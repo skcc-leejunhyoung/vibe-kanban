@@ -24,6 +24,7 @@ SELF_HOST_LOCAL_AUTH_PASSWORD=
 # Optional
 PUBLIC_BASE_URL=http://localhost:3000
 VITE_RELAY_API_BASE_URL=http://localhost:8082
+RELAY_SERVER_PORTS=127.0.0.1:8082:8082
 VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY=
 LOOPS_EMAIL_API_KEY=
 
@@ -98,6 +99,13 @@ docker compose --env-file .env.remote --profile relay --profile attachments up -
 Additional endpoint with the `relay` profile:
 
 - Relay API: `http://localhost:8082`
+
+If port `8082` is already in use, change both values in `.env.remote`:
+
+```env
+VITE_RELAY_API_BASE_URL=http://localhost:38082
+RELAY_SERVER_PORTS=127.0.0.1:38082:8082
+```
 
 ## Local HTTPS with Caddy (Optional)
 

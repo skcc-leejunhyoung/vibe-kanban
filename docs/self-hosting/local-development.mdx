@@ -82,6 +82,7 @@ GOOGLE_OAUTH_CLIENT_SECRET=
 # Relay (required for relay/tunnel features)
 # For plain HTTP local dev:
 VITE_RELAY_API_BASE_URL=http://localhost:8082
+RELAY_SERVER_PORTS=127.0.0.1:8082:8082
 
 # Email invitations (optional — leave empty to disable)
 LOOPS_EMAIL_API_KEY=
@@ -119,6 +120,13 @@ This starts:
 - **ElectricSQL** on port 3000 (internal only, used by Remote Server for real-time sync)
 - **Remote Server** on port 3000 (external) / 8081 (internal)
 - **Relay Server** on port 8082 (external and internal)
+
+If port `8082` is already in use, set both values in `.env.remote`:
+
+```env
+VITE_RELAY_API_BASE_URL=http://localhost:38082
+RELAY_SERVER_PORTS=127.0.0.1:38082:8082
+```
 
 <Warning>
 The remote server binds to `127.0.0.1:3000` only - it's not accessible from other machines. For production, use a reverse proxy.
