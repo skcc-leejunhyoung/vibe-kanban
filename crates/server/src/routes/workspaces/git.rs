@@ -148,23 +148,6 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/branch", axum::routing::put(rename_branch))
 }
 
-async fn resolve_vibe_kanban_identifier(
-    deployment: &DeploymentImpl,
-    local_workspace_id: Uuid,
-) -> String {
-    if let Ok(client) = deployment.remote_client()
-        && let Ok(remote_ws) = client.get_workspace_by_local_id(local_workspace_id).await
-        && let Some(issue_id) = remote_ws.issue_id
-        && let Ok(issue) = client.get_issue(issue_id).await
-    {
-        if !issue.simple_id.is_empty() {
-            return issue.simple_id;
-        }
-        return issue_id.to_string();
-    }
-    local_workspace_id.to_string()
-}
-
 #[axum::debug_handler]
 pub async fn stream_diff_ws(
     ws: SignedWsUpgrade,
@@ -219,16 +202,11 @@ pub async fn merge_workspace(
     let workspace_path = Path::new(&container_ref);
     let worktree_path = workspace_path.join(repo.name);
 
-    let workspace_label = workspace.name.as_deref().unwrap_or(&workspace.branch);
-    let vk_id = resolve_vibe_kanban_identifier(&deployment, workspace.id).await;
-    let commit_message = format!("{} (vibe-kanban {})", workspace_label, vk_id);
-
     let merge_commit_id = deployment.git().merge_changes(
         &repo.path,
         &worktree_path,
         &workspace.branch,
         &workspace_repo.target_branch,
-        &commit_message,
     )?;
 
     Merge::create_direct(

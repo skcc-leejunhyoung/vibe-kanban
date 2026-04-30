@@ -485,13 +485,7 @@ fn merge_does_not_overwrite_main_repo_untracked_files() {
     checkout_branch(&main_repo, "main");
 
     let service = GitService::new();
-    let res = service.merge_changes(
-        &repo_path,
-        &worktree_path,
-        "feature",
-        "main",
-        "squash merge",
-    );
+    let res = service.merge_changes(&repo_path, &worktree_path, "feature", "main");
     assert!(
         res.is_err(),
         "merge should refuse due to untracked conflict"
@@ -528,13 +522,7 @@ fn merge_does_not_touch_tracked_uncommitted_changes_in_base_worktree() {
 
     // Merge via service (squash into main) should not modify files in the main worktree
     let service = GitService::new();
-    let res = service.merge_changes(
-        &repo_path,
-        &worktree_path,
-        "feature",
-        "main",
-        "squash merge",
-    );
+    let res = service.merge_changes(&repo_path, &worktree_path, "feature", "main");
     assert!(
         res.is_ok(),
         "merge should succeed without touching worktree"
@@ -564,7 +552,7 @@ fn merge_refuses_with_staged_changes_on_base() {
     // main has staged change
     write_file(&repo_path, "staged.txt", "staged\n");
     add_path(&repo_path, "staged.txt");
-    let res = s.merge_changes(&repo_path, &worktree_path, "feature", "main", "squash");
+    let res = s.merge_changes(&repo_path, &worktree_path, "feature", "main");
     assert!(res.is_err(), "should refuse merge due to staged changes");
     // staged file remains
     let content = std::fs::read_to_string(repo_path.join("staged.txt")).unwrap();
@@ -586,7 +574,7 @@ fn merge_preserves_unstaged_changes_on_base() {
     commit_all(&wt_repo, "feature merged");
 
     let _sha = s
-        .merge_changes(&repo_path, &worktree_path, "feature", "main", "squash")
+        .merge_changes(&repo_path, &worktree_path, "feature", "main")
         .unwrap();
     // local edit preserved
     let loc = std::fs::read_to_string(repo_path.join("common.txt")).unwrap();
@@ -612,7 +600,7 @@ fn update_ref_does_not_destroy_feature_worktree_dirty_state() {
     write_file(&worktree_path, "dirty.txt", "unstaged\n");
     // merge from feature into main (CLI path updates task ref via update-ref)
     let sha = s
-        .merge_changes(&repo_path, &worktree_path, "feature", "main", "squash")
+        .merge_changes(&repo_path, &worktree_path, "feature", "main")
         .unwrap();
     // uncommitted change in feature worktree preserved
     let dirty = std::fs::read_to_string(worktree_path.join("dirty.txt")).unwrap();
@@ -640,7 +628,7 @@ fn libgit2_merge_updates_base_ref_in_both_repos() {
 
     // Perform merge (squash) while main repo is NOT on base branch (libgit2 path)
     let sha = s
-        .merge_changes(&repo_path, &worktree_path, "feature", "main", "squash")
+        .merge_changes(&repo_path, &worktree_path, "feature", "main")
         .expect("merge should succeed via libgit2 path");
 
     // Base branch ref advanced in both main and worktree repositories
@@ -662,7 +650,7 @@ fn libgit2_merge_updates_task_ref_and_feature_head_preserves_dirty() {
 
     // Perform merge (squash) from feature into main; this path uses libgit2
     let sha = s
-        .merge_changes(&repo_path, &worktree_path, "feature", "main", "squash")
+        .merge_changes(&repo_path, &worktree_path, "feature", "main")
         .expect("merge should succeed via libgit2 path");
 
     // Dirty file preserved in worktree
@@ -787,13 +775,7 @@ fn merge_when_base_ahead_and_feature_ahead_fails() {
 
     // Attempt to merge (squash) into main - should fail because base is ahead
     let service = GitService::new();
-    let res = service.merge_changes(
-        &repo_path,
-        &worktree_path,
-        "feature",
-        "main",
-        "squash merge",
-    );
+    let res = service.merge_changes(&repo_path, &worktree_path, "feature", "main");
 
     assert!(
         res.is_err(),
@@ -819,13 +801,7 @@ fn merge_conflict_does_not_move_base_ref() {
     let before = g.get_branch_oid(&repo_path, "main").unwrap();
 
     let service = GitService::new();
-    let res = service.merge_changes(
-        &repo_path,
-        &worktree_path,
-        "feature",
-        "main",
-        "squash merge",
-    );
+    let res = service.merge_changes(&repo_path, &worktree_path, "feature", "main");
 
     assert!(res.is_err(), "conflicting merge should fail");
 
@@ -862,13 +838,7 @@ fn merge_delete_vs_modify_conflict_behaves_safely() {
     let before = g.get_branch_oid(&repo_path, "main").unwrap();
 
     let service = GitService::new();
-    let res = service.merge_changes(
-        &repo_path,
-        &worktree_path,
-        "feature",
-        "main",
-        "squash merge",
-    );
+    let res = service.merge_changes(&repo_path, &worktree_path, "feature", "main");
 
     // Should now fail due to base branch being ahead, not due to merge conflicts
     assert!(res.is_err(), "merge should fail when base branch is ahead");
@@ -932,9 +902,7 @@ fn merge_refreshes_main_worktree_when_on_base() {
     let _ = s.commit(&wt, "feature change").unwrap();
 
     // Merge into main (squash) and ensure main worktree is updated since it is on base
-    let merge_sha = s
-        .merge_changes(&repo_path, &wt, "feature", "main", "squash")
-        .unwrap();
+    let merge_sha = s.merge_changes(&repo_path, &wt, "feature", "main").unwrap();
     // Since main is on base branch and we use safe CLI merge, both working tree
     // and ref should reflect the merged content.
     let content = std::fs::read_to_string(repo_path.join("file.txt")).unwrap();
@@ -1063,7 +1031,7 @@ fn merge_binary_conflict_does_not_move_ref() {
     let _ = s.commit(&repo_path, "main bin").unwrap();
 
     let before = s.get_branch_oid(&repo_path, "main").unwrap();
-    let res = s.merge_changes(&repo_path, &worktree_path, "feature", "main", "merge bin");
+    let res = s.merge_changes(&repo_path, &worktree_path, "feature", "main");
     assert!(res.is_err(), "binary conflict should fail");
     let after = s.get_branch_oid(&repo_path, "main").unwrap();
     assert_eq!(before, after, "main ref unchanged on conflict");
@@ -1096,13 +1064,7 @@ fn merge_rename_vs_modify_conflict_does_not_move_ref() {
     let _ = s.commit(&repo_path, "modify main").unwrap();
 
     let before = s.get_branch_oid(&repo_path, "main").unwrap();
-    let res = s.merge_changes(
-        &repo_path,
-        &worktree_path,
-        "feature",
-        "main",
-        "merge rename",
-    );
+    let res = s.merge_changes(&repo_path, &worktree_path, "feature", "main");
     match res {
         Err(_) => {
             let after = s.get_branch_oid(&repo_path, "main").unwrap();
@@ -1134,13 +1096,7 @@ fn merge_leaves_no_staged_changes_on_target_branch() {
 
     // Perform the merge
     let _merge_sha = s
-        .merge_changes(
-            &repo_path,
-            &worktree_path,
-            "feature",
-            "main",
-            "merge feature",
-        )
+        .merge_changes(&repo_path, &worktree_path, "feature", "main")
         .expect("merge should succeed");
 
     // THE KEY CHECK: Verify no staged changes remain on target branch
@@ -1204,13 +1160,7 @@ fn worktree_to_worktree_merge_leaves_no_staged_changes() {
     // Ensure main repo is on different branch (neither feature-a nor feature-b)
     checkout_branch(&repo, "main");
 
-    let _sha = service.merge_changes(
-        &repo_path,
-        &worktree_a_path,
-        "feature-a",
-        "feature-b",
-        "merge feature-a into feature-b",
-    );
+    let _sha = service.merge_changes(&repo_path, &worktree_a_path, "feature-a", "feature-b");
 
     // Verify no staged changes were introduced
     let git_cli = GitCli::new();
@@ -1261,13 +1211,7 @@ fn merge_into_orphaned_branch_uses_libgit2_fallback() {
 
     // Perform merge into orphaned branch (should use libgit2 fallback)
     let merge_sha = service
-        .merge_changes(
-            &repo_path,
-            &worktree_path,
-            "feature",
-            "orphaned-feature",
-            "merge into orphaned branch",
-        )
+        .merge_changes(&repo_path, &worktree_path, "feature", "orphaned-feature")
         .expect("libgit2 merge into orphaned branch should succeed");
 
     // Verify merge worked - orphaned-feature branch should now point to merge commit
@@ -1332,13 +1276,7 @@ fn merge_base_ahead_of_task_should_error() {
 
     // Attempt to merge feature into main when main is ahead
     // This should error because base branch has moved ahead of task branch
-    let res = service.merge_changes(
-        &repo_path,
-        &worktree_path,
-        "feature",
-        "main",
-        "attempt merge when base ahead",
-    );
+    let res = service.merge_changes(&repo_path, &worktree_path, "feature", "main");
 
     // TDD: This test will initially fail because merge currently succeeds
     // Later we'll fix the merge logic to detect this scenario and error

@@ -373,28 +373,23 @@ fn worktree_diff_permission_only_change() {
 }
 
 #[test]
-fn squash_merge_libgit2_sets_author_without_user() {
-    // Verify merge_changes (libgit2 path) uses fallback author when no config exists
+fn ff_merge_libgit2_moves_base_to_task_tip() {
     use git2::Repository;
 
     let td = TempDir::new().unwrap();
-    let repo_path = td.path().join("repo_fallback_merge");
+    let repo_path = td.path().join("repo_ff_merge");
     let worktree_path = td.path().join("wt_feature");
     let s = GitService::new();
 
-    // Init repo without user config
     s.initialize_repo_with_main_branch(&repo_path).unwrap();
 
-    // Create feature branch and worktree
     create_branch(&repo_path, "feature");
     s.add_worktree(&repo_path, &worktree_path, "feature", false)
         .unwrap();
 
-    // Make a feature commit in the worktree via libgit2 using an explicit signature
     write_file(&worktree_path, "f.txt", "feat\n");
-    {
+    let feature_tip = {
         let repo = Repository::open(&worktree_path).unwrap();
-        // stage all
         let mut index = repo.index().unwrap();
         index
             .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
@@ -404,28 +399,21 @@ fn squash_merge_libgit2_sets_author_without_user() {
         let tree = repo.find_tree(tree_id).unwrap();
         let sig = git2::Signature::now("Other Author", "other@example.com").unwrap();
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
-        let _cid = repo
-            .commit(Some("HEAD"), &sig, &sig, "feat", &tree, &[&parent])
-            .unwrap();
-    }
+        repo.commit(Some("HEAD"), &sig, &sig, "feat", &tree, &[&parent])
+            .unwrap()
+    };
 
     // Ensure main repo is NOT on base branch so merge_changes takes libgit2 path
     create_branch(&repo_path, "dev");
     checkout_branch(&repo_path, "dev");
 
-    // Merge feature -> main (libgit2 squash)
     let merge_sha = s
-        .merge_changes(&repo_path, &worktree_path, "feature", "main", "squash")
+        .merge_changes(&repo_path, &worktree_path, "feature", "main")
         .unwrap();
 
-    // The squash commit author should not be the feature commit's author, and must be present.
+    // FF merge: base ref now points at feature tip; no new commit was created.
+    assert_eq!(merge_sha, feature_tip.to_string());
     let (name, email) = get_commit_author(&repo_path, &merge_sha);
-    assert_ne!(name.as_deref(), Some("Other Author"));
-    assert_ne!(email.as_deref(), Some("other@example.com"));
-    if has_global_git_identity() {
-        assert!(name.is_some() && email.is_some());
-    } else {
-        assert_eq!(name.as_deref(), Some("Vibe Kanban"));
-        assert_eq!(email.as_deref(), Some("noreply@vibekanban.com"));
-    }
+    assert_eq!(name.as_deref(), Some("Other Author"));
+    assert_eq!(email.as_deref(), Some("other@example.com"));
 }

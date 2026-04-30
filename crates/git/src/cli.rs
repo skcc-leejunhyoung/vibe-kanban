@@ -643,17 +643,15 @@ impl GitCli {
     }
 
     /// Checkout base branch, squash-merge from_branch, and commit with message. Returns new HEAD sha.
-    pub fn merge_squash_commit(
+    pub fn merge_ff_only(
         &self,
         repo_path: &Path,
         base_branch: &str,
         from_branch: &str,
-        message: &str,
     ) -> Result<String, GitCliError> {
         self.git(repo_path, ["checkout", base_branch]).map(|_| ())?;
-        self.git(repo_path, ["merge", "--squash", "--no-commit", from_branch])
+        self.git(repo_path, ["merge", "--ff-only", from_branch])
             .map(|_| ())?;
-        self.git(repo_path, ["commit", "-m", message]).map(|_| ())?;
         let sha = self
             .git(repo_path, ["rev-parse", "HEAD"])?
             .trim()
