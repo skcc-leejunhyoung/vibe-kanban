@@ -33,6 +33,25 @@ import type {
 
 const EMPTY_BYTES = new Uint8Array();
 
+// `localApiTransport.scopeLocalApiPath` rewrites relative `/api/*` paths to
+// `/api/host/{hostId}/*` so that a single relay-tunnel session can address
+// arbitrary paired hosts. The relay tunnel path itself already pins the
+// destination host (via the `/v1/relay/h/{hostId}/...` segment), and the host
+// that receives the proxied request would otherwise loop the call through
+// `host_relay::proxy` for a host_id it doesn't have credentials for. Strip
+// the prefix so the host's main router handles the request directly.
+function unscopeHostApiPath(pathAndQuery: string, hostId: string): string {
+  const prefix = `/api/host/${hostId}`;
+  if (
+    pathAndQuery === prefix ||
+    pathAndQuery.startsWith(`${prefix}/`) ||
+    pathAndQuery.startsWith(`${prefix}?`)
+  ) {
+    return `/api${pathAndQuery.slice(prefix.length)}`;
+  }
+  return pathAndQuery;
+}
+
 export { isWorkspaceRoutePath };
 
 export async function requestLocalApiViaRelay(
@@ -59,7 +78,11 @@ export async function requestLocalApiViaRelay(
     );
   }
 
-  return requestRelayHostApi(hostId, pathAndQuery, relayRequestInit);
+  return requestRelayHostApi(
+    hostId,
+    unscopeHostApiPath(pathAndQuery, hostId),
+    relayRequestInit,
+  );
 }
 
 export async function openLocalApiWebSocketViaRelay(
@@ -82,7 +105,7 @@ export async function openLocalApiWebSocketViaRelay(
     );
   }
 
-  return openRelayHostWebSocket(hostId, pathAndQuery);
+  return openRelayHostWebSocket(hostId, unscopeHostApiPath(pathAndQuery, hostId));
 }
 
 export async function requestRelayHostApi(

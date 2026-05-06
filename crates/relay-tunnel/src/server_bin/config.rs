@@ -8,6 +8,11 @@ pub struct RelayServerConfig {
     pub database_url: String,
     pub listen_addr: String,
     pub jwt_secret: SecretString,
+    /// Suffix used for preview subdomains (e.g. "relay.vk.example.com").
+    /// When set, requests with `Host: {port}--{host_id}.{suffix}` are forwarded
+    /// to the corresponding host's local preview proxy via the existing control
+    /// tunnel. Tailnet trust is assumed; no per-request signing is required.
+    pub preview_host_suffix: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -32,10 +37,16 @@ impl RelayServerConfig {
         validate_jwt_secret(&jwt_secret_str)?;
         let jwt_secret = SecretString::new(jwt_secret_str.into());
 
+        let preview_host_suffix = env::var("RELAY_PREVIEW_HOST_SUFFIX")
+            .ok()
+            .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
+
         Ok(Self {
             database_url,
             listen_addr,
             jwt_secret,
+            preview_host_suffix,
         })
     }
 }

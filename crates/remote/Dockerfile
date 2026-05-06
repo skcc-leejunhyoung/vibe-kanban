@@ -3,13 +3,16 @@
 ARG APP_NAME=remote
 ARG FEATURES=""
 ARG VITE_RELAY_API_BASE_URL=""
+ARG VITE_RELAY_PREVIEW_HOST_SUFFIX=""
 ARG VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY=""
 
 FROM node:20-alpine AS fe-builder
 ARG VITE_RELAY_API_BASE_URL
+ARG VITE_RELAY_PREVIEW_HOST_SUFFIX
 ARG VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY
 WORKDIR /repo
 ENV VITE_RELAY_API_BASE_URL=${VITE_RELAY_API_BASE_URL}
+ENV VITE_RELAY_PREVIEW_HOST_SUFFIX=${VITE_RELAY_PREVIEW_HOST_SUFFIX}
 ENV VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY=${VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY}
 
 RUN corepack enable
@@ -31,7 +34,10 @@ COPY packages/ui/ packages/ui/
 COPY packages/web-core/ packages/web-core/
 COPY shared/ shared/
 
-RUN pnpm -C packages/remote-web build
+# Bust cache for the frontend build only (not pnpm install / cargo build) by
+# passing --build-arg CACHEBUST=$(date +%s) when iterating on UI code.
+ARG CACHEBUST=0
+RUN echo "cachebust=${CACHEBUST}" >/dev/null && pnpm -C packages/remote-web build
 
 FROM rust:1.93-slim-bookworm AS builder
 ARG APP_NAME

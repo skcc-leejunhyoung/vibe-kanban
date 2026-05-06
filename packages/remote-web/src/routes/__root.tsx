@@ -16,6 +16,7 @@ import { ExecutionProcessesProvider } from "@/shared/providers/ExecutionProcesse
 import { TerminalProvider } from "@/shared/providers/TerminalProvider";
 import { LogsPanelProvider } from "@/shared/providers/LogsPanelProvider";
 import { ActionsProvider } from "@/shared/providers/ActionsProvider";
+import { HostIdProvider } from "@/shared/providers/HostIdProvider";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useKanbanIssueComposerScratch } from "@/shared/hooks/useKanbanIssueComposerScratch";
 import { useUiPreferencesScratch } from "@/shared/hooks/useUiPreferencesScratch";
@@ -163,7 +164,9 @@ function RootLayout() {
     <AppNavigationProvider value={appNavigation}>
       <UserProvider>
         <RemoteActionsProvider>
-          <RemoteUserSystemProvider>{content}</RemoteUserSystemProvider>
+          <RemoteUserSystemProvider>
+            <HostIdProvider>{content}</HostIdProvider>
+          </RemoteUserSystemProvider>
         </RemoteActionsProvider>
       </UserProvider>
     </AppNavigationProvider>

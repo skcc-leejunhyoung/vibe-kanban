@@ -109,7 +109,7 @@ async fn forward_preview_ws(
     .into_response()
 }
 
-async fn subdomain_proxy_request(
+pub async fn subdomain_proxy_request(
     State(deployment): State<DeploymentImpl>,
     request: Request,
 ) -> Response {

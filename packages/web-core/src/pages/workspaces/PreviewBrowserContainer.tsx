@@ -283,8 +283,7 @@ export function PreviewBrowserContainer({
       return directUrl.toString();
     }
 
-    // Loopback URLs need the preview proxy for origin isolation
-    if (!previewProxyPort) return undefined;
+    const path = effectiveParsedUrl.pathname + effectiveParsedUrl.search;
 
     // Don't proxy to Vibe Kanban's own ports (would create infinite loop)
     const vibeKanbanPort = window.location.port || '80';
@@ -296,15 +295,30 @@ export function PreviewBrowserContainer({
       return undefined;
     }
 
-    // Also check if it's the preview proxy port itself
+    // Remote mode: route the iframe through a public preview subdomain that
+    // resolves to the relay-tunnel server, which forwards through the host's
+    // control tunnel. Tailnet membership is the access boundary.
+    const remotePreviewSuffix = (
+      import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? ''
+    ).trim();
+    if (remotePreviewSuffix && hostId != null) {
+      const remoteUrl = new URL(
+        `https://${devServerPort}--${hostId}.${remotePreviewSuffix}${path}`
+      );
+      remoteUrl.searchParams.set('_refresh', String(previewRefreshKey));
+      return remoteUrl.toString();
+    }
+
+    // Local mode: loopback dev servers go through the on-machine preview
+    // proxy on `previewProxyPort` (browser must be on the same machine).
+    if (!previewProxyPort) return undefined;
+
     if (devServerPort === String(previewProxyPort)) {
       console.warn(
         `[Preview] Ignoring dev server URL with same port as preview proxy (${devServerPort}).`
       );
       return undefined;
     }
-
-    const path = effectiveParsedUrl.pathname + effectiveParsedUrl.search;
 
     // Subdomain-based routing: the proxy extracts the port from the Host header
     const hostToken =
@@ -740,11 +754,13 @@ export function PreviewBrowserContainer({
     // Bridge SPA navigation only works when the proxy injects devtools_script.js
     // into the iframe. Non-loopback URLs bypass the proxy entirely, so the bridge
     // isn't available — fall through to setOverrideUrl for a full iframe reload.
+    const remotePreviewSuffix = (
+      import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? ''
+    ).trim();
     if (
       showIframe &&
       iframeRef.current?.contentWindow &&
       isLoopbackPreview &&
-      previewProxyPort &&
       devServerPort != null &&
       normalizedInputDevPort === devServerPort
     ) {
@@ -752,13 +768,20 @@ export function PreviewBrowserContainer({
         normalizedInputDevParsed.pathname +
         normalizedInputDevParsed.search +
         normalizedInputDevParsed.hash;
-      const hostToken =
-        hostId != null
-          ? `${normalizedInputDevPort}--${hostId}`
-          : normalizedInputDevPort;
-      const proxyUrl = `http://${hostToken}.localhost:${previewProxyPort}${proxyPath}`;
-      bridgeRef.current?.navigateTo(proxyUrl);
-      return;
+      let proxyUrl: string | null = null;
+      if (remotePreviewSuffix && hostId != null) {
+        proxyUrl = `https://${normalizedInputDevPort}--${hostId}.${remotePreviewSuffix}${proxyPath}`;
+      } else if (previewProxyPort) {
+        const hostToken =
+          hostId != null
+            ? `${normalizedInputDevPort}--${hostId}`
+            : normalizedInputDevPort;
+        proxyUrl = `http://${hostToken}.localhost:${previewProxyPort}${proxyPath}`;
+      }
+      if (proxyUrl) {
+        bridgeRef.current?.navigateTo(proxyUrl);
+        return;
+      }
     }
 
     setOverrideUrl(normalizedInputDevUrl);

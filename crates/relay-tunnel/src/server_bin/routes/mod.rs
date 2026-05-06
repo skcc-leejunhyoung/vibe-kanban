@@ -1,12 +1,14 @@
 mod auth_code;
 pub mod connect;
 pub mod path_routes;
+pub mod preview_subdomain;
 
 use axum::{
     Router,
+    extract::{Request, State},
     http::{HeaderName, StatusCode},
-    middleware,
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use serde::Serialize;
@@ -51,6 +53,10 @@ pub fn build_router(state: RelayAppState) -> Router {
         .nest("/v1", protected)
         .nest("/v1", proxy)
         .merge(public)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            preview_subdomain_dispatch,
+        ))
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::mirror_request())
@@ -74,4 +80,18 @@ struct HealthResponse {
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, axum::Json(HealthResponse { status: "ok" }))
+}
+
+/// If the inbound Host header looks like a preview subdomain, route through
+/// the host control tunnel; otherwise fall through to the normal routes.
+async fn preview_subdomain_dispatch(
+    State(state): State<RelayAppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let suffix = state.config.preview_host_suffix.as_deref();
+    if preview_subdomain::is_preview_request(&request, suffix) {
+        return preview_subdomain::preview_subdomain_handler(State(state), request).await;
+    }
+    next.run(request).await
 }

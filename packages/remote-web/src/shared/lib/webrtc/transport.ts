@@ -37,6 +37,23 @@ function normalizeWebSocketUrl(pathOrUrl: string): string {
   return url.toString();
 }
 
+// The WebRTC datachannel is host-scoped by connection, so the
+// `/api/host/{hostId}/` prefix added by `localApiTransport` is redundant —
+// and harmful, because the host's `host_relay` router would try to forward
+// the request through `relay_hosts.host(host_id)`, which has no entry for
+// itself. Strip the scope prefix before sending over the datachannel.
+function unscopeHostApiPath(pathAndQuery: string, hostId: string): string {
+  const prefix = `/api/host/${hostId}`;
+  if (
+    pathAndQuery === prefix ||
+    pathAndQuery.startsWith(`${prefix}/`) ||
+    pathAndQuery.startsWith(`${prefix}?`)
+  ) {
+    return `/api${pathAndQuery.slice(prefix.length)}`;
+  }
+  return pathAndQuery;
+}
+
 export async function requestLocalApiViaWebRtc(
   pathOrUrl: string,
   requestInit: LocalApiRequestOptions = {},
@@ -89,7 +106,7 @@ export async function requestLocalApiViaWebRtc(
   try {
     const dcResp = await conn.sendHttpRequest(
       method,
-      pathAndQuery,
+      unscopeHostApiPath(pathAndQuery, hostId),
       headers,
       bodyBytes,
     );
@@ -120,7 +137,7 @@ export async function openLocalApiWebSocketViaWebRtc(
     return openLocalApiWebSocketViaRelay(pathOrUrl, options);
   }
 
-  return createDataChannelWebSocket(conn, pathAndQuery);
+  return createDataChannelWebSocket(conn, unscopeHostApiPath(pathAndQuery, hostId));
 }
 
 function dataChannelResponseToResponse(dcResp: DataChannelResponse): Response {
