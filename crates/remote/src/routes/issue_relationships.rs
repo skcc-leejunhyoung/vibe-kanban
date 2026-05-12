@@ -1,7 +1,6 @@
 use api_types::{
-    CreateIssueRelationshipRequest, DeleteResponse, IssueRelationship,
-    IssueRelationshipDirection, ListIssueRelationshipsQuery, ListIssueRelationshipsResponse,
-    MutationResponse,
+    CreateIssueRelationshipRequest, DeleteResponse, IssueRelationship, IssueRelationshipDirection,
+    ListIssueRelationshipsQuery, ListIssueRelationshipsResponse, MutationResponse,
 };
 use axum::{
     Json,
@@ -61,11 +60,9 @@ async fn list_issue_relationships(
         IssueRelationshipDirection::Both => {
             let outgoing =
                 IssueRelationshipRepository::list_by_issue(state.pool(), query.issue_id).await;
-            let incoming = IssueRelationshipRepository::list_by_related_issue(
-                state.pool(),
-                query.issue_id,
-            )
-            .await;
+            let incoming =
+                IssueRelationshipRepository::list_by_related_issue(state.pool(), query.issue_id)
+                    .await;
             match (outgoing, incoming) {
                 (Ok(mut o), Ok(i)) => {
                     o.extend(i);

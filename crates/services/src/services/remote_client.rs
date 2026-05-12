@@ -736,6 +736,38 @@ impl RemoteClient {
         Ok(())
     }
 
+    /// Returns true if the workspace's linked issue carries the "vibe" tag and should be auto-merged on completion.
+    pub async fn auto_merge_check(
+        &self,
+        local_workspace_id: Uuid,
+    ) -> Result<bool, RemoteClientError> {
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            should_auto_merge: bool,
+        }
+        let resp: Resp = self
+            .get_authed(&format!(
+                "/v1/workspaces/{local_workspace_id}/auto_merge_check"
+            ))
+            .await?;
+        Ok(resp.should_auto_merge)
+    }
+
+    /// Forces the workspace's linked issue into "In review" — used when auto-merge fails.
+    pub async fn mark_workspace_issue_for_review(
+        &self,
+        local_workspace_id: Uuid,
+    ) -> Result<(), RemoteClientError> {
+        self.send(
+            reqwest::Method::POST,
+            &format!("/v1/workspaces/{local_workspace_id}/mark_for_review"),
+            true,
+            None::<&()>,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Creates a workspace on the remote server, linking it to a local workspace and an issue.
     pub async fn create_workspace(
         &self,

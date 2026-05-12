@@ -33,6 +33,7 @@ pub struct IssueRepository;
 enum IssueWorkflowSignal {
     ReviewStarted,
     WorkMerged,
+    LocalWorkMerged,
 }
 
 impl IssueRepository {
@@ -520,6 +521,8 @@ impl IssueRepository {
     /// Syncs issue status based on a workflow signal.
     /// - `ReviewStarted` → move issue to "In review"
     /// - `WorkMerged` → if all linked PRs are merged, move issue to "Done"
+    /// - `LocalWorkMerged` → if all linked PRs are merged, move issue to "Done",
+    ///   except issues tagged "vibe" which go to "In review" so the human can review the merge.
     async fn sync_status_from_workflow_signal(
         conn: &mut PgConnection,
         issue_id: Uuid,
@@ -538,6 +541,18 @@ impl IssueRepository {
                     "Done"
                 } else {
                     return Ok(());
+                }
+            }
+            IssueWorkflowSignal::LocalWorkMerged => {
+                let prs = PullRequestRepository::list_by_issue(&mut *conn, issue_id).await?;
+                let all_merged = prs.iter().all(|pr| pr.status == PullRequestStatus::Merged);
+                if !all_merged {
+                    return Ok(());
+                }
+                if Self::has_vibe_tag(&mut *conn, issue_id).await? {
+                    "In review"
+                } else {
+                    "Done"
                 }
             }
         };
@@ -594,8 +609,36 @@ impl IssueRepository {
         conn: &mut PgConnection,
         issue_id: Uuid,
     ) -> Result<(), IssueError> {
-        Self::sync_status_from_workflow_signal(conn, issue_id, IssueWorkflowSignal::WorkMerged)
+        Self::sync_status_from_workflow_signal(conn, issue_id, IssueWorkflowSignal::LocalWorkMerged)
             .await
+    }
+
+    /// Forces an issue into "In review" — used when an automated merge fails so
+    /// a human is asked to step in.
+    pub async fn mark_for_review(
+        conn: &mut PgConnection,
+        issue_id: Uuid,
+    ) -> Result<(), IssueError> {
+        Self::sync_status_from_workflow_signal(conn, issue_id, IssueWorkflowSignal::ReviewStarted)
+            .await
+    }
+
+    /// Returns true if the issue carries the case-sensitive "vibe" tag.
+    pub async fn has_vibe_tag(conn: &mut PgConnection, issue_id: Uuid) -> Result<bool, IssueError> {
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM issue_tags it
+                JOIN tags t ON t.id = it.tag_id
+                WHERE it.issue_id = $1 AND t.name = 'vibe'
+            ) AS "exists!"
+            "#,
+            issue_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(exists)
     }
 
     /// Moves an issue to the given target status if its current status is "Backlog" or "To do".

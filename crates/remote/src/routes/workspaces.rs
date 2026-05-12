@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, head, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -48,6 +48,14 @@ pub(super) fn router() -> Router<AppState> {
             post(sync_issue_status_from_local_merge),
         )
         .route(
+            "/workspaces/{local_workspace_id}/auto_merge_check",
+            get(auto_merge_check),
+        )
+        .route(
+            "/workspaces/{local_workspace_id}/mark_for_review",
+            post(mark_for_review),
+        )
+        .route(
             "/workspaces/by-local-id/{local_workspace_id}",
             get(get_workspace_by_local_id),
         )
@@ -55,6 +63,11 @@ pub(super) fn router() -> Router<AppState> {
             "/workspaces/exists/{local_workspace_id}",
             head(workspace_exists),
         )
+}
+
+#[derive(Debug, Serialize)]
+struct AutoMergeCheckResponse {
+    should_auto_merge: bool,
 }
 
 #[instrument(
@@ -187,6 +200,86 @@ async fn sync_issue_status_from_local_merge(
         .await
         .map_err(|error| {
             tracing::error!(?error, issue_id = %issue_id, "failed to sync issue status");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[instrument(
+    name = "workspaces.auto_merge_check",
+    skip(state, ctx),
+    fields(local_workspace_id = %local_workspace_id, user_id = %ctx.user.id)
+)]
+async fn auto_merge_check(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(local_workspace_id): Path<Uuid>,
+) -> Result<Json<AutoMergeCheckResponse>, ErrorResponse> {
+    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), local_workspace_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, local_workspace_id = %local_workspace_id, "failed to find workspace");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to find workspace")
+        })?
+        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
+
+    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+
+    let Some(issue_id) = workspace.issue_id else {
+        return Ok(Json(AutoMergeCheckResponse {
+            should_auto_merge: false,
+        }));
+    };
+
+    let mut conn = state.pool().acquire().await.map_err(|error| {
+        tracing::error!(?error, "failed to acquire connection");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    let should_auto_merge = IssueRepository::has_vibe_tag(&mut conn, issue_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, issue_id = %issue_id, "failed to check vibe tag");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+        })?;
+
+    Ok(Json(AutoMergeCheckResponse { should_auto_merge }))
+}
+
+#[instrument(
+    name = "workspaces.mark_for_review",
+    skip(state, ctx),
+    fields(local_workspace_id = %local_workspace_id, user_id = %ctx.user.id)
+)]
+async fn mark_for_review(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(local_workspace_id): Path<Uuid>,
+) -> Result<StatusCode, ErrorResponse> {
+    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), local_workspace_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, local_workspace_id = %local_workspace_id, "failed to find workspace");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to find workspace")
+        })?
+        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
+
+    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+
+    let Some(issue_id) = workspace.issue_id else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+
+    let mut conn = state.pool().acquire().await.map_err(|error| {
+        tracing::error!(?error, "failed to acquire connection");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    IssueRepository::mark_for_review(&mut conn, issue_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, issue_id = %issue_id, "failed to mark issue for review");
             ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
         })?;
 

@@ -17,6 +17,7 @@ use db::{
             ExecutionContext, ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus,
         },
         execution_process_repo_state::ExecutionProcessRepoState,
+        merge::{Merge, MergeStatus},
         repo::Repo,
         scratch::{DraftFollowUpData, Scratch, ScratchType},
         session::{Session, SessionError},
@@ -605,6 +606,7 @@ impl LocalContainerService {
 
                         // Manually finalize task since we're bypassing normal execution flow
                         container.finalize_task(&ctx).await;
+                        container.auto_merge_for_vibe_issue(&ctx).await;
                         already_finalized = true;
                     }
                 }
@@ -656,6 +658,7 @@ impl LocalContainerService {
                                 tracing::error!("Failed to start queued follow-up: {}", e);
                                 // Fall back to finalization if follow-up fails
                                 container.finalize_task(&ctx).await;
+                                container.auto_merge_for_vibe_issue(&ctx).await;
                             } else {
                                 started_queued_follow_up = true;
                             }
@@ -667,9 +670,11 @@ impl LocalContainerService {
                                 ctx.execution_process.status
                             );
                             container.finalize_task(&ctx).await;
+                            container.auto_merge_for_vibe_issue(&ctx).await;
                         }
                     } else {
                         container.finalize_task(&ctx).await;
+                        container.auto_merge_for_vibe_issue(&ctx).await;
                     }
 
                     let should_mark_turn_unseen = matches!(
@@ -1115,6 +1120,218 @@ impl LocalContainerService {
             &ExecutionProcessRunReason::CodingAgent,
         )
         .await
+    }
+
+    /// If the workspace's linked issue carries the "vibe" tag, automatically merge each
+    /// qualifying repo into its target branch on successful execution completion. On any
+    /// merge failure, force the issue into "In review" so a human can intervene.
+    pub async fn auto_merge_for_vibe_issue(&self, ctx: &ExecutionContext) {
+        if !matches!(
+            ctx.execution_process.status,
+            ExecutionProcessStatus::Completed
+        ) {
+            return;
+        }
+        if ctx.workspace.task_id.is_none() {
+            return;
+        }
+        let Some(client) = self.remote_client.clone() else {
+            return;
+        };
+
+        let workspace = ctx.workspace.clone();
+        let workspace_id = workspace.id;
+
+        match client.auto_merge_check(workspace_id).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                tracing::warn!(
+                    "auto_merge_check failed for workspace {}: {}",
+                    workspace_id,
+                    e
+                );
+                return;
+            }
+        }
+
+        let workspace_repos =
+            match WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace_id).await {
+                Ok(v) if !v.is_empty() => v,
+                Ok(_) => return,
+                Err(e) => {
+                    tracing::error!(
+                        "auto_merge: failed to load workspace_repos for {}: {}",
+                        workspace_id,
+                        e
+                    );
+                    return;
+                }
+            };
+
+        let container_ref = match self.ensure_container_exists(&workspace).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(
+                    "auto_merge: failed to ensure container for {}: {}",
+                    workspace_id,
+                    e
+                );
+                if let Err(err) = client.mark_workspace_issue_for_review(workspace_id).await {
+                    tracing::warn!(
+                        "auto_merge: failed to mark workspace {} for review: {}",
+                        workspace_id,
+                        err
+                    );
+                }
+                return;
+            }
+        };
+        let workspace_path = Path::new(&container_ref);
+
+        let mut any_success = false;
+        let mut any_failure = false;
+        let mut any_skipped = false;
+
+        for workspace_repo in &workspace_repos {
+            let repo = match Repo::find_by_id(&self.db.pool, workspace_repo.repo_id).await {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    tracing::warn!(
+                        "auto_merge: repo {} not found for workspace {}",
+                        workspace_repo.repo_id,
+                        workspace_id
+                    );
+                    any_failure = true;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::error!("auto_merge: failed to load repo: {}", e);
+                    any_failure = true;
+                    continue;
+                }
+            };
+
+            let merges =
+                match Merge::find_by_workspace_and_repo_id(&self.db.pool, workspace_id, repo.id)
+                    .await
+                {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::error!(
+                            "auto_merge: failed to load merges for {}: {}",
+                            repo.name,
+                            e
+                        );
+                        any_failure = true;
+                        continue;
+                    }
+                };
+            let has_open_pr = merges.iter().any(
+                |m| matches!(m, Merge::Pr(pr) if matches!(pr.pr_info.status, MergeStatus::Open)),
+            );
+            if has_open_pr {
+                tracing::info!(
+                    "auto_merge: skipping repo {} for workspace {} due to open PR",
+                    repo.name,
+                    workspace_id
+                );
+                any_skipped = true;
+                continue;
+            }
+
+            let is_target_remote = match self
+                .git
+                .is_remote_branch(&repo.path, &workspace_repo.target_branch)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(
+                        "auto_merge: is_remote_branch failed for {}: {}",
+                        repo.name,
+                        e
+                    );
+                    any_failure = true;
+                    continue;
+                }
+            };
+            if is_target_remote {
+                tracing::info!(
+                    "auto_merge: skipping repo {} for workspace {} (remote target)",
+                    repo.name,
+                    workspace_id
+                );
+                any_skipped = true;
+                continue;
+            }
+
+            let worktree_path = workspace_path.join(&repo.name);
+            let merge_commit_id = match self.git.merge_changes(
+                &repo.path,
+                &worktree_path,
+                &workspace.branch,
+                &workspace_repo.target_branch,
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(
+                        "auto_merge: merge_changes failed for repo {}: {}",
+                        repo.name,
+                        e
+                    );
+                    any_failure = true;
+                    continue;
+                }
+            };
+
+            if let Err(e) = Merge::create_direct(
+                &self.db.pool,
+                workspace_id,
+                repo.id,
+                &workspace_repo.target_branch,
+                &merge_commit_id,
+            )
+            .await
+            {
+                tracing::error!(
+                    "auto_merge: failed to record merge for {}: {}",
+                    repo.name,
+                    e
+                );
+                any_failure = true;
+                continue;
+            }
+
+            any_success = true;
+        }
+
+        if any_failure {
+            if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
+                tracing::warn!(
+                    "auto_merge: failed to mark workspace {} for review: {}",
+                    workspace_id,
+                    e
+                );
+            }
+            return;
+        }
+
+        if !any_success {
+            return;
+        }
+
+        remote_sync::sync_local_workspace_merge_to_remote(&client, workspace_id).await;
+
+        if !any_skipped
+            && !workspace.pinned
+            && let Err(e) = self.archive_workspace(workspace_id).await
+        {
+            tracing::error!(
+                "auto_merge: failed to archive workspace {}: {}",
+                workspace_id,
+                e
+            );
+        }
     }
 }
 
