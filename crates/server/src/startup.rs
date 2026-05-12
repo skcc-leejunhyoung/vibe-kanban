@@ -179,6 +179,9 @@ pub async fn initialize_deployment(
         executors::executors::utils::preload_global_executor_options_cache().await;
     });
 
+    // Background poller that resumes agent spawns deferred by issue-blocker gating.
+    crate::blocker_watcher::spawn(deployment.clone());
+
     Ok(deployment)
 }
 

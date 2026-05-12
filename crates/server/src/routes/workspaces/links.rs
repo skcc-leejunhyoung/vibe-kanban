@@ -44,6 +44,18 @@ pub async fn link_workspace(
         })
         .await?;
 
+    // Mirror the workspace ↔ issue link locally so blocker-gating can detect
+    // the linked issue without re-querying the cloud backend on every request.
+    if let Err(e) =
+        Workspace::set_task_id(&deployment.db().pool, workspace.id, Some(payload.issue_id)).await
+    {
+        tracing::warn!(
+            "Failed to mirror workspace {} task_id locally: {}",
+            workspace.id,
+            e
+        );
+    }
+
     {
         let pool = deployment.db().pool.clone();
         let ws_id = workspace.id;
@@ -93,11 +105,24 @@ pub async fn unlink_workspace(
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     let client = deployment.remote_client()?;
 
-    match client.delete_workspace(workspace_id).await {
+    let result = match client.delete_workspace(workspace_id).await {
+        Ok(()) => Ok(()),
+        Err(RemoteClientError::Http { status: 404, .. }) => Ok(()),
+        Err(e) => Err(e),
+    };
+
+    // Always clear the local mirror, even when remote delete returned 404 — the
+    // upstream link is gone either way.
+    if let Err(e) = Workspace::set_task_id(&deployment.db().pool, workspace_id, None).await {
+        tracing::warn!(
+            "Failed to clear workspace {} task_id locally: {}",
+            workspace_id,
+            e
+        );
+    }
+
+    match result {
         Ok(()) => Ok(ResponseJson(ApiResponse::success(()))),
-        Err(RemoteClientError::Http { status: 404, .. }) => {
-            Ok(ResponseJson(ApiResponse::success(())))
-        }
         Err(e) => Err(e.into()),
     }
 }

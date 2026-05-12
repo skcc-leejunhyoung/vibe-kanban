@@ -11,6 +11,7 @@ use axum::{
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
+    pending_execution_start::PendingExecutionStart,
     requests::UpdateSession,
     scratch::{Scratch, ScratchType},
     session::{CreateSession, Session, SessionError},
@@ -25,7 +26,7 @@ use executors::{
     profile::ExecutorConfig,
 };
 use serde::Deserialize;
-use services::services::container::ContainerService;
+use services::services::{container::ContainerService, issue_gating};
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -209,15 +210,76 @@ pub async fn follow_up(
 
     let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
-    let execution_process = deployment
-        .container()
-        .start_execution(
-            &workspace,
-            &session,
-            &action,
-            &ExecutionProcessRunReason::CodingAgent,
-        )
-        .await?;
+    // Blocker gating: if the workspace is linked to an upstream issue (task_id)
+    // and that issue has unresolved blockers, create the execution_process row
+    // but defer the actual spawn. A background watcher resumes the spawn once
+    // every blocker reaches a resolved status (Done / In review).
+    let gated_blocker = match workspace.task_id {
+        Some(task_id) => match deployment.remote_client() {
+            Ok(client) => match issue_gating::unresolved_blockers(&client, task_id).await {
+                Ok(blockers) if !blockers.is_empty() => Some((task_id, blockers.len())),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to evaluate blockers for task {} (proceeding with spawn): {}",
+                        task_id,
+                        e
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        },
+        None => None,
+    };
+
+    let execution_process = if let Some((task_id, blocker_count)) = gated_blocker {
+        let record = deployment
+            .container()
+            .create_execution_record(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?;
+
+        match PendingExecutionStart::create(pool, record.id, workspace.id, session.id, task_id)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(
+                    "Deferred execution {} for workspace {} due to {} unresolved blocker(s)",
+                    record.id,
+                    workspace.id,
+                    blocker_count
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to register pending execution for process {} (spawning immediately): {}",
+                    record.id,
+                    e
+                );
+                deployment
+                    .container()
+                    .finish_execution_spawn(&workspace, &session, &record, &action)
+                    .await?;
+            }
+        }
+
+        record
+    } else {
+        deployment
+            .container()
+            .start_execution(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?
+    };
 
     // Clear the draft follow-up scratch on successful spawn
     // This ensures the scratch is wiped even if the user navigates away quickly

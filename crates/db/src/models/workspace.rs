@@ -179,6 +179,22 @@ impl Workspace {
         Ok(())
     }
 
+    /// Sets or clears the upstream task/issue id for a workspace. Used by the
+    /// link/unlink flow so blocker-gating can detect the linked issue locally
+    /// without an extra round trip to the cloud backend.
+    pub async fn set_task_id(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        task_id: Option<Uuid>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workspaces SET task_id = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(task_id)
+            .bind(workspace_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     /// Update the workspace's updated_at timestamp to prevent cleanup.
     /// Call this when the workspace is accessed (e.g., opened in editor).
     pub async fn touch(pool: &SqlitePool, workspace_id: Uuid) -> Result<(), sqlx::Error> {

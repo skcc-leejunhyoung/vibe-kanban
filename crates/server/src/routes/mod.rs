@@ -111,9 +111,10 @@ async fn preview_host_dispatch(
         // already strips upstream content-encoding, so claiming `identity`
         // here is accurate and tells the layer to leave the body alone.
         if !response.headers().contains_key(header::CONTENT_ENCODING) {
-            response
-                .headers_mut()
-                .insert(header::CONTENT_ENCODING, HeaderValue::from_static("identity"));
+            response.headers_mut().insert(
+                header::CONTENT_ENCODING,
+                HeaderValue::from_static("identity"),
+            );
         }
         return response;
     }

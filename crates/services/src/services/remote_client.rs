@@ -912,13 +912,25 @@ impl RemoteClient {
 
     // ── Issue Relationships ────────────────────────────────────────────
 
-    /// Lists relationships for an issue.
+    /// Lists relationships for an issue (outgoing; `issue_id = $1`).
     pub async fn list_issue_relationships(
         &self,
         issue_id: Uuid,
     ) -> Result<ListIssueRelationshipsResponse, RemoteClientError> {
         self.get_authed(&format!("/v1/issue_relationships?issue_id={issue_id}"))
             .await
+    }
+
+    /// Lists relationships that target the given issue (`related_issue_id = $1`).
+    /// Used to discover the blockers of an issue.
+    pub async fn list_issue_relationships_incoming(
+        &self,
+        issue_id: Uuid,
+    ) -> Result<ListIssueRelationshipsResponse, RemoteClientError> {
+        self.get_authed(&format!(
+            "/v1/issue_relationships?issue_id={issue_id}&direction=incoming"
+        ))
+        .await
     }
 
     /// Creates a new issue relationship.

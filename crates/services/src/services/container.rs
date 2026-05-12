@@ -1130,6 +1130,74 @@ pub trait ContainerService {
         Ok(execution_process)
     }
 
+    /// Same end-state as [`Self::start_workspace`] up through "execution_process
+    /// row exists and is associated with a setup+coding-agent action chain",
+    /// but without spawning the underlying process. Returns `(session, record)`
+    /// so the caller can register a `pending_execution_starts` row and let a
+    /// background watcher resume the spawn via [`Self::finish_execution_spawn`].
+    ///
+    /// Always uses the sequential setup chain (no parallel optimisation), so
+    /// the recorded `executor_action` is a single action whose `next_action`s
+    /// run all setup scripts followed by the coding agent. This keeps the
+    /// deferred-resume path simple: a single `finish_execution_spawn` call
+    /// performs the full sequence.
+    async fn start_workspace_deferred(
+        &self,
+        workspace: &Workspace,
+        executor_config: ExecutorConfig,
+        prompt: String,
+    ) -> Result<(Session, ExecutionProcess, ExecutorAction), ContainerError> {
+        // Container + workspace load (matches start_workspace prelude).
+        self.create(workspace).await?;
+        let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
+        let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
+            .await?
+            .ok_or(SqlxError::RowNotFound)?;
+
+        let session = Session::create(
+            &self.db().pool,
+            &CreateSession {
+                executor: Some(executor_config.executor.to_string()),
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await?;
+
+        let cleanup_action = self.cleanup_actions_for_repos(&repos);
+        let working_dir = session
+            .agent_working_dir
+            .as_ref()
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+
+        let coding_action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt,
+                executor_config: executor_config.clone(),
+                working_dir,
+            }),
+            cleanup_action.map(Box::new),
+        );
+
+        let repos_with_setup: Vec<_> = repos.iter().filter(|r| r.setup_script.is_some()).collect();
+        let (main_action, run_reason) = if repos_with_setup.is_empty() {
+            (coding_action, ExecutionProcessRunReason::CodingAgent)
+        } else {
+            (
+                Self::build_sequential_setup_chain(&repos_with_setup, coding_action),
+                ExecutionProcessRunReason::SetupScript,
+            )
+        };
+
+        let record = self
+            .create_execution_record(&workspace, &session, &main_action, &run_reason)
+            .await?;
+
+        Ok((session, record, main_action))
+    }
+
     async fn start_execution(
         &self,
         workspace: &Workspace,
@@ -1137,8 +1205,26 @@ pub trait ContainerService {
         executor_action: &ExecutorAction,
         run_reason: &ExecutionProcessRunReason,
     ) -> Result<ExecutionProcess, ContainerError> {
-        // Create new execution process record
-        // Capture current HEAD per repository as the "before" commit for this execution
+        let execution_process = self
+            .create_execution_record(workspace, session, executor_action, run_reason)
+            .await?;
+        self.finish_execution_spawn(workspace, session, &execution_process, executor_action)
+            .await?;
+        Ok(execution_process)
+    }
+
+    /// Creates the `execution_process` row (plus repo state / coding-agent turn /
+    /// msg-store setup / workspace un-archive) but does not yet spawn the
+    /// underlying agent process. Callers that need to defer the spawn (e.g. the
+    /// blocker-gating queue) can hold the returned row and trigger
+    /// [`Self::finish_execution_spawn`] later.
+    async fn create_execution_record(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        executor_action: &ExecutorAction,
+        run_reason: &ExecutionProcessRunReason,
+    ) -> Result<ExecutionProcess, ContainerError> {
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
         if repositories.is_empty() {
@@ -1225,8 +1311,33 @@ pub trait ContainerService {
             }
         }
 
+        Ok(execution_process)
+    }
+
+    /// Performs the actual agent spawn for an already-created execution
+    /// process row, plus normalised-log wiring. On spawn failure the row is
+    /// marked as Failed and a stderr log entry is appended. Used both by the
+    /// normal [`Self::start_execution`] path and by the blocker-gating queue
+    /// when a previously-deferred execution is finally allowed to run.
+    async fn finish_execution_spawn(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        execution_process: &ExecutionProcess,
+        executor_action: &ExecutorAction,
+    ) -> Result<(), ContainerError> {
+        // Ensure a msg_store exists for this process (it normally does because
+        // create_execution_record set it up, but a deferred resume may have
+        // happened after a server restart where the in-memory store is empty).
+        {
+            let mut stores = self.msg_stores().write().await;
+            stores
+                .entry(execution_process.id)
+                .or_insert_with(|| Arc::new(MsgStore::new()));
+        }
+
         if let Err(start_error) = self
-            .start_execution_inner(workspace, &execution_process, executor_action)
+            .start_execution_inner(workspace, execution_process, executor_action)
             .await
         {
             self.msg_stores()
@@ -1352,7 +1463,7 @@ pub trait ContainerService {
             execution_process.id,
             session.id,
         );
-        Ok(execution_process)
+        Ok(())
     }
 
     async fn try_start_next_action(&self, ctx: &ExecutionContext) -> Result<(), ContainerError> {

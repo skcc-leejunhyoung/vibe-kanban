@@ -1,3 +1,4 @@
+pub mod blocker_watcher;
 pub mod error;
 pub mod middleware;
 pub mod relay_pairing;

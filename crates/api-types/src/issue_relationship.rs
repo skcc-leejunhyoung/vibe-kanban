@@ -34,9 +34,24 @@ pub struct CreateIssueRelationshipRequest {
     pub relationship_type: IssueRelationshipType,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueRelationshipDirection {
+    /// Relationships where the given issue is the source (`issue_id = $1`).
+    /// Default; preserves the original API behaviour.
+    Outgoing,
+    /// Relationships that target the given issue (`related_issue_id = $1`).
+    /// Used to find issues that block the given issue.
+    Incoming,
+    /// Both directions combined.
+    Both,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListIssueRelationshipsQuery {
     pub issue_id: Uuid,
+    #[serde(default)]
+    pub direction: Option<IssueRelationshipDirection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

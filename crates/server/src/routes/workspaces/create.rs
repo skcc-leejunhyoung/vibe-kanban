@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
+    pending_execution_start::PendingExecutionStart,
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
     },
     workspace::{CreateWorkspace, Workspace},
 };
 use deployment::Deployment;
-use services::services::container::ContainerService;
+use services::services::{container::ContainerService, issue_gating};
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
@@ -295,10 +296,86 @@ pub async fn create_and_start_workspace(
     let workspace = managed_workspace.workspace.clone();
     tracing::info!("Created workspace {}", workspace.id);
 
-    let execution_process = deployment
-        .container()
-        .start_workspace(&workspace, executor_config.clone(), workspace_prompt)
-        .await?;
+    // Mirror the linked issue onto the workspace row so blocker-gating can
+    // detect it locally. Failure here only disables gating for this workspace;
+    // it must not prevent the workspace from starting.
+    if let Some(linked_issue) = &linked_issue
+        && let Err(e) = Workspace::set_task_id(
+            &deployment.db().pool,
+            workspace.id,
+            Some(linked_issue.issue_id),
+        )
+        .await
+    {
+        tracing::warn!("Failed to set task_id on workspace {}: {}", workspace.id, e);
+    }
+
+    // Blocker gating for the very first execution. When the linked issue has
+    // unresolved blockers, build the full setup+coding-agent action chain and
+    // persist the execution_process row, but skip the spawn. A background
+    // watcher resumes it once every blocker reaches a resolved status.
+    let gated_blocker = match &linked_issue {
+        Some(linked) => match deployment.remote_client() {
+            Ok(client) => match issue_gating::unresolved_blockers(&client, linked.issue_id).await {
+                Ok(blockers) if !blockers.is_empty() => Some((linked.issue_id, blockers.len())),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to evaluate blockers for issue {} (proceeding with spawn): {}",
+                        linked.issue_id,
+                        e
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        },
+        None => None,
+    };
+
+    let execution_process = if let Some((task_id, blocker_count)) = gated_blocker {
+        let (session, record, main_action) = deployment
+            .container()
+            .start_workspace_deferred(&workspace, executor_config.clone(), workspace_prompt)
+            .await?;
+
+        match PendingExecutionStart::create(
+            &deployment.db().pool,
+            record.id,
+            workspace.id,
+            session.id,
+            task_id,
+        )
+        .await
+        {
+            Ok(_) => {
+                tracing::info!(
+                    "Deferred initial execution {} for workspace {} due to {} unresolved blocker(s)",
+                    record.id,
+                    workspace.id,
+                    blocker_count
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to register pending execution for process {} (spawning immediately): {}",
+                    record.id,
+                    e
+                );
+                deployment
+                    .container()
+                    .finish_execution_spawn(&workspace, &session, &record, &main_action)
+                    .await?;
+            }
+        }
+
+        record
+    } else {
+        deployment
+            .container()
+            .start_workspace(&workspace, executor_config.clone(), workspace_prompt)
+            .await?
+    };
 
     deployment
         .track_if_analytics_allowed(

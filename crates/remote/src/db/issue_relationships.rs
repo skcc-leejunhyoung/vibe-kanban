@@ -63,6 +63,32 @@ impl IssueRelationshipRepository {
         Ok(records)
     }
 
+    /// Lists relationships that target the given issue (`related_issue_id = $1`).
+    /// Used to find issues that block this one.
+    pub async fn list_by_related_issue(
+        pool: &PgPool,
+        related_issue_id: Uuid,
+    ) -> Result<Vec<IssueRelationship>, IssueRelationshipError> {
+        let records = sqlx::query_as!(
+            IssueRelationship,
+            r#"
+            SELECT
+                id                AS "id!: Uuid",
+                issue_id          AS "issue_id!: Uuid",
+                related_issue_id  AS "related_issue_id!: Uuid",
+                relationship_type AS "relationship_type!: IssueRelationshipType",
+                created_at        AS "created_at!: DateTime<Utc>"
+            FROM issue_relationships
+            WHERE related_issue_id = $1
+            "#,
+            related_issue_id
+        )
+        .fetch_all(pool)
+        .await?;
+
+        Ok(records)
+    }
+
     pub async fn list_by_project(
         pool: &PgPool,
         project_id: Uuid,

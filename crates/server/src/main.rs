@@ -93,6 +93,9 @@ async fn main() -> Result<(), VibeKanbanError> {
     tokio::spawn(async move {
         executors::executors::utils::preload_global_executor_options_cache().await;
     });
+
+    // Background poller that resumes agent spawns deferred by issue-blocker gating.
+    server::blocker_watcher::spawn(deployment.clone());
     let port = std::env::var("BACKEND_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()

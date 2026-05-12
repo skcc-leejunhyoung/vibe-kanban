@@ -1,6 +1,7 @@
 use api_types::{
-    CreateIssueRelationshipRequest, DeleteResponse, IssueRelationship, ListIssueRelationshipsQuery,
-    ListIssueRelationshipsResponse, MutationResponse,
+    CreateIssueRelationshipRequest, DeleteResponse, IssueRelationship,
+    IssueRelationshipDirection, ListIssueRelationshipsQuery, ListIssueRelationshipsResponse,
+    MutationResponse,
 };
 use axum::{
     Json,
@@ -46,11 +47,34 @@ async fn list_issue_relationships(
 ) -> Result<Json<ListIssueRelationshipsResponse>, ErrorResponse> {
     ensure_issue_access(state.pool(), ctx.user.id, query.issue_id).await?;
 
-    let issue_relationships = IssueRelationshipRepository::list_by_issue(
-        state.pool(),
-        query.issue_id,
-    )
-    .await
+    let direction = query
+        .direction
+        .unwrap_or(IssueRelationshipDirection::Outgoing);
+
+    let issue_relationships = match direction {
+        IssueRelationshipDirection::Outgoing => {
+            IssueRelationshipRepository::list_by_issue(state.pool(), query.issue_id).await
+        }
+        IssueRelationshipDirection::Incoming => {
+            IssueRelationshipRepository::list_by_related_issue(state.pool(), query.issue_id).await
+        }
+        IssueRelationshipDirection::Both => {
+            let outgoing =
+                IssueRelationshipRepository::list_by_issue(state.pool(), query.issue_id).await;
+            let incoming = IssueRelationshipRepository::list_by_related_issue(
+                state.pool(),
+                query.issue_id,
+            )
+            .await;
+            match (outgoing, incoming) {
+                (Ok(mut o), Ok(i)) => {
+                    o.extend(i);
+                    Ok(o)
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
+    }
     .map_err(|error| {
         tracing::error!(?error, issue_id = %query.issue_id, "failed to list issue relationships");
         ErrorResponse::new(
