@@ -1147,7 +1147,12 @@ pub trait ContainerService {
         executor_config: ExecutorConfig,
         prompt: String,
     ) -> Result<(Session, ExecutionProcess, ExecutorAction), ContainerError> {
-        // Container + workspace load (matches start_workspace prelude).
+        // Create the container/worktree immediately so other endpoints
+        // (diff, attachment import, status, etc.) called by the frontend
+        // right after the workspace is created can resolve a path. The
+        // blocker_watcher rebases each worktree onto the latest origin base
+        // before resuming the spawn so the blocker's merge commit is picked
+        // up automatically.
         self.create(workspace).await?;
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
         let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
@@ -1233,16 +1238,21 @@ pub trait ContainerService {
             )));
         }
 
+        // When the container hasn't been initialised yet (blocker-gated deferred
+        // start) we cannot capture a HEAD; record the repo_state entries with
+        // before_head_commit = None and let the watcher backfill the HEAD on
+        // resume if needed.
         let workspace_root = workspace
             .container_ref
             .as_ref()
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| ContainerError::Other(anyhow!("Container ref not found")))?;
+            .map(std::path::PathBuf::from);
 
         let mut repo_states = Vec::with_capacity(repositories.len());
         for repo in &repositories {
-            let repo_path = workspace_root.join(&repo.name);
-            let before_head_commit = self.git().get_head_info(&repo_path).ok().map(|h| h.oid);
+            let before_head_commit = workspace_root.as_ref().and_then(|root| {
+                let repo_path = root.join(&repo.name);
+                self.git().get_head_info(&repo_path).ok().map(|h| h.oid)
+            });
             repo_states.push(CreateExecutionProcessRepoState {
                 repo_id: repo.id,
                 before_head_commit,
