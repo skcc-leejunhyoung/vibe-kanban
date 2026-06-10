@@ -635,7 +635,7 @@ export type SandboxMode = "auto" | "read-only" | "workspace-write" | "danger-ful
 
 export type AskForApproval = "unless-trusted" | "on-failure" | "on-request" | "never";
 
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 

@@ -117,6 +117,8 @@ pub enum AskForApproval {
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum ReasoningEffort {
+    None,
+    Minimal,
     Low,
     Medium,
     High,
@@ -316,6 +318,8 @@ impl StandardCodingAgentExecutor for Codex {
     ) -> Result<futures::stream::BoxStream<'static, json_patch::Patch>, ExecutorError> {
         let xhigh_reasoning_options = ReasoningOption::from_names(
             [
+                ReasoningEffort::None,
+                ReasoningEffort::Minimal,
                 ReasoningEffort::Low,
                 ReasoningEffort::Medium,
                 ReasoningEffort::High,
@@ -763,7 +767,7 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_model;
+    use super::{ReasoningEffort, resolve_model};
 
     #[test]
     fn resolve_model_detects_fast_suffix() {
@@ -779,5 +783,18 @@ mod tests {
             (Some("gpt-5.4-mini"), false)
         );
         assert_eq!(resolve_model(None), (None, false));
+    }
+
+    #[test]
+    fn reasoning_effort_parses_latest_codex_values() {
+        assert_eq!("none".parse::<ReasoningEffort>(), Ok(ReasoningEffort::None));
+        assert_eq!(
+            "minimal".parse::<ReasoningEffort>(),
+            Ok(ReasoningEffort::Minimal)
+        );
+        assert_eq!(
+            "xhigh".parse::<ReasoningEffort>(),
+            Ok(ReasoningEffort::Xhigh)
+        );
     }
 }
