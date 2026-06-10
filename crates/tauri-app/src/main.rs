@@ -11,6 +11,7 @@ use services::services::{
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 use tauri::{Emitter, Listener};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -139,7 +140,19 @@ fn main() {
     let pending_for_setup = pending_update.clone();
     let pending_for_exit = pending_update.clone();
 
-    let mut builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if argv.iter().any(|arg| is_open_deep_link(arg)) {
+                show_main_window(app);
+            }
+        }));
+    }
+
+    builder = builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -164,6 +177,26 @@ fn main() {
 
     builder
         .setup(move |app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions, target_os = "windows")))]
+            app.deep_link().register_all()?;
+
+            if let Some(urls) = app.deep_link().get_current()?
+                && urls.iter().any(|url| is_open_deep_link(&url.to_string()))
+            {
+                show_main_window(app.handle());
+            }
+
+            let deep_link_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                if event
+                    .urls()
+                    .iter()
+                    .any(|url| is_open_deep_link(&url.to_string()))
+                {
+                    show_main_window(&deep_link_handle);
+                }
+            });
+
             // Initialize platform-native notifications (request permission,
             // install click-handling delegates) before anything else.
             #[cfg(target_os = "macos")]
@@ -298,7 +331,7 @@ fn main() {
             // macOS: clicking the dock icon when the window is hidden should reopen it.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {
-                show_window(_app);
+                show_main_window(_app);
             }
 
             // Install any pending update when the app exits (e.g. Cmd+Q)
@@ -309,6 +342,10 @@ fn main() {
                 tauri::async_runtime::block_on(install_pending_update(_app, &pending_for_exit));
             }
         });
+}
+
+fn is_open_deep_link(value: &str) -> bool {
+    value == "vibe-kanban://open" || value.starts_with("vibe-kanban://open/")
 }
 
 /// Disable trackpad/touchpad pinch-to-zoom on macOS while keeping Cmd+/- zoom.
@@ -366,8 +403,7 @@ fn optimize_webview_performance(window: &tauri::WebviewWindow) {
     });
 }
 
-#[cfg(target_os = "macos")]
-fn show_window(app: &tauri::AppHandle) {
+fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
