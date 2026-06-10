@@ -105,7 +105,10 @@ export async function openLocalApiWebSocketViaRelay(
     );
   }
 
-  return openRelayHostWebSocket(hostId, unscopeHostApiPath(pathAndQuery, hostId));
+  return openRelayHostWebSocket(
+    hostId,
+    unscopeHostApiPath(pathAndQuery, hostId),
+  );
 }
 
 export async function requestRelayHostApi(

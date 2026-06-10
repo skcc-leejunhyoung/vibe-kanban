@@ -137,7 +137,10 @@ export async function openLocalApiWebSocketViaWebRtc(
     return openLocalApiWebSocketViaRelay(pathOrUrl, options);
   }
 
-  return createDataChannelWebSocket(conn, unscopeHostApiPath(pathAndQuery, hostId));
+  return createDataChannelWebSocket(
+    conn,
+    unscopeHostApiPath(pathAndQuery, hostId),
+  );
 }
 
 function dataChannelResponseToResponse(dcResp: DataChannelResponse): Response {
