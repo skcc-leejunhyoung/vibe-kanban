@@ -18,6 +18,7 @@ import { TRANSFORMERS, type Transformer } from '@lexical/markdown';
 import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin';
 import { CodeBlockEscapePlugin } from '@vibe/ui/components/CodeBlockEscapePlugin';
 import { InlineCodeBoundaryPlugin } from '@vibe/ui/components/InlineCodeBoundaryPlugin';
+import { ImeDeleteGuardPlugin } from '@vibe/ui/components/ImeDeleteGuardPlugin';
 import {
   PrCommentNode,
   PR_COMMENT_TRANSFORMER,
@@ -368,6 +369,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
         // noop – bridge handles fallback
       }
     }, [value]);
+
     const imageNodeDefinition = useMemo(
       () =>
         createImageNode({
@@ -559,6 +561,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                   <>
                     {autoFocus && <AutoFocusPlugin />}
                     <HistoryPlugin />
+                    <ImeDeleteGuardPlugin />
                     <CodeBlockEscapePlugin />
                     <InlineCodeBoundaryPlugin />
                     <PasteMarkdownPlugin transformers={allTransformers} />
