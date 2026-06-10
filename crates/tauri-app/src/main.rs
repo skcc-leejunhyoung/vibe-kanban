@@ -1,7 +1,10 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use services::services::{
@@ -15,7 +18,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
-use tokio::{sync::Mutex, time::sleep};
+use tokio::{sync::Mutex as AsyncMutex, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, prelude::*};
 use utils::{
@@ -136,17 +139,20 @@ fn main() {
 
     // Holds downloaded update bytes until the app exits or user restarts.
     // Created here (outside setup) so the RunEvent::Exit handler can access it.
-    let pending_update: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let pending_update: Arc<AsyncMutex<Option<Vec<u8>>>> = Arc::new(AsyncMutex::new(None));
     let pending_for_setup = pending_update.clone();
     let pending_for_exit = pending_update.clone();
+    let pending_deeplink_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let pending_deeplink_for_setup = pending_deeplink_path.clone();
 
     let mut builder = tauri::Builder::default();
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            if argv.iter().any(|arg| is_open_deep_link(arg)) {
-                show_main_window(app);
+            show_main_window(app);
+            for arg in argv.iter().filter(|arg| is_open_deep_link(arg)) {
+                handle_open_deep_link(app, arg, None);
             }
         }));
     }
@@ -180,20 +186,25 @@ fn main() {
             #[cfg(any(target_os = "linux", all(debug_assertions, target_os = "windows")))]
             app.deep_link().register_all()?;
 
-            if let Some(urls) = app.deep_link().get_current()?
-                && urls.iter().any(|url| is_open_deep_link(&url.to_string()))
-            {
-                show_main_window(app.handle());
+            if let Some(urls) = app.deep_link().get_current()? {
+                for url in urls.iter().map(|url| url.to_string()) {
+                    handle_open_deep_link(
+                        app.handle(),
+                        &url,
+                        Some(&pending_deeplink_for_setup),
+                    );
+                }
             }
 
             let deep_link_handle = app.handle().clone();
+            let pending_deeplink_for_open = pending_deeplink_for_setup.clone();
             app.deep_link().on_open_url(move |event| {
-                if event
-                    .urls()
-                    .iter()
-                    .any(|url| is_open_deep_link(&url.to_string()))
-                {
-                    show_main_window(&deep_link_handle);
+                for url in event.urls().iter().map(|url| url.to_string()) {
+                    handle_open_deep_link(
+                        &deep_link_handle,
+                        &url,
+                        Some(&pending_deeplink_for_open),
+                    );
                 }
             });
 
@@ -217,6 +228,7 @@ fn main() {
                 let window = create_window(
                     app,
                     tauri::WebviewUrl::External(dev_url.parse().unwrap()),
+                    Some(pending_deeplink_for_setup.clone()),
                 )?;
                 #[cfg(target_os = "macos")]
                 {
@@ -247,7 +259,11 @@ fn main() {
                             let _ = app_handle.run_on_main_thread(move || {
                                 let webview_url =
                                     tauri::WebviewUrl::External(url_clone.parse().unwrap());
-                                match create_window(&create_handle, webview_url) {
+                                match create_window(
+                                    &create_handle,
+                                    webview_url,
+                                    Some(pending_deeplink_for_setup.clone()),
+                                ) {
                                     Ok(window) => {
                                         #[cfg(target_os = "macos")]
                                         {
@@ -345,7 +361,50 @@ fn main() {
 }
 
 fn is_open_deep_link(value: &str) -> bool {
-    value == "vibe-kanban://open" || value.starts_with("vibe-kanban://open/")
+    open_deep_link_path(value).is_some()
+}
+
+fn open_deep_link_path(value: &str) -> Option<Option<String>> {
+    let url = tauri::Url::parse(value).ok()?;
+    if url.scheme() != "vibe-kanban" || url.host_str() != Some("open") {
+        return None;
+    }
+
+    let path = url.path();
+    if path.is_empty() || path == "/" {
+        Some(None)
+    } else {
+        Some(Some(path.to_string()))
+    }
+}
+
+fn handle_open_deep_link(
+    app: &tauri::AppHandle,
+    value: &str,
+    pending_path: Option<&Arc<Mutex<Option<String>>>>,
+) {
+    let Some(path) = open_deep_link_path(value) else {
+        return;
+    };
+
+    show_main_window(app);
+
+    if let Some(path) = path {
+        if app.get_webview_window("main").is_some() {
+            emit_deeplink_path(app, &path);
+        } else if let Some(pending_path) = pending_path {
+            if let Ok(mut pending) = pending_path.lock() {
+                *pending = Some(path);
+            }
+        }
+    }
+}
+
+fn emit_deeplink_path(app: &tauri::AppHandle, path: &str) {
+    let _ = app.emit(
+        "notification-clicked",
+        serde_json::json!({ "deeplinkPath": path }),
+    );
 }
 
 /// Disable trackpad/touchpad pinch-to-zoom on macOS while keeping Cmd+/- zoom.
@@ -413,6 +472,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 fn create_window<R: tauri::Runtime, M: tauri::Manager<R>>(
     manager: &M,
     url: tauri::WebviewUrl,
+    pending_deeplink_path: Option<Arc<Mutex<Option<String>>>>,
 ) -> Result<tauri::WebviewWindow<R>, tauri::Error> {
     let handle = manager.app_handle().clone();
     let builder = tauri::WebviewWindowBuilder::new(manager, "main", url)
@@ -432,6 +492,28 @@ fn create_window<R: tauri::Runtime, M: tauri::Manager<R>>(
         .hidden_title(true)
         .traffic_light_position(tauri::LogicalPosition::new(8.0, 14.0));
 
+    let builder = builder.on_page_load(move |window, payload| {
+        if payload.event() != tauri::webview::PageLoadEvent::Finished {
+            return;
+        }
+
+        let Some(pending_deeplink_path) = &pending_deeplink_path else {
+            return;
+        };
+
+        let path = pending_deeplink_path
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take());
+
+        if let Some(path) = path {
+            let _ = window.emit(
+                "notification-clicked",
+                serde_json::json!({ "deeplinkPath": path }),
+            );
+        }
+    });
+
     builder
         .on_new_window(move |url, _features| {
             tracing::info!("New window requested for URL: {}", url);
@@ -444,7 +526,7 @@ fn create_window<R: tauri::Runtime, M: tauri::Manager<R>>(
 
 /// Takes the pending update bytes (if any) and installs them.
 /// Requires a network call to re-fetch the `Update` metadata.
-async fn install_pending_update(app: &tauri::AppHandle, pending: &Mutex<Option<Vec<u8>>>) {
+async fn install_pending_update(app: &tauri::AppHandle, pending: &AsyncMutex<Option<Vec<u8>>>) {
     let bytes = match pending.lock().await.take() {
         Some(b) => b,
         None => return,
@@ -474,7 +556,10 @@ async fn install_pending_update(app: &tauri::AppHandle, pending: &Mutex<Option<V
     }
 }
 
-async fn check_for_updates(app: tauri::AppHandle, pending_update: Arc<Mutex<Option<Vec<u8>>>>) {
+async fn check_for_updates(
+    app: tauri::AppHandle,
+    pending_update: Arc<AsyncMutex<Option<Vec<u8>>>>,
+) {
     let has_pending_update = pending_update.lock().await.is_some();
     if has_pending_update {
         tracing::info!("Update already downloaded; skipping update check");
@@ -536,7 +621,7 @@ async fn check_for_updates(app: tauri::AppHandle, pending_update: Arc<Mutex<Opti
 
 async fn run_periodic_update_checks(
     app: tauri::AppHandle,
-    pending_update: Arc<Mutex<Option<Vec<u8>>>>,
+    pending_update: Arc<AsyncMutex<Option<Vec<u8>>>>,
 ) {
     check_for_updates(app.clone(), pending_update.clone()).await;
 
