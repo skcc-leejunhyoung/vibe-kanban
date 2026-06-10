@@ -587,7 +587,7 @@ export type AvailabilityInfo = { "type": "LOGIN_DETECTED", last_auth_timestamp: 
 
 export type CommandBuilder = { 
 /**
- * Base executable command (e.g., "npx -y @anthropic-ai/claude-code@latest")
+ * Base executable command (e.g., "claude")
  */
 base: string, 
 /**

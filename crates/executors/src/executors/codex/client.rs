@@ -9,15 +9,15 @@ use std::{
 
 use async_trait::async_trait;
 use codex_app_server_protocol::{
-    ClientInfo, ClientNotification, ClientRequest, CommandExecutionApprovalDecision,
-    CommandExecutionRequestApprovalResponse, ConfigBatchWriteParams, ConfigEdit, ConfigReadParams,
-    ConfigReadResponse, ConfigWriteResponse, DynamicToolCallOutputContentItem,
-    DynamicToolCallResponse, FileChangeApprovalDecision, FileChangeRequestApprovalResponse,
-    GetAccountParams, GetAccountRateLimitsResponse, GetAccountResponse, InitializeCapabilities,
-    InitializeParams, InitializeResponse, ItemCompletedNotification, JSONRPCError,
-    JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams,
-    ListMcpServerStatusResponse, McpServerStatusDetail, RequestId, ReviewStartParams,
-    ReviewStartResponse, ReviewTarget, ServerRequest, ThreadCompactStartParams,
+    AttestationGenerateResponse, ClientInfo, ClientNotification, ClientRequest,
+    CommandExecutionApprovalDecision, CommandExecutionRequestApprovalResponse,
+    ConfigBatchWriteParams, ConfigEdit, ConfigReadParams, ConfigReadResponse, ConfigWriteResponse,
+    DynamicToolCallOutputContentItem, DynamicToolCallResponse, FileChangeApprovalDecision,
+    FileChangeRequestApprovalResponse, GetAccountParams, GetAccountRateLimitsResponse,
+    GetAccountResponse, InitializeCapabilities, InitializeParams, InitializeResponse,
+    ItemCompletedNotification, JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
+    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerStatusDetail, RequestId,
+    ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest, ThreadCompactStartParams,
     ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams,
     ThreadReadResponse, ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
     ToolRequestUserInputQuestion, ToolRequestUserInputResponse, TurnCompletedNotification,
@@ -230,6 +230,7 @@ impl AppServerClient {
                 cursor,
                 limit: None,
                 detail: Some(McpServerStatusDetail::ToolsAndAuthOnly),
+                thread_id: None,
             },
         };
         self.send_request(request, "mcpServerStatus/list").await
@@ -425,6 +426,13 @@ impl AppServerClient {
                         ),
                     }],
                     success: false,
+                };
+                send_server_response(peer, request_id, response).await?;
+                Ok(())
+            }
+            ServerRequest::AttestationGenerate { request_id, .. } => {
+                let response = AttestationGenerateResponse {
+                    token: String::new(),
                 };
                 send_server_response(peer, request_id, response).await?;
                 Ok(())

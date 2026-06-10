@@ -191,6 +191,7 @@ impl Codex {
                             .await
                             .ok()
                             .and_then(|r| r.config.service_tier)
+                            .and_then(|t| ServiceTier::from_request_value(&t))
                             .map(|t| matches!(t, ServiceTier::Fast))
                             .unwrap_or(false);
                         if status {
@@ -211,7 +212,7 @@ impl Codex {
                         };
                         // Persist service_tier to codex config via config/batchWrite
                         let config_value = if want_fast {
-                            json!("fast")
+                            json!(ServiceTier::Fast.request_value())
                         } else {
                             json!(null)
                         };
@@ -225,7 +226,7 @@ impl Codex {
                         // Fork current session with new tier if one is active
                         if let Some(old_thread_id) = session_id {
                             let service_tier = if want_fast {
-                                Some(Some(ServiceTier::Fast))
+                                Some(Some(ServiceTier::Fast.request_value().to_string()))
                             } else {
                                 Some(None)
                             };
@@ -401,6 +402,7 @@ async fn fetch_status_message(
     let global_fast = config_resp
         .as_ref()
         .and_then(|r| r.config.service_tier.as_ref())
+        .and_then(|t| ServiceTier::from_request_value(t))
         .map(|t| matches!(t, ServiceTier::Fast))
         .unwrap_or(false);
     if global_fast || session_fast {
