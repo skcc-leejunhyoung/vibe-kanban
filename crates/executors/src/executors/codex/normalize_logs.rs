@@ -9,7 +9,7 @@ use codex_app_server_protocol::{
     CommandExecutionOutputDeltaNotification, CommandExecutionStatus as AppCommandExecutionStatus,
     DynamicToolCallOutputContentItem as AppDynamicToolCallOutputContentItem,
     DynamicToolCallStatus as AppDynamicToolCallStatus, FileChangeOutputDeltaNotification,
-    ItemCompletedNotification as AppItemCompletedNotification,
+    FileChangePatchUpdatedNotification, ItemCompletedNotification as AppItemCompletedNotification,
     ItemStartedNotification as AppItemStartedNotification, JSONRPCNotification, JSONRPCRequest,
     JSONRPCResponse, McpToolCallProgressNotification, McpToolCallStatus as AppMcpToolCallStatus,
     PatchApplyStatus as AppPatchApplyStatus, ServerNotification, ServerRequest, ThreadForkResponse,
@@ -23,14 +23,15 @@ use codex_protocol::{
     plan_tool::{StepStatus, UpdatePlanArgs},
     protocol::{
         AgentMessageContentDeltaEvent, AgentMessageEvent, AgentReasoningEvent,
-        AgentReasoningSectionBreakEvent, ApplyPatchApprovalRequestEvent, ErrorEvent, EventMsg,
-        ExecApprovalRequestEvent, ExecCommandBeginEvent, ExecCommandEndEvent,
-        ExecCommandOutputDeltaEvent, ExecOutputStream, ExitedReviewModeEvent,
-        FileChange as CodexProtoFileChange, ItemCompletedEvent, ItemStartedEvent, McpInvocation,
-        McpToolCallBeginEvent, McpToolCallEndEvent, ModelRerouteEvent, PatchApplyBeginEvent,
-        PatchApplyEndEvent, PlanDeltaEvent, ReasoningContentDeltaEvent, RequestUserInputEvent,
-        StreamErrorEvent, ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent,
-        WebSearchEndEvent,
+        AgentReasoningRawContentEvent, AgentReasoningSectionBreakEvent,
+        ApplyPatchApprovalRequestEvent, ErrorEvent, EventMsg, ExecApprovalRequestEvent,
+        ExecCommandBeginEvent, ExecCommandEndEvent, ExecCommandOutputDeltaEvent, ExecOutputStream,
+        ExitedReviewModeEvent, FileChange as CodexProtoFileChange, ItemCompletedEvent,
+        ItemStartedEvent, McpInvocation, McpToolCallBeginEvent, McpToolCallEndEvent,
+        ModelRerouteEvent, PatchApplyBeginEvent, PatchApplyEndEvent, PatchApplyUpdatedEvent,
+        PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent,
+        RequestUserInputEvent, StreamErrorEvent, ViewImageToolCallEvent, WarningEvent,
+        WebSearchBeginEvent, WebSearchEndEvent,
     },
 };
 use futures::StreamExt;
@@ -628,6 +629,56 @@ fn normalize_app_file_changes(
         .collect()
 }
 
+fn sync_patch_entries(
+    state: &mut LogState,
+    msg_store: &Arc<MsgStore>,
+    entry_index: &EntryIndexProvider,
+    call_id: String,
+    normalized: Vec<(String, Vec<FileChange>)>,
+    status: ToolStatus,
+    awaiting_approval: bool,
+) {
+    let patch_state = state.patches.entry(call_id.clone()).or_default();
+    let normalized_len = normalized.len();
+    let mut iter = normalized.into_iter();
+
+    for entry in &mut patch_state.entries {
+        if let Some((path, file_changes)) = iter.next() {
+            entry.path = path;
+            entry.changes = file_changes;
+            entry.status = status.clone();
+            entry.awaiting_approval = awaiting_approval;
+            let index = entry.index.unwrap_or_else(|| {
+                add_normalized_entry(msg_store, entry_index, entry.to_normalized_entry())
+            });
+            entry.index = Some(index);
+            replace_normalized_entry(msg_store, index, entry.to_normalized_entry());
+        }
+    }
+
+    if normalized_len < patch_state.entries.len() {
+        for entry in patch_state.entries.drain(normalized_len..) {
+            if let Some(index) = entry.index {
+                msg_store.push_patch(ConversationPatch::remove(index));
+            }
+        }
+    }
+
+    for (path, file_changes) in iter {
+        let mut entry = PatchEntry {
+            index: None,
+            path,
+            changes: file_changes,
+            status: status.clone(),
+            awaiting_approval,
+            call_id: call_id.clone(),
+        };
+        let index = add_normalized_entry(msg_store, entry_index, entry.to_normalized_entry());
+        entry.index = Some(index);
+        patch_state.entries.push(entry);
+    }
+}
+
 fn app_command_status_to_tool_status(status: &AppCommandExecutionStatus) -> ToolStatus {
     match status {
         AppCommandExecutionStatus::InProgress => ToolStatus::Created,
@@ -924,46 +975,15 @@ fn handle_direct_item_started(
         }
         AppThreadItem::FileChange { id, changes, .. } => {
             let normalized = normalize_app_file_changes(worktree_path, &changes);
-            let patch_state = state.patches.entry(id.clone()).or_default();
-            let normalized_len = normalized.len();
-            let mut iter = normalized.into_iter();
-
-            for entry in &mut patch_state.entries {
-                if let Some((path, file_changes)) = iter.next() {
-                    entry.path = path;
-                    entry.changes = file_changes;
-                    entry.status = ToolStatus::Created;
-                    entry.awaiting_approval = false;
-                    let index = entry.index.unwrap_or_else(|| {
-                        add_normalized_entry(msg_store, entry_index, entry.to_normalized_entry())
-                    });
-                    entry.index = Some(index);
-                    replace_normalized_entry(msg_store, index, entry.to_normalized_entry());
-                }
-            }
-
-            if normalized_len < patch_state.entries.len() {
-                for entry in patch_state.entries.drain(normalized_len..) {
-                    if let Some(index) = entry.index {
-                        msg_store.push_patch(ConversationPatch::remove(index));
-                    }
-                }
-            }
-
-            for (path, file_changes) in iter {
-                let mut entry = PatchEntry {
-                    index: None,
-                    path,
-                    changes: file_changes,
-                    status: ToolStatus::Created,
-                    awaiting_approval: false,
-                    call_id: id.clone(),
-                };
-                let index =
-                    add_normalized_entry(msg_store, entry_index, entry.to_normalized_entry());
-                entry.index = Some(index);
-                patch_state.entries.push(entry);
-            }
+            sync_patch_entries(
+                state,
+                msg_store,
+                entry_index,
+                id,
+                normalized,
+                ToolStatus::Created,
+                false,
+            );
         }
         AppThreadItem::McpToolCall {
             id,
@@ -1315,6 +1335,12 @@ fn handle_direct_notification(
             upsert_normalized_entry(msg_store, index, entry, is_new);
             true
         }
+        ServerNotification::ReasoningTextDelta(notification) => {
+            state.assistant = None;
+            let (entry, index, is_new) = state.thinking_append(notification.delta);
+            upsert_normalized_entry(msg_store, index, entry, is_new);
+            true
+        }
         ServerNotification::ReasoningSummaryPartAdded(..) => {
             state.assistant = None;
             state.thinking = None;
@@ -1344,9 +1370,27 @@ fn handle_direct_notification(
             }
             true
         }
+        ServerNotification::FileChangePatchUpdated(FileChangePatchUpdatedNotification {
+            item_id,
+            changes,
+            ..
+        }) => {
+            state.assistant = None;
+            state.thinking = None;
+            let normalized = normalize_app_file_changes(worktree_path, &changes);
+            sync_patch_entries(
+                state,
+                msg_store,
+                entry_index,
+                item_id,
+                normalized,
+                ToolStatus::Created,
+                false,
+            );
+            true
+        }
         ServerNotification::FileChangeOutputDelta(FileChangeOutputDeltaNotification { .. })
         | ServerNotification::McpToolCallProgress(McpToolCallProgressNotification { .. })
-        | ServerNotification::ReasoningTextDelta(..)
         | ServerNotification::ThreadStatusChanged(..)
         | ServerNotification::TurnCompleted(..)
         | ServerNotification::TurnStarted(..) => true,
@@ -1621,6 +1665,13 @@ pub fn normalize_logs(
                     let (entry, index, is_new) = state.thinking_append(delta);
                     upsert_normalized_entry(&msg_store, index, entry, is_new);
                 }
+                EventMsg::ReasoningRawContentDelta(ReasoningRawContentDeltaEvent {
+                    delta, ..
+                }) => {
+                    state.assistant = None;
+                    let (entry, index, is_new) = state.thinking_append(delta);
+                    upsert_normalized_entry(&msg_store, index, entry, is_new);
+                }
                 EventMsg::AgentMessage(AgentMessageEvent { message, .. }) => {
                     state.thinking = None;
                     let (entry, index, is_new) = state.assistant_message(message);
@@ -1628,6 +1679,12 @@ pub fn normalize_logs(
                     state.assistant = None;
                 }
                 EventMsg::AgentReasoning(AgentReasoningEvent { text }) => {
+                    state.assistant = None;
+                    let (entry, index, is_new) = state.thinking(text);
+                    upsert_normalized_entry(&msg_store, index, entry, is_new);
+                    state.thinking = None;
+                }
+                EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
                     state.assistant = None;
                     let (entry, index, is_new) = state.thinking(text);
                     upsert_normalized_entry(&msg_store, index, entry, is_new);
@@ -1695,60 +1752,15 @@ pub fn normalize_logs(
                     state.thinking = None;
 
                     let normalized = normalize_file_changes(&worktree_path_str, &changes);
-                    let patch_state = state.patches.entry(call_id.clone()).or_default();
-
-                    // Update existing entries in place to keep them in MsgStore
-                    let normalized_len = normalized.len();
-                    let mut iter = normalized.into_iter();
-                    for entry in &mut patch_state.entries {
-                        if let Some((path, file_changes)) = iter.next() {
-                            entry.path = path;
-                            entry.changes = file_changes;
-                            entry.awaiting_approval = true;
-                            if let Some(index) = entry.index {
-                                replace_normalized_entry(
-                                    &msg_store,
-                                    index,
-                                    entry.to_normalized_entry(),
-                                );
-                            } else {
-                                let index = add_normalized_entry(
-                                    &msg_store,
-                                    &entry_index,
-                                    entry.to_normalized_entry(),
-                                );
-                                entry.index = Some(index);
-                            }
-                        }
-                    }
-
-                    // Remove stale entries if new changes have fewer files
-                    if normalized_len < patch_state.entries.len() {
-                        for entry in patch_state.entries.drain(normalized_len..) {
-                            if let Some(index) = entry.index {
-                                msg_store.push_patch(ConversationPatch::remove(index));
-                            }
-                        }
-                    }
-
-                    // Add new entries if changes have more files
-                    for (path, file_changes) in iter {
-                        let mut entry = PatchEntry {
-                            index: None,
-                            path,
-                            changes: file_changes,
-                            status: ToolStatus::Created,
-                            awaiting_approval: true,
-                            call_id: call_id.clone(),
-                        };
-                        let index = add_normalized_entry(
-                            &msg_store,
-                            &entry_index,
-                            entry.to_normalized_entry(),
-                        );
-                        entry.index = Some(index);
-                        patch_state.entries.push(entry);
-                    }
+                    sync_patch_entries(
+                        &mut state,
+                        &msg_store,
+                        &entry_index,
+                        call_id,
+                        normalized,
+                        ToolStatus::Created,
+                        true,
+                    );
                 }
                 EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                     call_id,
@@ -2005,68 +2017,31 @@ pub fn normalize_logs(
                     state.assistant = None;
                     state.thinking = None;
                     let normalized = normalize_file_changes(&worktree_path_str, &changes);
-                    if let Some(patch_state) = state.patches.get_mut(&call_id) {
-                        let mut iter = normalized.into_iter();
-                        for entry in &mut patch_state.entries {
-                            if let Some((path, file_changes)) = iter.next() {
-                                entry.path = path;
-                                entry.changes = file_changes;
-                            }
-                            entry.status = ToolStatus::Created;
-                            entry.awaiting_approval = false;
-                            if let Some(index) = entry.index {
-                                replace_normalized_entry(
-                                    &msg_store,
-                                    index,
-                                    entry.to_normalized_entry(),
-                                );
-                            } else {
-                                let index = add_normalized_entry(
-                                    &msg_store,
-                                    &entry_index,
-                                    entry.to_normalized_entry(),
-                                );
-                                entry.index = Some(index);
-                            }
-                        }
-                        for (path, file_changes) in iter {
-                            let mut entry = PatchEntry {
-                                index: None,
-                                path,
-                                changes: file_changes,
-                                status: ToolStatus::Created,
-                                awaiting_approval: false,
-                                call_id: call_id.clone(),
-                            };
-                            let index = add_normalized_entry(
-                                &msg_store,
-                                &entry_index,
-                                entry.to_normalized_entry(),
-                            );
-                            entry.index = Some(index);
-                            patch_state.entries.push(entry);
-                        }
-                    } else {
-                        let mut patch_state = PatchState::default();
-                        for (path, file_changes) in normalized {
-                            patch_state.entries.push(PatchEntry {
-                                index: None,
-                                path,
-                                changes: file_changes,
-                                status: ToolStatus::Created,
-                                awaiting_approval: false,
-                                call_id: call_id.clone(),
-                            });
-                            let patch_entry = patch_state.entries.last_mut().unwrap();
-                            let index = add_normalized_entry(
-                                &msg_store,
-                                &entry_index,
-                                patch_entry.to_normalized_entry(),
-                            );
-                            patch_entry.index = Some(index);
-                        }
-                        state.patches.insert(call_id, patch_state);
-                    }
+                    sync_patch_entries(
+                        &mut state,
+                        &msg_store,
+                        &entry_index,
+                        call_id,
+                        normalized,
+                        ToolStatus::Created,
+                        false,
+                    );
+                }
+                EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
+                    call_id, changes, ..
+                }) => {
+                    state.assistant = None;
+                    state.thinking = None;
+                    let normalized = normalize_file_changes(&worktree_path_str, &changes);
+                    sync_patch_entries(
+                        &mut state,
+                        &msg_store,
+                        &entry_index,
+                        call_id,
+                        normalized,
+                        ToolStatus::Created,
+                        false,
+                    );
                 }
                 EventMsg::PatchApplyEnd(PatchApplyEndEvent {
                     call_id,
@@ -2727,6 +2702,7 @@ mod tests {
                     "threadId": "thread-1",
                     "turnId": "turn-1",
                     "itemId": call_id,
+                    "startedAtMs": 1,
                     "approvalId": "approval-1",
                     "command": "git push"
                 }
@@ -2824,9 +2800,11 @@ mod tests {
                 "params": {
                     "threadId": "thread-1",
                     "turnId": "turn-1",
+                    "completedAtMs": 2,
                     "item": {
                         "type": "dynamicToolCall",
                         "id": call_id,
+                        "namespace": null,
                         "tool": tool_name,
                         "arguments": {"id": "ABC-123"},
                         "status": "completed",
@@ -2866,6 +2844,107 @@ mod tests {
                 );
             }
             other => panic!("unexpected dynamic tool entry: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn normalizes_direct_raw_reasoning_delta() {
+        let entries = normalize_lines(&[json!({
+            "jsonrpc": "2.0",
+            "method": "item/reasoning/textDelta",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "reasoning-1",
+                "delta": "raw thought",
+                "contentIndex": 0
+            }
+        })
+        .to_string()])
+        .await;
+
+        assert!(entries.iter().any(|entry| matches!(
+            &entry.entry_type,
+            NormalizedEntryType::Thinking
+        ) && entry.content == "raw thought"));
+    }
+
+    #[tokio::test]
+    async fn normalizes_legacy_raw_reasoning_delta() {
+        let entries = normalize_lines(&[json!({
+            "jsonrpc": "2.0",
+            "method": "codex/event",
+            "params": {
+                "msg": {
+                    "type": "reasoning_raw_content_delta",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item_id": "reasoning-1",
+                    "delta": "legacy raw thought",
+                    "content_index": 0
+                }
+            }
+        })
+        .to_string()])
+        .await;
+
+        assert!(entries.iter().any(|entry| matches!(
+            &entry.entry_type,
+            NormalizedEntryType::Thinking
+        ) && entry.content == "legacy raw thought"));
+    }
+
+    #[tokio::test]
+    async fn normalizes_direct_file_change_patch_updated() {
+        let item_id = "patch-1";
+        let entries = normalize_lines(&[
+            json!({
+                "jsonrpc": "2.0",
+                "method": "item/fileChange/patchUpdated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": item_id,
+                    "changes": [{
+                        "path": "/tmp/test-worktree/src/lib.rs",
+                        "kind": {"type": "update", "movePath": null},
+                        "diff": "@@ -1 +1 @@\n-old\n+new\n"
+                    }]
+                }
+            })
+            .to_string(),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "item/fileChange/patchUpdated",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": item_id,
+                    "changes": [{
+                        "path": "/tmp/test-worktree/src/lib.rs",
+                        "kind": {"type": "update", "movePath": null},
+                        "diff": "@@ -1 +1 @@\n-new\n+newer\n"
+                    }]
+                }
+            })
+            .to_string(),
+        ])
+        .await;
+
+        let edit = tool_use(&entries, "edit");
+        match &edit.entry_type {
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::FileEdit { path, changes },
+                status: ToolStatus::Created,
+                ..
+            } => {
+                assert_eq!(path, "src/lib.rs");
+                assert!(matches!(
+                    &changes[..],
+                    [FileChange::Edit { unified_diff, .. }] if unified_diff.contains("+newer")
+                ));
+            }
+            other => panic!("unexpected file edit entry: {other:?}"),
         }
     }
 }
