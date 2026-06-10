@@ -26,7 +26,9 @@ export function UserSystemProvider({ children }: UserSystemProviderProps) {
 
   // Set runtime remote API base URL for self-hosting support.
   // Must run during render (not in useEffect) so it's set before children mount.
-  setRemoteApiBase(userSystemInfo?.shared_api_base);
+  if (userSystemInfo) {
+    setRemoteApiBase(userSystemInfo.shared_api_base);
+  }
 
   // Sync language with i18n when config changes
   useEffect(() => {
