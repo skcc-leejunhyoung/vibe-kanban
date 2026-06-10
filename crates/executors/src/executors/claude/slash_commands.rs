@@ -184,6 +184,13 @@ impl ClaudeCode {
                     ),
                 },
                 SlashCommandDescription {
+                    name: "fast".to_string(),
+                    description: Some(
+                        "Toggle Fast mode for higher-speed Opus responses. Use /fast [on|off]"
+                            .to_string(),
+                    ),
+                },
+                SlashCommandDescription {
                     name: "release-notes".to_string(),
                     description: Some("View release notes".to_string()),
                 },
