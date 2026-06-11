@@ -1,0 +1,3 @@
+# Local run state — holds plaintext connector secrets (Slack/GitHub/Vibe tokens).
+# Only created when running outside Docker (DATA_DIR defaults to ./data).
+data/
