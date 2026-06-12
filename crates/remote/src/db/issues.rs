@@ -37,6 +37,10 @@ enum IssueWorkflowSignal {
 }
 
 impl IssueRepository {
+    fn target_status_for_local_work_merged(all_pull_requests_merged: bool) -> Option<&'static str> {
+        all_pull_requests_merged.then_some("In review")
+    }
+
     fn sort_field_key(sort_field: IssueSortField) -> &'static str {
         match sort_field {
             IssueSortField::SortOrder => "sort_order",
@@ -521,8 +525,7 @@ impl IssueRepository {
     /// Syncs issue status based on a workflow signal.
     /// - `ReviewStarted` → move issue to "In review"
     /// - `WorkMerged` → if all linked PRs are merged, move issue to "Done"
-    /// - `LocalWorkMerged` → if all linked PRs are merged, move issue to "Done",
-    ///   except issues tagged "vibe" which go to "In review" so the human can review the merge.
+    /// - `LocalWorkMerged` → if all linked PRs are merged, move issue to "In review"
     async fn sync_status_from_workflow_signal(
         conn: &mut PgConnection,
         issue_id: Uuid,
@@ -546,14 +549,12 @@ impl IssueRepository {
             IssueWorkflowSignal::LocalWorkMerged => {
                 let prs = PullRequestRepository::list_by_issue(&mut *conn, issue_id).await?;
                 let all_merged = prs.iter().all(|pr| pr.status == PullRequestStatus::Merged);
-                if !all_merged {
+                let Some(target_status_name) =
+                    Self::target_status_for_local_work_merged(all_merged)
+                else {
                     return Ok(());
-                }
-                if Self::has_vibe_tag(&mut *conn, issue_id).await? {
-                    "In review"
-                } else {
-                    "Done"
-                }
+                };
+                target_status_name
             }
         };
 
@@ -743,6 +744,18 @@ mod tests {
         assert_eq!(
             IssueRepository::escape_like_pattern(r"100%_done\ish"),
             r"100\%\_done\\ish"
+        );
+    }
+
+    #[test]
+    fn local_work_merged_moves_to_review_after_all_pull_requests_merge() {
+        assert_eq!(
+            IssueRepository::target_status_for_local_work_merged(true),
+            Some("In review")
+        );
+        assert_eq!(
+            IssueRepository::target_status_for_local_work_merged(false),
+            None
         );
     }
 }
