@@ -94,6 +94,15 @@ function normalizePreviewUrl(rawUrl: string, baseUrl?: string): string | null {
   return parsePreviewUrl(rawUrl, baseUrl)?.toString() ?? null;
 }
 
+function formatShortcutLabel(rawUrl: string): string {
+  const parsedUrl = parsePreviewUrl(rawUrl);
+  if (!parsedUrl) return rawUrl;
+
+  const pathLabel =
+    parsedUrl.pathname === '/' ? '' : parsedUrl.pathname.replace(/\/$/, '');
+  return `${parsedUrl.host}${pathLabel || '/'}`;
+}
+
 function stripPreviewRefreshParam(rawUrl: string): string | null {
   try {
     const url = new URL(rawUrl);
@@ -229,6 +238,9 @@ export function PreviewBrowserContainer({
     responsiveDimensions,
     setScreenSize,
     setResponsiveDimensions,
+    shortcuts,
+    addShortcut,
+    removeShortcut,
   } = usePreviewSettings(activeWorkspaceId ?? workspaceId);
 
   // ─── URL Bar State ──────────────────────────────────────────────────────────
@@ -709,96 +721,103 @@ export function PreviewBrowserContainer({
     setUrlInputValue(value);
   }, []);
 
-  const handleUrlSubmit = useCallback(() => {
-    const trimmed = urlInputValue.trim();
-    if (!trimmed) {
-      clearOverride();
-      urlInputRef.current?.blur();
-      return;
-    }
-
-    const baseUrl = displayedPreviewUrl ?? undefined;
-    const normalizedInputUrl = parsePreviewUrl(trimmed, baseUrl);
-    if (!normalizedInputUrl) {
-      return;
-    }
-    const normalizedInput = normalizedInputUrl.toString();
-    const normalizedInputDevPort = getTargetDevPort(
-      normalizedInputUrl,
-      previewProxyPort ?? undefined
-    );
-    const normalizedInputDevUrl =
-      transformProxyUrlToDevUrl(normalizedInput, normalizedInputDevPort) ??
-      normalizedInput;
-    const normalizedInputDevParsed = parsePreviewUrl(normalizedInputDevUrl);
-    if (!normalizedInputDevParsed) {
-      return;
-    }
-
-    urlInputRef.current?.blur();
-    const normalizedCurrentUrl = displayedPreviewUrl
-      ? normalizePreviewUrl(displayedPreviewUrl, baseUrl)
-      : null;
-    if (
-      normalizedCurrentUrl &&
-      normalizedInputDevUrl === normalizedCurrentUrl
-    ) {
-      if (hasOverride) {
+  const navigateToPreviewUrl = useCallback(
+    (rawUrl: string) => {
+      const trimmed = rawUrl.trim();
+      if (!trimmed) {
         clearOverride();
+        urlInputRef.current?.blur();
+        return false;
       }
-      return;
-    }
 
-    resetNavigation();
-
-    // Bridge SPA navigation only works when the proxy injects devtools_script.js
-    // into the iframe. Non-loopback URLs bypass the proxy entirely, so the bridge
-    // isn't available — fall through to setOverrideUrl for a full iframe reload.
-    const remotePreviewSuffix = (
-      import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? ''
-    ).trim();
-    if (
-      showIframe &&
-      iframeRef.current?.contentWindow &&
-      isLoopbackPreview &&
-      devServerPort != null &&
-      normalizedInputDevPort === devServerPort
-    ) {
-      const proxyPath =
-        normalizedInputDevParsed.pathname +
-        normalizedInputDevParsed.search +
-        normalizedInputDevParsed.hash;
-      let proxyUrl: string | null = null;
-      if (remotePreviewSuffix && hostId != null) {
-        proxyUrl = `https://${normalizedInputDevPort}--${hostId}.${remotePreviewSuffix}${proxyPath}`;
-      } else if (previewProxyPort) {
-        const hostToken =
-          hostId != null
-            ? `${normalizedInputDevPort}--${hostId}`
-            : normalizedInputDevPort;
-        proxyUrl = `http://${hostToken}.localhost:${previewProxyPort}${proxyPath}`;
+      const baseUrl = displayedPreviewUrl ?? undefined;
+      const normalizedInputUrl = parsePreviewUrl(trimmed, baseUrl);
+      if (!normalizedInputUrl) {
+        return false;
       }
-      if (proxyUrl) {
-        bridgeRef.current?.navigateTo(proxyUrl);
-        return;
+      const normalizedInput = normalizedInputUrl.toString();
+      const normalizedInputDevPort = getTargetDevPort(
+        normalizedInputUrl,
+        previewProxyPort ?? undefined
+      );
+      const normalizedInputDevUrl =
+        transformProxyUrlToDevUrl(normalizedInput, normalizedInputDevPort) ??
+        normalizedInput;
+      const normalizedInputDevParsed = parsePreviewUrl(normalizedInputDevUrl);
+      if (!normalizedInputDevParsed) {
+        return false;
       }
-    }
 
-    setOverrideUrl(normalizedInputDevUrl);
-    setImmediateLoad(true);
-  }, [
-    devServerPort,
-    urlInputValue,
-    displayedPreviewUrl,
-    hostId,
-    isLoopbackPreview,
-    hasOverride,
-    showIframe,
-    previewProxyPort,
-    clearOverride,
-    resetNavigation,
-    setOverrideUrl,
-  ]);
+      urlInputRef.current?.blur();
+      const normalizedCurrentUrl = displayedPreviewUrl
+        ? normalizePreviewUrl(displayedPreviewUrl, baseUrl)
+        : null;
+      if (
+        normalizedCurrentUrl &&
+        normalizedInputDevUrl === normalizedCurrentUrl
+      ) {
+        if (hasOverride) {
+          clearOverride();
+        }
+        return true;
+      }
+
+      resetNavigation();
+
+      // Bridge SPA navigation only works when the proxy injects devtools_script.js
+      // into the iframe. Non-loopback URLs bypass the proxy entirely, so the bridge
+      // isn't available — fall through to setOverrideUrl for a full iframe reload.
+      const remotePreviewSuffix = (
+        import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? ''
+      ).trim();
+      if (
+        showIframe &&
+        iframeRef.current?.contentWindow &&
+        isLoopbackPreview &&
+        devServerPort != null &&
+        normalizedInputDevPort === devServerPort
+      ) {
+        const proxyPath =
+          normalizedInputDevParsed.pathname +
+          normalizedInputDevParsed.search +
+          normalizedInputDevParsed.hash;
+        let proxyUrl: string | null = null;
+        if (remotePreviewSuffix && hostId != null) {
+          proxyUrl = `https://${normalizedInputDevPort}--${hostId}.${remotePreviewSuffix}${proxyPath}`;
+        } else if (previewProxyPort) {
+          const hostToken =
+            hostId != null
+              ? `${normalizedInputDevPort}--${hostId}`
+              : normalizedInputDevPort;
+          proxyUrl = `http://${hostToken}.localhost:${previewProxyPort}${proxyPath}`;
+        }
+        if (proxyUrl) {
+          bridgeRef.current?.navigateTo(proxyUrl);
+          return true;
+        }
+      }
+
+      setOverrideUrl(normalizedInputDevUrl);
+      setImmediateLoad(true);
+      return true;
+    },
+    [
+      devServerPort,
+      displayedPreviewUrl,
+      hostId,
+      isLoopbackPreview,
+      hasOverride,
+      showIframe,
+      previewProxyPort,
+      clearOverride,
+      resetNavigation,
+      setOverrideUrl,
+    ]
+  );
+
+  const handleUrlSubmit = useCallback(() => {
+    navigateToPreviewUrl(urlInputValue);
+  }, [navigateToPreviewUrl, urlInputValue]);
 
   // handleUrlEscape: reverts URL bar to the current page URL and blurs,
   // discarding whatever the user typed.
@@ -894,6 +913,47 @@ export function PreviewBrowserContainer({
     }
   }, [displayedPreviewUrl]);
 
+  const activeShortcutId = useMemo(() => {
+    if (!displayedPreviewUrl) return null;
+
+    const normalizedCurrentUrl = normalizePreviewUrl(displayedPreviewUrl);
+    if (!normalizedCurrentUrl) return null;
+
+    return (
+      shortcuts.find((shortcut) => {
+        const normalizedShortcutUrl = normalizePreviewUrl(shortcut.url);
+        return normalizedShortcutUrl === normalizedCurrentUrl;
+      })?.id ?? null
+    );
+  }, [displayedPreviewUrl, shortcuts]);
+
+  const handleAddShortcut = useCallback(async () => {
+    if (!displayedPreviewUrl) return;
+
+    const normalizedUrl = normalizePreviewUrl(displayedPreviewUrl);
+    if (!normalizedUrl) return;
+
+    await addShortcut({
+      label: formatShortcutLabel(normalizedUrl),
+      url: normalizedUrl,
+    });
+  }, [addShortcut, displayedPreviewUrl]);
+
+  const handleRemoveShortcut = useCallback(
+    async (id: string) => {
+      await removeShortcut(id);
+    },
+    [removeShortcut]
+  );
+
+  const handleOpenShortcut = useCallback(
+    (url: string) => {
+      setUrlInputValue(url);
+      navigateToPreviewUrl(url);
+    },
+    [navigateToPreviewUrl]
+  );
+
   const handleScreenSizeChange = useCallback(
     (size: ScreenSize) => {
       setScreenSize(size);
@@ -961,6 +1021,11 @@ export function PreviewBrowserContainer({
       onClearOverride={handleClearOverride}
       onCopyUrl={handleCopyUrl}
       onOpenInNewTab={handleOpenInNewTab}
+      shortcuts={shortcuts}
+      activeShortcutId={activeShortcutId}
+      onAddShortcut={handleAddShortcut}
+      onRemoveShortcut={handleRemoveShortcut}
+      onOpenShortcut={handleOpenShortcut}
       onRefresh={handleRefresh}
       onStart={handleStart}
       onStop={handleStop}

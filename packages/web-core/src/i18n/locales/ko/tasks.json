@@ -229,7 +229,10 @@
       "responsiveView": "반응형 보기 (크기 조절 가능)",
       "startDevServer": "개발 서버 시작",
       "submitUrl": "URL 제출",
-      "toggleDevTools": "DevTools 전환"
+      "toggleDevTools": "DevTools 전환",
+      "addShortcut": "웹페이지 바로가기 등록",
+      "removeShortcut": "웹페이지 바로가기 제거",
+      "shortcuts": "바로가기"
     },
     "loading": {
       "startingServer": "개발 서버 시작 중...",

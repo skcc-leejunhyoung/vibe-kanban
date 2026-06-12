@@ -4,6 +4,7 @@ import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import {
   ScratchType,
   type PreviewSettingsData,
+  type PreviewShortcutData,
   type ScratchPayload,
 } from 'shared/types';
 
@@ -13,6 +14,8 @@ export interface ResponsiveDimensions {
   width: number;
   height: number;
 }
+
+export type PreviewShortcut = PreviewShortcutData;
 
 interface UsePreviewSettingsResult {
   // URL override
@@ -26,6 +29,11 @@ interface UsePreviewSettingsResult {
   responsiveDimensions: ResponsiveDimensions;
   setScreenSize: (size: ScreenSize) => void;
   setResponsiveDimensions: (dimensions: ResponsiveDimensions) => void;
+
+  // Shortcuts
+  shortcuts: PreviewShortcut[];
+  addShortcut: (shortcut: Omit<PreviewShortcut, 'id'>) => Promise<void>;
+  removeShortcut: (id: string) => Promise<void>;
 
   isLoading: boolean;
 }
@@ -47,7 +55,6 @@ export function usePreviewSettings(
   const {
     scratch,
     updateScratch,
-    deleteScratch,
     isLoading: isScratchLoading,
   } = useScratch(ScratchType.PREVIEW_SETTINGS, workspaceId ?? '', {
     enabled,
@@ -72,6 +79,10 @@ export function usePreviewSettings(
     }),
     [scratchData?.responsive_width, scratchData?.responsive_height]
   );
+  const shortcuts = useMemo(
+    () => scratchData?.shortcuts ?? [],
+    [scratchData?.shortcuts]
+  );
 
   // Helper to save settings
   const saveSettings = useCallback(
@@ -89,6 +100,7 @@ export function usePreviewSettings(
                 updates.responsive_width ?? responsiveDimensions.width,
               responsive_height:
                 updates.responsive_height ?? responsiveDimensions.height,
+              shortcuts: updates.shortcuts ?? shortcuts,
             },
           },
         });
@@ -103,6 +115,7 @@ export function usePreviewSettings(
       screenSize,
       responsiveDimensions.width,
       responsiveDimensions.height,
+      shortcuts,
     ]
   );
 
@@ -147,13 +160,39 @@ export function usePreviewSettings(
   );
 
   const clearOverride = useCallback(async () => {
-    try {
-      await deleteScratch();
-    } catch (e) {
-      // Ignore 404 errors when scratch doesn't exist
-      console.error('[usePreviewSettings] Failed to clear:', e);
-    }
-  }, [deleteScratch]);
+    await saveSettings({ url: '' });
+  }, [saveSettings]);
+
+  const addShortcut = useCallback(
+    async (shortcut: Omit<PreviewShortcut, 'id'>) => {
+      const trimmedUrl = shortcut.url.trim();
+      if (!trimmedUrl) return;
+
+      const normalizedLabel = shortcut.label.trim() || trimmedUrl;
+      const normalizedShortcut: PreviewShortcut = {
+        id:
+          globalThis.crypto?.randomUUID?.() ??
+          `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        label: normalizedLabel,
+        url: trimmedUrl,
+      };
+
+      const nextShortcuts = [
+        ...shortcuts.filter((item) => item.url !== trimmedUrl),
+        normalizedShortcut,
+      ];
+      await saveSettings({ shortcuts: nextShortcuts });
+    },
+    [saveSettings, shortcuts]
+  );
+
+  const removeShortcut = useCallback(
+    async (id: string) => {
+      const nextShortcuts = shortcuts.filter((shortcut) => shortcut.id !== id);
+      await saveSettings({ shortcuts: nextShortcuts });
+    },
+    [saveSettings, shortcuts]
+  );
 
   return {
     overrideUrl,
@@ -164,6 +203,9 @@ export function usePreviewSettings(
     responsiveDimensions,
     setScreenSize,
     setResponsiveDimensions,
+    shortcuts,
+    addShortcut,
+    removeShortcut,
     isLoading: isScratchLoading,
   };
 }

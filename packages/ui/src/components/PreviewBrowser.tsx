@@ -15,6 +15,8 @@ import {
   CheckIcon,
   TerminalIcon,
   GlobeIcon,
+  PlusIcon,
+  TrashIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
@@ -43,6 +45,12 @@ export interface PreviewBrowserRepo {
   dev_server_script?: string | null;
 }
 
+export interface PreviewBrowserShortcut {
+  id: string;
+  label: string;
+  url: string;
+}
+
 interface PreviewBrowserProps {
   url?: string;
   autoDetectedUrl?: string;
@@ -55,6 +63,11 @@ interface PreviewBrowserProps {
   onClearOverride?: () => void;
   onCopyUrl: () => void;
   onOpenInNewTab: () => void;
+  shortcuts?: PreviewBrowserShortcut[];
+  activeShortcutId?: string | null;
+  onAddShortcut?: () => void;
+  onRemoveShortcut?: (id: string) => void;
+  onOpenShortcut?: (url: string) => void;
   onRefresh: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -103,6 +116,11 @@ export function PreviewBrowser({
   onClearOverride,
   onCopyUrl,
   onOpenInNewTab,
+  shortcuts = [],
+  activeShortcutId,
+  onAddShortcut,
+  onRemoveShortcut,
+  onOpenShortcut,
   onRefresh,
   onStart,
   onStop,
@@ -146,6 +164,7 @@ export function PreviewBrowser({
   const hasDevScript = repos.some(
     (repo) => repo.dev_server_script && repo.dev_server_script.trim() !== ''
   );
+  const selectedShortcutId = activeShortcutId ?? '';
 
   const getIframeContainerStyle = (): CSSProperties => {
     switch (screenSize) {
@@ -177,7 +196,7 @@ export function PreviewBrowser({
     >
       {/* Floating Toolbar */}
       <div className="p-double">
-        <div className="backdrop-blur-sm bg-primary/80 border border-brand/20 flex items-center gap-base p-base rounded-md shadow-md shrink-0">
+        <div className="backdrop-blur-sm bg-primary/80 border border-brand/20 flex flex-wrap items-center gap-base p-base rounded-md shadow-md shrink-0">
           {/* Mobile: URL expanded mode — full-width URL input with submit/close */}
           {isMobile && mobileUrlExpanded ? (
             <>
@@ -212,6 +231,13 @@ export function PreviewBrowser({
               </div>
               <IconButtonGroup>
                 <IconButtonGroupItem
+                  icon={PlusIcon}
+                  onClick={onAddShortcut}
+                  disabled={!isServerRunning || !urlInputValue.trim()}
+                  aria-label={t('preview.toolbar.addShortcut')}
+                  title={t('preview.toolbar.addShortcut')}
+                />
+                <IconButtonGroupItem
                   icon={CheckIcon}
                   onClick={() => {
                     onUrlSubmit();
@@ -228,6 +254,48 @@ export function PreviewBrowser({
                   title={t('common:buttons.close')}
                 />
               </IconButtonGroup>
+              <div className="basis-full flex items-center gap-half min-w-0">
+                <select
+                  value={selectedShortcutId}
+                  onChange={(e) => {
+                    const shortcut = shortcuts.find(
+                      (item) => item.id === e.target.value
+                    );
+                    if (shortcut) {
+                      onOpenShortcut?.(shortcut.url);
+                      onMobileUrlExpandedChange?.(false);
+                    }
+                  }}
+                  disabled={!isServerRunning || shortcuts.length === 0}
+                  aria-label={t('preview.toolbar.shortcuts')}
+                  title={t('preview.toolbar.shortcuts')}
+                  className={cn(
+                    'h-8 min-w-0 flex-1 rounded-sm border border-brand/20',
+                    'bg-primary/80 px-base text-sm text-normal outline-none',
+                    'disabled:cursor-not-allowed disabled:opacity-50'
+                  )}
+                >
+                  <option value="">{t('preview.toolbar.shortcuts')}</option>
+                  {shortcuts.map((shortcut) => (
+                    <option key={shortcut.id} value={shortcut.id}>
+                      {shortcut.label}
+                    </option>
+                  ))}
+                </select>
+                <IconButtonGroup>
+                  <IconButtonGroupItem
+                    icon={TrashIcon}
+                    onClick={() => {
+                      if (selectedShortcutId) {
+                        onRemoveShortcut?.(selectedShortcutId);
+                      }
+                    }}
+                    disabled={!isServerRunning || !selectedShortcutId}
+                    aria-label={t('preview.toolbar.removeShortcut')}
+                    title={t('preview.toolbar.removeShortcut')}
+                  />
+                </IconButtonGroup>
+              </div>
             </>
           ) : isMobile ? (
             /* Mobile: URL collapsed mode — globe, refresh, open-in-tab, start/stop */
@@ -360,6 +428,13 @@ export function PreviewBrowser({
               {/* URL Actions */}
               <IconButtonGroup>
                 <IconButtonGroupItem
+                  icon={PlusIcon}
+                  onClick={onAddShortcut}
+                  disabled={!isServerRunning || !urlInputValue.trim()}
+                  aria-label={t('preview.toolbar.addShortcut')}
+                  title={t('preview.toolbar.addShortcut')}
+                />
+                <IconButtonGroupItem
                   icon={CheckIcon}
                   onClick={onUrlSubmit}
                   disabled={!isServerRunning}
@@ -397,6 +472,46 @@ export function PreviewBrowser({
                   title={t('preview.toolbar.refresh')}
                 />
               </IconButtonGroup>
+
+              <div className="flex items-center gap-half min-w-[9rem] max-w-56">
+                <select
+                  value={selectedShortcutId}
+                  onChange={(e) => {
+                    const shortcut = shortcuts.find(
+                      (item) => item.id === e.target.value
+                    );
+                    if (shortcut) onOpenShortcut?.(shortcut.url);
+                  }}
+                  disabled={!isServerRunning || shortcuts.length === 0}
+                  aria-label={t('preview.toolbar.shortcuts')}
+                  title={t('preview.toolbar.shortcuts')}
+                  className={cn(
+                    'h-8 min-w-0 flex-1 rounded-sm border border-brand/20',
+                    'bg-primary/80 px-base text-sm text-normal outline-none',
+                    'disabled:cursor-not-allowed disabled:opacity-50'
+                  )}
+                >
+                  <option value="">{t('preview.toolbar.shortcuts')}</option>
+                  {shortcuts.map((shortcut) => (
+                    <option key={shortcut.id} value={shortcut.id}>
+                      {shortcut.label}
+                    </option>
+                  ))}
+                </select>
+                <IconButtonGroup>
+                  <IconButtonGroupItem
+                    icon={TrashIcon}
+                    onClick={() => {
+                      if (selectedShortcutId) {
+                        onRemoveShortcut?.(selectedShortcutId);
+                      }
+                    }}
+                    disabled={!isServerRunning || !selectedShortcutId}
+                    aria-label={t('preview.toolbar.removeShortcut')}
+                    title={t('preview.toolbar.removeShortcut')}
+                  />
+                </IconButtonGroup>
+              </div>
 
               {/* Screen Size Toggle */}
               <IconButtonGroup>

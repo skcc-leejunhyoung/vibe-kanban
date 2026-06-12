@@ -28,6 +28,7 @@ fn generate_types_content() -> String {
         db::models::scratch::DraftWorkspaceLinkedIssue::decl(),
         db::models::scratch::DraftWorkspaceRepo::decl(),
         db::models::scratch::DraftIssueData::decl(),
+        db::models::scratch::PreviewShortcutData::decl(),
         db::models::scratch::PreviewSettingsData::decl(),
         db::models::scratch::WorkspaceNotesData::decl(),
         db::models::scratch::WorkspacePanelStateData::decl(),

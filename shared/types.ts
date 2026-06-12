@@ -54,7 +54,9 @@ project_id: string,
  */
 parent_issue_id: string | null, };
 
-export type PreviewSettingsData = { url: string, screen_size: string | null, responsive_width: number | null, responsive_height: number | null, };
+export type PreviewShortcutData = { id: string, label: string, url: string, };
+
+export type PreviewSettingsData = { url: string, screen_size: string | null, responsive_width: number | null, responsive_height: number | null, shortcuts: Array<PreviewShortcutData>, };
 
 export type WorkspaceNotesData = { content: string, };
 

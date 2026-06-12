@@ -25,7 +25,15 @@ pub struct DraftFollowUpData {
     pub executor_config: ExecutorConfig,
 }
 
-/// Data for preview settings scratch (URL override and screen size)
+/// Saved shortcut for the preview browser.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct PreviewShortcutData {
+    pub id: String,
+    pub label: String,
+    pub url: String,
+}
+
+/// Data for preview settings scratch (URL override, screen size, and shortcuts)
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PreviewSettingsData {
     pub url: String,
@@ -35,6 +43,8 @@ pub struct PreviewSettingsData {
     pub responsive_width: Option<i32>,
     #[serde(default)]
     pub responsive_height: Option<i32>,
+    #[serde(default)]
+    pub shortcuts: Vec<PreviewShortcutData>,
 }
 
 /// Data for workspace notes scratch
