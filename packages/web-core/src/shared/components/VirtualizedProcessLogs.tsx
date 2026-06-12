@@ -1,20 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  DataWithScrollModifier,
-  ScrollModifier,
-  VirtuosoMessageList,
-  VirtuosoMessageListLicense,
-  VirtuosoMessageListMethods,
-  VirtuosoMessageListProps,
-} from '@virtuoso.dev/message-list';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { WarningCircleIcon } from '@phosphor-icons/react/dist/ssr';
 import RawLogText from '@/shared/components/RawLogText';
-import {
-  INITIAL_TOP_ITEM,
-  InitialDataScrollModifier,
-  ScrollToBottomModifier as ScrollToLastItem,
-} from '@/shared/lib/virtuoso-modifiers';
 import type { PatchType } from 'shared/types';
 
 export type LogEntry = Extract<
@@ -38,15 +26,13 @@ interface SearchContext {
   currentMatchIndex: number;
 }
 
-const computeItemKey: VirtuosoMessageListProps<
-  LogEntryWithKey,
-  SearchContext
->['computeItemKey'] = ({ data }) => data.key;
-
-const ItemContent: VirtuosoMessageListProps<
-  LogEntryWithKey,
-  SearchContext
->['ItemContent'] = ({ data, context }) => {
+function LogItem({
+  data,
+  context,
+}: {
+  data: LogEntryWithKey;
+  context: SearchContext;
+}) {
   const isMatch = context.matchIndices.includes(data.originalIndex);
   const isCurrentMatch =
     context.matchIndices[context.currentMatchIndex] === data.originalIndex;
@@ -61,7 +47,7 @@ const ItemContent: VirtuosoMessageListProps<
       isCurrentMatch={isCurrentMatch}
     />
   );
-};
+}
 
 export function VirtualizedProcessLogs({
   logs,
@@ -71,15 +57,11 @@ export function VirtualizedProcessLogs({
   currentMatchIndex,
 }: VirtualizedProcessLogsProps) {
   const { t } = useTranslation('tasks');
-  const [channelData, setChannelData] =
-    useState<DataWithScrollModifier<LogEntryWithKey> | null>(null);
-  const messageListRef = useRef<VirtuosoMessageListMethods<
-    LogEntryWithKey,
-    SearchContext
-  > | null>(null);
+  const [logEntries, setLogEntries] = useState<LogEntryWithKey[]>([]);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const hasInitializedRef = useRef(false);
   const prevCurrentMatchRef = useRef<number | undefined>(undefined);
-  const isAtBottomRef = useRef(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -88,28 +70,23 @@ export function VirtualizedProcessLogs({
         key: `log-${index}`,
         originalIndex: index,
       }));
-
-      // Use InitialDataScrollModifier (with purgeItemSizes) only on the
-      // very first data load. For all subsequent updates, use ScrollToLastItem
-      // which always jumps to the end — unlike auto-scroll-to-bottom which
-      // only follows if the viewport is already at the bottom.
-      let scrollModifier: ScrollModifier | null = null;
-      if (!hasInitializedRef.current && logs.length > 0) {
-        hasInitializedRef.current = true;
-        scrollModifier = InitialDataScrollModifier;
-      } else if (isAtBottomRef.current) {
-        scrollModifier = ScrollToLastItem;
-      }
-
-      if (scrollModifier) {
-        setChannelData({ data: logsWithKeys, scrollModifier });
-      } else {
-        setChannelData({ data: logsWithKeys });
-      }
+      setLogEntries(logsWithKeys);
     }, 100);
 
     return () => clearTimeout(timeoutId);
   }, [logs]);
+
+  useEffect(() => {
+    if (!hasInitializedRef.current && logEntries.length > 0) {
+      hasInitializedRef.current = true;
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({
+          index: logEntries.length - 1,
+          align: 'end',
+        });
+      });
+    }
+  }, [logEntries.length]);
 
   // Scroll to current match when it changes
   useEffect(() => {
@@ -119,7 +96,7 @@ export function VirtualizedProcessLogs({
       currentMatchIndex !== prevCurrentMatchRef.current
     ) {
       const logIndex = matchIndices[currentMatchIndex];
-      messageListRef.current?.scrollToItem({
+      virtuosoRef.current?.scrollToIndex({
         index: logIndex,
         align: 'center',
         behavior: 'smooth',
@@ -156,23 +133,18 @@ export function VirtualizedProcessLogs({
   };
 
   return (
-    <div className="virtuoso-license-wrapper h-full overflow-hidden">
-      <VirtuosoMessageListLicense
-        licenseKey={import.meta.env.VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY}
-      >
-        <VirtuosoMessageList<LogEntryWithKey, SearchContext>
-          ref={messageListRef}
-          className="h-full"
-          data={channelData}
-          context={context}
-          initialLocation={INITIAL_TOP_ITEM}
-          onScroll={(location) => {
-            isAtBottomRef.current = location.isAtBottom;
-          }}
-          computeItemKey={computeItemKey}
-          ItemContent={ItemContent}
-        />
-      </VirtuosoMessageListLicense>
-    </div>
+    <Virtuoso<LogEntryWithKey, SearchContext>
+      ref={virtuosoRef}
+      className="h-full overflow-hidden"
+      data={logEntries}
+      context={context}
+      computeItemKey={(_index, entry) => entry.key}
+      itemContent={(_index, entry, itemContext) => (
+        <LogItem data={entry} context={itemContext} />
+      )}
+      atBottomStateChange={setIsAtBottom}
+      followOutput={isAtBottom ? 'smooth' : false}
+      increaseViewportBy={{ top: 0, bottom: 600 }}
+    />
   );
 }
