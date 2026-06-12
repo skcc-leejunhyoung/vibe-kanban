@@ -73,10 +73,13 @@ function getAggregationType(
 }
 
 /**
- * First pass: group consecutive thinking entries within each turn (between user messages)
- * for all turns except the last one.
+ * First pass: group consecutive thinking entries within each turn (between user messages).
+ *
+ * Previous turns are always collapsed for readability. In the current turn, only
+ * consecutive thinking chunks are grouped so a single thinking entry still
+ * renders inline while streamed chunks avoid producing a stack of rows.
  */
-function aggregateThinkingInPreviousTurns(
+function aggregateConsecutiveThinkingEntries(
   entries: PatchTypeWithKey[]
 ): PatchTypeWithKey[] {
   if (entries.length === 0) return [];
@@ -89,35 +92,25 @@ function aggregateThinkingInPreviousTurns(
     }
   });
 
-  // If there's 0 or 1 user message, no "previous" turns exist
-  if (userMessageIndices.length <= 1) {
-    return entries;
-  }
-
-  // The last user message index marks the start of the "current" turn
+  // The last user message index marks the start of the "current" turn.
+  // If there are no user messages, treat all entries as the current turn.
   const lastUserMessageIndex =
-    userMessageIndices[userMessageIndices.length - 1];
+    userMessageIndices.length > 0
+      ? userMessageIndices[userMessageIndices.length - 1]
+      : 0;
 
-  // Process entries, grouping thinking entries in previous turns
+  // Process entries, grouping thinking entries per turn.
   const result: PatchTypeWithKey[] = [];
   let currentThinkingGroup: PatchTypeWithKey[] = [];
+  let currentThinkingGroupIsPreviousTurn = false;
 
   const flushThinkingGroup = () => {
     if (currentThinkingGroup.length === 0) return;
 
-    if (currentThinkingGroup.length === 1) {
-      // Single thinking entry - create a group anyway for consistency in collapsed view
-      const entry = currentThinkingGroup[0];
-      const aggregatedGroup: AggregatedThinkingGroup = {
-        type: 'AGGREGATED_THINKING_GROUP',
-        entries: [...currentThinkingGroup],
-        patchKey: `agg-thinking:${entry.patchKey}`,
-        executionProcessId: entry.executionProcessId,
-      };
-      // Cast to PatchTypeWithKey to maintain the array type
-      result.push(aggregatedGroup as unknown as PatchTypeWithKey);
-    } else {
-      // Multiple entries - create an aggregated thinking group
+    const shouldGroup =
+      currentThinkingGroupIsPreviousTurn || currentThinkingGroup.length > 1;
+
+    if (shouldGroup) {
       const firstEntry = currentThinkingGroup[0];
       const aggregatedGroup: AggregatedThinkingGroup = {
         type: 'AGGREGATED_THINKING_GROUP',
@@ -127,14 +120,18 @@ function aggregateThinkingInPreviousTurns(
       };
       // Cast to PatchTypeWithKey to maintain the array type
       result.push(aggregatedGroup as unknown as PatchTypeWithKey);
+    } else {
+      result.push(currentThinkingGroup[0]);
     }
 
     currentThinkingGroup = [];
+    currentThinkingGroupIsPreviousTurn = false;
   };
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
-    const isInPreviousTurn = i < lastUserMessageIndex;
+    const isInPreviousTurn =
+      userMessageIndices.length > 1 && i < lastUserMessageIndex;
 
     // Track turn boundaries
     if (isUserMessage(entry)) {
@@ -144,8 +141,10 @@ function aggregateThinkingInPreviousTurns(
       continue;
     }
 
-    // Only aggregate thinking entries in previous turns
-    if (isInPreviousTurn && isThinkingEntry(entry)) {
+    if (isThinkingEntry(entry)) {
+      if (currentThinkingGroup.length === 0) {
+        currentThinkingGroupIsPreviousTurn = isInPreviousTurn;
+      }
       currentThinkingGroup.push(entry);
     } else {
       // Flush any pending thinking group
@@ -165,12 +164,13 @@ function aggregateThinkingInPreviousTurns(
  * into grouped entries for accordion-style display.
  *
  * Also aggregates consecutive file_edit entries for the same file path.
- * Also aggregates thinking entries in previous conversation turns.
+ * Also aggregates thinking entries for cleaner display.
  *
  * Rules:
  * - Only group entries of the same type that follow each other consecutively
  * - For file_edit entries, also group by file path
  * - Thinking entries in previous turns (before the last user message) are collapsed
+ * - Consecutive thinking entries in the current turn are grouped
  * - Preserve the original order of entries
  * - Single entries of an aggregatable type are NOT grouped (returned as-is)
  * - At least 2 consecutive entries of the same type are required to form a group
@@ -180,9 +180,9 @@ export function aggregateConsecutiveEntries(
 ): DisplayEntry[] {
   if (entries.length === 0) return [];
 
-  // First pass: aggregate thinking entries in previous turns
+  // First pass: aggregate thinking entries
   const entriesWithThinkingAggregated =
-    aggregateThinkingInPreviousTurns(entries);
+    aggregateConsecutiveThinkingEntries(entries);
 
   const result: DisplayEntry[] = [];
 
