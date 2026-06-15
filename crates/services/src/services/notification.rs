@@ -44,7 +44,8 @@ static WSL_ROOT_PATH_CACHE: OnceLock<Option<String>> = OnceLock::new();
 impl PushNotifier for DefaultPushNotifier {
     async fn send(&self, title: &str, message: &str, _workspace_id: Option<Uuid>) {
         if cfg!(target_os = "macos") {
-            send_macos_notification(title, message).await;
+            let click_url = notification_click_url().await;
+            send_macos_notification(title, message, click_url.as_deref()).await;
         } else if cfg!(target_os = "linux") && !utils::is_wsl2() {
             send_linux_notification(title, message).await;
         } else if cfg!(target_os = "windows") || (cfg!(target_os = "linux") && utils::is_wsl2()) {
@@ -153,8 +154,96 @@ impl NotificationService {
 
 // --- Platform-specific push notification helpers (used by DefaultPushNotifier) ---
 
-/// Send macOS notification using osascript
-async fn send_macos_notification(title: &str, message: &str) {
+const REMOTE_NOTIFICATION_URL_ENV: &str = "VK_NOTIFICATION_REMOTE_URL";
+const PUBLIC_BASE_URL_ENV: &str = "PUBLIC_BASE_URL";
+
+fn local_notification_url(port: u16) -> String {
+    format!("http://localhost:{port}")
+}
+
+fn normalize_remote_notification_url(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.starts_with("https://") {
+        Some(format!("{trimmed}/"))
+    } else {
+        None
+    }
+}
+
+fn remote_notification_url_from_env() -> Option<String> {
+    for key in [REMOTE_NOTIFICATION_URL_ENV, PUBLIC_BASE_URL_ENV] {
+        let Ok(value) = std::env::var(key) else {
+            continue;
+        };
+
+        if let Some(url) = normalize_remote_notification_url(&value) {
+            return Some(url);
+        }
+
+        tracing::warn!(
+            env = key,
+            "ignoring notification remote URL because it is not an https URL"
+        );
+    }
+
+    None
+}
+
+async fn notification_click_url() -> Option<String> {
+    match utils::port_file::read_port_file("vibe-kanban").await {
+        Ok(port) => Some(local_notification_url(port)),
+        Err(error) => {
+            tracing::debug!(%error, "local Vibe Kanban port file unavailable");
+            remote_notification_url_from_env()
+        }
+    }
+}
+
+/// Locate the `terminal-notifier` binary (PATH first, then common Homebrew
+/// locations). Returns `None` if it is not installed.
+fn find_terminal_notifier() -> Option<String> {
+    use std::path::Path;
+
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':') {
+            let candidate = Path::new(dir).join("terminal-notifier");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    for candidate in [
+        "/opt/homebrew/bin/terminal-notifier",
+        "/usr/local/bin/terminal-notifier",
+    ] {
+        if Path::new(candidate).is_file() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+/// Send macOS notification.
+///
+/// `osascript display notification` has no click URL support, so use
+/// `terminal-notifier` when available and fall back to display-only banners.
+async fn send_macos_notification(title: &str, message: &str, click_url: Option<&str>) {
+    if let (Some(bin), Some(url)) = (find_terminal_notifier(), click_url) {
+        let _ = tokio::process::Command::new(bin)
+            .arg("-title")
+            .arg(title)
+            .arg("-message")
+            .arg(message)
+            .arg("-open")
+            .arg(url)
+            .arg("-sound")
+            .arg("default")
+            .spawn();
+        return;
+    }
+
     let script = format!(
         r#"display notification "{message}" with title "{title}" sound name "Glass""#,
         message = message.replace('"', r#"\""#),
@@ -293,5 +382,35 @@ async fn wsl_to_windows_path(wsl_path: &std::path::Path) -> Option<String> {
             path_str
         );
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{local_notification_url, normalize_remote_notification_url};
+
+    #[test]
+    fn local_notification_url_targets_localhost_root() {
+        assert_eq!(local_notification_url(47823), "http://localhost:47823");
+    }
+
+    #[test]
+    fn remote_notification_url_requires_https() {
+        assert_eq!(
+            normalize_remote_notification_url(" https://kanban.example.com/path/ "),
+            Some("https://kanban.example.com/path/".to_string())
+        );
+        assert_eq!(
+            normalize_remote_notification_url("http://example.com"),
+            None
+        );
+        assert_eq!(
+            normalize_remote_notification_url("file:///tmp/private"),
+            None
+        );
+        assert_eq!(
+            normalize_remote_notification_url("vibe-kanban://open"),
+            None
+        );
     }
 }
