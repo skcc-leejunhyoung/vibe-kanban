@@ -1277,6 +1277,11 @@ impl ClaudeLogProcessor {
                         }
                     }
                     Some("compact_boundary") => {}
+                    // Progress-only signal emitted during redacted/extended
+                    // thinking. The estimate is already surfaced in the live
+                    // thinking entry (via thinking deltas), so skip it here to
+                    // avoid stacking a new "System: thinking_tokens" row per event.
+                    Some("thinking_tokens") => {}
                     Some("task_started") => {
                         if let Some(tool_use_id) = tool_use_id
                             && !self.tool_map.contains_key(tool_use_id)
@@ -2183,6 +2188,9 @@ struct StreamingContentState {
     kind: StreamingContentKind,
     buffer: String,
     entry_index: Option<usize>,
+    // Running estimate of thinking tokens, accumulated from thinking deltas
+    // that carry no visible text (redacted/extended thinking).
+    thinking_tokens: u64,
 }
 
 impl StreamingContentState {
@@ -2192,11 +2200,13 @@ impl StreamingContentState {
                 kind: StreamingContentKind::Text,
                 buffer: text,
                 entry_index: None,
+                thinking_tokens: 0,
             }),
             ClaudeContentItem::Thinking { thinking } => Some(Self {
                 kind: StreamingContentKind::Thinking,
                 buffer: thinking,
                 entry_index: None,
+                thinking_tokens: 0,
             }),
             _ => None,
         }
@@ -2208,11 +2218,13 @@ impl StreamingContentState {
                 kind: StreamingContentKind::Text,
                 buffer: String::new(),
                 entry_index: None,
+                thinking_tokens: 0,
             }),
             ClaudeContentBlockDelta::ThinkingDelta { .. } => Some(Self {
                 kind: StreamingContentKind::Thinking,
                 buffer: String::new(),
                 entry_index: None,
+                thinking_tokens: 0,
             }),
             _ => None,
         }
@@ -2225,9 +2237,13 @@ impl StreamingContentState {
             }
             (
                 StreamingContentKind::Thinking,
-                ClaudeContentBlockDelta::ThinkingDelta { thinking },
+                ClaudeContentBlockDelta::ThinkingDelta {
+                    thinking,
+                    estimated_tokens,
+                },
             ) => {
                 self.buffer.push_str(thinking);
+                self.thinking_tokens += estimated_tokens.unwrap_or(0);
             }
             // Signature deltas are sent at the end of thinking blocks for verification;
             // they don't contain display content so we ignore them.
@@ -2247,6 +2263,15 @@ impl StreamingContentState {
             StreamingContentKind::Text => ClaudeContentItem::Text {
                 text: self.buffer.clone(),
             },
+            // When the model streams redacted/extended thinking, the deltas
+            // carry no visible text and only report a token estimate. Surface
+            // that estimate as the thinking content so the single thinking
+            // entry shows live progress instead of staying blank.
+            StreamingContentKind::Thinking if self.buffer.is_empty() => {
+                ClaudeContentItem::Thinking {
+                    thinking: format!("*Thinking… (~{} tokens)*", self.thinking_tokens),
+                }
+            }
             StreamingContentKind::Thinking => ClaudeContentItem::Thinking {
                 thinking: self.buffer.clone(),
             },
@@ -2481,7 +2506,14 @@ pub enum ClaudeContentBlockDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
     #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
+    ThinkingDelta {
+        thinking: String,
+        // Estimated thinking-token count for this delta. Present when the
+        // model streams redacted/extended thinking that only reports progress
+        // as a token estimate rather than visible text.
+        #[serde(default)]
+        estimated_tokens: Option<u64>,
+    },
     #[serde(rename = "signature_delta")]
     SignatureDelta {
         #[serde(default)]
@@ -2982,6 +3014,58 @@ mod tests {
         assert!(
             patch_count > 0,
             "Expected JsonPatch messages to be generated from streaming processing"
+        );
+    }
+
+    #[test]
+    fn test_thinking_tokens_progress_collapses_into_single_entry() {
+        // Reproduces the redacted/extended-thinking stream: thinking deltas
+        // carry no visible text, only a token estimate, interleaved with
+        // `system thinking_tokens` progress events. The former used to leave a
+        // blank thinking bubble while the latter stacked a new
+        // "System: thinking_tokens" row per event.
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+
+        let lines = [
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","role":"assistant","content":[]}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}}}"#,
+            r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":150}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":100}}}"#,
+            r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":250}"#,
+        ];
+
+        let mut by_index: std::collections::BTreeMap<usize, NormalizedEntry> =
+            std::collections::BTreeMap::new();
+        for line in lines {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+            for patch in &patches {
+                if let Some((idx, entry)) = extract_normalized_entry_from_patch(patch) {
+                    by_index.insert(idx, entry);
+                }
+            }
+        }
+
+        // The `system thinking_tokens` events must not stack system rows.
+        assert!(
+            !by_index
+                .values()
+                .any(|e| e.content.contains("thinking_tokens")),
+            "thinking_tokens system events must not create system message rows"
+        );
+
+        // A single live thinking entry, updated in place, surfacing the
+        // accumulated token estimate (50 + 100 = 150).
+        let thinking: Vec<_> = by_index
+            .values()
+            .filter(|e| matches!(e.entry_type, NormalizedEntryType::Thinking))
+            .collect();
+        assert_eq!(thinking.len(), 1, "expected a single live thinking entry");
+        assert!(
+            thinking[0].content.contains("150"),
+            "thinking entry should surface the accumulated token estimate, got {:?}",
+            thinking[0].content
         );
     }
 
