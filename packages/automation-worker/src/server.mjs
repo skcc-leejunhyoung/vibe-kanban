@@ -147,6 +147,9 @@ const POLLABLE_TYPES = new Set(['slack', 'github']);
 const githubLoginCache = new Map();
 const vibeTokenCache = new Map();
 const vibeTokenInflight = new Map();
+// One in-flight poll per connector. This is used during bootstrap's initial
+// scheduleAll() call, so it must be initialized before bootstrap starts.
+const pollInFlight = new Map();
 let writeQueue = Promise.resolve();
 
 await bootstrap();
@@ -316,8 +319,9 @@ function safeEqual(a, b) {
   return timingSafeEqual(ha, hb);
 }
 
-// Poller-managed runtime state lives in connector.config; preserve it across
-// user config saves so a UI/API edit can't roll back the cursor/dedup/parent map.
+// Poller-managed runtime state lives in connector.config. Preserve it for
+// partial config patches, but let full connector saves from the JSON editor be
+// authoritative so operators can reset cursors/dedup maps from the web UI.
 const RUNTIME_CONFIG_KEYS = ['cursorTs', 'seenIds', 'issueMap', 'tagMap'];
 
 // Credential fields in connector.config. They are replaced with SECRET_MASK in
@@ -326,10 +330,12 @@ const RUNTIME_CONFIG_KEYS = ['cursorTs', 'seenIds', 'issueMap', 'tagMap'];
 const SECRET_CONFIG_KEYS = ['token', 'bearerToken', 'authHeaderValue'];
 const SECRET_MASK = '__stored__';
 
-function preserveRuntimeConfig(prevConfig, nextConfig) {
+function preserveMissingRuntimeConfig(prevConfig, nextConfig) {
   const prev = prevConfig || {};
   for (const key of RUNTIME_CONFIG_KEYS) {
-    if (prev[key] !== undefined) nextConfig[key] = prev[key];
+    if (prev[key] !== undefined && nextConfig[key] === undefined) {
+      nextConfig[key] = prev[key];
+    }
   }
   return nextConfig;
 }
@@ -368,7 +374,6 @@ function upsertConnector(input) {
   const connector = normalizeConnector(input);
   const index = state.connectors.findIndex((item) => item.id === connector.id);
   if (index >= 0) {
-    preserveRuntimeConfig(state.connectors[index].config, connector.config);
     preserveMaskedSecrets(state.connectors[index].config, connector.config);
     state.connectors[index] = connector;
   } else {
@@ -399,7 +404,7 @@ function applyConnectorPatch(connector, patch) {
   if ('config' in patch) {
     const next = patch.config && typeof patch.config === 'object' ? patch.config : {};
     const prev = connector.config;
-    preserveRuntimeConfig(prev, next);
+    preserveMissingRuntimeConfig(prev, next);
     preserveMaskedSecrets(prev, next);
     connector.config = next;
   }
@@ -459,11 +464,6 @@ function scheduleAll() {
     });
   }
 }
-
-// One in-flight poll per connector. Without this, a poll that outruns its
-// interval (or overlaps a manual poll) would let two runs read the same
-// cursor/seen snapshot and create duplicate issues before either persists.
-const pollInFlight = new Map();
 
 function pollConnector(id, manual) {
   const existing = pollInFlight.get(id);
