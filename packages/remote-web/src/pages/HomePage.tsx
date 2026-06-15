@@ -11,6 +11,7 @@ import type { OrganizationWithRole } from "shared/types";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
 import { clearTokens } from "@remote/shared/lib/auth";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
+import { AppBarNotificationBellContainer } from "@/pages/workspaces/AppBarNotificationBellContainer";
 import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
 import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
@@ -258,14 +259,21 @@ export default function HomePage() {
           </section>
         )}
 
-        <header className="space-y-half">
-          <h1 className="text-2xl font-semibold text-high">Organizations</h1>
-          <p className="text-sm text-low">
-            {organizationCount}{" "}
-            {organizationCount === 1 ? "organization" : "organizations"} •{" "}
-            {totalProjectCount}{" "}
-            {totalProjectCount === 1 ? "project" : "projects"}
-          </p>
+        <header className="flex items-start justify-between gap-base">
+          <div className="space-y-half">
+            <h1 className="text-2xl font-semibold text-high">Organizations</h1>
+            <p className="text-sm text-low">
+              {organizationCount}{" "}
+              {organizationCount === 1 ? "organization" : "organizations"} •{" "}
+              {totalProjectCount}{" "}
+              {totalProjectCount === 1 ? "project" : "projects"}
+            </p>
+          </div>
+          {isMobile && isSignedIn && (
+            <div className="shrink-0">
+              <AppBarNotificationBellContainer />
+            </div>
+          )}
         </header>
 
         {organizationCount === 0 ? (

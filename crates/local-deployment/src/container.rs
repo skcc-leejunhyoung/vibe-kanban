@@ -107,7 +107,8 @@ impl LocalContainerService {
         let db_stream_handles = Arc::new(RwLock::new(HashMap::new()));
         let exit_monitor_handles = Arc::new(RwLock::new(HashMap::new()));
         let workspace_touch_times = Arc::new(RwLock::new(HashMap::new()));
-        let notification_service = NotificationService::new(config.clone());
+        let notification_service =
+            NotificationService::new(config.clone(), db.pool.clone(), remote_client.clone());
 
         let container = LocalContainerService {
             db,

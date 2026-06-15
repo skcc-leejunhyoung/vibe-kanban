@@ -57,6 +57,7 @@ hex = "0.4"
 urlencoding = "2.1"
 url = "2.5"
 base64 = "0.22"
+web-push = "0.11"
 aws-sdk-s3 = { version = "1.65", default-features = false, features = ["behavior-version-latest", "rt-tokio"] }
 aws-credential-types = "1.2"
 azure_core = "0.31"

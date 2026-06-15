@@ -20,6 +20,7 @@ pub struct RemoteServerConfig {
     pub review_worker_base_url: Option<String>,
     pub review_disabled: bool,
     pub github_app: Option<GitHubAppConfig>,
+    pub web_push: Option<WebPushConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +162,82 @@ pub struct GitHubAppConfig {
     pub app_slug: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct WebPushConfig {
+    pub public_key: String,
+    pub private_key: SecretString,
+    pub subject: String,
+    pub remote_base_url: Option<String>,
+    pub workspace_path_template: String,
+}
+
+impl WebPushConfig {
+    pub fn from_env() -> Result<Option<Self>, ConfigError> {
+        let public_key = env::var("WEB_PUSH_VAPID_PUBLIC_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let private_key = env::var("WEB_PUSH_VAPID_PRIVATE_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+
+        let (public_key, private_key) = match (public_key, private_key) {
+            (None, None) => {
+                tracing::info!("Web Push VAPID keys not set, web push disabled");
+                return Ok(None);
+            }
+            (Some(public_key), Some(private_key)) => (public_key, private_key),
+            (None, Some(_)) => return Err(ConfigError::MissingVar("WEB_PUSH_VAPID_PUBLIC_KEY")),
+            (Some(_), None) => return Err(ConfigError::MissingVar("WEB_PUSH_VAPID_PRIVATE_KEY")),
+        };
+
+        let subject = env::var("WEB_PUSH_VAPID_SUBJECT")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "mailto:admin@vibekanban.com".to_string());
+        let remote_base_url = first_web_push_base_url([
+            "WEB_PUSH_REMOTE_BASE_URL",
+            "SERVER_PUBLIC_BASE_URL",
+            "PUBLIC_BASE_URL",
+        ]);
+        let workspace_path_template = env::var("WEB_PUSH_WORKSPACE_PATH_TEMPLATE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "/workspace/{workspace_id}".to_string());
+
+        Ok(Some(Self {
+            public_key,
+            private_key: SecretString::new(private_key.into()),
+            subject,
+            remote_base_url,
+            workspace_path_template,
+        }))
+    }
+}
+
+fn normalize_web_push_base_url(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    let is_allowed = trimmed.starts_with("https://")
+        || trimmed.starts_with("http://localhost:")
+        || trimmed == "http://localhost"
+        || trimmed.starts_with("http://127.0.0.1:")
+        || trimmed == "http://127.0.0.1";
+
+    is_allowed.then(|| trimmed.to_string())
+}
+
+fn first_web_push_base_url<const N: usize>(keys: [&str; N]) -> Option<String> {
+    for key in keys {
+        let Ok(value) = env::var(key) else {
+            continue;
+        };
+        if let Some(base_url) = normalize_web_push_base_url(&value) {
+            return Some(base_url);
+        }
+    }
+
+    None
+}
+
 impl GitHubAppConfig {
     pub fn from_env() -> Result<Option<Self>, ConfigError> {
         let app_id = match env::var("GITHUB_APP_ID") {
@@ -256,6 +333,7 @@ impl RemoteServerConfig {
             .unwrap_or(false);
 
         let github_app = GitHubAppConfig::from_env()?;
+        let web_push = WebPushConfig::from_env()?;
 
         Ok(Self {
             database_url,
@@ -272,6 +350,7 @@ impl RemoteServerConfig {
             review_worker_base_url,
             review_disabled,
             github_app,
+            web_push,
         })
     }
 }

@@ -19,6 +19,7 @@ import { ActionsProvider } from "@/shared/providers/ActionsProvider";
 import { HostIdProvider } from "@/shared/providers/HostIdProvider";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useKanbanIssueComposerScratch } from "@/shared/hooks/useKanbanIssueComposerScratch";
+import { useServiceWorkerNavigation } from "@/shared/hooks/useServiceWorkerNavigation";
 import { useUiPreferencesScratch } from "@/shared/hooks/useUiPreferencesScratch";
 import { useWorkspaceContext } from "@/shared/hooks/useWorkspaceContext";
 import { AppNavigationProvider } from "@/shared/hooks/useAppNavigation";
@@ -111,6 +112,7 @@ function RootLayout() {
   useSystemTheme();
   useUiPreferencesScratch();
   useKanbanIssueComposerScratch();
+  useServiceWorkerNavigation();
   const { isSignedIn } = useAuth();
   const location = useLocation();
   const { hostId } = useParams({ strict: false });

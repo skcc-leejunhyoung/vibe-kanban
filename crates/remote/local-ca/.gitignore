@@ -1,0 +1,4 @@
+# Additional trusted CA certificate(s) for Docker builds that need to trust an
+# extra root CA for HTTPS. Machine-specific — kept local, never committed.
+*.crt
+*.pem

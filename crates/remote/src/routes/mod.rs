@@ -50,6 +50,7 @@ mod pull_requests;
 mod review;
 pub mod tags;
 mod tokens;
+mod web_push;
 mod workspaces;
 
 pub fn router(state: AppState) -> Router {
@@ -131,6 +132,7 @@ pub fn router(state: AppState) -> Router {
         .merge(pull_request_issues::router())
         .merge(pull_requests::router())
         .merge(notifications::router())
+        .merge(web_push::router())
         .merge(workspaces::router())
         .merge(billing::protected_router())
         .merge(export::router())

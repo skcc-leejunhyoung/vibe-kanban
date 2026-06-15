@@ -287,6 +287,36 @@ impl RemoteClient {
         self.require_token().await
     }
 
+    /// Forwards a local notification (e.g. coding-agent task completion) to the
+    /// authenticated user's remote web push subscriptions (phone, etc.).
+    pub async fn send_self_web_push(
+        &self,
+        title: &str,
+        body: &str,
+        workspace_id: Option<Uuid>,
+    ) -> Result<(), RemoteClientError> {
+        #[derive(Serialize)]
+        struct Request<'a> {
+            title: &'a str,
+            body: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            workspace_id: Option<Uuid>,
+        }
+
+        self.send(
+            reqwest::Method::POST,
+            "/v1/web-push/self",
+            true,
+            Some(&Request {
+                title,
+                body,
+                workspace_id,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Initiates an authorization-code handoff for the given provider.
     pub async fn handoff_init(
         &self,

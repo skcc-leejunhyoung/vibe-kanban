@@ -61,6 +61,17 @@ RUN apt-get update \
   && chmod 600 /root/.ssh/known_hosts \
   && rm -rf /var/lib/apt/lists/*
 
+# Optional extra trusted CA: if a cert is dropped into crates/remote/local-ca/
+# (git-ignored), trust it so rustup (static.rust-lang.org), cargo
+# (index.crates.io) and git HTTPS work inside the build. No-op when the folder
+# has no cert.
+COPY crates/remote/local-ca/ /tmp/vk-local-ca/
+RUN if ls /tmp/vk-local-ca/*.crt >/dev/null 2>&1; then \
+      cp /tmp/vk-local-ca/*.crt /usr/local/share/ca-certificates/ && update-ca-certificates; \
+    fi
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    CARGO_HTTP_CAINFO=/etc/ssl/certs/ca-certificates.crt
+
 WORKDIR /app
 
 COPY rust-toolchain.toml ./
@@ -116,6 +127,14 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --create-home --uid 10001 appuser
 
+# Optional extra trusted CA (see crates/remote/local-ca/): trust it at runtime
+# so the server's OUTBOUND web push HTTPS (web.push.apple.com / fcm.googleapis.com)
+# is accepted. No-op when the folder has no cert.
+COPY crates/remote/local-ca/ /tmp/vk-local-ca/
+RUN if ls /tmp/vk-local-ca/*.crt >/dev/null 2>&1; then \
+      cp /tmp/vk-local-ca/*.crt /usr/local/share/ca-certificates/ && update-ca-certificates; \
+    fi
+
 WORKDIR /srv
 
 COPY --from=builder /app/bin/${APP_NAME} /usr/local/bin/${APP_NAME}
@@ -124,7 +143,8 @@ COPY --from=fe-builder /repo/packages/remote-web/dist /srv/static
 USER appuser
 
 ENV SERVER_LISTEN_ADDR=0.0.0.0:8081 \
-    RUST_LOG=info
+    RUST_LOG=info \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 8081
 

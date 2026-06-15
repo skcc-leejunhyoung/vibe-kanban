@@ -64,7 +64,7 @@ pub async fn send_issue_notifications(
     let payload = build_payload(issue, actor_user_id, notification_type, extra_payload);
 
     for &recipient_id in recipients {
-        if let Err(e) = NotificationRepository::create(
+        match NotificationRepository::create(
             pool,
             organization_id,
             recipient_id,
@@ -75,7 +75,15 @@ pub async fn send_issue_notifications(
         )
         .await
         {
-            tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to create notification");
+            Ok(notification) => {
+                tokio::spawn(crate::web_push_notifications::send_notification(
+                    pool.clone(),
+                    notification,
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to create notification");
+            }
         }
     }
 }
@@ -99,7 +107,7 @@ pub async fn send_debounced_issue_notifications(
     let payload = build_payload(issue, actor_user_id, notification_type, extra_payload);
 
     for &recipient_id in recipients {
-        if let Err(e) = NotificationRepository::upsert_recent(
+        match NotificationRepository::upsert_recent(
             pool,
             organization_id,
             recipient_id,
@@ -110,7 +118,15 @@ pub async fn send_debounced_issue_notifications(
         )
         .await
         {
-            tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to upsert notification");
+            Ok(notification) => {
+                tokio::spawn(crate::web_push_notifications::send_notification(
+                    pool.clone(),
+                    notification,
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to upsert notification");
+            }
         }
     }
 }

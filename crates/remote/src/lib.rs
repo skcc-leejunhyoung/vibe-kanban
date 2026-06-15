@@ -21,6 +21,7 @@ pub mod shape_routes;
 pub mod shapes;
 mod shared_key_auth;
 mod state;
+mod web_push_notifications;
 
 use std::env;
 

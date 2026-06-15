@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ExportRouteImport } from './routes/export'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as WorkspaceWorkspaceIdRouteImport } from './routes/workspace.$workspaceId'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as LoginCompleteRouteImport } from './routes/login_.complete'
 import { Route as AccountCompleteRouteImport } from './routes/account_.complete'
@@ -52,6 +53,11 @@ const AccountRoute = AccountRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkspaceWorkspaceIdRoute = WorkspaceWorkspaceIdRouteImport.update({
+  id: '/workspace/$workspaceId',
+  path: '/workspace/$workspaceId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
@@ -147,6 +153,7 @@ export interface FileRoutesByFullPath {
   '/account/complete': typeof AccountCompleteRoute
   '/login/complete': typeof LoginCompleteRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
+  '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRoute
   '/account/organizations/$orgId': typeof AccountOrganizationsOrgIdRoute
   '/hosts/$hostId/workspaces': typeof HostsHostIdWorkspacesRouteWithChildren
   '/invitations/$token/accept': typeof InvitationsTokenAcceptRoute
@@ -168,6 +175,7 @@ export interface FileRoutesByTo {
   '/account/complete': typeof AccountCompleteRoute
   '/login/complete': typeof LoginCompleteRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
+  '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRoute
   '/account/organizations/$orgId': typeof AccountOrganizationsOrgIdRoute
   '/hosts/$hostId/workspaces': typeof HostsHostIdWorkspacesRouteWithChildren
   '/invitations/$token/accept': typeof InvitationsTokenAcceptRoute
@@ -190,6 +198,7 @@ export interface FileRoutesById {
   '/account_/complete': typeof AccountCompleteRoute
   '/login_/complete': typeof LoginCompleteRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
+  '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRoute
   '/account_/organizations/$orgId': typeof AccountOrganizationsOrgIdRoute
   '/hosts/$hostId/workspaces': typeof HostsHostIdWorkspacesRouteWithChildren
   '/invitations/$token/accept': typeof InvitationsTokenAcceptRoute
@@ -213,6 +222,7 @@ export interface FileRouteTypes {
     | '/account/complete'
     | '/login/complete'
     | '/projects/$projectId'
+    | '/workspace/$workspaceId'
     | '/account/organizations/$orgId'
     | '/hosts/$hostId/workspaces'
     | '/invitations/$token/accept'
@@ -234,6 +244,7 @@ export interface FileRouteTypes {
     | '/account/complete'
     | '/login/complete'
     | '/projects/$projectId'
+    | '/workspace/$workspaceId'
     | '/account/organizations/$orgId'
     | '/hosts/$hostId/workspaces'
     | '/invitations/$token/accept'
@@ -255,6 +266,7 @@ export interface FileRouteTypes {
     | '/account_/complete'
     | '/login_/complete'
     | '/projects/$projectId'
+    | '/workspace/$workspaceId'
     | '/account_/organizations/$orgId'
     | '/hosts/$hostId/workspaces'
     | '/invitations/$token/accept'
@@ -277,6 +289,7 @@ export interface RootRouteChildren {
   AccountCompleteRoute: typeof AccountCompleteRoute
   LoginCompleteRoute: typeof LoginCompleteRoute
   ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
+  WorkspaceWorkspaceIdRoute: typeof WorkspaceWorkspaceIdRoute
   AccountOrganizationsOrgIdRoute: typeof AccountOrganizationsOrgIdRoute
   HostsHostIdWorkspacesRoute: typeof HostsHostIdWorkspacesRouteWithChildren
   InvitationsTokenAcceptRoute: typeof InvitationsTokenAcceptRoute
@@ -324,6 +337,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspace/$workspaceId': {
+      id: '/workspace/$workspaceId'
+      path: '/workspace/$workspaceId'
+      fullPath: '/workspace/$workspaceId'
+      preLoaderRoute: typeof WorkspaceWorkspaceIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/projects/$projectId': {
@@ -450,6 +470,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountCompleteRoute: AccountCompleteRoute,
   LoginCompleteRoute: LoginCompleteRoute,
   ProjectsProjectIdRoute: ProjectsProjectIdRoute,
+  WorkspaceWorkspaceIdRoute: WorkspaceWorkspaceIdRoute,
   AccountOrganizationsOrgIdRoute: AccountOrganizationsOrgIdRoute,
   HostsHostIdWorkspacesRoute: HostsHostIdWorkspacesRouteWithChildren,
   InvitationsTokenAcceptRoute: InvitationsTokenAcceptRoute,

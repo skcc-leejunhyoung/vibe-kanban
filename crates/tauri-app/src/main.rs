@@ -7,10 +7,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use services::services::{
-    config::load_config_from_file,
-    notification::{NotificationService, PushNotifier, set_global_push_notifier},
-};
+use services::services::notification::{PushNotifier, set_global_push_notifier};
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 use tauri::{Emitter, Listener};
@@ -21,10 +18,7 @@ use tauri_plugin_updater::UpdaterExt;
 use tokio::{sync::Mutex as AsyncMutex, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, prelude::*};
-use utils::{
-    assets::config_path,
-    sentry::{self as sentry_utils, SentrySource, sentry_layer},
-};
+use utils::sentry::{self as sentry_utils, SentrySource, sentry_layer};
 use uuid::Uuid;
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -67,6 +61,7 @@ fn show_native_notification(title: &str, body: &str, deeplink_path: Option<&str>
 
 #[tauri::command]
 async fn show_system_notification(
+    app_handle: tauri::AppHandle,
     title: String,
     body: String,
     deeplink_path: Option<String>,
@@ -76,10 +71,13 @@ async fn show_system_notification(
         return Ok(());
     }
 
-    // Fallback: generic NotificationService (e.g. macOS dev mode).
-    let config = load_config_from_file(&config_path()).await;
-    let notification_service = NotificationService::new(Arc::new(tokio::sync::RwLock::new(config)));
-    notification_service.notify(&title, &body, None).await;
+    app_handle
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

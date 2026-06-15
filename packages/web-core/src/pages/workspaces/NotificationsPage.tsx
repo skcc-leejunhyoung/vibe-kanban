@@ -1,7 +1,13 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
-import { BellIcon, CheckIcon, ChecksIcon } from '@phosphor-icons/react';
+import {
+  BellIcon,
+  BellRingingIcon,
+  CheckIcon,
+  ChecksIcon,
+} from '@phosphor-icons/react';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
@@ -11,6 +17,12 @@ import {
 } from '@/shared/lib/notificationMessage';
 import { formatRelativeTime } from '@/shared/lib/date';
 import { cn } from '@/shared/lib/utils';
+import {
+  disableWebPush,
+  enableWebPush,
+  getWebPushStatus,
+  type WebPushStatus,
+} from '@/shared/lib/webPush';
 
 function NotificationMessage({
   segments,
@@ -53,6 +65,77 @@ function NotificationMessage({
         return <span key={i}>Someone</span>;
       })}
     </>
+  );
+}
+
+function WebPushToggle() {
+  const runtime = useAppRuntime();
+  const [status, setStatus] = useState<WebPushStatus>('unsupported');
+  const [pending, setPending] = useState(false);
+
+  const refresh = useCallback(() => {
+    void getWebPushStatus(runtime)
+      .then(setStatus)
+      .catch(() => {
+        setStatus('disabled');
+      });
+  }, [runtime]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handleClick = useCallback(async () => {
+    if (pending || status === 'unsupported' || status === 'disabled') return;
+
+    setPending(true);
+    try {
+      if (status === 'subscribed') {
+        await disableWebPush(runtime);
+      } else {
+        await enableWebPush(runtime);
+      }
+      refresh();
+    } catch {
+      refresh();
+    } finally {
+      setPending(false);
+    }
+  }, [pending, refresh, runtime, status]);
+
+  const label =
+    status === 'subscribed'
+      ? 'Push on'
+      : status === 'denied'
+        ? 'Push blocked'
+        : status === 'unsupported'
+          ? 'Push unavailable'
+          : status === 'disabled'
+            ? 'Push disabled'
+            : 'Enable push';
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={
+        pending ||
+        status === 'unsupported' ||
+        status === 'disabled' ||
+        status === 'denied'
+      }
+      className={cn(
+        'flex items-center gap-1 px-base py-half text-sm transition-colors',
+        'disabled:cursor-not-allowed disabled:opacity-50',
+        status === 'subscribed'
+          ? 'text-brand hover:text-brand'
+          : 'text-low hover:text-normal'
+      )}
+      title={label}
+    >
+      <BellRingingIcon size={16} />
+      <span className="hidden sm:inline">{pending ? 'Saving...' : label}</span>
+    </button>
   );
 }
 
@@ -107,16 +190,19 @@ export function NotificationsPage() {
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex items-center justify-between px-double py-base border-b border-border">
         <h1 className="text-xl font-medium text-high">Notifications</h1>
-        {unseenCount > 0 && (
-          <button
-            type="button"
-            onClick={handleMarkAllSeen}
-            className="flex items-center gap-1 px-base py-half text-sm text-low hover:text-normal transition-colors cursor-pointer"
-          >
-            <ChecksIcon size={16} />
-            Mark all as read
-          </button>
-        )}
+        <div className="flex items-center gap-half">
+          <WebPushToggle />
+          {unseenCount > 0 && (
+            <button
+              type="button"
+              onClick={handleMarkAllSeen}
+              className="flex items-center gap-1 px-base py-half text-sm text-low hover:text-normal transition-colors cursor-pointer"
+            >
+              <ChecksIcon size={16} />
+              Mark all as read
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">

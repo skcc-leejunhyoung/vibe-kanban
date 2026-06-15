@@ -1,0 +1,72 @@
+// Apply service worker updates immediately so notification deep-link changes
+// take effect without needing the app to be fully relaunched twice.
+self.addEventListener('install', () => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('push', (event) => {
+  let payload = {};
+  if (event.data) {
+    try {
+      payload = event.data.json();
+    } catch (_error) {
+      payload = { body: event.data.text() };
+    }
+  }
+
+  const title = payload.title || 'Vibe Kanban';
+  const options = {
+    body: payload.body || '',
+    icon: '/favicon.png',
+    badge: '/favicon.png',
+    tag: payload.notification_id || payload.deeplink_path || 'vibe-kanban',
+    data: {
+      deeplinkPath: payload.deeplink_path || '/notifications',
+    },
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  const deeplinkPath = event.notification.data?.deeplinkPath || '/notifications';
+  // Take only the PATH and resolve it onto THIS service worker's origin, so a
+  // cross-origin deeplink (e.g. the server builds http://localhost:47823/... but
+  // the installed app runs on http://vibe-kanban.localhost) still navigates
+  // inside the app instead of failing client.navigate() / opening another origin.
+  const src = new URL(deeplinkPath, self.location.origin);
+  const targetPath = src.pathname + src.search + src.hash;
+  const targetUrl = new URL(targetPath, self.location.origin).href;
+
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then(async (clients) => {
+        for (const client of clients) {
+          if (new URL(client.url).origin !== self.location.origin) continue;
+
+          await client.focus();
+          // Client-side route (works on iOS standalone PWAs where navigate is a
+          // no-op) and a same-origin client.navigate() fallback (reliable on
+          // desktop, no message-listener race).
+          client.postMessage({ type: 'vk-navigate', path: targetPath });
+          if ('navigate' in client) {
+            try {
+              await client.navigate(targetUrl);
+            } catch (_error) {
+              // ignore — the postMessage handler navigates instead
+            }
+          }
+          return;
+        }
+
+        return self.clients.openWindow(targetUrl);
+      })
+  );
+});

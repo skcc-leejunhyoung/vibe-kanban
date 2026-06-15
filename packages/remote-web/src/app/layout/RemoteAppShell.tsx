@@ -9,7 +9,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { siDiscord, siGithub } from "simple-icons";
 import { AppBar, type AppBarHostStatus } from "@vibe/ui/components/AppBar";
-import { XIcon, PlusIcon, HouseIcon, KanbanIcon } from "@phosphor-icons/react";
+import {
+  XIcon,
+  PlusIcon,
+  HouseIcon,
+  KanbanIcon,
+  BellIcon,
+} from "@phosphor-icons/react";
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
@@ -311,6 +317,21 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               <HouseIcon className="h-4 w-4" />
               Home
             </button>
+
+            {/* Notifications link */}
+            {isSignedIn && (
+              <button
+                type="button"
+                onClick={() => {
+                  navigate({ to: "/notifications" });
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <BellIcon className="h-4 w-4" />
+                Notifications
+              </button>
+            )}
 
             {/* Divider */}
             <div className="mx-3 border-t border-border" />
