@@ -161,6 +161,20 @@ pub async fn delete_session(
         );
     }
 
+    // Best-effort cleanup of the on-disk process-log directory. FK CASCADE only
+    // removes execution_process_logs rows, not the per-session log directory on
+    // disk, so without this every session delete would leak it (workspace
+    // deletion already does this for each of its sessions).
+    if let Err(e) =
+        services::services::execution_process::remove_session_process_logs(session_id).await
+    {
+        tracing::warn!(
+            "Failed to remove filesystem process logs for session {}: {}",
+            session_id,
+            e
+        );
+    }
+
     deployment
         .track_if_analytics_allowed(
             "session_deleted",

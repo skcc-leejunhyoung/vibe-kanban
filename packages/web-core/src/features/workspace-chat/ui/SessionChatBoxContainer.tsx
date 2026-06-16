@@ -66,6 +66,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { sessionsApi } from '@/shared/lib/api';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
+import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import type { TurnNavigationItem } from '@vibe/ui/components/TurnNavigationPopup';
 
 /** Compute execution status from boolean flags */
@@ -201,10 +202,22 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           variant: 'destructive',
         });
         if (result !== 'confirmed') return;
-        await sessionsApi.delete(targetSessionId);
-        void queryClient.invalidateQueries({
-          queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
-        });
+        try {
+          await sessionsApi.delete(targetSessionId);
+          void queryClient.invalidateQueries({
+            queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+          });
+        } catch (error) {
+          // Surface backend failures (e.g. 409 while processes are running)
+          // instead of swallowing them silently.
+          void ErrorDialog.show({
+            title: t('conversation.sessions.deleteFailedTitle'),
+            message:
+              error instanceof Error
+                ? error.message
+                : t('conversation.sessions.deleteFailedDescription'),
+          });
+        }
       })();
     },
     [queryClient, hostId, workspaceId, t]

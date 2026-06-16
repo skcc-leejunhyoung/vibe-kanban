@@ -441,7 +441,9 @@
       "renaming": "名前を変更中...",
       "delete": "削除",
       "deleteTitle": "セッションを削除",
-      "deleteDescription": "このセッションを削除しますか？会話履歴は完全に削除され、元に戻せません。"
+      "deleteDescription": "このセッションを削除しますか？会話履歴は完全に削除され、元に戻せません。",
+      "deleteFailedTitle": "セッションの削除に失敗しました",
+      "deleteFailedDescription": "セッションを削除できませんでした。もう一度お試しください。"
     },
     "reviewComments": {
       "count_one": "{{count}}件のレビューコメントが含まれます",

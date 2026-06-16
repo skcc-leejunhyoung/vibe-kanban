@@ -166,7 +166,9 @@
       "renaming": "Renommage...",
       "delete": "Supprimer",
       "deleteTitle": "Supprimer la session",
-      "deleteDescription": "Voulez-vous vraiment supprimer cette session ? Son historique de conversation sera définitivement supprimé. Cette action est irréversible."
+      "deleteDescription": "Voulez-vous vraiment supprimer cette session ? Son historique de conversation sera définitivement supprimé. Cette action est irréversible.",
+      "deleteFailedTitle": "Échec de la suppression de la session",
+      "deleteFailedDescription": "Impossible de supprimer la session. Veuillez réessayer."
     },
     "reviewComments": {
       "count_one": "{{count}} commentaire de révision sera inclus",

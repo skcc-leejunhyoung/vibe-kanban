@@ -441,7 +441,9 @@
       "renaming": "Renombrando...",
       "delete": "Eliminar",
       "deleteTitle": "Eliminar sesión",
-      "deleteDescription": "¿Está seguro de que desea eliminar esta sesión? Su historial de conversación se eliminará de forma permanente. Esta acción no se puede deshacer."
+      "deleteDescription": "¿Está seguro de que desea eliminar esta sesión? Su historial de conversación se eliminará de forma permanente. Esta acción no se puede deshacer.",
+      "deleteFailedTitle": "No se pudo eliminar la sesión",
+      "deleteFailedDescription": "No se pudo eliminar la sesión. Inténtelo de nuevo."
     },
     "reviewComments": {
       "count_one": "{{count}} comentario de revisión será incluido",

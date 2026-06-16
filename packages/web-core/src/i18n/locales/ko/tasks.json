@@ -447,7 +447,9 @@
       "renaming": "이름 변경 중...",
       "delete": "삭제",
       "deleteTitle": "세션 삭제",
-      "deleteDescription": "이 세션을 삭제하시겠습니까? 대화 기록이 영구적으로 삭제되며 되돌릴 수 없습니다."
+      "deleteDescription": "이 세션을 삭제하시겠습니까? 대화 기록이 영구적으로 삭제되며 되돌릴 수 없습니다.",
+      "deleteFailedTitle": "세션 삭제 실패",
+      "deleteFailedDescription": "세션을 삭제하지 못했습니다. 다시 시도해 주세요."
     },
     "reviewComments": {
       "count_one": "{{count}}개의 리뷰 댓글이 포함됩니다",

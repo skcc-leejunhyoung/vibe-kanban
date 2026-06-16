@@ -423,7 +423,9 @@
       "renaming": "正在重命名...",
       "delete": "删除",
       "deleteTitle": "删除会话",
-      "deleteDescription": "确定要删除此会话吗？其对话历史将被永久删除，此操作无法撤销。"
+      "deleteDescription": "确定要删除此会话吗？其对话历史将被永久删除，此操作无法撤销。",
+      "deleteFailedTitle": "删除会话失败",
+      "deleteFailedDescription": "无法删除会话，请重试。"
     },
     "reviewComments": {
       "count_one": "{{count}} 条审查评论将被包含",
