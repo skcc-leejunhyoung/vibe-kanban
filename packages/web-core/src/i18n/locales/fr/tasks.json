@@ -163,7 +163,10 @@
       "renameTitle": "Renommer la session",
       "renameDescription": "Entrez un nouveau nom pour cette session.",
       "renamePlaceholder": "Entrez le nom de la session",
-      "renaming": "Renommage..."
+      "renaming": "Renommage...",
+      "delete": "Supprimer",
+      "deleteTitle": "Supprimer la session",
+      "deleteDescription": "Voulez-vous vraiment supprimer cette session ? Son historique de conversation sera définitivement supprimé. Cette action est irréversible."
     },
     "reviewComments": {
       "count_one": "{{count}} commentaire de révision sera inclus",

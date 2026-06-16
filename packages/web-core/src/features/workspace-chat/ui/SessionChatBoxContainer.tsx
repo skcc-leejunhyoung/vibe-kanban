@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import {
@@ -64,6 +65,7 @@ import type { NormalizedComment } from '@vibe/ui/components/pr-comment-node';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { sessionsApi } from '@/shared/lib/api';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
+import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import type { TurnNavigationItem } from '@vibe/ui/components/TurnNavigationPopup';
 
 /** Compute execution status from boolean flags */
@@ -172,6 +174,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const sessionId = session?.id;
   const queryClient = useQueryClient();
   const hostId = useHostId();
+  const { t } = useTranslation('tasks');
 
   const handleRenameSession = useCallback(
     (targetSessionId: string, currentName: string) => {
@@ -186,6 +189,25 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     },
     [queryClient, hostId, workspaceId]
+  );
+
+  const handleDeleteSession = useCallback(
+    (targetSessionId: string) => {
+      void (async () => {
+        const result = await ConfirmDialog.show({
+          title: t('conversation.sessions.deleteTitle'),
+          message: t('conversation.sessions.deleteDescription'),
+          confirmText: t('conversation.sessions.delete'),
+          variant: 'destructive',
+        });
+        if (result !== 'confirmed') return;
+        await sessionsApi.delete(targetSessionId);
+        void queryClient.invalidateQueries({
+          queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+        });
+      })();
+    },
+    [queryClient, hostId, workspaceId, t]
   );
   const appNavigation = useAppNavigation();
 
@@ -1043,6 +1065,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         isNewSessionMode: needsExecutorSelection,
         onNewSession: onStartNewSession,
         onRenameSession: handleRenameSession,
+        onDeleteSession: handleDeleteSession,
       }}
       toolbarActions={{
         items: toolbarActionItems,

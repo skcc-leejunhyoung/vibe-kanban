@@ -438,7 +438,10 @@
       "renameTitle": "セッション名の変更",
       "renameDescription": "このセッションの新しい名前を入力してください。",
       "renamePlaceholder": "セッション名を入力",
-      "renaming": "名前を変更中..."
+      "renaming": "名前を変更中...",
+      "delete": "削除",
+      "deleteTitle": "セッションを削除",
+      "deleteDescription": "このセッションを削除しますか？会話履歴は完全に削除され、元に戻せません。"
     },
     "reviewComments": {
       "count_one": "{{count}}件のレビューコメントが含まれます",

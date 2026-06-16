@@ -4,13 +4,14 @@ pub mod review;
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
+    http::StatusCode,
     middleware::from_fn_with_state,
     response::Json as ResponseJson,
     routing::{get, post},
 };
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
-    execution_process::{ExecutionProcess, ExecutionProcessRunReason},
+    execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     pending_execution_start::PendingExecutionStart,
     requests::UpdateSession,
     scratch::{Scratch, ScratchType},
@@ -104,6 +105,73 @@ pub async fn update_session(
         .ok_or(ApiError::Session(SessionError::NotFound))?;
 
     Ok(ResponseJson(ApiResponse::success(updated)))
+}
+
+pub async fn delete_session(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<(StatusCode, ResponseJson<ApiResponse<()>>), ApiError> {
+    let pool = &deployment.db().pool;
+    let session_id = session.id;
+
+    // Refuse deletion while non-dev-server processes are still running.
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session_id).await? {
+        return Err(ApiError::Conflict(
+            "Cannot delete session while processes are running. Stop all processes first."
+                .to_string(),
+        ));
+    }
+
+    // Stop any running dev servers tied to this session before deleting it.
+    let dev_servers =
+        ExecutionProcess::find_running_dev_servers_by_session(pool, session_id).await?;
+    for dev_server in dev_servers {
+        tracing::info!(
+            "Stopping dev server {} before deleting session {}",
+            dev_server.id,
+            session_id
+        );
+
+        if let Err(e) = deployment
+            .container()
+            .stop_execution(&dev_server, ExecutionProcessStatus::Killed)
+            .await
+        {
+            tracing::error!(
+                "Failed to stop dev server {} for session {}: {}",
+                dev_server.id,
+                session_id,
+                e
+            );
+        }
+    }
+
+    // FK CASCADE removes execution_processes (and their children) for this session.
+    let rows_affected = Session::delete(pool, session_id).await?;
+    if rows_affected == 0 {
+        return Err(ApiError::Session(SessionError::NotFound));
+    }
+
+    // Best-effort cleanup of the draft follow-up scratch (no FK to cascade).
+    if let Err(e) = Scratch::delete(pool, session_id, &ScratchType::DraftFollowUp).await {
+        tracing::debug!(
+            "Failed to delete draft follow-up scratch for session {}: {}",
+            session_id,
+            e
+        );
+    }
+
+    deployment
+        .track_if_analytics_allowed(
+            "session_deleted",
+            serde_json::json!({
+                "session_id": session_id.to_string(),
+                "workspace_id": session.workspace_id.to_string(),
+            }),
+        )
+        .await;
+
+    Ok((StatusCode::OK, ResponseJson(ApiResponse::success(()))))
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -375,7 +443,10 @@ pub async fn run_setup_script(
 
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let session_id_router = Router::new()
-        .route("/", get(get_session).put(update_session))
+        .route(
+            "/",
+            get(get_session).put(update_session).delete(delete_session),
+        )
         .route("/follow-up", post(follow_up))
         .route("/reset", post(reset_process))
         .route("/setup", post(run_setup_script))
