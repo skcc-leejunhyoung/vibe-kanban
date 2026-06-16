@@ -71,7 +71,10 @@
       "toggleDevTools": "Toggle DevTools",
       "addShortcut": "Add page shortcut",
       "removeShortcut": "Remove page shortcut",
-      "shortcuts": "Shortcuts"
+      "shortcuts": "Shortcuts",
+      "screenSize": "Screen size",
+      "more": "More",
+      "inspectElement": "Select element"
     },
     "loading": {
       "startingServer": "Starting dev server...",

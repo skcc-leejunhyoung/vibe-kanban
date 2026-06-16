@@ -232,7 +232,10 @@
       "toggleDevTools": "DevTools 전환",
       "addShortcut": "웹페이지 바로가기 등록",
       "removeShortcut": "웹페이지 바로가기 제거",
-      "shortcuts": "바로가기"
+      "shortcuts": "바로가기",
+      "screenSize": "화면 크기",
+      "more": "더 보기",
+      "inspectElement": "요소 선택"
     },
     "loading": {
       "startingServer": "개발 서버 시작 중...",

@@ -17,15 +17,25 @@ import {
   GlobeIcon,
   PlusIcon,
   TrashIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  StarIcon,
+  CaretDownIcon,
+  DotsThreeIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { PrimaryButton } from './PrimaryButton';
 import { IconButtonGroup, IconButtonGroupItem } from './IconButtonGroup';
+import { Tooltip } from './Tooltip';
 import {
-  PreviewNavigation,
-  type PreviewNavigationState,
-} from './PreviewNavigation';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './DropdownMenu';
 
 export const MOBILE_WIDTH = 390;
 export const MOBILE_HEIGHT = 844;
@@ -35,6 +45,11 @@ const PREVIEW_IFRAME_SANDBOX =
   'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals';
 
 export type PreviewBrowserScreenSize = 'desktop' | 'mobile' | 'responsive';
+
+export interface PreviewNavigationState {
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
 
 export interface PreviewBrowserResponsiveDimensions {
   width: number;
@@ -165,6 +180,21 @@ export function PreviewBrowser({
     (repo) => repo.dev_server_script && repo.dev_server_script.trim() !== ''
   );
   const selectedShortcutId = activeShortcutId ?? '';
+  const isBookmarked = !!activeShortcutId;
+  const canBookmark = isServerRunning && (isBookmarked || !!url);
+  const handleStarToggle = () => {
+    if (activeShortcutId) {
+      onRemoveShortcut?.(activeShortcutId);
+    } else {
+      onAddShortcut?.();
+    }
+  };
+  const ScreenSizeIcon =
+    screenSize === 'mobile'
+      ? DeviceMobileIcon
+      : screenSize === 'responsive'
+        ? ArrowsOutCardinalIcon
+        : MonitorIcon;
 
   const getIframeContainerStyle = (): CSSProperties => {
     switch (screenSize) {
@@ -364,43 +394,44 @@ export function PreviewBrowser({
               </IconButtonGroup>
             </>
           ) : (
-            /* Desktop: Full toolbar */
+            /* Desktop: Streamlined address-bar toolbar */
             <>
-              {/* Navigation (Back/Forward) */}
-              <PreviewNavigation
-                navigation={navigation}
-                onBack={onNavigateBack}
-                onForward={onNavigateForward}
-                disabled={!isServerRunning}
-              />
-
-              {/* Inspect Mode & DevTools */}
+              {/* Navigation: back / forward / refresh */}
               <IconButtonGroup>
                 <IconButtonGroupItem
-                  icon={CrosshairIcon}
-                  onClick={onToggleInspectMode}
-                  active={isInspectMode}
-                  disabled={!isServerRunning}
-                  aria-label="Select element as context"
-                  title="Select element as context"
+                  icon={ArrowLeftIcon}
+                  onClick={onNavigateBack}
+                  disabled={!navigation?.canGoBack || !isServerRunning}
+                  aria-label="Go back"
+                  title="Go back"
                 />
                 <IconButtonGroupItem
-                  icon={TerminalIcon}
-                  onClick={onToggleEruda}
-                  active={isErudaVisible}
+                  icon={ArrowRightIcon}
+                  onClick={onNavigateForward}
+                  disabled={!navigation?.canGoForward || !isServerRunning}
+                  aria-label="Go forward"
+                  title="Go forward"
+                />
+                <IconButtonGroupItem
+                  icon={ArrowClockwiseIcon}
+                  onClick={onRefresh}
                   disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.toggleDevTools')}
-                  title={t('preview.toolbar.toggleDevTools')}
+                  aria-label={t('preview.toolbar.refresh')}
+                  title={t('preview.toolbar.refresh')}
                 />
               </IconButtonGroup>
 
-              {/* URL Input */}
+              {/* URL field with inline globe, bookmark star, and shortcuts menu */}
               <div
                 className={cn(
-                  'flex items-center gap-half rounded-sm px-base py-half flex-1 min-w-0',
+                  'flex items-center gap-half rounded-sm border border-brand/20 px-base py-half flex-1 min-w-0',
                   !isServerRunning && 'opacity-50'
                 )}
               >
+                <GlobeIcon
+                  className="size-icon-sm text-low shrink-0"
+                  weight="bold"
+                />
                 <input
                   ref={urlInputRef}
                   type="text"
@@ -423,131 +454,266 @@ export function PreviewBrowser({
                     !isServerRunning && 'cursor-not-allowed'
                   )}
                 />
-              </div>
-
-              {/* URL Actions */}
-              <IconButtonGroup>
-                <IconButtonGroupItem
-                  icon={PlusIcon}
-                  onClick={onAddShortcut}
-                  disabled={!isServerRunning || !urlInputValue.trim()}
-                  aria-label={t('preview.toolbar.addShortcut')}
-                  title={t('preview.toolbar.addShortcut')}
-                />
-                <IconButtonGroupItem
-                  icon={CheckIcon}
-                  onClick={onUrlSubmit}
-                  disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.submitUrl')}
-                  title={t('preview.toolbar.submitUrl')}
-                />
-                {isUsingOverride && (
-                  <IconButtonGroupItem
-                    icon={XIcon}
-                    onClick={onClearOverride}
-                    disabled={!isServerRunning}
-                    aria-label={t('preview.toolbar.clearUrlOverride')}
-                    title={t('preview.toolbar.resetUrl')}
-                  />
-                )}
-                <IconButtonGroupItem
-                  icon={CopyIcon}
-                  onClick={onCopyUrl}
-                  disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.copyUrl')}
-                  title={t('preview.toolbar.copyUrl')}
-                />
-                <IconButtonGroupItem
-                  icon={ArrowSquareOutIcon}
-                  onClick={onOpenInNewTab}
-                  disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.openInTab')}
-                  title={t('preview.toolbar.openInTab')}
-                />
-                <IconButtonGroupItem
-                  icon={ArrowClockwiseIcon}
-                  onClick={onRefresh}
-                  disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.refresh')}
-                  title={t('preview.toolbar.refresh')}
-                />
-              </IconButtonGroup>
-
-              <div className="flex items-center gap-half min-w-[9rem] max-w-56">
-                <select
-                  value={selectedShortcutId}
-                  onChange={(e) => {
-                    const shortcut = shortcuts.find(
-                      (item) => item.id === e.target.value
-                    );
-                    if (shortcut) onOpenShortcut?.(shortcut.url);
-                  }}
-                  disabled={!isServerRunning || shortcuts.length === 0}
-                  aria-label={t('preview.toolbar.shortcuts')}
-                  title={t('preview.toolbar.shortcuts')}
-                  className={cn(
-                    'h-8 min-w-0 flex-1 rounded-sm border border-brand/20',
-                    'bg-primary/80 px-base text-sm text-normal outline-none',
-                    'disabled:cursor-not-allowed disabled:opacity-50'
-                  )}
+                {/* Bookmark star: add current page / remove if already saved */}
+                <Tooltip
+                  content={
+                    isBookmarked
+                      ? t('preview.toolbar.removeShortcut')
+                      : t('preview.toolbar.addShortcut')
+                  }
                 >
-                  <option value="">{t('preview.toolbar.shortcuts')}</option>
-                  {shortcuts.map((shortcut) => (
-                    <option key={shortcut.id} value={shortcut.id}>
-                      {shortcut.label}
-                    </option>
-                  ))}
-                </select>
-                <IconButtonGroup>
-                  <IconButtonGroupItem
-                    icon={TrashIcon}
-                    onClick={() => {
-                      if (selectedShortcutId) {
-                        onRemoveShortcut?.(selectedShortcutId);
-                      }
-                    }}
-                    disabled={!isServerRunning || !selectedShortcutId}
-                    aria-label={t('preview.toolbar.removeShortcut')}
-                    title={t('preview.toolbar.removeShortcut')}
-                  />
-                </IconButtonGroup>
+                  <button
+                    type="button"
+                    onClick={handleStarToggle}
+                    disabled={!canBookmark}
+                    aria-label={
+                      isBookmarked
+                        ? t('preview.toolbar.removeShortcut')
+                        : t('preview.toolbar.addShortcut')
+                    }
+                    className={cn(
+                      'p-half shrink-0 transition-colors',
+                      !canBookmark
+                        ? 'opacity-40 cursor-not-allowed text-low'
+                        : isBookmarked
+                          ? 'text-brand hover:text-brand-hover'
+                          : 'text-low hover:text-normal'
+                    )}
+                  >
+                    <StarIcon
+                      className="size-icon-sm"
+                      weight={isBookmarked ? 'fill' : 'regular'}
+                    />
+                  </button>
+                </Tooltip>
+                {/* Saved shortcuts dropdown */}
+                {shortcuts.length > 0 && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        disabled={!isServerRunning}
+                        aria-label={t('preview.toolbar.shortcuts')}
+                        title={t('preview.toolbar.shortcuts')}
+                        className={cn(
+                          'p-half shrink-0 transition-colors',
+                          !isServerRunning
+                            ? 'opacity-40 cursor-not-allowed text-low'
+                            : 'text-low hover:text-normal'
+                        )}
+                      >
+                        <CaretDownIcon
+                          className="size-icon-sm"
+                          weight="bold"
+                        />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="max-w-72">
+                      <DropdownMenuLabel>
+                        {t('preview.toolbar.shortcuts')}
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {shortcuts.map((shortcut) => (
+                        <DropdownMenuItem
+                          key={shortcut.id}
+                          onSelect={() => onOpenShortcut?.(shortcut.url)}
+                          className={cn(
+                            'gap-base',
+                            activeShortcutId === shortcut.id && 'text-brand'
+                          )}
+                        >
+                          <span className="flex-1 truncate">
+                            {shortcut.label}
+                          </span>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            aria-label={t('preview.toolbar.removeShortcut')}
+                            title={t('preview.toolbar.removeShortcut')}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onRemoveShortcut?.(shortcut.id);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                onRemoveShortcut?.(shortcut.id);
+                              }
+                            }}
+                            className="shrink-0 text-low hover:text-normal"
+                          >
+                            <TrashIcon
+                              className="size-icon-sm"
+                              weight="bold"
+                            />
+                          </span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </div>
 
-              {/* Screen Size Toggle */}
+              {/* Screen size dropdown (desktop / mobile / responsive) */}
               <IconButtonGroup>
-                <IconButtonGroupItem
-                  icon={MonitorIcon}
-                  onClick={() => onScreenSizeChange('desktop')}
-                  active={screenSize === 'desktop'}
-                  disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.desktopView')}
-                  title={t('preview.toolbar.desktopView')}
-                />
-                <IconButtonGroupItem
-                  icon={DeviceMobileIcon}
-                  onClick={() => onScreenSizeChange('mobile')}
-                  active={screenSize === 'mobile'}
-                  disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.mobileView')}
-                  title={t('preview.toolbar.mobileView')}
-                />
-                <IconButtonGroupItem
-                  icon={ArrowsOutCardinalIcon}
-                  onClick={() => onScreenSizeChange('responsive')}
-                  active={screenSize === 'responsive'}
-                  disabled={!isServerRunning}
-                  aria-label={t('preview.toolbar.responsiveView')}
-                  title={t('preview.toolbar.responsiveView')}
-                />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      disabled={!isServerRunning}
+                      aria-label={t('preview.toolbar.screenSize')}
+                      title={t('preview.toolbar.screenSize')}
+                      className={cn(
+                        'flex items-center gap-half p-half transition-colors',
+                        !isServerRunning
+                          ? 'opacity-40 cursor-not-allowed text-low'
+                          : 'text-low hover:text-normal hover:bg-secondary/50'
+                      )}
+                    >
+                      <ScreenSizeIcon
+                        className="size-icon-sm"
+                        weight="bold"
+                      />
+                      {screenSize === 'responsive' && (
+                        <span className="text-xs text-low font-mono whitespace-nowrap">
+                          {Math.round(localDimensions.width)}&times;
+                          {Math.round(localDimensions.height)}
+                        </span>
+                      )}
+                      <CaretDownIcon className="size-3" weight="bold" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={() => onScreenSizeChange('desktop')}
+                      className="gap-base"
+                    >
+                      <MonitorIcon className="size-icon-sm" weight="bold" />
+                      <span className="flex-1">
+                        {t('preview.toolbar.desktopView')}
+                      </span>
+                      {screenSize === 'desktop' && (
+                        <CheckIcon className="size-icon-sm" weight="bold" />
+                      )}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => onScreenSizeChange('mobile')}
+                      className="gap-base"
+                    >
+                      <DeviceMobileIcon
+                        className="size-icon-sm"
+                        weight="bold"
+                      />
+                      <span className="flex-1">
+                        {t('preview.toolbar.mobileView')}
+                      </span>
+                      {screenSize === 'mobile' && (
+                        <CheckIcon className="size-icon-sm" weight="bold" />
+                      )}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => onScreenSizeChange('responsive')}
+                      className="gap-base"
+                    >
+                      <ArrowsOutCardinalIcon
+                        className="size-icon-sm"
+                        weight="bold"
+                      />
+                      <span className="flex-1">
+                        {t('preview.toolbar.responsiveView')}
+                      </span>
+                      {screenSize === 'responsive' && (
+                        <CheckIcon className="size-icon-sm" weight="bold" />
+                      )}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </IconButtonGroup>
 
-              {/* Dimensions display for responsive mode */}
-              {screenSize === 'responsive' && (
-                <span className="text-xs text-low font-mono whitespace-nowrap">
-                  {Math.round(localDimensions.width)} &times;{' '}
-                  {Math.round(localDimensions.height)}
-                </span>
-              )}
+              {/* Overflow menu: inspect / devtools / copy / open / reset */}
+              <IconButtonGroup>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      disabled={!isServerRunning}
+                      aria-label={t('preview.toolbar.more')}
+                      title={t('preview.toolbar.more')}
+                      className={cn(
+                        'p-half transition-colors',
+                        !isServerRunning
+                          ? 'opacity-40 cursor-not-allowed text-low'
+                          : 'text-low hover:text-normal hover:bg-secondary/50'
+                      )}
+                    >
+                      <DotsThreeIcon className="size-icon-sm" weight="bold" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={onToggleInspectMode}
+                      className="gap-base"
+                    >
+                      <CrosshairIcon className="size-icon-sm" weight="bold" />
+                      <span className="flex-1">
+                        {t('preview.toolbar.inspectElement')}
+                      </span>
+                      {isInspectMode && (
+                        <CheckIcon className="size-icon-sm" weight="bold" />
+                      )}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={onToggleEruda}
+                      className="gap-base"
+                    >
+                      <TerminalIcon className="size-icon-sm" weight="bold" />
+                      <span className="flex-1">
+                        {t('preview.toolbar.toggleDevTools')}
+                      </span>
+                      {isErudaVisible && (
+                        <CheckIcon className="size-icon-sm" weight="bold" />
+                      )}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={onCopyUrl}
+                      disabled={!isServerRunning}
+                      className="gap-base"
+                    >
+                      <CopyIcon className="size-icon-sm" weight="bold" />
+                      <span className="flex-1">
+                        {t('preview.toolbar.copyUrl')}
+                      </span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={onOpenInNewTab}
+                      disabled={!isServerRunning}
+                      className="gap-base"
+                    >
+                      <ArrowSquareOutIcon
+                        className="size-icon-sm"
+                        weight="bold"
+                      />
+                      <span className="flex-1">
+                        {t('preview.toolbar.openInTab')}
+                      </span>
+                    </DropdownMenuItem>
+                    {isUsingOverride && (
+                      <DropdownMenuItem
+                        onSelect={onClearOverride}
+                        className="gap-base"
+                      >
+                        <XIcon className="size-icon-sm" weight="bold" />
+                        <span className="flex-1">
+                          {t('preview.toolbar.resetUrl')}
+                        </span>
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </IconButtonGroup>
 
               {/* Start/Stop Button */}
               <IconButtonGroup>
