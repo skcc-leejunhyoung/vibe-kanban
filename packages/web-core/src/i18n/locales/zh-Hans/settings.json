@@ -53,6 +53,11 @@
           "placeholder": "选择主题",
           "helper": "选择您喜欢的配色方案。"
         },
+        "primaryColor": {
+          "label": "主色",
+          "helper": "选择用于按钮、焦点环和高亮的强调色。",
+          "error": "请输入有效的十六进制颜色，例如 #d9772d。"
+        },
         "language": {
           "label": "语言",
           "placeholder": "选择语言",

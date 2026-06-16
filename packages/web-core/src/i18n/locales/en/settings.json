@@ -61,6 +61,11 @@
           "placeholder": "Select theme",
           "helper": "Choose your preferred color scheme."
         },
+        "primaryColor": {
+          "label": "Primary color",
+          "helper": "Choose the accent color used for buttons, focus rings, and highlights.",
+          "error": "Enter a valid hex color, such as #d9772d."
+        },
         "language": {
           "label": "Language",
           "placeholder": "Select language",

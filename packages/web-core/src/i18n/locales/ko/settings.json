@@ -53,6 +53,11 @@
           "placeholder": "테마 선택",
           "helper": "선호하는 색상 구성표를 선택하세요."
         },
+        "primaryColor": {
+          "label": "Primary 색상",
+          "helper": "버튼, 포커스 링, 강조 표시에 사용할 accent 색상을 선택하세요.",
+          "error": "#d9772d 같은 올바른 hex 색상을 입력하세요."
+        },
         "language": {
           "label": "언어",
           "placeholder": "언어 선택",

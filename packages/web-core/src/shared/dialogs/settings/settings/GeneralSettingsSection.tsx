@@ -22,6 +22,12 @@ import { getModifierKey } from '@/shared/lib/platform';
 import { getLanguageOptions } from '@/i18n/languages';
 import { toPrettyCase } from '@/shared/lib/string';
 import {
+  DEFAULT_PRIMARY_COLOR,
+  applyPrimaryColor,
+  isValidPrimaryColor,
+  normalizePrimaryColor,
+} from '@/shared/lib/themeColors';
+import {
   getExecutorVariantKeys,
   getSortedExecutorVariantKeys,
 } from '@/shared/lib/executor';
@@ -74,6 +80,9 @@ export function GeneralSettingsSection() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [branchPrefixError, setBranchPrefixError] = useState<string | null>(
+    null
+  );
+  const [primaryColorError, setPrimaryColorError] = useState<string | null>(
     null
   );
   const { setTheme } = useTheme();
@@ -178,14 +187,23 @@ export function GeneralSettingsSection() {
 
   const handleSave = async () => {
     if (!draft) return;
+    if (!isValidPrimaryColor(draft.primary_color)) {
+      setPrimaryColorError(t('settings.general.appearance.primaryColor.error'));
+      return;
+    }
 
     setSaving(true);
     setError(null);
     setSuccess(false);
 
     try {
-      await updateAndSaveConfig(draft);
-      setTheme(draft.theme);
+      const nextDraft = {
+        ...draft,
+        primary_color: normalizePrimaryColor(draft.primary_color),
+      };
+      await updateAndSaveConfig(nextDraft);
+      setTheme(nextDraft.theme);
+      applyPrimaryColor(nextDraft.primary_color);
       setDirty(false);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
@@ -201,6 +219,7 @@ export function GeneralSettingsSection() {
     if (!config) return;
     setDraft(cloneDeep(config));
     setDirty(false);
+    setPrimaryColorError(null);
   };
 
   const resetOnboarding = async () => {
@@ -278,6 +297,40 @@ export function GeneralSettingsSection() {
             onChange={(value) => updateDraft({ theme: value })}
             placeholder={t('settings.general.appearance.theme.placeholder')}
           />
+        </SettingsField>
+
+        <SettingsField
+          label={t('settings.general.appearance.primaryColor.label')}
+          description={t('settings.general.appearance.primaryColor.helper')}
+          error={primaryColorError}
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={normalizePrimaryColor(
+                draft?.primary_color ?? DEFAULT_PRIMARY_COLOR
+              )}
+              onChange={(event) => {
+                setPrimaryColorError(null);
+                updateDraft({ primary_color: event.target.value });
+              }}
+              className="h-8 w-10 shrink-0 cursor-pointer rounded-sm border border-border bg-secondary p-1"
+              aria-label={t('settings.general.appearance.primaryColor.label')}
+            />
+            <SettingsInput
+              value={draft?.primary_color ?? DEFAULT_PRIMARY_COLOR}
+              onChange={(value) => {
+                setPrimaryColorError(
+                  value && !isValidPrimaryColor(value)
+                    ? t('settings.general.appearance.primaryColor.error')
+                    : null
+                );
+                updateDraft({ primary_color: value });
+              }}
+              placeholder={DEFAULT_PRIMARY_COLOR}
+              error={!!primaryColorError}
+            />
+          </div>
         </SettingsField>
 
         <SettingsField
@@ -839,7 +892,7 @@ export function GeneralSettingsSection() {
       <SettingsSaveBar
         show={hasUnsavedChanges}
         saving={saving}
-        saveDisabled={!!branchPrefixError}
+        saveDisabled={!!branchPrefixError || !!primaryColorError}
         onSave={handleSave}
         onDiscard={handleDiscard}
       />

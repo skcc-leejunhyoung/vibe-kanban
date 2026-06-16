@@ -53,6 +53,11 @@
           "placeholder": "Seleccionar tema",
           "helper": "Elige tus colores preferidos."
         },
+        "primaryColor": {
+          "label": "Color principal",
+          "helper": "Elige el color de acento para botones, foco y resaltados.",
+          "error": "Introduce un color hexadecimal válido, como #d9772d."
+        },
         "language": {
           "label": "Idioma",
           "placeholder": "Selecciona tu idioma",

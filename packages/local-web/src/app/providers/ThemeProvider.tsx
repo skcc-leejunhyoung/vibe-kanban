@@ -1,15 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { ThemeMode } from 'shared/types';
 import { ThemeProviderContext } from '@/shared/hooks/useTheme';
+import { applyPrimaryColor } from '@/shared/lib/themeColors';
 
 type ThemeProviderProps = {
   children: React.ReactNode;
   initialTheme?: ThemeMode;
+  initialPrimaryColor?: string;
 };
 
 export function ThemeProvider({
   children,
   initialTheme = ThemeMode.SYSTEM,
+  initialPrimaryColor,
   ...props
 }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<ThemeMode>(initialTheme);
@@ -18,6 +21,10 @@ export function ThemeProvider({
   useEffect(() => {
     setThemeState(initialTheme);
   }, [initialTheme]);
+
+  useEffect(() => {
+    applyPrimaryColor(initialPrimaryColor);
+  }, [initialPrimaryColor]);
 
   useEffect(() => {
     const root = window.document.documentElement;

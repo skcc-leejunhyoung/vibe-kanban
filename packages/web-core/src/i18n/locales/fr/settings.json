@@ -53,6 +53,11 @@
           "placeholder": "Sélectionner un thème",
           "helper": "Choisissez votre palette de couleurs préférée."
         },
+        "primaryColor": {
+          "label": "Couleur principale",
+          "helper": "Choisissez la couleur d'accent utilisée pour les boutons, les focus et les surbrillances.",
+          "error": "Saisissez une couleur hex valide, par exemple #d9772d."
+        },
         "language": {
           "label": "Langue",
           "placeholder": "Sélectionner une langue",
