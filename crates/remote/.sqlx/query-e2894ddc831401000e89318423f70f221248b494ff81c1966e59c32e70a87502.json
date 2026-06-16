@@ -34,7 +34,8 @@
                 "issue_description_changed",
                 "issue_priority_changed",
                 "issue_unassigned",
-                "issue_comment_reaction"
+                "issue_comment_reaction",
+                "issue_review_requested"
               ]
             }
           }

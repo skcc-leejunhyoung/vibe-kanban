@@ -12,7 +12,7 @@ use api_types::{
     PullRequestIssue, PullRequestStatus, SearchIssuesRequest, SortDirection, Tag,
     UpdateIssueCommentReactionRequest, UpdateIssueCommentRequest, UpdateIssueRequest,
     UpdateNotificationRequest, UpdateProjectRequest, UpdateProjectStatusRequest, UpdateTagRequest,
-    User, UserData, Workspace,
+    UpdateUserNotificationPreferenceRequest, User, UserData, UserNotificationPreference, Workspace,
 };
 use relay_types::{CreateRemoteSessionResponse, ListRelayHostsResponse, RelayHost};
 use remote::{
@@ -104,6 +104,7 @@ fn export_shapes() -> String {
         SortDirection::decl(),
         UserData::decl(),
         User::decl(),
+        UserNotificationPreference::decl(),
         RelayHost::decl(),
         ListRelayHostsResponse::decl(),
         CreateRemoteSessionResponse::decl(),
@@ -127,6 +128,7 @@ fn export_shapes() -> String {
         UpdateIssueCommentRequest::decl(),
         CreateIssueCommentReactionRequest::decl(),
         UpdateIssueCommentReactionRequest::decl(),
+        UpdateUserNotificationPreferenceRequest::decl(),
         // Attachment API request/response types
         InitUploadRequest::decl(),
         InitUploadResponse::decl(),

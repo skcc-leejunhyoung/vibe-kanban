@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT user_id AS \"user_id!: Uuid\"\n            FROM user_notification_preferences\n            WHERE user_id = ANY($1)\n              AND review_requested_enabled = FALSE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!: Uuid",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "44f8224b1ebcc5a4b920f3f9beec17212506d097627e20b92167e497fbde91ec"
+}

@@ -71,6 +71,8 @@ export type UserData = { user_id: string, first_name: string | null, last_name: 
 
 export type User = { id: string, email: string, first_name: string | null, last_name: string | null, username: string | null, created_at: string, updated_at: string, };
 
+export type UserNotificationPreference = { user_id: string, review_requested_enabled: boolean, };
+
 export type RelayHost = { id: string, owner_user_id: string, machine_id: string, name: string, status: string, last_seen_at: string | null, agent_version: string | null, created_at: string, updated_at: string, access_role: string, };
 
 export type ListRelayHostsResponse = { hosts: Array<RelayHost>, };
@@ -164,6 +166,8 @@ export type CreateIssueCommentReactionRequest = {
 id?: string, comment_id: string, emoji: string, };
 
 export type UpdateIssueCommentReactionRequest = { emoji: string | null, };
+
+export type UpdateUserNotificationPreferenceRequest = { review_requested_enabled: boolean, };
 
 export type InitUploadRequest = { project_id: string, filename: string, size_bytes: number, hash: string, };
 

@@ -103,12 +103,21 @@ import {
   OpenRemoteEditorResponse,
   ProfileResponse,
 } from 'shared/types';
-import type { Project as RemoteProject } from 'shared/remote-types';
+import type {
+  Project as RemoteProject,
+  UpdateUserNotificationPreferenceRequest,
+  UserNotificationPreference,
+} from 'shared/remote-types';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { resolveHostRequestScope } from '@/shared/lib/hostRequestScope';
 import { makeRequest as makeRemoteRequest } from '@/shared/lib/remoteApi';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
+
+export type {
+  UpdateUserNotificationPreferenceRequest,
+  UserNotificationPreference,
+} from 'shared/remote-types';
 
 export class ApiError<E = unknown> extends Error {
   public status?: number;
@@ -183,15 +192,6 @@ export type Result<T, E> = Ok<T> | Err<E>;
 
 type ListRemoteProjectsResponse = {
   projects: RemoteProject[];
-};
-
-export type UserNotificationPreference = {
-  user_id: string;
-  review_requested_enabled: boolean;
-};
-
-export type UpdateUserNotificationPreferenceRequest = {
-  review_requested_enabled: boolean;
 };
 
 export type OrganizationBillingStatus =

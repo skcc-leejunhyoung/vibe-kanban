@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_notification_preferences (\n                user_id,\n                review_requested_enabled,\n                updated_at\n            )\n            VALUES ($1, $2, NOW())\n            ON CONFLICT (user_id) DO UPDATE\n            SET review_requested_enabled = EXCLUDED.review_requested_enabled,\n                updated_at = NOW()\n            RETURNING\n                user_id AS \"user_id!: Uuid\",\n                review_requested_enabled AS \"review_requested_enabled!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "review_requested_enabled!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f7ffd22e69cde883d4a956bc8dce20517f1517d25b44198747e6eac015472f19"
+}
