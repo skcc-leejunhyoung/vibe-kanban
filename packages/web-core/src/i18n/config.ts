@@ -154,4 +154,27 @@ export const updateLanguageFromConfig = (configLanguage: string) => {
   }
 };
 
+// i18n's own localStorage cache is disabled (handled via config), but the
+// remote web has routes without a hostId where config isn't loaded. Cache the
+// chosen language so it can be re-applied at boot on those routes.
+const LANGUAGE_STORAGE_KEY = 'vk-language';
+
+export const persistLanguage = (configLanguage: string | null | undefined) => {
+  if (typeof window === 'undefined' || !configLanguage) return;
+  try {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, configLanguage);
+  } catch {
+    // ignore storage errors (private mode / quota)
+  }
+};
+
+export const loadPersistedLanguage = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
 export default i18n;

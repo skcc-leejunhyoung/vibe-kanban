@@ -6,8 +6,11 @@ import { useUserSystemController } from "@/shared/hooks/useUserSystemController"
 import { UserSystemContext } from "@/shared/hooks/useUserSystem";
 import {
   applyPrimaryColor,
+  applyTheme,
   persistPrimaryColor,
+  persistTheme,
 } from "@/shared/lib/themeColors";
+import { persistLanguage, updateLanguageFromConfig } from "@/i18n/config";
 
 interface RemoteUserSystemProviderProps {
   children: ReactNode;
@@ -43,11 +46,10 @@ export function RemoteUserSystemProvider({
     [isLoaded, isLoading, isSignedIn, value],
   );
 
-  // Apply + cache the saved primary color whenever config is (re)loaded. Only
-  // act when a value is present: routes without a hostId (e.g. /projects/$id)
-  // don't load host config, so config?.primary_color is undefined there and we
-  // must NOT reset to the default — the value cached at boot (Bootstrap) keeps
-  // the color on those routes.
+  // Apply + cache UI preferences whenever config is (re)loaded. Only act when a
+  // value is present: routes without a hostId (e.g. /projects/$id) don't load
+  // host config, so these are undefined there and must NOT reset to defaults —
+  // the values cached at boot (Bootstrap) keep them on those routes.
   useEffect(() => {
     const primaryColor = contextValue.config?.primary_color;
     if (primaryColor) {
@@ -55,6 +57,22 @@ export function RemoteUserSystemProvider({
       persistPrimaryColor(primaryColor);
     }
   }, [contextValue.config?.primary_color]);
+
+  useEffect(() => {
+    const theme = contextValue.config?.theme;
+    if (theme) {
+      applyTheme(theme);
+      persistTheme(theme);
+    }
+  }, [contextValue.config?.theme]);
+
+  useEffect(() => {
+    const language = contextValue.config?.language;
+    if (language) {
+      updateLanguageFromConfig(language);
+      persistLanguage(language);
+    }
+  }, [contextValue.config?.language]);
 
   return (
     <UserSystemContext.Provider value={contextValue}>

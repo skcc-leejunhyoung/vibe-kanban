@@ -15,8 +15,11 @@ import { setRelayApiBase } from "@/shared/lib/relayBackendApi";
 import { setLocalApiTransport } from "@/shared/lib/localApiTransport";
 import {
   applyPrimaryColor,
+  applyTheme,
   loadPersistedPrimaryColor,
+  loadPersistedTheme,
 } from "@/shared/lib/themeColors";
+import { loadPersistedLanguage, updateLanguageFromConfig } from "@/i18n/config";
 import "@/shared/types/modals";
 import { queryClient } from "@/shared/lib/queryClient";
 import {
@@ -51,9 +54,14 @@ configureAuthRuntime({
   },
 });
 
-// Apply the cached primary color before first paint so it survives a refresh
-// on routes that don't load host config (e.g. /projects/$projectId), where
-// config?.primary_color is unavailable.
+// Apply cached UI preferences before first paint so they survive a refresh on
+// routes that don't load host config (e.g. /projects/$projectId), where config
+// is unavailable. applyTheme(null) falls back to the system preference.
+applyTheme(loadPersistedTheme());
+const cachedLanguage = loadPersistedLanguage();
+if (cachedLanguage) {
+  updateLanguageFromConfig(cachedLanguage);
+}
 const cachedPrimaryColor = loadPersistedPrimaryColor();
 if (cachedPrimaryColor) {
   applyPrimaryColor(cachedPrimaryColor);

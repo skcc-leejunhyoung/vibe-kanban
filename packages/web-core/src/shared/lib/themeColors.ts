@@ -1,3 +1,5 @@
+import { ThemeMode } from 'shared/types';
+
 export const DEFAULT_PRIMARY_COLOR = '#d9772d';
 
 const HEX_COLOR_RE = /^#([0-9a-f]{6})$/i;
@@ -125,6 +127,60 @@ export function loadPersistedPrimaryColor(): string | null {
   if (typeof window === 'undefined') return null;
   try {
     return window.localStorage.getItem(PRIMARY_COLOR_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+// --- theme mode (dark / light / system) ---
+
+const THEME_STORAGE_KEY = 'vk-theme';
+
+let systemThemeQuery: MediaQueryList | null = null;
+let systemThemeHandler: ((event: MediaQueryListEvent) => void) | null = null;
+
+function setThemeClass(resolved: 'light' | 'dark') {
+  const root = window.document.documentElement;
+  root.classList.remove('light', 'dark');
+  root.classList.add(resolved);
+}
+
+// Apply the theme to <html>. SYSTEM (or unset) follows prefers-color-scheme and
+// live-updates on OS changes; DARK/LIGHT are forced. Replaces useSystemTheme so
+// an explicit user choice is honored on the remote web too.
+export function applyTheme(theme: ThemeMode | string | null | undefined) {
+  if (typeof window === 'undefined') return;
+
+  if (systemThemeQuery && systemThemeHandler) {
+    systemThemeQuery.removeEventListener('change', systemThemeHandler);
+    systemThemeHandler = null;
+  }
+
+  if (!theme || theme === ThemeMode.SYSTEM) {
+    systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    setThemeClass(systemThemeQuery.matches ? 'dark' : 'light');
+    systemThemeHandler = (event) =>
+      setThemeClass(event.matches ? 'dark' : 'light');
+    systemThemeQuery.addEventListener('change', systemThemeHandler);
+    return;
+  }
+
+  setThemeClass(theme === ThemeMode.DARK ? 'dark' : 'light');
+}
+
+export function persistTheme(theme: ThemeMode | string | null | undefined) {
+  if (typeof window === 'undefined' || !theme) return;
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, String(theme));
+  } catch {
+    // ignore storage errors (private mode / quota)
+  }
+}
+
+export function loadPersistedTheme(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY);
   } catch {
     return null;
   }
