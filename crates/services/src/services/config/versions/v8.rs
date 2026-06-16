@@ -74,6 +74,9 @@ pub struct Config {
     pub host_nickname: Option<String>,
     #[serde(default = "default_primary_color")]
     pub primary_color: String,
+    /// Coding agents the user has hidden from agent selection.
+    #[serde(default)]
+    pub disabled_executors: Vec<BaseCodingAgent>,
 }
 
 impl Config {
@@ -106,6 +109,7 @@ impl Config {
             relay_enabled: true,
             host_nickname: None,
             primary_color: default_primary_color(),
+            disabled_executors: Vec::new(),
         }
     }
 
@@ -163,6 +167,7 @@ impl Default for Config {
             relay_enabled: true,
             host_nickname: None,
             primary_color: default_primary_color(),
+            disabled_executors: Vec::new(),
         }
     }
 }

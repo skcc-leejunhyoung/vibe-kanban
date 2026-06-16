@@ -494,6 +494,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     lastUsedConfig: latestConfig,
     scratchConfig: scratchData?.executor_config ?? undefined,
     configExecutorProfile: config?.executor_profile,
+    disabledExecutors: config?.disabled_executors,
     onPersist: (cfg) => void saveToScratch(localMessageRef.current, cfg),
   });
 

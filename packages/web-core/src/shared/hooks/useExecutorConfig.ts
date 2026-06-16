@@ -32,12 +32,21 @@ function useEffectiveExecutor(
   profiles: Record<string, ExecutorProfile> | null,
   scratchConfig: ExecutorConfig | null | undefined,
   lastUsedConfig: ExecutorConfig | null,
-  configExecutorProfile: ExecutorProfileId | null | undefined
+  configExecutorProfile: ExecutorProfileId | null | undefined,
+  disabledExecutors: BaseCodingAgent[] | undefined
 ) {
   const options = useMemo(
     () => Object.keys(profiles ?? {}) as BaseCodingAgent[],
     [profiles]
   );
+
+  // First enabled agent, used as the last-resort fallback so a hidden agent is
+  // never auto-selected. Falls back to the full list if every agent is hidden.
+  const fallback = useMemo(() => {
+    const disabled = new Set(disabledExecutors ?? []);
+    const enabled = options.filter((e) => !disabled.has(e));
+    return (enabled.length > 0 ? enabled : options)[0] ?? null;
+  }, [options, disabledExecutors]);
 
   const effective = useMemo(
     () =>
@@ -45,14 +54,13 @@ function useEffectiveExecutor(
       scratchConfig?.executor ??
       lastUsedConfig?.executor ??
       configExecutorProfile?.executor ??
-      options[0] ??
-      null,
+      fallback,
     [
       userSelections.executor,
       scratchConfig,
       lastUsedConfig,
       configExecutorProfile,
-      options,
+      fallback,
     ]
   );
 
@@ -182,6 +190,8 @@ interface UseExecutorConfigOptions {
   lastUsedConfig: ExecutorConfig | null;
   scratchConfig?: ExecutorConfig | null;
   configExecutorProfile?: ExecutorProfileId | null;
+  /** Agents the user has hidden from selection. */
+  disabledExecutors?: BaseCodingAgent[];
   onPersist?: (config: ExecutorConfig) => void;
 }
 
@@ -203,6 +213,7 @@ export function useExecutorConfig({
   lastUsedConfig,
   scratchConfig,
   configExecutorProfile,
+  disabledExecutors,
   onPersist,
 }: UseExecutorConfigOptions): UseExecutorConfigResult {
   const [userSelections, setUserSelections] = useState<Partial<ExecutorConfig>>(
@@ -214,8 +225,18 @@ export function useExecutorConfig({
     profiles,
     scratchConfig,
     lastUsedConfig,
-    configExecutorProfile
+    configExecutorProfile,
+    disabledExecutors
   );
+
+  // Hide disabled agents from selection, but keep the effective one visible so
+  // the current selection never disappears.
+  const executorOptions = useMemo(() => {
+    const disabled = new Set(disabledExecutors ?? []);
+    return executor.options.filter(
+      (e) => !disabled.has(e) || e === executor.effective
+    );
+  }, [executor.options, executor.effective, disabledExecutors]);
 
   const variant = useEffectiveVariant(
     userSelections,
@@ -317,7 +338,7 @@ export function useExecutorConfig({
     executorConfig,
     effectiveExecutor: executor.effective,
     selectedVariant: variant.resolved,
-    executorOptions: executor.options,
+    executorOptions,
     variantOptions: variant.options,
     presetOptions,
     setExecutor,

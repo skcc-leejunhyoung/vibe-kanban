@@ -341,7 +341,11 @@
         "jsonLabel": "Agent Configuration (JSON)",
         "jsonPlaceholder": "Loading profiles...",
         "jsonLoading": "Loading...",
-        "pathLabel": "Configuration file location:"
+        "pathLabel": "Configuration file location:",
+        "toggleEnabled": "Toggle {{name}}",
+        "enabledTooltip": "Shown in agent selection",
+        "disabledTooltip": "Hidden from agent selection",
+        "defaultCannotDisable": "The default agent can't be hidden"
       },
       "errors": {
         "deleteFailed": "Failed to delete configuration. Please try again.",

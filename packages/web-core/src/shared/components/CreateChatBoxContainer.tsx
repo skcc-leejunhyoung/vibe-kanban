@@ -135,6 +135,7 @@ export function CreateChatBoxContainer({
     lastUsedConfig: preferredExecutorConfig,
     scratchConfig,
     configExecutorProfile: config?.executor_profile,
+    disabledExecutors: config?.disabled_executors,
     onPersist: (cfg) => setDraftConfig(cfg),
   });
 

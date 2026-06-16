@@ -333,7 +333,11 @@
         "jsonLabel": "에이전트 구성 (JSON)",
         "jsonPlaceholder": "프로필 로딩 중...",
         "jsonLoading": "로딩 중...",
-        "pathLabel": "구성 파일 위치:"
+        "pathLabel": "구성 파일 위치:",
+        "toggleEnabled": "{{name}} 토글",
+        "enabledTooltip": "에이전트 선택 목록에 표시됨",
+        "disabledTooltip": "에이전트 선택 목록에서 숨겨짐",
+        "defaultCannotDisable": "기본 에이전트는 숨길 수 없습니다"
       },
       "errors": {
         "deleteFailed": "구성을 삭제하지 못했습니다. 다시 시도해 주세요.",

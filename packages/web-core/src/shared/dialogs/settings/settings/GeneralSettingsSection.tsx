@@ -88,10 +88,18 @@ export function GeneralSettingsSection() {
   );
   const { setTheme } = useTheme();
 
-  // Executor options for the default coding agent dropdown
+  // Executor options for the default coding agent dropdown. Hidden agents are
+  // filtered out, but the current default stays visible so the selection holds.
+  const disabledExecutors = draft?.disabled_executors ?? [];
+  const defaultExecutor = draft?.executor_profile?.executor;
   const executorOptions = profiles
     ? Object.keys(profiles)
         .sort()
+        .filter(
+          (key) =>
+            !disabledExecutors.includes(key as BaseCodingAgent) ||
+            key === defaultExecutor
+        )
         .map((key) => ({ value: key, label: toPrettyCase(key) }))
     : [];
 

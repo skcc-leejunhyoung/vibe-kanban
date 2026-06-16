@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from '@vibe/ui/components/DropdownMenu';
 import { Label } from '@vibe/ui/components/Label';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import type { ExecutorProfileId, BaseCodingAgent } from 'shared/types';
 
 interface AgentSelectorProps {
@@ -26,10 +27,16 @@ export function AgentSelector({
   className = '',
   showLabel = false,
 }: AgentSelectorProps) {
-  const agents = profiles
-    ? (Object.keys(profiles).sort() as BaseCodingAgent[])
-    : [];
+  const { config } = useUserSystem();
   const selectedAgent = selectedExecutorProfile?.executor;
+  const disabledAgents = config?.disabled_executors ?? [];
+  const agents = profiles
+    ? (Object.keys(profiles).sort() as BaseCodingAgent[]).filter(
+        // Keep the currently selected agent visible even if disabled, so the
+        // selection never breaks.
+        (agent) => !disabledAgents.includes(agent) || agent === selectedAgent
+      )
+    : [];
 
   if (!profiles) return null;
 

@@ -13,6 +13,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@vibe/ui/components/Dropdown';
+import { Switch } from '@vibe/ui/components/Switch';
 import { ExecutorConfigForm } from './ExecutorConfigForm';
 import { useMachineProfiles } from '@/shared/hooks/useProfiles';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
@@ -228,6 +229,21 @@ export function AgentsSettingsSection() {
     }
   };
 
+  const handleToggleExecutor = async (executor: string, enabled: boolean) => {
+    if (!config) return;
+    const current = config.disabled_executors ?? [];
+    const next = enabled
+      ? current.filter((e) => e !== executor)
+      : current.includes(executor as BaseCodingAgent)
+        ? current
+        : [...current, executor as BaseCodingAgent];
+    try {
+      await updateAndSaveConfig({ disabled_executors: next });
+    } catch (err) {
+      console.error('Error toggling executor:', err);
+    }
+  };
+
   const handleMakeDefault = async (executor: string, config: string) => {
     try {
       await updateAndSaveConfig({
@@ -389,6 +405,9 @@ export function AgentsSettingsSection() {
               {Object.keys(localParsedProfiles.executors).map((executor) => {
                 const isDefault =
                   config?.executor_profile?.executor === executor;
+                const isEnabled = !(config?.disabled_executors ?? []).includes(
+                  executor as BaseCodingAgent
+                );
                 return (
                   <TwoColumnPickerItem
                     key={executor}
@@ -407,18 +426,46 @@ export function AgentsSettingsSection() {
                     leading={
                       <AgentIcon
                         agent={executor as BaseCodingAgent}
-                        className="size-icon-sm shrink-0"
+                        className={cn(
+                          'size-icon-sm shrink-0',
+                          !isEnabled && 'opacity-40'
+                        )}
                       />
                     }
                     trailing={
-                      isDefault && (
-                        <TwoColumnPickerBadge variant="brand">
-                          {t('settings.agents.editor.isDefault')}
-                        </TwoColumnPickerBadge>
-                      )
+                      <div className="flex items-center gap-half shrink-0">
+                        {isDefault && (
+                          <TwoColumnPickerBadge variant="brand">
+                            {t('settings.agents.editor.isDefault')}
+                          </TwoColumnPickerBadge>
+                        )}
+                        <Switch
+                          checked={isEnabled}
+                          disabled={isDefault}
+                          onClick={(e) => e.stopPropagation()}
+                          onCheckedChange={(checked) =>
+                            handleToggleExecutor(executor, checked)
+                          }
+                          aria-label={t(
+                            'settings.agents.editor.toggleEnabled',
+                            {
+                              name: toPrettyCase(executor),
+                            }
+                          )}
+                          title={
+                            isDefault
+                              ? t('settings.agents.editor.defaultCannotDisable')
+                              : isEnabled
+                                ? t('settings.agents.editor.enabledTooltip')
+                                : t('settings.agents.editor.disabledTooltip')
+                          }
+                        />
+                      </div>
                     }
                   >
-                    {toPrettyCase(executor)}
+                    <span className={cn(!isEnabled && 'opacity-50')}>
+                      {toPrettyCase(executor)}
+                    </span>
                   </TwoColumnPickerItem>
                 );
               })}
