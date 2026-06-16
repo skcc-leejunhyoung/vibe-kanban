@@ -192,6 +192,10 @@ fn build_digest_copy(row: &NotificationDigestRow) -> DigestCopy {
             format!("{actor_name} changed the description on {issue_label}"),
             issue_context(payload).map(|issue| format!("Updated the description on {issue}.")),
         ),
+        NotificationType::IssueReviewRequested => (
+            format!("{actor_name} requested review on {issue_label}"),
+            issue_context(payload),
+        ),
     };
 
     DigestCopy {
