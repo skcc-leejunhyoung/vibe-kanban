@@ -495,6 +495,10 @@
       "setupHint": "提示：在設定 → 儲存庫中為此儲存庫設定安裝腳本",
       "setupHintDismiss": "關閉",
       "setupHintLink": "Configure in Settings"
+    },
+    "workspaceOnly": {
+      "create": "Workspace only",
+      "creating": "Creating workspace..."
     }
   },
   "modelSelector": {

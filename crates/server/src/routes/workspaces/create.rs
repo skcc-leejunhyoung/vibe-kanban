@@ -5,6 +5,8 @@ use db::models::{
     pending_execution_start::PendingExecutionStart,
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
+        CreateWorkspaceWithoutStartingRequest, CreateWorkspaceWithoutStartingResponse,
+        LinkedIssueInfo, WorkspaceRepoInput,
     },
     workspace::{CreateWorkspace, Workspace},
 };
@@ -12,6 +14,7 @@ use deployment::Deployment;
 use services::services::{container::ContainerService, issue_gating};
 use utils::response::ApiResponse;
 use uuid::Uuid;
+use workspace_manager::ManagedWorkspace;
 
 use crate::{
     DeploymentImpl,
@@ -210,6 +213,89 @@ fn rewrite_imported_issue_attachments_markdown(
     rewritten
 }
 
+async fn create_workspace_with_repos(
+    deployment: &DeploymentImpl,
+    name: Option<String>,
+    repos: Vec<WorkspaceRepoInput>,
+    linked_issue: Option<&LinkedIssueInfo>,
+    attachment_ids: Option<Vec<Uuid>>,
+) -> Result<ManagedWorkspace, ApiError> {
+    if repos.is_empty() {
+        return Err(ApiError::BadRequest(
+            "At least one repository is required".to_string(),
+        ));
+    }
+
+    let mut managed_workspace = deployment
+        .workspace_manager()
+        .load_managed_workspace(create_workspace_record(deployment, name).await?)
+        .await?;
+
+    for repo in &repos {
+        managed_workspace
+            .add_repository(repo, deployment.git())
+            .await
+            .map_err(ApiError::from)?;
+    }
+
+    if let Some(ids) = &attachment_ids {
+        managed_workspace.associate_attachments(ids).await?;
+    }
+
+    let workspace = &managed_workspace.workspace;
+    tracing::info!("Created workspace {}", workspace.id);
+
+    // Mirror the linked issue onto the workspace row so local issue-aware flows
+    // can detect it even before any agent execution exists.
+    if let Some(linked_issue) = linked_issue
+        && let Err(e) = Workspace::set_task_id(
+            &deployment.db().pool,
+            workspace.id,
+            Some(linked_issue.issue_id),
+        )
+        .await
+    {
+        tracing::warn!("Failed to set task_id on workspace {}: {}", workspace.id, e);
+    }
+
+    Ok(managed_workspace)
+}
+
+pub async fn create_workspace_without_starting(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<CreateWorkspaceWithoutStartingRequest>,
+) -> Result<ResponseJson<ApiResponse<CreateWorkspaceWithoutStartingResponse>>, ApiError> {
+    let CreateWorkspaceWithoutStartingRequest {
+        name,
+        repos,
+        linked_issue,
+        attachment_ids,
+    } = payload;
+
+    let managed_workspace = create_workspace_with_repos(
+        &deployment,
+        name,
+        repos,
+        linked_issue.as_ref(),
+        attachment_ids,
+    )
+    .await?;
+    let workspace = managed_workspace.workspace;
+
+    deployment
+        .track_if_analytics_allowed(
+            "workspace_created_without_starting",
+            serde_json::json!({
+                "workspace_id": workspace.id.to_string(),
+            }),
+        )
+        .await;
+
+    Ok(ResponseJson(ApiResponse::success(
+        CreateWorkspaceWithoutStartingResponse { workspace },
+    )))
+}
+
 pub async fn create_and_start_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
@@ -229,27 +315,14 @@ pub async fn create_and_start_workspace(
         )
     })?;
 
-    if repos.is_empty() {
-        return Err(ApiError::BadRequest(
-            "At least one repository is required".to_string(),
-        ));
-    }
-
-    let mut managed_workspace = deployment
-        .workspace_manager()
-        .load_managed_workspace(create_workspace_record(&deployment, name).await?)
-        .await?;
-
-    for repo in &repos {
-        managed_workspace
-            .add_repository(repo, deployment.git())
-            .await
-            .map_err(ApiError::from)?;
-    }
-
-    if let Some(ids) = &attachment_ids {
-        managed_workspace.associate_attachments(ids).await?;
-    }
+    let managed_workspace = create_workspace_with_repos(
+        &deployment,
+        name,
+        repos,
+        linked_issue.as_ref(),
+        attachment_ids,
+    )
+    .await?;
 
     if let Some(linked_issue) = &linked_issue
         && let Ok(client) = deployment.remote_client()
@@ -294,21 +367,6 @@ pub async fn create_and_start_workspace(
     }
 
     let workspace = managed_workspace.workspace.clone();
-    tracing::info!("Created workspace {}", workspace.id);
-
-    // Mirror the linked issue onto the workspace row so blocker-gating can
-    // detect it locally. Failure here only disables gating for this workspace;
-    // it must not prevent the workspace from starting.
-    if let Some(linked_issue) = &linked_issue
-        && let Err(e) = Workspace::set_task_id(
-            &deployment.db().pool,
-            workspace.id,
-            Some(linked_issue.issue_id),
-        )
-        .await
-    {
-        tracing::warn!("Failed to set task_id on workspace {}: {}", workspace.id, e);
-    }
 
     // Blocker gating for the very first execution. When the linked issue has
     // unresolved blockers, build the full setup+coding-agent action chain and

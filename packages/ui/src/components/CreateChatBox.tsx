@@ -61,6 +61,13 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   agentIcon?: ReactNode;
   onSend: () => void;
   isSending: boolean;
+  secondaryAction?: {
+    value: string;
+    pendingValue: string;
+    onClick: () => void;
+    disabled?: boolean;
+    isPending?: boolean;
+  };
   disabled?: boolean;
   executor: ExecutorProps<TExecutor>;
   formatExecutorLabel?: (executor: TExecutor) => string;
@@ -96,6 +103,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   agentIcon,
   onSend,
   isSending,
+  secondaryAction,
   disabled = false,
   executor,
   formatExecutorLabel = defaultExecutorLabel,
@@ -115,7 +123,8 @@ export function CreateChatBox<TExecutor extends string = string>({
 }: CreateChatBoxProps<TExecutor>) {
   const { t } = useTranslation(['common', 'tasks']);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const isDisabled = disabled || isSending;
+  const isSecondaryPending = secondaryAction?.isPending ?? false;
+  const isDisabled = disabled || isSending || isSecondaryPending;
   const canSend = editor.value.trim().length > 0 && !isDisabled;
 
   const handleCmdEnter = () => {
@@ -236,16 +245,31 @@ export function CreateChatBox<TExecutor extends string = string>({
         </>
       }
       footerRight={
-        <PrimaryButton
-          onClick={onSend}
-          disabled={!canSend}
-          actionIcon={isSending ? 'spinner' : undefined}
-          value={
-            isSending
-              ? t('tasks:conversation.workspace.creating')
-              : t('tasks:conversation.workspace.create')
-          }
-        />
+        <>
+          {secondaryAction && (
+            <PrimaryButton
+              variant="tertiary"
+              onClick={secondaryAction.onClick}
+              disabled={isDisabled || secondaryAction.disabled}
+              actionIcon={isSecondaryPending ? 'spinner' : undefined}
+              value={
+                isSecondaryPending
+                  ? secondaryAction.pendingValue
+                  : secondaryAction.value
+              }
+            />
+          )}
+          <PrimaryButton
+            onClick={onSend}
+            disabled={!canSend}
+            actionIcon={isSending ? 'spinner' : undefined}
+            value={
+              isSending
+                ? t('tasks:conversation.workspace.creating')
+                : t('tasks:conversation.workspace.create')
+            }
+          />
+        </>
       }
     />
   );

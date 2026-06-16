@@ -58,7 +58,7 @@ export function CreateChatBoxContainer({
     setAttachments: setDraftAttachments,
   } = useCreateMode();
 
-  const { createWorkspace } = useCreateWorkspace();
+  const { createWorkspace, createWorkspaceOnly } = useCreateWorkspace();
   const hasSelectedRepos = repos.length > 0;
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [hasInitializedStep, setHasInitializedStep] = useState(false);
@@ -109,7 +109,10 @@ export function CreateChatBoxContainer({
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    disabled: createWorkspace.isPending || !hasSelectedRepos,
+    disabled:
+      createWorkspace.isPending ||
+      createWorkspaceOnly.isPending ||
+      !hasSelectedRepos,
     noClick: true,
     noKeyboard: true,
   });
@@ -171,6 +174,7 @@ export function CreateChatBoxContainer({
     hasSelectedBranchesForAllRepos &&
     message.trim().length > 0 &&
     effectiveExecutor !== null;
+  const canCreateOnly = hasSelectedRepos && hasSelectedBranchesForAllRepos;
 
   const handlePresetSelect = (presetId: string | null) => {
     if (!effectiveExecutor) return;
@@ -220,65 +224,137 @@ export function CreateChatBoxContainer({
     [profiles, setDraftConfig, config?.executor_profile]
   );
 
-  // Handle submit
-  const handleSubmit = useCallback(async () => {
-    setHasAttemptedSubmit(true);
-    if (!canSubmit || !executorConfig) return;
-
+  const getWorkspaceName = useCallback(() => {
     const { title } = splitMessageToTitleDescription(message);
-    const data = {
-      executor_config: executorConfig,
-      name: title,
-      prompt: message,
-      repos: repos.map((r) => ({
+    return title.trim().length > 0 ? title : null;
+  }, [message]);
+
+  const getWorkspaceRepos = useCallback(
+    () =>
+      repos.map((r) => ({
         repo_id: r.id,
         target_branch: targetBranches[r.id]!,
       })),
-      linked_issue: linkedIssue
+    [repos, targetBranches]
+  );
+
+  const getLinkedIssuePayload = useCallback(
+    () =>
+      linkedIssue
         ? {
             remote_project_id: linkedIssue.remoteProjectId,
             issue_id: linkedIssue.issueId,
           }
         : null,
+    [linkedIssue]
+  );
+
+  const getLinkToIssue = useCallback(
+    () =>
+      linkedIssue
+        ? {
+            remoteProjectId: linkedIssue.remoteProjectId,
+            issueId: linkedIssue.issueId,
+          }
+        : undefined,
+    [linkedIssue]
+  );
+
+  const finishWorkspaceCreated = useCallback(
+    async (
+      workspaceId: string,
+      workspaceRepos: { repo_id: string; target_branch: string }[]
+    ) => {
+      onWorkspaceCreated(workspaceId);
+
+      if (linkedIssue?.remoteProjectId) {
+        saveProjectRepoDefaults(
+          linkedIssue.remoteProjectId,
+          workspaceRepos
+        ).catch((err) =>
+          console.warn('Failed to save project repo defaults:', err)
+        );
+      }
+
+      clearAttachments();
+      await clearDraft();
+    },
+    [
+      onWorkspaceCreated,
+      linkedIssue?.remoteProjectId,
+      clearAttachments,
+      clearDraft,
+    ]
+  );
+
+  // Handle submit
+  const handleSubmit = useCallback(async () => {
+    setHasAttemptedSubmit(true);
+    if (!canSubmit || !executorConfig) return;
+
+    const workspaceRepos = getWorkspaceRepos();
+    const data = {
+      executor_config: executorConfig,
+      name: getWorkspaceName(),
+      prompt: message,
+      repos: workspaceRepos,
+      linked_issue: getLinkedIssuePayload(),
       attachment_ids: getAttachmentIds(),
     };
-    const linkToIssue = linkedIssue
-      ? {
-          remoteProjectId: linkedIssue.remoteProjectId,
-          issueId: linkedIssue.issueId,
-        }
-      : undefined;
 
     const result = await createWorkspace.mutateAsync({
       data,
-      linkToIssue,
+      linkToIssue: getLinkToIssue(),
     });
 
     if (result.workspace) {
-      onWorkspaceCreated(result.workspace.id);
+      await finishWorkspaceCreated(result.workspace.id, workspaceRepos);
     }
-
-    if (linkedIssue?.remoteProjectId) {
-      saveProjectRepoDefaults(linkedIssue.remoteProjectId, data.repos).catch(
-        (err) => console.warn('Failed to save project repo defaults:', err)
-      );
-    }
-
-    clearAttachments();
-    await clearDraft();
   }, [
     canSubmit,
     executorConfig,
     message,
-    repos,
-    targetBranches,
     createWorkspace,
-    onWorkspaceCreated,
+    getWorkspaceName,
+    getWorkspaceRepos,
+    getLinkedIssuePayload,
     getAttachmentIds,
-    clearAttachments,
-    clearDraft,
-    linkedIssue,
+    getLinkToIssue,
+    finishWorkspaceCreated,
   ]);
+
+  const handleCreateOnly = useCallback(async () => {
+    setHasAttemptedSubmit(true);
+    if (!canCreateOnly) return;
+
+    const workspaceRepos = getWorkspaceRepos();
+    const data = {
+      name: getWorkspaceName(),
+      repos: workspaceRepos,
+      linked_issue: getLinkedIssuePayload(),
+      attachment_ids: getAttachmentIds(),
+    };
+
+    const result = await createWorkspaceOnly.mutateAsync({
+      data,
+      linkToIssue: getLinkToIssue(),
+    });
+
+    if (result.workspace) {
+      await finishWorkspaceCreated(result.workspace.id, workspaceRepos);
+    }
+  }, [
+    canCreateOnly,
+    createWorkspaceOnly,
+    getWorkspaceName,
+    getWorkspaceRepos,
+    getLinkedIssuePayload,
+    getAttachmentIds,
+    getLinkToIssue,
+    finishWorkspaceCreated,
+  ]);
+
+  const creationError = createWorkspace.error ?? createWorkspaceOnly.error;
 
   // Determine error to display
   const displayError =
@@ -286,9 +362,9 @@ export function CreateChatBoxContainer({
       ? 'Add at least one repository to create a workspace'
       : hasAttemptedSubmit && !hasSelectedBranchesForAllRepos
         ? 'Select a branch for every repository before creating a workspace'
-        : createWorkspace.error
-          ? createWorkspace.error instanceof Error
-            ? createWorkspace.error.message
+        : creationError
+          ? creationError instanceof Error
+            ? creationError.message
             : 'Failed to create workspace'
           : null;
 
@@ -360,6 +436,13 @@ export function CreateChatBoxContainer({
                   }
                   onSend={handleSubmit}
                   isSending={createWorkspace.isPending}
+                  secondaryAction={{
+                    value: t('createMode.workspaceOnly.create'),
+                    pendingValue: t('createMode.workspaceOnly.creating'),
+                    onClick: handleCreateOnly,
+                    disabled: !canCreateOnly,
+                    isPending: createWorkspaceOnly.isPending,
+                  }}
                   disabled={!hasSelectedRepos}
                   executor={{
                     selected: effectiveExecutor,

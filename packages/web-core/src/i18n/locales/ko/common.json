@@ -495,6 +495,10 @@
       "setupHint": "팁: 이 저장소의 설정 스크립트를 설정 → 저장소에서 구성하세요",
       "setupHintDismiss": "닫기",
       "setupHintLink": "Configure in Settings"
+    },
+    "workspaceOnly": {
+      "create": "워크스페이스만 만들기",
+      "creating": "워크스페이스 만드는 중..."
     }
   },
   "modelSelector": {

@@ -46,6 +46,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/",
             get(core::get_workspaces).post(create::create_workspace),
         )
+        .route("/create", post(create::create_workspace_without_starting))
         .route("/start", post(create::create_and_start_workspace))
         .route("/from-pr", post(pr::create_workspace_from_pr))
         .route("/streams/ws", get(streams::stream_workspaces_ws))

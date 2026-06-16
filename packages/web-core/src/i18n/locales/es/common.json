@@ -495,6 +495,10 @@
       "setupHint": "Consejo: Configura los scripts de instalación para este repositorio en Ajustes → Repositorios",
       "setupHintDismiss": "Cerrar",
       "setupHintLink": "Configure in Settings"
+    },
+    "workspaceOnly": {
+      "create": "Solo workspace",
+      "creating": "Creando workspace..."
     }
   },
   "modelSelector": {

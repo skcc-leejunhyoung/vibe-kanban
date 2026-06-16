@@ -45,6 +45,19 @@ pub struct CreateAndStartWorkspaceResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
+pub struct CreateWorkspaceWithoutStartingRequest {
+    pub name: Option<String>,
+    pub repos: Vec<WorkspaceRepoInput>,
+    pub linked_issue: Option<LinkedIssueInfo>,
+    pub attachment_ids: Option<Vec<Uuid>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct CreateWorkspaceWithoutStartingResponse {
+    pub workspace: Workspace,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
 pub struct UpdateWorkspace {
     pub archived: Option<bool>,
     pub pinned: Option<bool>,

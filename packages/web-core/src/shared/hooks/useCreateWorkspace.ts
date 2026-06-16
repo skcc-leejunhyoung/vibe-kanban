@@ -1,36 +1,56 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
-import type { CreateAndStartWorkspaceRequest } from 'shared/types';
+import type {
+  CreateAndStartWorkspaceRequest,
+  CreateWorkspaceWithoutStartingRequest,
+  Workspace,
+} from 'shared/types';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 
-interface CreateWorkspaceParams {
+interface LinkToIssueParams {
+  remoteProjectId: string;
+  issueId: string;
+}
+
+interface CreateAndStartWorkspaceParams {
   data: CreateAndStartWorkspaceRequest;
-  linkToIssue?: {
-    remoteProjectId: string;
-    issueId: string;
-  };
+  linkToIssue?: LinkToIssueParams;
+}
+
+interface CreateWorkspaceOnlyParams {
+  data: CreateWorkspaceWithoutStartingRequest;
+  linkToIssue?: LinkToIssueParams;
 }
 
 export function useCreateWorkspace() {
   const queryClient = useQueryClient();
 
-  const createWorkspace = useMutation({
-    mutationFn: async ({ data, linkToIssue }: CreateWorkspaceParams) => {
-      const { workspace } = await workspacesApi.createAndStart(data);
-
-      if (linkToIssue && workspace) {
-        try {
-          await workspacesApi.linkToIssue(
-            workspace.id,
-            linkToIssue.remoteProjectId,
-            linkToIssue.issueId
-          );
-        } catch (linkError) {
-          console.error('Failed to link workspace to issue:', linkError);
-        }
+  const finishWorkspaceCreation = async (
+    workspace: Workspace,
+    linkToIssue?: LinkToIssueParams
+  ) => {
+    if (linkToIssue) {
+      try {
+        await workspacesApi.linkToIssue(
+          workspace.id,
+          linkToIssue.remoteProjectId,
+          linkToIssue.issueId
+        );
+      } catch (linkError) {
+        console.error('Failed to link workspace to issue:', linkError);
       }
+    }
 
-      return { workspace };
+    return { workspace };
+  };
+
+  const createWorkspace = useMutation({
+    mutationFn: async ({
+      data,
+      linkToIssue,
+    }: CreateAndStartWorkspaceParams) => {
+      const { workspace } = await workspacesApi.createAndStart(data);
+      return finishWorkspaceCreation(workspace, linkToIssue);
     },
     onSuccess: () => {
       // Invalidate workspace summaries so they refresh with the new workspace included
@@ -43,5 +63,21 @@ export function useCreateWorkspace() {
     },
   });
 
-  return { createWorkspace };
+  const createWorkspaceOnly = useMutation({
+    mutationFn: async ({ data, linkToIssue }: CreateWorkspaceOnlyParams) => {
+      const { workspace } = await workspacesApi.createOnly(data);
+      return finishWorkspaceCreation(workspace, linkToIssue);
+    },
+    onSuccess: () => {
+      // Invalidate workspace summaries so they refresh with the new workspace included
+      queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
+      // Ensure create-mode defaults refetch the latest session/model selection.
+      queryClient.invalidateQueries({ queryKey: ['workspaceCreateDefaults'] });
+    },
+    onError: (err) => {
+      console.error('Failed to create workspace:', err);
+    },
+  });
+
+  return { createWorkspace, createWorkspaceOnly };
 }

@@ -89,6 +89,8 @@ import {
   CreateFromPrError,
   CreateAndStartWorkspaceRequest,
   CreateAndStartWorkspaceResponse,
+  CreateWorkspaceWithoutStartingRequest,
+  CreateWorkspaceWithoutStartingResponse,
   RelayPairedClient,
   ListRelayPairedClientsResponse,
   RemoveRelayPairedClientResponse,
@@ -398,6 +400,16 @@ export const sessionsApi = {
 
 // Workspace APIs
 export const workspacesApi = {
+  createOnly: async (
+    data: CreateWorkspaceWithoutStartingRequest
+  ): Promise<CreateWorkspaceWithoutStartingResponse> => {
+    const response = await makeRequest(`/api/workspaces/create`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleApiResponse<CreateWorkspaceWithoutStartingResponse>(response);
+  },
+
   createAndStart: async (
     data: CreateAndStartWorkspaceRequest
   ): Promise<CreateAndStartWorkspaceResponse> => {

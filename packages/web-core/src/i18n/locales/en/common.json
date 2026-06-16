@@ -509,6 +509,10 @@
       "setupHint": "Tip: Configure setup scripts for this repository in Settings → Repositories",
       "setupHintDismiss": "Dismiss",
       "setupHintLink": "Configure in Settings"
+    },
+    "workspaceOnly": {
+      "create": "Workspace only",
+      "creating": "Creating workspace..."
     }
   },
   "modelSelector": {
