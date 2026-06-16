@@ -535,6 +535,15 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                         aria-label={
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }
+                        // Disable Safari's autocorrect/spellcheck text-replacement.
+                        // On macOS Safari these route Hangul (and other CJK) input
+                        // through `insertReplacementText` instead of real IME
+                        // composition events, so each syllable is committed as final
+                        // text and backspace deletes a whole syllable instead of a
+                        // jamo. Turning them off lets WebKit use native composition.
+                        spellCheck={false}
+                        autoCorrect="off"
+                        autoCapitalize="off"
                         onPasteCapture={handlePaste}
                       />
                     }
