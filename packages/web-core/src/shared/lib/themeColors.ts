@@ -103,3 +103,29 @@ export function applyPrimaryColor(color: string | null | undefined) {
     getRelativeLuminance(normalizedColor) > 0.45 ? '0 0% 5%' : '0 0% 100%'
   );
 }
+
+const PRIMARY_COLOR_STORAGE_KEY = 'vk-primary-color';
+
+// Cache the chosen color locally so it can be applied before first paint on
+// any route — including ones that don't load server config (e.g. remote
+// /projects/$projectId, which has no hostId).
+export function persistPrimaryColor(color: string | null | undefined) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      PRIMARY_COLOR_STORAGE_KEY,
+      normalizeHexColor(color)
+    );
+  } catch {
+    // ignore storage errors (private mode / quota)
+  }
+}
+
+export function loadPersistedPrimaryColor(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(PRIMARY_COLOR_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}

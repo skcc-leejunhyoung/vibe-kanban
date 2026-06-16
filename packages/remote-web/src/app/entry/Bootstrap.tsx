@@ -13,6 +13,10 @@ import { configureAuthRuntime } from "@/shared/lib/auth/runtime";
 import { setRemoteApiBase } from "@/shared/lib/remoteApi";
 import { setRelayApiBase } from "@/shared/lib/relayBackendApi";
 import { setLocalApiTransport } from "@/shared/lib/localApiTransport";
+import {
+  applyPrimaryColor,
+  loadPersistedPrimaryColor,
+} from "@/shared/lib/themeColors";
 import "@/shared/types/modals";
 import { queryClient } from "@/shared/lib/queryClient";
 import {
@@ -46,6 +50,14 @@ configureAuthRuntime({
     return { user_id: identity.user_id };
   },
 });
+
+// Apply the cached primary color before first paint so it survives a refresh
+// on routes that don't load host config (e.g. /projects/$projectId), where
+// config?.primary_color is unavailable.
+const cachedPrimaryColor = loadPersistedPrimaryColor();
+if (cachedPrimaryColor) {
+  applyPrimaryColor(cachedPrimaryColor);
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

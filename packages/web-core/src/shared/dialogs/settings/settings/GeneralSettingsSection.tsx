@@ -26,6 +26,7 @@ import {
   applyPrimaryColor,
   isValidPrimaryColor,
   normalizePrimaryColor,
+  persistPrimaryColor,
 } from '@/shared/lib/themeColors';
 import {
   getExecutorVariantKeys,
@@ -204,6 +205,7 @@ export function GeneralSettingsSection() {
       await updateAndSaveConfig(nextDraft);
       setTheme(nextDraft.theme);
       applyPrimaryColor(nextDraft.primary_color);
+      persistPrimaryColor(nextDraft.primary_color);
       setDirty(false);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
