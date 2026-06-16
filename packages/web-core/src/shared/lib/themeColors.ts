@@ -171,7 +171,7 @@ export function applyTheme(theme: ThemeMode | string | null | undefined) {
 export function persistTheme(theme: ThemeMode | string | null | undefined) {
   if (typeof window === 'undefined' || !theme) return;
   try {
-    window.localStorage.setItem(THEME_STORAGE_KEY, String(theme));
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
     // ignore storage errors (private mode / quota)
   }
