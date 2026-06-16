@@ -98,8 +98,8 @@ export const DEFAULT_KANBAN_PROJECT_VIEW_ID = KANBAN_PROJECT_VIEW_IDS.TEAM;
 export const DEFAULT_KANBAN_SHOW_WORKSPACES = true;
 export const DEFAULT_KANBAN_HIDE_BLOCKED = false;
 
-export const getDefaultShowSubIssuesForView = (viewId: string): boolean =>
-  viewId === KANBAN_PROJECT_VIEW_IDS.PERSONAL;
+export const getDefaultShowSubIssuesForView = (_viewId: string): boolean =>
+  true;
 
 export type KanbanProjectView = {
   id: string;
