@@ -25,6 +25,8 @@
         "mcpDesc": "モデルコンテキストプロトコルサーバー",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
+        "notifications": "Notifications",
+        "notificationsDesc": "Manage account notification preferences",
         "remote-projects": "プロジェクト",
         "remote-projectsDesc": "プロジェクトを管理",
         "relay": "Remote Access",

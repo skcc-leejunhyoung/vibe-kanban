@@ -29,6 +29,7 @@ pub mod pull_requests_local;
 pub mod response;
 pub mod tag;
 pub mod user;
+pub mod user_notification_preference;
 pub mod workspace;
 pub mod workspaces;
 
@@ -54,6 +55,7 @@ pub use pull_requests_local::*;
 pub use response::*;
 pub use tag::*;
 pub use user::*;
+pub use user_notification_preference::*;
 pub use workspace::*;
 pub use workspaces::*;
 

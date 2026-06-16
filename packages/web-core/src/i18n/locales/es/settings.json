@@ -25,6 +25,8 @@
         "mcpDesc": "Servidores de Protocolo de Contexto de Modelo (MCP)",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
+        "notifications": "Notifications",
+        "notificationsDesc": "Manage account notification preferences",
         "remote-projects": "Proyectos",
         "remote-projectsDesc": "Gestionar proyectos",
         "relay": "Remote Access",

@@ -185,6 +185,15 @@ type ListRemoteProjectsResponse = {
   projects: RemoteProject[];
 };
 
+export type UserNotificationPreference = {
+  user_id: string;
+  review_requested_enabled: boolean;
+};
+
+export type UpdateUserNotificationPreferenceRequest = {
+  review_requested_enabled: boolean;
+};
+
 export type OrganizationBillingStatus =
   | 'free'
   | 'active'
@@ -1489,6 +1498,42 @@ export const organizationsApi = {
       method: 'DELETE',
     });
     return handleRemoteResponse<void>(response);
+  },
+};
+
+export const userNotificationPreferencesApi = {
+  get: async (): Promise<UserNotificationPreference> => {
+    const response = await makeRemoteRequest(
+      '/v1/user-notification-preferences'
+    );
+    if (!response.ok) {
+      throw new ApiError(
+        response.statusText || 'Failed to load notification settings',
+        response.status,
+        response
+      );
+    }
+    return response.json();
+  },
+
+  update: async (
+    data: UpdateUserNotificationPreferenceRequest
+  ): Promise<UserNotificationPreference> => {
+    const response = await makeRemoteRequest(
+      '/v1/user-notification-preferences',
+      {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }
+    );
+    if (!response.ok) {
+      throw new ApiError(
+        response.statusText || 'Failed to update notification settings',
+        response.status,
+        response
+      );
+    }
+    return response.json();
   },
 };
 

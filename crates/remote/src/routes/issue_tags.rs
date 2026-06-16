@@ -19,7 +19,7 @@ use crate::{
     auth::RequestContext,
     db::{
         issue_tags::IssueTagRepository, issues::IssueRepository, organization_members,
-        tags::TagRepository,
+        tags::TagRepository, user_notification_preferences::UserNotificationPreferenceRepository,
     },
     mutation_definition::{MutationBuilder, NoUpdate},
     notifications::send_issue_notifications,
@@ -165,11 +165,27 @@ async fn notify_review_tag_added(
             }
         };
 
-    let recipients: Vec<Uuid> = members
-        .into_iter()
-        .map(|member| member.user_id)
-        .filter(|user_id| *user_id != actor_user_id)
-        .collect();
+    let recipients: Vec<Uuid> = members.into_iter().map(|member| member.user_id).collect();
+
+    let recipients = match UserNotificationPreferenceRepository::review_enabled_user_ids(
+        state.pool(),
+        &recipients,
+    )
+    .await
+    {
+        Ok(enabled_user_ids) => recipients
+            .into_iter()
+            .filter(|user_id| enabled_user_ids.contains(user_id))
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                organization_id = %organization_id,
+                "failed to load review notification preferences"
+            );
+            return;
+        }
+    };
 
     send_issue_notifications(
         state.pool(),

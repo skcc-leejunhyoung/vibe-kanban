@@ -29,6 +29,7 @@ pub mod pull_requests;
 pub mod reviews;
 pub mod tags;
 pub mod types;
+pub mod user_notification_preferences;
 pub mod users;
 pub mod web_push;
 pub mod workspaces;

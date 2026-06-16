@@ -25,6 +25,8 @@
         "mcpDesc": "模型上下文协议服务器",
         "organizations": "组织设置",
         "organizationsDesc": "管理组织成员和权限",
+        "notifications": "Notifications",
+        "notificationsDesc": "Manage account notification preferences",
         "remote-projects": "项目",
         "remote-projectsDesc": "管理项目",
         "relay": "Remote Access",

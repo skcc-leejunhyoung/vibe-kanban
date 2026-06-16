@@ -25,6 +25,8 @@
         "mcpDesc": "Model Context Protocol 서버",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
+        "notifications": "알림",
+        "notificationsDesc": "계정 알림 설정 관리",
         "remote-projects": "프로젝트",
         "remote-projectsDesc": "프로젝트 관리",
         "relay": "Remote Access",
