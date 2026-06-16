@@ -150,7 +150,8 @@
       "description": "¿Estás seguro de que deseas eliminar este espacio de trabajo? Esta acción no se puede deshacer.",
       "deleteBranchLabel": "Eliminar rama",
       "cannotDeleteOpenPr": "No se puede eliminar la rama mientras el PR está abierto",
-      "unlinkFromIssueLabel": "También desvincular del issue"
+      "unlinkFromIssueLabel": "También desvincular del issue",
+      "repoMissingWarning": "El repositorio de origen ya no existe en el disco. Se eliminarán el espacio de trabajo y los recursos que aún se puedan limpiar, pero no se podrá eliminar la rama."
     },
     "linkError": "Failed to link workspace"
   },

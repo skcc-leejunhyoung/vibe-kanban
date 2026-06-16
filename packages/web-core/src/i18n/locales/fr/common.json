@@ -150,7 +150,8 @@
       "description": "Êtes-vous sûr de vouloir supprimer cet espace de travail ? Cette action est irréversible.",
       "deleteBranchLabel": "Supprimer la branche",
       "cannotDeleteOpenPr": "Impossible de supprimer la branche tant que la PR est ouverte",
-      "unlinkFromIssueLabel": "Également dissocier du ticket"
+      "unlinkFromIssueLabel": "Également dissocier du ticket",
+      "repoMissingWarning": "Le dépôt source n'existe plus sur le disque. L'espace de travail et toutes les ressources pouvant encore être nettoyées seront supprimés, mais la branche ne peut pas être supprimée."
     },
     "linkError": "Failed to link workspace"
   },

@@ -150,7 +150,8 @@
       "description": "이 워크스페이스를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
       "deleteBranchLabel": "브랜치 삭제",
       "cannotDeleteOpenPr": "PR이 열려 있는 동안에는 브랜치를 삭제할 수 없습니다",
-      "unlinkFromIssueLabel": "이슈에서도 연결 해제"
+      "unlinkFromIssueLabel": "이슈에서도 연결 해제",
+      "repoMissingWarning": "원본 저장소가 디스크에 더 이상 존재하지 않습니다. 워크스페이스와 정리할 수 있는 리소스는 삭제되지만 브랜치는 삭제할 수 없습니다."
     },
     "linkError": "Failed to link workspace"
   },

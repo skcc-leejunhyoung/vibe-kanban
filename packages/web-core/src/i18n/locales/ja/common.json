@@ -150,7 +150,8 @@
       "description": "このワークスペースを削除してもよろしいですか？この操作は元に戻せません。",
       "deleteBranchLabel": "ブランチを削除",
       "cannotDeleteOpenPr": "PRがオープン中はブランチを削除できません",
-      "unlinkFromIssueLabel": "イシューからもリンク解除する"
+      "unlinkFromIssueLabel": "イシューからもリンク解除する",
+      "repoMissingWarning": "元のリポジトリがディスク上に存在しません。ワークスペースと、まだクリーンアップ可能なリソースは削除されますが、ブランチは削除できません。"
     },
     "linkError": "Failed to link workspace"
   },

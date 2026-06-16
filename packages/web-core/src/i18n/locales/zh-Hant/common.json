@@ -150,7 +150,8 @@
       "description": "確定要刪除此工作區嗎？此操作無法復原。",
       "deleteBranchLabel": "刪除分支",
       "cannotDeleteOpenPr": "PR 開啟時無法刪除分支",
-      "unlinkFromIssueLabel": "同時取消與議題的關聯"
+      "unlinkFromIssueLabel": "同時取消與議題的關聯",
+      "repoMissingWarning": "來源儲存庫已不存在於磁碟上。將刪除工作區以及仍可清理的資源，但無法刪除分支。"
     },
     "linkError": "Failed to link workspace"
   },

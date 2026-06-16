@@ -23,6 +23,8 @@ export interface DeleteWorkspaceDialogProps {
   hasOpenPR?: boolean;
   isLinkedToIssue?: boolean;
   linkedIssueSimpleId?: string;
+  /** Source repository (or one of them) no longer exists on disk. */
+  hasMissingRepo?: boolean;
 }
 
 export type DeleteWorkspaceDialogResult = {
@@ -37,13 +39,14 @@ const DeleteWorkspaceDialogImpl = NiceModal.create<DeleteWorkspaceDialogProps>(
     hasOpenPR = false,
     isLinkedToIssue = false,
     linkedIssueSimpleId,
+    hasMissingRepo = false,
   }) => {
     const modal = useModal();
     const { t } = useTranslation();
     const [deleteBranches, setDeleteBranches] = useState(false);
     const [unlinkFromIssue, setUnlinkFromIssue] = useState(true);
 
-    const canDeleteBranches = !hasOpenPR;
+    const canDeleteBranches = !hasOpenPR && !hasMissingRepo;
 
     const handleConfirm = () => {
       modal.resolve({
@@ -78,6 +81,17 @@ const DeleteWorkspaceDialogImpl = NiceModal.create<DeleteWorkspaceDialogProps>(
           </DialogHeader>
 
           <div className="py-4 space-y-4">
+            {hasMissingRepo && (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                <WarningIcon className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  {t(
+                    'workspaces.deleteDialog.repoMissingWarning',
+                    'The source repository no longer exists on disk. The workspace and any resources that can still be cleaned up will be removed, but the branch cannot be deleted.'
+                  )}
+                </span>
+              </div>
+            )}
             <div className="flex flex-col gap-1">
               <div
                 className={`flex items-center gap-3 text-sm font-medium select-none ${

@@ -1,6 +1,11 @@
 import { forwardRef, createElement } from 'react';
 import type { Icon, IconProps } from '@phosphor-icons/react';
-import type { ExecutorConfig, Merge, Workspace } from 'shared/types';
+import type {
+  ExecutorConfig,
+  Merge,
+  RepoBranchStatus,
+  Workspace,
+} from 'shared/types';
 import type { QueryClient } from '@tanstack/react-query';
 import {
   CopyIcon,
@@ -297,18 +302,30 @@ export const Actions = {
       const linkedIssueSimpleId = remoteWs?.issue_id
         ? ctx.projectMutations?.getIssue(remoteWs.issue_id)?.simple_id
         : undefined;
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      // Branch status touches the source repos on disk, so it can fail when a repo
+      // has been removed. Don't let that block deletion — fall back gracefully and
+      // surface a warning instead.
+      let branchStatus: RepoBranchStatus[] = [];
+      let branchStatusFailed = false;
+      try {
+        branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      } catch {
+        branchStatusFailed = true;
+      }
       const hasOpenPR = branchStatus.some((repoStatus) =>
         repoStatus.merges?.some(
           (m: Merge) => m.type === 'pr' && m.pr_info.status === 'open'
         )
       );
+      const hasMissingRepo =
+        branchStatusFailed || branchStatus.some((s) => s.repo_missing);
 
       const result = await DeleteWorkspaceDialog.show({
         branchName: workspace.branch,
         hasOpenPR,
         isLinkedToIssue: Boolean(remoteWs?.issue_id),
         linkedIssueSimpleId,
+        hasMissingRepo,
       });
       if (result.action === 'confirmed') {
         // Calculate next workspace before deleting (only if deleting current)
@@ -447,9 +464,8 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) => !ctx.isSignedIn,
     execute: async () => {
-      const { OAuthDialog } = await import(
-        '@/shared/dialogs/global/OAuthDialog'
-      );
+      const { OAuthDialog } =
+        await import('@/shared/dialogs/global/OAuthDialog');
       await OAuthDialog.show({});
     },
   } satisfies GlobalActionDefinition,
@@ -462,12 +478,10 @@ export const Actions = {
     isVisible: (ctx) => ctx.isSignedIn,
     execute: async (ctx) => {
       const { oauthApi } = await import('@/shared/lib/api');
-      const { useOrganizationStore } = await import(
-        '@/shared/stores/useOrganizationStore'
-      );
-      const { organizationKeys } = await import(
-        '@/shared/hooks/organizationKeys'
-      );
+      const { useOrganizationStore } =
+        await import('@/shared/stores/useOrganizationStore');
+      const { organizationKeys } =
+        await import('@/shared/hooks/organizationKeys');
 
       await oauthApi.logout();
       useOrganizationStore.getState().clearSelectedOrgId();
@@ -518,9 +532,8 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     execute: async () => {
       // Dynamic import to avoid circular dependency (pages.ts imports Actions)
-      const { CommandBarDialog } = await import(
-        '@/shared/dialogs/command-bar/CommandBarDialog'
-      );
+      const { CommandBarDialog } =
+        await import('@/shared/dialogs/command-bar/CommandBarDialog');
       CommandBarDialog.show();
     },
   },
@@ -1253,9 +1266,8 @@ export const Actions = {
     isVisible: (ctx) => ctx.layoutMode === 'kanban' && ctx.isCreatingIssue,
     execute: async (ctx) => {
       if (!ctx.kanbanProjectId) return;
-      const { ProjectSelectionDialog } = await import(
-        '@/shared/dialogs/command-bar/selections/ProjectSelectionDialog'
-      );
+      const { ProjectSelectionDialog } =
+        await import('@/shared/dialogs/command-bar/selections/ProjectSelectionDialog');
       await ProjectSelectionDialog.show({
         projectId: ctx.kanbanProjectId,
         selection: { type: 'status', issueIds: [], isCreateMode: true },
@@ -1285,9 +1297,8 @@ export const Actions = {
     isVisible: (ctx) => ctx.layoutMode === 'kanban' && ctx.isCreatingIssue,
     execute: async (ctx) => {
       if (!ctx.kanbanProjectId) return;
-      const { ProjectSelectionDialog } = await import(
-        '@/shared/dialogs/command-bar/selections/ProjectSelectionDialog'
-      );
+      const { ProjectSelectionDialog } =
+        await import('@/shared/dialogs/command-bar/selections/ProjectSelectionDialog');
       await ProjectSelectionDialog.show({
         projectId: ctx.kanbanProjectId,
         selection: { type: 'priority', issueIds: [], isCreateMode: true },

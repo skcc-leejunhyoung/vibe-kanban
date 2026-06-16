@@ -95,6 +95,9 @@ pub struct BranchStatus {
 pub struct RepoBranchStatus {
     pub repo_id: Uuid,
     pub repo_name: String,
+    /// True when the source repository no longer exists on disk (e.g. the project
+    /// folder was moved or deleted). Git-derived fields are left empty in this case.
+    pub repo_missing: bool,
     #[serde(flatten)]
     pub status: BranchStatus,
 }
@@ -345,11 +348,28 @@ pub async fn get_workspace_branch_status(
         .map(|wr| (wr.repo_id, wr.target_branch.clone()))
         .collect();
 
-    let container_ref = deployment
-        .container()
-        .ensure_container_exists(&workspace)
-        .await?;
-    let workspace_dir = PathBuf::from(&container_ref);
+    // Detect source repos that no longer exist on disk (e.g. the project folder was
+    // moved or deleted). We must not fail the whole status request in that case —
+    // otherwise the workspace becomes impossible to inspect or delete. Report those
+    // repos as missing and skip any git operations on them.
+    let missing_repo_ids: std::collections::HashSet<Uuid> = repositories
+        .iter()
+        .filter(|repo| !deployment.git().is_repo_openable(&repo.path))
+        .map(|repo| repo.id)
+        .collect();
+
+    // Re-creating worktrees requires the source repos, so only ensure the container when
+    // every source repo is still present. When one is missing, fall back to whatever
+    // container directory already exists (if any).
+    let workspace_dir = if missing_repo_ids.is_empty() {
+        let container_ref = deployment
+            .container()
+            .ensure_container_exists(&workspace)
+            .await?;
+        Some(PathBuf::from(container_ref))
+    } else {
+        workspace.container_ref.clone().map(PathBuf::from)
+    };
 
     let all_merges = Merge::find_by_workspace_id(pool, workspace.id).await?;
     let merges_by_repo: HashMap<Uuid, Vec<Merge>> =
@@ -372,39 +392,71 @@ pub async fn get_workspace_branch_status(
         };
 
         let repo_merges = merges_by_repo.get(&repo.id).cloned().unwrap_or_default();
-        let worktree_path = workspace_dir.join(&repo.name);
 
-        let head_oid = deployment
-            .git()
-            .get_head_info(&worktree_path)
-            .ok()
+        // Missing source repo: report it without touching git, so the caller can warn
+        // the user while still allowing cleanup/deletion to proceed.
+        if missing_repo_ids.contains(&repo.id) {
+            results.push(RepoBranchStatus {
+                repo_id: repo.id,
+                repo_name: repo.name,
+                repo_missing: true,
+                status: BranchStatus {
+                    commits_behind: None,
+                    commits_ahead: None,
+                    has_uncommitted_changes: None,
+                    head_oid: None,
+                    uncommitted_count: None,
+                    untracked_count: None,
+                    target_branch_name: target_branch,
+                    remote_commits_behind: None,
+                    remote_commits_ahead: None,
+                    merges: repo_merges,
+                    is_rebase_in_progress: false,
+                    conflict_op: None,
+                    conflicted_files: Vec::new(),
+                    is_target_remote: false,
+                },
+            });
+            continue;
+        }
+
+        let worktree_path = workspace_dir.as_ref().map(|dir| dir.join(&repo.name));
+
+        let head_oid = worktree_path
+            .as_ref()
+            .and_then(|path| deployment.git().get_head_info(path).ok())
             .map(|h| h.oid);
 
-        let (is_rebase_in_progress, conflicted_files, conflict_op) = {
-            let in_rebase = deployment
-                .git()
-                .is_rebase_in_progress(&worktree_path)
-                .unwrap_or(false);
-            let conflicts = deployment
-                .git()
-                .get_conflicted_files(&worktree_path)
-                .unwrap_or_default();
-            let op = if conflicts.is_empty() {
-                None
-            } else {
-                deployment
+        let (is_rebase_in_progress, conflicted_files, conflict_op) =
+            if let Some(worktree_path) = worktree_path.as_ref() {
+                let in_rebase = deployment
                     .git()
-                    .detect_conflict_op(&worktree_path)
-                    .unwrap_or(None)
+                    .is_rebase_in_progress(worktree_path)
+                    .unwrap_or(false);
+                let conflicts = deployment
+                    .git()
+                    .get_conflicted_files(worktree_path)
+                    .unwrap_or_default();
+                let op = if conflicts.is_empty() {
+                    None
+                } else {
+                    deployment
+                        .git()
+                        .detect_conflict_op(worktree_path)
+                        .unwrap_or(None)
+                };
+                (in_rebase, conflicts, op)
+            } else {
+                (false, Vec::new(), None)
             };
-            (in_rebase, conflicts, op)
-        };
 
-        let (uncommitted_count, untracked_count) =
-            match deployment.git().get_worktree_change_counts(&worktree_path) {
-                Ok((a, b)) => (Some(a), Some(b)),
-                Err(_) => (None, None),
-            };
+        let (uncommitted_count, untracked_count) = match worktree_path
+            .as_ref()
+            .map(|path| deployment.git().get_worktree_change_counts(path))
+        {
+            Some(Ok((a, b))) => (Some(a), Some(b)),
+            _ => (None, None),
+        };
 
         let has_uncommitted_changes = uncommitted_count.map(|c| c > 0);
 
@@ -451,6 +503,7 @@ pub async fn get_workspace_branch_status(
         results.push(RepoBranchStatus {
             repo_id: repo.id,
             repo_name: repo.name,
+            repo_missing: false,
             status: BranchStatus {
                 commits_ahead,
                 commits_behind,

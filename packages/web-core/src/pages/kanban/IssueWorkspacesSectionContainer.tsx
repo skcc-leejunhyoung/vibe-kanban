@@ -185,9 +185,8 @@ export function IssueWorkspacesSectionContainer({
       return;
     }
 
-    const { WorkspaceSelectionDialog } = await import(
-      '@/shared/dialogs/command-bar/WorkspaceSelectionDialog'
-    );
+    const { WorkspaceSelectionDialog } =
+      await import('@/shared/dialogs/command-bar/WorkspaceSelectionDialog');
     await WorkspaceSelectionDialog.show({ projectId, issueId });
   }, [projectId, issueId]);
 
@@ -248,6 +247,17 @@ export function IssueWorkspacesSectionContainer({
         return;
       }
 
+      // Branch status touches the source repos on disk; if a repo was removed it can
+      // fail. Tolerate that and warn instead of blocking deletion.
+      let hasMissingRepo = false;
+      try {
+        const branchStatus =
+          await workspacesApi.getBranchStatus(localWorkspaceId);
+        hasMissingRepo = branchStatus.some((s) => s.repo_missing);
+      } catch {
+        hasMissingRepo = true;
+      }
+
       const result = await DeleteWorkspaceDialog.show({
         branchName: localWorkspace.branch,
         hasOpenPR:
@@ -258,6 +268,7 @@ export function IssueWorkspacesSectionContainer({
             ?.prs.some((pr) => pr.status === 'open') ?? false,
         isLinkedToIssue: true,
         linkedIssueSimpleId: getIssue(issueId)?.simple_id,
+        hasMissingRepo,
       });
 
       if (result.action !== 'confirmed') {

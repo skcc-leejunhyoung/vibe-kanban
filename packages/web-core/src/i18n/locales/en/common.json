@@ -165,7 +165,8 @@
       "description": "Are you sure you want to delete this workspace? This action cannot be undone.",
       "deleteBranchLabel": "Delete branch",
       "cannotDeleteOpenPr": "Cannot delete branch while PR is open",
-      "unlinkFromIssueLabel": "Also unlink from issue"
+      "unlinkFromIssueLabel": "Also unlink from issue",
+      "repoMissingWarning": "The source repository no longer exists on disk. The workspace and any resources that can still be cleaned up will be removed, but the branch cannot be deleted."
     }
   },
   "fileTree": {
