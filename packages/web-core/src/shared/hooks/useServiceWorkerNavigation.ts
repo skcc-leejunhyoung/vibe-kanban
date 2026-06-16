@@ -19,9 +19,7 @@ export function useServiceWorkerNavigation() {
     }
 
     const handler = (event: MessageEvent) => {
-      const data = event.data as
-        | { type?: string; path?: string }
-        | undefined;
+      const data = event.data as { type?: string; path?: string } | undefined;
       if (
         !data ||
         data.type !== 'vk-navigate' ||

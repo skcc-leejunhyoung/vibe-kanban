@@ -1192,7 +1192,6 @@ impl LocalContainerService {
 
         let mut any_success = false;
         let mut any_failure = false;
-        let mut any_skipped = false;
 
         for workspace_repo in &workspace_repos {
             let repo = match Repo::find_by_id(&self.db.pool, workspace_repo.repo_id).await {
@@ -1237,7 +1236,6 @@ impl LocalContainerService {
                     repo.name,
                     workspace_id
                 );
-                any_skipped = true;
                 continue;
             }
 
@@ -1262,7 +1260,6 @@ impl LocalContainerService {
                     repo.name,
                     workspace_id
                 );
-                any_skipped = true;
                 continue;
             }
 
@@ -1322,17 +1319,6 @@ impl LocalContainerService {
         }
 
         remote_sync::sync_local_workspace_merge_to_remote(&client, workspace_id).await;
-
-        if !any_skipped
-            && !workspace.pinned
-            && let Err(e) = self.archive_workspace(workspace_id).await
-        {
-            tracing::error!(
-                "auto_merge: failed to archive workspace {}: {}",
-                workspace_id,
-                e
-            );
-        }
     }
 }
 

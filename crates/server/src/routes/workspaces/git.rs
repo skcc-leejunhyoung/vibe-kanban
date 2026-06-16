@@ -225,12 +225,6 @@ pub async fn merge_workspace(
         });
     }
 
-    if !workspace.pinned
-        && let Err(e) = deployment.container().archive_workspace(workspace.id).await
-    {
-        tracing::error!("Failed to archive workspace {}: {}", workspace.id, e);
-    }
-
     deployment
         .track_if_analytics_allowed(
             "task_attempt_merged",
