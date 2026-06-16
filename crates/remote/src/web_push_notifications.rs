@@ -248,15 +248,29 @@ async fn remote_web_push_click_url(
     notification: &Notification,
 ) -> Option<String> {
     let base_url = config.remote_base_url.as_deref()?;
-    if let Some(path) = notification.payload.deeplink_path.as_deref() {
-        return Some(remote_path(base_url, path));
+    let workspace_id = notification_workspace_id(pool, notification).await;
+    remote_web_push_click_url_from_parts(
+        base_url,
+        &config.workspace_path_template,
+        workspace_id,
+        notification.payload.deeplink_path.as_deref(),
+    )
+}
+
+fn remote_web_push_click_url_from_parts(
+    base_url: &str,
+    workspace_path_template: &str,
+    workspace_id: Option<Uuid>,
+    deeplink_path: Option<&str>,
+) -> Option<String> {
+    if let Some(workspace_id) = workspace_id {
+        return Some(remote_path(
+            base_url,
+            &workspace_path(workspace_path_template, workspace_id),
+        ));
     }
 
-    let workspace_id = notification_workspace_id(pool, notification).await?;
-    Some(remote_path(
-        base_url,
-        &workspace_path(&config.workspace_path_template, workspace_id),
-    ))
+    deeplink_path.map(|path| remote_path(base_url, path))
 }
 
 async fn notification_workspace_id(pool: &PgPool, notification: &Notification) -> Option<Uuid> {
@@ -379,7 +393,7 @@ fn issue_label(payload: &NotificationPayload) -> String {
 mod tests {
     use uuid::Uuid;
 
-    use super::{remote_path, workspace_path};
+    use super::{remote_path, remote_web_push_click_url_from_parts, workspace_path};
 
     #[test]
     fn workspace_path_uses_workspace_alias() {
@@ -406,6 +420,36 @@ mod tests {
         assert_eq!(
             remote_path("https://vk.example.com/", "/projects/p/issues/i"),
             "https://vk.example.com/projects/p/issues/i"
+        );
+    }
+
+    #[test]
+    fn remote_web_push_click_url_prefers_workspace_over_deeplink_path() {
+        let workspace_id = Uuid::parse_str("018f5f99-7f0d-7a7f-9abc-001122334455").unwrap();
+
+        assert_eq!(
+            remote_web_push_click_url_from_parts(
+                "https://vk.example.com/",
+                "/workspace/{workspace_id}",
+                Some(workspace_id),
+                Some("/projects/project-id/issues/issue-id"),
+            ),
+            Some(
+                "https://vk.example.com/workspace/018f5f99-7f0d-7a7f-9abc-001122334455".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn remote_web_push_click_url_uses_deeplink_without_workspace() {
+        assert_eq!(
+            remote_web_push_click_url_from_parts(
+                "https://vk.example.com/",
+                "/workspace/{workspace_id}",
+                None,
+                Some("/projects/project-id/issues/issue-id"),
+            ),
+            Some("https://vk.example.com/projects/project-id/issues/issue-id".to_string())
         );
     }
 }
