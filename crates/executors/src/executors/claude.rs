@@ -1792,9 +1792,14 @@ impl ClaudeLogProcessor {
                     }
                 }
                 ClaudeStreamEvent::MessageStop => {
-                    if let Some(message_id) = self.streaming_message_id.take() {
-                        let _ = self.streaming_messages.remove(&message_id);
-                    }
+                    // Do NOT drop the streaming state here. Some Claude Code
+                    // versions emit `message_stop` BEFORE the final non-partial
+                    // `assistant` message; that message reuses the streamed entry
+                    // indices held in `streaming_messages` to avoid rendering the
+                    // whole response twice. Let the `assistant` handler be the sole
+                    // consumer that removes the state; only clear the active id
+                    // pointer here so later content blocks aren't misattributed.
+                    self.streaming_message_id = None;
                 }
                 ClaudeStreamEvent::Unknown => {}
             },
@@ -2866,6 +2871,88 @@ mod tests {
             NormalizedEntryType::AssistantMessage
         ));
         assert_eq!(entries[0].content, "Final result");
+    }
+
+    /// Feed a full stream-json sequence through ONE processor sharing ONE index
+    /// provider, then count distinct entry indices that end up holding the given
+    /// assistant text. >1 means the final message was rendered more than once.
+    fn count_assistant_entries_with(lines: &[&str], text: &str) -> usize {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        let mut final_by_index: std::collections::BTreeMap<usize, NormalizedEntry> =
+            Default::default();
+        for line in lines {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            let patches = processor.normalize_entries(&parsed, "", &provider);
+            for patch in &patches {
+                if let Some((idx, entry)) = extract_normalized_entry_from_patch(patch) {
+                    final_by_index.insert(idx, entry);
+                }
+            }
+        }
+        final_by_index
+            .values()
+            .filter(|e| {
+                matches!(e.entry_type, NormalizedEntryType::AssistantMessage) && e.content == text
+            })
+            .count()
+    }
+
+    const MSG_START: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","role":"assistant","content":[]}}}"#;
+    const CB_START: &str = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#;
+    const CB_DELTA_1: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello "}}}"#;
+    const CB_DELTA_2: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}}"#;
+    const CB_STOP: &str =
+        r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#;
+    const MSG_STOP: &str = r#"{"type":"stream_event","event":{"type":"message_stop"}}"#;
+    const ASSISTANT_FULL: &str = r#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Hello world"}]}}"#;
+    const RESULT_SUCCESS: &str =
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world"}"#;
+
+    /// Correct ordering observed on Claude Code 2.1.170: the full `assistant`
+    /// message arrives BEFORE `message_stop`, so the streaming entry index is
+    /// reused (replace) and the response is rendered exactly once.
+    #[test]
+    fn test_streaming_dedup_assistant_before_message_stop() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            CB_STOP,
+            ASSISTANT_FULL,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        assert_eq!(
+            count_assistant_entries_with(&lines, "Hello world"),
+            1,
+            "assistant message should be rendered exactly once when assistant precedes message_stop"
+        );
+    }
+
+    /// Regression: when `message_stop` arrives BEFORE the full `assistant`
+    /// message (ordering seen on some Claude Code versions), MessageStop removes
+    /// the streaming state, so the `assistant` handler can no longer reuse the
+    /// streamed entry index and emits the SAME text at a new index -> the whole
+    /// response is shown twice. Must stay at 1.
+    #[test]
+    fn test_streaming_dedup_message_stop_before_assistant() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            CB_STOP,
+            MSG_STOP,
+            ASSISTANT_FULL,
+            RESULT_SUCCESS,
+        ];
+        assert_eq!(
+            count_assistant_entries_with(&lines, "Hello world"),
+            1,
+            "DUPLICATION: assistant message rendered more than once when message_stop precedes assistant"
+        );
     }
 
     #[test]
