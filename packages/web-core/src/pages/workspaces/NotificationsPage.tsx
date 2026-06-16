@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
 import {
+  ArrowLeftIcon,
   BellIcon,
   BellRingingIcon,
   CheckIcon,
   ChecksIcon,
 } from '@phosphor-icons/react';
+import { Switch } from '@vibe/ui/components/Switch';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useNotifications } from '@/shared/hooks/useNotifications';
@@ -103,6 +105,12 @@ function WebPushToggle() {
     }
   }, [pending, refresh, runtime, status]);
 
+  const checked = status === 'subscribed';
+  const disabled =
+    pending ||
+    status === 'unsupported' ||
+    status === 'disabled' ||
+    status === 'denied';
   const label =
     status === 'subscribed'
       ? 'Push on'
@@ -115,27 +123,22 @@ function WebPushToggle() {
             : 'Enable push';
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      disabled={
-        pending ||
-        status === 'unsupported' ||
-        status === 'disabled' ||
-        status === 'denied'
-      }
+    <div
       className={cn(
-        'flex items-center gap-1 px-base py-half text-sm transition-colors',
-        'disabled:cursor-not-allowed disabled:opacity-50',
-        status === 'subscribed'
-          ? 'text-brand hover:text-brand'
-          : 'text-low hover:text-normal'
+        'flex items-center gap-half px-base py-half text-sm text-low',
+        disabled && 'opacity-50'
       )}
       title={label}
     >
       <BellRingingIcon size={16} />
       <span className="hidden sm:inline">{pending ? 'Saving...' : label}</span>
-    </button>
+      <Switch
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={handleClick}
+        aria-label={label}
+      />
+    </div>
   );
 }
 
@@ -189,7 +192,24 @@ export function NotificationsPage() {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex items-center justify-between px-double py-base border-b border-border">
-        <h1 className="text-xl font-medium text-high">Notifications</h1>
+        <div className="flex items-center gap-half min-w-0">
+          <button
+            type="button"
+            onClick={() => router.history.back()}
+            className={cn(
+              'flex sm:hidden items-center justify-center rounded-sm p-half text-low transition-colors',
+              'hover:bg-secondary hover:text-normal',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
+            )}
+            aria-label="Go back"
+            title="Back"
+          >
+            <ArrowLeftIcon size={18} />
+          </button>
+          <h1 className="text-xl font-medium text-high truncate">
+            Notifications
+          </h1>
+        </div>
         <div className="flex items-center gap-half">
           <WebPushToggle />
           {unseenCount > 0 && (

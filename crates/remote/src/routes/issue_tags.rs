@@ -1,6 +1,6 @@
 use api_types::{
     CreateIssueTagRequest, DeleteResponse, IssueTag, ListIssueTagsQuery, ListIssueTagsResponse,
-    MutationResponse,
+    MutationResponse, NotificationPayload, NotificationType,
 };
 use axum::{
     Json,
@@ -17,9 +17,15 @@ use super::{
 use crate::{
     AppState,
     auth::RequestContext,
-    db::issue_tags::IssueTagRepository,
+    db::{
+        issue_tags::IssueTagRepository, issues::IssueRepository, organization_members,
+        tags::TagRepository,
+    },
     mutation_definition::{MutationBuilder, NoUpdate},
+    notifications::send_issue_notifications,
 };
+
+const REVIEW_TAG_NAME: &str = "review";
 
 /// Mutation definition for IssueTag - provides both router and TypeScript metadata.
 pub fn mutation() -> MutationBuilder<IssueTag, CreateIssueTagRequest, NoUpdate> {
@@ -95,7 +101,7 @@ async fn create_issue_tag(
     Extension(ctx): Extension<RequestContext>,
     Json(payload): Json<CreateIssueTagRequest>,
 ) -> Result<Json<MutationResponse<IssueTag>>, ErrorResponse> {
-    ensure_issue_access(state.pool(), ctx.user.id, payload.issue_id).await?;
+    let organization_id = ensure_issue_access(state.pool(), ctx.user.id, payload.issue_id).await?;
 
     let response =
         IssueTagRepository::create(state.pool(), payload.id, payload.issue_id, payload.tag_id)
@@ -105,7 +111,81 @@ async fn create_issue_tag(
                 db_error(error, "failed to create issue tag")
             })?;
 
+    notify_review_tag_added(&state, organization_id, ctx.user.id, &response.data).await;
+
     Ok(Json(response))
+}
+
+async fn notify_review_tag_added(
+    state: &AppState,
+    organization_id: Uuid,
+    actor_user_id: Uuid,
+    issue_tag: &IssueTag,
+) {
+    let tag = match TagRepository::find_by_id(state.pool(), issue_tag.tag_id).await {
+        Ok(Some(tag)) => tag,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                tag_id = %issue_tag.tag_id,
+                "failed to load tag for review notification"
+            );
+            return;
+        }
+    };
+
+    if tag.name.trim().to_lowercase() != REVIEW_TAG_NAME {
+        return;
+    }
+
+    let issue = match IssueRepository::find_by_id(state.pool(), issue_tag.issue_id).await {
+        Ok(Some(issue)) => issue,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                issue_id = %issue_tag.issue_id,
+                "failed to load issue for review notification"
+            );
+            return;
+        }
+    };
+
+    let members =
+        match organization_members::list_by_organization(state.pool(), organization_id).await {
+            Ok(members) => members,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    organization_id = %organization_id,
+                    "failed to list organization members for review notification"
+                );
+                return;
+            }
+        };
+
+    let recipients: Vec<Uuid> = members
+        .into_iter()
+        .map(|member| member.user_id)
+        .filter(|user_id| *user_id != actor_user_id)
+        .collect();
+
+    send_issue_notifications(
+        state.pool(),
+        organization_id,
+        actor_user_id,
+        &recipients,
+        &issue,
+        NotificationType::IssueReviewRequested,
+        NotificationPayload {
+            tag_name: Some(tag.name),
+            ..Default::default()
+        },
+        None,
+        Some(issue.id),
+    )
+    .await;
 }
 
 #[instrument(

@@ -202,6 +202,8 @@ export function getGroupedNotificationSegments(
 
       return [...actor, text(' changed status of '), ...issueSegments];
     }
+    case 'issue_review_requested':
+      return [...actor, text(' requested review on '), ...issueSegments];
     case 'issue_deleted':
       return [...actor, text(' deleted '), ...issueSegments];
     default:

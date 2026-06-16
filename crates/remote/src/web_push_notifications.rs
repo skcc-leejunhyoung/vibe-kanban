@@ -248,10 +248,14 @@ async fn remote_web_push_click_url(
     notification: &Notification,
 ) -> Option<String> {
     let base_url = config.remote_base_url.as_deref()?;
+    if let Some(path) = notification.payload.deeplink_path.as_deref() {
+        return Some(remote_path(base_url, path));
+    }
+
     let workspace_id = notification_workspace_id(pool, notification).await?;
-    Some(format!(
-        "{base_url}{}",
-        workspace_path(&config.workspace_path_template, workspace_id)
+    Some(remote_path(
+        base_url,
+        &workspace_path(&config.workspace_path_template, workspace_id),
     ))
 }
 
@@ -316,6 +320,14 @@ fn workspace_path(template: &str, workspace_id: Uuid) -> String {
     }
 }
 
+fn remote_path(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
 fn is_expired_subscription_error(error: &WebPushError) -> bool {
     matches!(
         error,
@@ -347,6 +359,7 @@ fn notification_body(notification_type: NotificationType, payload: &Notification
         NotificationType::IssueDeleted => format!("{issue}: issue deleted"),
         NotificationType::IssueTitleChanged => format!("{issue}: title changed"),
         NotificationType::IssueDescriptionChanged => format!("{issue}: description changed"),
+        NotificationType::IssueReviewRequested => format!("{issue}: ready for review"),
     }
 }
 
@@ -366,7 +379,7 @@ fn issue_label(payload: &NotificationPayload) -> String {
 mod tests {
     use uuid::Uuid;
 
-    use super::workspace_path;
+    use super::{remote_path, workspace_path};
 
     #[test]
     fn workspace_path_uses_workspace_alias() {
@@ -385,6 +398,14 @@ mod tests {
         assert_eq!(
             workspace_path("workspace/{workspace_id}", workspace_id),
             "/workspace/018f5f99-7f0d-7a7f-9abc-001122334455"
+        );
+    }
+
+    #[test]
+    fn remote_path_joins_base_url_and_deeplink_path() {
+        assert_eq!(
+            remote_path("https://vk.example.com/", "/projects/p/issues/i"),
+            "https://vk.example.com/projects/p/issues/i"
         );
     }
 }

@@ -20,7 +20,8 @@ type IssueChangeField =
   | 'description'
   | 'priority'
   | 'assignee'
-  | 'unassigned';
+  | 'unassigned'
+  | 'review';
 
 type GroupableNotificationKind = Exclude<NotificationGroupKind, 'single'>;
 
@@ -92,6 +93,11 @@ const NOTIFICATION_GROUPING_META: Partial<
   },
   issue_comment_reaction: {
     groupKind: 'reactions',
+    scope: 'issue',
+  },
+  issue_review_requested: {
+    groupKind: 'issue_changes',
+    issueChangeField: 'review',
     scope: 'issue',
   },
   issue_deleted: {

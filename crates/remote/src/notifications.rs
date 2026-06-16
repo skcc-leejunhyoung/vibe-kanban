@@ -214,5 +214,6 @@ fn build_payload(
         new_priority: extra_payload.new_priority,
         assignee_user_id: extra_payload.assignee_user_id,
         emoji: extra_payload.emoji,
+        tag_name: extra_payload.tag_name,
     }
 }

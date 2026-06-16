@@ -19,6 +19,7 @@ pub enum NotificationType {
     IssueDeleted,
     IssueTitleChanged,
     IssueDescriptionChanged,
+    IssueReviewRequested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -78,6 +79,8 @@ pub struct NotificationPayload {
     pub assignee_user_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emoji: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
