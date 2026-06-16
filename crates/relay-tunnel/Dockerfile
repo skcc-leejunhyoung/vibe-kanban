@@ -9,6 +9,17 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
+# Optional extra trusted CA: if a cert is dropped into crates/remote/local-ca/
+# (git-ignored), trust it so rustup (static.rust-lang.org), cargo
+# (index.crates.io) and git HTTPS work inside the build. No-op when the folder
+# has no cert. Mirrors crates/remote/Dockerfile (corporate MITM workaround).
+COPY crates/remote/local-ca/ /tmp/vk-local-ca/
+RUN if ls /tmp/vk-local-ca/*.crt >/dev/null 2>&1; then \
+      cp /tmp/vk-local-ca/*.crt /usr/local/share/ca-certificates/ && update-ca-certificates; \
+    fi
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    CARGO_HTTP_CAINFO=/etc/ssl/certs/ca-certificates.crt
+
 WORKDIR /app
 
 COPY rust-toolchain.toml ./
@@ -59,6 +70,12 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates libssl3 wget \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --system --create-home --uid 10001 appuser
+
+# Optional extra trusted CA at runtime (see crates/remote/local-ca/). No-op when absent.
+COPY crates/remote/local-ca/ /tmp/vk-local-ca/
+RUN if ls /tmp/vk-local-ca/*.crt >/dev/null 2>&1; then \
+      cp /tmp/vk-local-ca/*.crt /usr/local/share/ca-certificates/ && update-ca-certificates; \
+    fi
 
 COPY --from=builder /app/bin/relay-server /usr/local/bin/relay-server
 
