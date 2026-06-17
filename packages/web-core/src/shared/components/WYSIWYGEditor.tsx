@@ -69,6 +69,7 @@ import { type EditorState, type LexicalEditor } from 'lexical';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
 import { useSlashCommands } from '@/shared/hooks/useExecutorDiscovery';
+import { useIsRealMobile } from '@/shared/hooks/useIsMobile';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { cn } from '@/shared/lib/utils';
 import { repoApi } from '@/shared/lib/api';
@@ -298,6 +299,9 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
 
     // Copy button state
     const [copied, setCopied] = useState(false);
+    // On real mobile devices, suppress editor autofocus so the on-screen
+    // keyboard doesn't pop up and cover the screen when the editor mounts.
+    const isRealMobile = useIsRealMobile();
     const diffPaths = useDiffPaths();
     const preferredRepoId = useUiPreferencesStore(
       (state) => state.fileSearchRepoId
@@ -568,7 +572,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 {/* Only include editing plugins when not in read-only mode */}
                 {!disabled && (
                   <>
-                    {autoFocus && <AutoFocusPlugin />}
+                    {autoFocus && !isRealMobile && <AutoFocusPlugin />}
                     <HistoryPlugin />
                     <ImeDeleteGuardPlugin />
                     <CodeBlockEscapePlugin />
