@@ -13,12 +13,10 @@ use chrono::{DateTime, Utc};
 use deployment::Deployment;
 use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
-use services::services::{
-    config::save_config_to_file, oauth_credentials::Credentials, remote_sync,
-};
+use services::services::{oauth_credentials::Credentials, remote_sync};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
-use utils::{assets::config_path, jwt::extract_expiration, response::ApiResponse};
+use utils::{jwt::extract_expiration, response::ApiResponse};
 use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError, runtime::relay_registration};
@@ -345,38 +343,6 @@ async fn finalize_login(
             tracing::error!(?e, "failed to save credentials");
             ApiError::Io(e)
         })?;
-
-    let config_guard = deployment.config().read().await;
-    if !config_guard.analytics_enabled {
-        let mut new_config = config_guard.clone();
-        drop(config_guard);
-
-        new_config.analytics_enabled = true;
-
-        let config_path = config_path();
-        if let Err(e) = save_config_to_file(&new_config, &config_path).await {
-            tracing::warn!(
-                ?e,
-                "failed to save config after enabling analytics on login"
-            );
-        } else {
-            let mut config = deployment.config().write().await;
-            *config = new_config;
-            drop(config);
-
-            tracing::info!("analytics automatically enabled after successful login");
-
-            if let Some(analytics) = deployment.analytics() {
-                analytics.track_event(
-                    deployment.user_id(),
-                    "analytics_session_start",
-                    Some(serde_json::json!({})),
-                );
-            }
-        }
-    } else {
-        drop(config_guard);
-    }
 
     let profile = match deployment.get_login_status().await {
         api_types::LoginStatus::LoggedIn {

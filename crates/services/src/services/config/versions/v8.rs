@@ -81,8 +81,8 @@ pub struct Config {
 
 impl Config {
     fn from_v7_config(old_config: v7::Config) -> Self {
-        // Convert Option<bool> to bool: None or Some(true) become true, Some(false) stays false
-        let analytics_enabled = old_config.analytics_enabled.unwrap_or(true);
+        // Default analytics to disabled (opt-in): only an explicit Some(true) enables it
+        let analytics_enabled = old_config.analytics_enabled.unwrap_or(false);
 
         Self {
             config_version: "v8".to_string(),
@@ -152,7 +152,7 @@ impl Default for Config {
             notifications: NotificationConfig::default(),
             editor: EditorConfig::default(),
             github: GitHubConfig::default(),
-            analytics_enabled: true,
+            analytics_enabled: false,
             workspace_dir: None,
             last_app_version: None,
             show_release_notes: false,
