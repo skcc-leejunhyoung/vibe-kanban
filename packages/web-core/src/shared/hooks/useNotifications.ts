@@ -23,9 +23,24 @@ export function useNotifications() {
     }
   );
 
-  const groupedNotifications = useMemo(
-    () => groupNotifications(result.data),
+  const activeNotifications = useMemo(
+    () => result.data.filter((notification) => !notification.dismissed_at),
     [result.data]
+  );
+
+  const archivedNotifications = useMemo(
+    () => result.data.filter((notification) => notification.dismissed_at),
+    [result.data]
+  );
+
+  const groupedNotifications = useMemo(
+    () => groupNotifications(activeNotifications),
+    [activeNotifications]
+  );
+
+  const groupedArchivedNotifications = useMemo(
+    () => groupNotifications(archivedNotifications),
+    [archivedNotifications]
   );
 
   const unseenCount = useMemo(
@@ -36,7 +51,10 @@ export function useNotifications() {
   return {
     ...result,
     enabled,
+    activeNotifications,
+    archivedNotifications,
     groupedNotifications,
+    groupedArchivedNotifications,
     unseenCount,
   };
 }

@@ -31,6 +31,7 @@ export type GroupedNotification = {
   latest: Notification;
   seen: boolean;
   deeplinkPath: string | null;
+  notificationIds: string[];
   notificationCount: number;
   unseenNotificationIds: string[];
   issueChangeCount: number;
@@ -156,6 +157,7 @@ function buildGroupedNotification(
     latest,
     seen: unseenNotificationIds.length === 0,
     deeplinkPath: getDeeplinkPath(latest),
+    notificationIds: notifications.map((notification) => notification.id),
     notificationCount: notifications.length,
     unseenNotificationIds,
     issueChangeCount,

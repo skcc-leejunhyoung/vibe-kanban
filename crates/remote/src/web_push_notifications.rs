@@ -131,6 +131,7 @@ pub async fn send_custom_notification(
     title: String,
     body: String,
     workspace_id: Option<Uuid>,
+    notification_id: Option<Uuid>,
 ) {
     let Some(config) = WebPushConfig::from_env().ok().flatten() else {
         return;
@@ -229,7 +230,7 @@ async fn send_custom_to_subscription(
         title,
         body: body.to_string(),
         deeplink_path,
-        notification_id: Uuid::new_v4().to_string(),
+        notification_id: notification_id.unwrap_or_else(Uuid::new_v4).to_string(),
     };
     let payload = serde_json::to_vec(&payload).map_err(|_| WebPushError::InvalidResponse)?;
 
@@ -374,6 +375,10 @@ fn notification_body(notification_type: NotificationType, payload: &Notification
         NotificationType::IssueTitleChanged => format!("{issue}: title changed"),
         NotificationType::IssueDescriptionChanged => format!("{issue}: description changed"),
         NotificationType::IssueReviewRequested => format!("{issue}: ready for review"),
+        NotificationType::WorkspaceTaskCompleted => payload
+            .body
+            .clone()
+            .unwrap_or_else(|| "workspace task completed".to_string()),
     }
 }
 

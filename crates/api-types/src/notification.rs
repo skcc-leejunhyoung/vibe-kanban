@@ -20,6 +20,7 @@ pub enum NotificationType {
     IssueTitleChanged,
     IssueDescriptionChanged,
     IssueReviewRequested,
+    WorkspaceTaskCompleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -31,6 +32,7 @@ pub enum NotificationGroupKind {
     Comments,
     Reactions,
     IssueDeleted,
+    WorkspaceTask,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -81,10 +83,18 @@ pub struct NotificationPayload {
     pub emoji: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
 pub struct UpdateNotificationRequest {
     #[serde(default, deserialize_with = "some_if_present")]
     pub seen: Option<bool>,
+    #[serde(default, deserialize_with = "some_if_present")]
+    pub archived: Option<bool>,
 }

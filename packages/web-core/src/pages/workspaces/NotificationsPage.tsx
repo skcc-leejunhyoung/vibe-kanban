@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
 import {
   ArrowLeftIcon,
@@ -7,6 +7,7 @@ import {
   CheckIcon,
   ChecksIcon,
 } from '@phosphor-icons/react';
+import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { Switch } from '@vibe/ui/components/Switch';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
@@ -144,8 +145,33 @@ function WebPushToggle() {
 
 export function NotificationsPage() {
   const router = useRouter();
-  const { data, updateMany, enabled, unseenCount, groupedNotifications } =
-    useNotifications();
+  const {
+    data,
+    activeNotifications,
+    updateMany,
+    enabled,
+    unseenCount,
+    groupedNotifications,
+    groupedArchivedNotifications,
+  } = useNotifications();
+  const [view, setView] = useState<'inbox' | 'archive'>('inbox');
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const visibleGroups =
+    view === 'archive' ? groupedArchivedNotifications : groupedNotifications;
+  const selectedGroups = useMemo(
+    () => visibleGroups.filter((group) => selectedGroupIds.has(group.id)),
+    [selectedGroupIds, visibleGroups]
+  );
+  const selectedNotificationIds = useMemo(
+    () =>
+      Array.from(
+        new Set(selectedGroups.flatMap((group) => group.notificationIds))
+      ),
+    [selectedGroups]
+  );
+  const selectedCount = selectedGroups.length;
   const { membersByUserId } = useNotificationMembers(data);
 
   const markGroupSeen = useCallback(
@@ -164,6 +190,56 @@ export function NotificationsPage() {
     [updateMany]
   );
 
+  useEffect(() => {
+    setSelectedGroupIds(new Set());
+  }, [view]);
+
+  const toggleGroupSelected = useCallback(
+    (groupId: string, selected: boolean) => {
+      setSelectedGroupIds((current) => {
+        const next = new Set(current);
+        if (selected) {
+          next.add(groupId);
+        } else {
+          next.delete(groupId);
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const allVisibleSelected =
+    visibleGroups.length > 0 &&
+    visibleGroups.every((group) => selectedGroupIds.has(group.id));
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedGroupIds((current) => {
+      if (
+        visibleGroups.length > 0 &&
+        visibleGroups.every((group) => current.has(group.id))
+      ) {
+        return new Set();
+      }
+
+      return new Set(visibleGroups.map((group) => group.id));
+    });
+  }, [visibleGroups]);
+
+  const updateSelectedSeen = useCallback(
+    (seen: boolean) => {
+      if (selectedNotificationIds.length === 0) return;
+      updateMany(
+        selectedNotificationIds.map((id) => ({
+          id,
+          changes: { seen },
+        }))
+      );
+      setSelectedGroupIds(new Set());
+    },
+    [selectedNotificationIds, updateMany]
+  );
+
   const handleClick = useCallback(
     (group: GroupedNotification) => {
       markGroupSeen(group);
@@ -176,10 +252,10 @@ export function NotificationsPage() {
   );
 
   const handleMarkAllSeen = useCallback(() => {
-    const unseen = data.filter((n) => !n.seen);
+    const unseen = activeNotifications.filter((n) => !n.seen);
     if (unseen.length === 0) return;
     updateMany(unseen.map((n) => ({ id: n.id, changes: { seen: true } })));
-  }, [data, updateMany]);
+  }, [activeNotifications, updateMany]);
 
   if (!enabled) {
     return (
@@ -212,7 +288,7 @@ export function NotificationsPage() {
         </div>
         <div className="flex items-center gap-half">
           <WebPushToggle />
-          {unseenCount > 0 && (
+          {view === 'inbox' && unseenCount > 0 && selectedCount === 0 && (
             <button
               type="button"
               onClick={handleMarkAllSeen}
@@ -225,15 +301,72 @@ export function NotificationsPage() {
         </div>
       </div>
 
+      <div className="flex items-center justify-between gap-base px-double py-half border-b border-border">
+        <div className="flex items-center gap-half">
+          {(['inbox', 'archive'] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setView(tab)}
+              className={cn(
+                'px-base py-half rounded-sm text-sm transition-colors cursor-pointer',
+                view === tab
+                  ? 'bg-secondary text-high'
+                  : 'text-low hover:text-normal hover:bg-secondary'
+              )}
+            >
+              {tab === 'inbox' ? 'Inbox' : 'Archive'}
+            </button>
+          ))}
+        </div>
+
+        {visibleGroups.length > 0 && (
+          <div className="flex items-center gap-half text-sm text-low">
+            <Checkbox
+              checked={allVisibleSelected}
+              onCheckedChange={toggleSelectAll}
+              aria-label="Select all notifications"
+            />
+            {selectedCount > 0 ? (
+              <>
+                <span className="hidden sm:inline">
+                  {selectedCount} selected
+                </span>
+                <button
+                  type="button"
+                  onClick={() => updateSelectedSeen(true)}
+                  className="px-half py-half rounded-sm hover:bg-secondary hover:text-normal transition-colors cursor-pointer"
+                >
+                  Mark read
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSelectedSeen(false)}
+                  className="px-half py-half rounded-sm hover:bg-secondary hover:text-normal transition-colors cursor-pointer"
+                >
+                  Mark unread
+                </button>
+              </>
+            ) : (
+              <span className="hidden sm:inline">Select</span>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="flex-1 overflow-y-auto">
-        {groupedNotifications.length === 0 ? (
+        {visibleGroups.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-low">
             <BellIcon size={32} weight="light" />
-            <p className="text-base">No notifications yet</p>
+            <p className="text-base">
+              {view === 'archive'
+                ? 'No archived notifications'
+                : 'No notifications yet'}
+            </p>
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {groupedNotifications.map((group) => (
+            {visibleGroups.map((group) => (
               <div
                 key={group.id}
                 role="button"
@@ -253,6 +386,15 @@ export function NotificationsPage() {
                   !group.seen && 'bg-brand/5'
                 )}
               >
+                <Checkbox
+                  checked={selectedGroupIds.has(group.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  onCheckedChange={(checked) =>
+                    toggleGroupSelected(group.id, checked)
+                  }
+                  className="shrink-0"
+                  aria-label="Select notification"
+                />
                 <span
                   className={cn(
                     'shrink-0 w-2 h-2 rounded-full',

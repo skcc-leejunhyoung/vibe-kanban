@@ -149,12 +149,13 @@ async fn update_notification(
         ));
     }
 
-    let data = NotificationRepository::update(&mut *tx, notification_id, payload.seen)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to update notification");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-        })?;
+    let data =
+        NotificationRepository::update(&mut *tx, notification_id, payload.seen, payload.archived)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to update notification");
+                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            })?;
 
     let txid = get_txid(&mut *tx).await.map_err(|error| {
         tracing::error!(?error, "failed to get txid");
@@ -284,12 +285,17 @@ async fn bulk_update_notifications(
             ));
         }
 
-        let updated = NotificationRepository::update(&mut *tx, item.id, item.changes.seen)
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, notification_id = %item.id, "failed to update notification");
-                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-            })?;
+        let updated = NotificationRepository::update(
+            &mut *tx,
+            item.id,
+            item.changes.seen,
+            item.changes.archived,
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, notification_id = %item.id, "failed to update notification");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+        })?;
 
         results.push(updated);
     }

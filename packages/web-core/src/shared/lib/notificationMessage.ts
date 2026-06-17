@@ -204,6 +204,11 @@ export function getGroupedNotificationSegments(
     }
     case 'issue_review_requested':
       return [...actor, text(' requested review on '), ...issueSegments];
+    case 'workspace_task_completed':
+      return [
+        emphasis(payload.title ?? 'Workspace task completed'),
+        ...(payload.body ? [text(`: ${payload.body}`)] : []),
+      ];
     case 'issue_deleted':
       return [...actor, text(' deleted '), ...issueSegments];
     default:

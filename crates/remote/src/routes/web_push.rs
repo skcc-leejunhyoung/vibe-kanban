@@ -11,7 +11,10 @@ use crate::{
     AppState,
     auth::RequestContext,
     config::WebPushConfig,
-    db::web_push::WebPushSubscriptionRepository,
+    db::{
+        notifications::NotificationRepository, projects::ProjectRepository,
+        web_push::WebPushSubscriptionRepository, workspaces::WorkspaceRepository,
+    },
     routes::error::{ErrorResponse, db_error},
 };
 
@@ -145,12 +148,81 @@ async fn notify_self(
         ));
     }
 
+    let notification_id = if let Some(workspace_id) = payload.workspace_id {
+        match WorkspaceRepository::find_by_local_id(state.pool(), workspace_id).await {
+            Ok(Some(workspace)) if workspace.owner_user_id == ctx.user.id => {
+                let organization_id =
+                    ProjectRepository::organization_id(state.pool(), workspace.project_id)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                ?error,
+                                %workspace_id,
+                                "failed to resolve workspace notification organization"
+                            );
+                            ErrorResponse::new(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal server error",
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            ErrorResponse::new(StatusCode::NOT_FOUND, "workspace project not found")
+                        })?;
+
+                match NotificationRepository::create(
+                    state.pool(),
+                    organization_id,
+                    ctx.user.id,
+                    api_types::NotificationType::WorkspaceTaskCompleted,
+                    api_types::NotificationPayload {
+                        deeplink_path: Some(format!("/workspace/{workspace_id}")),
+                        title: Some(payload.title.clone()),
+                        body: Some(payload.body.clone()),
+                        workspace_id: Some(workspace_id),
+                        ..Default::default()
+                    },
+                    workspace.issue_id,
+                    None,
+                )
+                .await
+                {
+                    Ok(notification) => Some(notification.id),
+                    Err(error) => {
+                        tracing::warn!(?error, %workspace_id, "failed to save workspace notification");
+                        None
+                    }
+                }
+            }
+            Ok(Some(_)) => {
+                return Err(ErrorResponse::new(
+                    StatusCode::NOT_FOUND,
+                    "workspace not found",
+                ));
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    %workspace_id,
+                    user_id = %ctx.user.id,
+                    "forwarded workspace notification has no synced remote workspace"
+                );
+                None
+            }
+            Err(error) => {
+                tracing::warn!(?error, %workspace_id, "failed to load workspace");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     tokio::spawn(crate::web_push_notifications::send_custom_notification(
         state.pool().clone(),
         ctx.user.id,
         payload.title,
         payload.body,
         payload.workspace_id,
+        notification_id,
     ));
 
     Ok(StatusCode::ACCEPTED)

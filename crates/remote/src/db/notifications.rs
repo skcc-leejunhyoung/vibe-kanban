@@ -186,6 +186,7 @@ impl NotificationRepository {
         executor: E,
         id: Uuid,
         seen: Option<bool>,
+        archived: Option<bool>,
     ) -> Result<Notification, NotificationError>
     where
         E: Executor<'e, Database = Postgres>,
@@ -196,7 +197,9 @@ impl NotificationRepository {
             UPDATE notifications
             SET seen = COALESCE($1, seen),
                 dismissed_at = CASE
-                    WHEN $1 = true AND dismissed_at IS NULL THEN NOW()
+                    WHEN $3 = true AND dismissed_at IS NULL THEN NOW()
+                    WHEN $3 = false THEN NULL
+                    WHEN $3 IS NULL AND $1 = true AND dismissed_at IS NULL THEN NOW()
                     ELSE dismissed_at
                 END
             WHERE id = $2
@@ -213,7 +216,8 @@ impl NotificationRepository {
                 created_at
             "#,
             seen,
-            id
+            id,
+            archived
         )
         .fetch_one(executor)
         .await?;

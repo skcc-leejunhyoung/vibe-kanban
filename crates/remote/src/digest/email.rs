@@ -196,6 +196,13 @@ fn build_digest_copy(row: &NotificationDigestRow) -> DigestCopy {
             format!("{actor_name} requested review on {issue_label}"),
             issue_context(payload),
         ),
+        NotificationType::WorkspaceTaskCompleted => (
+            payload
+                .title
+                .clone()
+                .unwrap_or_else(|| "Workspace task completed".to_string()),
+            payload.body.clone(),
+        ),
     };
 
     DigestCopy {
