@@ -60,8 +60,6 @@ export type PreviewSettingsData = { url: string, screen_size: string | null, res
 
 export type WorkspaceNotesData = { content: string, };
 
-export type WorkspacePanelStateData = { right_main_panel_mode: string | null, is_left_main_panel_visible: boolean, };
-
 export type WorkspacePrFilterData = "all" | "has_pr" | "no_pr";
 
 export type WorkspaceSortByData = "updated_at" | "created_at";
@@ -86,10 +84,6 @@ expanded: { [key in string]?: boolean },
  */
 context_bar_position: string | null, 
 /**
- * Pane sizes
- */
-pane_sizes: { [key in string]?: JsonValue }, 
-/**
  * Collapsed paths per workspace in file tree
  */
 collapsed_paths: { [key in string]?: Array<string> }, 
@@ -97,22 +91,6 @@ collapsed_paths: { [key in string]?: Array<string> },
  * Preferred file-search repo
  */
 file_search_repo_id: string | null, 
-/**
- * Global left sidebar visibility
- */
-is_left_sidebar_visible: boolean | null, 
-/**
- * Global right sidebar visibility
- */
-is_right_sidebar_visible: boolean | null, 
-/**
- * Global terminal visibility
- */
-is_terminal_visible: boolean | null, 
-/**
- * Workspace-specific panel states
- */
-workspace_panel_states: { [key in string]?: WorkspacePanelStateData }, 
 /**
  * Workspace sidebar filter preferences
  */
