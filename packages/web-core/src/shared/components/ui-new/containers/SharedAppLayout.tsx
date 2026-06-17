@@ -346,7 +346,7 @@ export function SharedAppLayout() {
               onUpdateClick={restartForUpdate ?? undefined}
             />
             {/* Desktop content. */}
-            <div className="relative min-h-0 overflow-hidden">
+            <div className="relative min-h-0 min-w-0 overflow-hidden">
               {isWorkspaceSidebarPreviewEnabled && (
                 <div className="absolute inset-y-0 left-0 z-20 flex items-center">
                   <WorkspacesSidebarReopenTag
