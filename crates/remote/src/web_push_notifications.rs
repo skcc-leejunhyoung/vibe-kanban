@@ -181,6 +181,7 @@ pub async fn send_custom_notification(
             &title,
             &body,
             deeplink_path.as_deref(),
+            notification_id,
         )
         .await
         {
@@ -214,6 +215,7 @@ async fn send_custom_to_subscription(
     title: &str,
     body: &str,
     deeplink_path: Option<&str>,
+    notification_id: Option<Uuid>,
 ) -> Result<(), WebPushError> {
     let subscription_info = SubscriptionInfo::new(
         subscription.endpoint.as_str(),

@@ -35,7 +35,8 @@
                 "issue_priority_changed",
                 "issue_unassigned",
                 "issue_comment_reaction",
-                "issue_review_requested"
+                "issue_review_requested",
+                "workspace_task_completed"
               ]
             }
           }
