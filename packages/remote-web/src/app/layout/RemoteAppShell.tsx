@@ -478,7 +478,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
           </div>
         </MobileDrawer>
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col pb-half">
           {isMobile && (isWorkspaceContextRoute || isProjectRoute) && (
             <RemoteNavbarContainer
               organizationName={selectedOrgName}
