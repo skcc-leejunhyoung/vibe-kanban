@@ -1,6 +1,7 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
+import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import {
   ScratchType,
   type PreviewSettingsData,
@@ -51,6 +52,10 @@ export function usePreviewSettings(
   workspaceId: string | undefined
 ): UsePreviewSettingsResult {
   const enabled = !!workspaceId;
+  const shortcuts = useUiPreferencesStore((state) => state.previewShortcuts);
+  const setPreviewShortcuts = useUiPreferencesStore(
+    (state) => state.setPreviewShortcuts
+  );
 
   const {
     scratch,
@@ -79,10 +84,25 @@ export function usePreviewSettings(
     }),
     [scratchData?.responsive_width, scratchData?.responsive_height]
   );
-  const shortcuts = useMemo(
-    () => scratchData?.shortcuts ?? [],
-    [scratchData?.shortcuts]
-  );
+  const legacyWorkspaceShortcuts = scratchData?.shortcuts ?? [];
+
+  useEffect(() => {
+    if (legacyWorkspaceShortcuts.length === 0) return;
+
+    const nextShortcutsByUrl = new Map(
+      shortcuts.map((shortcut) => [shortcut.url, shortcut])
+    );
+
+    for (const shortcut of legacyWorkspaceShortcuts) {
+      if (!nextShortcutsByUrl.has(shortcut.url)) {
+        nextShortcutsByUrl.set(shortcut.url, shortcut);
+      }
+    }
+
+    if (nextShortcutsByUrl.size !== shortcuts.length) {
+      setPreviewShortcuts(Array.from(nextShortcutsByUrl.values()));
+    }
+  }, [legacyWorkspaceShortcuts, setPreviewShortcuts, shortcuts]);
 
   // Helper to save settings
   const saveSettings = useCallback(
@@ -100,7 +120,7 @@ export function usePreviewSettings(
                 updates.responsive_width ?? responsiveDimensions.width,
               responsive_height:
                 updates.responsive_height ?? responsiveDimensions.height,
-              shortcuts: updates.shortcuts ?? shortcuts,
+              shortcuts: scratchData?.shortcuts ?? [],
             },
           },
         });
@@ -115,7 +135,7 @@ export function usePreviewSettings(
       screenSize,
       responsiveDimensions.width,
       responsiveDimensions.height,
-      shortcuts,
+      scratchData?.shortcuts,
     ]
   );
 
@@ -181,17 +201,17 @@ export function usePreviewSettings(
         ...shortcuts.filter((item) => item.url !== trimmedUrl),
         normalizedShortcut,
       ];
-      await saveSettings({ shortcuts: nextShortcuts });
+      setPreviewShortcuts(nextShortcuts);
     },
-    [saveSettings, shortcuts]
+    [setPreviewShortcuts, shortcuts]
   );
 
   const removeShortcut = useCallback(
     async (id: string) => {
       const nextShortcuts = shortcuts.filter((shortcut) => shortcut.id !== id);
-      await saveSettings({ shortcuts: nextShortcuts });
+      setPreviewShortcuts(nextShortcuts);
     },
-    [saveSettings, shortcuts]
+    [setPreviewShortcuts, shortcuts]
   );
 
   return {

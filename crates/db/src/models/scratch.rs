@@ -138,6 +138,8 @@ pub struct UiPreferencesData {
     /// Kanban project view preferences (filters, toggles per project per view)
     #[serde(default)]
     pub kanban_project_view_preferences: std::collections::HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub preview_shortcuts: Vec<PreviewShortcutData>,
 }
 
 /// Linked issue data for draft workspace scratch

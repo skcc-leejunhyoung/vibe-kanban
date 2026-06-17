@@ -6,6 +6,7 @@ import {
   type UiPreferencesData,
   type ScratchPayload,
   type JsonValue,
+  type PreviewShortcutData,
 } from 'shared/types';
 import {
   useUiPreferencesStore,
@@ -45,6 +46,7 @@ function storeToScratchData(state: {
     string,
     Record<string, KanbanProjectViewPreferences>
   >;
+  previewShortcuts: PreviewShortcutData[];
 }): UiPreferencesData {
   return {
     repo_actions: state.repoActions as { [key: string]: string },
@@ -69,6 +71,7 @@ function storeToScratchData(state: {
     >,
     kanban_project_view_preferences:
       state.kanbanProjectViewPreferences as Record<string, JsonValue>,
+    preview_shortcuts: state.previewShortcuts,
   };
 }
 
@@ -91,6 +94,7 @@ function scratchDataToStore(data: UiPreferencesData): {
     string,
     Record<string, KanbanProjectViewPreferences>
   >;
+  previewShortcuts: PreviewShortcutData[];
 } {
   // Backwards compatibility with older payloads that used
   // file_search_repo_by_project (project_id -> repo_id).
@@ -131,6 +135,7 @@ function scratchDataToStore(data: UiPreferencesData): {
       {}) as Record<string, KanbanProjectViewSelection>,
     kanbanProjectViewPreferences: (data.kanban_project_view_preferences ??
       {}) as Record<string, Record<string, KanbanProjectViewPreferences>>,
+    previewShortcuts: data.preview_shortcuts ?? [],
   };
 }
 
@@ -163,6 +168,7 @@ export function useUiPreferencesScratch() {
     createDraftWorkspaceByDefault: state.createDraftWorkspaceByDefault,
     kanbanProjectViewSelections: state.kanbanProjectViewSelections,
     kanbanProjectViewPreferences: state.kanbanProjectViewPreferences,
+    previewShortcuts: state.previewShortcuts,
   }));
 
   // Extract scratch data
@@ -190,6 +196,7 @@ export function useUiPreferencesScratch() {
       createDraftWorkspaceByDefault: currentState.createDraftWorkspaceByDefault,
       kanbanProjectViewSelections: currentState.kanbanProjectViewSelections,
       kanbanProjectViewPreferences: currentState.kanbanProjectViewPreferences,
+      previewShortcuts: currentState.previewShortcuts,
     });
 
     try {
@@ -234,6 +241,7 @@ export function useUiPreferencesScratch() {
           serverState.createDraftWorkspaceByDefault,
         kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
         kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
+        previewShortcuts: serverState.previewShortcuts,
       });
 
       // Allow a brief delay for state to settle

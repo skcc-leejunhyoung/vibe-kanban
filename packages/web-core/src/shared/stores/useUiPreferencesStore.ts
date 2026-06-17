@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from 'react';
 import { create } from 'zustand';
 import type { RepoAction } from '@vibe/ui/components/RepoCard';
 import type { IssuePriority } from 'shared/remote-types';
+import type { PreviewShortcutData } from 'shared/types';
 
 export const RIGHT_MAIN_PANEL_MODES = {
   CHANGES: 'changes',
@@ -336,6 +337,9 @@ type State = {
     Record<string, KanbanProjectViewPreferences>
   >;
 
+  // Global preview browser shortcuts
+  previewShortcuts: PreviewShortcutData[];
+
   // Workspace sidebar filter state
   workspaceFilters: WorkspaceFilterState;
   workspaceSort: WorkspaceSortState;
@@ -420,6 +424,7 @@ type State = {
     projectId: string,
     viewId: string
   ) => void;
+  setPreviewShortcuts: (shortcuts: PreviewShortcutData[]) => void;
 
   // Workspace sidebar filter actions
   setWorkspaceProjectFilter: (projectIds: string[]) => void;
@@ -467,6 +472,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Kanban per-project view selection
   kanbanProjectViewSelections: {},
   kanbanProjectViewPreferences: {},
+  previewShortcuts: [],
 
   // Workspace sidebar filter state
   workspaceFilters: DEFAULT_WORKSPACE_FILTER_STATE,
@@ -788,6 +794,8 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       };
     });
   },
+
+  setPreviewShortcuts: (shortcuts) => set({ previewShortcuts: shortcuts }),
 
   // Workspace sidebar filter actions
   setWorkspaceProjectFilter: (projectIds) =>
