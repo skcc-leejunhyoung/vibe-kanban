@@ -1,9 +1,21 @@
 import { useEffect } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { $getSelection, $isRangeSelection } from 'lexical';
 
 type ImeDebugWindow = Window & {
   __vibeImeDebugLog?: unknown[];
 };
+
+/**
+ * Desktop macOS Safari (WebKit). Excludes Chrome/Chromium-based browsers and
+ * iOS. Used to scope the `insertReplacementText` workaround below to the only
+ * engine where it is needed, so other platforms keep their native behavior.
+ */
+const IS_MAC_SAFARI =
+  typeof navigator !== 'undefined' &&
+  /Macintosh/.test(navigator.userAgent) &&
+  /Safari/.test(navigator.userAgent) &&
+  !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(navigator.userAgent);
 
 function isDeleteBeforeInput(event: InputEvent): boolean {
   return (
@@ -134,6 +146,46 @@ export function ImeDeleteGuardPlugin() {
         }
       };
 
+      /**
+       * Apply an `insertReplacementText` using the replacement string the IME
+       * provides in `event.dataTransfer` (falling back to `event.data`), over
+       * the event's target range.
+       *
+       * On desktop macOS Safari, Hangul/CJK input in this Lexical
+       * contentEditable never surfaces composition events; instead every
+       * syllable transition — including jamo-level backspace (한→하) — arrives
+       * as an `insertReplacementText` whose replacement lives in
+       * `dataTransfer.getData('text/plain')`. Lexical's built-in handler fails
+       * to read it and ends up replacing the target syllable with an empty
+       * string, so the whole syllable is deleted. We instead apply the
+       * IME-provided string ourselves, reproducing the correct native
+       * <textarea> behavior without any Hangul math.
+       *
+       * Returns true when it took over handling so the caller can prevent the
+       * default action and stop Lexical.
+       */
+      const applyReplacementText = (event: InputEvent): boolean => {
+        const targetRange = event.getTargetRanges?.()[0];
+        if (!targetRange) {
+          return false;
+        }
+
+        const replacement =
+          event.dataTransfer?.getData('text/plain') || event.data || '';
+
+        let applied = false;
+        editor.update(() => {
+          const selection = $getSelection();
+          if (!$isRangeSelection(selection)) {
+            return;
+          }
+          selection.applyDOMRange(targetRange);
+          selection.insertText(replacement);
+          applied = true;
+        });
+        return applied;
+      };
+
       const handleBeforeInputCapture = (event: InputEvent) => {
         logImeDebug('beforeinput', {
           data: event.data,
@@ -142,6 +194,19 @@ export function ImeDeleteGuardPlugin() {
           isComposing: event.isComposing,
           isNativeComposing,
         });
+
+        if (
+          IS_MAC_SAFARI &&
+          event.inputType === 'insertReplacementText' &&
+          !isComposing(event)
+        ) {
+          if (applyReplacementText(event)) {
+            logImeDebug('beforeinput:apply-replacement', { data: event.data });
+            event.preventDefault();
+            stopLexicalEvent(event);
+          }
+          return;
+        }
 
         if (!isDeleteBeforeInput(event)) {
           return;
