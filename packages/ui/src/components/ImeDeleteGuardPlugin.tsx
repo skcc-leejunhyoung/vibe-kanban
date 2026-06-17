@@ -140,6 +140,21 @@ export function ImeDeleteGuardPlugin() {
           return;
         }
 
+        if (IS_MAC_SAFARI && !isComposing(event)) {
+          // macOS Apple 두벌식 in jamo-delete mode delivers Backspace as a
+          // follow-up `insertReplacementText` (한→하) that we apply in
+          // handleBeforeInputCapture. If we let Lexical's own
+          // KEY_BACKSPACE_COMMAND run on this keydown it deletes the whole
+          // syllable first, so the replacement then lands on an already-removed
+          // node and the syllable vanishes. Suppress Lexical here and let the
+          // follow-up beforeinput drive the edit. In syllable-delete mode this
+          // simply defers to the native `deleteContentBackward` beforeinput,
+          // which Lexical still handles, so whole-syllable deletion is intact.
+          logImeDebug('keydown:mac-safari-defer-to-beforeinput');
+          stopLexicalEvent(event);
+          return;
+        }
+
         if (isComposing(event)) {
           logImeDebug('keydown:let-browser-delete');
           stopLexicalEvent(event);
