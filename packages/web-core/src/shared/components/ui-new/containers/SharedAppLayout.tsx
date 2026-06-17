@@ -346,7 +346,7 @@ export function SharedAppLayout() {
               onUpdateClick={restartForUpdate ?? undefined}
             />
             {/* Desktop content. */}
-            <div className="relative flex min-h-0 min-w-0 flex-col overflow-hidden pb-half">
+            <div className="relative min-h-0 min-w-0 overflow-hidden">
               {isWorkspaceSidebarPreviewEnabled && (
                 <div className="absolute inset-y-0 left-0 z-20 flex items-center">
                   <WorkspacesSidebarReopenTag
@@ -375,9 +375,7 @@ export function SharedAppLayout() {
                 </div>
               )}
 
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <Outlet />
-              </div>
+              <Outlet />
             </div>
           </>
         )}
@@ -389,10 +387,8 @@ export function SharedAppLayout() {
               onOrgSelect={setSelectedOrgId}
               onOpenDrawer={() => setIsDrawerOpen(true)}
             />
-            <div className="flex-1 min-h-0 overflow-hidden pb-half">
-              <div className="min-h-0 h-full overflow-hidden">
-                <Outlet />
-              </div>
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <Outlet />
             </div>
           </div>
         )}

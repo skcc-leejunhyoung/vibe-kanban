@@ -388,9 +388,8 @@ html {
 
   .chat-box-running::before {
     content: '';
-    @apply absolute inset-0 pointer-events-none rounded-t-md;
+    @apply absolute inset-0 pointer-events-none rounded-sm;
     padding: 1px;
-    padding-bottom: 0;
     background: linear-gradient(
       45deg,
       transparent,
