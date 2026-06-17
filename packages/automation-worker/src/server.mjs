@@ -25,6 +25,16 @@ if (!ADMIN_TOKEN) {
 }
 const HOST = process.env.HOST || '0.0.0.0';
 const RULE_TIMEOUT_MS = Number(process.env.RULE_TIMEOUT_MS || 10000);
+// A rule that throws (e.g. the Vibe issue create failed) drops its event into a
+// retry queue instead of being lost. Each poll re-attempts due items with
+// exponential backoff up to RETRY_MAX_ATTEMPTS; after that the item is marked
+// "exhausted" and only retried when an operator manually triggers it.
+const RETRY_MAX_ATTEMPTS = Math.max(1, Number(process.env.RETRY_MAX_ATTEMPTS || 5));
+const RETRY_BASE_DELAY_MS = Math.max(1000, Number(process.env.RETRY_BASE_DELAY_MS || 60000));
+const RETRY_MAX_DELAY_MS = Math.max(
+  RETRY_BASE_DELAY_MS,
+  Number(process.env.RETRY_MAX_DELAY_MS || 3600000),
+);
 
 const defaultRuleScript = `async function handle(event, ctx) {
   if (event.source !== 'slack' || event.type !== 'message') return;
@@ -136,6 +146,7 @@ const defaultState = {
       script: defaultGithubRuleScript,
     },
   ],
+  retryQueue: [],
 };
 
 let state = structuredClone(defaultState);
@@ -150,6 +161,10 @@ const vibeTokenInflight = new Map();
 // One in-flight poll per connector. This is used during bootstrap's initial
 // scheduleAll() call, so it must be initialized before bootstrap starts.
 const pollInFlight = new Map();
+// Retry-queue item ids currently being executed, so an overlapping manual
+// trigger and poll-driven pass never run the same item (and its side effect)
+// twice.
+const retryInFlight = new Set();
 let writeQueue = Promise.resolve();
 
 await bootstrap();
@@ -185,6 +200,7 @@ async function bootstrap() {
 function ensureDefaults() {
   state.connectors ||= [];
   state.rules ||= [];
+  state.retryQueue ||= [];
   for (const connector of defaultState.connectors) {
     if (!state.connectors.some((item) => item.id === connector.id)) {
       state.connectors.push(structuredClone(connector));
@@ -296,6 +312,41 @@ async function route(req, res) {
     const event = await readBodyJson(req);
     await runRules(event);
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/api/retry-queue' && req.method === 'GET') {
+    sendJson(res, 200, state.retryQueue || []);
+    return;
+  }
+
+  // Manual retry trigger. Body: { connectorId?, includeExhausted? }. Forces all
+  // matching items now (ignoring backoff); set includeExhausted to also re-try
+  // items that already hit the attempt cap — i.e. register the leftover misses.
+  if (url.pathname === '/api/retry-queue/process' && req.method === 'POST') {
+    const body = await readBodyJson(req).catch(() => ({}));
+    const result = await processRetryQueue({
+      connectorId: body?.connectorId || null,
+      includeExhausted: Boolean(body?.includeExhausted),
+      force: true,
+    });
+    await log('info', 'retry queue processed (manual)', {
+      includeExhausted: Boolean(body?.includeExhausted),
+      ...result,
+    });
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/retry-queue/') && req.method === 'DELETE') {
+    const id = decodeURIComponent(url.pathname.split('/').pop() || '');
+    const before = (state.retryQueue || []).length;
+    removeRetryItem(id);
+    if ((state.retryQueue || []).length !== before) {
+      await persistState();
+      await log('info', 'retry item discarded', { retryId: id });
+    }
+    sendJson(res, 200, { ok: true, remaining: (state.retryQueue || []).length });
     return;
   }
 
@@ -481,6 +532,9 @@ function pollConnector(id, manual) {
 async function runPoll(id, manual) {
   const connector = findConnector(id);
   if (!connector.enabled && !manual) return { ok: true, skipped: 'disabled' };
+  // Re-attempt this connector's previously failed events before fetching new
+  // ones, so every poll cycle is also a retry cycle.
+  await processRetryQueue({ connectorId: id });
   if (connector.type === 'slack') return pollSlack(connector);
   if (connector.type === 'github') return pollGithub(connector);
   throw new Error(`poll not supported for ${connector.type}`);
@@ -824,8 +878,131 @@ async function runRules(event) {
         eventSource: event.source,
         error: errorMessage(error),
       });
+      // The event itself was valid (it polled successfully); the rule's side
+      // effect failed. Queue it so the next poll re-attempts rather than losing
+      // it — the source connector's cursor has already advanced past it.
+      await enqueueRetry(rule, event, error);
     }
   }
+}
+
+// Backoff grows exponentially per attempt, capped, so a persistently failing
+// item doesn't hammer the API every poll.
+function retryDelay(attempts) {
+  const delay = RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempts - 1);
+  return Math.min(delay, RETRY_MAX_DELAY_MS);
+}
+
+async function enqueueRetry(rule, event, error) {
+  state.retryQueue ||= [];
+  const now = Date.now();
+  const item = {
+    id: randomUUID(),
+    ruleId: rule.id,
+    connectorId: event.connectorId || null,
+    source: event.source || null,
+    label: event.title || event.text || event.url || null,
+    event: cloneData(event),
+    attempts: 1,
+    maxAttempts: RETRY_MAX_ATTEMPTS,
+    status: 'pending',
+    lastError: errorMessage(error),
+    enqueuedAt: now,
+    updatedAt: now,
+    nextAttemptAt: now + retryDelay(1),
+  };
+  state.retryQueue.push(item);
+  await log('warn', 'event queued for retry', {
+    retryId: item.id,
+    ruleId: rule.id,
+    connectorId: item.connectorId,
+    attempts: item.attempts,
+    maxAttempts: item.maxAttempts,
+    nextAttemptAt: new Date(item.nextAttemptAt).toISOString(),
+    error: item.lastError,
+  });
+  await persistState();
+}
+
+function removeRetryItem(id) {
+  state.retryQueue = (state.retryQueue || []).filter((item) => item.id !== id);
+}
+
+// Re-run queued rule failures. Called automatically each poll (for the polling
+// connector's due items) and manually via the API. `force` ignores the backoff
+// timer; `includeExhausted` also retries items that already hit the cap.
+async function processRetryQueue({
+  connectorId = null,
+  includeExhausted = false,
+  force = false,
+} = {}) {
+  const now = Date.now();
+  const summary = { retried: 0, succeeded: 0, failed: 0, exhausted: 0 };
+  // Snapshot so concurrent enqueues (from a parallel poll) don't disturb iteration.
+  for (const item of [...(state.retryQueue || [])]) {
+    if (connectorId && item.connectorId !== connectorId) continue;
+    if (item.status === 'exhausted' && !includeExhausted) continue;
+    if (!force && item.status === 'pending' && (item.nextAttemptAt || 0) > now) continue;
+    // Claim the item so a concurrent run (e.g. a manual trigger overlapping the
+    // poll-driven pass) can't execute the same rule twice — there is no
+    // idempotency key, so a double run means a duplicate side effect.
+    if (retryInFlight.has(item.id)) continue;
+
+    const rule = state.rules.find((entry) => entry.id === item.ruleId);
+    if (!rule) {
+      // The rule was deleted; the item can never succeed — drop it.
+      removeRetryItem(item.id);
+      await log('warn', 'retry item dropped (rule missing)', {
+        retryId: item.id,
+        ruleId: item.ruleId,
+      });
+      continue;
+    }
+    if (!rule.enabled) continue;
+
+    retryInFlight.add(item.id);
+    summary.retried += 1;
+    try {
+      await runRule(rule, item.event);
+      removeRetryItem(item.id);
+      summary.succeeded += 1;
+      await log('info', 'retry succeeded', {
+        retryId: item.id,
+        ruleId: item.ruleId,
+        attempts: item.attempts,
+      });
+    } catch (error) {
+      item.attempts += 1;
+      item.lastError = errorMessage(error);
+      item.updatedAt = Date.now();
+      if (item.attempts >= item.maxAttempts) {
+        item.status = 'exhausted';
+        item.nextAttemptAt = null;
+        summary.exhausted += 1;
+        await log('error', 'retry exhausted', {
+          retryId: item.id,
+          ruleId: item.ruleId,
+          attempts: item.attempts,
+          error: item.lastError,
+        });
+      } else {
+        item.status = 'pending';
+        item.nextAttemptAt = Date.now() + retryDelay(item.attempts);
+        summary.failed += 1;
+        await log('warn', 'retry failed', {
+          retryId: item.id,
+          ruleId: item.ruleId,
+          attempts: item.attempts,
+          error: item.lastError,
+        });
+      }
+    } finally {
+      retryInFlight.delete(item.id);
+    }
+  }
+  if (summary.retried > 0) await persistState();
+  summary.remaining = (state.retryQueue || []).length;
+  return { ok: true, ...summary };
 }
 
 async function runRule(rule, event) {
@@ -1279,6 +1456,7 @@ function pageHtml() {
     <nav>
       <button class="active" onclick="tab('connectors')">Connectors</button>
       <button onclick="tab('rules')">Rules</button>
+      <button onclick="tab('retries')">Retries</button>
       <button onclick="tab('logs')">Logs</button>
       <p class="muted">Edit connectors and JavaScript rules here. Changes are saved to /data/state.json.</p>
     </nav>
@@ -1339,6 +1517,15 @@ function pageHtml() {
         </div>
       </div>
     </section>
+    <section id="retries">
+      <div class="toolbar">
+        <button class="primary" onclick="processRetries(false)">Retry due now</button>
+        <button onclick="processRetries(true)">Retry exhausted too</button>
+        <button onclick="loadRetries()">Refresh</button>
+        <span class="muted">Failed registrations re-attempt automatically each poll (backoff). "Retry exhausted too" forces leftover misses that hit the attempt cap.</span>
+      </div>
+      <div id="retryList" class="list"></div>
+    </section>
     <section id="logs">
       <div id="logList" class="list"></div>
     </section>
@@ -1364,6 +1551,7 @@ function pageHtml() {
       document.querySelectorAll('section').forEach((section) => section.classList.remove('active'));
       document.getElementById(id).classList.add('active');
       if (id === 'logs') loadLogs();
+      if (id === 'retries') loadRetries();
     }
     async function api(path, options = {}) {
       const response = await fetch(path, {
@@ -1485,6 +1673,29 @@ function pageHtml() {
       });
       await loadLogs();
     }
+    async function loadRetries() {
+      const items = await api('/api/retry-queue');
+      const root = document.getElementById('retryList');
+      if (!items.length) {
+        root.innerHTML = '<p class="muted">No items queued for retry.</p>';
+        return;
+      }
+      root.innerHTML = items.map((item) => '<div class="log"><strong class="' + (item.status === 'exhausted' ? 'error' : 'warn') + '">' + item.status.toUpperCase() + '</strong> <span class="muted">' + escapeHtml(item.ruleId) + ' · ' + (item.attempts || 0) + '/' + (item.maxAttempts || 0) + ' attempts</span><div>' + escapeHtml(item.label || '(no title)') + '</div><div class="muted">' + escapeHtml(item.lastError || '') + '</div><div class="toolbar"><button data-retry-discard="' + escapeHtml(item.id) + '">Discard</button></div></div>').join('');
+    }
+    async function processRetries(includeExhausted) {
+      const result = await api('/api/retry-queue/process', {
+        method: 'POST',
+        body: JSON.stringify({ includeExhausted }),
+      });
+      await loadRetries();
+      await loadLogs();
+      alert('Retried ' + result.retried + ' · succeeded ' + result.succeeded + ' · failed ' + result.failed + ' · exhausted ' + result.exhausted + ' · remaining ' + result.remaining);
+    }
+    async function discardRetry(id) {
+      if (!confirm('Discard this retry item?')) return;
+      await api('/api/retry-queue/' + encodeURIComponent(id), { method: 'DELETE' });
+      await loadRetries();
+    }
     async function loadLogs() {
       const items = await api('/api/logs');
       document.getElementById('logList').innerHTML = items.map((item) => '<div class="log"><strong class="' + item.level + '">' + item.level.toUpperCase() + '</strong> <span class="muted">' + item.ts + '</span><div>' + escapeHtml(item.message) + '</div><pre>' + escapeHtml(JSON.stringify(item.meta || {}, null, 2)) + '</pre></div>').join('');
@@ -1499,6 +1710,10 @@ function pageHtml() {
     document.getElementById('ruleList').addEventListener('click', (clickEvent) => {
       const row = clickEvent.target.closest('[data-rule-id]');
       if (row) selectRule(row.getAttribute('data-rule-id'));
+    });
+    document.getElementById('retryList').addEventListener('click', (clickEvent) => {
+      const button = clickEvent.target.closest('[data-retry-discard]');
+      if (button) discardRetry(button.getAttribute('data-retry-discard'));
     });
     load().catch((error) => alert(error.message));
   </script>

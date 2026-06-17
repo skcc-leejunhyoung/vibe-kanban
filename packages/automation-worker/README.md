@@ -30,6 +30,27 @@ Open `http://localhost:8787`, then enter the token in the header.
 | `HOST` | `0.0.0.0` | Bind address. |
 | `PORT` | `8787` | Listen port. |
 | `RULE_TIMEOUT_MS` | `10000` | Max wall-clock per rule run. |
+| `RETRY_MAX_ATTEMPTS` | `5` | Times a failed rule run (e.g. the Vibe issue create failed) is auto-retried before being marked `exhausted`. |
+| `RETRY_BASE_DELAY_MS` | `60000` | First retry backoff; doubles each attempt. |
+| `RETRY_MAX_DELAY_MS` | `3600000` | Cap on the retry backoff. |
+
+## Retry Queue
+
+A rule throwing (e.g. the source event was fetched fine, but creating the Vibe
+issue failed) drops the event into a **retry queue** instead of losing it — the
+source connector's cursor has already advanced past it, so without this the
+miss would never be re-tried.
+
+- Each poll cycle re-attempts that connector's due items with exponential
+  backoff, up to `RETRY_MAX_ATTEMPTS`.
+- After the cap an item is marked `exhausted` and left alone.
+- The **Retries** tab (and `POST /api/retry-queue/process`) lets an operator
+  force a run now. Send `{ "includeExhausted": true }` to also re-attempt the
+  leftover misses that already hit the cap. `GET /api/retry-queue` lists items;
+  `DELETE /api/retry-queue/<id>` discards one.
+
+> Note: there is no idempotency key, so if a failure happened *after* the Vibe
+> issue was actually created (response lost), a retry can create a duplicate.
 
 ## Built-in Connectors
 
