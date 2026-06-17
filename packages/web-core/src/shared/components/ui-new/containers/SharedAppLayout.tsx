@@ -294,7 +294,7 @@ export function SharedAppLayout() {
           'bg-primary',
           isMobile
             ? 'flex fixed inset-0 pb-[env(safe-area-inset-bottom)]'
-            : 'grid grid-cols-[auto_1fr] grid-rows-[auto_1fr] h-screen'
+            : 'grid grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_1fr] h-screen'
         )}
       >
         {!isMobile && (
