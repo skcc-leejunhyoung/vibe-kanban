@@ -366,9 +366,47 @@ impl AppendPrompt {
 
     pub fn combine_prompt(&self, prompt: &str) -> String {
         match self {
-            AppendPrompt(Some(value)) => format!("{prompt}{value}"),
-            AppendPrompt(None) => prompt.to_string(),
+            AppendPrompt(Some(value)) if !value.is_empty() => {
+                // Always separate the appended prompt from the user's prompt
+                // with a line break so the two remain distinguishable. Avoid a
+                // redundant newline when the prompt already ends with one.
+                let separator = if prompt.ends_with('\n') { "" } else { "\n" };
+                format!("{prompt}{separator}{value}")
+            }
+            _ => prompt.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod append_prompt_tests {
+    use super::AppendPrompt;
+
+    #[test]
+    fn inserts_line_break_before_appended_prompt() {
+        let append = AppendPrompt(Some("appended".to_string()));
+        assert_eq!(append.combine_prompt("user input"), "user input\nappended");
+    }
+
+    #[test]
+    fn does_not_double_line_break_when_prompt_ends_with_newline() {
+        let append = AppendPrompt(Some("appended".to_string()));
+        assert_eq!(
+            append.combine_prompt("user input\n"),
+            "user input\nappended"
+        );
+    }
+
+    #[test]
+    fn no_append_returns_prompt_unchanged() {
+        assert_eq!(
+            AppendPrompt(None).combine_prompt("user input"),
+            "user input"
+        );
+        assert_eq!(
+            AppendPrompt(Some(String::new())).combine_prompt("user input"),
+            "user input"
+        );
     }
 }
 
