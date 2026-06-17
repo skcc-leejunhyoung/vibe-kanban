@@ -452,6 +452,14 @@ export const workspacesApi = {
     return handleApiResponse<Workspace>(response);
   },
 
+  /** Resolve the project id this workspace belongs to (null when unlinked) */
+  getProjectId: async (workspaceId: string): Promise<string | null> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/project`
+    );
+    return handleApiResponse<string | null>(response);
+  },
+
   update: async (
     workspaceId: string,
     data: { archived?: boolean; pinned?: boolean; name?: string }

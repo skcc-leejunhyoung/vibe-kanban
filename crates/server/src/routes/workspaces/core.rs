@@ -7,6 +7,7 @@ use axum::{
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    task::Task,
     workspace::{Workspace, WorkspaceError},
 };
 use deployment::Deployment;
@@ -85,6 +86,22 @@ pub async fn update_workspace(
     }
 
     Ok(ResponseJson(ApiResponse::success(updated)))
+}
+
+/// Resolve the project id a workspace belongs to (via its linked task), if any.
+/// Returns `None` for workspaces that aren't linked to a task (e.g. draft/standalone).
+pub async fn get_workspace_project_id(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Option<String>>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let project_id = match workspace.task_id {
+        Some(task_id) => Task::find_by_id(pool, task_id)
+            .await?
+            .map(|task| task.project_id.to_string()),
+        None => None,
+    };
+    Ok(ResponseJson(ApiResponse::success(project_id)))
 }
 
 pub async fn get_first_user_message(

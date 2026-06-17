@@ -4,6 +4,13 @@ import type { RepoAction } from '@vibe/ui/components/RepoCard';
 import type { IssuePriority } from 'shared/remote-types';
 import type { PreviewShortcutData } from 'shared/types';
 
+/**
+ * Bucket key used to store preview shortcuts for workspaces that aren't
+ * linked to a project (e.g. draft/standalone). Also receives migrated
+ * legacy global shortcuts.
+ */
+export const PREVIEW_SHORTCUTS_GLOBAL_KEY = '__global';
+
 export const RIGHT_MAIN_PANEL_MODES = {
   CHANGES: 'changes',
   LOGS: 'logs',
@@ -337,8 +344,9 @@ type State = {
     Record<string, KanbanProjectViewPreferences>
   >;
 
-  // Global preview browser shortcuts
-  previewShortcuts: PreviewShortcutData[];
+  // Preview browser shortcuts keyed by project id. Workspaces with no
+  // associated project use PREVIEW_SHORTCUTS_GLOBAL_KEY.
+  previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
 
   // Workspace sidebar filter state
   workspaceFilters: WorkspaceFilterState;
@@ -424,7 +432,10 @@ type State = {
     projectId: string,
     viewId: string
   ) => void;
-  setPreviewShortcuts: (shortcuts: PreviewShortcutData[]) => void;
+  setPreviewShortcuts: (
+    projectKey: string,
+    shortcuts: PreviewShortcutData[]
+  ) => void;
 
   // Workspace sidebar filter actions
   setWorkspaceProjectFilter: (projectIds: string[]) => void;
@@ -472,7 +483,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Kanban per-project view selection
   kanbanProjectViewSelections: {},
   kanbanProjectViewPreferences: {},
-  previewShortcuts: [],
+  previewShortcutsByProject: {},
 
   // Workspace sidebar filter state
   workspaceFilters: DEFAULT_WORKSPACE_FILTER_STATE,
@@ -795,7 +806,13 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     });
   },
 
-  setPreviewShortcuts: (shortcuts) => set({ previewShortcuts: shortcuts }),
+  setPreviewShortcuts: (projectKey, shortcuts) =>
+    set((s) => ({
+      previewShortcutsByProject: {
+        ...s.previewShortcutsByProject,
+        [projectKey]: shortcuts,
+      },
+    })),
 
   // Workspace sidebar filter actions
   setWorkspaceProjectFilter: (projectIds) =>

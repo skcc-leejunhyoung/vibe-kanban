@@ -118,7 +118,17 @@ kanban_project_view_selections: { [key in string]?: JsonValue },
 /**
  * Kanban project view preferences (filters, toggles per project per view)
  */
-kanban_project_view_preferences: { [key in string]?: JsonValue }, preview_shortcuts: Array<PreviewShortcutData>, };
+kanban_project_view_preferences: { [key in string]?: JsonValue }, 
+/**
+ * Legacy global preview shortcuts. Kept for backward-compatible migration into the
+ * per-project map below (merged under the `__global` key on the frontend).
+ */
+preview_shortcuts: Array<PreviewShortcutData>, 
+/**
+ * Preview browser shortcuts keyed by project id. Workspaces with no associated project
+ * are stored under the special `__global` key.
+ */
+preview_shortcuts_by_project: { [key in string]?: Array<PreviewShortcutData> }, };
 
 export type ProjectRepoDefaultsData = { repos: Array<DraftWorkspaceRepo>, };
 

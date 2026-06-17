@@ -22,6 +22,7 @@ import {
 import { useLogStream } from '@/shared/hooks/useLogStream';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
+import { useWorkspaceProjectId } from '@/shared/hooks/useWorkspaceProjectId';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
@@ -195,6 +196,10 @@ export function PreviewBrowserContainer({
     (s) => s.triggerPreviewRefresh
   );
   const { repos, workspaceId: activeWorkspaceId } = useWorkspaceContext();
+  // Project the workspace belongs to — used to scope preview shortcuts per project.
+  const previewProjectId = useWorkspaceProjectId(
+    activeWorkspaceId ?? workspaceId
+  );
   const { previewProxyPort } = useUserSystem();
   const hostId = useHostId();
 
@@ -241,7 +246,7 @@ export function PreviewBrowserContainer({
     shortcuts,
     addShortcut,
     removeShortcut,
-  } = usePreviewSettings(activeWorkspaceId ?? workspaceId);
+  } = usePreviewSettings(activeWorkspaceId ?? workspaceId, previewProjectId);
 
   // ─── URL Bar State ──────────────────────────────────────────────────────────
   // effectiveUrl:       The override URL (if set) or the auto-detected dev server URL.

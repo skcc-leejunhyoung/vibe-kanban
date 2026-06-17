@@ -10,6 +10,7 @@ import {
 } from 'shared/types';
 import {
   useUiPreferencesStore,
+  PREVIEW_SHORTCUTS_GLOBAL_KEY,
   DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
   type ContextBarPosition,
   type WorkspaceFilterState,
@@ -46,7 +47,7 @@ function storeToScratchData(state: {
     string,
     Record<string, KanbanProjectViewPreferences>
   >;
-  previewShortcuts: PreviewShortcutData[];
+  previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
 }): UiPreferencesData {
   return {
     repo_actions: state.repoActions as { [key: string]: string },
@@ -71,7 +72,10 @@ function storeToScratchData(state: {
     >,
     kanban_project_view_preferences:
       state.kanbanProjectViewPreferences as Record<string, JsonValue>,
-    preview_shortcuts: state.previewShortcuts,
+    // Legacy global list is migrated into the per-project map on read, so we
+    // always persist it empty going forward.
+    preview_shortcuts: [],
+    preview_shortcuts_by_project: state.previewShortcutsByProject,
   };
 }
 
@@ -94,7 +98,7 @@ function scratchDataToStore(data: UiPreferencesData): {
     string,
     Record<string, KanbanProjectViewPreferences>
   >;
-  previewShortcuts: PreviewShortcutData[];
+  previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
 } {
   // Backwards compatibility with older payloads that used
   // file_search_repo_by_project (project_id -> repo_id).
@@ -108,6 +112,31 @@ function scratchDataToStore(data: UiPreferencesData): {
     Object.values(legacyFileSearchRepoByProject)[0]
       ? Object.values(legacyFileSearchRepoByProject)[0]
       : null;
+
+  // Migrate legacy global preview shortcuts into the per-project map under the
+  // global bucket (merge by url so we don't duplicate already-migrated entries).
+  const previewShortcutsByProject: Record<string, PreviewShortcutData[]> = {
+    ...((data.preview_shortcuts_by_project ?? {}) as Record<
+      string,
+      PreviewShortcutData[]
+    >),
+  };
+  const legacyGlobalShortcuts = data.preview_shortcuts ?? [];
+  if (legacyGlobalShortcuts.length > 0) {
+    const globalBucket =
+      previewShortcutsByProject[PREVIEW_SHORTCUTS_GLOBAL_KEY] ?? [];
+    const byUrl = new Map(
+      globalBucket.map((shortcut) => [shortcut.url, shortcut])
+    );
+    for (const shortcut of legacyGlobalShortcuts) {
+      if (!byUrl.has(shortcut.url)) {
+        byUrl.set(shortcut.url, shortcut);
+      }
+    }
+    previewShortcutsByProject[PREVIEW_SHORTCUTS_GLOBAL_KEY] = Array.from(
+      byUrl.values()
+    );
+  }
 
   return {
     repoActions: (data.repo_actions ?? {}) as Record<string, RepoAction>,
@@ -135,7 +164,7 @@ function scratchDataToStore(data: UiPreferencesData): {
       {}) as Record<string, KanbanProjectViewSelection>,
     kanbanProjectViewPreferences: (data.kanban_project_view_preferences ??
       {}) as Record<string, Record<string, KanbanProjectViewPreferences>>,
-    previewShortcuts: data.preview_shortcuts ?? [],
+    previewShortcutsByProject,
   };
 }
 
@@ -168,7 +197,7 @@ export function useUiPreferencesScratch() {
     createDraftWorkspaceByDefault: state.createDraftWorkspaceByDefault,
     kanbanProjectViewSelections: state.kanbanProjectViewSelections,
     kanbanProjectViewPreferences: state.kanbanProjectViewPreferences,
-    previewShortcuts: state.previewShortcuts,
+    previewShortcutsByProject: state.previewShortcutsByProject,
   }));
 
   // Extract scratch data
@@ -196,7 +225,7 @@ export function useUiPreferencesScratch() {
       createDraftWorkspaceByDefault: currentState.createDraftWorkspaceByDefault,
       kanbanProjectViewSelections: currentState.kanbanProjectViewSelections,
       kanbanProjectViewPreferences: currentState.kanbanProjectViewPreferences,
-      previewShortcuts: currentState.previewShortcuts,
+      previewShortcutsByProject: currentState.previewShortcutsByProject,
     });
 
     try {
@@ -241,7 +270,7 @@ export function useUiPreferencesScratch() {
           serverState.createDraftWorkspaceByDefault,
         kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
         kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
-        previewShortcuts: serverState.previewShortcuts,
+        previewShortcutsByProject: serverState.previewShortcutsByProject,
       });
 
       // Allow a brief delay for state to settle

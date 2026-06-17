@@ -30,6 +30,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
                 .delete(core::delete_workspace),
         )
         .route("/messages/first", get(core::get_first_user_message))
+        .route("/project", get(core::get_workspace_project_id))
         .route("/seen", axum::routing::put(core::mark_seen))
         .nest("/git", git::router())
         .nest("/execution", execution::router())

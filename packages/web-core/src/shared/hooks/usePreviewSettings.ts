@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
-import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import {
+  useUiPreferencesStore,
+  PREVIEW_SHORTCUTS_GLOBAL_KEY,
+} from '@/shared/stores/useUiPreferencesStore';
 import {
   ScratchType,
   type PreviewSettingsData,
@@ -45,14 +48,24 @@ const DEFAULT_RESPONSIVE_DIMENSIONS: ResponsiveDimensions = {
 };
 
 /**
- * Hook to manage per-workspace preview settings (URL override and screen size).
- * Uses the scratch system for persistence.
+ * Hook to manage preview settings. URL override and screen size are stored
+ * per-workspace via the scratch system; shortcuts are stored per-project
+ * (keyed by `projectId`, falling back to a shared global bucket when the
+ * workspace has no associated project).
  */
 export function usePreviewSettings(
-  workspaceId: string | undefined
+  workspaceId: string | undefined,
+  projectId?: string | null
 ): UsePreviewSettingsResult {
   const enabled = !!workspaceId;
-  const shortcuts = useUiPreferencesStore((state) => state.previewShortcuts);
+  const projectKey = projectId ?? PREVIEW_SHORTCUTS_GLOBAL_KEY;
+  const shortcutsByProject = useUiPreferencesStore(
+    (state) => state.previewShortcutsByProject
+  );
+  const shortcuts = useMemo(
+    () => shortcutsByProject[projectKey] ?? [],
+    [shortcutsByProject, projectKey]
+  );
   const setPreviewShortcuts = useUiPreferencesStore(
     (state) => state.setPreviewShortcuts
   );
@@ -86,6 +99,8 @@ export function usePreviewSettings(
   );
   const legacyWorkspaceShortcuts = scratchData?.shortcuts ?? [];
 
+  // Migrate any legacy per-workspace shortcuts into this workspace's project
+  // bucket (merge by url) so previously-saved shortcuts aren't lost.
   useEffect(() => {
     if (legacyWorkspaceShortcuts.length === 0) return;
 
@@ -100,9 +115,9 @@ export function usePreviewSettings(
     }
 
     if (nextShortcutsByUrl.size !== shortcuts.length) {
-      setPreviewShortcuts(Array.from(nextShortcutsByUrl.values()));
+      setPreviewShortcuts(projectKey, Array.from(nextShortcutsByUrl.values()));
     }
-  }, [legacyWorkspaceShortcuts, setPreviewShortcuts, shortcuts]);
+  }, [legacyWorkspaceShortcuts, setPreviewShortcuts, shortcuts, projectKey]);
 
   // Helper to save settings
   const saveSettings = useCallback(
@@ -201,17 +216,17 @@ export function usePreviewSettings(
         ...shortcuts.filter((item) => item.url !== trimmedUrl),
         normalizedShortcut,
       ];
-      setPreviewShortcuts(nextShortcuts);
+      setPreviewShortcuts(projectKey, nextShortcuts);
     },
-    [setPreviewShortcuts, shortcuts]
+    [setPreviewShortcuts, shortcuts, projectKey]
   );
 
   const removeShortcut = useCallback(
     async (id: string) => {
       const nextShortcuts = shortcuts.filter((shortcut) => shortcut.id !== id);
-      setPreviewShortcuts(nextShortcuts);
+      setPreviewShortcuts(projectKey, nextShortcuts);
     },
-    [setPreviewShortcuts, shortcuts]
+    [setPreviewShortcuts, shortcuts, projectKey]
   );
 
   return {

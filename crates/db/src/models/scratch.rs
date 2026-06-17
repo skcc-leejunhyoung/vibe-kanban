@@ -138,8 +138,14 @@ pub struct UiPreferencesData {
     /// Kanban project view preferences (filters, toggles per project per view)
     #[serde(default)]
     pub kanban_project_view_preferences: std::collections::HashMap<String, serde_json::Value>,
+    /// Legacy global preview shortcuts. Kept for backward-compatible migration into the
+    /// per-project map below (merged under the `__global` key on the frontend).
     #[serde(default)]
     pub preview_shortcuts: Vec<PreviewShortcutData>,
+    /// Preview browser shortcuts keyed by project id. Workspaces with no associated project
+    /// are stored under the special `__global` key.
+    #[serde(default)]
+    pub preview_shortcuts_by_project: std::collections::HashMap<String, Vec<PreviewShortcutData>>,
 }
 
 /// Linked issue data for draft workspace scratch
