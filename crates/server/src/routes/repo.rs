@@ -23,6 +23,10 @@ use crate::{DeploymentImpl, error::ApiError};
 pub struct OpenEditorRequest {
     pub editor_type: Option<String>,
     pub git_repo_path: Option<PathBuf>,
+    /// Whether the request originates from the remote web app. Used together
+    /// with the editor's `remote_ssh_only_in_remote_web` setting.
+    #[serde(default)]
+    pub is_remote_web: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize, ts_rs::TS)]
@@ -164,7 +168,11 @@ pub async fn open_repo_in_editor(
         config.editor.with_override(editor_type_str)
     };
 
-    match editor_config.open_file(&repo.path).await {
+    let is_remote_web = payload
+        .as_ref()
+        .and_then(|req| req.is_remote_web)
+        .unwrap_or(false);
+    match editor_config.open_file(&repo.path, is_remote_web).await {
         Ok(url) => {
             tracing::info!(
                 "Opened editor for repo {} at path: {}{}",

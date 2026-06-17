@@ -350,7 +350,12 @@ export type StartReviewRequest = { executor_config: ExecutorConfig, additional_p
 
 export type ReviewError = { "type": "process_already_running" };
 
-export type OpenEditorRequest = { editor_type: string | null, file_path: string | null, };
+export type OpenEditorRequest = { editor_type: string | null, file_path: string | null, 
+/**
+ * Whether the request originates from the remote web app. Used together
+ * with the editor's `remote_ssh_only_in_remote_web` setting.
+ */
+is_remote_web: boolean | null, };
 
 export type OpenEditorResponse = { url: string | null, };
 
@@ -525,7 +530,12 @@ export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean
 
 export enum ThemeMode { LIGHT = "LIGHT", DARK = "DARK", SYSTEM = "SYSTEM" }
 
-export type EditorConfig = { editor_type: EditorType, custom_command: string | null, remote_ssh_host: string | null, remote_ssh_user: string | null, auto_install_extension: boolean, };
+export type EditorConfig = { editor_type: EditorType, custom_command: string | null, remote_ssh_host: string | null, remote_ssh_user: string | null, 
+/**
+ * When enabled, the remote SSH host is only used to open the editor from
+ * the remote web app. The local web app ignores it and opens locally.
+ */
+remote_ssh_only_in_remote_web: boolean, auto_install_extension: boolean, };
 
 export enum EditorType { VS_CODE = "VS_CODE", VS_CODE_INSIDERS = "VS_CODE_INSIDERS", CURSOR = "CURSOR", WINDSURF = "WINDSURF", INTELLI_J = "INTELLI_J", ZED = "ZED", XCODE = "XCODE", GOOGLE_ANTIGRAVITY = "GOOGLE_ANTIGRAVITY", CUSTOM = "CUSTOM" }
 

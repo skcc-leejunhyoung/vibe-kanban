@@ -40,6 +40,10 @@ pub struct EditorConfig {
     remote_ssh_host: Option<String>,
     #[serde(default)]
     remote_ssh_user: Option<String>,
+    /// When enabled, the remote SSH host is only used to open the editor from
+    /// the remote web app. The local web app ignores it and opens locally.
+    #[serde(default)]
+    remote_ssh_only_in_remote_web: bool,
     #[serde(default = "default_auto_install_extension")]
     auto_install_extension: bool,
 }
@@ -67,6 +71,7 @@ impl Default for EditorConfig {
             custom_command: None,
             remote_ssh_host: None,
             remote_ssh_user: None,
+            remote_ssh_only_in_remote_web: false,
             auto_install_extension: true,
         }
     }
@@ -86,6 +91,8 @@ impl EditorConfig {
             custom_command,
             remote_ssh_host,
             remote_ssh_user,
+            // Migration/availability-check helper; defaults to the shared behaviour.
+            remote_ssh_only_in_remote_web: false,
             auto_install_extension,
         }
     }
@@ -161,8 +168,12 @@ impl EditorConfig {
         let _ = cmd.no_window().spawn();
     }
 
-    pub async fn open_file(&self, path: &Path) -> Result<Option<String>, EditorOpenError> {
-        if let Some(url) = self.remote_url(path) {
+    pub async fn open_file(
+        &self,
+        path: &Path,
+        is_remote_web: bool,
+    ) -> Result<Option<String>, EditorOpenError> {
+        if let Some(url) = self.remote_url(path, is_remote_web) {
             return Ok(Some(url));
         }
         if self.should_auto_install_extension() {
@@ -172,8 +183,15 @@ impl EditorConfig {
         Ok(None)
     }
 
-    fn remote_url(&self, path: &Path) -> Option<String> {
+    fn remote_url(&self, path: &Path, is_remote_web: bool) -> Option<String> {
         let remote_host = self.remote_ssh_host.as_ref()?;
+
+        // When this option is enabled, the remote SSH URL is only used by the
+        // remote web app. The local web app falls back to opening locally.
+        if self.remote_ssh_only_in_remote_web && !is_remote_web {
+            return None;
+        }
+
         let user_part = self
             .remote_ssh_user
             .as_ref()
@@ -225,10 +243,54 @@ impl EditorConfig {
                 custom_command: self.custom_command.clone(),
                 remote_ssh_host: self.remote_ssh_host.clone(),
                 remote_ssh_user: self.remote_ssh_user.clone(),
+                remote_ssh_only_in_remote_web: self.remote_ssh_only_in_remote_web,
                 auto_install_extension: self.auto_install_extension,
             }
         } else {
             self.clone()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ssh_config(remote_ssh_only_in_remote_web: bool) -> EditorConfig {
+        EditorConfig {
+            editor_type: EditorType::VsCode,
+            custom_command: None,
+            remote_ssh_host: Some("example.com".to_string()),
+            remote_ssh_user: Some("user".to_string()),
+            remote_ssh_only_in_remote_web,
+            auto_install_extension: false,
+        }
+    }
+
+    #[test]
+    fn remote_url_is_none_without_host() {
+        let config = EditorConfig::default();
+        let path = Path::new("/tmp/project");
+        assert!(config.remote_url(path, true).is_none());
+        assert!(config.remote_url(path, false).is_none());
+    }
+
+    #[test]
+    fn remote_url_shared_behavior_when_toggle_off() {
+        let config = ssh_config(false);
+        let path = Path::new("/tmp/project");
+        // Toggle off: both local and remote web use the SSH URL (legacy behaviour).
+        assert!(config.remote_url(path, false).is_some());
+        assert!(config.remote_url(path, true).is_some());
+    }
+
+    #[test]
+    fn remote_url_only_in_remote_web_when_toggle_on() {
+        let config = ssh_config(true);
+        let path = Path::new("/tmp/project");
+        // Remote web keeps using the SSH URL...
+        assert!(config.remote_url(path, true).is_some());
+        // ...while local web falls back to opening locally.
+        assert!(config.remote_url(path, false).is_none());
     }
 }

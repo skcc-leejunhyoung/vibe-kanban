@@ -425,6 +425,25 @@ export function GeneralSettingsSection() {
           draft?.editor.editor_type === EditorType.GOOGLE_ANTIGRAVITY ||
           draft?.editor.editor_type === EditorType.ZED) && (
           <>
+            <SettingsCheckbox
+              id="remote-ssh-only-in-remote-web"
+              label={t(
+                'settings.general.editor.remoteSsh.onlyInRemoteWeb.label'
+              )}
+              description={t(
+                'settings.general.editor.remoteSsh.onlyInRemoteWeb.helper'
+              )}
+              checked={draft?.editor.remote_ssh_only_in_remote_web ?? false}
+              onChange={(checked) =>
+                updateDraft({
+                  editor: {
+                    ...draft!.editor,
+                    remote_ssh_only_in_remote_web: checked,
+                  },
+                })
+              }
+            />
+
             <SettingsField
               label={t('settings.general.editor.remoteSsh.host.label')}
               description={t('settings.general.editor.remoteSsh.host.helper')}

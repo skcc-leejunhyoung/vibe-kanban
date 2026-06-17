@@ -35,6 +35,7 @@ export function useOpenInEditor(
             : await workspacesApi.openEditor(workspaceId, {
                 editor_type: editorType ?? null,
                 file_path: filePath ?? null,
+                is_remote_web: appRuntime === 'remote',
               });
 
         // If a URL is returned, open it in a new window/tab

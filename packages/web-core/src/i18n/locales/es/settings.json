@@ -91,6 +91,10 @@
           "helper": "Ingresa el comando para lanzar tu editor personalizado. Se utilizará para abrir archivos."
         },
         "remoteSsh": {
+          "onlyInRemoteWeb": {
+            "label": "Usar SSH remoto solo en la web remota",
+            "helper": "Cuando está activado, la aplicación web remota abre el editor a través de la dirección SSH remota, mientras que la aplicación web local lo abre localmente. Cuando está desactivado, ambas se comportan igual según si el host SSH remoto está configurado."
+          },
           "host": {
             "label": "Host SSH Remoto (Opcional)",
             "placeholder": "ej., nombre de host o dirección IP",

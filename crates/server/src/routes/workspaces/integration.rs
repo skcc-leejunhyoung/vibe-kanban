@@ -32,6 +32,10 @@ pub struct RunAgentSetupResponse {}
 pub struct OpenEditorRequest {
     editor_type: Option<String>,
     file_path: Option<String>,
+    /// Whether the request originates from the remote web app. Used together
+    /// with the editor's `remote_ssh_only_in_remote_web` setting.
+    #[serde(default)]
+    is_remote_web: Option<bool>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -103,7 +107,8 @@ pub async fn open_workspace_in_editor(
         config.editor.with_override(editor_type_str)
     };
 
-    match editor_config.open_file(path.as_path()).await {
+    let is_remote_web = payload.is_remote_web.unwrap_or(false);
+    match editor_config.open_file(path.as_path(), is_remote_web).await {
         Ok(url) => {
             tracing::info!(
                 "Opened editor for workspace {} at path: {}{}",

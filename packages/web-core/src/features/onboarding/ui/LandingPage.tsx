@@ -265,6 +265,7 @@ export function LandingPage() {
         editorType === EditorType.CUSTOM ? customCommand.trim() : null,
       remote_ssh_host: null,
       remote_ssh_user: null,
+      remote_ssh_only_in_remote_web: false,
       auto_install_extension: true,
     };
 

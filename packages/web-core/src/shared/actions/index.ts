@@ -772,6 +772,7 @@ export const Actions = {
             : await workspacesApi.openEditor(ctx.currentWorkspaceId, {
                 editor_type: null,
                 file_path: null,
+                is_remote_web: ctx.appRuntime === 'remote',
               });
         if (response.url) {
           window.open(response.url, '_blank');
@@ -1136,11 +1137,12 @@ export const Actions = {
     icon: DesktopIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
-    execute: async (_ctx, _workspaceId, repoId) => {
+    execute: async (ctx, _workspaceId, repoId) => {
       try {
         const response = await repoApi.openEditor(repoId, {
           editor_type: null,
           file_path: null,
+          is_remote_web: ctx.appRuntime === 'remote',
         });
         if (response.url) {
           window.open(response.url, '_blank');

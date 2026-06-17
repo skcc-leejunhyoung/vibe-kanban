@@ -99,6 +99,10 @@
           "helper": "Enter the command to launch your custom editor. This will be used to open files."
         },
         "remoteSsh": {
+          "onlyInRemoteWeb": {
+            "label": "Use remote SSH only in remote web",
+            "helper": "When enabled, the remote web app opens the editor through the remote SSH address, while the local web app opens it locally. When disabled, both apps behave the same based on whether the remote SSH host is set."
+          },
           "host": {
             "label": "Remote SSH Host (Optional)",
             "placeholder": "e.g., hostname or IP address",

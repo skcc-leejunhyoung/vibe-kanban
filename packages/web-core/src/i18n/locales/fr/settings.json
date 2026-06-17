@@ -91,6 +91,10 @@
           "helper": "Saisissez la commande pour lancer votre éditeur personnalisé. Elle sera utilisée pour ouvrir les fichiers."
         },
         "remoteSsh": {
+          "onlyInRemoteWeb": {
+            "label": "Utiliser le SSH distant uniquement dans le web distant",
+            "helper": "Lorsque cette option est activée, l'application web distante ouvre l'éditeur via l'adresse SSH distante, tandis que l'application web locale l'ouvre localement. Lorsqu'elle est désactivée, les deux se comportent de la même manière selon que l'hôte SSH distant est défini."
+          },
           "host": {
             "label": "Hôte SSH distant (optionnel)",
             "placeholder": "ex: nom d'hôte ou adresse IP",
