@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE notifications\n            SET seen = COALESCE($1, seen),\n                dismissed_at = CASE\n                    WHEN $1 = true AND dismissed_at IS NULL THEN NOW()\n                    ELSE dismissed_at\n                END\n            WHERE id = $2\n            RETURNING\n                id,\n                organization_id,\n                user_id,\n                notification_type as \"notification_type!: NotificationType\",\n                payload as \"payload!: sqlx::types::Json<NotificationPayload>\",\n                issue_id,\n                comment_id,\n                seen,\n                dismissed_at,\n                created_at\n            ",
+  "query": "\n            UPDATE notifications\n            SET seen = COALESCE($1, seen),\n                dismissed_at = CASE\n                    WHEN $3 = true AND dismissed_at IS NULL THEN NOW()\n                    WHEN $3 = false THEN NULL\n                    WHEN $3 IS NULL AND $1 = true AND dismissed_at IS NULL THEN NOW()\n                    ELSE dismissed_at\n                END\n            WHERE id = $2\n            RETURNING\n                id,\n                organization_id,\n                user_id,\n                notification_type as \"notification_type!: NotificationType\",\n                payload as \"payload!: sqlx::types::Json<NotificationPayload>\",\n                issue_id,\n                comment_id,\n                seen,\n                dismissed_at,\n                created_at\n            ",
   "describe": {
     "columns": [
       {
@@ -35,7 +35,8 @@
                 "issue_priority_changed",
                 "issue_unassigned",
                 "issue_comment_reaction",
-                "issue_review_requested"
+                "issue_review_requested",
+                "workspace_task_completed"
               ]
             }
           }
@@ -75,7 +76,8 @@
     "parameters": {
       "Left": [
         "Bool",
-        "Uuid"
+        "Uuid",
+        "Bool"
       ]
     },
     "nullable": [
@@ -91,5 +93,5 @@
       false
     ]
   },
-  "hash": "1d612faf67c945cfe22cfd7ab6b6d360fbce8dceb7b64c4d17b4df108434c822"
+  "hash": "1194d2a9af1100c2fb8e54e3eca96f939031cee815669bbb973be29e8fb646ff"
 }
