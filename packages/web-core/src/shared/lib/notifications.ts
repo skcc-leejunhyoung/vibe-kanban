@@ -270,3 +270,40 @@ export function groupNotifications(
 
   return groups;
 }
+
+/**
+ * 사용자가 현재 앱에서 보고 있는 대상(이슈/워크스페이스)과 연관된, 아직 읽지
+ * 않은 알림들의 id를 반환한다. 알림 센터를 거치지 않고 칸반 보드나 워크스페이스
+ * 화면에서 직접 대상을 열어 확인한 경우에도 읽음 처리할 수 있도록 사용된다.
+ *
+ * - 이슈 관련 알림은 `issue_id`로 매칭한다(이슈에 연결된 워크스페이스 완료
+ *   알림도 함께 포함된다).
+ * - 워크스페이스 완료 알림은 `payload.workspace_id`로 매칭한다.
+ */
+export function selectUnseenNotificationIdsForView(
+  notifications: Notification[],
+  view: { issueId: string | null; workspaceId: string | null }
+): string[] {
+  const { issueId, workspaceId } = view;
+  if (!issueId && !workspaceId) {
+    return [];
+  }
+
+  return notifications
+    .filter((notification) => {
+      if (notification.seen) {
+        return false;
+      }
+      if (issueId && notification.issue_id === issueId) {
+        return true;
+      }
+      if (
+        workspaceId &&
+        getPayload(notification).workspace_id === workspaceId
+      ) {
+        return true;
+      }
+      return false;
+    })
+    .map((notification) => notification.id);
+}

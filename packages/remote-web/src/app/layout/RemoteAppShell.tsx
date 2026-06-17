@@ -26,6 +26,7 @@ import { AppBarNotificationBellContainer } from "@/pages/workspaces/AppBarNotifi
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog";
 import { useCommandBarShortcut } from "@/shared/hooks/useCommandBarShortcut";
+import { useMarkNotificationsReadOnView } from "@/shared/hooks/useMarkNotificationsReadOnView";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
 import { RemoteAppBarUserPopoverContainer } from "@remote/app/layout/RemoteAppBarUserPopoverContainer";
 import { RemoteNavbarContainer } from "@remote/app/layout/RemoteNavbarContainer";
@@ -65,6 +66,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     () => CommandBarDialog.show(),
     isWorkspaceContextRoute || isProjectRoute,
   );
+  useMarkNotificationsReadOnView();
   const isMobile = useIsMobile();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
