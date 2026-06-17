@@ -7,6 +7,7 @@ pub struct IssueTag {
     pub id: Uuid,
     pub issue_id: Uuid,
     pub tag_id: Uuid,
+    pub project_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

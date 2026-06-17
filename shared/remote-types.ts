@@ -32,7 +32,7 @@ export type AttachmentWithBlob = { id: string, blob_id: string, issue_id: string
 
 export type IssueFollower = { id: string, issue_id: string, user_id: string, };
 
-export type IssueTag = { id: string, issue_id: string, tag_id: string, };
+export type IssueTag = { id: string, issue_id: string, tag_id: string, project_id: string, };
 
 export type IssueRelationship = { id: string, issue_id: string, related_issue_id: string, relationship_type: IssueRelationshipType, created_at: string, };
 

@@ -19,9 +19,10 @@ impl IssueTagRepository {
             IssueTag,
             r#"
             SELECT
-                id       AS "id!: Uuid",
-                issue_id AS "issue_id!: Uuid",
-                tag_id   AS "tag_id!: Uuid"
+                id         AS "id!: Uuid",
+                issue_id   AS "issue_id!: Uuid",
+                tag_id     AS "tag_id!: Uuid",
+                project_id AS "project_id!: Uuid"
             FROM issue_tags
             WHERE id = $1
             "#,
@@ -41,9 +42,10 @@ impl IssueTagRepository {
             IssueTag,
             r#"
             SELECT
-                id       AS "id!: Uuid",
-                issue_id AS "issue_id!: Uuid",
-                tag_id   AS "tag_id!: Uuid"
+                id         AS "id!: Uuid",
+                issue_id   AS "issue_id!: Uuid",
+                tag_id     AS "tag_id!: Uuid",
+                project_id AS "project_id!: Uuid"
             FROM issue_tags
             WHERE issue_id = $1
             "#,
@@ -63,11 +65,12 @@ impl IssueTagRepository {
             IssueTag,
             r#"
             SELECT
-                id       AS "id!: Uuid",
-                issue_id AS "issue_id!: Uuid",
-                tag_id   AS "tag_id!: Uuid"
+                id         AS "id!: Uuid",
+                issue_id   AS "issue_id!: Uuid",
+                tag_id     AS "tag_id!: Uuid",
+                project_id AS "project_id!: Uuid"
             FROM issue_tags
-            WHERE issue_id IN (SELECT id FROM issues WHERE project_id = $1)
+            WHERE project_id = $1
             "#,
             project_id
         )
@@ -87,12 +90,15 @@ impl IssueTagRepository {
         let data = sqlx::query_as!(
             IssueTag,
             r#"
-            INSERT INTO issue_tags (id, issue_id, tag_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO issue_tags (id, issue_id, tag_id, project_id)
+            SELECT $1, $2, $3, i.project_id
+            FROM issues i
+            WHERE i.id = $2
             RETURNING
-                id       AS "id!: Uuid",
-                issue_id AS "issue_id!: Uuid",
-                tag_id   AS "tag_id!: Uuid"
+                id         AS "id!: Uuid",
+                issue_id   AS "issue_id!: Uuid",
+                tag_id     AS "tag_id!: Uuid",
+                project_id AS "project_id!: Uuid"
             "#,
             id,
             issue_id,

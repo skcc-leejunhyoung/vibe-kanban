@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id       AS \"id!: Uuid\",\n                issue_id AS \"issue_id!: Uuid\",\n                tag_id   AS \"tag_id!: Uuid\"\n            FROM issue_tags\n            WHERE id = $1\n            ",
+  "query": "\n            SELECT\n                id         AS \"id!: Uuid\",\n                issue_id   AS \"issue_id!: Uuid\",\n                tag_id     AS \"tag_id!: Uuid\",\n                project_id AS \"project_id!: Uuid\"\n            FROM issue_tags\n            WHERE id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,11 @@
         "ordinal": 2,
         "name": "tag_id!: Uuid",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "project_id!: Uuid",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -27,8 +32,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "622e613f8a71f6dd4d110df061bff6ab4e46636ab60dd85dbccd9181d004de33"
+  "hash": "e57fbf517197c0cd1fe49bd6a2e6a8c000535cfbf8697b94e278c6b00a844037"
 }

@@ -111,7 +111,7 @@ pub const PROJECT_ISSUE_FOLLOWERS_SHAPE: ShapeDefinition<IssueFollower> = crate:
 pub const PROJECT_ISSUE_TAGS_SHAPE: ShapeDefinition<IssueTag> = crate::define_shape!(
     name: "PROJECT_ISSUE_TAGS_SHAPE",
     table: "issue_tags",
-    where_clause: r#""issue_id" IN (SELECT id FROM issues WHERE "project_id" = $1)"#,
+    where_clause: r#""project_id" = $1"#,
     url: "/shape/project/{project_id}/issue_tags",
     params: ["project_id"],
 );
