@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   ArrowLeftIcon,
   FunnelIcon,
+  ListChecksIcon,
   MagnifyingGlassIcon,
   PlusIcon,
   XIcon,
@@ -101,6 +102,13 @@ interface KanbanFilterBarProps<
   onCreateIssue: () => void;
   shouldAnimateCreateButton: boolean;
   isMobile?: boolean;
+  /** Whether explicit multi-select mode is currently active */
+  isSelectionMode?: boolean;
+  /**
+   * Toggle explicit multi-select mode. When provided, a selection toggle
+   * button is rendered (used on mobile/touch where there is no Cmd/Shift).
+   */
+  onToggleSelectionMode?: () => void;
   renderFiltersDialog?: (
     props: RenderKanbanFiltersDialogProps<TTag, TUser, TSortField>
   ) => ReactNode;
@@ -137,6 +145,8 @@ export function KanbanFilterBar<
   onCreateIssue,
   shouldAnimateCreateButton,
   isMobile,
+  isSelectionMode = false,
+  onToggleSelectionMode,
   renderFiltersDialog,
 }: KanbanFilterBarProps<TTag, TUser, TSortField>) {
   const { t } = useTranslation('common');
@@ -231,6 +241,24 @@ export function KanbanFilterBar<
           >
             <FunnelIcon className="size-icon-sm" weight="bold" />
           </button>
+
+          {onToggleSelectionMode && (
+            <button
+              type="button"
+              onClick={onToggleSelectionMode}
+              className={cn(
+                'flex items-center justify-center p-half rounded-sm transition-colors',
+                isSelectionMode
+                  ? 'text-brand hover:text-brand'
+                  : 'text-low hover:text-normal hover:bg-secondary'
+              )}
+              aria-pressed={isSelectionMode}
+              aria-label={t('kanban.selectIssues', 'Select issues')}
+              title={t('kanban.selectIssues', 'Select issues')}
+            >
+              <ListChecksIcon className="size-icon-sm" weight="bold" />
+            </button>
+          )}
 
           {hasActiveFilters && (
             <PrimaryButton

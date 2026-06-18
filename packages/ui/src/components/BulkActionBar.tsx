@@ -64,8 +64,8 @@ export function BulkActionBar({
   const { t } = useTranslation('common');
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
-      <div className="flex items-center gap-half bg-primary border border-secondary rounded-lg shadow-[0_4px_24px_rgba(0,0,0,0.3)] px-base py-half">
+    <div className="fixed bottom-6 inset-x-0 z-50 flex justify-center px-base pointer-events-none">
+      <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-half bg-primary border border-secondary rounded-lg shadow-[0_4px_24px_rgba(0,0,0,0.3)] px-base py-half max-w-full">
         <span className="text-sm font-medium text-high whitespace-nowrap px-half">
           {t('kanban.bulkSelectedCount', {
             count: selectedCount,

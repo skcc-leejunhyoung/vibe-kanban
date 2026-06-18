@@ -32,6 +32,7 @@ export function useIssueShortcuts() {
   const multiSelectedIssueIds = useIssueSelectionStore(
     (s) => s.selectedIssueIds
   );
+  const isSelectionMode = useIssueSelectionStore((s) => s.isSelectionMode);
   const selectAll = useIssueSelectionStore((s) => s.selectAll);
   const clearSelection = useIssueSelectionStore((s) => s.clearSelection);
   const toggleIssue = useIssueSelectionStore((s) => s.toggleIssue);
@@ -43,6 +44,7 @@ export function useIssueShortcuts() {
   const isKanbanRef = useRef(isKanban);
   const isCreatingIssueRef = useRef(isCreatingIssue);
   const multiSelectedIssueIdsRef = useRef(multiSelectedIssueIds);
+  const isSelectionModeRef = useRef(isSelectionMode);
   const selectAllRef = useRef(selectAll);
   const clearSelectionRef = useRef(clearSelection);
   const toggleIssueRef = useRef(toggleIssue);
@@ -55,6 +57,7 @@ export function useIssueShortcuts() {
     isKanbanRef.current = isKanban;
     isCreatingIssueRef.current = isCreatingIssue;
     multiSelectedIssueIdsRef.current = multiSelectedIssueIds;
+    isSelectionModeRef.current = isSelectionMode;
     selectAllRef.current = selectAll;
     clearSelectionRef.current = clearSelection;
     toggleIssueRef.current = toggleIssue;
@@ -200,7 +203,10 @@ export function useIssueShortcuts() {
     'escape',
     (e) => {
       if (!isKanbanRef.current) return;
-      if (multiSelectedIssueIdsRef.current.size > 0) {
+      if (
+        multiSelectedIssueIdsRef.current.size > 0 ||
+        isSelectionModeRef.current
+      ) {
         e.preventDefault();
         e.stopPropagation();
         clearSelectionRef.current();

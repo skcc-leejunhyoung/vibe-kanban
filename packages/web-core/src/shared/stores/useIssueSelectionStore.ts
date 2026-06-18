@@ -3,6 +3,12 @@ import { create } from 'zustand';
 interface IssueSelectionState {
   /** Set of currently selected issue IDs */
   selectedIssueIds: Set<string>;
+  /**
+   * Explicit selection mode, primarily for touch/mobile where there is no
+   * Cmd/Shift modifier. While active, a plain tap on an issue toggles its
+   * selection instead of opening it.
+   */
+  isSelectionMode: boolean;
   /** Anchor issue for Shift+Click range selection */
   anchorIssueId: string | null;
   /** Cursor position for keyboard-driven selection (Shift+J/K) */
@@ -10,6 +16,8 @@ interface IssueSelectionState {
   /** Flat ordered list of all visible issue IDs (set by the kanban container) */
   orderedIssueIds: string[];
 
+  /** Turn on explicit selection mode (e.g. from the mobile select button) */
+  enterSelectionMode: () => void;
   toggleIssue: (issueId: string) => void;
   selectRange: (targetIssueId: string) => void;
   /** Extend selection by one issue in the given direction (for Shift+J/K) */
@@ -27,9 +35,14 @@ interface IssueSelectionState {
 export const useIssueSelectionStore = create<IssueSelectionState>(
   (set, get) => ({
     selectedIssueIds: new Set<string>(),
+    isSelectionMode: false,
     anchorIssueId: null,
     cursorIssueId: null,
     orderedIssueIds: [],
+
+    enterSelectionMode: () => {
+      set({ isSelectionMode: true });
+    },
 
     toggleIssue: (issueId: string) => {
       const { selectedIssueIds, anchorIssueId } = get();
@@ -153,6 +166,7 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
     clearSelection: () => {
       set({
         selectedIssueIds: new Set<string>(),
+        isSelectionMode: false,
         anchorIssueId: null,
         cursorIssueId: null,
       });

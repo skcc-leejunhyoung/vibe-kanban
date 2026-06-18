@@ -752,7 +752,9 @@ export function KanbanContainer() {
   // Multi-select support
   const {
     selectedIssueIds,
+    isSelectionMode,
     isMultiSelectActive,
+    enterSelectionMode,
     handleIssueClick,
     handleCheckboxChange,
     clearSelection,
@@ -789,6 +791,17 @@ export function KanbanContainer() {
 
   const handleCardClick = useCallback(
     (issueId: string, e?: MouseEvent) => {
+      // In explicit selection mode (mobile/touch), any tap toggles selection
+      // instead of opening the issue. Modifier-key handling stays in the hook.
+      if (isSelectionMode) {
+        if (e) {
+          handleIssueClick(issueId, e);
+        } else {
+          handleCheckboxChange(issueId);
+        }
+        return;
+      }
+
       if (e && (e.metaKey || e.ctrlKey || e.shiftKey)) {
         handleIssueClick(issueId, e);
       } else {
@@ -801,13 +814,23 @@ export function KanbanContainer() {
       }
     },
     [
+      isSelectionMode,
       openIssue,
       handleIssueClick,
+      handleCheckboxChange,
       selectedIssueIds.size,
       clearSelection,
       setAnchor,
     ]
   );
+
+  const handleToggleSelectionMode = useCallback(() => {
+    if (isSelectionMode) {
+      clearSelection();
+    } else {
+      enterSelectionMode();
+    }
+  }, [isSelectionMode, clearSelection, enterSelectionMode]);
 
   const handleAddTask = useCallback(
     (statusId?: string) => {
@@ -826,7 +849,10 @@ export function KanbanContainer() {
   // When multi-select is active, apply to all selected issues
   const handleCardPriorityClick = useCallback(
     (issueId: string) => {
-      const ids = isMultiSelectActive ? [...selectedIssueIds] : [issueId];
+      const ids =
+        isMultiSelectActive && selectedIssueIds.size > 0
+          ? [...selectedIssueIds]
+          : [issueId];
       openPrioritySelection(projectId, ids);
     },
     [projectId, openPrioritySelection, selectedIssueIds, isMultiSelectActive]
@@ -834,7 +860,10 @@ export function KanbanContainer() {
 
   const handleCardAssigneeClick = useCallback(
     (issueId: string) => {
-      const ids = isMultiSelectActive ? [...selectedIssueIds] : [issueId];
+      const ids =
+        isMultiSelectActive && selectedIssueIds.size > 0
+          ? [...selectedIssueIds]
+          : [issueId];
       openAssigneeSelection(projectId, ids);
     },
     [projectId, openAssigneeSelection, selectedIssueIds, isMultiSelectActive]
@@ -842,7 +871,10 @@ export function KanbanContainer() {
 
   const handleCardMoreActionsClick = useCallback(
     (issueId: string) => {
-      const ids = isMultiSelectActive ? [...selectedIssueIds] : [issueId];
+      const ids =
+        isMultiSelectActive && selectedIssueIds.size > 0
+          ? [...selectedIssueIds]
+          : [issueId];
       CommandBarDialog.show({
         page: 'issueActions',
         projectId,
@@ -970,6 +1002,10 @@ export function KanbanContainer() {
             shouldAnimateCreateButton={shouldAnimateCreateButton}
             renderFiltersDialog={(props) => <KanbanFiltersDialog {...props} />}
             isMobile={isMobile}
+            isSelectionMode={isSelectionMode}
+            onToggleSelectionMode={
+              isMobile ? handleToggleSelectionMode : undefined
+            }
           />
         </div>
       </div>
@@ -1147,7 +1183,9 @@ export function KanbanContainer() {
         </div>
       )}
 
-      {isMultiSelectActive && <BulkActionBarContainer projectId={projectId} />}
+      {isMultiSelectActive && selectedIssueIds.size > 0 && (
+        <BulkActionBarContainer projectId={projectId} />
+      )}
     </div>
   );
 }
