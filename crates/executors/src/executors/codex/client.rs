@@ -355,8 +355,13 @@ impl AppServerClient {
         let log_writer = self.log_writer.clone();
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
-            Self::emit_rate_limit_if_reached(peer, log_writer, cancel.clone()).await;
-            cancel.cancel();
+            // The reader stays alive until this token is cancelled, so the
+            // cancellation must happen no matter how the check ends. A drop
+            // guard fires the cancel on normal completion AND on panic/unwind;
+            // without it a panic in the rate-limit check would hang the reader
+            // (and the process) forever.
+            let _guard = cancel.clone().drop_guard();
+            Self::emit_rate_limit_if_reached(peer, log_writer, cancel).await;
         });
     }
 
