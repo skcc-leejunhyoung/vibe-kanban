@@ -44,6 +44,17 @@ pub struct EditorConfig {
     /// the remote web app. The local web app ignores it and opens locally.
     #[serde(default)]
     remote_ssh_only_in_remote_web: bool,
+    /// When enabled (VS Code only), remote opens go through a VS Code Tunnel via
+    /// the browser (`https://vscode.dev/tunnel/<name>`) instead of an SSH URL,
+    /// so clients without SSH (e.g. mobile) can connect. This only replaces the
+    /// remote SSH URL — local opens are unaffected. Requires `code tunnel` to be
+    /// running on this machine under `remote_tunnel_name`.
+    #[serde(default)]
+    remote_tunnel_enabled: bool,
+    /// The machine name from `code tunnel --name`, used to build the
+    /// `https://vscode.dev/tunnel/<name>` URL.
+    #[serde(default)]
+    remote_tunnel_name: Option<String>,
     #[serde(default = "default_auto_install_extension")]
     auto_install_extension: bool,
 }
@@ -72,6 +83,8 @@ impl Default for EditorConfig {
             remote_ssh_host: None,
             remote_ssh_user: None,
             remote_ssh_only_in_remote_web: false,
+            remote_tunnel_enabled: false,
+            remote_tunnel_name: None,
             auto_install_extension: true,
         }
     }
@@ -93,6 +106,8 @@ impl EditorConfig {
             remote_ssh_user,
             // Migration/availability-check helper; defaults to the shared behaviour.
             remote_ssh_only_in_remote_web: false,
+            remote_tunnel_enabled: false,
+            remote_tunnel_name: None,
             auto_install_extension,
         }
     }
@@ -192,12 +207,32 @@ impl EditorConfig {
             return None;
         }
 
+        let path_str = path.to_string_lossy();
+
+        // VS Code Tunnel: open through the browser-based vscode.dev so clients
+        // without an SSH stack (e.g. mobile) can connect. Only the VS Code
+        // family has vscode.dev tunnels; other editors fall through to SSH.
+        // This replaces the remote SSH URL only — the local fallback above
+        // already returned for non-remote opens, so local behaviour is intact.
+        if self.remote_tunnel_enabled
+            && matches!(
+                self.editor_type,
+                EditorType::VsCode | EditorType::VsCodeInsiders
+            )
+            && let Some(name) = self
+                .remote_tunnel_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+        {
+            return Some(format!("https://vscode.dev/tunnel/{name}{path_str}"));
+        }
+
         let user_part = self
             .remote_ssh_user
             .as_ref()
             .map(|u| format!("{u}@"))
             .unwrap_or_default();
-        let path_str = path.to_string_lossy();
 
         let scheme = match self.editor_type {
             EditorType::VsCode => "vscode",
@@ -244,6 +279,8 @@ impl EditorConfig {
                 remote_ssh_host: self.remote_ssh_host.clone(),
                 remote_ssh_user: self.remote_ssh_user.clone(),
                 remote_ssh_only_in_remote_web: self.remote_ssh_only_in_remote_web,
+                remote_tunnel_enabled: self.remote_tunnel_enabled,
+                remote_tunnel_name: self.remote_tunnel_name.clone(),
                 auto_install_extension: self.auto_install_extension,
             }
         } else {
@@ -263,7 +300,17 @@ mod tests {
             remote_ssh_host: Some("example.com".to_string()),
             remote_ssh_user: Some("user".to_string()),
             remote_ssh_only_in_remote_web,
+            remote_tunnel_enabled: false,
+            remote_tunnel_name: None,
             auto_install_extension: false,
+        }
+    }
+
+    fn tunnel_config(remote_ssh_only_in_remote_web: bool) -> EditorConfig {
+        EditorConfig {
+            remote_tunnel_enabled: true,
+            remote_tunnel_name: Some("my-mac".to_string()),
+            ..ssh_config(remote_ssh_only_in_remote_web)
         }
     }
 
@@ -292,5 +339,57 @@ mod tests {
         assert!(config.remote_url(path, true).is_some());
         // ...while local web falls back to opening locally.
         assert!(config.remote_url(path, false).is_none());
+    }
+
+    #[test]
+    fn tunnel_replaces_ssh_url_for_vscode() {
+        let config = tunnel_config(false);
+        let path = Path::new("/Users/test-user/proj");
+        let url = config.remote_url(path, true).unwrap();
+        assert_eq!(url, "https://vscode.dev/tunnel/my-mac/Users/test-user/proj");
+        assert!(!url.contains("ssh-remote"));
+    }
+
+    #[test]
+    fn tunnel_does_not_affect_local_open() {
+        // only_in_remote_web + local web => None (opens locally); the tunnel
+        // branch must not leak into the local path.
+        let config = tunnel_config(true);
+        let path = Path::new("/Users/test-user/proj");
+        assert!(config.remote_url(path, false).is_none());
+    }
+
+    #[test]
+    fn tunnel_ignored_for_non_vscode_editor() {
+        let config = EditorConfig {
+            editor_type: EditorType::Zed,
+            ..tunnel_config(false)
+        };
+        let path = Path::new("/Users/test-user/proj");
+        // Zed has no vscode.dev tunnel, so it falls back to its SSH URL.
+        let url = config.remote_url(path, true).unwrap();
+        assert!(url.starts_with("zed://ssh/"));
+    }
+
+    #[test]
+    fn tunnel_disabled_uses_ssh_url() {
+        let config = EditorConfig {
+            remote_tunnel_enabled: false,
+            ..tunnel_config(false)
+        };
+        let path = Path::new("/Users/test-user/proj");
+        let url = config.remote_url(path, true).unwrap();
+        assert!(url.contains("ssh-remote"));
+    }
+
+    #[test]
+    fn tunnel_with_empty_name_falls_back_to_ssh() {
+        let config = EditorConfig {
+            remote_tunnel_name: Some("  ".to_string()),
+            ..tunnel_config(false)
+        };
+        let path = Path::new("/Users/test-user/proj");
+        let url = config.remote_url(path, true).unwrap();
+        assert!(url.contains("ssh-remote"));
     }
 }

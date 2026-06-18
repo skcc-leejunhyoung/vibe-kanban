@@ -106,6 +106,17 @@
             "helper": "Nom d'utilisateur SSH pour la connexion distante. S'il n'est pas défini, VS Code utilisera votre config SSH ou vous demandera."
           }
         },
+        "remoteTunnel": {
+          "enabled": {
+            "label": "Use VS Code Tunnel (open via browser)",
+            "helper": "When enabled, remote \"Open in Editor\" opens through vscode.dev (https://vscode.dev/tunnel/<name>) instead of an SSH URL, so devices without SSH (e.g. mobile) can connect. Only affects opens that already use the remote SSH host; local opens are unchanged. Requires \"code tunnel\" running on this machine."
+          },
+          "name": {
+            "label": "Tunnel machine name",
+            "placeholder": "e.g., my-mac",
+            "helper": "The name from \"code tunnel --name <name>\" on the machine running Vibe Kanban. Used to build the vscode.dev/tunnel link."
+          }
+        },
         "autoInstallExtension": {
           "label": "Auto-install VS Code Extension",
           "helper": "Automatically install the Vibe Kanban extension when opening a project in VS Code or Cursor. This runs in the background and has no effect if the extension is already installed."

@@ -485,6 +485,56 @@ export function GeneralSettingsSection() {
                 />
               </SettingsField>
             )}
+
+            {draft?.editor.remote_ssh_host &&
+              draft?.editor.editor_type === EditorType.VS_CODE && (
+                <>
+                  <SettingsCheckbox
+                    id="remote-tunnel-enabled"
+                    label={t(
+                      'settings.general.editor.remoteTunnel.enabled.label'
+                    )}
+                    description={t(
+                      'settings.general.editor.remoteTunnel.enabled.helper'
+                    )}
+                    checked={draft?.editor.remote_tunnel_enabled ?? false}
+                    onChange={(checked) =>
+                      updateDraft({
+                        editor: {
+                          ...draft!.editor,
+                          remote_tunnel_enabled: checked,
+                        },
+                      })
+                    }
+                  />
+
+                  {draft?.editor.remote_tunnel_enabled && (
+                    <SettingsField
+                      label={t(
+                        'settings.general.editor.remoteTunnel.name.label'
+                      )}
+                      description={t(
+                        'settings.general.editor.remoteTunnel.name.helper'
+                      )}
+                    >
+                      <SettingsInput
+                        value={draft?.editor.remote_tunnel_name || ''}
+                        onChange={(value) =>
+                          updateDraft({
+                            editor: {
+                              ...draft!.editor,
+                              remote_tunnel_name: value || null,
+                            },
+                          })
+                        }
+                        placeholder={t(
+                          'settings.general.editor.remoteTunnel.name.placeholder'
+                        )}
+                      />
+                    </SettingsField>
+                  )}
+                </>
+              )}
           </>
         )}
 

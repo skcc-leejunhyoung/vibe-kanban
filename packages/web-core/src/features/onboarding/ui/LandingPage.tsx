@@ -266,6 +266,8 @@ export function LandingPage() {
       remote_ssh_host: null,
       remote_ssh_user: null,
       remote_ssh_only_in_remote_web: false,
+      remote_tunnel_enabled: false,
+      remote_tunnel_name: null,
       auto_install_extension: true,
     };
 
