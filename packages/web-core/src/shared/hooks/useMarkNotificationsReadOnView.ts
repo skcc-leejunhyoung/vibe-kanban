@@ -12,8 +12,8 @@ import { selectUnseenNotificationIdsForView } from '@/shared/lib/notifications';
  * 연관된 미확인 알림을 읽음 처리한다. 읽음 시맨틱은 알림 센터의 "Mark as read"와
  * 동일하게 `seen: true`만 전송한다(서버가 읽음 처리 시 자동으로 보관함으로 이동).
  *
- * 이 훅은 인증된 모든 페이지에 마운트되는 알림 벨 컨테이너에서 호출되어 라우트
- * 변경마다 동작한다.
+ * 이 훅은 인증된 모든 페이지를 감싸는 앱 레이아웃 셸(로컬: SharedAppLayout,
+ * 리모트: RemoteAppShell)에서 호출되어 라우트 변경마다 동작한다.
  */
 export function useMarkNotificationsReadOnView(): void {
   const destination = useCurrentAppDestination();
