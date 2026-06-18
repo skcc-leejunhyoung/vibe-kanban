@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Command as CommandPrimitive } from 'cmdk';
 import { MagnifyingGlassIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { isRealMobileDevice } from '../lib/platform';
 import { Dialog, DialogContent, DialogTitle } from './Dialog';
 
 const Command = React.forwardRef<
@@ -30,13 +31,20 @@ function CommandDialog({
   onOpenAutoFocus,
   ...props
 }: CommandDialogProps) {
+  // On real mobile devices, suppress the dialog's open-autofocus so the
+  // on-screen keyboard doesn't pop up and cover the screen when a command
+  // bar / selection dialog opens. Desktop keeps the default focus behavior.
+  const handleOpenAutoFocus = (event: Event) => {
+    if (isRealMobileDevice()) event.preventDefault();
+    onOpenAutoFocus?.(event);
+  };
   return (
     <Dialog {...props}>
       <DialogContent
         className="overflow-hidden p-0"
         hideCloseButton
         onCloseAutoFocus={onCloseAutoFocus}
-        onOpenAutoFocus={onOpenAutoFocus}
+        onOpenAutoFocus={handleOpenAutoFocus}
         aria-describedby={undefined}
       >
         <DialogTitle className="sr-only">Command Bar</DialogTitle>

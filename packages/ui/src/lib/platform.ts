@@ -14,6 +14,19 @@ export function getModifierKey(): string {
   return isMac() ? '\u2318' : 'Ctrl';
 }
 
+/** Detect a real mobile device via user-agent (not just viewport width). */
+export function isRealMobileDevice(): boolean {
+  // Modern API: navigator.userAgentData.mobile (Chrome, Edge, Opera).
+  const nav = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
+  if (nav.userAgentData?.mobile !== undefined) {
+    return nav.userAgentData.mobile;
+  }
+  // Fallback: user-agent string regex (Safari, Firefox).
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Windows Phone|Mobi/i.test(
+    navigator.userAgent
+  );
+}
+
 type TauriInvoke = (
   cmd: string,
   args?: Record<string, unknown>

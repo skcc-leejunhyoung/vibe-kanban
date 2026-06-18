@@ -13,6 +13,7 @@ import type {
 } from '@/shared/types/commandBar';
 import type { StatusItem } from '@/shared/types/selectionItems';
 import { resolveLabel, type ActionDefinition } from '@/shared/types/actions';
+import { useIsRealMobile } from '@/shared/hooks/useIsMobile';
 
 export interface SelectionPage<TResult = unknown> {
   id: string;
@@ -35,6 +36,9 @@ const SelectionDialogImpl = create<SelectionDialogProps>(
   ({ initialPageId, pages, statuses = [] }) => {
     const modal = useModal();
     const previousFocusRef = useRef<HTMLElement | null>(null);
+    // On real mobile devices, skip autofocusing the search input so the
+    // on-screen keyboard doesn't pop up and cover the screen on open.
+    const isRealMobile = useIsRealMobile();
     const [search, setSearch] = useState('');
     const [currentPageId, setCurrentPageId] = useState(initialPageId);
     const [pageStack, setPageStack] = useState<string[]>([]);
@@ -50,7 +54,7 @@ const SelectionDialogImpl = create<SelectionDialogProps>(
 
     // Ensure cmdk search input is focused when dialog opens or page changes.
     useEffect(() => {
-      if (!modal.visible) return;
+      if (!modal.visible || isRealMobile) return;
       const rafId = requestAnimationFrame(() => {
         const activeDialog = document.querySelector(
           '[role="dialog"][data-state="open"]'
@@ -61,7 +65,7 @@ const SelectionDialogImpl = create<SelectionDialogProps>(
       });
 
       return () => cancelAnimationFrame(rafId);
-    }, [modal.visible, currentPageId]);
+    }, [modal.visible, currentPageId, isRealMobile]);
 
     // Guard against stale page IDs when opening with different page sets.
     useEffect(() => {
