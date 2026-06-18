@@ -171,3 +171,41 @@ impl Default for Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use crate::services::config::versions::v7;
+
+    fn v7_config_with_analytics(analytics_enabled: Option<bool>) -> v7::Config {
+        v7::Config {
+            analytics_enabled,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn migrating_v7_without_analytics_preference_defaults_to_disabled() {
+        // None means the user never made a choice -> opt-in default is disabled.
+        let migrated = Config::from_v7_config(v7_config_with_analytics(None));
+        assert!(!migrated.analytics_enabled);
+    }
+
+    #[test]
+    fn migrating_v7_with_analytics_explicitly_disabled_stays_disabled() {
+        let migrated = Config::from_v7_config(v7_config_with_analytics(Some(false)));
+        assert!(!migrated.analytics_enabled);
+    }
+
+    #[test]
+    fn migrating_v7_with_analytics_explicitly_enabled_is_preserved() {
+        // An explicit opt-in must survive the migration.
+        let migrated = Config::from_v7_config(v7_config_with_analytics(Some(true)));
+        assert!(migrated.analytics_enabled);
+    }
+
+    #[test]
+    fn default_config_disables_analytics() {
+        assert!(!Config::default().analytics_enabled);
+    }
+}
