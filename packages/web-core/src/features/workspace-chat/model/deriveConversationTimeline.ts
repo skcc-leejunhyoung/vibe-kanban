@@ -21,7 +21,11 @@ function isRenderableConversationEntry(entry: DisplayEntry): boolean {
     'entry_type' in entry.content
   ) {
     const entryType = entry.content.entry_type.type;
-    return entryType !== 'next_action' && entryType !== 'token_usage_info';
+    return (
+      entryType !== 'next_action' &&
+      entryType !== 'token_usage_info' &&
+      entryType !== 'rate_limit_info'
+    );
   }
 
   return (

@@ -1085,36 +1085,28 @@ impl LocalContainerService {
         }
 
         // Look for a rate-limit entry emitted by the executor when a usage
-        // limit was reached during this execution.
-        let records =
-            ExecutionProcessLogs::find_by_execution_id(&self.db.pool, ctx.execution_process.id)
-                .await?;
-        let msgs = match ExecutionProcessLogs::parse_logs(&records) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("Failed to parse logs for rate-limit detection: {}", e);
-                return Ok(());
+        // limit was reached during this execution. Prefer the in-memory
+        // MsgStore because the exit monitor runs before DB log streaming is
+        // flushed; falling back to DB logs keeps this usable for unusual paths
+        // where the store has already gone away.
+        let msgs = if let Some(store) = self.get_msg_store_by_id(&ctx.execution_process.id).await {
+            store.get_history()
+        } else {
+            let records =
+                ExecutionProcessLogs::find_by_execution_id(&self.db.pool, ctx.execution_process.id)
+                    .await?;
+            match ExecutionProcessLogs::parse_logs(&records) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("Failed to parse logs for rate-limit detection: {}", e);
+                    return Ok(());
+                }
             }
         };
 
-        let mut limit_reached = false;
-        let mut reset_hint: Option<String> = None;
-        for msg in &msgs {
-            if let LogMsg::JsonPatch(patch) = msg
-                && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
-                && let NormalizedEntryType::RateLimitInfo(info) = &entry.entry_type
-                && info.limit_reached
-            {
-                limit_reached = true;
-                if info.resets_at.is_some() {
-                    reset_hint = info.resets_at.clone();
-                }
-            }
-        }
-
-        if !limit_reached {
+        let Some(reset_hint) = Self::rate_limit_reset_hint_from_msgs(&msgs) else {
             return Ok(());
-        }
+        };
 
         // Prefer the agent-reported reset time when present and in the future;
         // otherwise fall back to a conservative estimate.
@@ -1143,6 +1135,26 @@ impl LocalContainerService {
             resume_at
         );
         Ok(())
+    }
+
+    fn rate_limit_reset_hint_from_msgs(msgs: &[LogMsg]) -> Option<Option<String>> {
+        let mut limit_reached = false;
+        let mut reset_hint: Option<String> = None;
+
+        for msg in msgs {
+            if let LogMsg::JsonPatch(patch) = msg
+                && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+                && let NormalizedEntryType::RateLimitInfo(info) = &entry.entry_type
+                && info.limit_reached
+            {
+                limit_reached = true;
+                if info.resets_at.is_some() {
+                    reset_hint = info.resets_at.clone();
+                }
+            }
+        }
+
+        limit_reached.then_some(reset_hint)
     }
 
     /// Start a follow-up execution from a queued message
@@ -1414,6 +1426,50 @@ impl LocalContainerService {
         }
 
         remote_sync::sync_local_workspace_merge_to_remote(&client, workspace_id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use executors::logs::{NormalizedEntry, RateLimitInfo, utils::patch::ConversationPatch};
+
+    use super::*;
+
+    fn rate_limit_msg(resets_at: Option<&str>) -> LogMsg {
+        LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+            0,
+            NormalizedEntry {
+                timestamp: None,
+                entry_type: NormalizedEntryType::RateLimitInfo(RateLimitInfo {
+                    limit_reached: true,
+                    resets_at: resets_at.map(str::to_string),
+                    scope: Some("5h".to_string()),
+                }),
+                content: "Usage rate limit reached".to_string(),
+                metadata: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn rate_limit_reset_hint_detects_in_memory_patch() {
+        let reset_at = "2026-06-18T12:00:00+00:00";
+        let msgs = vec![rate_limit_msg(Some(reset_at))];
+
+        assert_eq!(
+            LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
+            Some(Some(reset_at.to_string()))
+        );
+    }
+
+    #[test]
+    fn rate_limit_reset_hint_requires_limit_reached_entry() {
+        let msgs = vec![LogMsg::Stdout("not a rate-limit patch".to_string())];
+
+        assert_eq!(
+            LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
+            None
+        );
     }
 }
 

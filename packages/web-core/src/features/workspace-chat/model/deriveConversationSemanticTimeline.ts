@@ -96,7 +96,8 @@ export function deriveConversationSemanticTimeline(
         (entry) =>
           entry.type !== 'NORMALIZED_ENTRY' ||
           (entry.content.entry_type.type !== 'user_message' &&
-            entry.content.entry_type.type !== 'token_usage_info')
+            entry.content.entry_type.type !== 'token_usage_info' &&
+            entry.content.entry_type.type !== 'rate_limit_info')
       );
 
       const hasPendingApprovalEntry = visibleEntries.some((entry) => {
