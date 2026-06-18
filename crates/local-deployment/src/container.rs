@@ -560,9 +560,14 @@ impl LocalContainerService {
                 // If this execution stopped because a usage rate limit was
                 // reached and the session opted into auto-resume, schedule a
                 // deferred "continue" follow-up for once the limit resets.
-                if let Err(e) = container.maybe_schedule_rate_limit_resume(&ctx).await {
-                    tracing::warn!("Failed to schedule rate-limit auto-resume: {}", e);
-                }
+                let rate_limit_resume_scheduled =
+                    match container.maybe_schedule_rate_limit_resume(&ctx).await {
+                        Ok(scheduled) => scheduled,
+                        Err(e) => {
+                            tracing::warn!("Failed to schedule rate-limit auto-resume: {}", e);
+                            false
+                        }
+                    };
 
                 let success = matches!(
                     ctx.execution_process.status,
@@ -579,7 +584,7 @@ impl LocalContainerService {
 
                 let mut already_finalized = false;
 
-                if success || cleanup_done {
+                if !rate_limit_resume_scheduled && (success || cleanup_done) {
                     // Commit changes (if any) and get feedback about whether changes were made
                     let changes_committed = match container.try_commit_changes(&ctx).await {
                         Ok(committed) => committed,
@@ -622,7 +627,10 @@ impl LocalContainerService {
                     }
                 }
 
-                if !already_finalized && container.should_finalize(&ctx) {
+                if !rate_limit_resume_scheduled
+                    && !already_finalized
+                    && container.should_finalize(&ctx)
+                {
                     let has_chained_follow_up = ctx
                         .execution_process
                         .executor_action()
@@ -707,6 +715,13 @@ impl LocalContainerService {
                             e
                         );
                     }
+                }
+
+                if rate_limit_resume_scheduled {
+                    tracing::info!(
+                        "Skipping finalization for execution {} while rate-limit auto-resume is pending",
+                        ctx.execution_process.id
+                    );
                 }
 
                 // When a parallel setup script finishes and no coding agent is running,
@@ -1073,15 +1088,15 @@ impl LocalContainerService {
     async fn maybe_schedule_rate_limit_resume(
         &self,
         ctx: &ExecutionContext,
-    ) -> Result<(), ContainerError> {
+    ) -> Result<bool, ContainerError> {
         if !matches!(
             ctx.execution_process.run_reason,
             ExecutionProcessRunReason::CodingAgent
         ) {
-            return Ok(());
+            return Ok(false);
         }
         if !ctx.session.auto_resume_enabled {
-            return Ok(());
+            return Ok(false);
         }
 
         // Look for a rate-limit entry emitted by the executor when a usage
@@ -1099,13 +1114,13 @@ impl LocalContainerService {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::warn!("Failed to parse logs for rate-limit detection: {}", e);
-                    return Ok(());
+                    return Ok(false);
                 }
             }
         };
 
         let Some(reset_hint) = Self::rate_limit_reset_hint_from_msgs(&msgs) else {
-            return Ok(());
+            return Ok(false);
         };
 
         // Prefer the agent-reported reset time when present and in the future;
@@ -1134,7 +1149,7 @@ impl LocalContainerService {
             ctx.execution_process.id,
             resume_at
         );
-        Ok(())
+        Ok(true)
     }
 
     fn rate_limit_reset_hint_from_msgs(msgs: &[LogMsg]) -> Option<Option<String>> {

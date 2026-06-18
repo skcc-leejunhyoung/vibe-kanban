@@ -349,6 +349,7 @@ export const sessionsApi = {
   create: async (data: {
     workspace_id: string;
     executor?: string;
+    variant?: string | null;
     name?: string;
   }): Promise<Session> => {
     const response = await makeRequest('/api/sessions', {

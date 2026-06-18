@@ -50,6 +50,7 @@ pub struct SessionQuery {
 pub struct CreateSessionRequest {
     pub workspace_id: Uuid,
     pub executor: Option<String>,
+    pub variant: Option<String>,
     pub name: Option<String>,
 }
 
@@ -71,10 +72,10 @@ pub async fn get_session(
 async fn seed_auto_resume_default(
     pool: &sqlx::SqlitePool,
     session_id: Uuid,
-    executor: BaseCodingAgent,
+    executor_profile_id: &ExecutorProfileId,
 ) -> Result<bool, sqlx::Error> {
     let configs = ExecutorConfigs::get_cached();
-    let agent = configs.get_coding_agent_or_default(&ExecutorProfileId::new(executor));
+    let agent = configs.get_coding_agent_or_default(executor_profile_id);
     if !agent.auto_resume_on_limit() {
         return Ok(false);
     }
@@ -164,7 +165,11 @@ pub async fn create_session(
     if let Some(executor_str) = session.executor.as_deref()
         && let Ok(executor) = BaseCodingAgent::from_str(executor_str)
     {
-        if seed_auto_resume_default(pool, session.id, executor).await? {
+        let executor_profile_id = ExecutorProfileId {
+            executor,
+            variant: payload.variant,
+        };
+        if seed_auto_resume_default(pool, session.id, &executor_profile_id).await? {
             session.auto_resume_enabled = true;
         }
     }
@@ -334,7 +339,7 @@ pub async fn follow_up(
         Session::update_executor(pool, session.id, &executor_profile_id.executor.to_string())
             .await?;
         session.executor = Some(executor_profile_id.executor.to_string());
-        if seed_auto_resume_default(pool, session.id, executor_profile_id.executor).await? {
+        if seed_auto_resume_default(pool, session.id, &executor_profile_id).await? {
             session.auto_resume_enabled = true;
         }
     }

@@ -31,6 +31,7 @@ export function useCreateSession() {
       const session = await sessionsApi.create({
         workspace_id: workspaceId,
         executor: executorConfig.executor,
+        variant: executorConfig.variant ?? null,
       });
 
       const body: CreateFollowUpAttempt = {
