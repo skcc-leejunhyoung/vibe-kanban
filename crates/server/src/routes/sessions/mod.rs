@@ -130,11 +130,15 @@ pub async fn set_auto_resume(
     Session::set_auto_resume_enabled(pool, session.id, request.enabled).await?;
 
     if let Some(pending) = pending_resume {
-        PendingRateLimitResume::delete_by_session_id(pool, session.id).await?;
-        deployment
-            .container()
-            .finalize_cancelled_rate_limit_resume(pending.execution_process_id)
-            .await?;
+        // Claim via delete: only finalize if this call actually removed the row,
+        // so a concurrent rate_limit_watcher abandon_resume can't double-run the
+        // (non-idempotent) finalization on the same execution.
+        if PendingRateLimitResume::delete_by_session_id(pool, session.id).await? > 0 {
+            deployment
+                .container()
+                .finalize_cancelled_rate_limit_resume(pending.execution_process_id)
+                .await?;
+        }
     }
 
     let pending_resume_at = PendingRateLimitResume::find_by_session_id(pool, session.id)

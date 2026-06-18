@@ -83,21 +83,25 @@ async fn process_one(
         }
     };
 
-    // Respect the per-session toggle: if auto-resume was turned off after the
-    // schedule was created, drop the pending row without resuming.
-    if !session.auto_resume_enabled {
-        abandon_resume(deployment, pool, row).await;
-        return Ok(());
-    }
-
-    // Don't start a duplicate execution if the session already has a
-    // (non-dev-server) process running — e.g. the user manually resumed it
-    // after the limit reset, or a previous resume is still in flight. Leave the
-    // pending row in place and retry on a later tick; it is cleared once the
-    // session goes idle and resumes, or when a manual follow-up supersedes it.
+    // Don't act while the session has a (non-dev-server) process running — e.g.
+    // the user manually resumed it after the limit reset, or a previous resume
+    // is still in flight. Leave the pending row in place and retry on a later
+    // tick; it is cleared once the session goes idle and resumes, or when a
+    // manual follow-up supersedes it. Checked before the auto-resume toggle so
+    // that abandon_resume (below) only runs when the session is idle, where its
+    // deferred finalization can actually proceed instead of being skipped by the
+    // running-process guard inside finalize_cancelled_rate_limit_resume.
     if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, row.session_id)
         .await?
     {
+        return Ok(());
+    }
+
+    // Respect the per-session toggle: if auto-resume was turned off after the
+    // schedule was created, drop the pending row and run the deferred
+    // finalization without resuming.
+    if !session.auto_resume_enabled {
+        abandon_resume(deployment, pool, row).await;
         return Ok(());
     }
 
@@ -207,7 +211,14 @@ async fn abandon_resume(
     pool: &sqlx::SqlitePool,
     row: &PendingRateLimitResume,
 ) {
-    let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+    // Claim the row by deleting it, and only finalize if this call actually
+    // removed it. A concurrent set_auto_resume(false) deletes + finalizes the
+    // same row; making the delete the claim ensures exactly one of them runs the
+    // (non-idempotent) finalization.
+    match PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await {
+        Ok(n) if n > 0 => {}
+        _ => return,
+    }
     if let Err(e) = deployment
         .container()
         .finalize_cancelled_rate_limit_resume(row.execution_process_id)
