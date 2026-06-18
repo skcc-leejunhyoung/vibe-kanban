@@ -88,6 +88,17 @@ async fn process_one(
         return Ok(());
     }
 
+    // Don't start a duplicate execution if the session already has a
+    // (non-dev-server) process running — e.g. the user manually resumed it
+    // after the limit reset, or a previous resume is still in flight. Leave the
+    // pending row in place and retry on a later tick; it is cleared once the
+    // session goes idle and resumes, or when a manual follow-up supersedes it.
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, row.session_id)
+        .await?
+    {
+        return Ok(());
+    }
+
     let workspace = match Workspace::find_by_id(pool, session.workspace_id).await? {
         Some(w) => w,
         None => {

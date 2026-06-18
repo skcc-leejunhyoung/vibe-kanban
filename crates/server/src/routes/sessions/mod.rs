@@ -289,6 +289,11 @@ pub async fn follow_up(
 
     tracing::info!("{:?}", workspace);
 
+    // A manual follow-up supersedes any scheduled usage-limit auto-resume for
+    // this session: the user is driving it by hand, so cancel the pending
+    // resume to avoid the watcher sending a duplicate "continue" later.
+    let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
+
     deployment
         .container()
         .ensure_container_exists(&workspace)
