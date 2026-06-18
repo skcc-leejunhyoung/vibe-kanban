@@ -79,6 +79,10 @@ impl MsgStore {
         self.push(LogMsg::MessageId(id));
     }
 
+    pub fn push_scheduled_resume(&self, crons_json: String) {
+        self.push(LogMsg::ScheduledResume(crons_json));
+    }
+
     pub fn push_finished(&self) {
         self.push(LogMsg::Finished);
     }

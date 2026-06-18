@@ -738,6 +738,11 @@ pub enum HistoryStrategy {
 /// Default context window for models (used until we get actual value from result)
 const DEFAULT_CLAUDE_CONTEXT_WINDOW: u32 = 200_000;
 
+/// Internal stdout marker the Stop hook callback uses to forward agent-scheduled
+/// wakeups (session_crons) to the log storage consumer. The JSON array of crons
+/// follows the prefix on the same line. Not part of the Claude CLI protocol.
+pub(crate) const SCHEDULED_WAKEUP_MARKER: &str = "__VK_SCHEDULED_WAKEUP__";
+
 /// Handles log processing and interpretation for Claude executor
 pub struct ClaudeLogProcessor {
     model_name: Option<String>,
@@ -797,6 +802,7 @@ impl ClaudeLogProcessor {
                     LogMsg::JsonPatch(_)
                     | LogMsg::SessionId(_)
                     | LogMsg::MessageId(_)
+                    | LogMsg::ScheduledResume(_)
                     | LogMsg::Stderr(_)
                     | LogMsg::Ready => continue,
                     LogMsg::Finished => break,
@@ -821,6 +827,14 @@ impl ClaudeLogProcessor {
                         || trimmed
                             .contains("claude code router service has been successfully stopped")
                     {
+                        continue;
+                    }
+
+                    // Intercept the internal scheduled-wakeup marker emitted by
+                    // the Stop hook callback; forward it to storage as a
+                    // ScheduledResume instead of rendering it as agent output.
+                    if let Some(crons_json) = trimmed.strip_prefix(SCHEDULED_WAKEUP_MARKER) {
+                        msg_store.push_scheduled_resume(crons_json.to_string());
                         continue;
                     }
 

@@ -5,11 +5,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use db::{
     DBService,
     models::{
         coding_agent_turn::CodingAgentTurn, execution_process::ExecutionProcess,
-        execution_process_logs::ExecutionProcessLogs,
+        execution_process_logs::ExecutionProcessLogs, scheduled_resume::ScheduledResume,
     },
 };
 use futures::{StreamExt, TryStreamExt};
@@ -338,6 +339,9 @@ pub fn spawn_stream_raw_logs_to_storage(
                             );
                         }
                     }
+                    LogMsg::ScheduledResume(crons_json) => {
+                        persist_scheduled_resumes(&db.pool, session_id, crons_json).await;
+                    }
                     LogMsg::Finished => {
                         break;
                     }
@@ -346,6 +350,56 @@ pub fn spawn_stream_raw_logs_to_storage(
             }
         }
     })
+}
+
+/// Persist agent-scheduled wakeups (claude `session_crons`) forwarded by the
+/// Stop hook as ScheduledResume rows. Each cron's 5-field schedule is resolved
+/// to an absolute `next_fire_at`; the unique (session_id, cron_id) index keeps
+/// a cron re-reported on every Stop registered only once. Best-effort: parse or
+/// persistence failures are logged and skipped, never surfaced to the agent.
+async fn persist_scheduled_resumes(pool: &SqlitePool, session_id: Uuid, crons_json: &str) {
+    let crons: Vec<serde_json::Value> = match serde_json::from_str(crons_json) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to parse scheduled_resume payload for session {session_id}: {e}"
+            );
+            return;
+        }
+    };
+    let now = Utc::now();
+    for cron in &crons {
+        let (Some(cron_id), Some(schedule), Some(prompt)) = (
+            cron.get("id").and_then(|v| v.as_str()),
+            cron.get("schedule").and_then(|v| v.as_str()),
+            cron.get("prompt").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let recurring = cron
+            .get("recurring")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let Some(next_fire_at) = ScheduledResume::next_fire_after(schedule, now) else {
+            tracing::warn!(
+                "Skipping scheduled resume with unparseable cron '{schedule}' for session {session_id}"
+            );
+            continue;
+        };
+        if let Err(e) = ScheduledResume::upsert(
+            pool,
+            session_id,
+            cron_id,
+            prompt,
+            schedule,
+            recurring,
+            next_fire_at,
+        )
+        .await
+        {
+            tracing::error!("Failed to persist scheduled resume for session {session_id}: {e}");
+        }
+    }
 }
 
 async fn read_execution_logs_for_execution(

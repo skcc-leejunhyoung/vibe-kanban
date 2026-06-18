@@ -6,7 +6,7 @@ use std::sync::{
 use tokio_util::sync::CancellationToken;
 use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
 
-use super::types::PermissionMode;
+use super::{SCHEDULED_WAKEUP_MARKER, types::PermissionMode};
 use crate::{
     approvals::{ExecutorApprovalError, ExecutorApprovalService},
     env::RepoContext,
@@ -390,6 +390,21 @@ impl ClaudeAgentClient {
         // Stop hook: drives background-task auto-resume and the optional commit
         // reminder. Returns a `decision` (approve/block) and an optional `reason`.
         if callback_id == STOP_GIT_CHECK_CALLBACK_ID {
+            // Forward any agent-scheduled wakeups (session_crons) to storage so a
+            // background watcher can resume this session when they fire. The CLI
+            // re-reports active crons on every Stop; the DB dedupes by
+            // (session_id, cron_id). Best-effort — never blocks the stop.
+            if let Some(crons) = input
+                .get("session_crons")
+                .filter(|c| c.as_array().is_some_and(|a| !a.is_empty()))
+                && let Ok(payload) = serde_json::to_string(crons)
+            {
+                let _ = self
+                    .log_writer
+                    .log_raw(&format!("{SCHEDULED_WAKEUP_MARKER}{payload}"))
+                    .await;
+            }
+
             // 1. Background-task auto-resume. If the agent kicked off
             //    `run_in_background` task(s) and then tried to stop, block the
             //    stop so the SAME process keeps going until they finish. Without

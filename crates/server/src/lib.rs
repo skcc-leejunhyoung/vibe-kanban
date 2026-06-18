@@ -5,6 +5,7 @@ pub mod rate_limit_watcher;
 pub mod relay_pairing;
 pub mod routes;
 pub mod runtime;
+pub mod scheduled_resume_watcher;
 pub mod startup;
 
 // #[cfg(feature = "cloud")]
