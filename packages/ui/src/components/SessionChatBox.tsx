@@ -44,7 +44,6 @@ import {
   TurnNavigationPopup,
   type TurnNavigationItem,
 } from './TurnNavigationPopup';
-import { Switch } from './Switch';
 import { Tooltip } from './Tooltip';
 import { cn } from '../lib/cn';
 import { withDisplayTimeZone } from '../lib/datetime';
@@ -988,8 +987,8 @@ function formatCountdown(msRemaining: number) {
 
 /**
  * Per-session usage-based auto-resume control rendered in the chat header.
- * Shows a toggle, an "enabled" indicator, and (when a resume is scheduled) a
- * live countdown badge with a cancel button.
+ * Shows a clickable icon button (brand color when on, muted when off) and,
+ * when a resume is scheduled, a live countdown badge with a cancel button.
  */
 function AutoResumeControl({
   enabled,
@@ -1050,19 +1049,20 @@ function AutoResumeControl({
       }
       side="bottom"
     >
-      <label className="flex items-center gap-half cursor-pointer select-none">
+      <button
+        type="button"
+        onClick={() => onToggle(!enabled)}
+        aria-label={t('conversation.autoResume.toggleLabel')}
+        aria-pressed={enabled}
+        className="flex items-center cursor-pointer select-none p-1 -m-1"
+      >
         <ArrowsClockwiseIcon
           className={cn(
-            'size-icon-xs shrink-0',
-            enabled ? 'text-brand' : 'text-low'
+            'size-icon-xs shrink-0 transition-colors',
+            enabled ? 'text-brand' : 'text-low hover:text-normal'
           )}
         />
-        <Switch
-          checked={enabled}
-          onCheckedChange={onToggle}
-          aria-label={t('conversation.autoResume.toggleLabel')}
-        />
-      </label>
+      </button>
     </Tooltip>
   );
 }
