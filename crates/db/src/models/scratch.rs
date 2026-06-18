@@ -53,6 +53,13 @@ pub struct WorkspaceNotesData {
     pub content: String,
 }
 
+/// Workspace-specific panel state
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct WorkspacePanelStateData {
+    pub right_main_panel_mode: Option<String>,
+    pub is_left_main_panel_visible: bool,
+}
+
 /// Workspace sidebar PR filter state
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
 #[serde(rename_all = "snake_case")]
@@ -111,12 +118,27 @@ pub struct UiPreferencesData {
     /// Context bar position
     #[serde(default)]
     pub context_bar_position: Option<String>,
+    /// Pane sizes
+    #[serde(default)]
+    pub pane_sizes: std::collections::HashMap<String, serde_json::Value>,
     /// Collapsed paths per workspace in file tree
     #[serde(default)]
     pub collapsed_paths: std::collections::HashMap<String, Vec<String>>,
     /// Preferred file-search repo
     #[serde(default)]
     pub file_search_repo_id: Option<String>,
+    /// Global left sidebar visibility
+    #[serde(default)]
+    pub is_left_sidebar_visible: Option<bool>,
+    /// Global right sidebar visibility
+    #[serde(default)]
+    pub is_right_sidebar_visible: Option<bool>,
+    /// Global terminal visibility
+    #[serde(default)]
+    pub is_terminal_visible: Option<bool>,
+    /// Workspace-specific panel states
+    #[serde(default)]
+    pub workspace_panel_states: std::collections::HashMap<String, WorkspacePanelStateData>,
     /// Workspace sidebar filter preferences
     #[serde(default)]
     pub workspace_filters: WorkspaceFilterStateData,
