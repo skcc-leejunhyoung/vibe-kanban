@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use thiserror::Error;
@@ -135,21 +135,63 @@ impl ScheduledResume {
         Ok(res.rows_affected())
     }
 
+    /// Cron has one-minute resolution, so when registering a wakeup we treat the
+    /// just-elapsed minute as still due: if the agent's turn ends a few seconds
+    /// past the target minute, the wakeup fires now instead of being deferred a
+    /// whole period. 60s exactly covers "the current minute".
+    const REGISTRATION_LOOKBACK_SECS: i64 = 60;
+
     /// Compute the next fire time strictly after `after` for a claude
     /// `session_crons` schedule (5-field cron: minute hour day month weekday).
     /// Returns None if the expression cannot be parsed.
+    ///
+    /// Claude Code interprets self-scheduled crons in the **local system
+    /// timezone** ("0 9 * * *" means 9am local, not UTC; see its scheduled-tasks
+    /// docs), and the CLI runs on the same machine as this server, so the cron
+    /// fields are evaluated against `chrono::Local`'s wall clock.
     pub fn next_fire_after(schedule: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        Self::next_fire_after_in_tz(schedule, after, &chrono::Local)
+    }
+
+    /// The `next_fire_at` to persist when (re-)registering a cron observed at
+    /// `now`. Applies [`REGISTRATION_LOOKBACK_SECS`] so a wakeup whose target
+    /// minute has only just elapsed still fires promptly rather than rolling to
+    /// the next period. Used only at registration time; recurring reschedules
+    /// use [`next_fire_after`] (strict) to avoid re-firing the occurrence that
+    /// was just handled.
+    pub fn next_fire_at_for_registration(
+        schedule: &str,
+        now: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        Self::next_fire_after(
+            schedule,
+            now - Duration::seconds(Self::REGISTRATION_LOOKBACK_SECS),
+        )
+    }
+
+    /// Like [`next_fire_after`] but evaluates the cron fields in an explicit
+    /// timezone's wall clock. Kept separate so tests can pin a timezone without
+    /// depending on the host's `TZ`.
+    fn next_fire_after_in_tz<Tz: TimeZone>(
+        schedule: &str,
+        after: DateTime<Utc>,
+        tz: &Tz,
+    ) -> Option<DateTime<Utc>> {
         // The `cron` crate expects 6 fields (leading seconds); claude emits 5.
         let with_seconds = format!("0 {schedule}");
+        let after_local = after.with_timezone(tz);
         cron::Schedule::from_str(&with_seconds)
             .ok()?
-            .after(&after)
+            .after(&after_local)
             .next()
+            .map(|dt| dt.with_timezone(&Utc))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use chrono::FixedOffset;
+
     use super::*;
 
     fn at(rfc3339: &str) -> DateTime<Utc> {
@@ -158,23 +200,86 @@ mod tests {
             .with_timezone(&Utc)
     }
 
+    // Tests pin the timezone explicitly via the in-tz helper so they don't
+    // depend on the host's `TZ`.
+
     #[test]
     fn parses_claude_five_field_cron_same_day() {
         // "21 14 * * *" = daily 14:21; from 10:00 the next fire is the same day.
-        let next = ScheduledResume::next_fire_after("21 14 * * *", at("2026-06-18T10:00:00Z"));
+        let next =
+            ScheduledResume::next_fire_after_in_tz("21 14 * * *", at("2026-06-18T10:00:00Z"), &Utc);
         assert_eq!(next.unwrap().to_rfc3339(), "2026-06-18T14:21:00+00:00");
     }
 
     #[test]
     fn rolls_to_next_day_when_time_already_passed() {
-        let next = ScheduledResume::next_fire_after("21 14 * * *", at("2026-06-18T15:00:00Z"));
+        let next =
+            ScheduledResume::next_fire_after_in_tz("21 14 * * *", at("2026-06-18T15:00:00Z"), &Utc);
         assert_eq!(next.unwrap().to_rfc3339(), "2026-06-19T14:21:00+00:00");
     }
 
     #[test]
     fn invalid_schedule_returns_none() {
         assert!(
-            ScheduledResume::next_fire_after("not a cron", at("2026-06-18T10:00:00Z")).is_none()
+            ScheduledResume::next_fire_after_in_tz("not a cron", at("2026-06-18T10:00:00Z"), &Utc)
+                .is_none()
         );
+    }
+
+    // #3: cron fields are local wall-clock time, not UTC. Claude on a UTC+9
+    // machine emitting "21 14 * * *" means 14:21 local == 05:21 UTC.
+    #[test]
+    fn cron_is_evaluated_in_local_timezone_not_utc() {
+        let kst = FixedOffset::east_opt(9 * 3600).unwrap();
+        let next = ScheduledResume::next_fire_after_in_tz(
+            "21 14 * * *",
+            at("2026-06-18T00:00:00Z"), // 09:00 KST, before the 14:21 KST fire
+            &kst,
+        );
+        // Bug behavior would have returned 2026-06-18T14:21:00Z.
+        assert_eq!(next.unwrap().to_rfc3339(), "2026-06-18T05:21:00+00:00");
+    }
+
+    // #3: a local-time fire can land on a different UTC calendar day.
+    #[test]
+    fn cron_local_tz_crosses_utc_day_boundary() {
+        // UTC-5: 14:21 local == 19:21 UTC. From 15:00 local (20:00 UTC), just
+        // past today's fire, the next is tomorrow's 14:21 local == next-day
+        // 19:21 UTC.
+        let est = FixedOffset::west_opt(5 * 3600).unwrap();
+        let next =
+            ScheduledResume::next_fire_after_in_tz("21 14 * * *", at("2026-06-18T20:00:00Z"), &est);
+        assert_eq!(next.unwrap().to_rfc3339(), "2026-06-19T19:21:00+00:00");
+    }
+
+    // #4: registration look-back keeps a just-elapsed minute due instead of
+    // deferring it a whole day. The turn ends at 14:21:30, still within the
+    // 14:21 minute, so the wakeup should fire at 14:21, not tomorrow.
+    #[test]
+    fn registration_keeps_just_elapsed_minute_due() {
+        let now = at("2026-06-18T14:21:30Z");
+        // Mirrors next_fire_at_for_registration's look-back, pinned to UTC.
+        let fire = ScheduledResume::next_fire_after_in_tz(
+            "21 14 * * *",
+            now - Duration::seconds(ScheduledResume::REGISTRATION_LOOKBACK_SECS),
+            &Utc,
+        );
+        assert_eq!(fire.unwrap().to_rfc3339(), "2026-06-18T14:21:00+00:00");
+
+        // Strict (reschedule) semantics would have pushed it to the next day.
+        let strict = ScheduledResume::next_fire_after_in_tz("21 14 * * *", now, &Utc);
+        assert_eq!(strict.unwrap().to_rfc3339(), "2026-06-19T14:21:00+00:00");
+    }
+
+    // #4: past the one-minute grace window, a missed fire still rolls forward.
+    #[test]
+    fn registration_past_grace_window_rolls_forward() {
+        let now = at("2026-06-18T14:23:00Z"); // 2 minutes past the 14:21 fire
+        let fire = ScheduledResume::next_fire_after_in_tz(
+            "21 14 * * *",
+            now - Duration::seconds(ScheduledResume::REGISTRATION_LOOKBACK_SECS),
+            &Utc,
+        );
+        assert_eq!(fire.unwrap().to_rfc3339(), "2026-06-19T14:21:00+00:00");
     }
 }

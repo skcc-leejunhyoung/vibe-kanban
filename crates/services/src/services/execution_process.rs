@@ -380,7 +380,8 @@ async fn persist_scheduled_resumes(pool: &SqlitePool, session_id: Uuid, crons_js
             .get("recurring")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let Some(next_fire_at) = ScheduledResume::next_fire_after(schedule, now) else {
+        let Some(next_fire_at) = ScheduledResume::next_fire_at_for_registration(schedule, now)
+        else {
             tracing::warn!(
                 "Skipping scheduled resume with unparseable cron '{schedule}' for session {session_id}"
             );
