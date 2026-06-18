@@ -412,7 +412,6 @@
       "resetTooltip": "이 시점으로 초기화"
     },
     "autoResume": {
-      "enabled": "자동 재개 켜짐",
       "toggleLabel": "사용량 한도 도달 시 자동 재개 전환",
       "enabledTooltip": "자동 재개가 켜져 있습니다. 이 세션이 사용량 한도에 도달하면 한도가 리셋된 뒤 자동으로 'continue'를 보냅니다.",
       "disabledTooltip": "자동 재개를 켜면 사용량 한도가 리셋된 뒤 자동으로 'continue'를 보냅니다.",

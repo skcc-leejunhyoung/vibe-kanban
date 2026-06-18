@@ -1057,11 +1057,6 @@ function AutoResumeControl({
             enabled ? 'text-brand' : 'text-low'
           )}
         />
-        {enabled && (
-          <span className="text-xs text-normal whitespace-nowrap">
-            {t('conversation.autoResume.enabled')}
-          </span>
-        )}
         <Switch
           checked={enabled}
           onCheckedChange={onToggle}
