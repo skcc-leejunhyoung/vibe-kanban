@@ -5,7 +5,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use db::models::{
-    execution_process::ExecutionProcessError, repo::RepoError, scratch::ScratchError,
+    execution_process::ExecutionProcessError,
+    pending_rate_limit_resume::PendingRateLimitResumeError, repo::RepoError, scratch::ScratchError,
     session::SessionError, workspace::WorkspaceError,
 };
 use deployment::{DeploymentError, RelayHostsNotConfigured, RemoteClientNotConfigured};
@@ -94,6 +95,14 @@ pub enum ApiError {
 impl From<&'static str> for ApiError {
     fn from(msg: &'static str) -> Self {
         ApiError::BadRequest(msg.to_string())
+    }
+}
+
+impl From<PendingRateLimitResumeError> for ApiError {
+    fn from(err: PendingRateLimitResumeError) -> Self {
+        match err {
+            PendingRateLimitResumeError::Database(err) => ApiError::Database(err),
+        }
     }
 }
 

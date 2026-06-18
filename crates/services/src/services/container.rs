@@ -190,6 +190,11 @@ pub trait ContainerService {
 
     async fn take_db_stream_handle(&self, id: &Uuid) -> Option<JoinHandle<()>>;
 
+    async fn finalize_cancelled_rate_limit_resume(
+        &self,
+        execution_process_id: Uuid,
+    ) -> Result<(), ContainerError>;
+
     async fn create(&self, workspace: &Workspace) -> Result<ContainerRef, ContainerError>;
 
     async fn kill_all_running_processes(&self) -> Result<(), ContainerError>;

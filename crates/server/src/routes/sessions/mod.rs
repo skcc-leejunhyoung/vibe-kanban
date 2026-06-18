@@ -121,10 +121,22 @@ pub async fn set_auto_resume(
     Json(request): Json<SetAutoResumeRequest>,
 ) -> Result<ResponseJson<ApiResponse<AutoResumeStatus>>, ApiError> {
     let pool = &deployment.db().pool;
+    let pending_resume = if request.enabled {
+        None
+    } else {
+        PendingRateLimitResume::find_by_session_id(pool, session.id).await?
+    };
+
     Session::set_auto_resume_enabled(pool, session.id, request.enabled).await?;
-    if !request.enabled {
-        let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
+
+    if let Some(pending) = pending_resume {
+        PendingRateLimitResume::delete_by_session_id(pool, session.id).await?;
+        deployment
+            .container()
+            .finalize_cancelled_rate_limit_resume(pending.execution_process_id)
+            .await?;
     }
+
     let pending_resume_at = PendingRateLimitResume::find_by_session_id(pool, session.id)
         .await
         .ok()
@@ -306,11 +318,6 @@ pub async fn follow_up(
 
     tracing::info!("{:?}", workspace);
 
-    // A manual follow-up supersedes any scheduled usage-limit auto-resume for
-    // this session: the user is driving it by hand, so cancel the pending
-    // resume to avoid the watcher sending a duplicate "continue" later.
-    let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
-
     deployment
         .container()
         .ensure_container_exists(&workspace)
@@ -457,6 +464,10 @@ pub async fn follow_up(
             )
             .await?
     };
+
+    // A successfully-started manual follow-up supersedes any scheduled
+    // usage-limit auto-resume for this session.
+    let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
 
     // Clear the draft follow-up scratch on successful spawn
     // This ensures the scratch is wiped even if the user navigates away quickly

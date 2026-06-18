@@ -569,152 +569,12 @@ impl LocalContainerService {
                         }
                     };
 
-                let success = matches!(
-                    ctx.execution_process.status,
-                    ExecutionProcessStatus::Completed
-                ) && exit_code == Some(0);
-
-                let cleanup_done = matches!(
-                    ctx.execution_process.run_reason,
-                    ExecutionProcessRunReason::CleanupScript
-                ) && !matches!(
-                    ctx.execution_process.status,
-                    ExecutionProcessStatus::Running
-                );
-
-                let mut already_finalized = false;
-
-                if !rate_limit_resume_scheduled && (success || cleanup_done) {
-                    // Commit changes (if any) and get feedback about whether changes were made
-                    let changes_committed = match container.try_commit_changes(&ctx).await {
-                        Ok(committed) => committed,
-                        Err(e) => {
-                            tracing::error!("Failed to commit changes after execution: {}", e);
-                            // Treat commit failures as if changes were made to be safe
-                            true
-                        }
-                    };
-
-                    let should_start_next = if matches!(
-                        ctx.execution_process.run_reason,
-                        ExecutionProcessRunReason::CodingAgent
-                    ) {
-                        // Check if agent made commits OR if we just committed uncommitted changes
-                        changes_committed
-                            || container
-                                .has_commits_from_execution(&ctx)
-                                .await
-                                .unwrap_or(false)
-                    } else {
-                        true
-                    };
-
-                    if should_start_next {
-                        // If the process exited successfully, start the next action
-                        if let Err(e) = container.try_start_next_action(&ctx).await {
-                            tracing::error!("Failed to start next action after completion: {}", e);
-                        }
-                    } else {
-                        tracing::info!(
-                            "Skipping cleanup script for workspace {} - no changes made by coding agent",
-                            ctx.workspace.id
-                        );
-
-                        // Manually finalize task since we're bypassing normal execution flow
-                        container.finalize_task(&ctx).await;
-                        container.auto_merge_for_vibe_issue(&ctx).await;
-                        already_finalized = true;
-                    }
-                }
-
                 if !rate_limit_resume_scheduled
-                    && !already_finalized
-                    && container.should_finalize(&ctx)
-                {
-                    let has_chained_follow_up = ctx
-                        .execution_process
-                        .executor_action()
-                        .ok()
-                        .and_then(|action| action.next_action())
-                        .is_some();
-                    let mut started_queued_follow_up = false;
-
-                    // Only execute queued messages if the execution succeeded
-                    // If it failed or was killed, just clear the queue and finalize
-                    let should_execute_queued = !matches!(
-                        ctx.execution_process.status,
-                        ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
-                    );
-
-                    if let Some(queued_msg) =
-                        container.queued_message_service.take_queued(ctx.session.id)
-                    {
-                        if should_execute_queued {
-                            tracing::info!(
-                                "Found queued message for session {}, starting follow-up execution",
-                                ctx.session.id
-                            );
-
-                            // Delete the scratch since we're consuming the queued message
-                            if let Err(e) = Scratch::delete(
-                                &db.pool,
-                                ctx.session.id,
-                                &ScratchType::DraftFollowUp,
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    "Failed to delete scratch after consuming queued message: {}",
-                                    e
-                                );
-                            }
-
-                            // Execute the queued follow-up
-                            if let Err(e) = container
-                                .start_queued_follow_up(&ctx, &queued_msg.data)
-                                .await
-                            {
-                                tracing::error!("Failed to start queued follow-up: {}", e);
-                                // Fall back to finalization if follow-up fails
-                                container.finalize_task(&ctx).await;
-                                container.auto_merge_for_vibe_issue(&ctx).await;
-                            } else {
-                                started_queued_follow_up = true;
-                            }
-                        } else {
-                            // Execution failed or was killed - discard the queued message and finalize
-                            tracing::info!(
-                                "Discarding queued message for session {} due to execution status {:?}",
-                                ctx.session.id,
-                                ctx.execution_process.status
-                            );
-                            container.finalize_task(&ctx).await;
-                            container.auto_merge_for_vibe_issue(&ctx).await;
-                        }
-                    } else {
-                        container.finalize_task(&ctx).await;
-                        container.auto_merge_for_vibe_issue(&ctx).await;
-                    }
-
-                    let should_mark_turn_unseen = matches!(
-                        ctx.execution_process.run_reason,
-                        ExecutionProcessRunReason::CodingAgent
-                    ) && !has_chained_follow_up
-                        && !started_queued_follow_up;
-
-                    if should_mark_turn_unseen
-                        && let Err(e) = CodingAgentTurn::mark_unseen_by_execution_process_id(
-                            &db.pool,
-                            ctx.execution_process.id,
-                        )
+                    && let Err(e) = container
+                        .handle_execution_post_completion(&ctx, exit_code)
                         .await
-                    {
-                        tracing::warn!(
-                            "Failed to mark coding agent turn unseen for execution {}: {}",
-                            ctx.execution_process.id,
-                            e
-                        );
-                    }
+                {
+                    tracing::error!("Failed to run post-completion handling: {}", e);
                 }
 
                 if rate_limit_resume_scheduled {
@@ -1172,6 +1032,146 @@ impl LocalContainerService {
         limit_reached.then_some(reset_hint)
     }
 
+    async fn handle_execution_post_completion(
+        &self,
+        ctx: &ExecutionContext,
+        exit_code: Option<i64>,
+    ) -> Result<(), ContainerError> {
+        let success = matches!(
+            ctx.execution_process.status,
+            ExecutionProcessStatus::Completed
+        ) && exit_code == Some(0);
+
+        let cleanup_done = matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CleanupScript
+        ) && !matches!(
+            ctx.execution_process.status,
+            ExecutionProcessStatus::Running
+        );
+
+        let mut already_finalized = false;
+
+        if success || cleanup_done {
+            // Commit changes (if any) and get feedback about whether changes were made
+            let changes_committed = match self.try_commit_changes(ctx).await {
+                Ok(committed) => committed,
+                Err(e) => {
+                    tracing::error!("Failed to commit changes after execution: {}", e);
+                    // Treat commit failures as if changes were made to be safe
+                    true
+                }
+            };
+
+            let should_start_next = if matches!(
+                ctx.execution_process.run_reason,
+                ExecutionProcessRunReason::CodingAgent
+            ) {
+                // Check if agent made commits OR if we just committed uncommitted changes
+                changes_committed || self.has_commits_from_execution(ctx).await.unwrap_or(false)
+            } else {
+                true
+            };
+
+            if should_start_next {
+                // If the process exited successfully, start the next action
+                if let Err(e) = self.try_start_next_action(ctx).await {
+                    tracing::error!("Failed to start next action after completion: {}", e);
+                }
+            } else {
+                tracing::info!(
+                    "Skipping cleanup script for workspace {} - no changes made by coding agent",
+                    ctx.workspace.id
+                );
+
+                // Manually finalize task since we're bypassing normal execution flow
+                self.finalize_task(ctx).await;
+                self.auto_merge_for_vibe_issue(ctx).await;
+                already_finalized = true;
+            }
+        }
+
+        if !already_finalized && self.should_finalize(ctx) {
+            let has_chained_follow_up = ctx
+                .execution_process
+                .executor_action()
+                .ok()
+                .and_then(|action| action.next_action())
+                .is_some();
+            let mut started_queued_follow_up = false;
+
+            // Only execute queued messages if the execution succeeded
+            // If it failed or was killed, just clear the queue and finalize
+            let should_execute_queued = !matches!(
+                ctx.execution_process.status,
+                ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
+            );
+
+            if let Some(queued_msg) = self.queued_message_service.take_queued(ctx.session.id) {
+                if should_execute_queued {
+                    tracing::info!(
+                        "Found queued message for session {}, starting follow-up execution",
+                        ctx.session.id
+                    );
+
+                    // Delete the scratch since we're consuming the queued message
+                    if let Err(e) =
+                        Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp)
+                            .await
+                    {
+                        tracing::warn!(
+                            "Failed to delete scratch after consuming queued message: {e}"
+                        );
+                    }
+
+                    // Execute the queued follow-up
+                    if let Err(e) = self.start_queued_follow_up(ctx, &queued_msg.data).await {
+                        tracing::error!("Failed to start queued follow-up: {}", e);
+                        // Fall back to finalization if follow-up fails
+                        self.finalize_task(ctx).await;
+                        self.auto_merge_for_vibe_issue(ctx).await;
+                    } else {
+                        started_queued_follow_up = true;
+                    }
+                } else {
+                    // Execution failed or was killed - discard the queued message and finalize
+                    tracing::info!(
+                        "Discarding queued message for session {} due to execution status {:?}",
+                        ctx.session.id,
+                        ctx.execution_process.status
+                    );
+                    self.finalize_task(ctx).await;
+                    self.auto_merge_for_vibe_issue(ctx).await;
+                }
+            } else {
+                self.finalize_task(ctx).await;
+                self.auto_merge_for_vibe_issue(ctx).await;
+            }
+
+            let should_mark_turn_unseen = matches!(
+                ctx.execution_process.run_reason,
+                ExecutionProcessRunReason::CodingAgent
+            ) && !has_chained_follow_up
+                && !started_queued_follow_up;
+
+            if should_mark_turn_unseen
+                && let Err(e) = CodingAgentTurn::mark_unseen_by_execution_process_id(
+                    &self.db.pool,
+                    ctx.execution_process.id,
+                )
+                .await
+            {
+                tracing::warn!(
+                    "Failed to mark coding agent turn unseen for execution {}: {}",
+                    ctx.execution_process.id,
+                    e
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Start a follow-up execution from a queued message
     async fn start_queued_follow_up(
         &self,
@@ -1558,6 +1558,30 @@ impl ContainerService for LocalContainerService {
 
     async fn take_db_stream_handle(&self, id: &Uuid) -> Option<JoinHandle<()>> {
         LocalContainerService::take_db_stream_handle(self, id).await
+    }
+
+    async fn finalize_cancelled_rate_limit_resume(
+        &self,
+        execution_process_id: Uuid,
+    ) -> Result<(), ContainerError> {
+        let ctx = ExecutionProcess::load_context(&self.db.pool, execution_process_id).await?;
+
+        if ExecutionProcess::has_running_non_dev_server_processes_for_session(
+            &self.db.pool,
+            ctx.session.id,
+        )
+        .await?
+        {
+            tracing::info!(
+                "Skipping cancelled rate-limit finalization for execution {} because session {} has a running process",
+                execution_process_id,
+                ctx.session.id
+            );
+            return Ok(());
+        }
+
+        self.handle_execution_post_completion(&ctx, ctx.execution_process.exit_code)
+            .await
     }
 
     async fn git_branch_prefix(&self) -> String {

@@ -17,6 +17,7 @@ use db::models::{
     pending_rate_limit_resume::PendingRateLimitResume,
     session::Session,
     workspace::Workspace,
+    workspace_repo::WorkspaceRepo,
 };
 use deployment::Deployment;
 use executors::actions::{
@@ -150,6 +151,8 @@ async fn process_one(
         .as_ref()
         .filter(|d| !d.is_empty())
         .cloned();
+    let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
+    let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
 
     let action = ExecutorAction::new(
         ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
@@ -159,11 +162,8 @@ async fn process_one(
             executor_config,
             working_dir,
         }),
-        None,
+        cleanup_action.map(Box::new),
     );
-
-    // Clear the pending row before spawning so a spawn failure can't loop.
-    PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await?;
 
     deployment
         .container()
@@ -174,6 +174,8 @@ async fn process_one(
             &ExecutionProcessRunReason::CodingAgent,
         )
         .await?;
+
+    PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await?;
 
     tracing::info!(
         "rate_limit_watcher: resumed session {} after rate-limit reset",
