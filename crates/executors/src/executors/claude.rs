@@ -5,7 +5,7 @@ pub mod slash_commands;
 pub mod types;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -1432,16 +1432,24 @@ impl ClaudeLogProcessor {
                     patches.push(patch);
                 }
 
-                let mut streaming_message_state = message
+                let streaming_message_state = message
                     .id
                     .as_ref()
                     .and_then(|id| self.streaming_messages.remove(id));
 
-                for (content_index, item) in message.content.items().enumerate() {
-                    let entry_index = streaming_message_state
-                        .as_mut()
-                        .and_then(|state| state.content_entry_index(content_index));
+                // Reuse the entry indices allocated while streaming so the final
+                // non-partial `assistant` message REPLACES what was already rendered
+                // instead of duplicating it. Match streamed blocks to final content
+                // items by KIND in stream order, NOT by absolute position: the final
+                // message may omit streamed blocks (e.g. extended-thinking turns drop
+                // the `thinking` block), which shifts positional indices and would make
+                // the visible text reuse the thinking entry while its own streamed entry
+                // is left behind -> the whole response renders twice.
+                let (mut text_indices, mut thinking_indices) = streaming_message_state
+                    .map(|state| state.entry_indices_by_kind())
+                    .unwrap_or_default();
 
+                for item in message.content.items() {
                     match item {
                         ClaudeContentItem::ToolUse { id, tool_data } => {
                             let (entry, tool_name, content_text) = Self::build_tool_use_entry(
@@ -1449,8 +1457,10 @@ impl ClaudeLogProcessor {
                                 worktree_path,
                                 ToolStatus::Created,
                             );
-                            let existing_idx = entry_index
-                                .or_else(|| self.tool_map.get(id).map(|info| info.entry_index));
+                            // Tool calls are tracked via `tool_map`, never the streaming
+                            // `contents` map (which only holds text/thinking), so reuse
+                            // the index from there.
+                            let existing_idx = self.tool_map.get(id).map(|info| info.entry_index);
                             let is_new = existing_idx.is_none();
                             let id_num =
                                 existing_idx.unwrap_or_else(|| entry_index_provider.next());
@@ -1477,9 +1487,14 @@ impl ClaudeLogProcessor {
                                 worktree_path,
                                 &mut self.last_assistant_message,
                             ) {
-                                let is_new = entry_index.is_none();
-                                let idx =
-                                    entry_index.unwrap_or_else(|| entry_index_provider.next());
+                                let reused = match item {
+                                    ClaudeContentItem::Thinking { .. } => {
+                                        thinking_indices.pop_front()
+                                    }
+                                    _ => text_indices.pop_front(),
+                                };
+                                let is_new = reused.is_none();
+                                let idx = reused.unwrap_or_else(|| entry_index_provider.next());
                                 let patch = if is_new {
                                     ConversationPatch::add_normalized_entry(idx, entry)
                                 } else {
@@ -2235,10 +2250,28 @@ impl StreamingMessageState {
         }
     }
 
-    fn content_entry_index(&self, content_index: usize) -> Option<usize> {
-        self.contents
-            .get(&content_index)
-            .and_then(|s| s.entry_index)
+    /// Entry indices allocated during streaming, split into per-kind FIFO queues
+    /// ordered by content-block (stream) index. The final `assistant` message
+    /// pops these by item kind so that blocks omitted from the final message
+    /// (e.g. `thinking` on extended-thinking turns) don't shift the mapping and
+    /// cause the visible text to reuse the wrong streamed entry.
+    fn entry_indices_by_kind(&self) -> (VecDeque<usize>, VecDeque<usize>) {
+        let mut ordered: Vec<(usize, StreamingContentKind, usize)> = self
+            .contents
+            .iter()
+            .filter_map(|(idx, state)| state.entry_index.map(|ei| (*idx, state.kind, ei)))
+            .collect();
+        ordered.sort_by_key(|(stream_index, _, _)| *stream_index);
+
+        let mut text = VecDeque::new();
+        let mut thinking = VecDeque::new();
+        for (_, kind, entry_index) in ordered {
+            match kind {
+                StreamingContentKind::Text => text.push_back(entry_index),
+                StreamingContentKind::Thinking => thinking.push_back(entry_index),
+            }
+        }
+        (text, thinking)
     }
 }
 
