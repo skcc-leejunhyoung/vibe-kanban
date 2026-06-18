@@ -212,17 +212,23 @@ impl ClaudeCode {
         }
     }
 
-    pub fn get_hooks(&self, commit_reminder: bool) -> Option<serde_json::Value> {
+    pub fn get_hooks(&self) -> Option<serde_json::Value> {
         let mut hooks = serde_json::Map::new();
 
-        if commit_reminder {
-            hooks.insert(
-                "Stop".to_string(),
-                serde_json::json!([{
-                    "hookCallbackIds": [STOP_GIT_CHECK_CALLBACK_ID]
-                }]),
-            );
-        }
+        // The Stop hook is always registered. It powers two behaviors in
+        // ClaudeAgentClient::on_hook_callback:
+        //   1. Background-task auto-resume: when the agent left a
+        //      `run_in_background` task still running, we block the stop so the
+        //      same process keeps going until the task finishes — no follow-up
+        //      spawn, no lost background work.
+        //   2. The optional uncommitted-changes commit reminder (only applied
+        //      when commit_reminder is enabled on the client).
+        hooks.insert(
+            "Stop".to_string(),
+            serde_json::json!([{
+                "hookCallbackIds": [STOP_GIT_CHECK_CALLBACK_ID]
+            }]),
+        );
 
         // Add PreToolUse hooks based on plan/approvals settings
         if self.plan.unwrap_or(false) {
@@ -666,7 +672,7 @@ impl ClaudeCode {
 
         let new_stdout = create_stdout_pipe_writer(&mut child)?;
         let permission_mode = self.permission_mode();
-        let hooks = self.get_hooks(env.commit_reminder);
+        let hooks = self.get_hooks();
 
         // Create cancellation token for graceful shutdown
         let cancel = CancellationToken::new();
@@ -675,6 +681,7 @@ impl ClaudeCode {
         let prompt_clone = combined_prompt.clone();
         let approvals_clone = self.approvals_service.clone();
         let repo_context = env.repo_context.clone();
+        let commit_reminder = env.commit_reminder;
         let commit_reminder_prompt = env.commit_reminder_prompt.clone();
         let cancel_for_task = cancel.clone();
         tokio::spawn(async move {
@@ -683,6 +690,7 @@ impl ClaudeCode {
                 log_writer.clone(),
                 approvals_clone,
                 repo_context,
+                commit_reminder,
                 commit_reminder_prompt,
                 cancel_for_task.clone(),
             );
