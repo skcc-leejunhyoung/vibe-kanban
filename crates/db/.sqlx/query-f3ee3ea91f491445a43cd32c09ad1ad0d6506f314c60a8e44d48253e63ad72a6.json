@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT s.id AS \"id!: Uuid\",\n                      s.workspace_id AS \"workspace_id!: Uuid\",\n                      s.name,\n                      s.executor,\n                      s.agent_working_dir,\n                      s.created_at AS \"created_at!: DateTime<Utc>\",\n                      s.updated_at AS \"updated_at!: DateTime<Utc>\"\n               FROM sessions s\n               LEFT JOIN (\n                   SELECT ep.session_id, MAX(ep.created_at) as last_used\n                   FROM execution_processes ep\n                   WHERE ep.run_reason != 'devserver' AND ep.dropped = FALSE\n                   GROUP BY ep.session_id\n               ) latest_ep ON s.id = latest_ep.session_id\n               WHERE s.workspace_id = $1\n               ORDER BY COALESCE(latest_ep.last_used, s.created_at) DESC\n               LIMIT 1",
+  "query": "SELECT id AS \"id!: Uuid\",\n                      workspace_id AS \"workspace_id!: Uuid\",\n                      name,\n                      executor,\n                      agent_working_dir,\n                      created_at AS \"created_at!: DateTime<Utc>\",\n                      updated_at AS \"updated_at!: DateTime<Utc>\",\n                      auto_resume_enabled AS \"auto_resume_enabled!: bool\"\n               FROM sessions\n               WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,11 @@
         "name": "updated_at!: DateTime<Utc>",
         "ordinal": 6,
         "type_info": "Text"
+      },
+      {
+        "name": "auto_resume_enabled!: bool",
+        "ordinal": 7,
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -49,8 +54,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "93efe07b91d232fc0c371be8ee618ba6ccfd6930454fc11845d5dfc2ba0bad62"
+  "hash": "f3ee3ea91f491445a43cd32c09ad1ad0d6506f314c60a8e44d48253e63ad72a6"
 }

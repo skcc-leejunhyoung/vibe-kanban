@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use command_group::AsyncGroupChild;
 use db::{
     DBService,
@@ -16,8 +17,10 @@ use db::{
         execution_process::{
             ExecutionContext, ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus,
         },
+        execution_process_logs::ExecutionProcessLogs,
         execution_process_repo_state::ExecutionProcessRepoState,
         merge::{Merge, MergeStatus},
+        pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
         scratch::{DraftFollowUpData, Scratch, ScratchType},
         session::{Session, SessionError},
@@ -554,6 +557,13 @@ impl LocalContainerService {
                     tracing::warn!("Failed to update executor session summary: {}", e);
                 }
 
+                // If this execution stopped because a usage rate limit was
+                // reached and the session opted into auto-resume, schedule a
+                // deferred "continue" follow-up for once the limit resets.
+                if let Err(e) = container.maybe_schedule_rate_limit_resume(&ctx).await {
+                    tracing::warn!("Failed to schedule rate-limit auto-resume: {}", e);
+                }
+
                 let success = matches!(
                     ctx.execution_process.status,
                     ExecutionProcessStatus::Completed
@@ -1047,6 +1057,91 @@ impl LocalContainerService {
             );
         }
 
+        Ok(())
+    }
+
+    /// Conservative wait before auto-resuming a rate-limited session when the
+    /// agent does not report an exact reset time. Sized to the common 5-hour
+    /// usage window plus a small margin; if the limit is still active on resume,
+    /// a new schedule is created and we wait again.
+    const RATE_LIMIT_RESUME_DELAY_SECS: i64 = 5 * 60 * 60 + 5 * 60;
+
+    /// If this execution stopped because a usage rate limit was reached and the
+    /// session has auto-resume enabled, schedule an automatic "continue"
+    /// follow-up. Uses the agent-reported reset time when present and in the
+    /// future, otherwise a conservative estimate.
+    async fn maybe_schedule_rate_limit_resume(
+        &self,
+        ctx: &ExecutionContext,
+    ) -> Result<(), ContainerError> {
+        if !matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CodingAgent
+        ) {
+            return Ok(());
+        }
+        if !ctx.session.auto_resume_enabled {
+            return Ok(());
+        }
+
+        // Look for a rate-limit entry emitted by the executor when a usage
+        // limit was reached during this execution.
+        let records =
+            ExecutionProcessLogs::find_by_execution_id(&self.db.pool, ctx.execution_process.id)
+                .await?;
+        let msgs = match ExecutionProcessLogs::parse_logs(&records) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("Failed to parse logs for rate-limit detection: {}", e);
+                return Ok(());
+            }
+        };
+
+        let mut limit_reached = false;
+        let mut reset_hint: Option<String> = None;
+        for msg in &msgs {
+            if let LogMsg::JsonPatch(patch) = msg
+                && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+                && let NormalizedEntryType::RateLimitInfo(info) = &entry.entry_type
+                && info.limit_reached
+            {
+                limit_reached = true;
+                if info.resets_at.is_some() {
+                    reset_hint = info.resets_at.clone();
+                }
+            }
+        }
+
+        if !limit_reached {
+            return Ok(());
+        }
+
+        // Prefer the agent-reported reset time when present and in the future;
+        // otherwise fall back to a conservative estimate.
+        let now = Utc::now();
+        let resume_at = reset_hint
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc) + chrono::Duration::seconds(60))
+            .filter(|dt| *dt > now)
+            .unwrap_or_else(|| now + chrono::Duration::seconds(Self::RATE_LIMIT_RESUME_DELAY_SECS));
+
+        PendingRateLimitResume::upsert(
+            &self.db.pool,
+            ctx.session.id,
+            ctx.execution_process.id,
+            resume_at,
+            "continue",
+        )
+        .await
+        .map_err(|e| ContainerError::Other(e.into()))?;
+
+        tracing::info!(
+            "Scheduled rate-limit auto-resume for session {} (execution {}) at {}",
+            ctx.session.id,
+            ctx.execution_process.id,
+            resume_at
+        );
         Ok(())
     }
 

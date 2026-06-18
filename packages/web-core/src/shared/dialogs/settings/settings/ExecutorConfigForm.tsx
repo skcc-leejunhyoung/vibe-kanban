@@ -61,8 +61,12 @@ export function ExecutorConfigForm({
       env: {
         'ui:field': 'KeyValueField',
       },
+      auto_resume_on_limit: {
+        'ui:title': t('settings.agents.autoResume.label'),
+        'ui:description': t('settings.agents.autoResume.help'),
+      },
     }),
-    []
+    [t]
   );
 
   // Pass the env update handler via formContext

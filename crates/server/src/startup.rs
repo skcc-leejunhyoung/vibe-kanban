@@ -182,6 +182,9 @@ pub async fn initialize_deployment(
     // Background poller that resumes agent spawns deferred by issue-blocker gating.
     crate::blocker_watcher::spawn(deployment.clone());
 
+    // Background poller that resumes sessions after their usage rate limit resets.
+    crate::rate_limit_watcher::spawn(deployment.clone());
+
     Ok(deployment)
 }
 

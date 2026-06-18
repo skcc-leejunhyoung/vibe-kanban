@@ -1,4 +1,10 @@
-import { type ChangeEvent, type ReactNode, useRef } from 'react';
+import {
+  type ChangeEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   type Icon,
   PaperclipIcon,
@@ -12,6 +18,7 @@ import {
   WarningIcon,
   ArrowUpIcon,
   ArrowsOutIcon,
+  ArrowsClockwiseIcon,
   GithubLogoIcon,
   PencilSimpleIcon,
 } from '@phosphor-icons/react';
@@ -37,6 +44,9 @@ import {
   TurnNavigationPopup,
   type TurnNavigationItem,
 } from './TurnNavigationPopup';
+import { Switch } from './Switch';
+import { Tooltip } from './Tooltip';
+import { cn } from '../lib/cn';
 
 // Status enum - single source of truth for execution state
 export type ExecutionStatus =
@@ -139,6 +149,17 @@ interface ReviewCommentsProps {
   onClear: () => void;
 }
 
+interface AutoResumeProps {
+  /** Whether usage-based auto-resume is enabled for this session */
+  enabled: boolean;
+  /** RFC3339 timestamp when a resume is scheduled, or null if none pending */
+  pendingResumeAt?: string | null;
+  /** Toggle auto-resume for this session */
+  onToggle: (enabled: boolean) => void;
+  /** Cancel a pending (scheduled) resume */
+  onCancelPending?: () => void;
+}
+
 export interface SessionChatBoxEditorRenderProps<
   TExecutor extends string = string,
 > {
@@ -193,6 +214,7 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   getActiveTurnPatchKey?: () => string | null;
   tokenUsageInfo?: ContextUsageInfo | null;
   supportsContextUsage?: boolean;
+  autoResume?: AutoResumeProps;
   dropzone?: DropzoneProps;
 }
 
@@ -255,6 +277,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   getActiveTurnPatchKey,
   tokenUsageInfo,
   supportsContextUsage,
+  autoResume,
   dropzone,
 }: SessionChatBoxProps<TExecutor>) {
   const { t } = useTranslation('tasks');
@@ -812,6 +835,9 @@ export function SessionChatBox<TExecutor extends string = string>({
           )}
           {/* Todo progress popup - always rendered, disabled when no todos */}
           <TodoProgressPopup todos={todos ?? []} />
+          {autoResume && !isNewSessionMode && (
+            <AutoResumeControl {...autoResume} />
+          )}
           {supportsContextUsage && (
             <ContextUsageGauge tokenUsageInfo={tokenUsageInfo} />
           )}
@@ -931,5 +957,110 @@ export function SessionChatBox<TExecutor extends string = string>({
       }
       footerRight={renderActionButtons()}
     />
+  );
+}
+
+function formatResetTime(date: Date) {
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatCountdown(msRemaining: number) {
+  const totalSeconds = Math.max(0, Math.floor(msRemaining / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (hours > 0) {
+    return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+  }
+  return `${pad(minutes)}:${pad(seconds)}`;
+}
+
+/**
+ * Per-session usage-based auto-resume control rendered in the chat header.
+ * Shows a toggle, an "enabled" indicator, and (when a resume is scheduled) a
+ * live countdown badge with a cancel button.
+ */
+function AutoResumeControl({
+  enabled,
+  pendingResumeAt,
+  onToggle,
+  onCancelPending,
+}: AutoResumeProps) {
+  const { t } = useTranslation('tasks');
+
+  const resetDate = pendingResumeAt ? new Date(pendingResumeAt) : null;
+  const isPending =
+    !!resetDate && !Number.isNaN(resetDate.getTime()) && enabled;
+
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isPending) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isPending]);
+
+  if (isPending && resetDate) {
+    const remaining = resetDate.getTime() - now;
+    return (
+      <div
+        className={cn(
+          'flex items-center gap-half rounded-sm border border-border',
+          'bg-panel px-base py-half text-xs text-normal whitespace-nowrap'
+        )}
+      >
+        <ArrowsClockwiseIcon className="size-icon-xs text-brand shrink-0" />
+        <span>
+          {t('conversation.autoResume.pending', {
+            time: formatResetTime(resetDate),
+          })}
+        </span>
+        <span className="font-ibm-plex-mono text-low">
+          {formatCountdown(remaining)}
+        </span>
+        {onCancelPending && (
+          <ToolbarIconButton
+            icon={XIcon}
+            className="ml-half"
+            title={t('conversation.autoResume.cancel')}
+            aria-label={t('conversation.autoResume.cancel')}
+            onClick={onCancelPending}
+          />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <Tooltip
+      content={
+        enabled
+          ? t('conversation.autoResume.enabledTooltip')
+          : t('conversation.autoResume.disabledTooltip')
+      }
+      side="bottom"
+    >
+      <label className="flex items-center gap-half cursor-pointer select-none">
+        <ArrowsClockwiseIcon
+          className={cn(
+            'size-icon-xs shrink-0',
+            enabled ? 'text-brand' : 'text-low'
+          )}
+        />
+        {enabled && (
+          <span className="text-xs text-normal whitespace-nowrap">
+            {t('conversation.autoResume.enabled')}
+          </span>
+        )}
+        <Switch
+          checked={enabled}
+          onCheckedChange={onToggle}
+          aria-label={t('conversation.autoResume.toggleLabel')}
+        />
+      </label>
+    </Tooltip>
   );
 }

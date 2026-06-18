@@ -96,6 +96,8 @@ async fn main() -> Result<(), VibeKanbanError> {
 
     // Background poller that resumes agent spawns deferred by issue-blocker gating.
     server::blocker_watcher::spawn(deployment.clone());
+    // Background poller that resumes sessions after their usage rate limit resets.
+    server::rate_limit_watcher::spawn(deployment.clone());
     let port = std::env::var("BACKEND_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()

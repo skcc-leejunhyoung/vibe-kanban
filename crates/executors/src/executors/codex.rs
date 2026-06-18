@@ -183,6 +183,12 @@ pub struct Codex {
     pub developer_instructions: Option<String>,
     #[serde(default)]
     pub plan: bool,
+    /// When enabled, vibe-kanban automatically resumes this agent's session
+    /// after its usage rate limit resets (sends a "continue" follow-up). This
+    /// is the per-agent default for new sessions; it can be overridden per
+    /// session from the workspace chat UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_resume_on_limit: Option<bool>,
     #[serde(flatten)]
     pub cmd: CmdOverrides,
 

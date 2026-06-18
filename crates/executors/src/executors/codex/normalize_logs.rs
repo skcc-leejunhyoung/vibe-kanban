@@ -1543,6 +1543,11 @@ pub fn normalize_logs(
         let mut stdout_lines = msg_store.stdout_lines_stream();
 
         while let Some(Ok(line)) = stdout_lines.next().await {
+            if let Ok(rate_limit) = serde_json::from_str::<RateLimit>(&line) {
+                add_normalized_entry(&msg_store, &entry_index, rate_limit.to_normalized_entry());
+                continue;
+            }
+
             if let Ok(error) = serde_json::from_str::<Error>(&line) {
                 add_normalized_entry(&msg_store, &entry_index, error.to_normalized_entry());
                 continue;
@@ -2488,6 +2493,52 @@ impl ToNormalizedEntry for Error {
     }
 }
 
+/// Synthetic log line emitted by `AppServerClient` (not a Codex protocol
+/// message) when a turn ends because the account's usage rate limit was
+/// reached. It is serialized via [`LogWriter::log_raw`] and picked up by the
+/// `normalize_logs` stdout loop, mirroring how [`Error`] / [`Approval`] are
+/// threaded through the normalization path. The normalized entry it produces is
+/// what the exit monitor reads to schedule an auto-resume once the limit resets.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum RateLimit {
+    LimitReached {
+        /// RFC3339 reset time of the window that was hit, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<String>,
+        /// Which window was hit, for display: "5h" (primary) or "weekly"
+        /// (secondary).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
+}
+
+impl RateLimit {
+    pub fn limit_reached(resets_at: Option<String>, scope: Option<String>) -> Self {
+        Self::LimitReached { resets_at, scope }
+    }
+
+    pub fn raw(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
+impl ToNormalizedEntry for RateLimit {
+    fn to_normalized_entry(&self) -> NormalizedEntry {
+        match self {
+            RateLimit::LimitReached { resets_at, scope } => NormalizedEntry {
+                timestamp: None,
+                entry_type: NormalizedEntryType::RateLimitInfo(crate::logs::RateLimitInfo {
+                    limit_reached: true,
+                    resets_at: resets_at.clone(),
+                    scope: scope.clone(),
+                }),
+                content: "Usage rate limit reached".to_string(),
+                metadata: None,
+            },
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Approval {
     ApprovalRequested {
@@ -2946,5 +2997,44 @@ mod tests {
             }
             other => panic!("unexpected file edit entry: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_line_emits_rate_limit_info_entry() {
+        let entries = normalize_lines(&[RateLimit::limit_reached(
+            Some("2026-06-18T12:00:00+00:00".to_string()),
+            Some("5h".to_string()),
+        )
+        .raw()])
+        .await;
+
+        let info = entries
+            .iter()
+            .find_map(|entry| match &entry.entry_type {
+                NormalizedEntryType::RateLimitInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("missing rate-limit entry");
+
+        assert!(info.limit_reached);
+        assert_eq!(info.resets_at.as_deref(), Some("2026-06-18T12:00:00+00:00"));
+        assert_eq!(info.scope.as_deref(), Some("5h"));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_line_without_reset_leaves_fields_none() {
+        let entries = normalize_lines(&[RateLimit::limit_reached(None, None).raw()]).await;
+
+        let info = entries
+            .iter()
+            .find_map(|entry| match &entry.entry_type {
+                NormalizedEntryType::RateLimitInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("missing rate-limit entry");
+
+        assert!(info.limit_reached);
+        assert!(info.resets_at.is_none());
+        assert!(info.scope.is_none());
     }
 }

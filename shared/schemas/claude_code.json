@@ -67,6 +67,13 @@
         "null"
       ]
     },
+    "auto_resume_on_limit": {
+      "description": "When enabled, vibe-kanban automatically resumes this agent's session\nafter its usage rate limit resets (sends a \"continue\" follow-up). This\nis the per-agent default for new sessions; it can be overridden per\nsession from the workspace chat UI.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "base_command_override": {
       "title": "Base Command Override",
       "description": "Override the base command with a custom command",

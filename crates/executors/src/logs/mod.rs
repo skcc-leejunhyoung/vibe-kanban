@@ -93,6 +93,7 @@ pub enum NormalizedEntryType {
         needs_setup: bool,
     },
     TokenUsageInfo(TokenUsageInfo),
+    RateLimitInfo(RateLimitInfo),
     UserAnsweredQuestions {
         answers: Vec<AnsweredQuestion>,
     },
@@ -109,6 +110,26 @@ pub struct AnsweredQuestion {
 pub struct TokenUsageInfo {
     pub total_tokens: u32,
     pub model_context_window: u32,
+}
+
+/// Emitted when the coding agent reports a usage rate-limit. Used both for UI
+/// display and as the signal the exit monitor reads to schedule an automatic
+/// resume once the limit resets.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct RateLimitInfo {
+    /// True when the agent actually stopped because a usage limit was reached
+    /// (as opposed to a routine usage update). Only `true` entries trigger
+    /// auto-resume scheduling.
+    pub limit_reached: bool,
+    /// Best-known reset time as an RFC3339 timestamp, when the agent reports it.
+    /// `None` means unknown — the resume scheduler falls back to a conservative
+    /// estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<String>,
+    /// Which limit window was hit (agent-specific, e.g. "5h", "weekly"). For
+    /// display only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

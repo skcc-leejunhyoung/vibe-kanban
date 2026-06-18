@@ -1,6 +1,7 @@
 pub mod blocker_watcher;
 pub mod error;
 pub mod middleware;
+pub mod rate_limit_watcher;
 pub mod relay_pairing;
 pub mod routes;
 pub mod runtime;

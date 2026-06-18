@@ -124,6 +124,17 @@ pub enum CodingAgent {
 }
 
 impl CodingAgent {
+    /// Whether this agent's config opts into usage-based auto-resume by
+    /// default. Used to seed a new session's per-session toggle. Only Claude
+    /// Code and Codex expose this setting; all others default to `false`.
+    pub fn auto_resume_on_limit(&self) -> bool {
+        match self {
+            Self::ClaudeCode(c) => c.auto_resume_on_limit.unwrap_or(false),
+            Self::Codex(c) => c.auto_resume_on_limit.unwrap_or(false),
+            _ => false,
+        }
+    }
+
     pub fn get_mcp_config(&self) -> McpConfig {
         match self {
             Self::Codex(_) => McpConfig::new(

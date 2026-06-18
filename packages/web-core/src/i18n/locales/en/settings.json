@@ -313,6 +313,10 @@
       "description": "Customize the behavior of coding agents with different configurations.",
       "loading": "Loading agent configurations...",
       "selectAgent": "Select agent",
+      "autoResume": {
+        "label": "Auto-resume on usage limit",
+        "help": "When this agent's session hits its usage limit, automatically send 'continue' to resume once the limit resets. Can be turned on or off per session from the chat screen."
+      },
       "save": {
         "button": "Save Agent Configurations",
         "success": "✓ Executor configurations saved successfully!",

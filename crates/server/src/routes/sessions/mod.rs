@@ -1,6 +1,8 @@
 pub mod queue;
 pub mod review;
 
+use std::str::FromStr;
+
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
@@ -13,6 +15,7 @@ use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     pending_execution_start::PendingExecutionStart,
+    pending_rate_limit_resume::PendingRateLimitResume,
     requests::UpdateSession,
     scratch::{Scratch, ScratchType},
     session::{CreateSession, Session, SessionError},
@@ -24,9 +27,10 @@ use executors::{
     actions::{
         ExecutorAction, ExecutorActionType, coding_agent_follow_up::CodingAgentFollowUpRequest,
     },
-    profile::ExecutorConfig,
+    executors::BaseCodingAgent,
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use services::services::{container::ContainerService, issue_gating};
 use ts_rs::TS;
 use utils::response::ApiResponse;
@@ -64,6 +68,58 @@ pub async fn get_session(
     Ok(ResponseJson(ApiResponse::success(session)))
 }
 
+#[derive(Debug, Deserialize, TS)]
+pub struct SetAutoResumeRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct AutoResumeStatus {
+    pub enabled: bool,
+    /// RFC3339 reset time when a resume is currently scheduled, else null.
+    pub pending_resume_at: Option<String>,
+}
+
+/// Returns the session's auto-resume toggle state and any pending resume time.
+pub async fn get_auto_resume(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<AutoResumeStatus>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let pending_resume_at = PendingRateLimitResume::find_by_session_id(pool, session.id)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.resume_at.to_rfc3339());
+    Ok(ResponseJson(ApiResponse::success(AutoResumeStatus {
+        enabled: session.auto_resume_enabled,
+        pending_resume_at,
+    })))
+}
+
+/// Toggles usage-based auto-resume for the session. Turning it off also cancels
+/// any pending resume.
+pub async fn set_auto_resume(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<SetAutoResumeRequest>,
+) -> Result<ResponseJson<ApiResponse<AutoResumeStatus>>, ApiError> {
+    let pool = &deployment.db().pool;
+    Session::set_auto_resume_enabled(pool, session.id, request.enabled).await?;
+    if !request.enabled {
+        let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
+    }
+    let pending_resume_at = PendingRateLimitResume::find_by_session_id(pool, session.id)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.resume_at.to_rfc3339());
+    Ok(ResponseJson(ApiResponse::success(AutoResumeStatus {
+        enabled: request.enabled,
+        pending_resume_at,
+    })))
+}
+
 pub async fn create_session(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateSessionRequest>,
@@ -77,7 +133,7 @@ pub async fn create_session(
             "Workspace not found".to_string(),
         )))?;
 
-    let session = Session::create(
+    let mut session = Session::create(
         pool,
         &CreateSession {
             executor: payload.executor,
@@ -87,6 +143,19 @@ pub async fn create_session(
         payload.workspace_id,
     )
     .await?;
+
+    // Seed the per-session auto-resume toggle from the agent's default setting
+    // (the `auto_resume_on_limit` option in the agent settings screen).
+    if let Some(executor_str) = session.executor.as_deref()
+        && let Ok(executor) = BaseCodingAgent::from_str(executor_str)
+    {
+        let configs = ExecutorConfigs::get_cached();
+        let agent = configs.get_coding_agent_or_default(&ExecutorProfileId::new(executor));
+        if agent.auto_resume_on_limit() {
+            Session::set_auto_resume_enabled(pool, session.id, true).await?;
+            session.auto_resume_enabled = true;
+        }
+    }
 
     Ok(ResponseJson(ApiResponse::success(session)))
 }
@@ -462,6 +531,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             get(get_session).put(update_session).delete(delete_session),
         )
         .route("/follow-up", post(follow_up))
+        .route("/auto-resume", get(get_auto_resume).post(set_auto_resume))
         .route("/reset", post(reset_process))
         .route("/setup", post(run_setup_script))
         .route("/review", post(review::start_review))

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import {
   type AskUserQuestionItem,
@@ -222,6 +222,45 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     },
     [queryClient, hostId, workspaceId, t]
   );
+
+  // Usage-based auto-resume status for the current session. Polled so the
+  // "waiting to resume" badge + countdown stay live.
+  const autoResumeQuery = useQuery({
+    queryKey: ['sessionAutoResume', hostId, sessionId],
+    queryFn: () => sessionsApi.getAutoResume(sessionId!),
+    enabled: !!sessionId,
+    refetchInterval: 10000,
+  });
+
+  const autoResumeEnabled =
+    autoResumeQuery.data?.enabled ?? session?.auto_resume_enabled ?? false;
+  const autoResumePendingAt = autoResumeQuery.data?.pending_resume_at ?? null;
+
+  const handleSetAutoResume = useCallback(
+    (enabled: boolean) => {
+      if (!sessionId) return;
+      void (async () => {
+        try {
+          await sessionsApi.setAutoResume(sessionId, enabled);
+        } finally {
+          void queryClient.invalidateQueries({
+            queryKey: ['sessionAutoResume', hostId, sessionId],
+          });
+          void queryClient.invalidateQueries({
+            queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+          });
+        }
+      })();
+    },
+    [sessionId, hostId, workspaceId, queryClient]
+  );
+
+  // Cancelling a pending resume disables auto-resume for the session, which is
+  // the only primitive the backend exposes (POST { enabled }).
+  const handleCancelAutoResume = useCallback(() => {
+    handleSetAutoResume(false);
+  }, [handleSetAutoResume]);
+
   const appNavigation = useAppNavigation();
 
   const { executeAction } = useActions();
@@ -1049,6 +1088,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       repoIds={repoIds}
       tokenUsageInfo={tokenUsageInfo}
       supportsContextUsage={supportsContextUsage}
+      autoResume={
+        sessionId
+          ? {
+              enabled: autoResumeEnabled,
+              pendingResumeAt: autoResumePendingAt,
+              onToggle: handleSetAutoResume,
+              onCancelPending: handleCancelAutoResume,
+            }
+          : undefined
+      }
       formatExecutorLabel={toPrettyCase}
       formatSessionDate={(createdAt) =>
         formatDateShortWithTime(

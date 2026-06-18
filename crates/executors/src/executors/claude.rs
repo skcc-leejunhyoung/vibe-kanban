@@ -136,6 +136,12 @@ pub struct ClaudeCode {
     pub dangerously_skip_permissions: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_api_key: Option<bool>,
+    /// When enabled, vibe-kanban automatically resumes this agent's session
+    /// after its usage rate limit resets (sends a "continue" follow-up). This
+    /// is the per-agent default for new sessions; it can be overridden per
+    /// session from the workspace chat UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_resume_on_limit: Option<bool>,
     #[serde(flatten)]
     pub cmd: CmdOverrides,
 
@@ -1821,6 +1827,37 @@ impl ClaudeLogProcessor {
                     patches.push(self.add_token_usage_entry(entry_index_provider));
                 }
 
+                // If the turn ended in an error that mentions a usage/rate
+                // limit, emit a normalized RateLimitInfo entry so the exit
+                // monitor can schedule an auto-resume once the limit resets.
+                if is_error.unwrap_or(false) {
+                    let haystack = result
+                        .as_ref()
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| serde_json::to_string(claude_json).unwrap_or_default())
+                        .to_lowercase();
+                    if haystack.contains("usage limit")
+                        || haystack.contains("rate limit")
+                        || haystack.contains("rate_limit")
+                    {
+                        let entry = NormalizedEntry {
+                            timestamp: None,
+                            entry_type: NormalizedEntryType::RateLimitInfo(
+                                crate::logs::RateLimitInfo {
+                                    limit_reached: true,
+                                    resets_at: None,
+                                    scope: None,
+                                },
+                            ),
+                            content: "Usage rate limit reached".to_string(),
+                            metadata: None,
+                        };
+                        let idx = entry_index_provider.next();
+                        patches.push(ConversationPatch::add_normalized_entry(idx, entry));
+                    }
+                }
+
                 if matches!(self.strategy, HistoryStrategy::AmpResume) && is_error.unwrap_or(false)
                 {
                     let entry = NormalizedEntry {
@@ -3075,6 +3112,7 @@ mod tests {
             },
             approvals_service: None,
             disable_api_key: None,
+            auto_resume_on_limit: None,
         };
         let msg_store = Arc::new(MsgStore::new());
         let current_dir = std::path::PathBuf::from("/tmp/test-worktree");

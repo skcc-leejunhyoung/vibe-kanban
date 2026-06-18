@@ -412,6 +412,10 @@ function DisplayConversationEntry(props: Props) {
       // Displayed in the chat header as the context-usage gauge
       return null;
 
+    case 'rate_limit_info':
+      // Surfaced in the chat header via the auto-resume control, not inline
+      return null;
+
     case 'user_feedback':
       return (
         <UserFeedbackEntry

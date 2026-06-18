@@ -241,6 +241,7 @@ fn generate_types_content() -> String {
         executors::logs::NormalizedEntry::decl(),
         executors::logs::NormalizedEntryType::decl(),
         executors::logs::TokenUsageInfo::decl(),
+        executors::logs::RateLimitInfo::decl(),
         executors::logs::FileChange::decl(),
         executors::logs::ActionType::decl(),
         executors::logs::AnsweredQuestion::decl(),

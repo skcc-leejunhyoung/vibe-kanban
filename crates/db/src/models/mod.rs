@@ -5,6 +5,7 @@ pub mod execution_process_repo_state;
 pub mod file;
 pub mod merge;
 pub mod pending_execution_start;
+pub mod pending_rate_limit_resume;
 pub mod project;
 pub mod pull_request;
 pub mod repo;

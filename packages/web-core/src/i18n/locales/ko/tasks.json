@@ -411,6 +411,14 @@
       "reset": "초기화",
       "resetTooltip": "이 시점으로 초기화"
     },
+    "autoResume": {
+      "enabled": "자동 재개 켜짐",
+      "toggleLabel": "사용량 한도 도달 시 자동 재개 전환",
+      "enabledTooltip": "자동 재개가 켜져 있습니다. 이 세션이 사용량 한도에 도달하면 한도가 리셋된 뒤 자동으로 'continue'를 보냅니다.",
+      "disabledTooltip": "자동 재개를 켜면 사용량 한도가 리셋된 뒤 자동으로 'continue'를 보냅니다.",
+      "pending": "자동 재개 대기 중 · {{time}} 리셋",
+      "cancel": "자동 재개 취소"
+    },
     "approval": {
       "conflictWarning": "충돌하는 파일은 수동으로 해결해야 합니다",
       "conflicts_one": "{{count}}개의 충돌 파일을 수동으로 해결해야 합니다",

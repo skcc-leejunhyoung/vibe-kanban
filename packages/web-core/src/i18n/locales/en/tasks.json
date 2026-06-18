@@ -154,6 +154,14 @@
       "reset": "Reset",
       "resetTooltip": "Reset to this point"
     },
+    "autoResume": {
+      "enabled": "Auto-resume on",
+      "toggleLabel": "Toggle auto-resume on usage limit",
+      "enabledTooltip": "Auto-resume is on. When this session hits its usage limit, 'continue' is sent automatically once the limit resets.",
+      "disabledTooltip": "Turn on auto-resume to automatically send 'continue' after the usage limit resets.",
+      "pending": "Waiting to auto-resume · resets {{time}}",
+      "cancel": "Cancel auto-resume"
+    },
     "approval": {
       "conflictWarning": "Conflicted files need manual resolution",
       "conflicts_one": "{{count}} conflict",

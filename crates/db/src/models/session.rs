@@ -28,6 +28,10 @@ pub struct Session {
     pub agent_working_dir: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Whether usage-based auto-resume is enabled for this session. Seeded from
+    /// the agent's `auto_resume_on_limit` setting at creation; toggled per
+    /// session from the workspace chat UI.
+    pub auto_resume_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -46,7 +50,8 @@ impl Session {
                       executor,
                       agent_working_dir,
                       created_at AS "created_at!: DateTime<Utc>",
-                      updated_at AS "updated_at!: DateTime<Utc>"
+                      updated_at AS "updated_at!: DateTime<Utc>",
+                      auto_resume_enabled AS "auto_resume_enabled!: bool"
                FROM sessions
                WHERE id = $1"#,
             id
@@ -70,7 +75,8 @@ impl Session {
                       s.executor,
                       s.agent_working_dir,
                       s.created_at AS "created_at!: DateTime<Utc>",
-                      s.updated_at AS "updated_at!: DateTime<Utc>"
+                      s.updated_at AS "updated_at!: DateTime<Utc>",
+                      s.auto_resume_enabled AS "auto_resume_enabled!: bool"
                FROM sessions s
                LEFT JOIN (
                    SELECT ep.session_id, MAX(ep.created_at) as last_used
@@ -101,7 +107,8 @@ impl Session {
                       s.executor,
                       s.agent_working_dir,
                       s.created_at AS "created_at!: DateTime<Utc>",
-                      s.updated_at AS "updated_at!: DateTime<Utc>"
+                      s.updated_at AS "updated_at!: DateTime<Utc>",
+                      s.auto_resume_enabled AS "auto_resume_enabled!: bool"
                FROM sessions s
                LEFT JOIN (
                    SELECT ep.session_id, MAX(ep.created_at) as last_used
@@ -131,7 +138,8 @@ impl Session {
                       executor,
                       agent_working_dir,
                       created_at,
-                      updated_at
+                      updated_at,
+                      auto_resume_enabled
                FROM sessions
                WHERE workspace_id = ?
                ORDER BY created_at ASC, id ASC
@@ -161,7 +169,8 @@ impl Session {
                          executor,
                          agent_working_dir,
                          created_at AS "created_at!: DateTime<Utc>",
-                         updated_at AS "updated_at!: DateTime<Utc>""#,
+                         updated_at AS "updated_at!: DateTime<Utc>",
+                         auto_resume_enabled AS "auto_resume_enabled!: bool""#,
             id,
             workspace_id,
             name,
@@ -220,6 +229,22 @@ impl Session {
         sqlx::query!(
             r#"UPDATE sessions SET executor = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"#,
             executor,
+            id
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Toggle usage-based auto-resume for a session.
+    pub async fn set_auto_resume_enabled(
+        pool: &SqlitePool,
+        id: Uuid,
+        enabled: bool,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query!(
+            r#"UPDATE sessions SET auto_resume_enabled = $1, updated_at = datetime('now', 'subsec') WHERE id = $2"#,
+            enabled,
             id
         )
         .execute(pool)

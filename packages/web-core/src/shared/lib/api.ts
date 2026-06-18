@@ -187,6 +187,13 @@ const makeHostAwareRequest = async (
 export type Ok<T> = { success: true; data: T };
 export type Err<E> = { success: false; error: E | undefined; message?: string };
 
+// Auto-resume (usage-based) status for a session
+export interface SessionAutoResumeStatus {
+  enabled: boolean;
+  /** RFC3339 timestamp when a resume is scheduled, or null if none pending */
+  pending_resume_at: string | null;
+}
+
 // Result type for endpoints that need typed errors
 export type Result<T, E> = Ok<T> | Err<E>;
 
@@ -411,6 +418,29 @@ export const sessionsApi = {
       method: 'DELETE',
     });
     return handleApiResponse<void>(response);
+  },
+
+  getAutoResume: async (
+    sessionId: string
+  ): Promise<SessionAutoResumeStatus> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/auto-resume`
+    );
+    return handleApiResponse<SessionAutoResumeStatus>(response);
+  },
+
+  setAutoResume: async (
+    sessionId: string,
+    enabled: boolean
+  ): Promise<SessionAutoResumeStatus> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/auto-resume`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ enabled }),
+      }
+    );
+    return handleApiResponse<SessionAutoResumeStatus>(response);
   },
 };
 

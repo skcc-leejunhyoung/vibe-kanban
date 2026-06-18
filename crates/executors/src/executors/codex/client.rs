@@ -16,12 +16,12 @@ use codex_app_server_protocol::{
     FileChangeRequestApprovalResponse, GetAccountParams, GetAccountRateLimitsResponse,
     GetAccountResponse, InitializeCapabilities, InitializeParams, InitializeResponse,
     ItemCompletedNotification, JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
-    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerStatusDetail, RequestId,
-    ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest, ThreadCompactStartParams,
-    ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams,
-    ThreadReadResponse, ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
-    ToolRequestUserInputQuestion, ToolRequestUserInputResponse, TurnCompletedNotification,
-    TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
+    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerStatusDetail, RateLimitWindow,
+    RequestId, ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest,
+    ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
+    ThreadItem, ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
+    ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse,
+    TurnCompletedNotification, TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
 };
 use codex_protocol::config_types::{CollaborationMode, ModeKind, Settings};
 use futures::TryFutureExt;
@@ -38,7 +38,10 @@ use super::jsonrpc::{JsonRpcCallbacks, JsonRpcPeer};
 use crate::{
     approvals::{ExecutorApprovalError, ExecutorApprovalService},
     env::RepoContext,
-    executors::{ExecutorError, codex::normalize_logs::Approval},
+    executors::{
+        ExecutorError,
+        codex::normalize_logs::{Approval, RateLimit},
+    },
 };
 
 struct PendingPlan {
@@ -299,6 +302,59 @@ impl AppServerClient {
             params: None,
         };
         self.send_request(request, "account/rateLimits/read").await
+    }
+
+    /// Best-effort: after a turn ends, fetch the account rate-limit snapshot and,
+    /// if a usage limit was actually reached, emit a normalized `RateLimitInfo`
+    /// log entry so the exit monitor can schedule an auto-resume once it resets.
+    ///
+    /// Never fails the turn — any error fetching limits is logged and ignored.
+    async fn emit_rate_limit_if_reached(&self) {
+        let snapshot = match self.get_account_rate_limits().await {
+            Ok(resp) => resp.rate_limits,
+            Err(err) => {
+                tracing::debug!("rate limits unavailable on turn end: {err}");
+                return;
+            }
+        };
+
+        // A limit was hit if the server flagged it explicitly, or if a window is
+        // reported at/over 100% used. Prefer the explicitly-reached window for
+        // the reset time / scope, falling back to whichever window is saturated.
+        let reached_explicitly = snapshot.rate_limit_reached_type.is_some();
+        let window_saturated = |w: &Option<RateLimitWindow>| {
+            w.as_ref().map(|w| w.used_percent >= 100).unwrap_or(false)
+        };
+        let primary_hit = window_saturated(&snapshot.primary);
+        let secondary_hit = window_saturated(&snapshot.secondary);
+
+        if !reached_explicitly && !primary_hit && !secondary_hit {
+            return;
+        }
+
+        // Pick the window we attribute the limit to: a saturated window wins, and
+        // primary ("5h") is preferred over secondary ("weekly").
+        let (window, scope) = if primary_hit {
+            (snapshot.primary.as_ref(), Some("5h"))
+        } else if secondary_hit {
+            (snapshot.secondary.as_ref(), Some("weekly"))
+        } else if snapshot.primary.is_some() {
+            (snapshot.primary.as_ref(), Some("5h"))
+        } else if snapshot.secondary.is_some() {
+            (snapshot.secondary.as_ref(), Some("weekly"))
+        } else {
+            (None, None)
+        };
+
+        let resets_at = window
+            .and_then(|w| w.resets_at)
+            .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
+            .map(|dt| dt.to_rfc3339());
+
+        let entry = RateLimit::limit_reached(resets_at, scope.map(|s| s.to_string()));
+        if let Err(err) = self.log_writer.log_raw(&entry.raw()).await {
+            tracing::warn!("failed to emit rate-limit log entry: {err}");
+        }
     }
 
     async fn handle_server_request(
@@ -880,6 +936,11 @@ impl JsonRpcCallbacks for AppServerClient {
 
         // V2 turn completion detection
         if method == "turn/completed" {
+            // If the turn ended because a usage rate limit was reached, emit a
+            // normalized log entry so the exit monitor can schedule an
+            // auto-resume once it resets. Best-effort; never fails the turn.
+            self.emit_rate_limit_if_reached().await;
+
             let mut keep_alive = false;
 
             if let Some(params) = notification.params
