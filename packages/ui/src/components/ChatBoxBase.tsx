@@ -127,12 +127,20 @@ export function ChatBoxBase({
         {editor}
 
         {/* Footer - Controls */}
-        <div className="flex items-end justify-between gap-base">
-          <Toolbar className="flex-1 min-w-0 flex-wrap !gap-half">
-            {modelSelector}
-            {footerLeft}
-          </Toolbar>
-          <div className="flex shrink-0 gap-base">{footerRight}</div>
+        <div className="flex flex-col gap-base">
+          {/* Model selectors get their own row so the action buttons can't
+              squeeze them into multiple stacked lines on narrow widths */}
+          {modelSelector && (
+            <Toolbar className="min-w-0 flex-wrap !gap-half">
+              {modelSelector}
+            </Toolbar>
+          )}
+          <div className="flex items-end justify-between gap-base">
+            <Toolbar className="flex-1 min-w-0 flex-wrap !gap-half">
+              {footerLeft}
+            </Toolbar>
+            <div className="flex shrink-0 gap-base">{footerRight}</div>
+          </div>
         </div>
       </div>
     </div>
