@@ -1,14 +1,19 @@
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
+
 /**
- * Format a date string as "Jan 5, 10:30 AM".
+ * Format a date string as "Jan 5, 10:30 AM" in Korea Standard Time.
  */
 export function formatDateShortWithTime(dateString: string): string {
   const date = new Date(dateString);
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return date.toLocaleDateString(
+    undefined,
+    withDisplayTimeZone({
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  );
 }
 
 /**

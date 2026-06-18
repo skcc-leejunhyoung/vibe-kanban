@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import {
   Play,
   Square,
@@ -96,7 +97,7 @@ function ProcessesTab({ sessionId }: ProcessesTabProps) {
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
-    return date.toLocaleString();
+    return date.toLocaleString(undefined, withDisplayTimeZone());
   };
 
   const fetchProcessDetails = useCallback(async (processId: string) => {

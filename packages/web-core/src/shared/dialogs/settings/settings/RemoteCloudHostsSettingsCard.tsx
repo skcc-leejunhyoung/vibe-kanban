@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import {
   usePairRemoteCloudHostMutation,
   useRemoteCloudHostsState,
@@ -404,7 +405,7 @@ export function RemoteCloudHostsSettingsCardContent({
                         </p>
                         <p className="text-xs text-low truncate">
                           {isRemoteMode && host.status
-                            ? `${host.status === 'online' ? 'Online' : 'Offline'}${host.pairedAt ? ` · Paired ${new Date(host.pairedAt).toLocaleDateString()}` : ''}`
+                            ? `${host.status === 'online' ? 'Online' : 'Offline'}${host.pairedAt ? ` · Paired ${new Date(host.pairedAt).toLocaleDateString(undefined, withDisplayTimeZone())}` : ''}`
                             : host.id}
                         </p>
                       </div>

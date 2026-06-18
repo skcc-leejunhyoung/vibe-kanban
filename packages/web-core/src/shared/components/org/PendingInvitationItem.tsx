@@ -1,5 +1,6 @@
 import { Badge } from '@vibe/ui/components/Badge';
 import { Button } from '@vibe/ui/components/Button';
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import type { Invitation } from 'shared/types';
 import { MemberRole } from 'shared/types';
 import { useTranslation } from 'react-i18next';
@@ -34,7 +35,10 @@ export function PendingInvitationItem({
           <div className="font-medium text-sm">{invitation.email}</div>
           <div className="text-xs text-muted-foreground">
             {t('invitationList.invited', {
-              date: new Date(invitation.created_at).toLocaleDateString(),
+              date: new Date(invitation.created_at).toLocaleDateString(
+                undefined,
+                withDisplayTimeZone()
+              ),
             })}
           </div>
         </div>

@@ -1,6 +1,7 @@
 import { MessageSquare, Code, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
+import { withDisplayTimeZone } from '../lib/datetime';
 
 export interface PrCommentCardProps {
   author: string;
@@ -21,7 +22,7 @@ export interface PrCommentCardProps {
 
 function formatDate(dateStr: string): string {
   try {
-    return new Date(dateStr).toLocaleString();
+    return new Date(dateStr).toLocaleString(undefined, withDisplayTimeZone());
   } catch {
     return dateStr;
   }

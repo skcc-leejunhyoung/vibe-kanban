@@ -47,6 +47,7 @@ import {
 import { Switch } from './Switch';
 import { Tooltip } from './Tooltip';
 import { cn } from '../lib/cn';
+import { withDisplayTimeZone } from '../lib/datetime';
 
 // Status enum - single source of truth for execution state
 export type ExecutionStatus =
@@ -231,12 +232,15 @@ function defaultFormatSessionDate(createdAt: string | Date) {
     return String(createdAt);
   }
 
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  return date.toLocaleString(
+    undefined,
+    withDisplayTimeZone({
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+  );
 }
 
 /**
@@ -961,10 +965,13 @@ export function SessionChatBox<TExecutor extends string = string>({
 }
 
 function formatResetTime(date: Date) {
-  return date.toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return date.toLocaleTimeString(
+    undefined,
+    withDisplayTimeZone({
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  );
 }
 
 function formatCountdown(msRemaining: number) {

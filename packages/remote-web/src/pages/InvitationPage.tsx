@@ -6,6 +6,7 @@ import {
   type InvitationLookupResponse,
   type OAuthProvider,
 } from "@remote/shared/lib/api";
+import { withDisplayTimeZone } from "@vibe/ui/lib/datetime";
 import {
   generateChallenge,
   generateVerifier,
@@ -119,7 +120,10 @@ export default function InvitationPage() {
             <div className="flex items-center justify-between gap-base">
               <span className="text-low">Expires</span>
               <span className="font-medium text-high">
-                {new Date(invitation.expires_at).toLocaleDateString()}
+                {new Date(invitation.expires_at).toLocaleDateString(
+                  undefined,
+                  withDisplayTimeZone(),
+                )}
               </span>
             </div>
           </section>

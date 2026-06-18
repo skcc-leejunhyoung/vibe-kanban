@@ -6,6 +6,7 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { Button } from '@vibe/ui/components/Button';
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import { AlertCircle, ExternalLink, Loader2 } from 'lucide-react';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal, type NoProps } from '@/shared/lib/modals';
@@ -16,11 +17,14 @@ const GITHUB_RELEASES_URL = 'https://github.com/BloopAI/vibe-kanban/releases';
 
 function formatDate(dateStr: string): string {
   try {
-    return new Date(dateStr).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+    return new Date(dateStr).toLocaleDateString(
+      undefined,
+      withDisplayTimeZone({
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      })
+    );
   } catch {
     return dateStr;
   }

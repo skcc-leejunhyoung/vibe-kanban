@@ -4,6 +4,7 @@ import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
 import { useCurrentUser } from '@/shared/hooks/auth/useCurrentUser';
 import { useShape } from '@/shared/integrations/electric/hooks';
 import type { SyncError } from '@/shared/lib/electric/types';
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import {
   PROJECTS_SHAPE,
   PROJECT_TAGS_SHAPE,
@@ -877,7 +878,7 @@ function truncateId(id: string): string {
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleString();
+  return new Date(dateStr).toLocaleString(undefined, withDisplayTimeZone());
 }
 
 // ============================================================================
