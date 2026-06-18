@@ -2968,6 +2968,19 @@ mod tests {
     const RESULT_SUCCESS: &str =
         r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world"}"#;
 
+    // Extended-thinking stream: a `thinking` block is streamed at content index 0,
+    // then the visible `text` block at content index 1. Mirrors the real Opus 4.8
+    // (1m) logs where the final `assistant` message OMITS the thinking block.
+    const CB_START_THINK_0: &str = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}"#;
+    const CB_DELTA_THINK_0: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering...","estimated_tokens":196}}}"#;
+    const CB_STOP_THINK_0: &str =
+        r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#;
+    const CB_START_TEXT_1: &str = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}}"#;
+    const CB_DELTA_TEXT_1A: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello "}}}"#;
+    const CB_DELTA_TEXT_1B: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"world"}}}"#;
+    const CB_STOP_TEXT_1: &str =
+        r#"{"type":"stream_event","event":{"type":"content_block_stop","index":1}}"#;
+
     /// Correct ordering observed on Claude Code 2.1.170: the full `assistant`
     /// message arrives BEFORE `message_stop`, so the streaming entry index is
     /// reused (replace) and the response is rendered exactly once.
@@ -3011,6 +3024,79 @@ mod tests {
             count_assistant_entries_with(&lines, "Hello world"),
             1,
             "DUPLICATION: assistant message rendered more than once when message_stop precedes assistant"
+        );
+    }
+
+    /// Regression for the real-world duplication on Opus 4.8 (1m) extended-thinking
+    /// streams: a `thinking` block streams at content index 0 and the visible `text`
+    /// block at content index 1, but the final non-partial `assistant` message OMITS
+    /// the thinking block — so the text item sits at array position 0. Dedup matched
+    /// streamed entries to final items by ABSOLUTE position, so the final text
+    /// (position 0) reused the THINKING entry's index (replace) and the streamed text
+    /// entry (index 1) was left behind -> the response renders twice. The `assistant`
+    /// message also arrives BEFORE content_block_stop/message_stop, exactly as in the
+    /// captured logs. Must stay at 1.
+    #[test]
+    fn test_streaming_dedup_thinking_omitted_from_final_assistant() {
+        let lines = [
+            MSG_START,
+            CB_START_THINK_0,
+            CB_DELTA_THINK_0,
+            CB_STOP_THINK_0,
+            CB_START_TEXT_1,
+            CB_DELTA_TEXT_1A,
+            CB_DELTA_TEXT_1B,
+            ASSISTANT_FULL,
+            CB_STOP_TEXT_1,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        assert_eq!(
+            count_assistant_entries_with(&lines, "Hello world"),
+            1,
+            "DUPLICATION: thinking at index 0 shifts the final text to position 0; positional dedup reused the thinking entry and left the streamed text behind -> response rendered twice"
+        );
+    }
+
+    /// The same thinking-then-text stream, but the thinking entry must survive as a
+    /// distinct Thinking entry (it must NOT be clobbered into a second copy of the
+    /// text). Guards the secondary symptom of the positional-dedup bug.
+    #[test]
+    fn test_streaming_thinking_entry_preserved_when_text_finalized() {
+        let lines = [
+            MSG_START,
+            CB_START_THINK_0,
+            CB_DELTA_THINK_0,
+            CB_STOP_THINK_0,
+            CB_START_TEXT_1,
+            CB_DELTA_TEXT_1A,
+            CB_DELTA_TEXT_1B,
+            ASSISTANT_FULL,
+            CB_STOP_TEXT_1,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        let processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        let mut final_by_index: std::collections::BTreeMap<usize, NormalizedEntry> =
+            Default::default();
+        let mut processor = processor;
+        for line in lines {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            let patches = processor.normalize_entries(&parsed, "", &provider);
+            for patch in &patches {
+                if let Some((idx, entry)) = extract_normalized_entry_from_patch(patch) {
+                    final_by_index.insert(idx, entry);
+                }
+            }
+        }
+        let thinking_entries = final_by_index
+            .values()
+            .filter(|e| matches!(e.entry_type, NormalizedEntryType::Thinking))
+            .count();
+        assert_eq!(
+            thinking_entries, 1,
+            "the streamed thinking entry must survive instead of being overwritten by the final text"
         );
     }
 
