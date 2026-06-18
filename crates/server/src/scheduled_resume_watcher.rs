@@ -70,8 +70,12 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
     let pool = &deployment.db().pool;
 
     // Don't resume on top of a live run; leave the row pending and retry next
-    // tick once the session goes idle.
-    if ExecutionProcess::has_running_coding_agent_for_session(pool, row.session_id).await? {
+    // tick once the session goes idle. Use the broader "any non-dev-server
+    // process" check (matching rate_limit_watcher) so a setup/cleanup script
+    // mid-run also defers the resume instead of racing it in the same worktree.
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, row.session_id)
+        .await?
+    {
         tracing::debug!(
             "scheduled_resume_watcher: session {} busy, deferring resume {}",
             row.session_id,
