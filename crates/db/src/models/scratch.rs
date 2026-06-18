@@ -57,7 +57,15 @@ pub struct WorkspaceNotesData {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct WorkspacePanelStateData {
     pub right_main_panel_mode: Option<String>,
+    /// Defaults to visible — matches the frontend's `?? true` fallback — so a
+    /// partial or legacy `workspace_panel_states` entry missing this key does
+    /// not fail the entire `UiPreferencesData` deserialization.
+    #[serde(default = "default_left_main_panel_visible")]
     pub is_left_main_panel_visible: bool,
+}
+
+fn default_left_main_panel_visible() -> bool {
+    true
 }
 
 /// Workspace sidebar PR filter state
@@ -494,5 +502,33 @@ impl Scratch {
 
         let scratch = row.map(Scratch::try_from).transpose()?;
         Ok(scratch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_panel_state_missing_left_visible_defaults_true() {
+        // A legacy/partial entry omitting is_left_main_panel_visible must still
+        // deserialize (defaulting to visible) rather than erroring.
+        let data: WorkspacePanelStateData =
+            serde_json::from_str(r#"{"right_main_panel_mode":"diff"}"#).unwrap();
+        assert!(data.is_left_main_panel_visible);
+        assert_eq!(data.right_main_panel_mode.as_deref(), Some("diff"));
+    }
+
+    #[test]
+    fn ui_preferences_survives_partial_nested_panel_state() {
+        // The whole UiPreferencesData must not fail when a nested panel-state
+        // entry omits is_left_main_panel_visible — otherwise all UI prefs would
+        // silently fail to load.
+        let data: UiPreferencesData = serde_json::from_str(
+            r#"{"workspace_panel_states":{"ws1":{"right_main_panel_mode":null}}}"#,
+        )
+        .unwrap();
+        let entry = data.workspace_panel_states.get("ws1").unwrap();
+        assert!(entry.is_left_main_panel_visible);
     }
 }
