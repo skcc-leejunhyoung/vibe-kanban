@@ -88,10 +88,11 @@ pub struct ClaudeAgentClient {
     commit_reminder: bool,
     commit_reminder_prompt: String,
     cancel: CancellationToken,
-    /// Number of consecutive Stop-hook blocks we have issued to wait on
-    /// background tasks. Reset to 0 once no background task is running. Acts as
-    /// a safety valve against an infinite stop/resume loop if the agent keeps
-    /// trying to end the turn without waiting for its background work.
+    /// Total Stop-hook blocks issued to wait on background tasks over this
+    /// process's lifetime (never reset). Acts as a safety valve against an
+    /// infinite stop/resume loop: a task that flaps in and out of "running"
+    /// across stops must not reset the count, or the valve below could never
+    /// trip and the turn would block forever.
     background_block_count: AtomicUsize,
 }
 
@@ -413,9 +414,12 @@ impl ClaudeAgentClient {
             //    by the CLI in the Stop hook input and empties once tasks finish.
             const MAX_BACKGROUND_BLOCKS: usize = 20;
             let running = running_background_tasks(&input);
-            if running.is_empty() {
-                self.background_block_count.store(0, Ordering::SeqCst);
-            } else {
+            if !running.is_empty() {
+                // Count blocks across the whole process lifetime; never reset on
+                // an empty observation. A task that briefly drops out of
+                // "running" between stops would otherwise keep resetting the
+                // counter, so the safety valve could never trip and the turn
+                // would block forever.
                 let blocks = self.background_block_count.fetch_add(1, Ordering::SeqCst);
                 if blocks < MAX_BACKGROUND_BLOCKS {
                     return Ok(background_wait_block(&running));
