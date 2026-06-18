@@ -68,6 +68,21 @@ pub async fn get_session(
     Ok(ResponseJson(ApiResponse::success(session)))
 }
 
+async fn seed_auto_resume_default(
+    pool: &sqlx::SqlitePool,
+    session_id: Uuid,
+    executor: BaseCodingAgent,
+) -> Result<bool, sqlx::Error> {
+    let configs = ExecutorConfigs::get_cached();
+    let agent = configs.get_coding_agent_or_default(&ExecutorProfileId::new(executor));
+    if !agent.auto_resume_on_limit() {
+        return Ok(false);
+    }
+
+    Session::set_auto_resume_enabled(pool, session_id, true).await?;
+    Ok(true)
+}
+
 #[derive(Debug, Deserialize, TS)]
 pub struct SetAutoResumeRequest {
     pub enabled: bool,
@@ -149,10 +164,7 @@ pub async fn create_session(
     if let Some(executor_str) = session.executor.as_deref()
         && let Ok(executor) = BaseCodingAgent::from_str(executor_str)
     {
-        let configs = ExecutorConfigs::get_cached();
-        let agent = configs.get_coding_agent_or_default(&ExecutorProfileId::new(executor));
-        if agent.auto_resume_on_limit() {
-            Session::set_auto_resume_enabled(pool, session.id, true).await?;
+        if seed_auto_resume_default(pool, session.id, executor).await? {
             session.auto_resume_enabled = true;
         }
     }
@@ -274,7 +286,7 @@ pub struct ResetProcessRequest {
 }
 
 pub async fn follow_up(
-    Extension(session): Extension<Session>,
+    Extension(mut session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateFollowUpAttempt>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
@@ -321,6 +333,10 @@ pub async fn follow_up(
     if session.executor.is_none() {
         Session::update_executor(pool, session.id, &executor_profile_id.executor.to_string())
             .await?;
+        session.executor = Some(executor_profile_id.executor.to_string());
+        if seed_auto_resume_default(pool, session.id, executor_profile_id.executor).await? {
+            session.auto_resume_enabled = true;
+        }
     }
 
     if let Some(proc_id) = payload.retry_process_id {

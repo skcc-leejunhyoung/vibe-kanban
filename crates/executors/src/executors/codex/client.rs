@@ -5,6 +5,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -16,12 +17,13 @@ use codex_app_server_protocol::{
     FileChangeRequestApprovalResponse, GetAccountParams, GetAccountRateLimitsResponse,
     GetAccountResponse, InitializeCapabilities, InitializeParams, InitializeResponse,
     ItemCompletedNotification, JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
-    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerStatusDetail, RateLimitWindow,
-    RequestId, ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest,
-    ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
-    ThreadItem, ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
-    ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse,
-    TurnCompletedNotification, TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
+    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerStatusDetail,
+    RateLimitSnapshot, RateLimitWindow, RequestId, ReviewStartParams, ReviewStartResponse,
+    ReviewTarget, ServerRequest, ThreadCompactStartParams, ThreadCompactStartResponse,
+    ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams, ThreadReadResponse,
+    ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
+    ToolRequestUserInputQuestion, ToolRequestUserInputResponse, TurnCompletedNotification,
+    TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
 };
 use codex_protocol::config_types::{CollaborationMode, ModeKind, Settings};
 use futures::TryFutureExt;
@@ -309,52 +311,53 @@ impl AppServerClient {
     /// log entry so the exit monitor can schedule an auto-resume once it resets.
     ///
     /// Never fails the turn — any error fetching limits is logged and ignored.
-    async fn emit_rate_limit_if_reached(&self) {
-        let snapshot = match self.get_account_rate_limits().await {
-            Ok(resp) => resp.rate_limits,
-            Err(err) => {
+    async fn emit_rate_limit_if_reached(
+        peer: JsonRpcPeer,
+        log_writer: LogWriter,
+        cancel: CancellationToken,
+    ) {
+        let request = ClientRequest::GetAccountRateLimits {
+            request_id: peer.next_request_id(),
+            params: None,
+        };
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            peer.request::<GetAccountRateLimitsResponse, _>(
+                request_id(&request),
+                &request,
+                "account/rateLimits/read",
+                cancel,
+            ),
+        )
+        .await;
+        let snapshot = match response {
+            Ok(Ok(resp)) => resp.rate_limits,
+            Ok(Err(err)) => {
                 tracing::debug!("rate limits unavailable on turn end: {err}");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!("rate limits unavailable on turn end: timed out");
                 return;
             }
         };
 
-        // A limit was hit if the server flagged it explicitly, or if a window is
-        // reported at/over 100% used. Prefer the explicitly-reached window for
-        // the reset time / scope, falling back to whichever window is saturated.
-        let reached_explicitly = snapshot.rate_limit_reached_type.is_some();
-        let window_saturated = |w: &Option<RateLimitWindow>| {
-            w.as_ref().map(|w| w.used_percent >= 100).unwrap_or(false)
-        };
-        let primary_hit = window_saturated(&snapshot.primary);
-        let secondary_hit = window_saturated(&snapshot.secondary);
-
-        if !reached_explicitly && !primary_hit && !secondary_hit {
+        let Some(entry) = rate_limit_entry_from_snapshot(&snapshot) else {
             return;
-        }
-
-        // Pick the window we attribute the limit to: a saturated window wins, and
-        // primary ("5h") is preferred over secondary ("weekly").
-        let (window, scope) = if primary_hit {
-            (snapshot.primary.as_ref(), Some("5h"))
-        } else if secondary_hit {
-            (snapshot.secondary.as_ref(), Some("weekly"))
-        } else if snapshot.primary.is_some() {
-            (snapshot.primary.as_ref(), Some("5h"))
-        } else if snapshot.secondary.is_some() {
-            (snapshot.secondary.as_ref(), Some("weekly"))
-        } else {
-            (None, None)
         };
-
-        let resets_at = window
-            .and_then(|w| w.resets_at)
-            .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
-            .map(|dt| dt.to_rfc3339());
-
-        let entry = RateLimit::limit_reached(resets_at, scope.map(|s| s.to_string()));
-        if let Err(err) = self.log_writer.log_raw(&entry.raw()).await {
+        if let Err(err) = log_writer.log_raw(&entry.raw()).await {
             tracing::warn!("failed to emit rate-limit log entry: {err}");
         }
+    }
+
+    fn spawn_rate_limit_check_then_cancel(&self) {
+        let peer = self.rpc().clone();
+        let log_writer = self.log_writer.clone();
+        let cancel = self.cancel.clone();
+        tokio::spawn(async move {
+            Self::emit_rate_limit_if_reached(peer, log_writer, cancel.clone()).await;
+            cancel.cancel();
+        });
     }
 
     async fn handle_server_request(
@@ -936,20 +939,19 @@ impl JsonRpcCallbacks for AppServerClient {
 
         // V2 turn completion detection
         if method == "turn/completed" {
-            // If the turn ended because a usage rate limit was reached, emit a
-            // normalized log entry so the exit monitor can schedule an
-            // auto-resume once it resets. Best-effort; never fails the turn.
-            self.emit_rate_limit_if_reached().await;
-
             let mut keep_alive = false;
+            let mut was_interrupted = false;
+            let completed = notification.params.clone().and_then(|params| {
+                serde_json::from_value::<TurnCompletedNotification>(params).ok()
+            });
 
-            if let Some(params) = notification.params
-                && let Ok(completed) = serde_json::from_value::<TurnCompletedNotification>(params)
-                && completed.turn.status == TurnStatus::Interrupted
-            {
-                tracing::debug!("codex turn interrupted; flushing feedback queue");
-                if self.flush_pending_feedback().await {
-                    keep_alive = true;
+            if let Some(completed) = completed {
+                if completed.turn.status == TurnStatus::Interrupted {
+                    was_interrupted = true;
+                    tracing::debug!("codex turn interrupted; flushing feedback queue");
+                    if self.flush_pending_feedback().await {
+                        keep_alive = true;
+                    }
                 }
             }
 
@@ -973,6 +975,14 @@ impl JsonRpcCallbacks for AppServerClient {
             {
                 let prompt = format!("{}\n{}", self.commit_reminder_prompt, status);
                 self.spawn_user_message(thread_id, prompt);
+                return Ok(false);
+            }
+
+            if was_interrupted && !keep_alive {
+                // Keep the reader alive just long enough for the rate-limit
+                // snapshot request to complete; the task cancels the executor
+                // afterwards so finalization can continue.
+                self.spawn_rate_limit_check_then_cancel();
                 return Ok(false);
             }
 
@@ -1030,6 +1040,39 @@ fn answers_to_codex_format(
     }
 }
 
+fn rate_limit_entry_from_snapshot(snapshot: &RateLimitSnapshot) -> Option<RateLimit> {
+    snapshot.rate_limit_reached_type?;
+
+    // Use saturation only to choose the most relevant reset window after the
+    // server has explicitly told us a limit was reached.
+    let window_saturated =
+        |w: &Option<RateLimitWindow>| w.as_ref().map(|w| w.used_percent >= 100).unwrap_or(false);
+    let primary_hit = window_saturated(&snapshot.primary);
+    let secondary_hit = window_saturated(&snapshot.secondary);
+
+    let (window, scope) = if primary_hit {
+        (snapshot.primary.as_ref(), Some("5h"))
+    } else if secondary_hit {
+        (snapshot.secondary.as_ref(), Some("weekly"))
+    } else if snapshot.primary.is_some() {
+        (snapshot.primary.as_ref(), Some("5h"))
+    } else if snapshot.secondary.is_some() {
+        (snapshot.secondary.as_ref(), Some("weekly"))
+    } else {
+        (None, None)
+    };
+
+    let resets_at = window
+        .and_then(|w| w.resets_at)
+        .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
+        .map(|dt| dt.to_rfc3339());
+
+    Some(RateLimit::limit_reached(
+        resets_at,
+        scope.map(|s| s.to_string()),
+    ))
+}
+
 fn request_id(request: &ClientRequest) -> RequestId {
     match request {
         ClientRequest::Initialize { request_id, .. }
@@ -1045,6 +1088,62 @@ fn request_id(request: &ClientRequest) -> RequestId {
         | ClientRequest::ConfigBatchWrite { request_id, .. }
         | ClientRequest::GetAccountRateLimits { request_id, .. } => request_id.clone(),
         _ => unreachable!("request_id called for unsupported request variant"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use codex_app_server_protocol::RateLimitReachedType;
+
+    use super::*;
+
+    fn window(used_percent: i32, resets_at: Option<i64>) -> RateLimitWindow {
+        RateLimitWindow {
+            used_percent,
+            window_duration_mins: Some(300),
+            resets_at,
+        }
+    }
+
+    fn snapshot(
+        rate_limit_reached_type: Option<RateLimitReachedType>,
+        primary: Option<RateLimitWindow>,
+        secondary: Option<RateLimitWindow>,
+    ) -> RateLimitSnapshot {
+        RateLimitSnapshot {
+            limit_id: None,
+            limit_name: None,
+            primary,
+            secondary,
+            credits: None,
+            individual_limit: None,
+            plan_type: None,
+            rate_limit_reached_type,
+        }
+    }
+
+    #[test]
+    fn saturated_window_without_explicit_reached_type_is_ignored() {
+        let snapshot = snapshot(None, Some(window(100, Some(1_800_000_000))), None);
+
+        assert!(rate_limit_entry_from_snapshot(&snapshot).is_none());
+    }
+
+    #[test]
+    fn explicit_reached_type_emits_primary_reset_window() {
+        let snapshot = snapshot(
+            Some(RateLimitReachedType::RateLimitReached),
+            Some(window(100, Some(1_800_000_000))),
+            None,
+        );
+
+        let entry = rate_limit_entry_from_snapshot(&snapshot).expect("missing rate-limit entry");
+        match entry {
+            RateLimit::LimitReached { resets_at, scope } => {
+                assert_eq!(resets_at.as_deref(), Some("2027-01-15T08:00:00+00:00"));
+                assert_eq!(scope.as_deref(), Some("5h"));
+            }
+        }
     }
 }
 
