@@ -391,6 +391,42 @@ impl ExecutionProcess {
         .await
     }
 
+    /// Find dev server processes for a workspace across all sessions (any status,
+    /// excluding soft-deleted). Used to surface the workspace-level dev server in
+    /// the preview independent of which session is currently selected.
+    pub async fn find_dev_servers_by_workspace(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as!(
+            ExecutionProcess,
+            r#"
+        SELECT
+            ep.id as "id!: Uuid",
+            ep.session_id as "session_id!: Uuid",
+            ep.run_reason as "run_reason!: ExecutionProcessRunReason",
+            ep.executor_action as "executor_action!: sqlx::types::Json<ExecutorActionField>",
+            ep.status as "status!: ExecutionProcessStatus",
+            ep.exit_code,
+            ep.dropped as "dropped!: bool",
+            ep.started_at as "started_at!: DateTime<Utc>",
+            ep.completed_at as "completed_at?: DateTime<Utc>",
+            ep.created_at as "created_at!: DateTime<Utc>",
+            ep.updated_at as "updated_at!: DateTime<Utc>"
+        FROM execution_processes ep
+        JOIN sessions s ON ep.session_id = s.id
+        WHERE s.workspace_id = ?
+          AND ep.run_reason = 'devserver'
+          AND ep.dropped = 0
+        ORDER BY ep.created_at DESC
+        LIMIT 50
+        "#,
+            workspace_id
+        )
+        .fetch_all(pool)
+        .await
+    }
+
     /// Find latest execution process by session and run reason
     /// Find latest execution process by workspace and run reason (across all sessions)
     pub async fn find_latest_by_workspace_and_run_reason(

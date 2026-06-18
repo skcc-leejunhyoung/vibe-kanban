@@ -737,6 +737,15 @@ export const workspacesApi = {
     return handleApiResponse<ExecutionProcess[]>(response);
   },
 
+  // Dev server processes across all sessions of the workspace. The preview is
+  // workspace-scoped, so it must not depend on the currently selected session.
+  getDevServers: async (workspaceId: string): Promise<ExecutionProcess[]> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/execution/dev-servers`
+    );
+    return handleApiResponse<ExecutionProcess[]>(response);
+  },
+
   setupGhCli: async (workspaceId: string): Promise<ExecutionProcess> => {
     const response = await makeRequest(
       `/api/workspaces/${workspaceId}/integration/github/cli/setup`,

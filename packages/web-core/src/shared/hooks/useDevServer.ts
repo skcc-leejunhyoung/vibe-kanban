@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { workspacesApi, executionProcessesApi } from '@/shared/lib/api';
-import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
+import { useWorkspaceDevServers } from '@/shared/hooks/useWorkspaceDevServers';
 import {
   filterRunningDevServers,
   filterDevServerProcesses,
@@ -21,19 +21,17 @@ export function useDevServer(
   options?: UseDevServerOptions
 ) {
   const queryClient = useQueryClient();
-  const { attemptData } = useWorkspaceExecution(workspaceId);
+  const processes = useWorkspaceDevServers(workspaceId);
 
   const runningDevServers = useMemo(
-    () => filterRunningDevServers(attemptData.processes),
-    [attemptData.processes]
+    () => filterRunningDevServers(processes),
+    [processes]
   );
 
   const devServerProcesses = useMemo(
     () =>
-      deduplicateDevServersByWorkingDir(
-        filterDevServerProcesses(attemptData.processes)
-      ),
-    [attemptData.processes]
+      deduplicateDevServersByWorkingDir(filterDevServerProcesses(processes)),
+    [processes]
   );
 
   // Track when mutation succeeded but no running process exists yet
@@ -58,7 +56,7 @@ export function useDevServer(
     onSuccess: async () => {
       // Don't clear pendingStart here - wait for process to appear via useEffect
       await queryClient.invalidateQueries({
-        queryKey: ['executionProcesses', workspaceId],
+        queryKey: ['workspaceDevServers', workspaceId],
       });
       queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
       options?.onStartSuccess?.();
@@ -82,7 +80,7 @@ export function useDevServer(
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: ['executionProcesses', workspaceId],
+        queryKey: ['workspaceDevServers', workspaceId],
       });
       for (const ds of runningDevServers) {
         queryClient.invalidateQueries({

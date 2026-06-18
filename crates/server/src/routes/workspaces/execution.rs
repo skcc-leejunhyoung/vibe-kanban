@@ -1,4 +1,9 @@
-use axum::{Extension, Router, extract::State, response::Json as ResponseJson, routing::post};
+use axum::{
+    Extension, Router,
+    extract::State,
+    response::Json as ResponseJson,
+    routing::{get, post},
+};
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     session::{CreateSession, Session},
@@ -29,9 +34,22 @@ pub enum RunScriptError {
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/dev-server/start", post(start_dev_server))
+        .route("/dev-servers", get(get_dev_servers))
         .route("/cleanup", post(run_cleanup_script))
         .route("/archive", post(run_archive_script))
         .route("/stop", post(stop_workspace_execution))
+}
+
+/// Return dev server processes for the workspace across all of its sessions.
+/// The preview is workspace-scoped, so it must not depend on which session the
+/// user currently has selected.
+pub async fn get_dev_servers(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Vec<ExecutionProcess>>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let dev_servers = ExecutionProcess::find_dev_servers_by_workspace(pool, workspace.id).await?;
+    Ok(ResponseJson(ApiResponse::success(dev_servers)))
 }
 
 #[axum::debug_handler]
