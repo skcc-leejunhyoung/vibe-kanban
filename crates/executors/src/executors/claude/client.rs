@@ -88,12 +88,15 @@ pub struct ClaudeAgentClient {
     commit_reminder: bool,
     commit_reminder_prompt: String,
     cancel: CancellationToken,
-    /// Total Stop-hook blocks issued to wait on background tasks over this
-    /// process's lifetime (never reset). Acts as a safety valve against an
-    /// infinite stop/resume loop: a task that flaps in and out of "running"
-    /// across stops must not reset the count, or the valve below could never
-    /// trip and the turn would block forever.
+    /// Consecutive Stop-hook blocks since background tasks were last seen idle.
+    /// Reset to 0 on an empty observation so each distinct task gets a fresh
+    /// wait budget (up to MAX_CONSECUTIVE_BLOCKS).
     background_block_count: AtomicUsize,
+    /// Total Stop-hook blocks over the process lifetime (never reset). Bounds a
+    /// task that flaps in and out of "running" between stops, which would keep
+    /// resetting background_block_count and otherwise never trip the safety
+    /// valve — blocking the turn forever.
+    background_block_total: AtomicUsize,
 }
 
 impl ClaudeAgentClient {
@@ -116,6 +119,7 @@ impl ClaudeAgentClient {
             commit_reminder_prompt,
             cancel,
             background_block_count: AtomicUsize::new(0),
+            background_block_total: AtomicUsize::new(0),
         })
     }
 
@@ -412,25 +416,29 @@ impl ClaudeAgentClient {
             //    this the turn would end, killing the process (and its background
             //    tasks) before the work completed. `background_tasks` is supplied
             //    by the CLI in the Stop hook input and empties once tasks finish.
-            const MAX_BACKGROUND_BLOCKS: usize = 20;
+            // Per-task budget; the total bound is the flapping backstop.
+            const MAX_CONSECUTIVE_BLOCKS: usize = 20;
+            const MAX_TOTAL_BLOCKS: usize = 100;
             let running = running_background_tasks(&input);
-            if !running.is_empty() {
-                // Count blocks across the whole process lifetime; never reset on
-                // an empty observation. A task that briefly drops out of
-                // "running" between stops would otherwise keep resetting the
-                // counter, so the safety valve could never trip and the turn
-                // would block forever.
-                let blocks = self.background_block_count.fetch_add(1, Ordering::SeqCst);
-                if blocks < MAX_BACKGROUND_BLOCKS {
+            if running.is_empty() {
+                // A task finished: reset the per-task budget so the next task
+                // gets a fresh MAX_CONSECUTIVE_BLOCKS allowance.
+                self.background_block_count.store(0, Ordering::SeqCst);
+            } else {
+                let consecutive = self.background_block_count.fetch_add(1, Ordering::SeqCst);
+                let total = self.background_block_total.fetch_add(1, Ordering::SeqCst);
+                if consecutive < MAX_CONSECUTIVE_BLOCKS && total < MAX_TOTAL_BLOCKS {
                     return Ok(background_wait_block(&running));
                 }
-                // Safety valve: the agent kept stopping without waiting. Allow
-                // the turn to end rather than loop forever.
+                // Safety valve: either one task waited too long, or a flapping
+                // task kept resetting the per-task count past the total bound.
+                // Allow the turn to end rather than loop forever.
                 tracing::warn!(
-                    "Stop hook: {} background task(s) still running after {} resume blocks; \
-                     allowing the turn to end",
+                    "Stop hook: {} background task(s) still running after {} consecutive / {} total \
+                     resume blocks; allowing the turn to end",
                     running.len(),
-                    blocks
+                    consecutive,
+                    total
                 );
             }
 
