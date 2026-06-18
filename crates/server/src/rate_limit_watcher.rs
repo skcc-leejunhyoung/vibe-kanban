@@ -77,6 +77,7 @@ async fn process_one(
     let session = match Session::find_by_id(pool, row.session_id).await? {
         Some(s) => s,
         None => {
+            // Session is gone; there's nothing left to finalize. Just drop the row.
             let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
             return Ok(());
         }
@@ -85,7 +86,7 @@ async fn process_one(
     // Respect the per-session toggle: if auto-resume was turned off after the
     // schedule was created, drop the pending row without resuming.
     if !session.auto_resume_enabled {
-        let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+        abandon_resume(deployment, pool, row).await;
         return Ok(());
     }
 
@@ -103,7 +104,7 @@ async fn process_one(
     let workspace = match Workspace::find_by_id(pool, session.workspace_id).await? {
         Some(w) => w,
         None => {
-            let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+            abandon_resume(deployment, pool, row).await;
             return Ok(());
         }
     };
@@ -118,7 +119,7 @@ async fn process_one(
     let last_agent = match last_agent {
         Some(p) => p,
         None => {
-            let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+            abandon_resume(deployment, pool, row).await;
             return Ok(());
         }
     };
@@ -127,12 +128,12 @@ async fn process_one(
             ExecutorActionType::CodingAgentInitialRequest(r) => r.executor_config.clone(),
             ExecutorActionType::CodingAgentFollowUpRequest(r) => r.executor_config.clone(),
             _ => {
-                let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+                abandon_resume(deployment, pool, row).await;
                 return Ok(());
             }
         },
         Err(_) => {
-            let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+            abandon_resume(deployment, pool, row).await;
             return Ok(());
         }
     };
@@ -141,10 +142,19 @@ async fn process_one(
     let session_info = match CodingAgentTurn::find_latest_session_info(pool, session.id).await? {
         Some(info) => info,
         None => {
-            let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+            abandon_resume(deployment, pool, row).await;
             return Ok(());
         }
     };
+
+    // The reset is typically hours out, so the worktree may have been cleaned up
+    // in the meantime. Recreate it before resuming, matching
+    // `scheduled_resume_watcher` and the manual follow-up path; without this
+    // `start_execution` spawns against a missing worktree and fails.
+    deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
 
     let working_dir = session
         .agent_working_dir
@@ -183,4 +193,30 @@ async fn process_one(
     );
 
     Ok(())
+}
+
+/// Give up on a pending resume that can no longer be honored: drop the row and
+/// run the finalization the exit monitor deferred when the limit was hit. When a
+/// limit is reached the exit monitor skips finalization (commit / auto-merge /
+/// mark-unseen) on the assumption the resume will run it later; if we instead
+/// abandon the resume, that finalization must still happen or the original
+/// execution is stranded half-finalized forever. Best-effort: a failure here is
+/// logged, not propagated, so one bad row can't wedge the whole tick.
+async fn abandon_resume(
+    deployment: &DeploymentImpl,
+    pool: &sqlx::SqlitePool,
+    row: &PendingRateLimitResume,
+) {
+    let _ = PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await;
+    if let Err(e) = deployment
+        .container()
+        .finalize_cancelled_rate_limit_resume(row.execution_process_id)
+        .await
+    {
+        tracing::warn!(
+            "rate_limit_watcher: failed to finalize abandoned resume for session {}: {}",
+            row.session_id,
+            e
+        );
+    }
 }
