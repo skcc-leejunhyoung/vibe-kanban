@@ -279,9 +279,17 @@ export function useConversationVirtualizer({
       // - smoothScrollDeadlineRef: set during scrollToBottom('smooth')
       // - shouldSuppressSizeAdjustment: set during interaction anchor corrections
       // - 5px threshold: filters input-resize micro-adjustments
+      // - isNearBottom: critically, when content SHRINKS (e.g. a row estimated
+      //   `tall` measures smaller, common right after entering a workspace) the
+      //   browser clamps scrollTop down to the new max, firing a scroll event
+      //   that looks like an upward scroll even though we're still pinned to the
+      //   bottom. Requiring the new position to be away from the bottom keeps
+      //   the lock engaged through that settle, so the initial auto-scroll
+      //   sticks instead of stranding the view mid-conversation.
       if (
         bottomLockedRef.current &&
         prevScrollTopRef.current - currentScrollTop > 5 &&
+        !isNearBottom(currentScrollTop, el.clientHeight, el.scrollHeight) &&
         performance.now() > smoothScrollDeadlineRef.current &&
         !shouldSuppressSizeAdjustment?.()
       ) {
