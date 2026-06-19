@@ -12,6 +12,11 @@ CREATE TABLE vibe_runs (
     coding_turns       INTEGER NOT NULL DEFAULT 0,
     review_turns       INTEGER NOT NULL DEFAULT 0,
     merge_retries      INTEGER NOT NULL DEFAULT 0,
+    -- Canonical token (done/blocked/continue/approve) parsed from the agent's
+    -- full, untruncated final message at coding completion; consumed and
+    -- cleared by the next finalize. Avoids the 4096-char summary truncation
+    -- dropping a trailing VIBE_RESULT line.
+    last_result        TEXT,
     created_at         TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
     updated_at         TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE

@@ -823,6 +823,26 @@ impl LocalContainerService {
         None
     }
 
+    /// Like [`extract_last_assistant_message`] but returns the full, untruncated
+    /// content. Used for `VIBE_RESULT:` sentinel parsing, where a trailing line
+    /// must not be dropped by the 4096-char summary cap.
+    fn extract_last_assistant_message_full(&self, exec_id: &Uuid) -> Option<String> {
+        let msg_stores = self.msg_stores.try_read().ok()?;
+        let msg_store = msg_stores.get(exec_id)?;
+        for msg in msg_store.get_history().iter().rev() {
+            if let LogMsg::JsonPatch(patch) = msg
+                && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+                && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+            {
+                let content = entry.content.trim();
+                if !content.is_empty() {
+                    return Some(content.to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Update the coding agent turn summary with the final assistant message
     async fn update_executor_session_summary(&self, exec_id: &Uuid) -> Result<(), anyhow::Error> {
         // Check if there's a coding agent turn for this execution process
@@ -1045,6 +1065,13 @@ impl LocalContainerService {
         ctx: &ExecutionContext,
         exit_code: Option<i64>,
     ) -> Result<(), ContainerError> {
+        // vibe: capture the agent's `VIBE_RESULT:` self-report from the FULL
+        // in-memory final message now — while the coding process's MsgStore is
+        // still alive and before the truncated turn-summary path could drop a
+        // trailing sentinel on a long wrap-up. Persisted for the finalize below
+        // (or for the later cleanup-script finalize) to consume.
+        self.vibe_capture_result(ctx).await;
+
         let success = matches!(
             ctx.execution_process.status,
             ExecutionProcessStatus::Completed
@@ -1258,6 +1285,57 @@ impl LocalContainerService {
     /// per-workspace [`VibeRun`] state and the agent's `VIBE_RESULT:` self-report,
     /// asks the functional core ([`decide_finalize_action`]) what to do, and
     /// performs it. Non-vibe issues are a no-op.
+    /// Capture the agent's `VIBE_RESULT:` self-report at coding completion from
+    /// the full in-memory message and persist it on the run for the finalize to
+    /// consume. Runs only for coding-agent completions; skips before any remote
+    /// call unless an actual sentinel is present (non-vibe agents never emit
+    /// one, since they don't receive the preamble).
+    async fn vibe_capture_result(&self, ctx: &ExecutionContext) {
+        if !matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CodingAgent
+        ) {
+            return;
+        }
+        let Some(task_id) = ctx.workspace.task_id else {
+            return;
+        };
+        let Some(message) = self.extract_last_assistant_message_full(&ctx.execution_process.id)
+        else {
+            return;
+        };
+        let Some(token) = parse_vibe_result(&message).as_token() else {
+            return; // no sentinel → nothing to record (and no remote call)
+        };
+        let workspace_id = ctx.workspace.id;
+
+        // Create the run (after a one-time remote vibe-check) only if it doesn't
+        // exist yet; thereafter just update the token.
+        let exists = matches!(
+            VibeRun::find_by_workspace_id(&self.db.pool, workspace_id).await,
+            Ok(Some(_))
+        );
+        if !exists {
+            let Some(client) = self.remote_client.clone() else {
+                return;
+            };
+            if !matches!(client.auto_merge_check(workspace_id).await, Ok(true)) {
+                return;
+            }
+            if let Err(e) = VibeRun::get_or_create(&self.db.pool, workspace_id, task_id).await {
+                tracing::error!(
+                    "vibe: get_or_create (capture) failed for {}: {}",
+                    workspace_id,
+                    e
+                );
+                return;
+            }
+        }
+        if let Err(e) = VibeRun::set_last_result(&self.db.pool, workspace_id, Some(token)).await {
+            tracing::warn!("vibe: set_last_result failed for {}: {}", workspace_id, e);
+        }
+    }
+
     pub async fn vibe_on_finalize(&self, ctx: &ExecutionContext) {
         // Dev-server / archive completions never participate.
         if matches!(
@@ -1274,34 +1352,50 @@ impl LocalContainerService {
         };
         let workspace_id = ctx.workspace.id;
 
-        // Gate: only engage for issues carrying the `vibe` tag.
-        match client.auto_merge_check(workspace_id).await {
-            Ok(true) => {}
-            Ok(false) => return,
-            Err(e) => {
-                tracing::warn!("vibe: auto_merge_check failed for {}: {}", workspace_id, e);
-                return;
+        // A run row exists only for vibe issues, so its presence is the cheap
+        // local gate; only the first time we see this workspace do we pay a
+        // remote vibe-check before creating it.
+        let vibe_run = match VibeRun::find_by_workspace_id(&self.db.pool, workspace_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                match client.auto_merge_check(workspace_id).await {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(e) => {
+                        tracing::warn!("vibe: auto_merge_check failed for {}: {}", workspace_id, e);
+                        return;
+                    }
+                }
+                match VibeRun::get_or_create(&self.db.pool, workspace_id, task_id).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!("vibe: get_or_create failed for {}: {}", workspace_id, e);
+                        return;
+                    }
+                }
             }
-        }
-
-        let vibe_run = match VibeRun::get_or_create(&self.db.pool, workspace_id, task_id).await {
-            Ok(r) => r,
             Err(e) => {
-                tracing::error!("vibe: get_or_create failed for {}: {}", workspace_id, e);
+                tracing::error!(
+                    "vibe: find_by_workspace_id failed for {}: {}",
+                    workspace_id,
+                    e
+                );
                 return;
             }
         };
         let phase = VibePhase::from_db_str(&vibe_run.phase).unwrap_or(VibePhase::Coding);
         let session_is_review = vibe_run.review_session_id == Some(ctx.session.id);
 
-        let summary =
-            CodingAgentTurn::find_latest_summary_for_session(&self.db.pool, ctx.session.id)
-                .await
-                .unwrap_or(None);
-        let result = summary
+        // Consume the sentinel captured (untruncated) at coding completion, then
+        // clear it so a later turn with no sentinel falls back to the default.
+        let result = vibe_run
+            .last_result
             .as_deref()
-            .map(parse_vibe_result)
+            .map(VibeResult::from_token)
             .unwrap_or(VibeResult::None);
+        if vibe_run.last_result.is_some() {
+            let _ = VibeRun::set_last_result(&self.db.pool, workspace_id, None).await;
+        }
 
         let input = FinalizeInput {
             run_reason: ctx.execution_process.run_reason.clone(),

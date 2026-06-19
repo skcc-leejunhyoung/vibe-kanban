@@ -24,13 +24,17 @@ pub struct VibeRun {
     pub coding_turns: i64,
     pub review_turns: i64,
     pub merge_retries: i64,
+    /// Canonical sentinel token (done/blocked/continue/approve) captured from
+    /// the agent's full final message at coding completion; consumed and cleared
+    /// by the next finalize.
+    pub last_result: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl VibeRun {
     const COLUMNS: &'static str = "workspace_id, task_id, phase, review_session_id, \
-         coding_turns, review_turns, merge_retries, created_at, updated_at";
+         coding_turns, review_turns, merge_retries, last_result, created_at, updated_at";
 
     /// Fetch-or-initialize the run row for a workspace. New rows start in the
     /// `coding` phase. Idempotent: an existing row is returned unchanged.
@@ -141,6 +145,23 @@ impl VibeRun {
              WHERE workspace_id = ?",
         )
         .bind(merge_retries)
+        .bind(workspace_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record (or clear, with `None`) the agent's latest sentinel token.
+    pub async fn set_last_result(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        last_result: Option<&str>,
+    ) -> Result<(), VibeRunError> {
+        sqlx::query(
+            "UPDATE vibe_runs SET last_result = ?, updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ?",
+        )
+        .bind(last_result)
         .bind(workspace_id)
         .execute(pool)
         .await?;

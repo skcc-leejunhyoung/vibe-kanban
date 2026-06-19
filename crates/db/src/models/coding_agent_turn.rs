@@ -56,31 +56,6 @@ impl CodingAgentTurn {
         .await
     }
 
-    /// Return the summary (final assistant message) of the most recent
-    /// coding-agent turn for a session, if any. Used by the vibe orchestrator
-    /// to read the agent's `VIBE_RESULT:` self-report after a turn finalizes
-    /// (the summary is persisted before post-completion handling runs).
-    ///
-    /// Uses a runtime-checked query (no `query_as!`) so it does not require a
-    /// refreshed SQLx offline cache.
-    pub async fn find_latest_summary_for_session(
-        pool: &SqlitePool,
-        session_id: Uuid,
-    ) -> Result<Option<String>, sqlx::Error> {
-        let row: Option<Option<String>> = sqlx::query_scalar(
-            "SELECT cat.summary \
-             FROM coding_agent_turns cat \
-             JOIN execution_processes ep ON ep.id = cat.execution_process_id \
-             WHERE ep.session_id = ? AND ep.run_reason = 'codingagent' AND ep.dropped = FALSE \
-             ORDER BY ep.created_at DESC \
-             LIMIT 1",
-        )
-        .bind(session_id)
-        .fetch_optional(pool)
-        .await?;
-        Ok(row.flatten())
-    }
-
     /// Find coding agent turn by execution process ID
     pub async fn find_by_execution_process_id(
         pool: &SqlitePool,

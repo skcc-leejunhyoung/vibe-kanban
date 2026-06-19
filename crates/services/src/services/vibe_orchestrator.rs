@@ -105,6 +105,31 @@ pub enum VibeResult {
     None,
 }
 
+impl VibeResult {
+    /// Canonical token persisted in `vibe_runs.last_result`. `None` (no
+    /// sentinel) maps to `None` so nothing is stored.
+    pub fn as_token(self) -> Option<&'static str> {
+        match self {
+            VibeResult::Done => Some("done"),
+            VibeResult::Blocked => Some("blocked"),
+            VibeResult::Continue => Some("continue"),
+            VibeResult::Approve => Some("approve"),
+            VibeResult::None => Option::None,
+        }
+    }
+
+    /// Inverse of [`as_token`]: map a stored token back to a result.
+    pub fn from_token(s: &str) -> VibeResult {
+        match s {
+            "done" => VibeResult::Done,
+            "blocked" => VibeResult::Blocked,
+            "continue" => VibeResult::Continue,
+            "approve" => VibeResult::Approve,
+            _ => VibeResult::None,
+        }
+    }
+}
+
 /// The orchestration phase of a single vibe workspace run. Authoritative state,
 /// persisted in the `vibe_runs` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -464,6 +489,21 @@ mod tests {
     #[test]
     fn sentinel_without_known_token_is_none() {
         assert_eq!(parse_vibe_result("VIBE_RESULT: maybe?"), VibeResult::None);
+    }
+
+    #[test]
+    fn result_token_round_trips() {
+        for r in [
+            VibeResult::Done,
+            VibeResult::Blocked,
+            VibeResult::Continue,
+            VibeResult::Approve,
+        ] {
+            let token = r.as_token().expect("non-None has a token");
+            assert_eq!(VibeResult::from_token(token), r);
+        }
+        assert_eq!(VibeResult::None.as_token(), None);
+        assert_eq!(VibeResult::from_token("garbage"), VibeResult::None);
     }
 
     // ---- decide_finalize_action: helpers -----------------------------------
