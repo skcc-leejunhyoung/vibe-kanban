@@ -4,9 +4,13 @@ FROM rust:1.93-slim-bookworm AS builder
 
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 ENV CARGO_TARGET_DIR=/app/target
+# Fetch git dependencies (e.g. ts-rs) via the system git CLI rather than the
+# bundled libgit2, so corporate-MITM CA trust applies and a cold cargo-git
+# cache can re-fetch a locked revision. Mirrors crates/remote/Dockerfile.
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
 
 # Optional extra trusted CA: if a cert is dropped into crates/remote/local-ca/
