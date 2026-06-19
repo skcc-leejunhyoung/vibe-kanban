@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use tokio_util::sync::CancellationToken;
-use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
+use workspace_utils::approvals::{ApprovalStatus, QuestionAnswer, QuestionStatus};
 
 use super::{SCHEDULED_WAKEUP_MARKER, types::PermissionMode};
 use crate::{
@@ -268,15 +268,7 @@ impl ClaudeAgentClient {
 
         match status {
             QuestionStatus::Answered { answers } => {
-                let answers_map: serde_json::Map<String, serde_json::Value> = answers
-                    .iter()
-                    .map(|qa| {
-                        (
-                            qa.question.clone(),
-                            serde_json::Value::String(qa.answer.join(", ")),
-                        )
-                    })
-                    .collect();
+                let answers_map = question_answers_map(&tool_input, &answers);
                 let mut updated = tool_input.clone();
                 if let Some(obj) = updated.as_object_mut() {
                     obj.insert(
@@ -501,9 +493,59 @@ impl ClaudeAgentClient {
     }
 }
 
+/// Build the `answers` object Claude's AskUserQuestion tool expects, keyed by
+/// each question's text.
+///
+/// The UI supplies the exact question text per answer. The vibe auto-responder
+/// cannot know the question text and sends a single answer under an empty key;
+/// in that case the lone answer is applied to every question so Claude doesn't
+/// drop it. When the keys already match (the normal path) they are used verbatim.
+fn question_answers_map(
+    tool_input: &serde_json::Value,
+    answers: &[QuestionAnswer],
+) -> serde_json::Map<String, serde_json::Value> {
+    let question_texts: Vec<String> = tool_input
+        .get("questions")
+        .and_then(|q| q.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|q| {
+                    q.get("question")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let single_unmatched = answers.len() == 1
+        && !question_texts.is_empty()
+        && !question_texts.contains(&answers[0].question);
+
+    if single_unmatched {
+        let answer = serde_json::Value::String(answers[0].answer.join(", "));
+        question_texts
+            .into_iter()
+            .map(|q| (q, answer.clone()))
+            .collect()
+    } else {
+        answers
+            .iter()
+            .map(|qa| {
+                (
+                    qa.question.clone(),
+                    serde_json::Value::String(qa.answer.join(", ")),
+                )
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{background_wait_block, running_background_tasks};
+    use super::{
+        QuestionAnswer, background_wait_block, question_answers_map, running_background_tasks,
+    };
 
     // Shapes below mirror the real Stop-hook `input.background_tasks` observed
     // from `claude -p` (control protocol): each running task carries
@@ -571,5 +613,73 @@ mod tests {
         assert!(reason.contains("bxwcb4god"));
         assert!(reason.contains("sleep 6"));
         assert!(reason.contains("still running"));
+    }
+
+    fn qa(question: &str, answer: &str) -> QuestionAnswer {
+        QuestionAnswer {
+            question: question.to_string(),
+            answer: vec![answer.to_string()],
+        }
+    }
+
+    #[test]
+    fn matched_question_keys_are_used_verbatim() {
+        let tool_input = serde_json::json!({
+            "questions": [{ "question": "Pick A or B?" }]
+        });
+        let map = question_answers_map(&tool_input, &[qa("Pick A or B?", "A")]);
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map["Pick A or B?"],
+            serde_json::Value::String("A".to_string())
+        );
+    }
+
+    #[test]
+    fn single_empty_keyed_answer_fills_every_question() {
+        // The vibe auto-responder sends a single answer under an empty key
+        // because it can't know the question text. It must be applied to every
+        // question rather than landing under an unmatched "" key that Claude
+        // would ignore (which would silently drop the automated answer).
+        let tool_input = serde_json::json!({
+            "questions": [{ "question": "First?" }, { "question": "Second?" }]
+        });
+        let map = question_answers_map(&tool_input, &[qa("", "추천대로 진행")]);
+        assert_eq!(map.len(), 2);
+        assert_eq!(
+            map["First?"],
+            serde_json::Value::String("추천대로 진행".to_string())
+        );
+        assert_eq!(
+            map["Second?"],
+            serde_json::Value::String("추천대로 진행".to_string())
+        );
+    }
+
+    #[test]
+    fn distinct_keyed_answers_are_not_broadcast() {
+        // More than one answer present → only the verbatim keys are used; an
+        // unmatched key must never be cross-wired onto another question.
+        let tool_input = serde_json::json!({
+            "questions": [{ "question": "First?" }, { "question": "Second?" }]
+        });
+        let map = question_answers_map(&tool_input, &[qa("First?", "one"), qa("mismatch", "two")]);
+        assert_eq!(map["First?"], serde_json::Value::String("one".to_string()));
+        assert_eq!(
+            map["mismatch"],
+            serde_json::Value::String("two".to_string())
+        );
+        assert!(map.get("Second?").is_none());
+    }
+
+    #[test]
+    fn empty_keyed_answer_without_questions_is_kept_verbatim() {
+        // No questions to broadcast onto → keep the answer as-is rather than
+        // producing an empty map that drops it entirely.
+        let map = question_answers_map(&serde_json::json!({}), &[qa("", "추천대로 진행")]);
+        assert_eq!(
+            map[""],
+            serde_json::Value::String("추천대로 진행".to_string())
+        );
     }
 }

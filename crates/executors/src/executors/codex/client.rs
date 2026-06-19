@@ -1026,17 +1026,28 @@ fn answers_to_codex_format(
     questions: &[ToolRequestUserInputQuestion],
     answers: &HashMap<String, Vec<String>>,
 ) -> ToolRequestUserInputResponse {
+    // The UI keys each answer by its exact question text. A caller that cannot
+    // know the question text — the vibe auto-responder — instead sends a single
+    // answer under an empty key; honor that by applying the lone answer to every
+    // question. Exact-key matches always take precedence, so the normal UI path
+    // (one answer per question, correctly keyed) is unaffected.
+    let single_answer = (answers.len() == 1)
+        .then(|| answers.values().next())
+        .flatten();
     let codex_answers = questions
         .iter()
         .filter_map(|q| {
-            answers.get(&q.question).map(|answer_vec| {
-                (
-                    q.id.clone(),
-                    ToolRequestUserInputAnswer {
-                        answers: answer_vec.clone(),
-                    },
-                )
-            })
+            answers
+                .get(&q.question)
+                .or(single_answer)
+                .map(|answer_vec| {
+                    (
+                        q.id.clone(),
+                        ToolRequestUserInputAnswer {
+                            answers: answer_vec.clone(),
+                        },
+                    )
+                })
         })
         .collect();
 
@@ -1149,6 +1160,66 @@ mod tests {
                 assert_eq!(scope.as_deref(), Some("5h"));
             }
         }
+    }
+
+    fn question(id: &str, text: &str) -> ToolRequestUserInputQuestion {
+        ToolRequestUserInputQuestion {
+            id: id.to_string(),
+            header: String::new(),
+            question: text.to_string(),
+            is_other: false,
+            is_secret: false,
+            options: None,
+        }
+    }
+
+    #[test]
+    fn answers_resolve_by_exact_question_text() {
+        let questions = vec![question("q1", "Pick A or B?"), question("q2", "Confirm?")];
+        let answers = HashMap::from([
+            ("Pick A or B?".to_string(), vec!["A".to_string()]),
+            ("Confirm?".to_string(), vec!["yes".to_string()]),
+        ]);
+
+        let resp = answers_to_codex_format(&questions, &answers);
+        assert_eq!(resp.answers.len(), 2);
+        assert_eq!(resp.answers["q1"].answers, vec!["A".to_string()]);
+        assert_eq!(resp.answers["q2"].answers, vec!["yes".to_string()]);
+    }
+
+    #[test]
+    fn single_empty_keyed_answer_applies_to_every_question() {
+        // The vibe auto-responder can't know the question text, so it sends one
+        // answer under an empty key. It must reach every question instead of
+        // being dropped by the exact-key lookup (which would silently lose the
+        // automated "proceed" answer and stall the run).
+        let questions = vec![question("q1", "Pick A or B?"), question("q2", "Confirm?")];
+        let answers = HashMap::from([(String::new(), vec!["추천대로 진행".to_string()])]);
+
+        let resp = answers_to_codex_format(&questions, &answers);
+        assert_eq!(resp.answers.len(), 2);
+        assert_eq!(
+            resp.answers["q1"].answers,
+            vec!["추천대로 진행".to_string()]
+        );
+        assert_eq!(
+            resp.answers["q2"].answers,
+            vec!["추천대로 진행".to_string()]
+        );
+    }
+
+    #[test]
+    fn unmatched_answer_among_several_is_not_broadcast() {
+        // With more than one answer present we only honor exact matches; an
+        // unmatched key must not be cross-wired onto unrelated questions.
+        let questions = vec![question("q1", "Pick A or B?")];
+        let answers = HashMap::from([
+            ("wrong key".to_string(), vec!["A".to_string()]),
+            ("other key".to_string(), vec!["B".to_string()]),
+        ]);
+
+        let resp = answers_to_codex_format(&questions, &answers);
+        assert!(resp.answers.is_empty());
     }
 }
 

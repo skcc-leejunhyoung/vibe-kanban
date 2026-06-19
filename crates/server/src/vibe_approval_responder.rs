@@ -109,6 +109,13 @@ async fn tick(
 
 /// Build the auto-response: approve a tool/plan request, or answer a question
 /// with the "proceed with your recommendation" instruction. Pure.
+///
+/// The `question` key is intentionally empty: this watcher only has the pending
+/// approval's metadata (`ApprovalInfo` carries counts/ids, not the prompt's
+/// question text). The executors special-case a single empty-keyed answer by
+/// applying it to every question (see `answers_to_codex_format` and
+/// `question_answers_map`), so this lone "proceed" answer reaches each question
+/// instead of being dropped by their exact-question-text matching.
 fn auto_outcome(execution_process_id: Uuid, is_question: bool) -> ApprovalResponse {
     let status = if is_question {
         ApprovalOutcome::Answered {
