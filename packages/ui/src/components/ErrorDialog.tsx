@@ -34,7 +34,7 @@ const ErrorDialogImpl = NiceModal.create<ErrorDialogProps>((props) => {
     >
       <DialogContent
         className="sm:max-w-[425px] p-double"
-        style={{ zIndex: 10001 }}
+        wrapperZIndex={10001}
       >
         <DialogHeader>
           <div className="flex items-center gap-3">
