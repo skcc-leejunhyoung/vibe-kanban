@@ -7,6 +7,7 @@ pub mod routes;
 pub mod runtime;
 pub mod scheduled_resume_watcher;
 pub mod startup;
+pub mod vibe_approval_responder;
 
 // #[cfg(feature = "cloud")]
 // type DeploymentImpl = vibe_kanban_cloud::deployment::CloudDeployment;

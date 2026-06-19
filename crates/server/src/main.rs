@@ -102,6 +102,8 @@ async fn main() -> Result<(), VibeKanbanError> {
     // Background poller that resumes sessions at agent-scheduled wakeup times
     // (claude ScheduleWakeup / session_crons).
     server::scheduled_resume_watcher::spawn(deployment.clone());
+    // Background poller that auto-approves pending approvals for vibe sessions.
+    server::vibe_approval_responder::spawn(deployment.clone());
     let port = std::env::var("BACKEND_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()

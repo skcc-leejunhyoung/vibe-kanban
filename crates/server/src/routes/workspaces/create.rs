@@ -11,7 +11,8 @@ use db::models::{
     workspace::{CreateWorkspace, Workspace},
 };
 use deployment::Deployment;
-use services::services::{container::ContainerService, issue_gating};
+use executors::model_selector::PermissionPolicy;
+use services::services::{container::ContainerService, issue_gating, vibe_orchestrator, vibe_tags};
 use utils::response::ApiResponse;
 use uuid::Uuid;
 use workspace_manager::ManagedWorkspace;
@@ -304,7 +305,7 @@ pub async fn create_and_start_workspace(
         name,
         repos,
         linked_issue,
-        executor_config,
+        mut executor_config,
         prompt,
         attachment_ids,
     } = payload;
@@ -367,6 +368,25 @@ pub async fn create_and_start_workspace(
     }
 
     let workspace = managed_workspace.workspace.clone();
+
+    // If the linked issue carries the `vibe` tag, opt this run into the
+    // automated workflow: force permission_policy=Auto so approvals never block,
+    // and append the self-report instruction so the agent emits a `VIBE_RESULT:`
+    // sentinel the backend acts on. Applies to the deferred-spawn (blocker)
+    // path too, since the action below is built from these values.
+    if let Some(linked) = &linked_issue
+        && let Ok(client) = deployment.remote_client()
+        && vibe_tags::has_issue_tag_named(&client, linked.issue_id, vibe_orchestrator::TAG_VIBE)
+            .await
+            .unwrap_or(false)
+    {
+        executor_config.permission_policy = Some(PermissionPolicy::Auto);
+        workspace_prompt = vibe_orchestrator::with_coding_preamble(&workspace_prompt);
+        tracing::info!(
+            "vibe: enabled automated workflow for issue {}",
+            linked.issue_id
+        );
+    }
 
     // Blocker gating for the very first execution. When the linked issue has
     // unresolved blockers, build the full setup+coding-agent action chain and

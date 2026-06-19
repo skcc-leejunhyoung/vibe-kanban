@@ -23,7 +23,8 @@ use db::{
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
         scratch::{DraftFollowUpData, Scratch, ScratchType},
-        session::{Session, SessionError},
+        session::{CreateSession, Session, SessionError},
+        vibe_run::VibeRun,
         workspace::Workspace,
         workspace_repo::WorkspaceRepo,
     },
@@ -39,9 +40,11 @@ use executors::{
     env::{ExecutionEnv, RepoContext},
     executors::{BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal},
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
+    model_selector::PermissionPolicy,
+    profile::ExecutorConfig,
 };
 use futures::{FutureExt, TryStreamExt, stream::select};
-use git::GitService;
+use git::{GitService, GitServiceError};
 use serde_json::json;
 use services::services::{
     analytics::AnalyticsContext,
@@ -53,7 +56,12 @@ use services::services::{
     notification::NotificationService,
     queued_message::QueuedMessageService,
     remote_client::RemoteClient,
-    remote_sync,
+    remote_sync, vibe_orchestrator,
+    vibe_orchestrator::{
+        FinalizeInput, MergeOutcome, PostMergeAction, VibeAction, VibeBounds, VibePhase,
+        VibeResult, decide_after_merge, decide_finalize_action, parse_vibe_result,
+    },
+    vibe_tags,
 };
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::io::ReaderStream;
@@ -1086,7 +1094,7 @@ impl LocalContainerService {
 
                 // Manually finalize task since we're bypassing normal execution flow
                 self.finalize_task(ctx).await;
-                self.auto_merge_for_vibe_issue(ctx).await;
+                self.vibe_on_finalize(ctx).await;
                 already_finalized = true;
             }
         }
@@ -1129,7 +1137,7 @@ impl LocalContainerService {
                         tracing::error!("Failed to start queued follow-up: {}", e);
                         // Fall back to finalization if follow-up fails
                         self.finalize_task(ctx).await;
-                        self.auto_merge_for_vibe_issue(ctx).await;
+                        self.vibe_on_finalize(ctx).await;
                     } else {
                         started_queued_follow_up = true;
                     }
@@ -1141,11 +1149,11 @@ impl LocalContainerService {
                         ctx.execution_process.status
                     );
                     self.finalize_task(ctx).await;
-                    self.auto_merge_for_vibe_issue(ctx).await;
+                    self.vibe_on_finalize(ctx).await;
                 }
             } else {
                 self.finalize_task(ctx).await;
-                self.auto_merge_for_vibe_issue(ctx).await;
+                self.vibe_on_finalize(ctx).await;
             }
 
             let should_mark_turn_unseen = matches!(
@@ -1245,202 +1253,472 @@ impl LocalContainerService {
         .await
     }
 
-    /// If the workspace's linked issue carries the "vibe" tag, automatically merge each
-    /// qualifying repo into its target branch on successful execution completion. On any
-    /// merge failure, force the issue into "In review" so a human can intervene.
-    pub async fn auto_merge_for_vibe_issue(&self, ctx: &ExecutionContext) {
-        if !matches!(
-            ctx.execution_process.status,
-            ExecutionProcessStatus::Completed
+    /// Entry point for the automated `vibe` workflow, called at every terminal
+    /// finalize (replacing the old immediate auto-merge). Reads the persisted
+    /// per-workspace [`VibeRun`] state and the agent's `VIBE_RESULT:` self-report,
+    /// asks the functional core ([`decide_finalize_action`]) what to do, and
+    /// performs it. Non-vibe issues are a no-op.
+    pub async fn vibe_on_finalize(&self, ctx: &ExecutionContext) {
+        // Dev-server / archive completions never participate.
+        if matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::DevServer | ExecutionProcessRunReason::ArchiveScript
         ) {
             return;
         }
-        if ctx.workspace.task_id.is_none() {
+        let Some(task_id) = ctx.workspace.task_id else {
             return;
-        }
+        };
         let Some(client) = self.remote_client.clone() else {
             return;
         };
+        let workspace_id = ctx.workspace.id;
 
-        let workspace = ctx.workspace.clone();
-        let workspace_id = workspace.id;
-
+        // Gate: only engage for issues carrying the `vibe` tag.
         match client.auto_merge_check(workspace_id).await {
             Ok(true) => {}
             Ok(false) => return,
             Err(e) => {
-                tracing::warn!(
-                    "auto_merge_check failed for workspace {}: {}",
-                    workspace_id,
-                    e
-                );
+                tracing::warn!("vibe: auto_merge_check failed for {}: {}", workspace_id, e);
                 return;
             }
         }
 
+        let vibe_run = match VibeRun::get_or_create(&self.db.pool, workspace_id, task_id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("vibe: get_or_create failed for {}: {}", workspace_id, e);
+                return;
+            }
+        };
+        let phase = VibePhase::from_db_str(&vibe_run.phase).unwrap_or(VibePhase::Coding);
+        let session_is_review = vibe_run.review_session_id == Some(ctx.session.id);
+
+        let summary =
+            CodingAgentTurn::find_latest_summary_for_session(&self.db.pool, ctx.session.id)
+                .await
+                .unwrap_or(None);
+        let result = summary
+            .as_deref()
+            .map(parse_vibe_result)
+            .unwrap_or(VibeResult::None);
+
+        let input = FinalizeInput {
+            run_reason: ctx.execution_process.run_reason.clone(),
+            status: ctx.execution_process.status.clone(),
+            phase,
+            session_is_review,
+            result,
+            coding_turns: vibe_run.coding_turns as u32,
+            review_turns: vibe_run.review_turns as u32,
+            merge_retries: vibe_run.merge_retries as u32,
+            bounds: VibeBounds::default(),
+        };
+        let action = decide_finalize_action(&input);
+        tracing::info!(
+            "vibe: workspace {} phase={} result={:?} -> {:?}",
+            workspace_id,
+            phase.as_str(),
+            result,
+            action
+        );
+
+        if let Err(e) = self
+            .vibe_execute(ctx, &client, &vibe_run, phase, action)
+            .await
+        {
+            tracing::error!("vibe: failed to execute action for {}: {}", workspace_id, e);
+        }
+    }
+
+    /// Perform the decided [`VibeAction`] (the side-effecting half of the shell).
+    async fn vibe_execute(
+        &self,
+        ctx: &ExecutionContext,
+        client: &RemoteClient,
+        vibe_run: &VibeRun,
+        phase: VibePhase,
+        action: VibeAction,
+    ) -> Result<(), ContainerError> {
+        let pool = &self.db.pool;
+        let workspace_id = ctx.workspace.id;
+        let task_id = vibe_run.task_id;
+
+        match action {
+            VibeAction::Nothing => {}
+
+            VibeAction::CleanupFix => {
+                let log = self
+                    .vibe_cleanup_failure_log(ctx.execution_process.id)
+                    .await;
+                let body = vibe_orchestrator::cleanup_fix_prompt(&log);
+                let in_review = matches!(phase, VibePhase::Review | VibePhase::Merging);
+                let prompt = if in_review {
+                    let _ =
+                        VibeRun::set_review_turns(pool, workspace_id, vibe_run.review_turns + 1)
+                            .await;
+                    vibe_orchestrator::with_review_preamble(&body)
+                } else {
+                    let _ =
+                        VibeRun::set_coding_turns(pool, workspace_id, vibe_run.coding_turns + 1)
+                            .await;
+                    vibe_orchestrator::with_coding_preamble(&body)
+                };
+                self.vibe_send_followup(ctx, &prompt).await?;
+            }
+
+            VibeAction::ContinueCoding { turn } => {
+                let _ = VibeRun::set_coding_turns(pool, workspace_id, turn as i64).await;
+                let prompt =
+                    vibe_orchestrator::with_coding_preamble(vibe_orchestrator::PROMPT_CONTINUE);
+                self.vibe_send_followup(ctx, &prompt).await?;
+            }
+
+            VibeAction::StartReview => {
+                self.vibe_tag(client, task_id, vibe_orchestrator::TAG_DONE)
+                    .await;
+                let prompt =
+                    vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
+                self.vibe_start_review_session(ctx, &prompt).await?;
+            }
+
+            VibeAction::ReviewFollowup { turn } => {
+                let _ = VibeRun::set_review_turns(pool, workspace_id, turn as i64).await;
+                let prompt =
+                    vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_B);
+                self.vibe_send_followup(ctx, &prompt).await?;
+            }
+
+            VibeAction::Block { reason } => {
+                let _ = VibeRun::set_phase(pool, workspace_id, VibePhase::Blocked.as_str()).await;
+                self.vibe_tag(client, task_id, vibe_orchestrator::TAG_BLOCK)
+                    .await;
+                tracing::warn!("vibe: workspace {} blocked ({:?})", workspace_id, reason);
+            }
+
+            VibeAction::AttemptMerge { retry } => {
+                let _ = VibeRun::set_phase(pool, workspace_id, VibePhase::Merging.as_str()).await;
+                self.vibe_tag(client, task_id, vibe_orchestrator::TAG_APPROVE)
+                    .await;
+
+                let outcome = self.vibe_perform_merge(ctx).await;
+                match decide_after_merge(outcome, retry, &VibeBounds::default()) {
+                    PostMergeAction::MarkInReview => {
+                        if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
+                            tracing::warn!(
+                                "vibe: mark_for_review failed for {}: {}",
+                                workspace_id,
+                                e
+                            );
+                        }
+                        let _ =
+                            VibeRun::set_phase(pool, workspace_id, VibePhase::Done.as_str()).await;
+                        tracing::info!("vibe: workspace {} merged → In review", workspace_id);
+                    }
+                    PostMergeAction::ResolveConflict { retry } => {
+                        let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
+                        let prompt = vibe_orchestrator::with_review_preamble(
+                            vibe_orchestrator::PROMPT_CONFLICT,
+                        );
+                        self.vibe_send_followup(ctx, &prompt).await?;
+                    }
+                    PostMergeAction::Escalate => {
+                        if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
+                            tracing::warn!(
+                                "vibe: mark_for_review failed for {}: {}",
+                                workspace_id,
+                                e
+                            );
+                        }
+                        let _ = VibeRun::set_phase(pool, workspace_id, VibePhase::Blocked.as_str())
+                            .await;
+                        self.vibe_tag(client, task_id, vibe_orchestrator::TAG_BLOCK)
+                            .await;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Best-effort attach of a `vibe-*` tag (for human visibility only).
+    async fn vibe_tag(&self, client: &RemoteClient, issue_id: Uuid, name: &str) {
+        if let Err(e) = vibe_tags::add_issue_tag_by_name(client, issue_id, name).await {
+            tracing::warn!(
+                "vibe: failed to add tag '{}' to issue {}: {}",
+                name,
+                issue_id,
+                e
+            );
+        }
+    }
+
+    /// Collect a failed cleanup script's stdout/stderr (tail-capped) for pasting
+    /// into the fix prompt.
+    async fn vibe_cleanup_failure_log(&self, exec_id: Uuid) -> String {
+        let records = match ExecutionProcessLogs::find_by_execution_id(&self.db.pool, exec_id).await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("vibe: failed to load cleanup logs for {}: {}", exec_id, e);
+                return String::new();
+            }
+        };
+        let msgs = ExecutionProcessLogs::parse_logs(&records).unwrap_or_default();
+        let mut out = String::new();
+        for msg in &msgs {
+            if let LogMsg::Stdout(s) | LogMsg::Stderr(s) = msg {
+                out.push_str(s);
+                if !s.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
+        const MAX: usize = 4000;
+        if out.len() > MAX {
+            let mut start = out.len() - MAX;
+            while start < out.len() && !out.is_char_boundary(start) {
+                start += 1;
+            }
+            format!("...(생략)...\n{}", &out[start..])
+        } else {
+            out
+        }
+    }
+
+    /// Build the executor config for a backend-driven vibe turn: the session's
+    /// current profile with `permission_policy = Auto` so tool/plan approvals
+    /// never block the automated run.
+    async fn vibe_executor_config(&self, session_id: Uuid) -> Option<ExecutorConfig> {
+        let profile =
+            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, session_id)
+                .await
+                .ok()
+                .flatten()?;
+        let mut cfg = ExecutorConfig::from(profile);
+        cfg.permission_policy = Some(PermissionPolicy::Auto);
+        Some(cfg)
+    }
+
+    /// Send a backend-driven follow-up prompt into `ctx.session` (continue,
+    /// cleanup-fix, review B, conflict-resolve), chaining cleanup as usual.
+    async fn vibe_send_followup(
+        &self,
+        ctx: &ExecutionContext,
+        prompt: &str,
+    ) -> Result<(), ContainerError> {
+        let Some(executor_config) = self.vibe_executor_config(ctx.session.id).await else {
+            tracing::warn!(
+                "vibe: no executor profile for session {}, cannot send follow-up",
+                ctx.session.id
+            );
+            return Ok(());
+        };
+        let latest_session_info =
+            CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
+        let repos =
+            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
+        let cleanup_action = self.cleanup_actions_for_repos(&repos);
+        let working_dir = ctx
+            .session
+            .agent_working_dir
+            .as_ref()
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+
+        let action_type = if let Some(info) = latest_session_info {
+            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+                prompt: prompt.to_string(),
+                session_id: info.session_id,
+                reset_to_message_id: None,
+                executor_config,
+                working_dir,
+            })
+        } else {
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: prompt.to_string(),
+                executor_config,
+                working_dir,
+            })
+        };
+        let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
+        self.start_execution(
+            &ctx.workspace,
+            &ctx.session,
+            &action,
+            &ExecutionProcessRunReason::CodingAgent,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Rule 4: open a fresh review session in the same workspace and send the
+    /// review prompt. Records the review session on the run before spawning so
+    /// the next finalize recognizes it.
+    async fn vibe_start_review_session(
+        &self,
+        ctx: &ExecutionContext,
+        prompt: &str,
+    ) -> Result<(), ContainerError> {
+        let Some(executor_config) = self.vibe_executor_config(ctx.session.id).await else {
+            tracing::warn!(
+                "vibe: no executor profile for session {}, cannot start review",
+                ctx.session.id
+            );
+            return Ok(());
+        };
+
+        let session_id = Uuid::new_v4();
+        let create = CreateSession {
+            executor: Some(executor_config.executor.to_string()),
+            name: Some("vibe-review".to_string()),
+        };
+        let session = Session::create(&self.db.pool, &create, session_id, ctx.workspace.id).await?;
+
+        VibeRun::begin_review(&self.db.pool, ctx.workspace.id, session.id)
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
+
+        let working_dir = session
+            .agent_working_dir
+            .as_ref()
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+        let repos =
+            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
+        let cleanup_action = self.cleanup_actions_for_repos(&repos);
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: prompt.to_string(),
+                executor_config,
+                working_dir,
+            }),
+            cleanup_action.map(Box::new),
+        );
+        self.start_execution(
+            &ctx.workspace,
+            &session,
+            &action,
+            &ExecutionProcessRunReason::CodingAgent,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Rule 5: fast-forward merge each qualifying repo into its target branch,
+    /// classifying the outcome for [`decide_after_merge`]. Skips repos with an
+    /// open PR, a remote target, or an already-recorded direct merge.
+    async fn vibe_perform_merge(&self, ctx: &ExecutionContext) -> MergeOutcome {
+        let workspace = ctx.workspace.clone();
+        let workspace_id = workspace.id;
+
         let workspace_repos =
             match WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace_id).await {
                 Ok(v) if !v.is_empty() => v,
-                Ok(_) => return,
+                Ok(_) => return MergeOutcome::Success,
                 Err(e) => {
-                    tracing::error!(
-                        "auto_merge: failed to load workspace_repos for {}: {}",
-                        workspace_id,
-                        e
-                    );
-                    return;
+                    tracing::error!("vibe merge: load workspace_repos failed: {}", e);
+                    return MergeOutcome::OtherFailure;
                 }
             };
 
         let container_ref = match self.ensure_container_exists(&workspace).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!(
-                    "auto_merge: failed to ensure container for {}: {}",
-                    workspace_id,
-                    e
-                );
-                if let Err(err) = client.mark_workspace_issue_for_review(workspace_id).await {
-                    tracing::warn!(
-                        "auto_merge: failed to mark workspace {} for review: {}",
-                        workspace_id,
-                        err
-                    );
-                }
-                return;
+                tracing::error!("vibe merge: ensure container failed: {}", e);
+                return MergeOutcome::OtherFailure;
             }
         };
         let workspace_path = Path::new(&container_ref);
 
-        let mut any_success = false;
-        let mut any_failure = false;
+        let mut any_conflict = false;
+        let mut any_other_failure = false;
 
         for workspace_repo in &workspace_repos {
             let repo = match Repo::find_by_id(&self.db.pool, workspace_repo.repo_id).await {
                 Ok(Some(r)) => r,
                 Ok(None) => {
-                    tracing::warn!(
-                        "auto_merge: repo {} not found for workspace {}",
-                        workspace_repo.repo_id,
-                        workspace_id
-                    );
-                    any_failure = true;
+                    tracing::warn!("vibe merge: repo {} not found", workspace_repo.repo_id);
+                    any_other_failure = true;
                     continue;
                 }
                 Err(e) => {
-                    tracing::error!("auto_merge: failed to load repo: {}", e);
-                    any_failure = true;
+                    tracing::error!("vibe merge: load repo failed: {}", e);
+                    any_other_failure = true;
                     continue;
                 }
             };
 
-            let merges =
-                match Merge::find_by_workspace_and_repo_id(&self.db.pool, workspace_id, repo.id)
-                    .await
-                {
-                    Ok(m) => m,
-                    Err(e) => {
-                        tracing::error!(
-                            "auto_merge: failed to load merges for {}: {}",
-                            repo.name,
-                            e
-                        );
-                        any_failure = true;
-                        continue;
-                    }
-                };
-            let has_open_pr = merges.iter().any(
+            let merges = Merge::find_by_workspace_and_repo_id(&self.db.pool, workspace_id, repo.id)
+                .await
+                .unwrap_or_default();
+            if merges.iter().any(
                 |m| matches!(m, Merge::Pr(pr) if matches!(pr.pr_info.status, MergeStatus::Open)),
-            );
-            if has_open_pr {
-                tracing::info!(
-                    "auto_merge: skipping repo {} for workspace {} due to open PR",
-                    repo.name,
-                    workspace_id
-                );
+            ) {
+                continue;
+            }
+            // Idempotency: a direct merge already recorded → nothing more to do.
+            if merges.iter().any(|m| matches!(m, Merge::Direct(_))) {
                 continue;
             }
 
-            let is_target_remote = match self
+            match self
                 .git
                 .is_remote_branch(&repo.path, &workspace_repo.target_branch)
             {
-                Ok(v) => v,
+                Ok(true) => continue, // remote target needs a PR
+                Ok(false) => {}
                 Err(e) => {
                     tracing::error!(
-                        "auto_merge: is_remote_branch failed for {}: {}",
+                        "vibe merge: is_remote_branch failed for {}: {}",
                         repo.name,
                         e
                     );
-                    any_failure = true;
+                    any_other_failure = true;
                     continue;
                 }
-            };
-            if is_target_remote {
-                tracing::info!(
-                    "auto_merge: skipping repo {} for workspace {} (remote target)",
-                    repo.name,
-                    workspace_id
-                );
-                continue;
             }
 
             let worktree_path = workspace_path.join(&repo.name);
-            let merge_commit_id = match self.git.merge_changes(
+            match self.git.merge_changes(
                 &repo.path,
                 &worktree_path,
                 &workspace.branch,
                 &workspace_repo.target_branch,
             ) {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(
-                        "auto_merge: merge_changes failed for repo {}: {}",
-                        repo.name,
-                        e
-                    );
-                    any_failure = true;
-                    continue;
+                Ok(merge_commit_id) => {
+                    if let Err(e) = Merge::create_direct(
+                        &self.db.pool,
+                        workspace_id,
+                        repo.id,
+                        &workspace_repo.target_branch,
+                        &merge_commit_id,
+                    )
+                    .await
+                    {
+                        tracing::error!("vibe merge: record merge failed for {}: {}", repo.name, e);
+                        any_other_failure = true;
+                    }
                 }
-            };
-
-            if let Err(e) = Merge::create_direct(
-                &self.db.pool,
-                workspace_id,
-                repo.id,
-                &workspace_repo.target_branch,
-                &merge_commit_id,
-            )
-            .await
-            {
-                tracing::error!(
-                    "auto_merge: failed to record merge for {}: {}",
-                    repo.name,
-                    e
-                );
-                any_failure = true;
-                continue;
+                Err(GitServiceError::MergeConflicts { .. })
+                | Err(GitServiceError::BranchesDiverged(_)) => {
+                    tracing::warn!("vibe merge: conflict merging {}", repo.name);
+                    any_conflict = true;
+                }
+                Err(e) => {
+                    tracing::warn!("vibe merge: merge_changes failed for {}: {}", repo.name, e);
+                    any_other_failure = true;
+                }
             }
-
-            any_success = true;
         }
 
-        if any_failure {
-            if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
-                tracing::warn!(
-                    "auto_merge: failed to mark workspace {} for review: {}",
-                    workspace_id,
-                    e
-                );
-            }
-            return;
+        if any_conflict {
+            MergeOutcome::Conflict
+        } else if any_other_failure {
+            MergeOutcome::OtherFailure
+        } else {
+            MergeOutcome::Success
         }
-
-        if !any_success {
-            return;
-        }
-
-        remote_sync::sync_local_workspace_merge_to_remote(&client, workspace_id).await;
     }
 }
 
