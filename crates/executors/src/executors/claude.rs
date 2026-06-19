@@ -3133,6 +3133,144 @@ mod tests {
         );
     }
 
+    // ===================================================================
+    // EXPERIMENTS for log [3]: no thinking, text streamed at index 0, the
+    // full `assistant` message arriving BEFORE content_block_stop. Goal:
+    // find empirically which orderings/ids actually duplicate the response.
+    // ===================================================================
+
+    /// Count ALL assistant-message entries regardless of their text, so an
+    /// extra copy with even slightly different content still shows up.
+    fn count_all_assistant_entries(lines: &[&str]) -> usize {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        let mut final_by_index: std::collections::BTreeMap<usize, NormalizedEntry> =
+            Default::default();
+        for line in lines {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            let patches = processor.normalize_entries(&parsed, "", &provider);
+            for patch in &patches {
+                if let Some((idx, entry)) = extract_normalized_entry_from_patch(patch) {
+                    final_by_index.insert(idx, entry);
+                }
+            }
+        }
+        final_by_index
+            .values()
+            .filter(|e| matches!(e.entry_type, NormalizedEntryType::AssistantMessage))
+            .count()
+    }
+
+    const ASSISTANT_DIFF_ID: &str = r#"{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Hello world"}]}}"#;
+    const ASSISTANT_NO_ID: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]}}"#;
+    const MSG_DELTA_END: &str = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":839}}}"#;
+    const RESULT_TRAILING_NL: &str =
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world\n"}"#;
+
+    /// EXP-1: exact log [3] event order (assistant BEFORE content_block_stop,
+    /// text at index 0, no thinking, message_delta + result tail). Baseline.
+    #[test]
+    fn exp1_log3_exact_order() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            ASSISTANT_FULL,
+            CB_STOP,
+            MSG_DELTA_END,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        let by_text = count_assistant_entries_with(&lines, "Hello world");
+        let total = count_all_assistant_entries(&lines);
+        assert_eq!(by_text, 1, "EXP-1 by_text count (expect 1)");
+        assert_eq!(total, 1, "EXP-1 total assistant entries (expect 1)");
+    }
+
+    /// EXP-2: streaming message_start id != final assistant id. The assistant
+    /// handler's `streaming_messages.remove(id)` misses, so the streamed entry
+    /// is orphaned and a fresh one is added -> duplicate. Asserts the DESIRED
+    /// behavior (1); currently produces 2, so it is a ready regression test.
+    #[ignore = "BUG (unfixed): streaming message_start id != assistant id renders the response twice"]
+    #[test]
+    fn exp2_streaming_id_mismatch() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            CB_STOP,
+            ASSISTANT_DIFF_ID,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        let total = count_all_assistant_entries(&lines);
+        assert_eq!(total, 1, "EXP-2 total assistant entries (id mismatch)");
+    }
+
+    /// EXP-3: final assistant message has NO id at all, so it can never match a
+    /// streamed state -> duplicate. (Ruled out for log [3], whose assistant
+    /// message DOES carry an id, but a real fragility worth guarding.)
+    #[ignore = "BUG (unfixed): assistant message without an id renders the response twice"]
+    #[test]
+    fn exp3_assistant_without_id() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            CB_STOP,
+            ASSISTANT_NO_ID,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        let total = count_all_assistant_entries(&lines);
+        assert_eq!(total, 1, "EXP-3 total assistant entries (assistant no id)");
+    }
+
+    /// EXP-4: result text differs from the streamed/assistant text by a single
+    /// trailing newline, so `last_assistant_message.contains(result)` fails and
+    /// the Result handler appends a SECOND assistant bubble. The most likely
+    /// remaining cause of a no-thinking duplicate like log [3].
+    #[ignore = "BUG (unfixed): result text whitespace mismatch appends a duplicate via the Result fallback"]
+    #[test]
+    fn exp4_result_text_trailing_newline_mismatch() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            ASSISTANT_FULL,
+            CB_STOP,
+            MSG_DELTA_END,
+            MSG_STOP,
+            RESULT_TRAILING_NL,
+        ];
+        let total = count_all_assistant_entries(&lines);
+        assert_eq!(
+            total, 1,
+            "EXP-4 total assistant entries (result trailing newline)"
+        );
+    }
+
+    /// EXP-5: NO message_start before the deltas (streaming_message_id never
+    /// set). Deltas are dropped; only the final assistant message renders.
+    #[test]
+    fn exp5_no_message_start() {
+        let lines = [
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            ASSISTANT_FULL,
+            CB_STOP,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        let total = count_all_assistant_entries(&lines);
+        assert_eq!(total, 1, "EXP-5 total assistant entries (no message_start)");
+    }
+
     #[test]
     fn test_thinking_content() {
         let thinking_json = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this..."}]}}"#;
