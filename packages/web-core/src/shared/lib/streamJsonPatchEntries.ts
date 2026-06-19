@@ -14,7 +14,24 @@ export interface StreamOptions<E = unknown> {
   onError?: (err: unknown) => void;
   /** called once when a "finished" event is received */
   onFinished?: (entries: E[]) => void;
+  /**
+   * Abandon a socket that hasn't fired `open` within this many ms and retry.
+   *
+   * Standalone (WebKit) PWAs that get suspended/resumed can leave a WebSocket
+   * stuck in CONNECTING with no `open`/`error`/`close` event ever firing. The
+   * browser's own connect timeout is ~60s+, which surfaces to the user as an
+   * indefinite loading spinner — so we time it out ourselves.
+   */
+  connectTimeoutMs?: number;
+  /**
+   * Maximum (re)connection attempts before giving up and calling `onError`.
+   * Covers both stalled connects and drops that happen before `finished`.
+   */
+  maxRetries?: number;
 }
+
+const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const DEFAULT_MAX_RETRIES = 5;
 
 interface StreamController<E = unknown> {
   /** Current entries array (immutable snapshot) */
@@ -43,9 +60,20 @@ export function streamJsonPatchEntries<E = unknown>(
   url: string,
   opts: StreamOptions<E> = {}
 ): StreamController<E> {
+  const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+  const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+
   let connected = false;
   let closed = false;
+  let finished = false;
+  let attempt = 0;
+  // Bumps on every (re)connect and whenever a socket is abandoned. Listeners
+  // capture the generation they were created under and ignore events from a
+  // stale/zombie socket, so a connection we gave up on can never resurface.
+  let generation = 0;
   let ws: WebSocket | null = null;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let snapshot: PatchContainer<E> = structuredClone(
     opts.initial ?? ({ entries: [] } as PatchContainer<E>)
   );
@@ -80,6 +108,59 @@ export function streamJsonPatchEntries<E = unknown>(
     notify();
   };
 
+  const clearConnectTimer = () => {
+    if (connectTimer !== null) {
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    }
+  };
+
+  const clearRetryTimer = () => {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const cancelRaf = () => {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  };
+
+  // Terminal failure: stop everything and surface the error once.
+  const fail = (err: unknown) => {
+    if (closed || finished) return;
+    closed = true;
+    clearConnectTimer();
+    clearRetryTimer();
+    cancelRaf();
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+      ws = null;
+    }
+    opts.onError?.(err);
+  };
+
+  const scheduleRetry = (reason: unknown) => {
+    if (closed || finished) return;
+    if (attempt >= maxRetries) {
+      fail(reason);
+      return;
+    }
+    attempt += 1;
+    const delay = Math.min(8000, 500 * 2 ** (attempt - 1));
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      connect();
+    }, delay);
+  };
+
   const handleMessage = (event: MessageEvent) => {
     try {
       const msg = JSON.parse(event.data);
@@ -95,53 +176,104 @@ export function streamJsonPatchEntries<E = unknown>(
 
       // Handle Finished messages — flush synchronously before closing
       if (msg.finished !== undefined) {
+        finished = true;
+        clearConnectTimer();
+        clearRetryTimer();
         if (rafId !== null) {
           cancelAnimationFrame(rafId);
         }
         flush();
         opts.onFinished?.(snapshot.entries);
-        ws?.close();
+        if (ws) {
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+          ws = null;
+        }
       }
     } catch (err) {
-      opts.onError?.(err);
+      fail(err);
     }
   };
 
-  void (async () => {
-    try {
-      const opened = await openLocalApiWebSocket(url);
+  function connect() {
+    if (closed || finished) return;
+    const myGen = ++generation;
+    connected = false;
 
-      if (closed) {
-        opened.close();
-        return;
-      }
-
-      ws = opened;
-      ws.addEventListener('open', () => {
-        connected = true;
-        opts.onConnect?.();
-      });
-
-      ws.addEventListener('message', handleMessage);
-
-      ws.addEventListener('error', (err) => {
-        connected = false;
-        opts.onError?.(err);
-      });
-
-      ws.addEventListener('close', () => {
-        connected = false;
-        if (rafId !== null) {
-          cancelAnimationFrame(rafId);
-          rafId = null;
+    // Connect watchdog: if the socket never opens, abandon it and retry rather
+    // than letting the caller wait on the browser's multi-minute timeout.
+    connectTimer = setTimeout(() => {
+      connectTimer = null;
+      if (closed || finished || myGen !== generation) return;
+      // Abandon this attempt: bumping the generation makes the in-flight
+      // open()/listeners no-op even if the zombie later fires events.
+      generation += 1;
+      const stalled = ws;
+      ws = null;
+      if (stalled) {
+        try {
+          stalled.close();
+        } catch {
+          /* ignore */
         }
-      });
-    } catch (error) {
-      if (!closed) {
-        opts.onError?.(error);
       }
-    }
-  })();
+      scheduleRetry(new Error('WebSocket connect timeout'));
+    }, connectTimeoutMs);
+
+    void (async () => {
+      try {
+        const opened = await openLocalApiWebSocket(url);
+
+        if (closed || finished || myGen !== generation) {
+          opened.close();
+          return;
+        }
+
+        ws = opened;
+
+        opened.addEventListener('open', () => {
+          if (myGen !== generation) return;
+          connected = true;
+          clearConnectTimer();
+          // A successful open resets the retry budget so a later drop still
+          // gets its full set of reconnection attempts.
+          attempt = 0;
+          opts.onConnect?.();
+        });
+
+        opened.addEventListener('message', (event) => {
+          if (myGen !== generation) return;
+          handleMessage(event as MessageEvent);
+        });
+
+        opened.addEventListener('error', () => {
+          if (myGen !== generation) return;
+          // Let 'close' (which always follows) drive the retry logic.
+          connected = false;
+        });
+
+        opened.addEventListener('close', () => {
+          if (myGen !== generation) return;
+          connected = false;
+          cancelRaf();
+          if (closed || finished) return;
+          // Closed before we saw "finished" — treat as a drop and reconnect.
+          clearConnectTimer();
+          ws = null;
+          scheduleRetry(new Error('WebSocket closed before finish'));
+        });
+      } catch (error) {
+        if (closed || finished || myGen !== generation) return;
+        clearConnectTimer();
+        scheduleRetry(error);
+      }
+    })();
+  }
+
+  connect();
 
   return {
     getEntries(): E[] {
@@ -161,11 +293,19 @@ export function streamJsonPatchEntries<E = unknown>(
     },
     close(): void {
       closed = true;
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
+      // Abandon any in-flight connection attempt.
+      generation += 1;
+      clearConnectTimer();
+      clearRetryTimer();
+      cancelRaf();
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        ws = null;
       }
-      ws?.close();
       subscribers.clear();
       connected = false;
     },

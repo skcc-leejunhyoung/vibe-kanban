@@ -9,6 +9,11 @@ type WsReadyMsg = { Ready: true };
 type WsFinishedMsg = { finished: boolean };
 type WsMsg = WsJsonPatchMsg | WsReadyMsg | WsFinishedMsg;
 
+// Abandon a socket stuck in CONNECTING after this long and reconnect. WebKit
+// standalone PWAs that are suspended/resumed can leave a WebSocket that never
+// fires open/error/close; without this the loading spinner is indefinite.
+const CONNECT_TIMEOUT_MS = 10_000;
+
 interface UseJsonPatchStreamOptions<T> {
   /**
    * Called once when the stream starts to inject initial data
@@ -47,9 +52,28 @@ export const useJsonPatchWsStream = <T extends object>(
   const retryAttemptsRef = useRef<number>(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const finishedRef = useRef<boolean>(false);
+  const connectWatchdogRef = useRef<number | null>(null);
+  // Mirrors of the connection state, read by the resume handler without making
+  // it a dependency (which would re-bind listeners on every status change).
+  const isConnectedRef = useRef<boolean>(false);
+  const isInitializedRef = useRef<boolean>(false);
 
   const injectInitialEntry = options?.injectInitialEntry;
   const deduplicatePatches = options?.deduplicatePatches;
+
+  useEffect(() => {
+    isConnectedRef.current = isConnected;
+  }, [isConnected]);
+  useEffect(() => {
+    isInitializedRef.current = isInitialized;
+  }, [isInitialized]);
+
+  function clearConnectWatchdog() {
+    if (connectWatchdogRef.current) {
+      window.clearTimeout(connectWatchdogRef.current);
+      connectWatchdogRef.current = null;
+    }
+  }
 
   function scheduleReconnect() {
     if (retryTimerRef.current) return; // already scheduled
@@ -69,6 +93,7 @@ export const useJsonPatchWsStream = <T extends object>(
         wsRef.current.close();
         wsRef.current = null;
       }
+      clearConnectWatchdog();
       if (retryTimerRef.current) {
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
@@ -110,6 +135,7 @@ export const useJsonPatchWsStream = <T extends object>(
           }
 
           ws.onopen = () => {
+            clearConnectWatchdog();
             setError(null);
             setIsConnected(true);
             // Reset backoff on successful connection
@@ -154,6 +180,7 @@ export const useJsonPatchWsStream = <T extends object>(
               // Treat finished as terminal - do NOT reconnect
               if ('finished' in msg) {
                 finishedRef.current = true;
+                clearConnectWatchdog();
                 ws.close(1000, 'finished');
                 wsRef.current = null;
                 setIsConnected(false);
@@ -171,6 +198,7 @@ export const useJsonPatchWsStream = <T extends object>(
           };
 
           ws.onclose = (evt) => {
+            clearConnectWatchdog();
             setIsConnected(false);
             wsRef.current = null;
 
@@ -193,6 +221,33 @@ export const useJsonPatchWsStream = <T extends object>(
           };
 
           wsRef.current = ws;
+
+          // Connect watchdog: if the socket never reaches OPEN, abandon it and
+          // reconnect instead of waiting on the browser's multi-minute timeout.
+          clearConnectWatchdog();
+          connectWatchdogRef.current = window.setTimeout(() => {
+            connectWatchdogRef.current = null;
+            if (cancelled || finishedRef.current) return;
+            if (ws.readyState === WebSocket.OPEN) return;
+
+            // Detach handlers so the zombie socket can't fire later, then drop
+            // and reconnect through the normal backoff path.
+            ws.onopen = null;
+            ws.onmessage = null;
+            ws.onerror = null;
+            ws.onclose = null;
+            try {
+              ws.close();
+            } catch {
+              /* ignore */
+            }
+            if (wsRef.current === ws) {
+              wsRef.current = null;
+            }
+            setIsConnected(false);
+            retryAttemptsRef.current += 1;
+            scheduleReconnect();
+          }, CONNECT_TIMEOUT_MS);
         } catch (error) {
           if (cancelled) {
             return;
@@ -207,6 +262,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
     return () => {
       cancelled = true;
+      clearConnectWatchdog();
       if (wsRef.current) {
         const ws = wsRef.current;
 
@@ -237,6 +293,59 @@ export const useJsonPatchWsStream = <T extends object>(
     deduplicatePatches,
     retryNonce,
   ]);
+
+  // When a suspended PWA is resumed (tab visible again / back online), a
+  // not-yet-connected stream may be sitting on a dead socket whose close event
+  // never fired. Force an immediate reconnect so the conversation loads without
+  // the user having to switch workspaces or refresh.
+  useEffect(() => {
+    if (!enabled || !endpoint) return;
+    if (typeof document === 'undefined') return;
+
+    const onResume = (evt?: Event) => {
+      // `pageshow` also fires on the initial load; only treat bfcache restores
+      // as a resume so we don't churn the first connection.
+      if (evt?.type === 'pageshow' && !(evt as PageTransitionEvent).persisted) {
+        return;
+      }
+      if (finishedRef.current) return;
+      if (document.visibilityState !== 'visible') return;
+      // Already healthy → nothing to do.
+      if (isConnectedRef.current && isInitializedRef.current) return;
+
+      retryAttemptsRef.current = 0;
+      if (retryTimerRef.current) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      // Drop any stalled socket so the main effect opens a fresh one.
+      clearConnectWatchdog();
+      if (wsRef.current) {
+        const ws = wsRef.current;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        wsRef.current = null;
+      }
+      setIsConnected(false);
+      setRetryNonce((n) => n + 1);
+    };
+
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('online', onResume);
+    window.addEventListener('pageshow', onResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('online', onResume);
+      window.removeEventListener('pageshow', onResume);
+    };
+  }, [enabled, endpoint]);
 
   const isInitializedForCurrentEndpoint =
     isInitialized && initializedForEndpointRef.current === endpoint;
