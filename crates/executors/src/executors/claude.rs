@@ -1435,7 +1435,23 @@ impl ClaudeLogProcessor {
                 let streaming_message_state = message
                     .id
                     .as_ref()
-                    .and_then(|id| self.streaming_messages.remove(id));
+                    .and_then(|id| self.streaming_messages.remove(id))
+                    .or_else(|| {
+                        // The final `assistant` id didn't match any streamed
+                        // `message_start` id (or the message carries no id at all).
+                        // Claude streams one message at a time, so when exactly ONE
+                        // streamed message is still unconsumed it must be this one —
+                        // reuse it instead of orphaning the streamed entry (which
+                        // would render the whole response twice). Stay conservative:
+                        // with 0 or 2+ pending states we can't safely guess, so fall
+                        // through and let a fresh entry be allocated.
+                        if self.streaming_messages.len() == 1 {
+                            let key = self.streaming_messages.keys().next().cloned();
+                            key.and_then(|k| self.streaming_messages.remove(&k))
+                        } else {
+                            None
+                        }
+                    });
 
                 // Reuse the entry indices allocated while streaming so the final
                 // non-partial `assistant` message REPLACES what was already rendered
@@ -3206,11 +3222,9 @@ mod tests {
         assert_eq!(total, 1, "EXP-1 total assistant entries (expect 1)");
     }
 
-    /// EXP-2: streaming message_start id != final assistant id. The assistant
-    /// handler's `streaming_messages.remove(id)` misses, so the streamed entry
-    /// is orphaned and a fresh one is added -> duplicate. Asserts the DESIRED
-    /// behavior (1); currently produces 2, so it is a ready regression test.
-    #[ignore = "BUG (unfixed): streaming message_start id != assistant id renders the response twice"]
+    /// EXP-2 (FIXED): streaming message_start id != final assistant id. The id
+    /// lookup misses, but the single-unconsumed-streaming-state fallback reuses
+    /// the streamed entry instead of orphaning it, so the response renders once.
     #[test]
     fn exp2_streaming_id_mismatch() {
         let lines = [
@@ -3227,10 +3241,10 @@ mod tests {
         assert_eq!(total, 1, "EXP-2 total assistant entries (id mismatch)");
     }
 
-    /// EXP-3: final assistant message has NO id at all, so it can never match a
-    /// streamed state -> duplicate. (Ruled out for log [3], whose assistant
-    /// message DOES carry an id, but a real fragility worth guarding.)
-    #[ignore = "BUG (unfixed): assistant message without an id renders the response twice"]
+    /// EXP-3 (FIXED): final assistant message has NO id at all, so the id lookup
+    /// can never match. The single-unconsumed-streaming-state fallback reuses the
+    /// streamed entry, so the response renders once. (Not log [3]'s cause — its
+    /// assistant message DID carry an id — but a real fragility now guarded.)
     #[test]
     fn exp3_assistant_without_id() {
         let lines = [
