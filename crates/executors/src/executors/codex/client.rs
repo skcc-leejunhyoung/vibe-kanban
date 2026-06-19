@@ -1031,9 +1031,16 @@ fn answers_to_codex_format(
     // answer under an empty key; honor that by applying the lone answer to every
     // question. Exact-key matches always take precedence, so the normal UI path
     // (one answer per question, correctly keyed) is unaffected.
+    //
+    // Only broadcast when the lone answer's key matches NO question (the empty
+    // vibe key, or any otherwise-unmatched key). A correctly-keyed single answer
+    // must not leak onto the other, unanswered questions — mirrors the
+    // claude-side `question_answers_map` `single_unmatched` guard.
     let single_answer = (answers.len() == 1)
-        .then(|| answers.values().next())
-        .flatten();
+        .then(|| answers.iter().next())
+        .flatten()
+        .filter(|(key, _)| !questions.iter().any(|q| &q.question == *key))
+        .map(|(_, val)| val);
     let codex_answers = questions
         .iter()
         .filter_map(|q| {
@@ -1220,6 +1227,21 @@ mod tests {
 
         let resp = answers_to_codex_format(&questions, &answers);
         assert!(resp.answers.is_empty());
+    }
+
+    #[test]
+    fn single_matched_keyed_answer_is_not_broadcast_to_others() {
+        // A lone answer whose key exactly matches one question must answer ONLY
+        // that question — it must not leak onto the other, unanswered questions.
+        // The broadcast path is reserved for the vibe auto-responder's empty /
+        // unmatched key; a correctly-keyed partial answer is not broadcast.
+        let questions = vec![question("q1", "Pick A or B?"), question("q2", "Confirm?")];
+        let answers = HashMap::from([("Pick A or B?".to_string(), vec!["A".to_string()])]);
+
+        let resp = answers_to_codex_format(&questions, &answers);
+        assert_eq!(resp.answers.len(), 1);
+        assert_eq!(resp.answers["q1"].answers, vec!["A".to_string()]);
+        assert!(!resp.answers.contains_key("q2"));
     }
 }
 

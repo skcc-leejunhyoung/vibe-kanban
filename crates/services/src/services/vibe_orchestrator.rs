@@ -300,7 +300,11 @@ pub fn parse_vibe_result(text: &str) -> VibeResult {
                 return res;
             }
         }
-        return VibeResult::None;
+        // This line mentions the marker but carries no recognized status — e.g. a
+        // recap line like "Note: emitted VIBE_RESULT above". Keep scanning upward
+        // instead of giving up, so a genuine sentinel printed earlier still wins
+        // rather than being shadowed by a later bare mention.
+        continue;
     }
     VibeResult::None
 }
@@ -491,6 +495,17 @@ mod tests {
         let msg = "First I considered VIBE_RESULT: continue\n\
                    ...but actually everything is finished.\n\
                    VIBE_RESULT: done";
+        assert_eq!(parse_vibe_result(msg), VibeResult::Done);
+    }
+
+    #[test]
+    fn bare_marker_mention_below_does_not_shadow_real_sentinel() {
+        // The bottom-most marker match is a recap line with no recognized status
+        // ("...VIBE_RESULT above"); it must NOT shadow the genuine sentinel
+        // printed earlier. The parser keeps scanning upward rather than giving
+        // up at the first match.
+        let msg = "VIBE_RESULT: done\n\
+                   Note: emitted VIBE_RESULT above as instructed.";
         assert_eq!(parse_vibe_result(msg), VibeResult::Done);
     }
 

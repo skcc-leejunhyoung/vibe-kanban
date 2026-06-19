@@ -1311,20 +1311,40 @@ impl LocalContainerService {
 
         // Create the run (after a one-time remote vibe-check) only if it doesn't
         // exist yet; thereafter just update the token.
-        let exists = matches!(
-            VibeRun::find_by_workspace_id(&self.db.pool, workspace_id).await,
-            Ok(Some(_))
-        );
-        if !exists {
-            let Some(client) = self.remote_client.clone() else {
-                return;
-            };
-            if !matches!(client.auto_merge_check(workspace_id).await, Ok(true)) {
-                return;
+        match VibeRun::find_by_workspace_id(&self.db.pool, workspace_id).await {
+            Ok(Some(run)) => {
+                // During review/merging, only the dedicated review session's
+                // sentinel is authoritative. A late or duplicate completion from
+                // the original coding session (also run_reason CodingAgent) must
+                // NOT overwrite the review verdict — otherwise a stale coding
+                // `done` could mask the review session's `approve` and stall the
+                // merge. Mirrors `session_is_review` in `vibe_on_finalize`.
+                let phase = VibePhase::from_db_str(&run.phase).unwrap_or(VibePhase::Coding);
+                if matches!(phase, VibePhase::Review | VibePhase::Merging)
+                    && run.review_session_id != Some(ctx.session.id)
+                {
+                    return;
+                }
             }
-            if let Err(e) = VibeRun::get_or_create(&self.db.pool, workspace_id, task_id).await {
+            Ok(None) => {
+                let Some(client) = self.remote_client.clone() else {
+                    return;
+                };
+                if !matches!(client.auto_merge_check(workspace_id).await, Ok(true)) {
+                    return;
+                }
+                if let Err(e) = VibeRun::get_or_create(&self.db.pool, workspace_id, task_id).await {
+                    tracing::error!(
+                        "vibe: get_or_create (capture) failed for {}: {}",
+                        workspace_id,
+                        e
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
                 tracing::error!(
-                    "vibe: get_or_create (capture) failed for {}: {}",
+                    "vibe: find_by_workspace_id (capture) failed for {}: {}",
                     workspace_id,
                     e
                 );
@@ -1661,8 +1681,9 @@ impl LocalContainerService {
     }
 
     /// Rule 4: open a fresh review session in the same workspace and send the
-    /// review prompt. Records the review session on the run before spawning so
-    /// the next finalize recognizes it.
+    /// review prompt. Records the review session on the run only after the
+    /// execution actually starts, so a spawn failure doesn't strand the run in
+    /// the `review` phase pointing at a session that never ran.
     async fn vibe_start_review_session(
         &self,
         ctx: &ExecutionContext,
@@ -1683,10 +1704,6 @@ impl LocalContainerService {
             name: Some("vibe-review".to_string()),
         };
         let session = Session::create(&self.db.pool, &create, session_id, ctx.workspace.id).await?;
-
-        VibeRun::begin_review(&self.db.pool, ctx.workspace.id, session.id)
-            .await
-            .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
 
         let working_dir = session
             .agent_working_dir
@@ -1711,6 +1728,16 @@ impl LocalContainerService {
             &ExecutionProcessRunReason::CodingAgent,
         )
         .await?;
+
+        // Record the review session only AFTER the execution actually started:
+        // the `?` above propagates a spawn failure before any phase change, so
+        // the run stays in its prior `coding` phase and the next finalize retries
+        // StartReview — instead of being stranded in `review` pointing at a
+        // session that never ran (previously recoverable only by the 15-minute
+        // orphan watcher).
+        VibeRun::begin_review(&self.db.pool, ctx.workspace.id, session.id)
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
         Ok(())
     }
 
