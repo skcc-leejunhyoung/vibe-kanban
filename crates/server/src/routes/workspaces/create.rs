@@ -376,16 +376,31 @@ pub async fn create_and_start_workspace(
     // path too, since the action below is built from these values.
     if let Some(linked) = &linked_issue
         && let Ok(client) = deployment.remote_client()
-        && vibe_tags::has_issue_tag_named(&client, linked.issue_id, vibe_orchestrator::TAG_VIBE)
-            .await
-            .unwrap_or(false)
     {
-        executor_config.permission_policy = Some(PermissionPolicy::Auto);
-        workspace_prompt = vibe_orchestrator::with_coding_preamble(&workspace_prompt);
-        tracing::info!(
-            "vibe: enabled automated workflow for issue {}",
-            linked.issue_id
-        );
+        match vibe_tags::has_issue_tag_named(&client, linked.issue_id, vibe_orchestrator::TAG_VIBE)
+            .await
+        {
+            Ok(true) => {
+                executor_config.permission_policy = Some(PermissionPolicy::Auto);
+                workspace_prompt = vibe_orchestrator::with_coding_preamble(&workspace_prompt);
+                tracing::info!(
+                    "vibe: enabled automated workflow for issue {}",
+                    linked.issue_id
+                );
+            }
+            Ok(false) => {}
+            // Distinguish "not a vibe issue" from "couldn't determine": swallowing
+            // the error would silently spawn a genuine vibe issue as an ordinary
+            // one-shot session (no preamble, no Auto policy), so the workflow
+            // would never engage or recover. Surface it instead.
+            Err(e) => {
+                tracing::warn!(
+                    "vibe: could not determine vibe tag for issue {} ({e}); \
+                     spawning as a non-vibe session",
+                    linked.issue_id
+                );
+            }
+        }
     }
 
     // Blocker gating for the very first execution. When the linked issue has

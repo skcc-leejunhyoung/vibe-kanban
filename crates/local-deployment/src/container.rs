@@ -1386,16 +1386,16 @@ impl LocalContainerService {
         let phase = VibePhase::from_db_str(&vibe_run.phase).unwrap_or(VibePhase::Coding);
         let session_is_review = vibe_run.review_session_id == Some(ctx.session.id);
 
-        // Consume the sentinel captured (untruncated) at coding completion, then
-        // clear it so a later turn with no sentinel falls back to the default.
+        // Read the sentinel captured (untruncated) at coding completion to drive
+        // the decision. It is consumed (cleared) only AFTER the action succeeds
+        // (below), so a failed action leaves the token in place for the next
+        // finalize to retry — rather than silently losing a `done`/`approve`
+        // self-report and falling back to the wrong default on the next turn.
         let result = vibe_run
             .last_result
             .as_deref()
             .map(VibeResult::from_token)
             .unwrap_or(VibeResult::None);
-        if vibe_run.last_result.is_some() {
-            let _ = VibeRun::set_last_result(&self.db.pool, workspace_id, None).await;
-        }
 
         let input = FinalizeInput {
             run_reason: ctx.execution_process.run_reason.clone(),
@@ -1417,11 +1417,21 @@ impl LocalContainerService {
             action
         );
 
-        if let Err(e) = self
+        match self
             .vibe_execute(ctx, &client, &vibe_run, phase, action)
             .await
         {
-            tracing::error!("vibe: failed to execute action for {}: {}", workspace_id, e);
+            // Action performed — now consume the sentinel so the next turn (with
+            // no fresh sentinel) falls back to the default instead of re-reading
+            // this one.
+            Ok(()) => {
+                if vibe_run.last_result.is_some() {
+                    let _ = VibeRun::set_last_result(&self.db.pool, workspace_id, None).await;
+                }
+            }
+            Err(e) => {
+                tracing::error!("vibe: failed to execute action for {}: {}", workspace_id, e);
+            }
         }
     }
 

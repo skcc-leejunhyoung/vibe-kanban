@@ -8,7 +8,7 @@
 //! instruction to proceed with the agent's own recommendation — covering every
 //! permission policy.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashSet, time::Duration};
 
 use db::models::{execution_process::ExecutionProcess, session::Session, workspace::Workspace};
 use deployment::Deployment;
@@ -27,12 +27,13 @@ const RECOMMEND_ANSWER: &str = "추천하는 방향으로 진행해줘.";
 /// Spawns the responder loop. Returns immediately; runs for the process lifetime.
 pub fn spawn(deployment: DeploymentImpl) {
     tokio::spawn(async move {
-        // Per-workspace vibe-ness is stable for a run; cache it to avoid a
-        // remote round-trip on every poll.
-        let mut vibe_cache: HashMap<Uuid, bool> = HashMap::new();
+        // Cache workspaces confirmed vibe to avoid a remote round-trip on every
+        // poll. Only positives are cached (see `tick`); a negative stays
+        // re-checkable so a late tag / transient failure can't disable us.
+        let mut vibe_workspaces: HashSet<Uuid> = HashSet::new();
         loop {
             sleep(POLL_INTERVAL).await;
-            if let Err(e) = tick(&deployment, &mut vibe_cache).await {
+            if let Err(e) = tick(&deployment, &mut vibe_workspaces).await {
                 tracing::warn!("vibe_approval_responder tick failed: {}", e);
             }
         }
@@ -41,7 +42,7 @@ pub fn spawn(deployment: DeploymentImpl) {
 
 async fn tick(
     deployment: &DeploymentImpl,
-    vibe_cache: &mut HashMap<Uuid, bool>,
+    vibe_workspaces: &mut HashSet<Uuid>,
 ) -> anyhow::Result<()> {
     let pending = deployment.approvals().pending_infos();
     if pending.is_empty() {
@@ -68,13 +69,17 @@ async fn tick(
             continue;
         }
 
-        let is_vibe = match vibe_cache.get(&workspace.id) {
-            Some(v) => *v,
-            None => {
-                let v = client.auto_merge_check(workspace.id).await.unwrap_or(false);
-                vibe_cache.insert(workspace.id, v);
-                v
-            }
+        // Only positive results are cached: a transient `auto_merge_check`
+        // failure (or an approval that races ahead of the vibe tag) must NOT
+        // permanently disable the responder for this workspace, so a negative
+        // result is re-checked on the next poll instead of being remembered.
+        let is_vibe = if vibe_workspaces.contains(&workspace.id) {
+            true
+        } else if matches!(client.auto_merge_check(workspace.id).await, Ok(true)) {
+            vibe_workspaces.insert(workspace.id);
+            true
+        } else {
+            false
         };
         if !is_vibe {
             continue;

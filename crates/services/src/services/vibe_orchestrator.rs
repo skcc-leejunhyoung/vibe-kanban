@@ -276,18 +276,27 @@ pub fn parse_vibe_result(text: &str) -> VibeResult {
         let Some(idx) = lower.find(needle) else {
             continue;
         };
-        let after = &lower[idx + needle.len()..];
-        // Order matters: check more specific / longer tokens first so that e.g.
-        // "blocked" is not shadowed and "approve" wins cleanly. Each keyword is
-        // a substring of its inflections ("approve" ⊂ "approved",
-        // "block" ⊂ "blocked").
+        // Look only at the FIRST word after the sentinel. Scanning the rest of
+        // the line for a substring would let trailing prose flip the result —
+        // e.g. "VIBE_RESULT: blocked (cannot approve)" must parse as Blocked,
+        // not Approve. Strip the leading colon / markdown wrappers / spaces,
+        // then read a single alphabetic token.
+        let token = lower[idx + needle.len()..]
+            .trim_start_matches(|c: char| {
+                c.is_whitespace() || matches!(c, ':' | '*' | '`' | '_' | '"' | '\'')
+            })
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()
+            .unwrap_or("");
+        // Prefix match so inflections work ("approve" ⊂ "approved",
+        // "block" ⊂ "blocked"); a single token matches at most one keyword.
         for (kw, res) in [
             ("approve", VibeResult::Approve),
             ("block", VibeResult::Blocked),
             ("continue", VibeResult::Continue),
             ("done", VibeResult::Done),
         ] {
-            if after.contains(kw) {
+            if token.starts_with(kw) {
                 return res;
             }
         }
@@ -489,6 +498,25 @@ mod tests {
     #[test]
     fn sentinel_without_known_token_is_none() {
         assert_eq!(parse_vibe_result("VIBE_RESULT: maybe?"), VibeResult::None);
+    }
+
+    #[test]
+    fn trailing_prose_on_sentinel_line_does_not_flip_result() {
+        // The keyword scan must look only at the first token after the sentinel,
+        // not anywhere on the line — otherwise an "approve" mentioned in an aside
+        // would hijack a "blocked"/"continue" verdict (→ a wrongful merge).
+        assert_eq!(
+            parse_vibe_result("VIBE_RESULT: blocked (cannot approve, conflicts remain)"),
+            VibeResult::Blocked
+        );
+        assert_eq!(
+            parse_vibe_result("VIBE_RESULT: continue — still need to approve the plan"),
+            VibeResult::Continue
+        );
+        assert_eq!(
+            parse_vibe_result("VIBE_RESULT: done. 이제 리뷰로 넘어갑니다"),
+            VibeResult::Done
+        );
     }
 
     #[test]
