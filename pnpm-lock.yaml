@@ -461,6 +461,9 @@ importers:
       vite:
         specifier: ^7.3.1
         version: 7.3.1(@types/node@24.10.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.0)
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.6(@types/debug@4.1.12)(@types/node@24.10.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.0)
 
   packages/ui:
     dependencies:
@@ -5873,7 +5876,7 @@ snapshots:
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
-      '@jridgewell/sourcemap-codec': 1.5.0
+      '@jridgewell/sourcemap-codec': 1.5.5
       '@jridgewell/trace-mapping': 0.3.31
 
   '@jridgewell/gen-mapping@0.3.8':
@@ -5898,12 +5901,12 @@ snapshots:
   '@jridgewell/trace-mapping@0.3.25':
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
-      '@jridgewell/sourcemap-codec': 1.5.0
+      '@jridgewell/sourcemap-codec': 1.5.5
 
   '@jridgewell/trace-mapping@0.3.31':
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
-      '@jridgewell/sourcemap-codec': 1.5.0
+      '@jridgewell/sourcemap-codec': 1.5.5
 
   '@lexical/clipboard@0.36.2':
     dependencies:

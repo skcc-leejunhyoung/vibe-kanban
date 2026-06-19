@@ -42,6 +42,32 @@ export function closeWebRtcConnection(hostId: string): void {
   hosts.delete(hostId);
 }
 
+/**
+ * Drop any WebRTC state that a suspended PWA may have left stale on resume.
+ *
+ * A standalone (WebKit) PWA that was backgrounded can come back with a dead
+ * peer connection whose close event never fired, and the host may have evicted
+ * its (in-memory, 15-min idle TTL) relay signing session. Without this:
+ *   - dead "connected" entries leak until the next request happens to probe
+ *     `isConnected`, and
+ *   - a host stuck in the 5-minute `failed` cooldown cannot reconnect at all,
+ *     so the app spins until a full reload.
+ *
+ * Clearing `failed`/dead entries lets the next `getWebRtcConnection` rebuild a
+ * fresh connection (and, via the relay HTTP path, a fresh signing session).
+ * Healthy and in-flight (`connecting`) entries are left untouched.
+ */
+export function resetWebRtcConnectionsForResume(): void {
+  for (const [hostId, entry] of hosts) {
+    if (entry.state === "failed") {
+      hosts.delete(hostId);
+    } else if (entry.state === "connected" && !entry.connection.isConnected) {
+      entry.connection.close();
+      hosts.delete(hostId);
+    }
+  }
+}
+
 function startConnect(hostId: string): void {
   hosts.set(hostId, { state: "connecting" });
 

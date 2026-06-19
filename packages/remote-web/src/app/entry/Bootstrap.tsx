@@ -26,6 +26,7 @@ import {
   requestLocalApiViaWebRtc,
   openLocalApiWebSocketViaWebRtc,
 } from "@remote/shared/lib/webrtc";
+import { installRelayResumeReconnect } from "@remote/shared/lib/relay/resumeReconnect";
 
 if (import.meta.env.VITE_PUBLIC_POSTHOG_KEY) {
   posthog.init(import.meta.env.VITE_PUBLIC_POSTHOG_KEY, {
@@ -43,6 +44,10 @@ setLocalApiTransport({
   request: requestLocalApiViaWebRtc,
   openWebSocket: openLocalApiWebSocketViaWebRtc,
 });
+// Re-establish the relay transport after the (standalone PWA) app is resumed
+// from suspension, so a stale signing session / dead data channel doesn't leave
+// the app spinning until a manual reload.
+installRelayResumeReconnect();
 
 configureAuthRuntime({
   getToken,

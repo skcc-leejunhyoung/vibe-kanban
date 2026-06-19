@@ -45,6 +45,16 @@ export function invalidateRemoteSessionId(hostId: string): void {
   remoteSessionIdCache.delete(hostId);
 }
 
+/**
+ * Drop every cached relay tunnel session id. Called on PWA resume: a relay
+ * session created before the app was suspended may be dead on the cloud side,
+ * so the next request re-creates a fresh one (and re-registers the signing
+ * session through it) instead of reusing a stale id that 401s.
+ */
+export function invalidateAllRemoteSessionIds(): void {
+  remoteSessionIdCache.clear();
+}
+
 export async function tryRefreshRelayHostSigningSession(
   context: RelayHostContext,
 ): Promise<RelayHostContext | null> {
