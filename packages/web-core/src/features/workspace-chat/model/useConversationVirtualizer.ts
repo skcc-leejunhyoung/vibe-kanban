@@ -62,6 +62,16 @@ export interface ConversationVirtualizerOptions {
   scrollContainerRef: RefObject<HTMLDivElement | null>;
 
   /**
+   * Ref to the element wrapping all scrollable content. Observed for size
+   * changes so the bottom-lock can re-pin even when content grows WITHOUT a
+   * row-count or virtualized-size change — e.g. an unvirtualized tail row
+   * whose markdown/code/diff renders taller asynchronously after the initial
+   * layout. Without this, entering an in-progress workspace lands slightly
+   * above the true bottom and never follows new streaming output.
+   */
+  contentRef?: RefObject<HTMLElement | null>;
+
+  /**
    * Called when the at-bottom state changes. Shells use this to show/hide
    * the scroll-to-bottom affordance.
    */
@@ -149,6 +159,7 @@ export function useConversationVirtualizer({
   rows,
   totalRowCount,
   scrollContainerRef,
+  contentRef,
   onAtBottomChange,
   shouldSuppressSizeAdjustment,
 }: ConversationVirtualizerOptions): ConversationVirtualizerResult {
@@ -296,11 +307,13 @@ export function useConversationVirtualizer({
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
 
-  useLayoutEffect(() => {
-    syncIsAtBottom();
-
+  // Re-pin the scroll position to the bottom while the bottom-lock is engaged.
+  // Skipped during smooth-scroll animations and interaction-anchor corrections
+  // so we never fight an in-flight programmatic scroll.
+  const pinToBottomIfLocked = useCallback(() => {
     if (!bottomLockedRef.current) return;
     if (performance.now() < smoothScrollDeadlineRef.current) return;
+    if (shouldSuppressSizeAdjustment?.()) return;
 
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -309,13 +322,37 @@ export function useConversationVirtualizer({
     if (maxScroll > 0 && Math.abs(maxScroll - el.scrollTop) > 1) {
       el.scrollTop = maxScroll;
     }
+  }, [scrollContainerRef, shouldSuppressSizeAdjustment]);
+
+  useLayoutEffect(() => {
+    syncIsAtBottom();
+    pinToBottomIfLocked();
   }, [
     rows.length,
     totalRowCount,
     totalSize,
     syncIsAtBottom,
-    scrollContainerRef,
+    pinToBottomIfLocked,
   ]);
+
+  // The layout effect above only fires on row-count / virtualized-size changes.
+  // Unvirtualized tail rows can grow in height AFTER initial layout (async
+  // markdown/code/diff rendering) without changing either, leaving the view
+  // stranded above the true bottom. Observe the content wrapper so any such
+  // growth re-pins to the bottom while locked.
+  useEffect(() => {
+    const content = contentRef?.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(() => {
+      pinToBottomIfLocked();
+    });
+    observer.observe(content);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [contentRef, pinToBottomIfLocked]);
 
   // -------------------------------------------------------------------------
   // Imperative helpers
