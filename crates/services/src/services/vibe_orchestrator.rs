@@ -382,9 +382,17 @@ pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
         }
         VibePhase::Merging => {
             // A conflict-resolution turn finished in the review session; retry
-            // the merge with the current retry count.
+            // the merge with the current retry count — unless the agent reports
+            // it could not resolve the conflict, in which case honor that
+            // immediately instead of burning the remaining merge retries on a
+            // conflict it already gave up on.
             if !input.session_is_review {
                 return VibeAction::Nothing;
+            }
+            if matches!(input.result, VibeResult::Blocked) {
+                return VibeAction::Block {
+                    reason: BlockReason::AgentReported,
+                };
             }
             VibeAction::AttemptMerge {
                 retry: input.merge_retries,
@@ -842,6 +850,25 @@ mod tests {
             ..input()
         };
         assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
+    }
+
+    #[test]
+    fn merging_blocked_honors_agent_instead_of_retrying() {
+        // The agent gave up on the conflict mid-retry; we must block now rather
+        // than re-attempt the merge until max_merge_retries is exhausted.
+        let i = FinalizeInput {
+            phase: VibePhase::Merging,
+            session_is_review: true,
+            result: VibeResult::Blocked,
+            merge_retries: 1,
+            ..input()
+        };
+        assert_eq!(
+            decide_finalize_action(&i),
+            VibeAction::Block {
+                reason: BlockReason::AgentReported
+            }
+        );
     }
 
     // ---- decide_after_merge ------------------------------------------------
