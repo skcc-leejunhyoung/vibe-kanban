@@ -967,10 +967,12 @@ export const repoApi = {
 
   getBranches: async (
     repoId: string,
-    hostId?: string | null
+    hostId?: string | null,
+    opts?: { fetch?: boolean }
   ): Promise<GitBranch[]> => {
+    const query = opts?.fetch ? '?fetch=true' : '';
     const response = await makeHostAwareRequest(
-      `/api/repos/${repoId}/branches`,
+      `/api/repos/${repoId}/branches${query}`,
       hostId
     );
     return handleApiResponse<GitBranch[]>(response);

@@ -1478,6 +1478,19 @@ impl GitService {
         self.fetch_from_remote(repo, remote, &refspec)
     }
 
+    /// Fetch all branches from the repository's default remote.
+    ///
+    /// Used to refresh the remote-tracking branches before listing them (e.g.
+    /// when the user opens the branch selector while creating a workspace).
+    /// Errors if there is no remote configured or the fetch fails; callers that
+    /// want best-effort behaviour should treat the error as non-fatal.
+    pub fn fetch_default_remote(&self, repo_path: &Path) -> Result<(), GitServiceError> {
+        let repo = Repository::open(repo_path)?;
+        let default_remote = self.default_remote(&repo, repo_path)?;
+        let remote = repo.find_remote(&default_remote.name)?;
+        self.fetch_all_from_remote(&repo, &remote)
+    }
+
     /// Clone a repository to the specified directory
     #[cfg(feature = "cloud")]
     pub fn clone_repository(

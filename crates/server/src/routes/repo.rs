@@ -84,14 +84,32 @@ pub async fn init_repo(
     Ok(ResponseJson(ApiResponse::success(repo)))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GetBranchesQuery {
+    /// When true, fetch from the default remote before listing branches so the
+    /// caller sees the latest branches pushed to origin. Best-effort: a failed
+    /// fetch still returns the locally known branches.
+    #[serde(default)]
+    pub fetch: bool,
+}
+
 pub async fn get_repo_branches(
     State(deployment): State<DeploymentImpl>,
     Path(repo_id): Path<Uuid>,
+    Query(query): Query<GetBranchesQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<GitBranch>>>, ApiError> {
     let repo = deployment
         .repo()
         .get_by_id(&deployment.db().pool, repo_id)
         .await?;
+
+    if query.fetch
+        && let Err(e) = deployment.git().fetch_default_remote(&repo.path)
+    {
+        tracing::warn!(
+            "Failed to fetch from default remote for repo {repo_id} before listing branches: {e}"
+        );
+    }
 
     let branches = deployment.git().get_all_branches(&repo.path)?;
     Ok(ResponseJson(ApiResponse::success(branches)))

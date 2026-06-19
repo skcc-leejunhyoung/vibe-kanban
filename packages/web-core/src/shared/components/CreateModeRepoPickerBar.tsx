@@ -95,7 +95,11 @@ export function CreateModeRepoPickerBar({
   );
 
   const pickBranchForRepo = useCallback(async (repo: Repo) => {
-    const branches = await repoApi.getBranches(repo.id);
+    // Fetch from the remote first so the list reflects the latest branches
+    // pushed to origin, not just what was known locally at clone time.
+    const branches = await repoApi.getBranches(repo.id, undefined, {
+      fetch: true,
+    });
     const branchItems = branches.map(toBranchItem);
     const branchResult = (await SelectionDialog.show({
       initialPageId: 'selectBranch',
