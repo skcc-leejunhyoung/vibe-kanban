@@ -3174,6 +3174,8 @@ mod tests {
 
     const ASSISTANT_DIFF_ID: &str = r#"{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Hello world"}]}}"#;
     const ASSISTANT_NO_ID: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]}}"#;
+    const ASSISTANT_THINKING_ONLY: &str = r#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"pondering..."}]}}"#;
+    const RESULT_ERROR: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the run failed"}"#;
     const MSG_DELTA_END: &str = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":839}}}"#;
     const RESULT_TRAILING_NL: &str =
         r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world\n"}"#;
@@ -3319,6 +3321,141 @@ mod tests {
             count_assistant_entries_with(&lines, "Hello world"),
             1,
             "the surviving entry must be the clean streamed assistant message"
+        );
+    }
+
+    /// Contract lock: once an assistant message has been streamed, the Result
+    /// fallback must NEVER add a second bubble — no matter how the `result` text
+    /// differs from the streamed text (identical, whitespace, superset, U+FFFD
+    /// corruption, empty). Covers the whole mismatch space in one place.
+    #[test]
+    fn test_result_fallback_never_duplicates_streamed_assistant() {
+        let result_variants: [(&str, &str); 6] = [
+            (
+                "identical",
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world"}"#,
+            ),
+            (
+                "trailing newline",
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world\n"}"#,
+            ),
+            (
+                "leading space",
+                r#"{"type":"result","subtype":"success","is_error":false,"result":" Hello world"}"#,
+            ),
+            (
+                "superset",
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world, all done."}"#,
+            ),
+            (
+                "U+FFFD corrupted",
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"Hell� �orld"}"#,
+            ),
+            (
+                "empty",
+                r#"{"type":"result","subtype":"success","is_error":false,"result":""}"#,
+            ),
+        ];
+        for (name, result_line) in result_variants {
+            let lines = [
+                MSG_START,
+                CB_START,
+                CB_DELTA_1,
+                CB_DELTA_2,
+                ASSISTANT_FULL,
+                CB_STOP,
+                MSG_STOP,
+                result_line,
+            ];
+            assert_eq!(
+                count_all_assistant_entries(&lines),
+                1,
+                "result variant `{name}` must not add a second assistant bubble"
+            );
+            assert_eq!(
+                count_assistant_entries_with(&lines, "Hello world"),
+                1,
+                "result variant `{name}`: the clean streamed message must survive"
+            );
+        }
+    }
+
+    /// Guard against OVER-suppression: a `thinking` block does NOT count as an
+    /// assistant message (it never sets `last_assistant_message`), so when no
+    /// text was streamed the Result fallback MUST still surface the final answer.
+    #[test]
+    fn test_result_fallback_fires_when_only_thinking_streamed() {
+        let lines = [
+            MSG_START,
+            CB_START_THINK_0,
+            CB_DELTA_THINK_0,
+            CB_STOP_THINK_0,
+            ASSISTANT_THINKING_ONLY,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        assert_eq!(
+            count_assistant_entries_with(&lines, "Hello world"),
+            1,
+            "fallback must fire (surface the result) when only thinking was streamed"
+        );
+    }
+
+    /// Composition of the thinking-omission fix (variant 2) and the result-
+    /// fallback fix (variant 3): thinking@0 + text@1 streamed, the final
+    /// `assistant` omits thinking, then `result` echoes the text. Must render the
+    /// assistant text EXACTLY ONCE — neither the positional shift nor the result
+    /// fallback may add a copy (no duplication, no triplication).
+    #[test]
+    fn test_thinking_then_text_then_result_renders_text_once() {
+        let lines = [
+            MSG_START,
+            CB_START_THINK_0,
+            CB_DELTA_THINK_0,
+            CB_STOP_THINK_0,
+            CB_START_TEXT_1,
+            CB_DELTA_TEXT_1A,
+            CB_DELTA_TEXT_1B,
+            ASSISTANT_FULL,
+            CB_STOP_TEXT_1,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        assert_eq!(
+            count_all_assistant_entries(&lines),
+            1,
+            "exactly one assistant bubble across thinking-shift + result fallback"
+        );
+        assert_eq!(
+            count_assistant_entries_with(&lines, "Hello world"),
+            1,
+            "the single assistant bubble is the final text"
+        );
+    }
+
+    /// An error `result` (is_error, non-success subtype) after a streamed
+    /// assistant must neither duplicate nor replace the assistant bubble.
+    #[test]
+    fn test_error_result_after_streamed_assistant_adds_no_assistant_bubble() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            ASSISTANT_FULL,
+            CB_STOP,
+            MSG_STOP,
+            RESULT_ERROR,
+        ];
+        assert_eq!(
+            count_all_assistant_entries(&lines),
+            1,
+            "error result must not add an assistant bubble"
+        );
+        assert_eq!(
+            count_assistant_entries_with(&lines, "Hello world"),
+            1,
+            "the streamed assistant message is preserved unchanged"
         );
     }
 
