@@ -104,6 +104,10 @@ async fn main() -> Result<(), VibeKanbanError> {
     server::scheduled_resume_watcher::spawn(deployment.clone());
     // Background poller that auto-approves pending approvals for vibe sessions.
     server::vibe_approval_responder::spawn(deployment.clone());
+    // Background poller that escalates orphaned vibe runs (e.g. after a restart
+    // or a failed follow-up spawn) so they never stall silently in a
+    // non-terminal phase.
+    server::vibe_run_watcher::spawn(deployment.clone());
     let port = std::env::var("BACKEND_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()

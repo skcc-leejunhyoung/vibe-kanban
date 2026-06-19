@@ -1594,12 +1594,14 @@ impl LocalContainerService {
     /// current profile with `permission_policy = Auto` so tool/plan approvals
     /// never block the automated run.
     async fn vibe_executor_config(&self, session_id: Uuid) -> Option<ExecutorConfig> {
-        let profile =
-            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, session_id)
+        // Carry the user's full executor config (model / reasoning / agent
+        // overrides), not just the profile identity — otherwise every
+        // backend-driven turn would silently downgrade to the default model.
+        let mut cfg =
+            ExecutionProcess::latest_executor_config_for_session(&self.db.pool, session_id)
                 .await
                 .ok()
                 .flatten()?;
-        let mut cfg = ExecutorConfig::from(profile);
         cfg.permission_policy = Some(PermissionPolicy::Auto);
         Some(cfg)
     }
@@ -1611,12 +1613,14 @@ impl LocalContainerService {
         ctx: &ExecutionContext,
         prompt: &str,
     ) -> Result<(), ContainerError> {
+        // No profile means we cannot spawn anything; surface it as an error so
+        // the finalize keeps `last_result` intact (rather than consuming it on a
+        // false success) and the orphan watcher can later escalate this run.
         let Some(executor_config) = self.vibe_executor_config(ctx.session.id).await else {
-            tracing::warn!(
+            return Err(ContainerError::Other(anyhow!(
                 "vibe: no executor profile for session {}, cannot send follow-up",
                 ctx.session.id
-            );
-            return Ok(());
+            )));
         };
         let latest_session_info =
             CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
@@ -1664,12 +1668,13 @@ impl LocalContainerService {
         ctx: &ExecutionContext,
         prompt: &str,
     ) -> Result<(), ContainerError> {
+        // See `vibe_send_followup`: a missing profile must error, not no-op, so
+        // the run is not silently abandoned in a non-terminal phase.
         let Some(executor_config) = self.vibe_executor_config(ctx.session.id).await else {
-            tracing::warn!(
+            return Err(ContainerError::Other(anyhow!(
                 "vibe: no executor profile for session {}, cannot start review",
                 ctx.session.id
-            );
-            return Ok(());
+            )));
         };
 
         let session_id = Uuid::new_v4();

@@ -68,6 +68,18 @@ impl VibeRun {
         Ok(row)
     }
 
+    /// All runs not in a terminal phase (`blocked`/`done`). Used by the
+    /// orphan-recovery watcher to detect runs that may have stalled.
+    pub async fn find_non_terminal(pool: &SqlitePool) -> Result<Vec<Self>, VibeRunError> {
+        let rows = sqlx::query_as::<_, Self>(&format!(
+            "SELECT {} FROM vibe_runs WHERE phase NOT IN ('blocked', 'done')",
+            Self::COLUMNS
+        ))
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn set_phase(
         pool: &SqlitePool,
         workspace_id: Uuid,
