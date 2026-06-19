@@ -1912,9 +1912,20 @@ impl ClaudeLogProcessor {
                     patches.push(ConversationPatch::add_normalized_entry(idx, entry));
                 } else if matches!(subtype.as_deref(), Some("success"))
                     && let Some(text) = result.as_ref().and_then(|v| v.as_str())
-                    && (self.last_assistant_message.is_none()
-                        || matches!(&self.last_assistant_message, Some(message) if !message.contains(text)))
+                    && self.last_assistant_message.is_none()
                 {
+                    // Fallback for executors/modes that DON'T stream an assistant
+                    // message: surface the final `result` text as the answer. When
+                    // an assistant message WAS streamed, the `result` field only
+                    // echoes it, so emitting it again duplicates the whole response.
+                    //
+                    // We deliberately do NOT try a substring/contains comparison
+                    // here: the `result` text can differ from the streamed text by
+                    // U+FFFD replacement chars (a multi-byte UTF-8 char split across
+                    // stdout read chunks) or trailing whitespace, which made the old
+                    // `!message.contains(text)` guard fire and render the response
+                    // twice. Presence of any streamed assistant message is the
+                    // reliable signal that the result is redundant.
                     let entry = NormalizedEntry {
                         timestamp: None,
                         entry_type: NormalizedEntryType::AssistantMessage,
@@ -3166,6 +3177,11 @@ mod tests {
     const MSG_DELTA_END: &str = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":839}}}"#;
     const RESULT_TRAILING_NL: &str =
         r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world\n"}"#;
+    // The `result` field corrupted with U+FFFD replacement chars (a multi-byte
+    // UTF-8 char split across a stdout read chunk), exactly as captured in the
+    // real failing run (workspace b85a633f, execution 11669d74): "wo" -> "w��".
+    const RESULT_CORRUPTED: &str =
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"Hell� �orld"}"#;
 
     /// EXP-1: exact log [3] event order (assistant BEFORE content_block_stop,
     /// text at index 0, no thinking, message_delta + result tail). Baseline.
@@ -3229,11 +3245,11 @@ mod tests {
         assert_eq!(total, 1, "EXP-3 total assistant entries (assistant no id)");
     }
 
-    /// EXP-4: result text differs from the streamed/assistant text by a single
-    /// trailing newline, so `last_assistant_message.contains(result)` fails and
-    /// the Result handler appends a SECOND assistant bubble. The most likely
-    /// remaining cause of a no-thinking duplicate like log [3].
-    #[ignore = "BUG (unfixed): result text whitespace mismatch appends a duplicate via the Result fallback"]
+    /// EXP-4 (CONFIRMED root cause of log [3], now FIXED): result text differs
+    /// from the streamed/assistant text (here a trailing newline), so the old
+    /// `last_assistant_message.contains(result)` guard failed and the Result
+    /// handler appended a SECOND assistant bubble. The fix skips the result
+    /// fallback whenever an assistant message was already streamed.
     #[test]
     fn exp4_result_text_trailing_newline_mismatch() {
         let lines = [
@@ -3269,6 +3285,41 @@ mod tests {
         ];
         let total = count_all_assistant_entries(&lines);
         assert_eq!(total, 1, "EXP-5 total assistant entries (no message_start)");
+    }
+
+    /// CONFIRMED production reproduction (workspace b85a633f / execution
+    /// 11669d74, captured live via the normalized-logs WS): the streamed
+    /// assistant message was CLEAN, but the `result` field arrived corrupted with
+    /// U+FFFD replacement chars (a multi-byte UTF-8 char split across a stdout
+    /// read chunk). The old Result-handler guard `!last_assistant_message
+    /// .contains(result)` then fired and re-emitted the whole response as a
+    /// second, corrupted bubble (`entry_type` metadata = "result"). The fix skips
+    /// the result fallback once any assistant message has been streamed.
+    #[test]
+    fn test_result_fallback_skipped_after_streamed_assistant_even_if_corrupted() {
+        let lines = [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            ASSISTANT_FULL,
+            CB_STOP,
+            MSG_DELTA_END,
+            MSG_STOP,
+            RESULT_CORRUPTED,
+        ];
+        // Exactly one assistant bubble — the corrupted result must NOT be added.
+        assert_eq!(
+            count_all_assistant_entries(&lines),
+            1,
+            "DUPLICATION: corrupted result text re-emitted the response as a second bubble"
+        );
+        // And the survivor is the CLEAN streamed message, not the corrupted result.
+        assert_eq!(
+            count_assistant_entries_with(&lines, "Hello world"),
+            1,
+            "the surviving entry must be the clean streamed assistant message"
+        );
     }
 
     #[test]
