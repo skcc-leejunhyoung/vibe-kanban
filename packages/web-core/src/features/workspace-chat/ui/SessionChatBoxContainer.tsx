@@ -585,7 +585,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       cancelDebouncedSave();
       setLocalMessage('');
       clearUploadedAttachments();
-      if (isNewSessionMode) await clearDraft();
+      // Clear the persisted draft for both new and existing sessions so the
+      // sent prompt doesn't reappear when navigating back to the chat.
+      await clearDraft();
       if (!isSlashCommand) {
         reviewContext?.clearComments();
       }
@@ -603,7 +605,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     cancelDebouncedSave,
     setLocalMessage,
     clearUploadedAttachments,
-    isNewSessionMode,
     clearDraft,
     reviewContext,
   ]);
