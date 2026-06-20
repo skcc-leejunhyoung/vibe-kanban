@@ -263,7 +263,12 @@ export const Actions = {
     icon: ArchiveIcon,
     shortcut: 'W A',
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.hasWorkspace && ctx.layoutMode === 'workspaces',
+    // Visible whenever a workspace is in context, matching its sibling
+    // workspace actions (StartReview, SpinOffWorkspace). This keeps Archive in
+    // the workspace three-dot menu even when a workspace is viewed inside the
+    // kanban/project layout (the `project-issue-workspace` destination), where
+    // `layoutMode` is 'kanban'.
+    isVisible: (ctx) => ctx.hasWorkspace,
     isActive: (ctx) => ctx.workspaceArchived,
     execute: async (ctx, workspaceId) => {
       const workspace = await getWorkspace(ctx.queryClient, workspaceId);
