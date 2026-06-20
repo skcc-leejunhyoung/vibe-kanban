@@ -1,8 +1,6 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { create, useModal } from '@ebay/nice-modal-react';
-import { useQueryClient } from '@tanstack/react-query';
-import type { Workspace } from 'shared/types';
 import { defineModal } from '@/shared/lib/modals';
 import { CommandDialog } from '@vibe/ui/components/Command';
 import {
@@ -11,7 +9,7 @@ import {
 } from '@vibe/ui/components/CommandBar';
 import { useActions } from '@/shared/hooks/useActions';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
-import { workspaceRecordKeys } from '@/shared/hooks/useWorkspaceRecord';
+import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { IdeIcon } from '@/shared/components/IdeIcon';
 import type { PageId, ResolvedGroupItem } from '@/shared/types/commandBar';
 import {
@@ -50,7 +48,6 @@ function CommandBarContent({
 }) {
   const modal = useModal();
   const previousFocusRef = useRef<HTMLElement | null>(null);
-  const queryClient = useQueryClient();
   const { executeAction, getLabel } = useActions();
   const { workspaceId: contextWorkspaceId, repos } = useWorkspaceContext();
 
@@ -75,11 +72,29 @@ function CommandBarContent({
   });
 
   const effectiveWorkspaceId = workspaceId ?? contextWorkspaceId;
-  const workspace = effectiveWorkspaceId
-    ? queryClient.getQueryData<Workspace>(
-        workspaceRecordKeys.byId(effectiveWorkspaceId)
-      )
-    : undefined;
+  // Fetch the *target* workspace record (host-scoped) so labels and visibility
+  // reflect the workspace the menu was opened on, regardless of which
+  // workspace — if any — is selected in the current route.
+  const { data: workspace } = useWorkspaceRecord(effectiveWorkspaceId);
+
+  // The command bar is always opened against a specific target workspace (e.g.
+  // the three-dot menu on a workspace row). On list-only routes — such as the
+  // mobile workspaces list — no workspace is selected in the route, so the
+  // route-derived context reports `hasWorkspace: false` and would hide
+  // workspace-target actions like Archive. Override the workspace fields from
+  // the explicit target so those actions stay available.
+  const effectiveVisibilityContext = useMemo(
+    () =>
+      effectiveWorkspaceId
+        ? {
+            ...visibilityContext,
+            hasWorkspace: true,
+            workspaceArchived:
+              workspace?.archived ?? visibilityContext.workspaceArchived,
+          }
+        : visibilityContext,
+    [effectiveWorkspaceId, visibilityContext, workspace?.archived]
+  );
 
   // State machine
   const { state, currentPage, canGoBack, dispatch } = useCommandBarState(page);
@@ -96,7 +111,7 @@ function CommandBarContent({
   const resolvedPage = useResolvedPage(
     currentPage,
     state.search,
-    visibilityContext,
+    effectiveVisibilityContext,
     workspace
   );
 
@@ -180,7 +195,9 @@ function CommandBarContent({
         canGoBack={canGoBack}
         onGoBack={() => dispatch({ type: 'GO_BACK' })}
         onSelect={handleSelect}
-        getLabel={(action) => getLabel(action, workspace, visibilityContext)}
+        getLabel={(action) =>
+          getLabel(action, workspace, effectiveVisibilityContext)
+        }
         search={state.search}
         onSearchChange={(query) => dispatch({ type: 'SEARCH_CHANGE', query })}
         renderSpecialActionIcon={(iconName) =>
