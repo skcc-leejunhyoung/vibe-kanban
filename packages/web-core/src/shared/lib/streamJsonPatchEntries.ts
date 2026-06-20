@@ -74,9 +74,12 @@ export function streamJsonPatchEntries<E = unknown>(
   let ws: WebSocket | null = null;
   let connectTimer: ReturnType<typeof setTimeout> | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  let snapshot: PatchContainer<E> = structuredClone(
-    opts.initial ?? ({ entries: [] } as PatchContainer<E>)
-  );
+  // Fresh copy of the baseline the stream starts from. The server replays the
+  // full history on every (re)connection, so each reconnect must rebuild from
+  // this baseline rather than appending onto entries from the prior connection.
+  const initialSnapshot = (): PatchContainer<E> =>
+    structuredClone(opts.initial ?? ({ entries: [] } as PatchContainer<E>));
+  let snapshot: PatchContainer<E> = initialSnapshot();
 
   const subscribers = new Set<(entries: E[]) => void>();
   if (opts.onEntries) subscribers.add(opts.onEntries);
@@ -200,6 +203,16 @@ export function streamJsonPatchEntries<E = unknown>(
 
   function connect() {
     if (closed || finished) return;
+    // Reconnect (attempt > 0): the server restarts the stream by replaying the
+    // entire history as `add /entries/N` patches. Reset the snapshot to the
+    // baseline and drop any ops buffered from the dead socket so the replay
+    // rebuilds the list cleanly instead of duplicating every entry once per
+    // reconnect. No notify() here — the in-flight entries stay visible until the
+    // first flush swaps in the rebuilt (identical) list, avoiding a blank flash.
+    if (attempt > 0) {
+      snapshot = initialSnapshot();
+      pendingOps = [];
+    }
     const myGen = ++generation;
     connected = false;
 

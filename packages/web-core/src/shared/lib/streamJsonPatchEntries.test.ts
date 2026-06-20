@@ -212,4 +212,51 @@ describe('streamJsonPatchEntries — connection watchdog (PWA resume)', () => {
     expect(onError).not.toHaveBeenCalled();
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
+
+  it('does not duplicate entries when a reconnect replays the full history', async () => {
+    const onFinished = vi.fn();
+    const onError = vi.fn();
+
+    streamJsonPatchEntries(URL, {
+      onFinished,
+      onError,
+      connectTimeoutMs: 5000,
+      maxRetries: 3,
+    });
+
+    const history = [
+      { op: 'add', path: '/entries/0', value: { id: 'a' } },
+      { op: 'add', path: '/entries/1', value: { id: 'b' } },
+      { op: 'add', path: '/entries/2', value: { id: 'c' } },
+    ];
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = FakeWebSocket.instances[0];
+    first.emitOpen();
+    // Server streams the full history, then the socket drops before "finished"
+    // (the suspended-PWA reconnect case this guards).
+    first.emitMessage({ JsonPatch: history });
+    await vi.advanceTimersByTimeAsync(0); // flush the rAF batch
+    first.emitClose(1006);
+
+    // Reconnect: the server restarts the stream by replaying the SAME full
+    // history from scratch (history_plus_stream), then finishes.
+    await vi.advanceTimersByTimeAsync(1000);
+    const second = FakeWebSocket.instances.at(-1)!;
+    expect(second).not.toBe(first);
+    second.emitOpen();
+    second.emitMessage({ JsonPatch: history });
+    second.emitMessage({ finished: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    // The replay must rebuild the list, not append onto the pre-drop entries
+    // (without the snapshot reset this would be [a,b,c,a,b,c]).
+    expect(onFinished.mock.calls[0][0]).toEqual([
+      { id: 'a' },
+      { id: 'b' },
+      { id: 'c' },
+    ]);
+  });
 });

@@ -1535,6 +1535,11 @@ impl LocalContainerService {
                                 e
                             );
                         }
+                        // Push the local merge status to the remote so cloud clients
+                        // reflect the merge — parity with the manual merge path
+                        // (workspaces/git.rs). Best-effort: handles auth/404 itself.
+                        remote_sync::sync_local_workspace_merge_to_remote(client, workspace_id)
+                            .await;
                         let _ =
                             VibeRun::set_phase(pool, workspace_id, VibePhase::Done.as_str()).await;
                         tracing::info!("vibe: workspace {} merged → In review", workspace_id);
@@ -1769,6 +1774,12 @@ impl LocalContainerService {
 
         let mut any_conflict = false;
         let mut any_other_failure = false;
+        // Whether at least one repo reached a review-ready state: freshly merged,
+        // already merged, or carrying an open PR. Without this, a run where every
+        // repo is skipped (open PR / already merged / remote target needing a PR)
+        // would fall through to `Success` and mark the issue In review / Done even
+        // though nothing actually merged.
+        let mut any_review_ready = false;
 
         for workspace_repo in &workspace_repos {
             let repo = match Repo::find_by_id(&self.db.pool, workspace_repo.repo_id).await {
@@ -1791,10 +1802,13 @@ impl LocalContainerService {
             if merges.iter().any(
                 |m| matches!(m, Merge::Pr(pr) if matches!(pr.pr_info.status, MergeStatus::Open)),
             ) {
+                // Open PR is the review artifact → legitimately In review.
+                any_review_ready = true;
                 continue;
             }
-            // Idempotency: a direct merge already recorded → nothing more to do.
+            // Idempotency: a direct merge already recorded → already merged.
             if merges.iter().any(|m| matches!(m, Merge::Direct(_))) {
+                any_review_ready = true;
                 continue;
             }
 
@@ -1802,7 +1816,7 @@ impl LocalContainerService {
                 .git
                 .is_remote_branch(&repo.path, &workspace_repo.target_branch)
             {
-                Ok(true) => continue, // remote target needs a PR
+                Ok(true) => continue, // remote target needs a PR — nothing merged here
                 Ok(false) => {}
                 Err(e) => {
                     tracing::error!(
@@ -1834,6 +1848,8 @@ impl LocalContainerService {
                     {
                         tracing::error!("vibe merge: record merge failed for {}: {}", repo.name, e);
                         any_other_failure = true;
+                    } else {
+                        any_review_ready = true;
                     }
                 }
                 Err(GitServiceError::MergeConflicts { .. })
@@ -1852,8 +1868,13 @@ impl LocalContainerService {
             MergeOutcome::Conflict
         } else if any_other_failure {
             MergeOutcome::OtherFailure
-        } else {
+        } else if any_review_ready {
             MergeOutcome::Success
+        } else {
+            // Nothing merged and no review artifact (e.g. only repos whose target
+            // is a remote branch needing a PR). Escalate to a human instead of
+            // silently marking the issue as merged.
+            MergeOutcome::OtherFailure
         }
     }
 }

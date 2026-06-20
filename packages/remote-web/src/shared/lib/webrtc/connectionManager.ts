@@ -3,7 +3,7 @@ import { WebRtcConnection } from "./connection";
 const FAILED_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 
 type HostEntry =
-  | { state: "connecting" }
+  | { state: "connecting"; token: object }
   | { state: "connected"; connection: WebRtcConnection }
   | { state: "failed"; failedAt: number };
 
@@ -53,9 +53,9 @@ export function closeWebRtcConnection(hostId: string): void {
  *   - a host stuck in the 5-minute `failed` cooldown cannot reconnect at all,
  *     so the app spins until a full reload.
  *
- * Clearing `failed`/dead entries lets the next `getWebRtcConnection` rebuild a
- * fresh connection (and, via the relay HTTP path, a fresh signing session).
- * Healthy and in-flight (`connecting`) entries are left untouched.
+ * Clearing `failed`/dead/in-flight entries lets the next `getWebRtcConnection`
+ * rebuild a fresh connection (and, via the relay HTTP path, a fresh signing
+ * session). Only healthy `connected` entries are left untouched.
  */
 export function resetWebRtcConnectionsForResume(): void {
   for (const [hostId, entry] of hosts) {
@@ -64,12 +64,30 @@ export function resetWebRtcConnectionsForResume(): void {
     } else if (entry.state === "connected" && !entry.connection.isConnected) {
       entry.connection.close();
       hosts.delete(hostId);
+    } else if (entry.state === "connecting") {
+      // A connect in flight when the PWA suspended will likely never settle
+      // (dead signaling, and connect() has no timeout); meanwhile
+      // getWebRtcConnection refuses to start a new one while an entry is
+      // `connecting`, so the host would spin forever. Drop it so the next
+      // getWebRtcConnection starts fresh — the stale promise is neutralized by
+      // the per-connect token guard in startConnect.
+      hosts.delete(hostId);
     }
   }
 }
 
 function startConnect(hostId: string): void {
-  hosts.set(hostId, { state: "connecting" });
+  // Unique identity for this connect. If the `connecting` entry is replaced or
+  // dropped before the promise settles (e.g. resume cleanup starts a fresh
+  // connect), the settle handlers below detect the stale token and bail instead
+  // of clobbering the newer entry.
+  const token = {};
+  hosts.set(hostId, { state: "connecting", token });
+
+  const isStale = (): boolean => {
+    const current = hosts.get(hostId);
+    return current?.state !== "connecting" || current.token !== token;
+  };
 
   WebRtcConnection.connect(hostId, {
     onDisconnect: () => {
@@ -77,9 +95,14 @@ function startConnect(hostId: string): void {
     },
   })
     .then((connection) => {
+      if (isStale()) {
+        connection.close();
+        return;
+      }
       hosts.set(hostId, { state: "connected", connection });
     })
     .catch((err) => {
+      if (isStale()) return;
       console.warn("[webrtc] connection failed for host", hostId, err);
       hosts.set(hostId, { state: "failed", failedAt: Date.now() });
     });

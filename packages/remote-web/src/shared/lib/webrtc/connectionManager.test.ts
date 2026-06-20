@@ -26,6 +26,8 @@ afterEach(() => {
   cm.closeWebRtcConnection("host-healthy");
   cm.closeWebRtcConnection("host-failed");
   cm.closeWebRtcConnection("host-dead");
+  cm.closeWebRtcConnection("host-stuck");
+  cm.closeWebRtcConnection("host-stale");
   vi.restoreAllMocks();
 });
 
@@ -90,5 +92,55 @@ describe("connectionManager — resume recovery", () => {
     expect(cm.getWebRtcConnection(host)).toBeNull(); // brand-new connect
     await flush();
     expect(connectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops a stuck connecting entry on resume so the host can reconnect", async () => {
+    const host = "host-stuck";
+    // A connect that was in flight when the PWA suspended never settles.
+    connectMock.mockReturnValueOnce(new Promise(() => {}));
+
+    expect(cm.getWebRtcConnection(host)).toBeNull(); // connecting (stuck)
+    await flush();
+    // Still stuck: getWebRtcConnection refuses to start a new connect while
+    // `connecting`, so without the reset this host would spin forever.
+    expect(cm.getWebRtcConnection(host)).toBeNull();
+    expect(connectMock).toHaveBeenCalledTimes(1);
+
+    // Resume must clear the stuck connecting entry...
+    cm.resetWebRtcConnectionsForResume();
+    // ...so the next request starts a fresh connect.
+    connectMock.mockResolvedValueOnce(makeConn(true));
+    expect(cm.getWebRtcConnection(host)).toBeNull();
+    await flush();
+    expect(connectMock).toHaveBeenCalledTimes(2);
+    expect(cm.getWebRtcConnection(host)).not.toBeNull();
+  });
+
+  it("ignores a stale connect that settles after a resume reset", async () => {
+    const host = "host-stale";
+    let resolveStale!: (c: unknown) => void;
+    const staleConn = makeConn(true);
+    connectMock.mockReturnValueOnce(
+      new Promise((r) => {
+        resolveStale = r;
+      }),
+    );
+
+    expect(cm.getWebRtcConnection(host)).toBeNull(); // connecting (gen 1)
+
+    // Resume drops the in-flight connect; a fresh request starts a new one.
+    cm.resetWebRtcConnectionsForResume();
+    const freshConn = makeConn(true);
+    connectMock.mockResolvedValueOnce(freshConn);
+    expect(cm.getWebRtcConnection(host)).toBeNull(); // connecting (gen 2)
+    await flush();
+    expect(cm.getWebRtcConnection(host)).toBe(freshConn); // gen 2 connected
+
+    // The original (gen 1) connect finally resolves — it must NOT clobber the
+    // fresh connection, and must close its now-orphaned connection.
+    resolveStale(staleConn);
+    await flush();
+    expect(cm.getWebRtcConnection(host)).toBe(freshConn);
+    expect(staleConn.close).toHaveBeenCalledTimes(1);
   });
 });
