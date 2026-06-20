@@ -22,6 +22,7 @@
 //! failed **setup** script does nothing and leaves the issue In progress.
 
 use db::models::execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus};
+use utils::log_msg::LogMsg;
 
 /// The four cloud tags this workflow keys off of. `vibe` is applied by the
 /// external orchestrator to opt an issue into the workflow; the other three are
@@ -78,6 +79,31 @@ pub fn cleanup_fix_prompt(log: &str) -> String {
     format!(
         "cleanup 스크립트가 실패했어. 아래 실패 로그를 보고 원인을 해결해줘:\n\n```\n{log}\n```"
     )
+}
+
+/// Concatenate the stdout/stderr text from a process's log messages, tail-capped
+/// to `max_bytes` on a UTF-8 char boundary. Non-text messages (JsonPatch,
+/// SessionId, Ready/Finished, …) are ignored. Pure — unit-testable without the
+/// MsgStore/DB the shell reads the messages from.
+pub fn cleanup_failure_log_text(msgs: &[LogMsg], max_bytes: usize) -> String {
+    let mut out = String::new();
+    for msg in msgs {
+        if let LogMsg::Stdout(s) | LogMsg::Stderr(s) = msg {
+            out.push_str(s);
+            if !s.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    if out.len() > max_bytes {
+        let mut start = out.len() - max_bytes;
+        while start < out.len() && !out.is_char_boundary(start) {
+            start += 1;
+        }
+        format!("...(생략)...\n{}", &out[start..])
+    } else {
+        out
+    }
 }
 
 /// Append the coding self-report instruction to a prompt body.
@@ -950,6 +976,54 @@ mod tests {
     fn cleanup_fix_prompt_handles_empty_log() {
         let p = cleanup_fix_prompt("   ");
         assert!(p.contains("로그가 비어 있음"));
+    }
+
+    // ---- cleanup_failure_log_text ------------------------------------------
+
+    #[test]
+    fn cleanup_log_concatenates_stdout_and_stderr() {
+        let msgs = vec![
+            LogMsg::Stdout("building...\n".into()),
+            LogMsg::Stderr("error: boom".into()),
+        ];
+        // stderr line gets a trailing newline appended; stdout already had one.
+        assert_eq!(
+            cleanup_failure_log_text(&msgs, 4000),
+            "building...\nerror: boom\n"
+        );
+    }
+
+    #[test]
+    fn cleanup_log_ignores_non_text_messages() {
+        // Only stdout/stderr count; control / structured messages are skipped.
+        let msgs = vec![
+            LogMsg::Ready,
+            LogMsg::SessionId("abc".into()),
+            LogMsg::Stdout("hello".into()),
+            LogMsg::Finished,
+        ];
+        assert_eq!(cleanup_failure_log_text(&msgs, 4000), "hello\n");
+    }
+
+    #[test]
+    fn cleanup_log_empty_when_no_text() {
+        assert_eq!(cleanup_failure_log_text(&[], 4000), "");
+        assert_eq!(
+            cleanup_failure_log_text(&[LogMsg::Ready, LogMsg::Finished], 4000),
+            ""
+        );
+    }
+
+    #[test]
+    fn cleanup_log_tail_caps_on_char_boundary() {
+        // "가나다라마" + appended "\n" = 16 bytes. Capping to 11 lands at byte 5,
+        // mid-character; it must advance to the next boundary (byte 6) so the
+        // slice is valid UTF-8 — tail "다라마\n", never a split codepoint.
+        let msgs = vec![LogMsg::Stdout("가나다라마".into())];
+        assert_eq!(
+            cleanup_failure_log_text(&msgs, 11),
+            "...(생략)...\n다라마\n"
+        );
     }
 
     // ---- phase round-trip --------------------------------------------------

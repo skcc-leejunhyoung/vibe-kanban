@@ -1585,34 +1585,23 @@ impl LocalContainerService {
     /// Collect a failed cleanup script's stdout/stderr (tail-capped) for pasting
     /// into the fix prompt.
     async fn vibe_cleanup_failure_log(&self, exec_id: Uuid) -> String {
-        let records = match ExecutionProcessLogs::find_by_execution_id(&self.db.pool, exec_id).await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("vibe: failed to load cleanup logs for {}: {}", exec_id, e);
-                return String::new();
-            }
-        };
-        let msgs = ExecutionProcessLogs::parse_logs(&records).unwrap_or_default();
-        let mut out = String::new();
-        for msg in &msgs {
-            if let LogMsg::Stdout(s) | LogMsg::Stderr(s) = msg {
-                out.push_str(s);
-                if !s.ends_with('\n') {
-                    out.push('\n');
+        // Logs stream to files (and the in-memory MsgStore), NOT the
+        // execution_process_logs DB table, so a DB read returns nothing right
+        // after completion — which made this always paste "(로그가 비어 있음)".
+        // Prefer the still-alive MsgStore, mirroring the rate-limit detection
+        // path above; fall back to the DB only if the store is already gone.
+        let msgs = if let Some(store) = self.get_msg_store_by_id(&exec_id).await {
+            store.get_history()
+        } else {
+            match ExecutionProcessLogs::find_by_execution_id(&self.db.pool, exec_id).await {
+                Ok(records) => ExecutionProcessLogs::parse_logs(&records).unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!("vibe: failed to load cleanup logs for {}: {}", exec_id, e);
+                    Vec::new()
                 }
             }
-        }
-        const MAX: usize = 4000;
-        if out.len() > MAX {
-            let mut start = out.len() - MAX;
-            while start < out.len() && !out.is_char_boundary(start) {
-                start += 1;
-            }
-            format!("...(생략)...\n{}", &out[start..])
-        } else {
-            out
-        }
+        };
+        vibe_orchestrator::cleanup_failure_log_text(&msgs, 4000)
     }
 
     /// Build the executor config for a backend-driven vibe turn: the session's
