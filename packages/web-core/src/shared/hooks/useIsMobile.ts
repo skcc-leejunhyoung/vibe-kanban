@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from 'react';
-import { isRealMobileDevice } from '@vibe/ui/lib/platform';
+import { isRealMobileDevice, isTouchDevice } from '@vibe/ui/lib/platform';
 
 const MOBILE_BREAKPOINT = 767;
 const query = `(max-width: ${MOBILE_BREAKPOINT}px)`;
@@ -37,11 +37,22 @@ export function isMobileViewport(): boolean {
 
 // Canonical implementation lives in @vibe/ui/lib/platform; re-exported here so
 // existing consumers can keep importing it from this module.
-export { isRealMobileDevice };
+export { isRealMobileDevice, isTouchDevice };
 
 /** React hook version of isRealMobileDevice — stable, no re-renders on resize */
 export function useIsRealMobile(): boolean {
   // Device type doesn't change during session, so compute once
   const [isReal] = useState(() => isRealMobileDevice());
   return isReal;
+}
+
+/**
+ * React hook version of isTouchDevice — stable, no re-renders. Catches iPadOS
+ * even when it spoofs a desktop user-agent (e.g. PWA/standalone), unlike the
+ * viewport-based useIsMobile.
+ */
+export function useIsTouchDevice(): boolean {
+  // Touch capability doesn't change during a session, so compute once.
+  const [isTouch] = useState(() => isTouchDevice());
+  return isTouch;
 }

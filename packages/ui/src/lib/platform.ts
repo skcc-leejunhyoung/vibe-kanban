@@ -27,6 +27,22 @@ export function isRealMobileDevice(): boolean {
   );
 }
 
+/**
+ * Detect a touch-capable device. Unlike isRealMobileDevice (user-agent based),
+ * this also catches iPadOS, which reports a desktop "Macintosh" user-agent in
+ * Safari and PWA/standalone mode yet still exposes touch points. Desktops with a
+ * mouse report maxTouchPoints === 0, so they are correctly excluded.
+ */
+export function isTouchDevice(): boolean {
+  if (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) {
+    return true;
+  }
+  if (typeof window !== 'undefined' && 'ontouchstart' in window) {
+    return true;
+  }
+  return false;
+}
+
 type TauriInvoke = (
   cmd: string,
   args?: Record<string, unknown>

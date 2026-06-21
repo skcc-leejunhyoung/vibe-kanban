@@ -13,7 +13,7 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useActions } from '@/shared/hooks/useActions';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
-import { useIsMobile } from '@/shared/hooks/useIsMobile';
+import { useIsMobile, useIsTouchDevice } from '@/shared/hooks/useIsMobile';
 import { cn } from '@/shared/lib/utils';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import {
@@ -124,6 +124,9 @@ function LoadingState() {
  */
 export function KanbanContainer() {
   const isMobile = useIsMobile();
+  // Touch devices (incl. iPadOS, which can spoof a desktop UA/viewport) need the
+  // explicit multi-select toggle since there is no Cmd/Shift+Click affordance.
+  const isTouch = useIsTouchDevice();
   const { t } = useTranslation('common');
   const appNavigation = useAppNavigation();
   const routeState = useCurrentKanbanRouteState();
@@ -1004,7 +1007,7 @@ export function KanbanContainer() {
             isMobile={isMobile}
             isSelectionMode={isSelectionMode}
             onToggleSelectionMode={
-              isMobile ? handleToggleSelectionMode : undefined
+              isMobile || isTouch ? handleToggleSelectionMode : undefined
             }
           />
         </div>
