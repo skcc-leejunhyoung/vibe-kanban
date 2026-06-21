@@ -1055,8 +1055,13 @@ pub trait ContainerService {
         executor_config: ExecutorConfig,
         prompt: String,
     ) -> Result<ExecutionProcess, ContainerError> {
-        // Create container
-        self.create(workspace).await?;
+        // Ensure the container/worktree exists (idempotent): reuse an existing
+        // worktree when present, otherwise create one. Review-mode workspaces
+        // arrive with the worktree already materialized and checked out on the
+        // PR head branch, so recreating it (the old `create` path, which always
+        // calls `create_branch`) would fail with "branch already exists";
+        // ensure_container_exists reuses the existing worktree instead.
+        self.ensure_container_exists(workspace).await?;
 
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
 
@@ -1152,13 +1157,14 @@ pub trait ContainerService {
         executor_config: ExecutorConfig,
         prompt: String,
     ) -> Result<(Session, ExecutionProcess, ExecutorAction), ContainerError> {
-        // Create the container/worktree immediately so other endpoints
+        // Ensure the container/worktree exists immediately so other endpoints
         // (diff, attachment import, status, etc.) called by the frontend
         // right after the workspace is created can resolve a path. The
         // blocker_watcher rebases each worktree onto the latest origin base
         // before resuming the spawn so the blocker's merge commit is picked
-        // up automatically.
-        self.create(workspace).await?;
+        // up automatically. Idempotent: a review-mode worktree already on the
+        // PR head branch is reused rather than recreated.
+        self.ensure_container_exists(workspace).await?;
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
         let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
             .await?
