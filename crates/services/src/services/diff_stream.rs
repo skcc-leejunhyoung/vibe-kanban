@@ -290,6 +290,17 @@ impl DiffStreamManager {
                 }
                 DiffEvent::Reconcile => {
                     if let Err(e) = self.handle_reconcile().await {
+                        // If the worktree directory has been removed (expired
+                        // workspace cleanup or workspace deletion), reconcile can
+                        // never recover. End the stream instead of retrying
+                        // `git diff` against a missing path every 5s forever.
+                        if self.worktree_removed().await {
+                            tracing::info!(
+                                "Worktree {} no longer exists; ending diff stream",
+                                self.args.worktree_path.display()
+                            );
+                            break;
+                        }
                         tracing::warn!("Reconcile failed: {e}");
                     }
                 }
@@ -649,6 +660,18 @@ impl DiffStreamManager {
             .flatten()
     }
 
+    /// Returns `true` if the worktree directory has been removed from disk.
+    ///
+    /// When a workspace is cleaned up (expired) or deleted, its worktree is
+    /// removed out from under this stream. Detecting that lets the stream
+    /// self-terminate instead of retrying `git diff` against a missing path.
+    async fn worktree_removed(&self) -> bool {
+        let wt = self.args.worktree_path.clone();
+        tokio::task::spawn_blocking(move || !wt.exists())
+            .await
+            .unwrap_or(false)
+    }
+
     fn repo_key(&self) -> String {
         self.args
             .path_prefix
@@ -837,4 +860,98 @@ fn setup_git_watcher(
     }
 
     Some((debouncer, rx))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("failed to spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Builds a repo with one commit on `main` plus a linked worktree on
+    /// `feature`. Returns the tempdir guard along with the repo and worktree
+    /// paths.
+    fn setup_repo_with_worktree() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo_path = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+
+        git(&repo_path, &["init", "-b", "main"]);
+        git(&repo_path, &["config", "user.email", "test@example.com"]);
+        git(&repo_path, &["config", "user.name", "Test"]);
+        std::fs::write(repo_path.join("a.txt"), "hello\n").unwrap();
+        git(&repo_path, &["add", "."]);
+        git(&repo_path, &["commit", "-m", "init"]);
+
+        let worktree_path = tmp.path().join("wt");
+        git(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+                "-b",
+                "feature",
+            ],
+        );
+
+        (tmp, repo_path, worktree_path)
+    }
+
+    /// A worktree removed mid-stream (expired-workspace cleanup or workspace
+    /// deletion) must be detected so the run loop terminates instead of
+    /// retrying `git diff` against the missing path forever.
+    #[tokio::test]
+    async fn reconcile_terminates_when_worktree_removed() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        let git_service = GitService::new();
+        let base_commit = git_service
+            .get_head_commit(&worktree_path)
+            .expect("worktree HEAD");
+
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let (tx, _rx) = mpsc::channel(DIFF_STREAM_CHANNEL_CAPACITY);
+        let args = DiffStreamArgs {
+            git_service,
+            db: DBService { pool },
+            workspace_id: Uuid::new_v4(),
+            repo_id: Uuid::new_v4(),
+            repo_path,
+            worktree_path: worktree_path.clone(),
+            branch: "feature".to_string(),
+            target_branch: "main".to_string(),
+            base_commit,
+            stats_only: false,
+            path_prefix: None,
+        };
+        let mut manager = DiffStreamManager::new(args, tx);
+        manager.last_head_commit = manager.resolve_head_commit().await;
+
+        // While the worktree exists, reconcile succeeds and is not flagged.
+        assert!(!manager.worktree_removed().await);
+        manager
+            .handle_reconcile()
+            .await
+            .expect("reconcile succeeds while worktree is present");
+
+        // Simulate expired-workspace cleanup / workspace deletion.
+        std::fs::remove_dir_all(&worktree_path).unwrap();
+
+        // The run loop breaks on this, and reconcile can no longer succeed.
+        assert!(manager.worktree_removed().await);
+        assert!(manager.handle_reconcile().await.is_err());
+    }
 }
