@@ -4,13 +4,14 @@ import { ArrowCounterClockwiseIcon } from '@phosphor-icons/react';
 import {
   modifierBindings,
   sequentialBindings,
+  mapCodeToLogicalKey,
+  displayKeyParts,
+  type ShortcutType,
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
-import { isMac, getModifierKey } from '@/shared/lib/platform';
+import { isMac } from '@/shared/lib/platform';
 import { cn } from '@/shared/lib/utils';
 import { SettingsCard } from './SettingsComponents';
-
-type ShortcutType = 'sequence' | 'modifier';
 
 interface ShortcutEntry {
   id: string;
@@ -71,13 +72,6 @@ const ENTRY_GROUPS: EntryGroup[] = (() => {
   return groups;
 })();
 
-/** Maps event.code to a logical key for layout independence (KeyG -> 'g'). */
-function mapCodeToLogicalKey(code: string, key: string): string | null {
-  if (code.startsWith('Key')) return code.slice(3).toLowerCase();
-  if (code.startsWith('Digit')) return code.slice(5);
-  return key.toLowerCase();
-}
-
 /**
  * Build a modifier combo string ('mod+shift+k') from an event, or null if no
  * modifier is held (combos require one). 'mod' = Cmd on macOS, Ctrl elsewhere.
@@ -93,29 +87,6 @@ function buildCombo(e: KeyboardEvent, key: string): string | null {
   if (parts.length === 0) return null;
   parts.push(key);
   return parts.join('+');
-}
-
-/** Human-readable key chips for display. */
-function displayKeyParts(keys: string, type: ShortcutType): string[] {
-  if (type === 'sequence') {
-    return keys.split('>').map((k) => k.toUpperCase());
-  }
-  return keys.split('+').map((part) => {
-    switch (part) {
-      case 'mod':
-        return getModifierKey();
-      case 'ctrl':
-        return 'Ctrl';
-      case 'meta':
-        return isMac() ? '⌘' : 'Win';
-      case 'shift':
-        return '⇧';
-      case 'alt':
-        return isMac() ? '⌥' : 'Alt';
-      default:
-        return part.toUpperCase();
-    }
-  });
 }
 
 function KeyChips({ keys, type }: { keys: string; type: ShortcutType }) {

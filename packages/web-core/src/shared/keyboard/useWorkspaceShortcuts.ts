@@ -53,10 +53,7 @@ export function useWorkspaceShortcuts() {
   }, []);
 
   // Resolve the effective key for a binding id, honoring user overrides.
-  const seq = useCallback(
-    (id: string) => resolveSequence(id, overrides),
-    [overrides]
-  );
+  const seq = (id: string) => resolveSequence(id, overrides);
 
   // Re-register hotkeys when overrides change so rebinds take effect live.
   useHotkeys(seq('seq-go-settings'), () => execute(Actions.Settings), OPTIONS, [

@@ -3,13 +3,17 @@ import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsS
 import {
   COMMAND_BAR_BINDING_ID,
   resolveModifier,
+  mapCodeToLogicalKey,
 } from '@/shared/keyboard/registry';
 import { isMac } from '@/shared/lib/platform';
 
 /**
  * Match a KeyboardEvent against a combo string like 'mod+k'.
  * 'mod' maps to Cmd on macOS and Ctrl elsewhere. All other modifiers must
- * match exactly so e.g. 'mod+k' does not also fire on Cmd+Shift+K.
+ * match exactly so e.g. 'mod+k' does not also fire on Cmd+Shift+K. The key is
+ * compared via the physical event.code (mapCodeToLogicalKey) so a rebound combo
+ * round-trips with the recorder and react-hotkeys-hook, which are also
+ * code-based — Shift+digit and non-QWERTY layouts then match correctly.
  */
 function matchesCombo(event: KeyboardEvent, combo: string): boolean {
   const parts = combo.toLowerCase().split('+');
@@ -23,7 +27,7 @@ function matchesCombo(event: KeyboardEvent, combo: string): boolean {
   const wantAlt = parts.includes('alt');
 
   return (
-    event.key.toLowerCase() === key &&
+    mapCodeToLogicalKey(event.code, event.key) === key &&
     event.metaKey === wantMeta &&
     event.ctrlKey === wantCtrl &&
     event.shiftKey === wantShift &&

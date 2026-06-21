@@ -7,7 +7,11 @@ import {
   type ActionDefinition,
   ActionTargetType,
 } from '@/shared/types/actions';
-import { Scope, resolveSequence } from '@/shared/keyboard/registry';
+import {
+  Scope,
+  resolveSequence,
+  sequentialBindings,
+} from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
@@ -22,20 +26,12 @@ const OPTIONS = {
 } as const;
 
 // Binding ids whose first key starts an issue (i) sequence. Used to track the
-// prefix keypress so a standalone `x` doesn't fire mid-sequence. Kept in sync
-// with the i-group entries in registry.ts.
-const I_GROUP_BINDING_IDS = [
-  'seq-issue-create',
-  'seq-issue-status',
-  'seq-issue-priority',
-  'seq-issue-assignees',
-  'seq-issue-make-sub-issue',
-  'seq-issue-add-sub-issue',
-  'seq-issue-remove-parent',
-  'seq-issue-link-workspace',
-  'seq-issue-duplicate',
-  'seq-issue-delete',
-] as const;
+// prefix keypress so a standalone `x` doesn't fire mid-sequence. Derived from
+// the registry (default first key 'i') so new i>* bindings are tracked
+// automatically without a hand-maintained list.
+const I_GROUP_BINDING_IDS = sequentialBindings
+  .filter((b) => b.keys[0] === 'i')
+  .map((b) => b.id);
 
 export function useIssueShortcuts() {
   const { executeAction } = useActions();
@@ -128,10 +124,7 @@ export function useIssueShortcuts() {
   const enabled = isKanban;
 
   // Resolve the effective key for a binding id, honoring user overrides.
-  const seq = useCallback(
-    (id: string) => resolveSequence(id, overrides),
-    [overrides]
-  );
+  const seq = (id: string) => resolveSequence(id, overrides);
 
   // Effective first keys of all i-group sequences (comma-joined for
   // react-hotkeys-hook). Defaults to 'i' but follows overrides.

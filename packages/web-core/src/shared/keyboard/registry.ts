@@ -1,3 +1,5 @@
+import { isMac, getModifierKey } from '@/shared/lib/platform';
+
 export enum Scope {
   GLOBAL = 'global',
   DIALOG = 'dialog',
@@ -580,6 +582,47 @@ export function getSequentialBindingFor(
  */
 export function formatSequentialKeys(keys: string[]): string {
   return keys.map((k) => k.toUpperCase()).join(' ');
+}
+
+export type ShortcutType = 'sequence' | 'modifier';
+
+/**
+ * Map a KeyboardEvent's physical `code` to a logical key for layout
+ * independence (e.g. 'KeyG' -> 'g', 'Digit5' -> '5'), falling back to the
+ * lowercased `event.key` for other codes. Single source of truth shared by
+ * the settings recorder, the SequenceTracker, and the command-bar matcher;
+ * kept consistent with how react-hotkeys-hook normalizes keys via event.code.
+ */
+export function mapCodeToLogicalKey(code: string, key: string): string {
+  if (code.startsWith('Key')) return code.slice(3).toLowerCase();
+  if (code.startsWith('Digit')) return code.slice(5);
+  return key.toLowerCase();
+}
+
+/**
+ * Human-readable key chips for display. Sequences split on '>'; modifier
+ * combos split on '+' with each modifier mapped to its platform glyph.
+ */
+export function displayKeyParts(keys: string, type: ShortcutType): string[] {
+  if (type === 'sequence') {
+    return keys.split('>').map((k) => k.toUpperCase());
+  }
+  return keys.split('+').map((part) => {
+    switch (part) {
+      case 'mod':
+        return getModifierKey();
+      case 'ctrl':
+        return 'Ctrl';
+      case 'meta':
+        return isMac() ? '⌘' : 'Win';
+      case 'shift':
+        return '⇧';
+      case 'alt':
+        return isMac() ? '⌥' : 'Alt';
+      default:
+        return part.toUpperCase();
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

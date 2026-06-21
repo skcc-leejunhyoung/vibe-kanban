@@ -10,6 +10,7 @@ import { createHmrContext } from '@/shared/lib/hmrContext';
 import {
   effectiveFirstKeys,
   effectiveValidSequences,
+  mapCodeToLogicalKey,
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 
@@ -172,12 +173,4 @@ export function SequenceTrackerProvider({
       {children}
     </SequenceTrackerContext.Provider>
   );
-}
-
-/** Maps event.code to logical key for keyboard layout independence (KeyG -> 'g') */
-function mapCodeToLogicalKey(code: string, key: string): string | null {
-  if (code.startsWith('Key')) {
-    return code.slice(3).toLowerCase();
-  }
-  return key.toLowerCase();
 }

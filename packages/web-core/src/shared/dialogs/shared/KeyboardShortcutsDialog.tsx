@@ -8,11 +8,15 @@ import { defineModal, type NoProps } from '@/shared/lib/modals';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { cn } from '@/shared/lib/utils';
 import {
-  sequentialBindings,
   formatSequentialKeys,
+  effectiveSequentialBindings,
+  resolveModifier,
+  displayKeyParts,
+  COMMAND_BAR_BINDING_ID,
   Scope,
 } from '@/shared/keyboard/registry';
 import { isMac, getModifierKey } from '@/shared/lib/platform';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { Tooltip } from '@vibe/ui/components/Tooltip';
 
 interface ShortcutItem {
@@ -31,6 +35,7 @@ function useShortcutGroups(): ShortcutGroup[] {
   const { config } = useUserSystem();
   const { t } = useTranslation('common');
   const sendShortcut = config?.send_message_shortcut ?? 'ModifierEnter';
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   return useMemo(() => {
     const mod = getModifierKey();
@@ -63,7 +68,10 @@ function useShortcutGroups(): ShortcutGroup[] {
       name: t('shortcuts.groups.modifiers'),
       shortcuts: [
         {
-          keys: [mod, 'K'],
+          keys: displayKeyParts(
+            resolveModifier(COMMAND_BAR_BINDING_ID, overrides),
+            'modifier'
+          ),
           description: t('shortcuts.actions.openCommandBar'),
         },
         {
@@ -84,10 +92,10 @@ function useShortcutGroups(): ShortcutGroup[] {
       ],
     };
 
-    // Group sequential bindings by their first key
+    // Group sequential bindings by their first key (overrides applied)
     const sequentialByFirstKey = new Map<string, ShortcutItem[]>();
-    for (const binding of sequentialBindings) {
-      const firstKey = binding.keys[0];
+    for (const { binding, keys } of effectiveSequentialBindings(overrides)) {
+      const firstKey = keys[0];
       if (!sequentialByFirstKey.has(firstKey)) {
         sequentialByFirstKey.set(firstKey, []);
       }
@@ -95,7 +103,7 @@ function useShortcutGroups(): ShortcutGroup[] {
         binding.scopes?.includes(Scope.WORKSPACE) ?? false;
 
       sequentialByFirstKey.get(firstKey)!.push({
-        keys: formatSequentialKeys(binding.keys),
+        keys: formatSequentialKeys(keys),
         description: t(
           `shortcuts.actions.${binding.actionId}`,
           binding.description
@@ -141,7 +149,7 @@ function useShortcutGroups(): ShortcutGroup[] {
     ].filter((g) => g.shortcuts.length > 0);
 
     return [quickActions, navigation, modifiers, ...sequentialGroups];
-  }, [sendShortcut, t]);
+  }, [sendShortcut, t, overrides]);
 }
 
 function ShortcutRow({ item }: { item: ShortcutItem }) {
