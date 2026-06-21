@@ -577,13 +577,6 @@ export function getSequentialBindingFor(
   return sequentialBindings.find((binding) => binding.actionId === actionId);
 }
 
-/**
- * Format sequential keys for display (e.g., ['g', 's'] -> 'G S')
- */
-export function formatSequentialKeys(keys: string[]): string {
-  return keys.map((k) => k.toUpperCase()).join(' ');
-}
-
 export type ShortcutType = 'sequence' | 'modifier';
 
 /**
@@ -720,3 +713,47 @@ export function buildCombo(e: KeyboardEvent, key: string): string | null {
   parts.push(key);
   return parts.join('+');
 }
+
+// ---------------------------------------------------------------------------
+// Reserved (non-rebindable) shortcuts
+//
+// These are hardcoded in feature hooks (issue multi-selection in
+// useIssueShortcuts) and are NOT part of the rebindable registry. They are
+// listed here only so the settings recorder can flag a conflict when a user
+// rebinds a sequence/combo onto one of them.
+//
+// Keys use the same normalized form `buildCombo` emits, so a captured value
+// compares by exact string (note 'arrowdown'/'arrowup', the logical key for the
+// arrow keys per mapCodeToLogicalKey). Single-key bindings (Escape, plain 'x')
+// are intentionally omitted: a captured override is always either a combo (needs
+// a modifier) or a two-key sequence, so a bare key can never collide with them.
+// ---------------------------------------------------------------------------
+
+export interface ReservedBinding {
+  /** Stable id, namespaced so it never collides with a rebindable binding id. */
+  id: string;
+  /** i18n key under common:shortcuts.actions.* */
+  actionId: string;
+  /** Combo in buildCombo's normalized form, e.g. 'mod+a'. */
+  keys: string;
+}
+
+export const reservedBindings: ReservedBinding[] = [
+  { id: 'reserved-select-all', actionId: 'selectAllIssues', keys: 'mod+a' },
+  {
+    id: 'reserved-extend-down',
+    actionId: 'extendSelectionDown',
+    keys: 'shift+j',
+  },
+  {
+    id: 'reserved-extend-down-arrow',
+    actionId: 'extendSelectionDown',
+    keys: 'shift+arrowdown',
+  },
+  { id: 'reserved-extend-up', actionId: 'extendSelectionUp', keys: 'shift+k' },
+  {
+    id: 'reserved-extend-up-arrow',
+    actionId: 'extendSelectionUp',
+    keys: 'shift+arrowup',
+  },
+];

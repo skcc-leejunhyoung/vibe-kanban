@@ -4,6 +4,7 @@ import { ArrowCounterClockwiseIcon, XIcon } from '@phosphor-icons/react';
 import {
   modifierBindings,
   sequentialBindings,
+  reservedBindings,
   mapCodeToLogicalKey,
   displayKeyParts,
   buildCombo,
@@ -304,7 +305,10 @@ export function KeyboardShortcutsSettingsSection() {
     [overrides]
   );
 
-  // Flat list of effective bindings for conflict detection.
+  // Flat list of effective bindings for conflict detection. Reserved (non-
+  // rebindable) shortcuts are included so the recorder warns when a user binds
+  // onto one (e.g. mod+a, used by issue multi-select) even though they can't be
+  // changed or reset here.
   const allEffective = useMemo<EffectiveBinding[]>(() => {
     const list: EffectiveBinding[] = [];
     for (const group of ENTRY_GROUPS) {
@@ -315,6 +319,9 @@ export function KeyboardShortcutsSettingsSection() {
           keys: overrides[entry.id] ?? entry.defaultKeys,
         });
       }
+    }
+    for (const r of reservedBindings) {
+      list.push({ id: r.id, actionId: r.actionId, keys: r.keys });
     }
     return list;
   }, [overrides]);
