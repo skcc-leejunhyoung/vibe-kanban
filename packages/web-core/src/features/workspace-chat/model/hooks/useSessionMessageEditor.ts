@@ -78,6 +78,17 @@ export function useSessionMessageEditor({
     [scratchId, updateScratch]
   );
 
+  // Delete the persisted draft, swallowing errors so callers (send / feedback /
+  // request-changes handlers) can finish clearing local state without their
+  // follow-up cleanup being interrupted by a transient scratch-delete failure.
+  const clearDraft = useCallback(async () => {
+    try {
+      await deleteScratch();
+    } catch (e) {
+      console.error('Failed to clear follow-up draft', e);
+    }
+  }, [deleteScratch]);
+
   const { debounced: debouncedSave, cancel: cancelDebouncedSave } =
     useDebouncedCallback(saveToScratch, 500);
 
@@ -117,7 +128,7 @@ export function useSessionMessageEditor({
     isScratchLoading,
     hasInitialValue,
     saveToScratch,
-    clearDraft: deleteScratch,
+    clearDraft,
     cancelDebouncedSave,
     handleMessageChange,
   };
