@@ -55,7 +55,7 @@ export function RootRedirectPage() {
   }, [appNavigation, config, loading, loginStatus?.status, setSelectedOrgId]);
 
   return (
-    <div className="h-screen bg-primary flex items-center justify-center">
+    <div className="h-dvh bg-primary flex items-center justify-center">
       <p className="text-low">Loading...</p>
     </div>
   );

@@ -80,7 +80,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="h-screen overflow-auto bg-primary">
+    <div className="h-dvh overflow-auto bg-primary">
       <div className="mx-auto flex min-h-full w-full max-w-md flex-col justify-center px-base py-double">
         <div className="space-y-double rounded-sm border border-border bg-secondary p-double">
           <header className="space-y-double text-center">

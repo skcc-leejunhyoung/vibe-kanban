@@ -251,7 +251,7 @@ export function OnboardingSignInPage() {
 
   if (loading || !config) {
     return (
-      <div className="h-screen bg-primary flex items-center justify-center">
+      <div className="h-dvh bg-primary flex items-center justify-center">
         <p className="text-low">Loading...</p>
       </div>
     );
@@ -265,7 +265,7 @@ export function OnboardingSignInPage() {
   }
 
   return (
-    <div className="h-screen overflow-auto bg-primary">
+    <div className="h-dvh overflow-auto bg-primary">
       {isTauriApp() && (
         <div
           data-tauri-drag-region

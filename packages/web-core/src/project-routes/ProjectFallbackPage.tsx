@@ -7,7 +7,7 @@ export function ProjectFallbackPage() {
 
   return React.createElement(
     'div',
-    { className: 'mx-auto min-h-screen w-full max-w-5xl px-double py-double' },
+    { className: 'mx-auto min-h-dvh w-full max-w-5xl px-double py-double' },
     React.createElement(
       'h1',
       { className: 'text-2xl font-semibold text-high' },

@@ -171,7 +171,7 @@ export function VSCodeWorkspacePage() {
 
   return (
     <AppWithStyleOverride setTheme={setTheme}>
-      <div className="h-screen flex flex-col bg-primary">
+      <div className="h-dvh flex flex-col bg-primary">
         <WebviewContextMenu />
 
         <main

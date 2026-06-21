@@ -242,7 +242,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
         "flex flex-col bg-primary",
         isMobile
           ? "fixed inset-0 pb-[env(safe-area-inset-bottom)]"
-          : "h-screen",
+          : "h-dvh",
       )}
     >
       <div className="flex min-h-0 flex-1">

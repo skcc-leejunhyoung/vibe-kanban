@@ -318,7 +318,7 @@ export function LandingPage() {
 
   if (loading || !config || !initialized) {
     return (
-      <div className="h-screen bg-primary flex items-center justify-center">
+      <div className="h-dvh bg-primary flex items-center justify-center">
         <p className="text-low">Loading...</p>
       </div>
     );
@@ -329,7 +329,7 @@ export function LandingPage() {
   }
 
   return (
-    <div className="h-screen bg-primary flex items-center justify-center p-double">
+    <div className="h-dvh bg-primary flex items-center justify-center p-double">
       {isTauriApp() && (
         <div
           data-tauri-drag-region

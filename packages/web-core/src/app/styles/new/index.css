@@ -269,7 +269,12 @@ html {
   html,
   body,
   #root {
-    @apply min-h-screen;
+    /* iOS standalone PWA reports 100vh including the status-bar/safe-area
+       inset, so the body ends up taller than the visible viewport and the
+       page scrolls a few px on iPad. 100dvh tracks the actual visible
+       height; the 100vh line is the fallback for browsers without dvh. */
+    min-height: 100vh;
+    min-height: 100dvh;
     @apply font-normal;
     @apply bg-background text-foreground font-ibm-plex-sans;
   }
