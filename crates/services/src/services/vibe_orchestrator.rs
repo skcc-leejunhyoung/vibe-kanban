@@ -89,10 +89,10 @@ pub fn cleanup_failure_log_text(msgs: &[LogMsg], max_bytes: usize) -> String {
     let mut out = String::new();
     for msg in msgs {
         if let LogMsg::Stdout(s) | LogMsg::Stderr(s) = msg {
+            // Append chunks verbatim. These are byte slices off the stdout/
+            // stderr ReaderStream, NOT whole lines, so injecting a newline here
+            // would split a logical line that happened to span two read chunks.
             out.push_str(s);
-            if !s.ends_with('\n') {
-                out.push('\n');
-            }
         }
     }
     if out.len() > max_bytes {
@@ -986,10 +986,10 @@ mod tests {
             LogMsg::Stdout("building...\n".into()),
             LogMsg::Stderr("error: boom".into()),
         ];
-        // stderr line gets a trailing newline appended; stdout already had one.
+        // Chunks are concatenated verbatim; no synthetic newline is injected.
         assert_eq!(
             cleanup_failure_log_text(&msgs, 4000),
-            "building...\nerror: boom\n"
+            "building...\nerror: boom"
         );
     }
 
@@ -1002,7 +1002,7 @@ mod tests {
             LogMsg::Stdout("hello".into()),
             LogMsg::Finished,
         ];
-        assert_eq!(cleanup_failure_log_text(&msgs, 4000), "hello\n");
+        assert_eq!(cleanup_failure_log_text(&msgs, 4000), "hello");
     }
 
     #[test]
@@ -1016,14 +1016,11 @@ mod tests {
 
     #[test]
     fn cleanup_log_tail_caps_on_char_boundary() {
-        // "가나다라마" + appended "\n" = 16 bytes. Capping to 11 lands at byte 5,
-        // mid-character; it must advance to the next boundary (byte 6) so the
-        // slice is valid UTF-8 — tail "다라마\n", never a split codepoint.
+        // "가나다라마" = 15 bytes (no synthetic newline). Capping to 11 lands at
+        // byte 4, mid-character; it must advance to the next boundary (byte 6)
+        // so the slice is valid UTF-8 — tail "다라마", never a split codepoint.
         let msgs = vec![LogMsg::Stdout("가나다라마".into())];
-        assert_eq!(
-            cleanup_failure_log_text(&msgs, 11),
-            "...(생략)...\n다라마\n"
-        );
+        assert_eq!(cleanup_failure_log_text(&msgs, 11), "...(생략)...\n다라마");
     }
 
     // ---- phase round-trip --------------------------------------------------

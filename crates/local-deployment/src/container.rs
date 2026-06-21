@@ -87,6 +87,9 @@ pub struct LocalContainerService {
     /// Tracks background tasks that stream logs to the database.
     /// When stopping execution, we await these to ensure logs are fully persisted.
     db_stream_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
+    /// Tracks the fire-and-forget task forwarding child stdout/stderr into the
+    /// MsgStore. Awaited at exit so post-completion log reads see all output.
+    forwarder_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
     exit_monitor_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
     workspace_touch_times: Arc<RwLock<HashMap<Uuid, Instant>>>,
     config: Arc<RwLock<Config>>,
@@ -116,6 +119,7 @@ impl LocalContainerService {
         let child_store = Arc::new(RwLock::new(HashMap::new()));
         let cancellation_tokens = Arc::new(RwLock::new(HashMap::new()));
         let db_stream_handles = Arc::new(RwLock::new(HashMap::new()));
+        let forwarder_handles = Arc::new(RwLock::new(HashMap::new()));
         let exit_monitor_handles = Arc::new(RwLock::new(HashMap::new()));
         let workspace_touch_times = Arc::new(RwLock::new(HashMap::new()));
         let notification_service =
@@ -128,6 +132,7 @@ impl LocalContainerService {
             cancellation_tokens,
             msg_stores,
             db_stream_handles,
+            forwarder_handles,
             exit_monitor_handles,
             workspace_touch_times,
             config,
@@ -238,6 +243,16 @@ impl LocalContainerService {
 
     async fn take_db_stream_handle(&self, id: &Uuid) -> Option<JoinHandle<()>> {
         let mut map = self.db_stream_handles.write().await;
+        map.remove(id)
+    }
+
+    async fn add_forwarder_handle(&self, id: Uuid, handle: JoinHandle<()>) {
+        let mut map = self.forwarder_handles.write().await;
+        map.insert(id, handle);
+    }
+
+    async fn take_forwarder_handle(&self, id: &Uuid) -> Option<JoinHandle<()>> {
+        let mut map = self.forwarder_handles.write().await;
         map.remove(id)
     }
 
@@ -552,6 +567,16 @@ impl LocalContainerService {
                 Err(_) => (None, ExecutionProcessStatus::Failed),
             };
 
+            // Drain the (otherwise detached) stdout/stderr forwarder into the
+            // MsgStore before any post-completion step reads this process's logs
+            // (turn summary, rate-limit detection, vibe cleanup-failure log).
+            // The forwarder is fire-and-forget, so right after exit its final
+            // chunks may not be in get_history() yet; await it (bounded) so the
+            // reads below observe the complete output.
+            if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
+                let _ = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
+            }
+
             if !ExecutionProcess::was_stopped(&db.pool, exec_id).await
                 && let Err(e) =
                     ExecutionProcess::update_completion(&db.pool, exec_id, status, exit_code).await
@@ -777,7 +802,8 @@ impl LocalContainerService {
 
         // Merge and forward into the store
         let merged = select(out, err); // Stream<Item = Result<LogMsg, io::Error>>
-        store.clone().spawn_forwarder(merged);
+        let handle = store.clone().spawn_forwarder(merged);
+        self.add_forwarder_handle(id, handle).await;
         Ok(())
     }
 
