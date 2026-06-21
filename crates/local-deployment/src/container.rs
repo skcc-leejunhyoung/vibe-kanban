@@ -1145,9 +1145,12 @@ impl LocalContainerService {
                     ctx.workspace.id
                 );
 
-                // Manually finalize task since we're bypassing normal execution flow
-                self.finalize_task(ctx).await;
-                self.vibe_on_finalize(ctx).await;
+                // We're bypassing the normal execution flow (no next action will
+                // run), so this is the terminal turn. Consume any queued
+                // follow-up here instead of just finalizing — otherwise the
+                // queued message would stay stuck in the in-memory queue forever
+                // (no cleanup-script finalize will ever drain it).
+                self.finalize_with_queued_followup(ctx, false).await;
                 already_finalized = true;
             }
         }
@@ -1159,78 +1162,94 @@ impl LocalContainerService {
                 .ok()
                 .and_then(|action| action.next_action())
                 .is_some();
-            let mut started_queued_follow_up = false;
-
-            // Only execute queued messages if the execution succeeded
-            // If it failed or was killed, just clear the queue and finalize
-            let should_execute_queued = !matches!(
-                ctx.execution_process.status,
-                ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
-            );
-
-            if let Some(queued_msg) = self.queued_message_service.take_queued(ctx.session.id) {
-                if should_execute_queued {
-                    tracing::info!(
-                        "Found queued message for session {}, starting follow-up execution",
-                        ctx.session.id
-                    );
-
-                    // Delete the scratch since we're consuming the queued message
-                    if let Err(e) =
-                        Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp)
-                            .await
-                    {
-                        tracing::warn!(
-                            "Failed to delete scratch after consuming queued message: {e}"
-                        );
-                    }
-
-                    // Execute the queued follow-up
-                    if let Err(e) = self.start_queued_follow_up(ctx, &queued_msg.data).await {
-                        tracing::error!("Failed to start queued follow-up: {}", e);
-                        // Fall back to finalization if follow-up fails
-                        self.finalize_task(ctx).await;
-                        self.vibe_on_finalize(ctx).await;
-                    } else {
-                        started_queued_follow_up = true;
-                    }
-                } else {
-                    // Execution failed or was killed - discard the queued message and finalize
-                    tracing::info!(
-                        "Discarding queued message for session {} due to execution status {:?}",
-                        ctx.session.id,
-                        ctx.execution_process.status
-                    );
-                    self.finalize_task(ctx).await;
-                    self.vibe_on_finalize(ctx).await;
-                }
-            } else {
-                self.finalize_task(ctx).await;
-                self.vibe_on_finalize(ctx).await;
-            }
-
-            let should_mark_turn_unseen = matches!(
-                ctx.execution_process.run_reason,
-                ExecutionProcessRunReason::CodingAgent
-            ) && !has_chained_follow_up
-                && !started_queued_follow_up;
-
-            if should_mark_turn_unseen
-                && let Err(e) = CodingAgentTurn::mark_unseen_by_execution_process_id(
-                    &self.db.pool,
-                    ctx.execution_process.id,
-                )
-                .await
-            {
-                tracing::warn!(
-                    "Failed to mark coding agent turn unseen for execution {}: {}",
-                    ctx.execution_process.id,
-                    e
-                );
-            }
+            self.finalize_with_queued_followup(ctx, has_chained_follow_up)
+                .await;
         }
 
         Ok(())
+    }
+
+    /// Terminal handling for a completed execution: consume the session's
+    /// queued follow-up message if one is present (and the execution wasn't
+    /// failed/killed), otherwise finalize the task. Also re-marks the coding
+    /// agent turn unseen when this is the terminal turn (no chained or queued
+    /// follow-up will run).
+    ///
+    /// Shared by the normal `should_finalize` path and the "no changes made"
+    /// early-finalize path, so that a queued message is never left stuck in the
+    /// in-memory queue when the cleanup script is skipped.
+    async fn finalize_with_queued_followup(
+        &self,
+        ctx: &ExecutionContext,
+        has_chained_follow_up: bool,
+    ) {
+        let mut started_queued_follow_up = false;
+
+        // Only execute queued messages if the execution succeeded.
+        // If it failed or was killed, just clear the queue and finalize.
+        let should_execute_queued = !matches!(
+            ctx.execution_process.status,
+            ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
+        );
+
+        if let Some(queued_msg) = self.queued_message_service.take_queued(ctx.session.id) {
+            if should_execute_queued {
+                tracing::info!(
+                    "Found queued message for session {}, starting follow-up execution",
+                    ctx.session.id
+                );
+
+                // Delete the scratch since we're consuming the queued message
+                if let Err(e) =
+                    Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp)
+                        .await
+                {
+                    tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
+                }
+
+                // Execute the queued follow-up
+                if let Err(e) = self.start_queued_follow_up(ctx, &queued_msg.data).await {
+                    tracing::error!("Failed to start queued follow-up: {}", e);
+                    // Fall back to finalization if follow-up fails
+                    self.finalize_task(ctx).await;
+                    self.vibe_on_finalize(ctx).await;
+                } else {
+                    started_queued_follow_up = true;
+                }
+            } else {
+                // Execution failed or was killed - discard the queued message and finalize
+                tracing::info!(
+                    "Discarding queued message for session {} due to execution status {:?}",
+                    ctx.session.id,
+                    ctx.execution_process.status
+                );
+                self.finalize_task(ctx).await;
+                self.vibe_on_finalize(ctx).await;
+            }
+        } else {
+            self.finalize_task(ctx).await;
+            self.vibe_on_finalize(ctx).await;
+        }
+
+        let should_mark_turn_unseen = matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CodingAgent
+        ) && !has_chained_follow_up
+            && !started_queued_follow_up;
+
+        if should_mark_turn_unseen
+            && let Err(e) = CodingAgentTurn::mark_unseen_by_execution_process_id(
+                &self.db.pool,
+                ctx.execution_process.id,
+            )
+            .await
+        {
+            tracing::warn!(
+                "Failed to mark coding agent turn unseen for execution {}: {}",
+                ctx.execution_process.id,
+                e
+            );
+        }
     }
 
     /// Start a follow-up execution from a queued message
