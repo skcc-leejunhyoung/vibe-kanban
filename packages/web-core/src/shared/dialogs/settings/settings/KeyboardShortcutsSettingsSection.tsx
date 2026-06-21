@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowCounterClockwiseIcon } from '@phosphor-icons/react';
+import { ArrowCounterClockwiseIcon, XIcon } from '@phosphor-icons/react';
 import {
   modifierBindings,
   sequentialBindings,
   mapCodeToLogicalKey,
   displayKeyParts,
+  buildCombo,
   type ShortcutType,
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
-import { isMac } from '@/shared/lib/platform';
 import { cn } from '@/shared/lib/utils';
 import { SettingsCard } from './SettingsComponents';
 
@@ -72,27 +72,10 @@ const ENTRY_GROUPS: EntryGroup[] = (() => {
   return groups;
 })();
 
-/**
- * Build a modifier combo string ('mod+shift+k') from an event, or null if no
- * modifier is held (combos require one). 'mod' = Cmd on macOS, Ctrl elsewhere.
- */
-function buildCombo(e: KeyboardEvent, key: string): string | null {
-  const mac = isMac();
-  const parts: string[] = [];
-  if ((mac && e.metaKey) || (!mac && e.ctrlKey)) parts.push('mod');
-  if (mac && e.ctrlKey) parts.push('ctrl');
-  if (!mac && e.metaKey) parts.push('meta');
-  if (e.shiftKey) parts.push('shift');
-  if (e.altKey) parts.push('alt');
-  if (parts.length === 0) return null;
-  parts.push(key);
-  return parts.join('+');
-}
-
-function KeyChips({ keys, type }: { keys: string; type: ShortcutType }) {
+function KeyChips({ keys }: { keys: string }) {
   return (
     <div className="flex items-center gap-1">
-      {displayKeyParts(keys, type).map((part, i) => (
+      {displayKeyParts(keys).map((part, i) => (
         <kbd
           key={i}
           className={cn(
@@ -112,13 +95,17 @@ function KeyChips({ keys, type }: { keys: string; type: ShortcutType }) {
 /**
  * Captures a new binding from the keyboard. Uses a capture-phase listener with
  * stopImmediatePropagation so live shortcuts don't fire while recording.
+ *
+ * A held modifier always produces a combo ('mod+a'). With `allowSequence`
+ * (sequence bindings), a modifier-free keystroke instead starts a two-key
+ * sequence ('w>a'); modifier bindings (command bar) require a combo.
  */
 function ShortcutRecorder({
-  type,
+  allowSequence,
   onCapture,
   onCancel,
 }: {
-  type: ShortcutType;
+  allowSequence: boolean;
   onCapture: (keys: string) => void;
   onCancel: () => void;
 }) {
@@ -149,28 +136,30 @@ function ShortcutRecorder({
       const key = mapCodeToLogicalKey(e.code, e.key);
       if (!key) return;
 
-      if (type === 'modifier') {
-        const combo = buildCombo(e, key);
-        if (!combo) return; // require a modifier; wait for a valid combo
+      // A modifier combo takes priority for every binding type.
+      const combo = buildCombo(e, key);
+      if (combo) {
         onCaptureRef.current(combo);
-      } else {
-        seqBufferRef.current = [...seqBufferRef.current, key];
-        if (seqBufferRef.current.length === 2) {
-          onCaptureRef.current(seqBufferRef.current.join('>'));
-          seqBufferRef.current = [];
-        }
+        return;
+      }
+      // No modifier: only sequence bindings accept a plain two-key sequence.
+      if (!allowSequence) return;
+      seqBufferRef.current = [...seqBufferRef.current, key];
+      if (seqBufferRef.current.length === 2) {
+        onCaptureRef.current(seqBufferRef.current.join('>'));
+        seqBufferRef.current = [];
       }
     };
     window.addEventListener('keydown', handler, { capture: true });
     return () =>
       window.removeEventListener('keydown', handler, { capture: true });
-  }, [type]);
+  }, [allowSequence]);
 
   return (
     <span className="text-xs text-brand font-medium animate-pulse">
-      {type === 'modifier'
-        ? t('settings.keyboardShortcuts.recording.modifier')
-        : t('settings.keyboardShortcuts.recording.sequence')}
+      {allowSequence
+        ? t('settings.keyboardShortcuts.recording.sequence')
+        : t('settings.keyboardShortcuts.recording.modifier')}
     </span>
   );
 }
@@ -207,8 +196,9 @@ function ShortcutRow({
 
   const handleCapture = useCallback(
     (keys: string) => {
+      // Disabled bindings ('') don't conflict; only non-empty values do.
       const conflict = allEffective.find(
-        (b) => b.id !== entry.id && b.keys === keys
+        (b) => b.id !== entry.id && b.keys !== '' && b.keys === keys
       );
       if (conflict) {
         const conflictLabel = t(`shortcuts.actions.${conflict.actionId}`, {
@@ -228,19 +218,41 @@ function ShortcutRow({
     [allEffective, entry.id, onSet, t]
   );
 
+  // Clear = store an empty override so the shortcut is disabled (kept blank).
+  const handleClear = useCallback(() => {
+    setError(null);
+    onSet(entry.id, '');
+    setRecording(false);
+  }, [entry.id, onSet]);
+
   return (
     <div className="py-1">
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm text-normal truncate">{label}</span>
         <div className="flex items-center gap-2 shrink-0">
           {recording ? (
-            <ShortcutRecorder
-              type={entry.type}
-              onCapture={handleCapture}
-              onCancel={() => setRecording(false)}
-            />
+            <>
+              <ShortcutRecorder
+                allowSequence={entry.type === 'sequence'}
+                onCapture={handleCapture}
+                onCancel={() => setRecording(false)}
+              />
+              <button
+                type="button"
+                onClick={handleClear}
+                className="text-low hover:text-normal"
+                title={t('settings.keyboardShortcuts.clear')}
+                aria-label={t('settings.keyboardShortcuts.clear')}
+              >
+                <XIcon className="size-icon-xs" weight="bold" />
+              </button>
+            </>
+          ) : effectiveKeys === '' ? (
+            <span className="text-xs text-low italic">
+              {t('settings.keyboardShortcuts.disabled')}
+            </span>
           ) : (
-            <KeyChips keys={effectiveKeys} type={entry.type} />
+            <KeyChips keys={effectiveKeys} />
           )}
           <button
             type="button"

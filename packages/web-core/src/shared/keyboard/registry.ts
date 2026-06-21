@@ -600,11 +600,15 @@ export function mapCodeToLogicalKey(code: string, key: string): string {
 }
 
 /**
- * Human-readable key chips for display. Sequences split on '>'; modifier
- * combos split on '+' with each modifier mapped to its platform glyph.
+ * Human-readable key chips for display. Format is inferred from the value
+ * itself: empty => no chips (disabled), contains '>' => a sequence split on
+ * '>', otherwise a modifier combo split on '+' with each modifier mapped to its
+ * platform glyph. A binding can be rebound across formats, so display must not
+ * rely on the binding's declared type.
  */
-export function displayKeyParts(keys: string, type: ShortcutType): string[] {
-  if (type === 'sequence') {
+export function displayKeyParts(keys: string): string[] {
+  if (!keys) return [];
+  if (keys.includes('>')) {
     return keys.split('>').map((k) => k.toUpperCase());
   }
   return keys.split('+').map((part) => {
@@ -631,52 +635,88 @@ export function displayKeyParts(keys: string, type: ShortcutType): string[] {
 // These take the user `overrides` map (from useKeyboardShortcutsStore) as an
 // argument rather than reading the store directly, so this module stays free of
 // an import cycle and the values stay reactive in callers that subscribe.
+//
+// An override value is one of three forms:
+//   - sequence:  'w>a'   (react-hotkeys-hook sequence syntax)
+//   - combo:     'mod+a' (a sequence binding may be rebound to a modifier combo)
+//   - empty:     ''      (binding cleared / disabled)
+// Absence of an entry means "use the default", but an empty string means
+// "disabled", so resolvers check `id in overrides` rather than truthiness.
 // ---------------------------------------------------------------------------
 
 type Overrides = Record<string, string>;
 
+/** True when an effective value is a two-key sequence (vs a combo or empty). */
+export function isSequenceKeys(keys: string): boolean {
+  return keys.includes('>');
+}
+
 /**
- * Effective hotkey for a sequential binding, honoring overrides.
- * Returns react-hotkeys-hook sequence syntax (e.g. 'w>a').
+ * Effective hotkey for a sequential binding, honoring overrides. Returns
+ * sequence syntax ('w>a'), a combo ('mod+a') if rebound, or '' if disabled.
  */
 export function resolveSequence(id: string, overrides: Overrides): string {
-  const override = overrides[id];
-  if (override) return override;
+  if (id in overrides) return overrides[id];
   const binding = sequentialBindings.find((b) => b.id === id);
   return binding ? binding.keys.join('>') : '';
 }
 
 /**
  * Effective combo for a modifier binding (e.g. the command bar), honoring
- * overrides. Returns matcher syntax (e.g. 'mod+k').
+ * overrides. Returns matcher syntax ('mod+k') or '' if disabled.
  */
 export function resolveModifier(id: string, overrides: Overrides): string {
-  const override = overrides[id];
-  if (override) return override;
+  if (id in overrides) return overrides[id];
   const binding = modifierBindings.find((b) => b.id === id);
   return binding ? binding.keys : '';
 }
 
-/** Sequential bindings paired with their effective keys (overrides applied). */
+/** Sequential bindings paired with their effective key string (overrides applied). */
 export function effectiveSequentialBindings(
   overrides: Overrides
-): { binding: SequentialBinding; keys: string[] }[] {
-  return sequentialBindings.map((binding) => {
-    const override = overrides[binding.id];
-    return { binding, keys: override ? override.split('>') : binding.keys };
-  });
+): { binding: SequentialBinding; keys: string }[] {
+  return sequentialBindings.map((binding) => ({
+    binding,
+    keys: resolveSequence(binding.id, overrides),
+  }));
 }
 
-/** Valid first keys for sequences, with overrides applied (for SequenceTracker). */
+/**
+ * Valid first keys for sequences, with overrides applied (for SequenceTracker).
+ * Only true sequences participate; combo and disabled overrides are excluded.
+ */
 export function effectiveFirstKeys(overrides: Overrides): Set<string> {
-  return new Set(
-    effectiveSequentialBindings(overrides).map(({ keys }) => keys[0])
-  );
+  const set = new Set<string>();
+  for (const { keys } of effectiveSequentialBindings(overrides)) {
+    if (isSequenceKeys(keys)) set.add(keys.split('>')[0]);
+  }
+  return set;
 }
 
 /** Full sequences (comma-joined) for validity checks, with overrides applied. */
 export function effectiveValidSequences(overrides: Overrides): Set<string> {
-  return new Set(
-    effectiveSequentialBindings(overrides).map(({ keys }) => keys.join(','))
-  );
+  const set = new Set<string>();
+  for (const { keys } of effectiveSequentialBindings(overrides)) {
+    if (isSequenceKeys(keys)) set.add(keys.split('>').join(','));
+  }
+  return set;
+}
+
+/**
+ * Build a modifier combo string ('mod+shift+k') from a KeyboardEvent, or null
+ * if no modifier is held. 'mod' = Cmd on macOS, Ctrl elsewhere. The key part is
+ * the layout-independent logical key (see mapCodeToLogicalKey). Shared by the
+ * settings recorder so captured combos round-trip with matchesCombo.
+ */
+export function buildCombo(e: KeyboardEvent, key: string): string | null {
+  const mac = isMac();
+  const parts: string[] = [];
+  if ((mac && e.metaKey) || (!mac && e.ctrlKey)) parts.push('mod');
+  if (mac && e.ctrlKey) parts.push('ctrl');
+  if (!mac && e.metaKey) parts.push('meta');
+  if (e.shiftKey) parts.push('shift');
+  if (e.altKey) parts.push('alt');
+  if (parts.length === 0) return null;
+  parts.push(key);
+  return parts.join('+');
 }

@@ -10,8 +10,10 @@ import {
 import {
   Scope,
   resolveSequence,
+  isSequenceKeys,
   sequentialBindings,
 } from '@/shared/keyboard/registry';
+import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
@@ -127,12 +129,13 @@ export function useIssueShortcuts() {
   const seq = (id: string) => resolveSequence(id, overrides);
 
   // Effective first keys of all i-group sequences (comma-joined for
-  // react-hotkeys-hook). Defaults to 'i' but follows overrides.
+  // react-hotkeys-hook). Defaults to 'i' but follows overrides; bindings rebound
+  // to a combo or cleared no longer contribute a prefix key.
   const iPrefixKeys = useMemo(() => {
     const keys = new Set<string>();
     for (const id of I_GROUP_BINDING_IDS) {
-      const first = resolveSequence(id, overrides).split('>')[0];
-      if (first) keys.add(first);
+      const eff = resolveSequence(id, overrides);
+      if (isSequenceKeys(eff)) keys.add(eff.split('>')[0]);
     }
     return [...keys].join(',');
   }, [overrides]);
@@ -141,7 +144,7 @@ export function useIssueShortcuts() {
   // like `x` don't fire during a sequence like `i>x`.
   const sequencePendingRef = useRef(false);
   const sequenceTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  useHotkeys(
+  useReboundHotkey(
     iPrefixKeys,
     () => {
       sequencePendingRef.current = true;
@@ -154,13 +157,13 @@ export function useIssueShortcuts() {
     [iPrefixKeys]
   );
 
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-create'),
     (e) => executeIssueAction(Actions.CreateIssue, e),
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-status'),
     (e) => {
       if (isCreatingIssueRef.current) {
@@ -172,7 +175,7 @@ export function useIssueShortcuts() {
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-priority'),
     (e) => {
       if (isCreatingIssueRef.current) {
@@ -184,7 +187,7 @@ export function useIssueShortcuts() {
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-assignees'),
     (e) => {
       if (isCreatingIssueRef.current) {
@@ -196,37 +199,37 @@ export function useIssueShortcuts() {
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-make-sub-issue'),
     (e) => executeIssueAction(Actions.MakeSubIssueOf, e),
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-add-sub-issue'),
     (e) => executeIssueAction(Actions.AddSubIssue, e),
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-remove-parent'),
     (e) => executeIssueAction(Actions.RemoveParentIssue, e),
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-link-workspace'),
     (e) => executeIssueAction(Actions.LinkWorkspace, e),
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-duplicate'),
     (e) => executeIssueAction(Actions.DuplicateIssue, e),
     { ...OPTIONS, enabled },
     [overrides]
   );
-  useHotkeys(
+  useReboundHotkey(
     seq('seq-issue-delete'),
     (e) => executeIssueAction(Actions.DeleteIssue, e),
     { ...OPTIONS, enabled },

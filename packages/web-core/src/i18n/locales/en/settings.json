@@ -40,17 +40,19 @@
       }
     },
     "keyboardShortcuts": {
-      "description": "Rebind the command bar and sequential shortcuts. Changes are saved to this browser.",
+      "description": "Rebind shortcuts to a key combo or a two-key sequence. Press Change, then the new keys — or ✕ to clear and disable. Saved to this browser.",
       "change": "Change",
       "cancel": "Cancel",
+      "clear": "Clear (disable)",
+      "disabled": "Not set",
       "reset": "Reset to default",
       "resetAll": "Reset all",
       "conflict": "Already used by \"{{action}}\"",
       "recording": {
         "modifier": "Press a key combo…",
-        "sequence": "Press two keys…"
+        "sequence": "Press a key combo, or two keys in sequence…"
       },
-      "sequentialHint": "Sequential shortcuts: press the first key, then the second within the timeout."
+      "sequentialHint": "Sequential shortcuts: press the first key, then the second within the timeout. Hold a modifier while recording to set a combo instead."
     },
     "hostPicker": {
       "thisMachine": "This machine",

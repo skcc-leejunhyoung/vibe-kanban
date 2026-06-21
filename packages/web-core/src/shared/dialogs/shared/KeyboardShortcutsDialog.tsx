@@ -8,7 +8,6 @@ import { defineModal, type NoProps } from '@/shared/lib/modals';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { cn } from '@/shared/lib/utils';
 import {
-  formatSequentialKeys,
   effectiveSequentialBindings,
   resolveModifier,
   displayKeyParts,
@@ -40,6 +39,8 @@ function useShortcutGroups(): ShortcutGroup[] {
   return useMemo(() => {
     const mod = getModifierKey();
     const enterKey = isMac() ? '↩' : 'Enter';
+    // Render effective keys as chips; a cleared (disabled) binding shows a dash.
+    const chips = (keys: string) => (keys ? displayKeyParts(keys) : ['—']);
 
     // Quick Actions - single key shortcuts
     const quickActions: ShortcutGroup = {
@@ -68,10 +69,7 @@ function useShortcutGroups(): ShortcutGroup[] {
       name: t('shortcuts.groups.modifiers'),
       shortcuts: [
         {
-          keys: displayKeyParts(
-            resolveModifier(COMMAND_BAR_BINDING_ID, overrides),
-            'modifier'
-          ),
+          keys: chips(resolveModifier(COMMAND_BAR_BINDING_ID, overrides)),
           description: t('shortcuts.actions.openCommandBar'),
         },
         {
@@ -95,7 +93,9 @@ function useShortcutGroups(): ShortcutGroup[] {
     // Group sequential bindings by their first key (overrides applied)
     const sequentialByFirstKey = new Map<string, ShortcutItem[]>();
     for (const { binding, keys } of effectiveSequentialBindings(overrides)) {
-      const firstKey = keys[0];
+      // Group by the binding's default first key so groups stay stable even when
+      // a binding is rebound to a combo or cleared.
+      const firstKey = binding.keys[0];
       if (!sequentialByFirstKey.has(firstKey)) {
         sequentialByFirstKey.set(firstKey, []);
       }
@@ -103,7 +103,7 @@ function useShortcutGroups(): ShortcutGroup[] {
         binding.scopes?.includes(Scope.WORKSPACE) ?? false;
 
       sequentialByFirstKey.get(firstKey)!.push({
-        keys: formatSequentialKeys(keys),
+        keys: chips(keys),
         description: t(
           `shortcuts.actions.${binding.actionId}`,
           binding.description
