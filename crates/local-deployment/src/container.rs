@@ -1169,6 +1169,20 @@ impl LocalContainerService {
         Ok(())
     }
 
+    /// Whether a session's queued follow-up should be executed (rather than
+    /// discarded) given the terminal status of the just-finished execution.
+    ///
+    /// A successfully completed turn — including a "no changes made" turn that
+    /// finalizes early without running the cleanup script — must still drain its
+    /// queue; only failed or killed turns discard it. Shared decision for both
+    /// finalize paths in [`Self::finalize_with_queued_followup`].
+    fn should_execute_queued_message(status: &ExecutionProcessStatus) -> bool {
+        !matches!(
+            status,
+            ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
+        )
+    }
+
     /// Terminal handling for a completed execution: consume the session's
     /// queued follow-up message if one is present (and the execution wasn't
     /// failed/killed), otherwise finalize the task. Also re-marks the coding
@@ -1187,10 +1201,8 @@ impl LocalContainerService {
 
         // Only execute queued messages if the execution succeeded.
         // If it failed or was killed, just clear the queue and finalize.
-        let should_execute_queued = !matches!(
-            ctx.execution_process.status,
-            ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
-        );
+        let should_execute_queued =
+            Self::should_execute_queued_message(&ctx.execution_process.status);
 
         if let Some(queued_msg) = self.queued_message_service.take_queued(ctx.session.id) {
             if should_execute_queued {
@@ -1954,6 +1966,28 @@ mod tests {
             LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
             None
         );
+    }
+
+    /// Regression for the "no changes made" early-finalize path (scenario A).
+    ///
+    /// A coding agent that completes successfully *without* making changes is
+    /// still a terminal turn whose queued follow-up must be executed, not left
+    /// stuck in the in-memory queue forever. Both the normal `should_finalize`
+    /// path and the no-changes early-finalize path now run through
+    /// `finalize_with_queued_followup`, which consumes the queue iff this
+    /// predicate holds — so a `Completed` status (the no-changes success case)
+    /// must execute the queue; only `Failed`/`Killed` discard it.
+    #[test]
+    fn completed_turn_executes_queued_followup_even_without_changes() {
+        assert!(LocalContainerService::should_execute_queued_message(
+            &ExecutionProcessStatus::Completed
+        ));
+        assert!(!LocalContainerService::should_execute_queued_message(
+            &ExecutionProcessStatus::Failed
+        ));
+        assert!(!LocalContainerService::should_execute_queued_message(
+            &ExecutionProcessStatus::Killed
+        ));
     }
 }
 
