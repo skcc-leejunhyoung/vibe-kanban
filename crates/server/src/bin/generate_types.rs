@@ -140,6 +140,7 @@ fn generate_types_content() -> String {
         server::routes::attachments::AttachmentResponse::decl(),
         server::routes::attachments::AttachmentMetadata::decl(),
         db::models::requests::WorkspaceRepoInput::decl(),
+        db::models::requests::PrReviewInput::decl(),
         server::routes::workspaces::integration::RunAgentSetupRequest::decl(),
         server::routes::workspaces::integration::RunAgentSetupResponse::decl(),
         server::routes::workspaces::gh_cli_setup::GhCliSetupError::decl(),

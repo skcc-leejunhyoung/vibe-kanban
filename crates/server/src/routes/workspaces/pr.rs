@@ -13,6 +13,7 @@ use db::models::{
     merge::{Merge, MergeStatus},
     pull_request::PullRequest,
     repo::{Repo, RepoError},
+    requests::PrReviewInput,
     session::{CreateSession, Session},
     workspace::{CreateWorkspace, Workspace, WorkspaceError},
     workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
@@ -36,7 +37,9 @@ use utils::response::ApiResponse;
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
 
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{
+    DeploymentImpl, error::ApiError, routes::workspaces::review_mode::review_target_branch_ref,
+};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct CreatePrApiRequest {
@@ -690,35 +693,51 @@ async fn cleanup_failed_pr_workspace(pool: &sqlx::SqlitePool, workspace: &Worksp
     }
 }
 
-#[axum::debug_handler]
-pub async fn create_workspace_from_pr(
-    State(deployment): State<DeploymentImpl>,
-    Json(payload): Json<CreateWorkspaceFromPrBody>,
-) -> Result<ResponseJson<ApiResponse<CreateWorkspaceFromPrResponse, CreateFromPrError>>, ApiError> {
+/// A failure to fetch or check out the PR's head branch (gh repo-info lookup or
+/// `gh pr checkout`). Surfaced separately from infra errors so callers can
+/// present it as a typed outcome instead of a 500.
+pub(crate) struct BranchFetchFailure {
+    pub message: String,
+}
+
+/// Shared workspace setup for the "work on an existing PR branch" flows:
+/// create-from-PR (command bar) and review-mode create-and-start.
+///
+/// Creates the workspace + single repo on the PR base ref, materializes the
+/// worktree, then `gh pr checkout`s the PR head branch and links the PR. Keeping
+/// the repo `target_branch` at the base ref means later merges / new PRs target
+/// the base. On a branch-fetch failure the partially-created workspace is
+/// cleaned up and `Ok(Err(BranchFetchFailure))` is returned; infra failures
+/// propagate as `Err(ApiError)`.
+pub(crate) async fn setup_pr_review_workspace(
+    deployment: &DeploymentImpl,
+    workspace_name: Option<String>,
+    pr: &PrReviewInput,
+) -> Result<Result<Workspace, BranchFetchFailure>, ApiError> {
     let pool = &deployment.db().pool;
 
-    let repo = Repo::find_by_id(pool, payload.repo_id)
+    let repo = Repo::find_by_id(pool, pr.repo_id)
         .await?
         .ok_or(RepoError::NotFound)?;
 
-    let remote = match payload.remote_name {
-        Some(ref name) => GitRemote {
+    let remote = match &pr.remote_name {
+        Some(name) => GitRemote {
             url: deployment.git().get_remote_url(&repo.path, name)?,
             name: name.clone(),
         },
         None => deployment.git().get_default_remote(&repo.path)?,
     };
 
-    // Use target branch initially - we'll switch to PR branch via gh pr checkout
-    let target_branch_ref = format!("{}/{}", remote.name, payload.base_branch);
+    // Start the worktree on the PR base ref; gh pr checkout switches it to the
+    // head branch below.
+    let target_branch_ref = review_target_branch_ref(&remote.name, &pr.base_branch);
 
-    // Create workspace with target branch initially
     let workspace_id = Uuid::new_v4();
     let mut workspace = Workspace::create(
         pool,
         &CreateWorkspace {
             branch: target_branch_ref.clone(),
-            name: Some(payload.pr_title.clone()),
+            name: workspace_name,
         },
         workspace_id,
     )
@@ -728,7 +747,7 @@ pub async fn create_workspace_from_pr(
         pool,
         workspace.id,
         &[CreateWorkspaceRepo {
-            repo_id: payload.repo_id,
+            repo_id: pr.repo_id,
             target_branch: target_branch_ref.clone(),
         }],
     )
@@ -739,11 +758,10 @@ pub async fn create_workspace_from_pr(
         .ensure_container_exists(&workspace)
         .await?;
 
-    // Update workspace with container_ref so start_execution can find it
+    // Needed so cleanup_failed_pr_workspace can locate the worktree dir on error.
     workspace.container_ref = Some(container_ref.clone());
 
-    // Use gh pr checkout to fetch and switch to the PR branch
-    // This handles SSH/HTTPS auth correctly regardless of fork URL format
+    // gh pr checkout handles SSH/HTTPS auth correctly regardless of fork URL.
     let worktree_path = PathBuf::from(&container_ref).join(&repo.name);
     match GhCli::new().get_repo_info(&remote.url, &worktree_path) {
         Ok(repo_info) => {
@@ -751,42 +769,73 @@ pub async fn create_workspace_from_pr(
                 &worktree_path,
                 &repo_info.owner,
                 &repo_info.repo_name,
-                payload.pr_number,
+                pr.pr_number,
             ) {
                 tracing::error!("Failed to checkout PR branch: {e}");
                 cleanup_failed_pr_workspace(pool, &workspace).await;
-                return Ok(ResponseJson(ApiResponse::error_with_data(
-                    CreateFromPrError::BranchFetchFailed {
-                        message: e.to_string(),
-                    },
-                )));
+                return Ok(Err(BranchFetchFailure {
+                    message: e.to_string(),
+                }));
             }
-            // Update workspace branch to the actual PR branch
-            Workspace::update_branch_name(pool, workspace.id, &payload.head_branch).await?;
-            workspace.branch = payload.head_branch.clone();
+            Workspace::update_branch_name(pool, workspace.id, &pr.head_branch).await?;
+            workspace.branch = pr.head_branch.clone();
         }
         Err(e) => {
             tracing::error!(
                 "Failed to get repo info for PR checkout (gh CLI may not be installed): {e}"
             );
             cleanup_failed_pr_workspace(pool, &workspace).await;
-            return Ok(ResponseJson(ApiResponse::error_with_data(
-                CreateFromPrError::BranchFetchFailed {
-                    message: format!("Failed to get repository info: {e}"),
-                },
-            )));
+            return Ok(Err(BranchFetchFailure {
+                message: format!("Failed to get repository info: {e}"),
+            }));
         }
     }
 
     PullRequest::create_for_workspace(
         pool,
         workspace.id,
-        payload.repo_id,
-        &format!("{}/{}", remote.name, payload.base_branch),
-        payload.pr_number,
-        &payload.pr_url,
+        pr.repo_id,
+        &target_branch_ref,
+        pr.pr_number,
+        &pr.pr_url,
     )
     .await?;
+
+    let workspace = Workspace::find_by_id(pool, workspace.id)
+        .await?
+        .ok_or(WorkspaceError::WorkspaceNotFound)?;
+
+    Ok(Ok(workspace))
+}
+
+#[axum::debug_handler]
+pub async fn create_workspace_from_pr(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<CreateWorkspaceFromPrBody>,
+) -> Result<ResponseJson<ApiResponse<CreateWorkspaceFromPrResponse, CreateFromPrError>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let pr_input = PrReviewInput {
+        repo_id: payload.repo_id,
+        pr_number: payload.pr_number,
+        pr_title: payload.pr_title.clone(),
+        pr_url: payload.pr_url.clone(),
+        head_branch: payload.head_branch.clone(),
+        base_branch: payload.base_branch.clone(),
+        remote_name: payload.remote_name.clone(),
+    };
+
+    let workspace =
+        match setup_pr_review_workspace(&deployment, Some(payload.pr_title.clone()), &pr_input)
+            .await?
+        {
+            Ok(workspace) => workspace,
+            Err(BranchFetchFailure { message }) => {
+                return Ok(ResponseJson(ApiResponse::error_with_data(
+                    CreateFromPrError::BranchFetchFailed { message },
+                )));
+            }
+        };
 
     if payload.run_setup {
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
@@ -833,10 +882,6 @@ pub async fn create_workspace_from_pr(
         workspace.id,
         payload.pr_number,
     );
-
-    let workspace = Workspace::find_by_id(pool, workspace.id)
-        .await?
-        .ok_or(WorkspaceError::WorkspaceNotFound)?;
 
     Ok(ResponseJson(ApiResponse::success(
         CreateWorkspaceFromPrResponse { workspace },

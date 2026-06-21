@@ -6,7 +6,7 @@ use db::models::{
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
         CreateWorkspaceWithoutStartingRequest, CreateWorkspaceWithoutStartingResponse,
-        LinkedIssueInfo, WorkspaceRepoInput,
+        LinkedIssueInfo, PrReviewInput, WorkspaceRepoInput,
     },
     workspace::{CreateWorkspace, Workspace},
 };
@@ -20,8 +20,10 @@ use workspace_manager::ManagedWorkspace;
 use crate::{
     DeploymentImpl,
     error::ApiError,
-    routes::workspaces::attachments::{
-        ImportedIssueAttachment, import_issue_attachments_from_remote,
+    routes::workspaces::{
+        attachments::{ImportedIssueAttachment, import_issue_attachments_from_remote},
+        pr::{self, BranchFetchFailure},
+        review_mode::{self, BranchSetup},
     },
 };
 
@@ -220,6 +222,7 @@ async fn create_workspace_with_repos(
     repos: Vec<WorkspaceRepoInput>,
     linked_issue: Option<&LinkedIssueInfo>,
     attachment_ids: Option<Vec<Uuid>>,
+    pr_review: Option<&PrReviewInput>,
 ) -> Result<ManagedWorkspace, ApiError> {
     if repos.is_empty() {
         return Err(ApiError::BadRequest(
@@ -227,17 +230,45 @@ async fn create_workspace_with_repos(
         ));
     }
 
-    let mut managed_workspace = deployment
-        .workspace_manager()
-        .load_managed_workspace(create_workspace_record(deployment, name).await?)
-        .await?;
+    let managed_workspace = match review_mode::plan_branch_setup(&repos, pr_review)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?
+    {
+        // Default: a fresh `vk/`-prefixed worktree branch forked from each
+        // repo's selected target branch.
+        BranchSetup::NewWorktreeBranch => {
+            let mut managed_workspace = deployment
+                .workspace_manager()
+                .load_managed_workspace(create_workspace_record(deployment, name).await?)
+                .await?;
 
-    for repo in &repos {
-        managed_workspace
-            .add_repository(repo, deployment.git())
-            .await
-            .map_err(ApiError::from)?;
-    }
+            for repo in &repos {
+                managed_workspace
+                    .add_repository(repo, deployment.git())
+                    .await
+                    .map_err(ApiError::from)?;
+            }
+
+            managed_workspace
+        }
+        // Review mode: check out the existing PR head branch directly and link
+        // the PR, instead of branching a new `vk/` worktree.
+        BranchSetup::ExistingPrBranch(review) => {
+            let workspace = match pr::setup_pr_review_workspace(deployment, name, review).await? {
+                Ok(workspace) => workspace,
+                Err(BranchFetchFailure { message }) => {
+                    return Err(ApiError::BadRequest(format!(
+                        "Failed to check out PR #{} branch for review: {message}",
+                        review.pr_number
+                    )));
+                }
+            };
+
+            deployment
+                .workspace_manager()
+                .load_managed_workspace(workspace)
+                .await?
+        }
+    };
 
     if let Some(ids) = &attachment_ids {
         managed_workspace.associate_attachments(ids).await?;
@@ -279,6 +310,7 @@ pub async fn create_workspace_without_starting(
         repos,
         linked_issue.as_ref(),
         attachment_ids,
+        None,
     )
     .await?;
     let workspace = managed_workspace.workspace;
@@ -308,6 +340,7 @@ pub async fn create_and_start_workspace(
         mut executor_config,
         prompt,
         attachment_ids,
+        pr_review,
     } = payload;
 
     let mut workspace_prompt = normalize_prompt(&prompt).ok_or_else(|| {
@@ -322,6 +355,7 @@ pub async fn create_and_start_workspace(
         repos,
         linked_issue.as_ref(),
         attachment_ids,
+        pr_review.as_ref(),
     )
     .await?;
 

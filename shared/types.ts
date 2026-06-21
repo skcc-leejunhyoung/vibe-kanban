@@ -391,6 +391,25 @@ export type AttachmentMetadata = { exists: boolean, file_name: string | null, pa
 
 export type WorkspaceRepoInput = { repo_id: string, target_branch: string, };
 
+export type PrReviewInput = {
+/**
+ * Repo whose PR is being reviewed. Must match the single entry in `repos`.
+ */
+repo_id: string, pr_number: bigint, pr_title: string, pr_url: string,
+/**
+ * The PR's head (feature) branch — checked out directly via `gh pr checkout`
+ * instead of branching a new `vk/` worktree.
+ */
+head_branch: string,
+/**
+ * The PR's base branch (merge target).
+ */
+base_branch: string,
+/**
+ * Remote the PR lives on; defaults to the repo's default remote when absent.
+ */
+remote_name: string | null, };
+
 export type RunAgentSetupRequest = { executor_profile_id: ExecutorProfileId, };
 
 export type RunAgentSetupResponse = Record<string, never>;
@@ -427,7 +446,12 @@ export type GetPrCommentsError = { "type": "no_pr_attached" } | { "type": "cli_n
 
 export type GetPrCommentsQuery = { repo_id: string, };
 
-export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, executor_config: ExecutorConfig, prompt: string, attachment_ids: Array<string> | null, };
+export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, executor_config: ExecutorConfig, prompt: string, attachment_ids: Array<string> | null,
+/**
+ * When set, work directly on an existing PR's head branch (review mode)
+ * instead of creating a new `vk/` worktree branch. Absent for normal runs.
+ */
+pr_review: PrReviewInput | null, };
 
 export type CreateAndStartWorkspaceResponse = { workspace: Workspace, execution_process: ExecutionProcess, };
 

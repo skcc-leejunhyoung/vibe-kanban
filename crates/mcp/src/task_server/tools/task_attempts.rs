@@ -190,6 +190,8 @@ impl McpServer {
             },
             prompt: workspace_prompt,
             attachment_ids: None,
+            // MCP-created workspaces always branch normally (no PR review mode).
+            pr_review: None,
         };
 
         let create_and_start_url = self.url("/api/workspaces/start");

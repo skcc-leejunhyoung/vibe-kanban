@@ -6,6 +6,7 @@ import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
+import { useReviewMode } from '@/shared/hooks/useReviewMode';
 import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { saveProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
@@ -18,6 +19,7 @@ import type { BaseCodingAgent, Repo } from 'shared/types';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
+import { ReviewModeBanner } from './ReviewModeBanner';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 
 function getRepoDisplayName(repo: Repo) {
@@ -140,6 +142,7 @@ export function CreateChatBoxContainer({
   });
 
   const repoId = repos.length === 1 ? repos[0]?.id : undefined;
+  const reviewMode = useReviewMode(linkedIssue, repoId);
   const repoSummaryLabel = useMemo(() => {
     if (repos.length === 1) {
       const repo = repos[0];
@@ -301,6 +304,9 @@ export function CreateChatBoxContainer({
       repos: workspaceRepos,
       linked_issue: getLinkedIssuePayload(),
       attachment_ids: getAttachmentIds(),
+      // Review mode: work on the issue's open PR head branch instead of a new
+      // `vk/` branch, and auto-link the PR. Null for normal workspace creation.
+      pr_review: reviewMode.prReviewPayload,
     };
 
     const result = await createWorkspace.mutateAsync({
@@ -322,6 +328,7 @@ export function CreateChatBoxContainer({
     getAttachmentIds,
     getLinkToIssue,
     finishWorkspaceCreated,
+    reviewMode.prReviewPayload,
   ]);
 
   const handleCreateOnly = useCallback(async () => {
@@ -395,6 +402,17 @@ export function CreateChatBoxContainer({
               <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
                 {t('createMode.headings.chatStep')}
               </h2>
+
+              {reviewMode.reviewTagPresent && (
+                <ReviewModeBanner
+                  resolved={reviewMode.resolved}
+                  isResolving={reviewMode.isResolving}
+                  headBranch={reviewMode.headBranch}
+                  prNumber={reviewMode.prNumber}
+                  enabled={reviewMode.enabled}
+                  onEnabledChange={reviewMode.setEnabled}
+                />
+              )}
 
               <div className="flex justify-center @container">
                 <CreateChatBox

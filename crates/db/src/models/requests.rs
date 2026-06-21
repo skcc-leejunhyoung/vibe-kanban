@@ -17,6 +17,26 @@ pub struct WorkspaceRepoInput {
     pub target_branch: String,
 }
 
+/// Review-mode payload: when present on a create request, the workspace works
+/// directly on an existing PR's head branch (no new `vk/` worktree branch) and
+/// auto-links that PR. Populated by the frontend when the linked issue carries
+/// the `review` tag and already has an open PR.
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct PrReviewInput {
+    /// Repo whose PR is being reviewed. Must match the single entry in `repos`.
+    pub repo_id: Uuid,
+    pub pr_number: i64,
+    pub pr_title: String,
+    pub pr_url: String,
+    /// The PR's head (feature) branch — checked out directly via `gh pr checkout`
+    /// instead of branching a new `vk/` worktree.
+    pub head_branch: String,
+    /// The PR's base branch (merge target).
+    pub base_branch: String,
+    /// Remote the PR lives on; defaults to the repo's default remote when absent.
+    pub remote_name: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct CreateWorkspaceApiRequest {
     pub name: Option<String>,
@@ -36,6 +56,9 @@ pub struct CreateAndStartWorkspaceRequest {
     pub executor_config: ExecutorConfig,
     pub prompt: String,
     pub attachment_ids: Option<Vec<Uuid>>,
+    /// When set, work directly on an existing PR's head branch (review mode)
+    /// instead of creating a new `vk/` worktree branch. Absent for normal runs.
+    pub pr_review: Option<PrReviewInput>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

@@ -10,6 +10,7 @@ pub mod integration;
 pub mod links;
 pub mod pr;
 pub mod repos;
+pub mod review_mode;
 pub mod streams;
 pub mod workspace_summary;
 
