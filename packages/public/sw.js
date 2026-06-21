@@ -32,6 +32,38 @@ self.addEventListener('push', (event) => {
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
+// Dismiss already-delivered OS notifications (lock screen / notification
+// centre) when the app marks the matching in-app notification as read/seen —
+// e.g. the user opened the workspace directly instead of tapping the push.
+// The page posts the notification ids, which equal the `tag` set in the push
+// handler above (tag = payload.notification_id), so we close any currently
+// displayed notification whose tag matches. Running this in the service worker
+// keeps it reliable on iOS standalone PWAs, where page-context
+// getNotifications() is flaky. Note: this only clears notifications on THIS
+// device — iOS forbids a silent push, so a notification sitting on another
+// device cannot be cleared remotely.
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || data.type !== 'vk-dismiss' || !Array.isArray(data.tags)) {
+    return;
+  }
+
+  const tags = new Set(data.tags.filter((tag) => typeof tag === 'string'));
+  if (tags.size === 0) {
+    return;
+  }
+
+  event.waitUntil(
+    self.registration.getNotifications().then((notifications) => {
+      for (const notification of notifications) {
+        if (tags.has(notification.tag)) {
+          notification.close();
+        }
+      }
+    })
+  );
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 

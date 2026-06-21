@@ -84,6 +84,56 @@ export async function disableWebPush(runtime: AppRuntime): Promise<void> {
   await subscription.unsubscribe();
 }
 
+/**
+ * 이미 단말에 표시된(잠금화면/알림센터) 웹 푸시 알림 중, 전달된 알림 id와
+ * 일치하는 것을 닫는다.
+ *
+ * 서비스 워커는 푸시를 표시할 때 notification `tag`를 알림 id로 설정하므로
+ * (packages/public/sw.js: `tag: payload.notification_id`), "알림 id == 표시된
+ * 알림의 tag"가 성립한다. 사용자가 앱에서 해당 워크스페이스/이슈를 직접 확인해
+ * 알림이 읽음 처리될 때 이 함수를 호출하면, 같은 단말에 떠 있던 푸시 배너도
+ * 함께 사라진다.
+ *
+ * 한계: 같은 단말의 알림만 정리할 수 있다. 다른 단말(예: 폰에 떠 있는 알림을
+ * 노트북에서 확인)의 알림은 정리하지 못한다 — iOS는 모든 푸시가 알림을
+ * 표시하도록 강제하므로 무음 "정리용 푸시"를 보낼 수 없다.
+ */
+export async function dismissDeliveredPushNotifications(
+  notificationIds: string[]
+): Promise<void> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return;
+  }
+
+  const tags = notificationIds.filter((id) => id.length > 0);
+  if (tags.length === 0) {
+    return;
+  }
+
+  try {
+    const registration =
+      await navigator.serviceWorker.getRegistration('/sw.js');
+    if (!registration) {
+      return;
+    }
+
+    // iOS standalone PWA에서 가장 신뢰성 있는 경로: 서비스 워커가 직접 닫는다.
+    registration.active?.postMessage({ type: 'vk-dismiss', tags });
+
+    // 데스크톱 등 페이지 컨텍스트가 신뢰 가능한 환경을 위한 보강(중복 닫기는
+    // 무해하다).
+    const tagSet = new Set(tags);
+    const notifications = await registration.getNotifications();
+    for (const notification of notifications) {
+      if (tagSet.has(notification.tag)) {
+        notification.close();
+      }
+    }
+  } catch {
+    // 알림 닫기는 부가 기능이므로 실패는 조용히 무시한다.
+  }
+}
+
 async function getPublicKey(runtime: AppRuntime): Promise<string | null> {
   const response = await request(runtime, '/web-push/public-key', {
     method: 'GET',
