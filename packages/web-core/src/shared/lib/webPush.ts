@@ -85,6 +85,26 @@ export async function disableWebPush(runtime: AppRuntime): Promise<void> {
 }
 
 /**
+ * 읽음/보관으로 전환되는 알림 업데이트 중, 같은 단말의 OS 푸시 배너를 닫아야
+ * 하는 알림 id를 고른다.
+ *
+ * `seen === true`는 자동·수동·전체 읽음 모든 경로가 보내는 값이다. `archived`는
+ * 현재 클라이언트가 직접 보내지 않고(서버가 읽음 처리 시 `dismissed_at`으로 자동
+ * 보관 이동) 향후 명시적 보관 mutation을 대비한 분기다 — 도달하더라도 동일하게
+ * 배너를 닫으면 되므로 함께 처리한다.
+ */
+export function collectDismissiblePushIds(
+  updates: ReadonlyArray<{
+    id: string;
+    changes: { seen?: boolean | null; archived?: boolean | null };
+  }>
+): string[] {
+  return updates
+    .filter(({ changes }) => changes.seen === true || changes.archived === true)
+    .map(({ id }) => id);
+}
+
+/**
  * 이미 단말에 표시된(잠금화면/알림센터) 웹 푸시 알림 중, 전달된 알림 id와
  * 일치하는 것을 닫는다.
  *

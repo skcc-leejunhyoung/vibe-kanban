@@ -6,7 +6,10 @@ import {
 } from 'shared/remote-types';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { groupNotifications } from '@/shared/lib/notifications';
-import { dismissDeliveredPushNotifications } from '@/shared/lib/webPush';
+import {
+  collectDismissiblePushIds,
+  dismissDeliveredPushNotifications,
+} from '@/shared/lib/webPush';
 
 export function useNotifications() {
   const { isSignedIn, userId } = useAuth();
@@ -29,11 +32,7 @@ export function useNotifications() {
   // 표시된 OS 푸시 알림(배너)도 함께 닫는다.
   const updateMany = useCallback<typeof result.updateMany>(
     (updates) => {
-      const dismissIds = updates
-        .filter(
-          ({ changes }) => changes.seen === true || changes.archived === true
-        )
-        .map(({ id }) => id);
+      const dismissIds = collectDismissiblePushIds(updates);
       if (dismissIds.length > 0) {
         void dismissDeliveredPushNotifications(dismissIds);
       }
