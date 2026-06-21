@@ -1,9 +1,17 @@
-import { useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import {
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  ReactNode,
+} from 'react';
 import { createHmrContext } from '@/shared/lib/hmrContext';
 import {
-  SEQUENCE_FIRST_KEYS,
-  sequentialBindings,
+  effectiveFirstKeys,
+  effectiveValidSequences,
 } from '@/shared/keyboard/registry';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 
 interface SequenceTrackerContextValue {
   buffer: string[];
@@ -25,18 +33,6 @@ export const useSequenceTracker = () => useContext(SequenceTrackerContext);
 const SEQUENCE_TIMEOUT_MS = 1500;
 const INVALID_DISPLAY_MS = 400;
 
-const VALID_SEQUENCES = new Set(
-  sequentialBindings.map((b) => b.keys.join(','))
-);
-
-function isValidPartialSequence(buffer: string[]): boolean {
-  if (buffer.length === 0) return false;
-  if (buffer.length === 1) {
-    return SEQUENCE_FIRST_KEYS.has(buffer[0]);
-  }
-  return VALID_SEQUENCES.has(buffer.join(','));
-}
-
 interface SequenceTrackerProviderProps {
   children: ReactNode;
 }
@@ -44,6 +40,9 @@ interface SequenceTrackerProviderProps {
 /**
  * Visual feedback for sequential shortcuts (g>s, v>c).
  * Display-only - execution handled by react-hotkeys-hook.
+ *
+ * The valid sequences and first keys are derived from the registry with user
+ * overrides applied, so rebound shortcuts get correct feedback.
  *
  * IMPORTANT: Uses refs alongside state because React setState is async.
  * Without synchronous ref updates, rapid keypresses read stale state.
@@ -55,15 +54,32 @@ export function SequenceTrackerProvider({
   const [isActive, setIsActive] = useState(false);
   const [isInvalid, setIsInvalid] = useState(false);
 
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const firstKeys = useMemo(() => effectiveFirstKeys(overrides), [overrides]);
+  const validSequences = useMemo(
+    () => effectiveValidSequences(overrides),
+    [overrides]
+  );
+
   const bufferRef = useRef<string[]>([]);
   const isActiveRef = useRef(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const invalidTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firstKeysRef = useRef(firstKeys);
+  const validSequencesRef = useRef(validSequences);
 
   bufferRef.current = buffer;
   isActiveRef.current = isActive;
+  firstKeysRef.current = firstKeys;
+  validSequencesRef.current = validSequences;
 
   useEffect(() => {
+    const isValidPartialSequence = (buf: string[]): boolean => {
+      if (buf.length === 0) return false;
+      if (buf.length === 1) return firstKeysRef.current.has(buf[0]);
+      return validSequencesRef.current.has(buf.join(','));
+    };
+
     const clearBuffer = () => {
       bufferRef.current = [];
       isActiveRef.current = false;
@@ -112,7 +128,7 @@ export function SequenceTrackerProvider({
       const currentIsActive = isActiveRef.current;
       const currentBuffer = bufferRef.current;
 
-      if (!currentIsActive && !SEQUENCE_FIRST_KEYS.has(key)) {
+      if (!currentIsActive && !firstKeysRef.current.has(key)) {
         return;
       }
 

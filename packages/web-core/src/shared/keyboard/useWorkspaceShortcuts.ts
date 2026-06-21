@@ -7,7 +7,8 @@ import {
   type ActionDefinition,
   ActionTargetType,
 } from '@/shared/types/actions';
-import { Scope } from '@/shared/keyboard/registry';
+import { Scope, resolveSequence } from '@/shared/keyboard/registry';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 
 const SEQUENCE_TIMEOUT_MS = 1500;
 
@@ -19,6 +20,7 @@ const OPTIONS = {
 export function useWorkspaceShortcuts() {
   const { executeAction } = useActions();
   const { workspaceId, repos } = useWorkspaceContext();
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   const workspaceIdRef = useRef(workspaceId);
   const reposRef = useRef(repos);
@@ -50,32 +52,140 @@ export function useWorkspaceShortcuts() {
     }
   }, []);
 
-  useHotkeys('g>s', () => execute(Actions.Settings), OPTIONS);
-  useHotkeys('g>n', () => execute(Actions.NewWorkspace), OPTIONS);
+  // Resolve the effective key for a binding id, honoring user overrides.
+  const seq = useCallback(
+    (id: string) => resolveSequence(id, overrides),
+    [overrides]
+  );
 
-  useHotkeys('w>d', () => execute(Actions.DuplicateWorkspace), OPTIONS);
-  useHotkeys('w>r', () => execute(Actions.RenameWorkspace), OPTIONS);
-  useHotkeys('w>p', () => execute(Actions.PinWorkspace), OPTIONS);
-  useHotkeys('w>a', () => execute(Actions.ArchiveWorkspace), OPTIONS);
-  useHotkeys('w>x', () => execute(Actions.DeleteWorkspace), OPTIONS);
+  // Re-register hotkeys when overrides change so rebinds take effect live.
+  useHotkeys(seq('seq-go-settings'), () => execute(Actions.Settings), OPTIONS, [
+    overrides,
+  ]);
+  useHotkeys(
+    seq('seq-go-new-workspace'),
+    () => execute(Actions.NewWorkspace),
+    OPTIONS,
+    [overrides]
+  );
 
-  useHotkeys('v>c', () => execute(Actions.ToggleChangesMode), OPTIONS);
-  useHotkeys('v>l', () => execute(Actions.ToggleLogsMode), OPTIONS);
-  useHotkeys('v>p', () => execute(Actions.TogglePreviewMode), OPTIONS);
-  useHotkeys('v>s', () => execute(Actions.ToggleLeftSidebar), OPTIONS);
-  useHotkeys('v>h', () => execute(Actions.ToggleLeftMainPanel), OPTIONS);
+  useHotkeys(
+    seq('seq-workspace-duplicate'),
+    () => execute(Actions.DuplicateWorkspace),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-workspace-rename'),
+    () => execute(Actions.RenameWorkspace),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-workspace-pin'),
+    () => execute(Actions.PinWorkspace),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-workspace-archive'),
+    () => execute(Actions.ArchiveWorkspace),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-workspace-delete'),
+    () => execute(Actions.DeleteWorkspace),
+    OPTIONS,
+    [overrides]
+  );
 
-  useHotkeys('x>p', () => execute(Actions.GitCreatePR), OPTIONS);
-  useHotkeys('x>m', () => execute(Actions.GitMerge), OPTIONS);
-  useHotkeys('x>r', () => execute(Actions.GitRebase), OPTIONS);
-  useHotkeys('x>u', () => execute(Actions.GitPush), OPTIONS);
+  useHotkeys(
+    seq('seq-view-changes'),
+    () => execute(Actions.ToggleChangesMode),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-view-logs'),
+    () => execute(Actions.ToggleLogsMode),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-view-preview'),
+    () => execute(Actions.TogglePreviewMode),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-view-sidebar'),
+    () => execute(Actions.ToggleLeftSidebar),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-view-chat'),
+    () => execute(Actions.ToggleLeftMainPanel),
+    OPTIONS,
+    [overrides]
+  );
 
-  useHotkeys('y>p', () => execute(Actions.CopyWorkspacePath), OPTIONS);
-  useHotkeys('y>l', () => execute(Actions.CopyRawLogs), OPTIONS);
+  useHotkeys(seq('seq-git-pr'), () => execute(Actions.GitCreatePR), OPTIONS, [
+    overrides,
+  ]);
+  useHotkeys(seq('seq-git-merge'), () => execute(Actions.GitMerge), OPTIONS, [
+    overrides,
+  ]);
+  useHotkeys(seq('seq-git-rebase'), () => execute(Actions.GitRebase), OPTIONS, [
+    overrides,
+  ]);
+  useHotkeys(seq('seq-git-push'), () => execute(Actions.GitPush), OPTIONS, [
+    overrides,
+  ]);
 
-  useHotkeys('t>d', () => execute(Actions.ToggleDevServer), OPTIONS);
-  useHotkeys('t>w', () => execute(Actions.ToggleWrapLines), OPTIONS);
+  useHotkeys(
+    seq('seq-yank-path'),
+    () => execute(Actions.CopyWorkspacePath),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-yank-logs'),
+    () => execute(Actions.CopyRawLogs),
+    OPTIONS,
+    [overrides]
+  );
 
-  useHotkeys('r>s', () => execute(Actions.RunSetupScript), OPTIONS);
-  useHotkeys('r>c', () => execute(Actions.RunCleanupScript), OPTIONS);
+  useHotkeys(
+    seq('seq-toggle-dev-server'),
+    () => execute(Actions.ToggleDevServer),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-toggle-wrap'),
+    () => execute(Actions.ToggleWrapLines),
+    OPTIONS,
+    [overrides]
+  );
+
+  useHotkeys(
+    seq('seq-run-setup'),
+    () => execute(Actions.RunSetupScript),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-run-cleanup'),
+    () => execute(Actions.RunCleanupScript),
+    OPTIONS,
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-run-archive'),
+    () => execute(Actions.RunArchiveScript),
+    OPTIONS,
+    [overrides]
+  );
 }

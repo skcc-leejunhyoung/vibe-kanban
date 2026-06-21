@@ -31,11 +31,26 @@
         "organizationsDesc": "Manage organization members and permissions",
         "notifications": "Notifications",
         "notificationsDesc": "Manage account notification preferences",
+        "keyboard-shortcuts": "Keyboard Shortcuts",
+        "keyboard-shortcutsDesc": "Customize keyboard shortcuts",
         "remote-projects": "Projects",
         "remote-projectsDesc": "Manage projects",
         "relay": "Remote Access",
         "relayDesc": "Relay tunnel and enrollment"
       }
+    },
+    "keyboardShortcuts": {
+      "description": "Rebind the command bar and sequential shortcuts. Changes are saved to this browser.",
+      "change": "Change",
+      "cancel": "Cancel",
+      "reset": "Reset to default",
+      "resetAll": "Reset all",
+      "conflict": "Already used by \"{{action}}\"",
+      "recording": {
+        "modifier": "Press a key combo…",
+        "sequence": "Press two keys…"
+      },
+      "sequentialHint": "Sequential shortcuts: press the first key, then the second within the timeout."
     },
     "hostPicker": {
       "thisMachine": "This machine",

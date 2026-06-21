@@ -512,6 +512,30 @@ export const keyBindings: KeyBinding[] = [
 ];
 
 /**
+ * Modifier-combo shortcuts (e.g. Cmd/Ctrl+K). Unlike the single-key entries in
+ * `keyBindings`, these are user-rebindable via the Keyboard Shortcuts settings.
+ */
+export const COMMAND_BAR_BINDING_ID = 'command-bar';
+
+export interface ModifierBinding {
+  id: string;
+  /** Matcher syntax with a leading modifier, e.g. 'mod+k' */
+  keys: string;
+  /** i18n key under common:shortcuts.actions.* */
+  actionId: string;
+  group: string;
+}
+
+export const modifierBindings: ModifierBinding[] = [
+  {
+    id: COMMAND_BAR_BINDING_ID,
+    keys: 'mod+k',
+    actionId: 'openCommandBar',
+    group: 'Modifiers',
+  },
+];
+
+/**
  * Get keyboard bindings for a specific action and scope
  */
 export function getKeysFor(action: Action, scope?: Scope): string[] {
@@ -556,4 +580,60 @@ export function getSequentialBindingFor(
  */
 export function formatSequentialKeys(keys: string[]): string {
   return keys.map((k) => k.toUpperCase()).join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Override-aware resolvers
+//
+// These take the user `overrides` map (from useKeyboardShortcutsStore) as an
+// argument rather than reading the store directly, so this module stays free of
+// an import cycle and the values stay reactive in callers that subscribe.
+// ---------------------------------------------------------------------------
+
+type Overrides = Record<string, string>;
+
+/**
+ * Effective hotkey for a sequential binding, honoring overrides.
+ * Returns react-hotkeys-hook sequence syntax (e.g. 'w>a').
+ */
+export function resolveSequence(id: string, overrides: Overrides): string {
+  const override = overrides[id];
+  if (override) return override;
+  const binding = sequentialBindings.find((b) => b.id === id);
+  return binding ? binding.keys.join('>') : '';
+}
+
+/**
+ * Effective combo for a modifier binding (e.g. the command bar), honoring
+ * overrides. Returns matcher syntax (e.g. 'mod+k').
+ */
+export function resolveModifier(id: string, overrides: Overrides): string {
+  const override = overrides[id];
+  if (override) return override;
+  const binding = modifierBindings.find((b) => b.id === id);
+  return binding ? binding.keys : '';
+}
+
+/** Sequential bindings paired with their effective keys (overrides applied). */
+export function effectiveSequentialBindings(
+  overrides: Overrides
+): { binding: SequentialBinding; keys: string[] }[] {
+  return sequentialBindings.map((binding) => {
+    const override = overrides[binding.id];
+    return { binding, keys: override ? override.split('>') : binding.keys };
+  });
+}
+
+/** Valid first keys for sequences, with overrides applied (for SequenceTracker). */
+export function effectiveFirstKeys(overrides: Overrides): Set<string> {
+  return new Set(
+    effectiveSequentialBindings(overrides).map(({ keys }) => keys[0])
+  );
+}
+
+/** Full sequences (comma-joined) for validity checks, with overrides applied. */
+export function effectiveValidSequences(overrides: Overrides): Set<string> {
+  return new Set(
+    effectiveSequentialBindings(overrides).map(({ keys }) => keys.join(','))
+  );
 }

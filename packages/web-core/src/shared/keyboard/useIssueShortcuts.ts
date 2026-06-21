@@ -7,7 +7,8 @@ import {
   type ActionDefinition,
   ActionTargetType,
 } from '@/shared/types/actions';
-import { Scope } from '@/shared/keyboard/registry';
+import { Scope, resolveSequence } from '@/shared/keyboard/registry';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
@@ -20,11 +21,28 @@ const OPTIONS = {
   sequenceTimeout: SEQUENCE_TIMEOUT_MS,
 } as const;
 
+// Binding ids whose first key starts an issue (i) sequence. Used to track the
+// prefix keypress so a standalone `x` doesn't fire mid-sequence. Kept in sync
+// with the i-group entries in registry.ts.
+const I_GROUP_BINDING_IDS = [
+  'seq-issue-create',
+  'seq-issue-status',
+  'seq-issue-priority',
+  'seq-issue-assignees',
+  'seq-issue-make-sub-issue',
+  'seq-issue-add-sub-issue',
+  'seq-issue-remove-parent',
+  'seq-issue-link-workspace',
+  'seq-issue-duplicate',
+  'seq-issue-delete',
+] as const;
+
 export function useIssueShortcuts() {
   const { executeAction } = useActions();
   const { projectId, issueId } = useParams({ strict: false });
   const destination = useCurrentAppDestination();
   const { isCreateMode: isCreatingIssue } = useCurrentKanbanRouteState();
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   const isKanban = isProjectDestination(destination);
 
@@ -109,12 +127,29 @@ export function useIssueShortcuts() {
 
   const enabled = isKanban;
 
+  // Resolve the effective key for a binding id, honoring user overrides.
+  const seq = useCallback(
+    (id: string) => resolveSequence(id, overrides),
+    [overrides]
+  );
+
+  // Effective first keys of all i-group sequences (comma-joined for
+  // react-hotkeys-hook). Defaults to 'i' but follows overrides.
+  const iPrefixKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const id of I_GROUP_BINDING_IDS) {
+      const first = resolveSequence(id, overrides).split('>')[0];
+      if (first) keys.add(first);
+    }
+    return [...keys].join(',');
+  }, [overrides]);
+
   // Track when a sequence prefix key (i) is pressed so standalone keys
   // like `x` don't fire during a sequence like `i>x`.
   const sequencePendingRef = useRef(false);
   const sequenceTimerRef = useRef<ReturnType<typeof setTimeout>>();
   useHotkeys(
-    'i',
+    iPrefixKeys,
     () => {
       sequencePendingRef.current = true;
       clearTimeout(sequenceTimerRef.current);
@@ -122,15 +157,18 @@ export function useIssueShortcuts() {
         sequencePendingRef.current = false;
       }, SEQUENCE_TIMEOUT_MS);
     },
-    { scopes: [Scope.KANBAN], enabled, keydown: true, keyup: false }
+    { scopes: [Scope.KANBAN], enabled, keydown: true, keyup: false },
+    [iPrefixKeys]
   );
 
-  useHotkeys('i>c', (e) => executeIssueAction(Actions.CreateIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
   useHotkeys(
-    'i>s',
+    seq('seq-issue-create'),
+    (e) => executeIssueAction(Actions.CreateIssue, e),
+    { ...OPTIONS, enabled },
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-issue-status'),
     (e) => {
       if (isCreatingIssueRef.current) {
         executeIssueAction(Actions.ChangeNewIssueStatus, e);
@@ -138,10 +176,11 @@ export function useIssueShortcuts() {
         executeIssueAction(Actions.ChangeIssueStatus, e);
       }
     },
-    { ...OPTIONS, enabled }
+    { ...OPTIONS, enabled },
+    [overrides]
   );
   useHotkeys(
-    'i>p',
+    seq('seq-issue-priority'),
     (e) => {
       if (isCreatingIssueRef.current) {
         executeIssueAction(Actions.ChangeNewIssuePriority, e);
@@ -149,10 +188,11 @@ export function useIssueShortcuts() {
         executeIssueAction(Actions.ChangePriority, e);
       }
     },
-    { ...OPTIONS, enabled }
+    { ...OPTIONS, enabled },
+    [overrides]
   );
   useHotkeys(
-    'i>a',
+    seq('seq-issue-assignees'),
     (e) => {
       if (isCreatingIssueRef.current) {
         executeIssueAction(Actions.ChangeNewIssueAssignees, e);
@@ -160,32 +200,45 @@ export function useIssueShortcuts() {
         executeIssueAction(Actions.ChangeAssignees, e);
       }
     },
-    { ...OPTIONS, enabled }
+    { ...OPTIONS, enabled },
+    [overrides]
   );
-  useHotkeys('i>m', (e) => executeIssueAction(Actions.MakeSubIssueOf, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>b', (e) => executeIssueAction(Actions.AddSubIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>u', (e) => executeIssueAction(Actions.RemoveParentIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>w', (e) => executeIssueAction(Actions.LinkWorkspace, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>d', (e) => executeIssueAction(Actions.DuplicateIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
-  useHotkeys('i>x', (e) => executeIssueAction(Actions.DeleteIssue, e), {
-    ...OPTIONS,
-    enabled,
-  });
+  useHotkeys(
+    seq('seq-issue-make-sub-issue'),
+    (e) => executeIssueAction(Actions.MakeSubIssueOf, e),
+    { ...OPTIONS, enabled },
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-issue-add-sub-issue'),
+    (e) => executeIssueAction(Actions.AddSubIssue, e),
+    { ...OPTIONS, enabled },
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-issue-remove-parent'),
+    (e) => executeIssueAction(Actions.RemoveParentIssue, e),
+    { ...OPTIONS, enabled },
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-issue-link-workspace'),
+    (e) => executeIssueAction(Actions.LinkWorkspace, e),
+    { ...OPTIONS, enabled },
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-issue-duplicate'),
+    (e) => executeIssueAction(Actions.DuplicateIssue, e),
+    { ...OPTIONS, enabled },
+    [overrides]
+  );
+  useHotkeys(
+    seq('seq-issue-delete'),
+    (e) => executeIssueAction(Actions.DeleteIssue, e),
+    { ...OPTIONS, enabled },
+    [overrides]
+  );
 
   // Select all visible issues
   useHotkeys(
