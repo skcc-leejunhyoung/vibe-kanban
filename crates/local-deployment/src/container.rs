@@ -102,6 +102,21 @@ pub struct LocalContainerService {
     remote_client: Option<RemoteClient>,
 }
 
+/// Pure plan describing how `handle_execution_post_completion` should wrap up a
+/// finished execution, separated from the DB/IO side effects so the terminal-turn
+/// branching can be unit-tested. See [`LocalContainerService::plan_post_completion`].
+#[derive(Debug, PartialEq)]
+struct PostCompletionPlan {
+    /// Run the chained next action (e.g. cleanup script / next coding step).
+    start_next: bool,
+    /// Emit the "skipping cleanup script - no changes" log (no-changes turn).
+    log_skip_cleanup: bool,
+    /// `Some(has_chained_follow_up)` => finalize via `finalize_with_queued_followup`,
+    /// draining any queued follow-up. `None` => leave finalization to a later
+    /// execution in the chain.
+    finalize_with_queue: Option<bool>,
+}
+
 impl LocalContainerService {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
@@ -1086,6 +1101,43 @@ impl LocalContainerService {
         limit_reached.then_some(reset_hint)
     }
 
+    /// Decide how to wrap up a finished execution. Pure so the terminal-turn
+    /// branching — notably that a "no changes made" turn must still drain its
+    /// queued follow-up rather than only finalizing — can be unit-tested without
+    /// DB/IO.
+    ///
+    /// - `success_or_cleanup`: coding agent completed ok, or a cleanup script
+    ///   finished — i.e. we're in the commit/next-action block.
+    /// - `should_start_next`: a next action should run (changes were made, or a
+    ///   non-coding-agent run). Only meaningful when `success_or_cleanup`.
+    /// - `should_finalize`: [`Self::should_finalize`] verdict for this ctx.
+    /// - `has_chained_follow_up`: a chained `next_action` exists.
+    fn plan_post_completion(
+        success_or_cleanup: bool,
+        should_start_next: bool,
+        should_finalize: bool,
+        has_chained_follow_up: bool,
+    ) -> PostCompletionPlan {
+        let start_next = success_or_cleanup && should_start_next;
+        // "No changes made" early-finalize: we bypass the normal flow (no next
+        // action runs), so this is the terminal turn and MUST drain the queue.
+        // It wins over `should_finalize` (mirrors the old `already_finalized`).
+        let no_changes_finalize = success_or_cleanup && !should_start_next;
+        let finalize_with_queue = if no_changes_finalize {
+            // Terminal turn with no chained follow-up by construction.
+            Some(false)
+        } else if should_finalize {
+            Some(has_chained_follow_up)
+        } else {
+            None
+        };
+        PostCompletionPlan {
+            start_next,
+            log_skip_cleanup: no_changes_finalize,
+            finalize_with_queue,
+        }
+    }
+
     async fn handle_execution_post_completion(
         &self,
         ctx: &ExecutionContext,
@@ -1111,9 +1163,12 @@ impl LocalContainerService {
             ExecutionProcessStatus::Running
         );
 
-        let mut already_finalized = false;
+        let success_or_cleanup = success || cleanup_done;
 
-        if success || cleanup_done {
+        // Whether a chained next action should run. Committing changes is a side
+        // effect, so it stays in the shell; only the resulting boolean feeds the
+        // pure planner below.
+        let should_start_next = if success_or_cleanup {
             // Commit changes (if any) and get feedback about whether changes were made
             let changes_committed = match self.try_commit_changes(ctx).await {
                 Ok(committed) => committed,
@@ -1124,7 +1179,7 @@ impl LocalContainerService {
                 }
             };
 
-            let should_start_next = if matches!(
+            if matches!(
                 ctx.execution_process.run_reason,
                 ExecutionProcessRunReason::CodingAgent
             ) {
@@ -1132,38 +1187,44 @@ impl LocalContainerService {
                 changes_committed || self.has_commits_from_execution(ctx).await.unwrap_or(false)
             } else {
                 true
-            };
+            }
+        } else {
+            false
+        };
 
-            if should_start_next {
-                // If the process exited successfully, start the next action
-                if let Err(e) = self.try_start_next_action(ctx).await {
-                    tracing::error!("Failed to start next action after completion: {}", e);
-                }
-            } else {
-                tracing::info!(
-                    "Skipping cleanup script for workspace {} - no changes made by coding agent",
-                    ctx.workspace.id
-                );
+        let has_chained_follow_up = ctx
+            .execution_process
+            .executor_action()
+            .ok()
+            .and_then(|action| action.next_action())
+            .is_some();
 
-                // We're bypassing the normal execution flow (no next action will
-                // run), so this is the terminal turn. Consume any queued
-                // follow-up here instead of just finalizing — otherwise the
-                // queued message would stay stuck in the in-memory queue forever
-                // (no cleanup-script finalize will ever drain it).
-                self.finalize_with_queued_followup(ctx, false).await;
-                already_finalized = true;
+        let plan = Self::plan_post_completion(
+            success_or_cleanup,
+            should_start_next,
+            self.should_finalize(ctx),
+            has_chained_follow_up,
+        );
+
+        if plan.start_next {
+            // If the process exited successfully, start the next action
+            if let Err(e) = self.try_start_next_action(ctx).await {
+                tracing::error!("Failed to start next action after completion: {}", e);
             }
         }
 
-        if !already_finalized && self.should_finalize(ctx) {
-            let has_chained_follow_up = ctx
-                .execution_process
-                .executor_action()
-                .ok()
-                .and_then(|action| action.next_action())
-                .is_some();
-            self.finalize_with_queued_followup(ctx, has_chained_follow_up)
-                .await;
+        if plan.log_skip_cleanup {
+            tracing::info!(
+                "Skipping cleanup script for workspace {} - no changes made by coding agent",
+                ctx.workspace.id
+            );
+        }
+
+        // Drain any queued follow-up here for BOTH the no-changes early-finalize
+        // path and the normal should_finalize path, so a queued message is never
+        // left stuck in the in-memory queue when the cleanup script is skipped.
+        if let Some(has_chained) = plan.finalize_with_queue {
+            self.finalize_with_queued_followup(ctx, has_chained).await;
         }
 
         Ok(())
@@ -1988,6 +2049,68 @@ mod tests {
         assert!(!LocalContainerService::should_execute_queued_message(
             &ExecutionProcessStatus::Killed
         ));
+    }
+
+    /// Decision table for [`LocalContainerService::plan_post_completion`].
+    ///
+    /// The scenario-A regression lives in the first case: a turn that completes
+    /// successfully *without* changes (`success_or_cleanup = true`,
+    /// `should_start_next = false`) must take the queue-draining finalize path
+    /// (`finalize_with_queue = Some(false)`), never start a next action, and must
+    /// NOT depend on `should_finalize`/`has_chained` (early-finalize wins). The
+    /// original bug skipped queue consumption entirely on this path.
+    #[test]
+    fn plan_post_completion_decision_table() {
+        // Scenario A: success, no changes -> drain queue via early finalize.
+        // should_finalize/has_chained set true to prove they don't matter here.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(true, false, true, true),
+            PostCompletionPlan {
+                start_next: false,
+                log_skip_cleanup: true,
+                finalize_with_queue: Some(false),
+            }
+        );
+
+        // Success with changes, not the last action -> start next, no finalize yet.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(true, true, false, false),
+            PostCompletionPlan {
+                start_next: true,
+                log_skip_cleanup: false,
+                finalize_with_queue: None,
+            }
+        );
+
+        // Success with changes, last action -> start next then finalize, carrying has_chained.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(true, true, true, true),
+            PostCompletionPlan {
+                start_next: true,
+                log_skip_cleanup: false,
+                finalize_with_queue: Some(true),
+            }
+        );
+
+        // Not in success block (e.g. failed/killed) but should_finalize -> finalize only.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(false, false, true, false),
+            PostCompletionPlan {
+                start_next: false,
+                log_skip_cleanup: false,
+                finalize_with_queue: Some(false),
+            }
+        );
+
+        // Nothing to do (not success, not finalizing) -> no side effects.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(false, false, false, false),
+            PostCompletionPlan {
+                start_next: false,
+                log_skip_cleanup: false,
+                finalize_with_queue: None,
+            }
+        );
     }
 }
 
