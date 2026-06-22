@@ -188,6 +188,10 @@ function StatusRow({
       }
       onStopEditing();
     } else if (e.key === 'Escape') {
+      // Cancel the inline edit only — don't let Escape bubble up and close the
+      // whole settings dialog.
+      e.preventDefault();
+      e.stopPropagation();
       setLocalName(status.name);
       onStopEditing();
     }

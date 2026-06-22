@@ -230,10 +230,14 @@ function SettingsDialogContent({
     setMobileShowContent(false);
   };
 
-  // Handle ESC key
+  // Handle ESC key. Skip when an inner layer already consumed the Escape (e.g.
+  // the unsaved-changes confirmation dialog, an open select, or an inline edit
+  // being cancelled), so closing those doesn't also re-trigger the settings
+  // close/confirm flow.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        e.preventDefault();
         handleCloseWithConfirmation();
       }
     };

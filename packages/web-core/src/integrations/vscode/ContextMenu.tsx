@@ -137,6 +137,19 @@ export const WebviewContextMenu: React.FC = () => {
     return () => cancelAnimationFrame(id);
   }, [visible, pos]);
 
+  // Close on Escape, like any other menu/popup.
+  useEffect(() => {
+    if (!visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        e.preventDefault();
+        setVisible(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [visible]);
+
   const close = () => setVisible(false);
 
   const onCopy = async () => {

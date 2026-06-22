@@ -56,33 +56,28 @@ const Dialog = React.forwardRef<
     };
   }, [open, enableScope, disableScope]);
 
-  useHotkeys(
-    'esc',
-    (e) => {
-      if (!open) return;
-      if (uncloseable) return;
-
-      const activeElement = document.activeElement as HTMLElement;
-      if (
-        activeElement &&
-        (activeElement.tagName === 'INPUT' ||
-          activeElement.tagName === 'TEXTAREA' ||
-          activeElement.isContentEditable)
-      ) {
-        activeElement.blur();
-        e?.preventDefault();
-        return;
-      }
-
-      onOpenChange?.(false);
-    },
-    {
-      enabled: !!open,
-      scopes: [DIALOG_SCOPE],
-      preventDefault: true,
-    },
-    [open, uncloseable, onOpenChange]
-  );
+  // Close on Escape. We use a native document listener (bubble phase) instead
+  // of `useHotkeys` so Escape still fires while an input/textarea/contentEditable
+  // is focused — react-hotkeys-hook ignores form fields by default, which is why
+  // dialogs that autofocus an input used to swallow the first Escape entirely.
+  //
+  // Nested dismissable layers cooperate via the event: Radix popovers/selects/
+  // dropdowns handle Escape in the capture phase and `preventDefault()` when they
+  // dismiss, and custom dropdowns `stopPropagation()`, so an inner layer always
+  // gets first claim on the key. We only close the dialog when nothing else
+  // consumed the Escape, and we mark it handled so an outer dialog doesn't close
+  // too.
+  React.useEffect(() => {
+    if (!open || uncloseable) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (!onOpenChange) return;
+      event.preventDefault();
+      onOpenChange(false);
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [open, uncloseable, onOpenChange]);
 
   useHotkeys(
     'enter',
