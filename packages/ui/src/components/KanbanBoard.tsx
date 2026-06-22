@@ -73,6 +73,8 @@ export type KanbanCardProps = Pick<Feature, 'id' | 'name'> & {
   onKeyDown?: (e: KeyboardEvent) => void;
   isOpen?: boolean;
   isSelected?: boolean;
+  /** Keyboard navigation cursor is on this card (arrow/vim key focus) */
+  isFocused?: boolean;
   dragDisabled?: boolean;
   isMobile?: boolean;
 };
@@ -89,6 +91,7 @@ export const KanbanCard = ({
   onKeyDown,
   isOpen,
   isSelected,
+  isFocused,
   dragDisabled = false,
   isMobile,
 }: KanbanCardProps) => {
@@ -111,9 +114,14 @@ export const KanbanCard = ({
             className={cn(
               'p-base outline-none flex-col border -mt-[1px] -mx-[1px] bg-primary',
               snapshot.isDragging && 'cursor-grabbing shadow-lg',
+              // Precedence: multi-select > keyboard cursor > opened panel.
+              // cn() is clsx-only (no tailwind-merge), so apply exactly one
+              // ring variant to avoid conflicting ring-* classes.
               isSelected
                 ? 'ring-2 ring-accent ring-inset bg-accent/5'
-                : isOpen && 'ring-2 ring-secondary-foreground ring-inset',
+                : isFocused
+                  ? 'ring-2 ring-brand ring-inset'
+                  : isOpen && 'ring-2 ring-secondary-foreground ring-inset',
               className
             )}
             ref={setRefs}

@@ -72,6 +72,14 @@ import { SearchableTagDropdownContainer } from '@/shared/components/SearchableTa
 import type { IssuePriority } from 'shared/remote-types';
 import { useIssueMultiSelect } from '@/shared/hooks/useIssueMultiSelect';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
+import { useHotkeys } from 'react-hotkeys-hook';
+import {
+  Scope,
+  useKeyNavUp,
+  useKeyNavDown,
+  useKeyNavLeft,
+  useKeyNavRight,
+} from '@/shared/keyboard';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
@@ -767,6 +775,12 @@ export function KanbanContainer() {
   );
   const setAnchor = useIssueSelectionStore((s) => s.setAnchor);
 
+  // Keyboard navigation cursor: the card focused via arrow/vim keys. Distinct
+  // from multi-selection (selectedIssueIds) and the opened issue
+  // (selectedKanbanIssueId). Card DOM nodes are tracked for scroll-into-view.
+  const [focusedIssueId, setFocusedIssueId] = useState<string | null>(null);
+  const cardRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+
   // Compute ordered issue IDs for range selection
   const orderedIssueIds = useMemo(() => {
     const statusOrder =
@@ -779,9 +793,10 @@ export function KanbanContainer() {
     setOrderedIssueIds(orderedIssueIds);
   }, [orderedIssueIds, setOrderedIssueIds]);
 
-  // Clear multi-selection when project or view mode changes
+  // Clear multi-selection and keyboard cursor when project or view mode changes
   useEffect(() => {
     clearSelection();
+    setFocusedIssueId(null);
   }, [projectId, kanbanViewMode, clearSelection]);
 
   // Keep anchor in sync with the currently opened issue (e.g. from URL on
@@ -813,6 +828,8 @@ export function KanbanContainer() {
         }
         // Set as anchor so Shift+Click from this issue works
         setAnchor(issueId);
+        // Keep the keyboard cursor in sync with mouse interaction
+        setFocusedIssueId(issueId);
         openIssue(issueId);
       }
     },
@@ -826,6 +843,105 @@ export function KanbanContainer() {
       setAnchor,
     ]
   );
+
+  // --- Keyboard arrow / vim (hjkl) navigation across cards -----------------
+  // Columns of issue IDs for 2D grid movement (kanban view only).
+  const focusColumns = useMemo(
+    () => visibleStatuses.map((status) => items[status.id] ?? []),
+    [visibleStatuses, items]
+  );
+
+  const isKanbanView = kanbanViewMode === 'kanban';
+
+  const moveFocus = useCallback(
+    (direction: 'up' | 'down' | 'left' | 'right') => {
+      const columns = focusColumns;
+      if (!columns.some((column) => column.length > 0)) return;
+
+      // Locate the current cursor within the grid (fall back to the opened
+      // issue so navigation continues from whatever the user last looked at).
+      const start = focusedIssueId ?? selectedKanbanIssueId;
+      let col = -1;
+      let row = -1;
+      if (start) {
+        for (let c = 0; c < columns.length; c++) {
+          const r = columns[c].indexOf(start);
+          if (r !== -1) {
+            col = c;
+            row = r;
+            break;
+          }
+        }
+      }
+
+      // No cursor yet: enter at the first non-empty column.
+      if (col === -1) {
+        const firstCol = columns.findIndex((column) => column.length > 0);
+        setFocusedIssueId(columns[firstCol][0]);
+        return;
+      }
+
+      if (direction === 'up' || direction === 'down') {
+        const nextRow = direction === 'down' ? row + 1 : row - 1;
+        if (nextRow < 0 || nextRow >= columns[col].length) return;
+        setFocusedIssueId(columns[col][nextRow]);
+        return;
+      }
+
+      // left / right: jump to the nearest non-empty column in that direction,
+      // clamping the row to that column's length.
+      const step = direction === 'right' ? 1 : -1;
+      for (let c = col + step; c >= 0 && c < columns.length; c += step) {
+        if (columns[c].length > 0) {
+          const nextRow = Math.min(row, columns[c].length - 1);
+          setFocusedIssueId(columns[c][nextRow]);
+          return;
+        }
+      }
+    },
+    [focusColumns, focusedIssueId, selectedKanbanIssueId]
+  );
+
+  const navOptions = {
+    scope: Scope.KANBAN,
+    enabled: isKanbanView,
+    preventDefault: true,
+  };
+  useKeyNavUp(() => moveFocus('up'), navOptions);
+  useKeyNavDown(() => moveFocus('down'), navOptions);
+  useKeyNavLeft(() => moveFocus('left'), navOptions);
+  useKeyNavRight(() => moveFocus('right'), navOptions);
+
+  // Enter opens the focused card (same behavior as a plain click). When the
+  // focused card is already open, let Enter behave normally so it doesn't
+  // hijack keystrokes inside the issue panel.
+  useHotkeys(
+    'enter',
+    (e) => {
+      if (!focusedIssueId || focusedIssueId === selectedKanbanIssueId) return;
+      e.preventDefault();
+      handleCardClick(focusedIssueId);
+    },
+    {
+      scopes: [Scope.KANBAN],
+      enabled: isKanbanView && !!focusedIssueId,
+      enableOnFormTags: false,
+    },
+    [focusedIssueId, selectedKanbanIssueId, handleCardClick, isKanbanView]
+  );
+
+  // Drop the cursor if its issue disappears (filter change / deletion);
+  // otherwise keep the focused card scrolled into view.
+  useEffect(() => {
+    if (!focusedIssueId) return;
+    if (!orderedIssueIds.includes(focusedIssueId)) {
+      setFocusedIssueId(null);
+      return;
+    }
+    cardRefs.current
+      .get(focusedIssueId)
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [focusedIssueId, orderedIssueIds]);
 
   const handleToggleSelectionMode = useCallback(() => {
     if (isSelectionMode) {
@@ -1077,6 +1193,11 @@ export function KanbanContainer() {
                             isOpen={selectedKanbanIssueId === issue.id}
                             isMobile={isMobile}
                             isSelected={selectedIssueIds.has(issue.id)}
+                            isFocused={focusedIssueId === issue.id}
+                            forwardedRef={(node) => {
+                              if (node) cardRefs.current.set(issue.id, node);
+                              else cardRefs.current.delete(issue.id);
+                            }}
                             dragDisabled={isMultiSelectActive}
                           >
                             <KanbanCardContent

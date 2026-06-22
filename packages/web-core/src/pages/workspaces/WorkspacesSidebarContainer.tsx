@@ -1,5 +1,6 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useParams } from '@tanstack/react-router';
+import { useHotkeys } from 'react-hotkeys-hook';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useUserContext } from '@/shared/hooks/useUserContext';
@@ -24,6 +25,7 @@ import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog'
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import {
   WorkspacesSidebar,
+  categorizeWorkspaces,
   type WorkspacesSidebarPersistKeys,
 } from '@vibe/ui/components/WorkspacesSidebar';
 import {
@@ -268,6 +270,7 @@ export function WorkspacesSidebarContainer({
   const { hosts: remoteCloudHosts } = useRemoteCloudHostsAppBarModel();
   const { hostId: routeHostId } = useParams({ strict: false });
   const setMobileActiveTab = useUiPreferencesStore((s) => s.setMobileActiveTab);
+  const mobileActiveTab = useUiPreferencesStore((s) => s.mobileActiveTab);
   const [searchQuery, setSearchQuery] = useState('');
   const [showArchive, setShowArchive] = usePersistedExpanded(
     PERSIST_KEYS.workspacesSidebarArchived,
@@ -589,6 +592,117 @@ export function WorkspacesSidebarContainer({
     ]
   );
 
+  // --- Keyboard arrow / vim (j/k) navigation across the workspace list -----
+  const [focusedWorkspaceId, setFocusedWorkspaceId] = useState<string | null>(
+    null
+  );
+  const workspaceRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const registerWorkspaceRef = useCallback(
+    (id: string, node: HTMLDivElement | null) => {
+      if (node) workspaceRefs.current.set(id, node);
+      else workspaceRefs.current.delete(id);
+    },
+    []
+  );
+
+  // Flat list of workspace IDs in display order, so up/down navigation matches
+  // what the user sees (archive view, accordion sections, or the flat list).
+  const displayedWorkspaceIds = useMemo(() => {
+    if (showArchive) {
+      return paginatedArchivedWorkspaces.map((w) => w.id);
+    }
+    if (layoutMode === 'accordion') {
+      const { raisedHandWorkspaces, runningWorkspaces, idleWorkspaces } =
+        categorizeWorkspaces(paginatedActiveWorkspaces);
+      return [
+        ...raisedHandWorkspaces,
+        ...runningWorkspaces,
+        ...idleWorkspaces,
+      ].map((w) => w.id);
+    }
+    return paginatedActiveWorkspaces.map((w) => w.id);
+  }, [
+    showArchive,
+    layoutMode,
+    paginatedActiveWorkspaces,
+    paginatedArchivedWorkspaces,
+  ]);
+
+  const moveWorkspaceFocus = useCallback(
+    (delta: 1 | -1) => {
+      const ids = displayedWorkspaceIds;
+      if (ids.length === 0) return;
+      // Start from the cursor, falling back to the open workspace, then either
+      // end depending on direction.
+      const current = focusedWorkspaceId ?? selectedWorkspaceId ?? null;
+      const currentIndex = current ? ids.indexOf(current) : -1;
+      const nextIndex =
+        currentIndex === -1
+          ? delta === 1
+            ? 0
+            : ids.length - 1
+          : currentIndex + delta;
+      if (nextIndex < 0 || nextIndex >= ids.length) return;
+      setFocusedWorkspaceId(ids[nextIndex]);
+    },
+    [displayedWorkspaceIds, focusedWorkspaceId, selectedWorkspaceId]
+  );
+
+  // Only active while the list is on screen (always on desktop; on mobile only
+  // while the workspaces tab shows). enableOnFormTags:false keeps arrow keys
+  // working normally inside the search box and other inputs.
+  const isListVisible = !isMobile || mobileActiveTab === 'workspaces';
+
+  useHotkeys(
+    'up, k',
+    (e) => {
+      e.preventDefault();
+      moveWorkspaceFocus(-1);
+    },
+    { enabled: isListVisible, enableOnFormTags: false },
+    [moveWorkspaceFocus, isListVisible]
+  );
+  useHotkeys(
+    'down, j',
+    (e) => {
+      e.preventDefault();
+      moveWorkspaceFocus(1);
+    },
+    { enabled: isListVisible, enableOnFormTags: false },
+    [moveWorkspaceFocus, isListVisible]
+  );
+  useHotkeys(
+    'enter',
+    (e) => {
+      // When the cursor is already on the open workspace, let Enter pass
+      // through instead of re-selecting it.
+      if (!focusedWorkspaceId || focusedWorkspaceId === selectedWorkspaceId) {
+        return;
+      }
+      e.preventDefault();
+      handleSelectWorkspace(focusedWorkspaceId);
+    },
+    { enabled: isListVisible && !!focusedWorkspaceId, enableOnFormTags: false },
+    [
+      focusedWorkspaceId,
+      selectedWorkspaceId,
+      handleSelectWorkspace,
+      isListVisible,
+    ]
+  );
+
+  // Drop the cursor if its workspace disappears; otherwise scroll it into view.
+  useEffect(() => {
+    if (!focusedWorkspaceId) return;
+    if (!displayedWorkspaceIds.includes(focusedWorkspaceId)) {
+      setFocusedWorkspaceId(null);
+      return;
+    }
+    workspaceRefs.current
+      .get(focusedWorkspaceId)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [focusedWorkspaceId, displayedWorkspaceIds]);
+
   const handleAddWorkspace = useCallback(() => {
     navigateToCreate();
     if (isMobile) {
@@ -699,6 +813,8 @@ export function WorkspacesSidebarContainer({
       hasMoreWorkspaces={hasMoreWorkspaces && !isSearching}
       searchControls={searchControls}
       onOpenWorkspaceActions={handleOpenWorkspaceActions}
+      focusedWorkspaceId={focusedWorkspaceId}
+      registerWorkspaceRef={registerWorkspaceRef}
       persistKeys={sidebarPersistKeys}
       activeRemoteHost={activeRemoteHost}
       onOpenRemoteHostSettings={handleOpenRemoteHostSettings}

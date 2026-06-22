@@ -79,6 +79,10 @@ export interface WorkspacesSidebarProps {
   searchControls?: ReactNode;
   /** Callback for opening workspace actions */
   onOpenWorkspaceActions?: (workspaceId: string) => void;
+  /** Keyboard navigation cursor (arrow/vim key focus) */
+  focusedWorkspaceId?: string | null;
+  /** Register a row's DOM node for scroll-into-view during keyboard nav */
+  registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;
   /** Persist keys for collapsible sections */
   persistKeys?: WorkspacesSidebarPersistKeys;
   activeRemoteHost?: {
@@ -128,16 +132,47 @@ export function WorkspacesSidebarReopenTag({
   );
 }
 
+/**
+ * Split workspaces into accordion sections in display order
+ * (Needs attention → Running → Idle). Exported so containers can derive the
+ * same flat ordering for keyboard navigation.
+ */
+export function categorizeWorkspaces(
+  workspaces: WorkspacesSidebarWorkspace[]
+): {
+  raisedHandWorkspaces: WorkspacesSidebarWorkspace[];
+  runningWorkspaces: WorkspacesSidebarWorkspace[];
+  idleWorkspaces: WorkspacesSidebarWorkspace[];
+} {
+  // Running workspaces stay in the "Running" section even if unseen.
+  const needsAttention = (ws: WorkspacesSidebarWorkspace) =>
+    ws.hasPendingApproval || (ws.hasUnseenActivity && !ws.isRunning);
+
+  return {
+    raisedHandWorkspaces: workspaces.filter((ws) => needsAttention(ws)),
+    runningWorkspaces: workspaces.filter(
+      (ws) => ws.isRunning && !needsAttention(ws)
+    ),
+    idleWorkspaces: workspaces.filter(
+      (ws) => !ws.isRunning && !needsAttention(ws)
+    ),
+  };
+}
+
 function WorkspaceList({
   workspaces,
   selectedWorkspaceId,
   onSelectWorkspace,
   onOpenWorkspaceActions,
+  focusedWorkspaceId,
+  registerWorkspaceRef,
 }: {
   workspaces: WorkspacesSidebarWorkspace[];
   selectedWorkspaceId: string | null;
   onSelectWorkspace: (id: string) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
+  focusedWorkspaceId?: string | null;
+  registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;
 }) {
   return (
     <>
@@ -150,6 +185,12 @@ function WorkspaceList({
           linesAdded={workspace.linesAdded}
           linesRemoved={workspace.linesRemoved}
           isActive={selectedWorkspaceId === workspace.id}
+          isFocused={focusedWorkspaceId === workspace.id}
+          forwardedRef={
+            registerWorkspaceRef
+              ? (node) => registerWorkspaceRef(workspace.id, node)
+              : undefined
+          }
           isRunning={workspace.isRunning}
           isPinned={workspace.isPinned}
           hasPendingApproval={workspace.hasPendingApproval}
@@ -187,6 +228,8 @@ export function WorkspacesSidebar({
   hasMoreWorkspaces = false,
   searchControls,
   onOpenWorkspaceActions,
+  focusedWorkspaceId = null,
+  registerWorkspaceRef,
   persistKeys = DEFAULT_PERSIST_KEYS,
   activeRemoteHost = null,
   onOpenRemoteHostSettings,
@@ -215,22 +258,10 @@ export function WorkspacesSidebar({
   };
 
   // Categorize workspaces for accordion layout
-  const { raisedHandWorkspaces, idleWorkspaces, runningWorkspaces } =
-    useMemo(() => {
-      // Running workspaces should stay in the "Running" section even if unseen.
-      const needsAttention = (ws: WorkspacesSidebarWorkspace) =>
-        ws.hasPendingApproval || (ws.hasUnseenActivity && !ws.isRunning);
-
-      return {
-        raisedHandWorkspaces: workspaces.filter((ws) => needsAttention(ws)),
-        idleWorkspaces: workspaces.filter(
-          (ws) => !ws.isRunning && !needsAttention(ws)
-        ),
-        runningWorkspaces: workspaces.filter(
-          (ws) => ws.isRunning && !needsAttention(ws)
-        ),
-      };
-    }, [workspaces]);
+  const { raisedHandWorkspaces, idleWorkspaces, runningWorkspaces } = useMemo(
+    () => categorizeWorkspaces(workspaces),
+    [workspaces]
+  );
 
   const headerActions: SectionAction[] = [
     {
@@ -343,6 +374,12 @@ export function WorkspacesSidebar({
                   linesAdded={workspace.linesAdded}
                   linesRemoved={workspace.linesRemoved}
                   isActive={selectedWorkspaceId === workspace.id}
+                  isFocused={focusedWorkspaceId === workspace.id}
+                  forwardedRef={
+                    registerWorkspaceRef
+                      ? (node) => registerWorkspaceRef(workspace.id, node)
+                      : undefined
+                  }
                   isRunning={workspace.isRunning}
                   isPinned={workspace.isPinned}
                   hasPendingApproval={workspace.hasPendingApproval}
@@ -385,6 +422,8 @@ export function WorkspacesSidebar({
                     selectedWorkspaceId={selectedWorkspaceId}
                     onSelectWorkspace={onSelectWorkspace}
                     onOpenWorkspaceActions={handleOpenWorkspaceActions}
+                    focusedWorkspaceId={focusedWorkspaceId}
+                    registerWorkspaceRef={registerWorkspaceRef}
                   />
                 )}
               </div>
@@ -407,6 +446,8 @@ export function WorkspacesSidebar({
                     selectedWorkspaceId={selectedWorkspaceId}
                     onSelectWorkspace={onSelectWorkspace}
                     onOpenWorkspaceActions={handleOpenWorkspaceActions}
+                    focusedWorkspaceId={focusedWorkspaceId}
+                    registerWorkspaceRef={registerWorkspaceRef}
                   />
                 )}
               </div>
@@ -429,6 +470,8 @@ export function WorkspacesSidebar({
                     selectedWorkspaceId={selectedWorkspaceId}
                     onSelectWorkspace={onSelectWorkspace}
                     onOpenWorkspaceActions={handleOpenWorkspaceActions}
+                    focusedWorkspaceId={focusedWorkspaceId}
+                    registerWorkspaceRef={registerWorkspaceRef}
                   />
                 )}
               </div>
@@ -460,6 +503,12 @@ export function WorkspacesSidebar({
                 linesAdded={workspace.linesAdded}
                 linesRemoved={workspace.linesRemoved}
                 isActive={selectedWorkspaceId === workspace.id}
+                isFocused={focusedWorkspaceId === workspace.id}
+                forwardedRef={
+                  registerWorkspaceRef
+                    ? (node) => registerWorkspaceRef(workspace.id, node)
+                    : undefined
+                }
                 isRunning={workspace.isRunning}
                 isPinned={workspace.isPinned}
                 hasPendingApproval={workspace.hasPendingApproval}

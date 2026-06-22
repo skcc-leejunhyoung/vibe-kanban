@@ -9,6 +9,7 @@ import {
   DotsThreeIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
+import type { Ref } from 'react';
 import { cn } from '../lib/cn';
 import { RunningDots } from './RunningDots';
 
@@ -48,6 +49,10 @@ export interface WorkspaceSummaryProps {
   /** Whether this is a draft workspace (shows "Draft" instead of elapsed time) */
   isDraft?: boolean;
   onOpenWorkspaceActions?: (workspaceId: string) => void;
+  /** Keyboard navigation cursor is on this row (arrow/vim key focus) */
+  isFocused?: boolean;
+  /** Ref to the row container, used to scroll the focused row into view */
+  forwardedRef?: Ref<HTMLDivElement>;
 }
 
 export function WorkspaceSummary({
@@ -70,6 +75,8 @@ export function WorkspaceSummary({
   summary = false,
   isDraft = false,
   onOpenWorkspaceActions,
+  isFocused = false,
+  forwardedRef,
 }: WorkspaceSummaryProps) {
   const { t } = useTranslation('common');
   const hasChanges = filesChanged !== undefined && filesChanged > 0;
@@ -84,9 +91,11 @@ export function WorkspaceSummary({
 
   return (
     <div
+      ref={forwardedRef}
       className={cn(
         'group relative rounded-sm transition-all duration-100 overflow-hidden',
         isActive ? 'bg-tertiary' : '',
+        isFocused && 'ring-1 ring-inset ring-brand',
         className
       )}
     >
