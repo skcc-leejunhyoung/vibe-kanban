@@ -111,7 +111,8 @@ const EditBranchNameDialogImpl = create<EditBranchNameDialogProps>(
                   if (
                     e.key === 'Enter' &&
                     !e.nativeEvent.isComposing &&
-                    !renameMutation.isPending
+                    !renameMutation.isPending &&
+                    branchName.trim()
                   ) {
                     e.preventDefault();
                     handleConfirm();
