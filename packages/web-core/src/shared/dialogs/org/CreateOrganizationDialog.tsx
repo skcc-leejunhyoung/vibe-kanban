@@ -150,6 +150,7 @@ const CreateOrganizationDialogImpl = create<NoProps>(() => {
               onKeyDown={(e) => {
                 if (
                   e.key === 'Enter' &&
+                  !e.nativeEvent.isComposing &&
                   name.trim() &&
                   slug.trim() &&
                   !createOrganization.isPending

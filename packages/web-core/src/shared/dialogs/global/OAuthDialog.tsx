@@ -293,6 +293,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
                     onKeyDown={(e) => {
                       if (
                         e.key === 'Enter' &&
+                        !e.nativeEvent.isComposing &&
                         localEmail.trim() &&
                         localPassword &&
                         !isSubmittingLocal

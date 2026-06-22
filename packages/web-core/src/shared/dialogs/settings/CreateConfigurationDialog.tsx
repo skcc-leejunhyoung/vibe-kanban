@@ -109,7 +109,11 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
                   setError(null);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && configName.trim()) {
+                  if (
+                    e.key === 'Enter' &&
+                    !e.nativeEvent.isComposing &&
+                    configName.trim()
+                  ) {
                     e.preventDefault();
                     handleCreate();
                   }

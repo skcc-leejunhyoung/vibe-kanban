@@ -148,6 +148,7 @@ const TagEditDialogImpl = create<TagEditDialogProps>(({ tag }) => {
               onKeyDown={(e) => {
                 if (
                   e.key === 'Enter' &&
+                  !e.nativeEvent.isComposing &&
                   !saving &&
                   !tagNameError &&
                   formData.content.trim()

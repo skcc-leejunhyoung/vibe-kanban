@@ -99,7 +99,12 @@ const CreateRepoDialogImpl = NiceModal.create<CreateRepoDialogProps>(
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && name.trim() && !isSubmitting) {
+                  if (
+                    e.key === 'Enter' &&
+                    !e.nativeEvent.isComposing &&
+                    name.trim() &&
+                    !isSubmitting
+                  ) {
                     e.preventDefault();
                     void handleCreate();
                   }

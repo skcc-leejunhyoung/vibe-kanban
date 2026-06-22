@@ -166,7 +166,11 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
                     value={manualPath}
                     onChange={handleManualPathChange}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && manualPath.trim()) {
+                      if (
+                        e.key === 'Enter' &&
+                        !e.nativeEvent.isComposing &&
+                        manualPath.trim()
+                      ) {
                         e.preventDefault();
                         handleManualPathSubmit();
                       }

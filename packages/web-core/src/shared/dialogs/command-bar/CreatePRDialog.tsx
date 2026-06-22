@@ -356,7 +356,12 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                     value={prTitle}
                     onChange={(e) => setPrTitle(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && prTitle.trim() && !creatingPR) {
+                      if (
+                        e.key === 'Enter' &&
+                        !e.nativeEvent.isComposing &&
+                        prTitle.trim() &&
+                        !creatingPR
+                      ) {
                         e.preventDefault();
                         handleConfirmCreatePR();
                       }

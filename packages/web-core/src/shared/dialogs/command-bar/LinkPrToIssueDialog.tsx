@@ -340,7 +340,11 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
                   onBlur={handleUrlBlur}
                   onPaste={handleUrlPaste}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && canLink) {
+                    if (
+                      e.key === 'Enter' &&
+                      !e.nativeEvent.isComposing &&
+                      canLink
+                    ) {
                       e.preventDefault();
                       void handleLink();
                     }

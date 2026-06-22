@@ -108,7 +108,11 @@ const EditBranchNameDialogImpl = create<EditBranchNameDialogProps>(
                   setError(null);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !renameMutation.isPending) {
+                  if (
+                    e.key === 'Enter' &&
+                    !e.nativeEvent.isComposing &&
+                    !renameMutation.isPending
+                  ) {
                     e.preventDefault();
                     handleConfirm();
                   }

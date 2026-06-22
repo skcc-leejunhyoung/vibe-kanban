@@ -129,6 +129,7 @@ const InviteMemberDialogImpl = create<InviteMemberDialogProps>((props) => {
               onKeyDown={(e) => {
                 if (
                   e.key === 'Enter' &&
+                  !e.nativeEvent.isComposing &&
                   email.trim() &&
                   !createInvitation.isPending
                 ) {

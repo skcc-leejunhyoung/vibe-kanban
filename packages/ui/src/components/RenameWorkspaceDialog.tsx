@@ -98,7 +98,11 @@ const RenameWorkspaceDialogImpl = NiceModal.create<RenameWorkspaceDialogProps>(
                   setError(null);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !isSubmitting) {
+                  if (
+                    e.key === 'Enter' &&
+                    !e.nativeEvent.isComposing &&
+                    !isSubmitting
+                  ) {
                     e.preventDefault();
                     void handleConfirm();
                   }
