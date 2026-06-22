@@ -15,6 +15,7 @@ import {
   effectiveFirstKeys,
   effectiveValidSequences,
   displayKeyParts,
+  effectiveActionShortcut,
   buildCombo,
   reservedBindings,
   COMMAND_BAR_BINDING_ID,
@@ -149,6 +150,57 @@ describe('displayKeyParts', () => {
     expect(displayKeyParts('mod+a')).toEqual(['⌘', 'A']);
     expect(displayKeyParts('mod+shift+k')).toEqual(['⌘', '⇧', 'K']);
     expect(displayKeyParts('alt+x')).toEqual(['⌥', 'X']);
+  });
+});
+
+describe('effectiveActionShortcut', () => {
+  it('resolves a sequence-bound action to its display string, honoring overrides', () => {
+    // default: the registry sequence (v>r) bound to toggle-right-sidebar
+    expect(effectiveActionShortcut('toggle-right-sidebar', 'V R', {})).toBe(
+      'V R'
+    );
+    // rebound to another sequence
+    expect(
+      effectiveActionShortcut('toggle-right-sidebar', 'V R', {
+        'seq-view-right-sidebar': 'g>x',
+      })
+    ).toBe('G X');
+    // rebound to a modifier combo -> platform glyphs (mac)
+    expect(
+      effectiveActionShortcut('toggle-right-sidebar', 'V R', {
+        'seq-view-right-sidebar': 'mod+r',
+      })
+    ).toBe('⌘ R');
+  });
+
+  it('hides the hint (undefined) for a cleared sequence, ignoring the static fallback', () => {
+    // present-but-empty override => disabled; must not fall back to 'V R'
+    expect(
+      effectiveActionShortcut('toggle-right-sidebar', 'V R', {
+        'seq-view-right-sidebar': '',
+      })
+    ).toBeUndefined();
+  });
+
+  it('resolves a modifier-bound action via the explicit action-id map', () => {
+    // open-command-bar (Action.id) maps to the command-bar modifier binding,
+    // so the literal '{mod} K' fallback is replaced by the real glyphs.
+    expect(effectiveActionShortcut('open-command-bar', '{mod} K', {})).toBe(
+      '⌘ K'
+    );
+    // cleared modifier => hint hidden
+    expect(
+      effectiveActionShortcut('open-command-bar', '{mod} K', {
+        [COMMAND_BAR_BINDING_ID]: '',
+      })
+    ).toBeUndefined();
+  });
+
+  it('falls back to the static shortcut when the action has no rebindable binding', () => {
+    expect(effectiveActionShortcut('no-binding-action', 'X Y', {})).toBe('X Y');
+    expect(
+      effectiveActionShortcut('no-binding-action', undefined, {})
+    ).toBeUndefined();
   });
 });
 
