@@ -329,6 +329,7 @@
       "toggle-logs-mode": "Toggle Logs panel",
       "toggle-preview-mode": "Toggle Preview panel",
       "toggle-left-sidebar": "Toggle Left Sidebar",
+      "toggle-right-sidebar": "Toggle Right Sidebar",
       "toggle-left-main-panel": "Toggle Chat panel",
       "create-issue": "Create Issue",
       "change-issue-status": "Change Status",

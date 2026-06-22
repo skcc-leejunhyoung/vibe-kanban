@@ -157,6 +157,13 @@ export const sequentialBindings: SequentialBinding[] = [
     actionId: 'toggle-left-sidebar',
   },
   {
+    id: 'seq-view-right-sidebar',
+    keys: ['v', 'r'],
+    description: 'Toggle Right Sidebar',
+    group: 'View',
+    actionId: 'toggle-right-sidebar',
+  },
+  {
     id: 'seq-view-chat',
     keys: ['v', 'h'],
     description: 'Toggle Chat panel',
@@ -693,6 +700,46 @@ export function effectiveValidSequences(overrides: Overrides): Set<string> {
     if (isSequenceKeys(keys)) set.add(keys.split('>').join(','));
   }
   return set;
+}
+
+/**
+ * Map an Action.id to the modifier binding it triggers. Modifier bindings carry
+ * an i18n actionId that differs from the triggering Action.id (e.g.
+ * 'openCommandBar' vs 'open-command-bar'), so this link is explicit. Sequence
+ * bindings need no such map — their actionId IS the Action.id.
+ */
+const MODIFIER_BINDING_BY_ACTION_ID: Record<string, string> = {
+  'open-command-bar': COMMAND_BAR_BINDING_ID,
+};
+
+/**
+ * Effective shortcut string for display next to an action (navbar tooltips, the
+ * command bar), honoring user overrides. Resolved by the action's id:
+ *   - rebindable binding, active  -> the rebound keys ('V S', '⌘ K')
+ *   - rebindable binding, cleared -> undefined (disabled: show no hint)
+ *   - no rebindable binding       -> the action's static `shortcut` fallback
+ * Keeps these hints in sync with the keys that actually fire and with the help
+ * dialog / settings, instead of the hardcoded registry defaults.
+ */
+export function effectiveActionShortcut(
+  actionId: string,
+  staticShortcut: string | undefined,
+  overrides: Overrides
+): string | undefined {
+  const seq = sequentialBindings.find((b) => b.actionId === actionId);
+  if (seq) {
+    return (
+      displayKeyParts(resolveSequence(seq.id, overrides)).join(' ') || undefined
+    );
+  }
+  const modifierId = MODIFIER_BINDING_BY_ACTION_ID[actionId];
+  if (modifierId) {
+    return (
+      displayKeyParts(resolveModifier(modifierId, overrides)).join(' ') ||
+      undefined
+    );
+  }
+  return staticShortcut;
 }
 
 /**

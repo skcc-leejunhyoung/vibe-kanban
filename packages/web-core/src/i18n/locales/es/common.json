@@ -312,6 +312,7 @@
       "toggle-logs-mode": "Alternar panel de registros",
       "toggle-preview-mode": "Alternar panel de vista previa",
       "toggle-left-sidebar": "Alternar barra lateral izquierda",
+      "toggle-right-sidebar": "Alternar barra lateral derecha",
       "toggle-left-main-panel": "Alternar panel de chat",
       "create-issue": "Crear issue",
       "change-issue-status": "Cambiar estado",

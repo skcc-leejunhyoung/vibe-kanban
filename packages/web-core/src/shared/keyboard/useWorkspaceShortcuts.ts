@@ -125,6 +125,12 @@ export function useWorkspaceShortcuts() {
     [overrides]
   );
   useReboundHotkey(
+    seq('seq-view-right-sidebar'),
+    () => execute(Actions.ToggleRightSidebar),
+    OPTIONS,
+    [overrides]
+  );
+  useReboundHotkey(
     seq('seq-view-chat'),
     () => execute(Actions.ToggleLeftMainPanel),
     OPTIONS,

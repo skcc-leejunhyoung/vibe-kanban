@@ -646,6 +646,7 @@ export const Actions = {
         ? 'Hide Right Sidebar'
         : 'Show Right Sidebar',
     icon: RightSidebarIcon,
+    shortcut: 'V R',
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) => ctx.layoutMode === 'workspaces',
     isActive: (ctx) => ctx.isRightSidebarVisible,

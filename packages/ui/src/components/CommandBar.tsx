@@ -134,6 +134,11 @@ interface CommandBarProps<
   onGoBack: () => void;
   onSelect: (item: CommandBarGroupItem<TAction, TPageId>) => void;
   getLabel: (action: TAction) => string;
+  /**
+   * Effective shortcut hint for an action. Lets the host resolve user rebinds;
+   * when omitted, the action's static `shortcut` is shown.
+   */
+  getShortcut?: (action: TAction) => string | undefined;
   search: string;
   onSearchChange: (search: string) => void;
   statuses?: CommandBarStatusItem[];
@@ -186,6 +191,7 @@ export function CommandBar<
   onGoBack,
   onSelect,
   getLabel,
+  getShortcut,
   search,
   onSearchChange,
   statuses = [],
@@ -392,6 +398,9 @@ export function CommandBar<
               }
 
               const label = getLabel(item.action);
+              const shortcut = getShortcut
+                ? getShortcut(item.action)
+                : item.action.shortcut;
               return (
                 <CommandItem
                   key={item.action.id}
@@ -408,9 +417,7 @@ export function CommandBar<
                     renderSpecialActionIcon={renderSpecialActionIcon}
                   />
                   <span>{label}</span>
-                  {item.action.shortcut && (
-                    <CommandShortcut>{item.action.shortcut}</CommandShortcut>
-                  )}
+                  {shortcut && <CommandShortcut>{shortcut}</CommandShortcut>}
                 </CommandItem>
               );
             })}

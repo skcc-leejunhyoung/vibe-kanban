@@ -312,6 +312,7 @@
       "toggle-logs-mode": "Basculer le panneau Logs",
       "toggle-preview-mode": "Basculer le panneau Aperçu",
       "toggle-left-sidebar": "Basculer la barre latérale gauche",
+      "toggle-right-sidebar": "Basculer la barre latérale droite",
       "toggle-left-main-panel": "Basculer le panneau Chat",
       "create-issue": "Créer un ticket",
       "change-issue-status": "Changer le statut",

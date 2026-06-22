@@ -26,6 +26,8 @@ import type { EditorType } from 'shared/types';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
 import { CopyButton } from '@/shared/components/CopyButton';
 import { isRealMobileDevice } from '@/shared/hooks/useIsMobile';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 
 /**
  * Check if a ContextBarItem is a divider
@@ -161,6 +163,9 @@ export function ContextBarContainer({
   // Get visibility context (now includes dev server state)
   const actionCtx = useActionVisibilityContext();
 
+  // Subscribe to keyboard overrides so tooltip shortcut hints reflect rebinds.
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+
   const handleExecuteAction = useCallback(
     async (action: ActionDefinition) => {
       if (action.requiresTarget === ActionTargetType.NONE) {
@@ -183,7 +188,11 @@ export function ContextBarContainer({
         const action = item;
         const enabled = isActionEnabled(action, actionCtx);
         const tooltip = getActionTooltip(action, actionCtx);
-        const shortcut = action.shortcut;
+        const shortcut = effectiveActionShortcut(
+          action.id,
+          action.shortcut,
+          overrides
+        );
         const iconClassName = getIconClassName(action, actionCtx, !enabled);
         const key = `${prefix}-${action.id}-${index}`;
         const execute = () => {
@@ -225,7 +234,7 @@ export function ContextBarContainer({
         ];
       });
     },
-    [actionCtx, editorType, handleExecuteAction]
+    [actionCtx, editorType, handleExecuteAction, overrides]
   );
 
   // Filter visible actions and map to render items

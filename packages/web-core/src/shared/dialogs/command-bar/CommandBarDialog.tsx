@@ -22,6 +22,8 @@ import type { RepoSelectionResult } from './selections/repoSelection';
 import { useCommandBarState } from './commandBar/useCommandBarState';
 import { useResolvedPage } from './commandBar/useResolvedPage';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 
 export interface CommandBarDialogProps {
   page?: PageId;
@@ -50,6 +52,8 @@ function CommandBarContent({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const { executeAction, getLabel } = useActions();
   const { workspaceId: contextWorkspaceId, repos } = useWorkspaceContext();
+  // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   // Get issue context from props, multi-selection store, or route params
   const { projectId: routeProjectId, issueId: routeIssueId } = useParams({
@@ -197,6 +201,9 @@ function CommandBarContent({
         onSelect={handleSelect}
         getLabel={(action) =>
           getLabel(action, workspace, effectiveVisibilityContext)
+        }
+        getShortcut={(action) =>
+          effectiveActionShortcut(action.id, action.shortcut, overrides)
         }
         search={state.search}
         onSearchChange={(query) => dispatch({ type: 'SEARCH_CHANGE', query })}

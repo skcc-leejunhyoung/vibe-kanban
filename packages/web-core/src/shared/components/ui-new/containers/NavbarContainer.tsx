@@ -33,6 +33,8 @@ import {
 } from '@/shared/types/actions';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
 import { useMobileActiveTab } from '@/shared/stores/useUiPreferencesStore';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { getProjectDestination } from '@/shared/lib/routes/appNavigation';
@@ -86,6 +88,7 @@ function filterNavbarItems(
 function toNavbarSectionItems(
   items: readonly ActionNavbarItem[],
   ctx: ActionVisibilityContext,
+  overrides: Record<string, string>,
   onExecuteAction: (action: ActionDefinition) => void
 ): NavbarSectionItem[] {
   return items.reduce<NavbarSectionItem[]>((result, item) => {
@@ -105,7 +108,7 @@ function toNavbarSectionItems(
       icon,
       isActive: isActionActive(item, ctx),
       tooltip: getActionTooltip(item, ctx),
-      shortcut: item.shortcut,
+      shortcut: effectiveActionShortcut(item.id, item.shortcut, overrides),
       disabled: !isActionEnabled(item, ctx),
       onClick: () => onExecuteAction(item),
     });
@@ -157,6 +160,9 @@ export function NavbarContainer({
   // Get action visibility context (includes all state for visibility/active/enabled)
   const actionCtx = useActionVisibilityContext();
 
+  // Subscribe to keyboard overrides so tooltip shortcut hints reflect rebinds.
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+
   // Action handler - all actions go through the standard executeAction
   const handleExecuteAction = useCallback(
     (action: ActionDefinition) => {
@@ -174,9 +180,10 @@ export function NavbarContainer({
       toNavbarSectionItems(
         filterNavbarItems(NavbarActionGroups.left, actionCtx),
         actionCtx,
+        overrides,
         handleExecuteAction
       ),
-    [actionCtx, handleExecuteAction]
+    [actionCtx, overrides, handleExecuteAction]
   );
 
   const rightItems = useMemo(
@@ -184,9 +191,10 @@ export function NavbarContainer({
       toNavbarSectionItems(
         filterNavbarItems(NavbarActionGroups.right, actionCtx),
         actionCtx,
+        overrides,
         handleExecuteAction
       ),
-    [actionCtx, handleExecuteAction]
+    [actionCtx, overrides, handleExecuteAction]
   );
 
   const navbarTitle = isCreateMode
