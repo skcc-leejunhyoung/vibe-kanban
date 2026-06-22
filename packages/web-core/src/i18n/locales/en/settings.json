@@ -80,6 +80,11 @@
           "placeholder": "Select theme",
           "helper": "Choose your preferred color scheme."
         },
+        "themeVariant": {
+          "label": "Theme variant",
+          "helper": "Optional CRT/terminal skin applied on top of the light/dark mode. Applies immediately.",
+          "default": "Default"
+        },
         "primaryColor": {
           "label": "Primary color",
           "helper": "Choose the accent color used for buttons, focus rings, and highlights.",

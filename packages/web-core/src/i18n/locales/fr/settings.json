@@ -55,6 +55,11 @@
           "placeholder": "Sélectionner un thème",
           "helper": "Choisissez votre palette de couleurs préférée."
         },
+        "themeVariant": {
+          "label": "Variante de thème",
+          "helper": "Skin CRT/terminal optionnel appliqué par-dessus le mode clair/sombre. Application immédiate.",
+          "default": "Par défaut"
+        },
         "primaryColor": {
           "label": "Couleur principale",
           "helper": "Choisissez la couleur d'accent utilisée pour les boutons, les focus et les surbrillances.",

@@ -55,6 +55,11 @@
           "placeholder": "选择主题",
           "helper": "选择您喜欢的配色方案。"
         },
+        "themeVariant": {
+          "label": "主题变体",
+          "helper": "在浅色/深色模式之上应用的可选 CRT/终端皮肤。立即生效。",
+          "default": "默认"
+        },
         "primaryColor": {
           "label": "主色",
           "helper": "选择用于按钮、焦点环和高亮的强调色。",

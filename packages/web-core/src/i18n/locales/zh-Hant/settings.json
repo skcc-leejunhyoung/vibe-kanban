@@ -55,6 +55,11 @@
           "placeholder": "選擇主題",
           "helper": "選擇您喜歡的配色方案。"
         },
+        "themeVariant": {
+          "label": "主題變體",
+          "helper": "在淺色/深色模式之上套用的可選 CRT/終端機外觀。立即生效。",
+          "default": "預設"
+        },
         "primaryColor": {
           "label": "主色",
           "helper": "選擇用於按鈕、焦點環和醒目提示的強調色。",

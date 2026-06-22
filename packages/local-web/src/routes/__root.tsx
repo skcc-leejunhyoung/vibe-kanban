@@ -8,6 +8,7 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { ThemeProvider } from '@web/app/providers/ThemeProvider';
 import { useUiPreferencesScratch } from '@/shared/hooks/useUiPreferencesScratch';
 import { useServiceWorkerNavigation } from '@/shared/hooks/useServiceWorkerNavigation';
+import { useApplyThemeVariant } from '@/shared/lib/themeVariant';
 import { UserProvider } from '@/shared/providers/remote/UserProvider';
 import '@/app/styles/new/index.css';
 
@@ -17,6 +18,7 @@ function RootRouteComponent() {
 
   useUiPreferencesScratch();
   useServiceWorkerNavigation();
+  useApplyThemeVariant();
 
   useEffect(() => {
     if (!posthog || !machineId) return;

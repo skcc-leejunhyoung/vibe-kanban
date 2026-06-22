@@ -55,6 +55,11 @@
           "placeholder": "Seleccionar tema",
           "helper": "Elige tus colores preferidos."
         },
+        "themeVariant": {
+          "label": "Variante de tema",
+          "helper": "Skin CRT/terminal opcional aplicado sobre el modo claro/oscuro. Se aplica de inmediato.",
+          "default": "Predeterminado"
+        },
         "primaryColor": {
           "label": "Color principal",
           "helper": "Elige el color de acento para botones, foco y resaltados.",

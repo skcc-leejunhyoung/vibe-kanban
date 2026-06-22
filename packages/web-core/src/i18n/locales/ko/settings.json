@@ -72,6 +72,11 @@
           "placeholder": "테마 선택",
           "helper": "선호하는 색상 구성표를 선택하세요."
         },
+        "themeVariant": {
+          "label": "테마 변형",
+          "helper": "Light/Dark 모드 위에 적용되는 선택적 CRT/터미널 스킨입니다. 즉시 적용됩니다.",
+          "default": "기본값"
+        },
         "primaryColor": {
           "label": "Primary 색상",
           "helper": "버튼, 포커스 링, 강조 표시에 사용할 accent 색상을 선택하세요.",
