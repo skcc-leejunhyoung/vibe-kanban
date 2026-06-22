@@ -856,12 +856,35 @@ export function KanbanContainer() {
 
   const moveFocus = useCallback(
     (direction: 'up' | 'down' | 'left' | 'right') => {
+      // Fall back to the opened issue so navigation continues from whatever the
+      // user last looked at.
+      const start = cursorIssueId ?? selectedKanbanIssueId;
+
+      // up / down: navigate the flat ordered list. This is the same order used
+      // by Shift+Arrow range selection (selectAdjacent over orderedIssueIds), so
+      // the keyboard cursor and range selection move in lockstep — including
+      // across column boundaries.
+      if (direction === 'up' || direction === 'down') {
+        const ids = orderedIssueIds;
+        if (ids.length === 0) return;
+        const index = start ? ids.indexOf(start) : -1;
+        // No cursor yet: enter at the first issue.
+        if (index === -1) {
+          focusCursor(ids[0]);
+          return;
+        }
+        const nextIndex = direction === 'down' ? index + 1 : index - 1;
+        if (nextIndex < 0 || nextIndex >= ids.length) return;
+        focusCursor(ids[nextIndex]);
+        return;
+      }
+
+      // left / right: jump between columns in the 2D grid. Locate the cursor,
+      // then move to the nearest non-empty column in that direction, clamping
+      // the row to that column's length.
       const columns = focusColumns;
       if (!columns.some((column) => column.length > 0)) return;
 
-      // Locate the current cursor within the grid (fall back to the opened
-      // issue so navigation continues from whatever the user last looked at).
-      const start = cursorIssueId ?? selectedKanbanIssueId;
       let col = -1;
       let row = -1;
       if (start) {
@@ -882,15 +905,6 @@ export function KanbanContainer() {
         return;
       }
 
-      if (direction === 'up' || direction === 'down') {
-        const nextRow = direction === 'down' ? row + 1 : row - 1;
-        if (nextRow < 0 || nextRow >= columns[col].length) return;
-        focusCursor(columns[col][nextRow]);
-        return;
-      }
-
-      // left / right: jump to the nearest non-empty column in that direction,
-      // clamping the row to that column's length.
       const step = direction === 'right' ? 1 : -1;
       for (let c = col + step; c >= 0 && c < columns.length; c += step) {
         if (columns[c].length > 0) {
@@ -900,7 +914,13 @@ export function KanbanContainer() {
         }
       }
     },
-    [focusColumns, cursorIssueId, selectedKanbanIssueId, focusCursor]
+    [
+      orderedIssueIds,
+      focusColumns,
+      cursorIssueId,
+      selectedKanbanIssueId,
+      focusCursor,
+    ]
   );
 
   const navOptions = {

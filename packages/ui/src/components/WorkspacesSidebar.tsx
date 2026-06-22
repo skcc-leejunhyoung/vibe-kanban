@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { useCallback, useMemo, useRef } from 'react';
 import {
   PlusIcon,
@@ -83,6 +83,11 @@ export interface WorkspacesSidebarProps {
   focusedWorkspaceId?: string | null;
   /** Register a row's DOM node for scroll-into-view during keyboard nav */
   registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;
+  /**
+   * Ref for the sidebar root, used to scope arrow-key navigation to the list:
+   * the hotkeys only fire while keyboard focus is inside this container.
+   */
+  keyboardNavRef?: Ref<HTMLDivElement>;
   /** Persist keys for collapsible sections */
   persistKeys?: WorkspacesSidebarPersistKeys;
   activeRemoteHost?: {
@@ -230,6 +235,7 @@ export function WorkspacesSidebar({
   onOpenWorkspaceActions,
   focusedWorkspaceId = null,
   registerWorkspaceRef,
+  keyboardNavRef,
   persistKeys = DEFAULT_PERSIST_KEYS,
   activeRemoteHost = null,
   onOpenRemoteHostSettings,
@@ -276,7 +282,10 @@ export function WorkspacesSidebar({
   ];
 
   return (
-    <div className="w-full h-full bg-secondary flex flex-col">
+    <div
+      ref={keyboardNavRef}
+      className="w-full h-full bg-secondary flex flex-col"
+    >
       {/* Header + Search */}
       <div className="flex flex-col gap-base">
         <CollapsibleSectionHeader

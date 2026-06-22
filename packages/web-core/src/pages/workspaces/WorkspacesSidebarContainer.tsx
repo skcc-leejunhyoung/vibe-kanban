@@ -1,4 +1,11 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import {
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  type RefObject,
+} from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useTranslation } from 'react-i18next';
@@ -653,43 +660,41 @@ export function WorkspacesSidebarContainer({
   // working normally inside the search box and other inputs.
   const isListVisible = !isMobile || mobileActiveTab === 'workspaces';
 
-  useHotkeys(
-    'up',
+  // Arrow-key navigation is scoped to the sidebar via the ref returned by
+  // useHotkeys: it only fires while keyboard focus is inside this container (a
+  // row is a <button>, so clicking/tabbing a workspace focuses it). This leaves
+  // arrow-key scrolling intact when the user is working in the main/right
+  // panels. enableOnFormTags:false additionally exempts the search input.
+  // The cast aligns react-hotkeys-hook's RefObject<T | null> return (React 19
+  // ref typing) with the RefObject<T> shape @types/react 18 expects.
+  const keyboardNavRef = useHotkeys<HTMLDivElement>(
+    ['up', 'down', 'enter'],
     (e) => {
-      e.preventDefault();
-      moveWorkspaceFocus(-1);
-    },
-    { enabled: isListVisible, enableOnFormTags: false },
-    [moveWorkspaceFocus, isListVisible]
-  );
-  useHotkeys(
-    'down',
-    (e) => {
-      e.preventDefault();
-      moveWorkspaceFocus(1);
-    },
-    { enabled: isListVisible, enableOnFormTags: false },
-    [moveWorkspaceFocus, isListVisible]
-  );
-  useHotkeys(
-    'enter',
-    (e) => {
-      // When the cursor is already on the open workspace, let Enter pass
-      // through instead of re-selecting it.
-      if (!focusedWorkspaceId || focusedWorkspaceId === selectedWorkspaceId) {
-        return;
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        moveWorkspaceFocus(-1);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        moveWorkspaceFocus(1);
+      } else if (e.key === 'Enter') {
+        // When the cursor is already on the open workspace, let Enter pass
+        // through instead of re-selecting it.
+        if (!focusedWorkspaceId || focusedWorkspaceId === selectedWorkspaceId) {
+          return;
+        }
+        e.preventDefault();
+        handleSelectWorkspace(focusedWorkspaceId);
       }
-      e.preventDefault();
-      handleSelectWorkspace(focusedWorkspaceId);
     },
-    { enabled: isListVisible && !!focusedWorkspaceId, enableOnFormTags: false },
+    { enabled: isListVisible, enableOnFormTags: false },
     [
+      moveWorkspaceFocus,
       focusedWorkspaceId,
       selectedWorkspaceId,
       handleSelectWorkspace,
       isListVisible,
     ]
-  );
+  ) as RefObject<HTMLDivElement>;
 
   // Drop the cursor if its workspace disappears; otherwise scroll it into view.
   useEffect(() => {
@@ -815,6 +820,7 @@ export function WorkspacesSidebarContainer({
       onOpenWorkspaceActions={handleOpenWorkspaceActions}
       focusedWorkspaceId={focusedWorkspaceId}
       registerWorkspaceRef={registerWorkspaceRef}
+      keyboardNavRef={keyboardNavRef}
       persistKeys={sidebarPersistKeys}
       activeRemoteHost={activeRemoteHost}
       onOpenRemoteHostSettings={handleOpenRemoteHostSettings}
