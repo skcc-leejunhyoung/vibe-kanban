@@ -339,9 +339,58 @@ impl LocalContainerService {
         Ok(())
     }
 
+    /// Delete any leftover ephemeral (spec-intake) workspaces from a prior run
+    /// that crashed mid-generation. Keyed on the durable `ephemeral` flag, not a
+    /// name, so it can never touch a real user workspace.
+    async fn reap_ephemeral_workspaces(&self) {
+        let ephemeral = match Workspace::find_ephemeral(&self.db.pool).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                tracing::warn!("Failed to query ephemeral workspaces for reaping: {}", e);
+                return;
+            }
+        };
+        for workspace in ephemeral {
+            let workspace_id = workspace.id;
+            match self
+                .workspace_manager
+                .load_managed_workspace(workspace)
+                .await
+            {
+                Ok(managed) => match managed.prepare_deletion_context().await {
+                    Ok(ctx) => {
+                        if let Err(e) = managed.delete_record().await {
+                            tracing::warn!(
+                                "Failed to delete leftover ephemeral workspace {}: {}",
+                                workspace_id,
+                                e
+                            );
+                        }
+                        WorkspaceManager::spawn_workspace_deletion_cleanup(ctx, true);
+                        tracing::info!("Reaped leftover ephemeral workspace {}", workspace_id);
+                    }
+                    Err(e) => tracing::warn!(
+                        "Failed to prepare deletion for ephemeral workspace {}: {}",
+                        workspace_id,
+                        e
+                    ),
+                },
+                Err(e) => tracing::warn!(
+                    "Failed to load ephemeral workspace {} for reaping: {}",
+                    workspace_id,
+                    e
+                ),
+            }
+        }
+    }
+
     fn spawn_workspace_cleanup(&self) {
         let container = self.clone();
         tokio::spawn(async move {
+            // Reap leftover ephemeral workspaces first (after the orphan-execution
+            // reconciliation that runs during server startup).
+            container.reap_ephemeral_workspaces().await;
+
             container
                 .workspace_manager
                 .cleanup_orphan_workspaces()
@@ -599,7 +648,16 @@ impl LocalContainerService {
                 tracing::error!("Failed to update execution process completion: {}", e);
             }
 
-            if let Ok(ctx) = ExecutionProcess::load_context(&db.pool, exec_id).await {
+            // Ephemeral workspaces (spec-intake) are throwaway: skip ALL normal
+            // finalize side effects — session summary, rate-limit auto-resume,
+            // commit, next-action, queued follow-ups, task finalize, vibe
+            // orchestration, analytics, and remote sync. Completion status was
+            // already persisted above, and the MsgStore/stream teardown below
+            // still runs regardless (the spec-intake route reads the agent's
+            // final message from the MsgStore before it is dropped).
+            if let Ok(ctx) = ExecutionProcess::load_context(&db.pool, exec_id).await
+                && !ctx.workspace.ephemeral
+            {
                 // Update executor session summary if available
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {
                     tracing::warn!("Failed to update executor session summary: {}", e);
@@ -2234,12 +2292,40 @@ impl ContainerService for LocalContainerService {
         .await
         .map_err(Self::map_workspace_manager_error)?;
 
-        // Copy project files and images to workspace
-        self.copy_files_and_images(&created_workspace.workspace_dir, workspace)
-            .await?;
+        // Worktrees now exist on disk but `container_ref` is not yet persisted.
+        // If the post-worktree steps fail here, the normal deletion path (which
+        // reads `container_ref` from the DB) can't find this directory, leaving
+        // an orphaned worktree. Clean it up directly on failure to close that
+        // window (matters especially for ephemeral spec-intake workspaces).
+        let post_worktree: Result<(), ContainerError> = async {
+            // Copy project files and images to workspace
+            self.copy_files_and_images(&created_workspace.workspace_dir, workspace)
+                .await?;
+            Self::create_workspace_config_files(&created_workspace.workspace_dir, &repositories)
+                .await?;
+            Ok(())
+        }
+        .await;
 
-        Self::create_workspace_config_files(&created_workspace.workspace_dir, &repositories)
-            .await?;
+        if let Err(e) = post_worktree {
+            tracing::error!(
+                "Workspace {} setup failed after worktree creation; cleaning up {}: {}",
+                workspace.id,
+                created_workspace.workspace_dir.display(),
+                e
+            );
+            if let Err(cleanup_err) =
+                WorkspaceManager::cleanup_workspace(&created_workspace.workspace_dir, &repositories)
+                    .await
+            {
+                tracing::warn!(
+                    "Failed to clean up partially-created workspace {}: {}",
+                    workspace.id,
+                    cleanup_err
+                );
+            }
+            return Err(e);
+        }
 
         Workspace::update_container_ref(
             &self.db.pool,

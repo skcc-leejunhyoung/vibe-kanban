@@ -38,7 +38,10 @@ use executors::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
             ConversationPatch,
-            patch::{fix_patch_ops, is_add_or_replace, patch_entry_path},
+            patch::{
+                extract_normalized_entry_from_patch, fix_patch_ops, is_add_or_replace,
+                patch_entry_path,
+            },
         },
     },
     profile::{ExecutorConfig, ExecutorProfileId},
@@ -1047,6 +1050,87 @@ pub trait ContainerService {
 
             Some(deduped.boxed())
         }
+    }
+
+    /// Start a single coding-agent run in this workspace WITHOUT repo setup or
+    /// cleanup scripts, returning the coding-agent execution process directly.
+    ///
+    /// Unlike [`Self::start_workspace`], this never chains setup/cleanup actions,
+    /// so the returned `ExecutionProcess` is always the coding agent itself (not
+    /// a setup-script process). Used by the spec-intake flow, where the workspace
+    /// is ephemeral and we only want the agent's text output. Setup/cleanup
+    /// scripts would be unnecessary and potentially side-effecting here.
+    async fn start_oneshot_coding_agent(
+        &self,
+        workspace: &Workspace,
+        executor_config: ExecutorConfig,
+        prompt: String,
+    ) -> Result<ExecutionProcess, ContainerError> {
+        // Create container (worktrees).
+        self.create(workspace).await?;
+
+        let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
+            .await?
+            .ok_or(SqlxError::RowNotFound)?;
+
+        let session = Session::create(
+            &self.db().pool,
+            &CreateSession {
+                executor: Some(executor_config.executor.to_string()),
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await?;
+
+        let working_dir = session
+            .agent_working_dir
+            .as_ref()
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+
+        // Always headless: the spec-intake caller normalizes interactive
+        // executors to headless before reaching this point.
+        let coding_action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt,
+                executor_config,
+                working_dir,
+            }),
+            None,
+        );
+
+        let execution_process = self
+            .start_execution(
+                &workspace,
+                &session,
+                &coding_action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?;
+
+        Ok(execution_process)
+    }
+
+    /// Return the last non-empty assistant message from the in-memory MsgStore
+    /// for an execution process, or `None` if the store is gone or has no
+    /// assistant text. Used by the spec-intake flow to read the agent's final
+    /// JSON-fenced output.
+    async fn latest_assistant_message(&self, exec_id: &Uuid) -> Option<String> {
+        let msg_store = self.get_msg_store_by_id(exec_id).await?;
+        for msg in msg_store.get_history().iter().rev() {
+            if let LogMsg::JsonPatch(patch) = msg
+                && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+                && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+            {
+                let content = entry.content.trim();
+                if !content.is_empty() {
+                    return Some(content.to_string());
+                }
+            }
+        }
+        None
     }
 
     async fn start_workspace(

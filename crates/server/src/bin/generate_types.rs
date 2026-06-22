@@ -163,6 +163,8 @@ fn generate_types_content() -> String {
         server::routes::workspaces::pr::GetPrCommentsQuery::decl(),
         db::models::requests::CreateAndStartWorkspaceRequest::decl(),
         db::models::requests::CreateAndStartWorkspaceResponse::decl(),
+        db::models::requests::GenerateSpecRequest::decl(),
+        db::models::requests::GenerateSpecResponse::decl(),
         db::models::requests::CreateWorkspaceWithoutStartingRequest::decl(),
         db::models::requests::CreateWorkspaceWithoutStartingResponse::decl(),
         git_host::UnifiedPrComment::decl(),
