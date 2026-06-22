@@ -592,7 +592,7 @@ export function WorkspacesSidebarContainer({
     ]
   );
 
-  // --- Keyboard arrow / vim (j/k) navigation across the workspace list -----
+  // --- Keyboard arrow-key navigation across the workspace list ------------
   const [focusedWorkspaceId, setFocusedWorkspaceId] = useState<string | null>(
     null
   );
@@ -654,7 +654,7 @@ export function WorkspacesSidebarContainer({
   const isListVisible = !isMobile || mobileActiveTab === 'workspaces';
 
   useHotkeys(
-    'up, k',
+    'up',
     (e) => {
       e.preventDefault();
       moveWorkspaceFocus(-1);
@@ -663,7 +663,7 @@ export function WorkspacesSidebarContainer({
     [moveWorkspaceFocus, isListVisible]
   );
   useHotkeys(
-    'down, j',
+    'down',
     (e) => {
       e.preventDefault();
       moveWorkspaceFocus(1);

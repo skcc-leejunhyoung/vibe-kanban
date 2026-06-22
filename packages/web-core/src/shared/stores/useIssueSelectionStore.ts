@@ -29,6 +29,12 @@ interface IssueSelectionState {
   clearSelection: () => void;
   /** Set anchor for range selection without selecting the issue */
   setAnchor: (issueId: string) => void;
+  /**
+   * Move the keyboard navigation cursor to an issue, clearing any multi
+   * selection. Anchor follows the cursor so a subsequent Shift+Arrow extends
+   * the range from this position.
+   */
+  focusCursor: (issueId: string) => void;
   setOrderedIssueIds: (ids: string[]) => void;
 }
 
@@ -174,6 +180,14 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
 
     setAnchor: (issueId: string) => {
       set({ anchorIssueId: issueId, cursorIssueId: issueId });
+    },
+
+    focusCursor: (issueId: string) => {
+      set({
+        anchorIssueId: issueId,
+        cursorIssueId: issueId,
+        selectedIssueIds: new Set<string>(),
+      });
     },
 
     setOrderedIssueIds: (ids: string[]) => {
