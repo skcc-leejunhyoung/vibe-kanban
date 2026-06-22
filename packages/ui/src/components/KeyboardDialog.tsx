@@ -9,6 +9,14 @@ const DIALOG_SCOPE = 'dialog';
 const KANBAN_SCOPE = 'kanban';
 const PROJECTS_SCOPE = 'projects';
 
+// Stack of currently-open KeyboardDialog instances. Escape only closes the
+// top-most (most recently opened) one. Stacked dialogs all listen on `document`
+// in the bubble phase, where listeners fire in registration order (outer first),
+// so without this gate Escape would wrongly close the OUTER dialog and orphan
+// the inner one. Identity is a per-instance symbol pushed while the dialog is
+// open.
+const openDialogStack: symbol[] = [];
+
 function assignRef<T>(ref: React.ForwardedRef<T>, value: T | null) {
   if (typeof ref === 'function') {
     ref(value);
@@ -29,6 +37,10 @@ const Dialog = React.forwardRef<
 >(({ className, open, onOpenChange, children, uncloseable, ...props }, ref) => {
   const { enableScope, disableScope } = useHotkeysContext();
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
+  const dialogIdRef = React.useRef<symbol | null>(null);
+  if (dialogIdRef.current === null) {
+    dialogIdRef.current = Symbol('keyboard-dialog');
+  }
 
   const setDialogRef = React.useCallback(
     (node: HTMLDivElement | null) => {
@@ -56,6 +68,19 @@ const Dialog = React.forwardRef<
     };
   }, [open, enableScope, disableScope]);
 
+  // Track this dialog in the open-dialog stack while it is open. Depends only on
+  // `open`/`uncloseable` so the stack order is stable even when `onOpenChange` is
+  // recreated on a parent re-render (which re-runs the Escape effect below).
+  React.useEffect(() => {
+    if (!open || uncloseable) return;
+    const id = dialogIdRef.current!;
+    openDialogStack.push(id);
+    return () => {
+      const idx = openDialogStack.lastIndexOf(id);
+      if (idx !== -1) openDialogStack.splice(idx, 1);
+    };
+  }, [open, uncloseable]);
+
   // Close on Escape. We use a native document listener (bubble phase) instead
   // of `useHotkeys` so Escape still fires while an input/textarea/contentEditable
   // is focused — react-hotkeys-hook ignores form fields by default, which is why
@@ -64,14 +89,19 @@ const Dialog = React.forwardRef<
   // Nested dismissable layers cooperate via the event: Radix popovers/selects/
   // dropdowns handle Escape in the capture phase and `preventDefault()` when they
   // dismiss, and custom dropdowns `stopPropagation()`, so an inner layer always
-  // gets first claim on the key. We only close the dialog when nothing else
-  // consumed the Escape, and we mark it handled so an outer dialog doesn't close
-  // too.
+  // gets first claim on the key and our handler then skips via `defaultPrevented`.
+  // For two stacked KeyboardDialogs both listening on `document`, the outer one's
+  // listener runs first (registered first), so we additionally gate on the
+  // open-dialog stack: only the top-most dialog closes, leaving Escape to peel
+  // dialogs off inner-first.
   React.useEffect(() => {
     if (!open || uncloseable) return;
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (!onOpenChange) return;
+      if (openDialogStack[openDialogStack.length - 1] !== dialogIdRef.current) {
+        return;
+      }
       event.preventDefault();
       onOpenChange(false);
     };
