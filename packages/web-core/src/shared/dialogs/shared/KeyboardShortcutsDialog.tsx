@@ -54,14 +54,15 @@ function useShortcutGroups(): ShortcutGroup[] {
       ],
     };
 
-    // Navigation - Vim-style
+    // Navigation - arrow keys (kanban board grid + workspace list).
+    // Keep in sync with the NAV_* bindings in the keyboard registry.
     const navigation: ShortcutGroup = {
       name: t('shortcuts.groups.navigation'),
       shortcuts: [
-        { keys: 'J', description: t('shortcuts.actions.moveDown') },
-        { keys: 'K', description: t('shortcuts.actions.moveUp') },
-        { keys: 'H', description: t('shortcuts.actions.moveLeft') },
-        { keys: 'L', description: t('shortcuts.actions.moveRight') },
+        { keys: '↑', description: t('shortcuts.actions.moveUp') },
+        { keys: '↓', description: t('shortcuts.actions.moveDown') },
+        { keys: '←', description: t('shortcuts.actions.moveLeft') },
+        { keys: '→', description: t('shortcuts.actions.moveRight') },
       ],
     };
 

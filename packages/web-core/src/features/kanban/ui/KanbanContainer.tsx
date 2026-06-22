@@ -783,6 +783,12 @@ export function KanbanContainer() {
   const focusCursor = useIssueSelectionStore((s) => s.focusCursor);
   const cardRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
 
+  // Whether keyboard focus is currently inside the board. Arrow/Enter
+  // navigation is scoped to this so it doesn't hijack arrow-key scrolling or
+  // Enter while the user works in the open issue panel — mirroring the
+  // focus-scoped workspace sidebar list.
+  const [isBoardFocused, setIsBoardFocused] = useState(false);
+
   // Compute ordered issue IDs for range selection
   const orderedIssueIds = useMemo(() => {
     const statusOrder =
@@ -811,6 +817,10 @@ export function KanbanContainer() {
 
   const handleCardClick = useCallback(
     (issueId: string, e?: MouseEvent) => {
+      // A click inside the board means it owns focus; enable arrow/Enter
+      // navigation even if the card's drag handle didn't emit a focus event.
+      setIsBoardFocused(true);
+
       // In explicit selection mode (mobile/touch), any tap toggles selection
       // instead of opening the issue. Modifier-key handling stays in the hook.
       if (isSelectionMode) {
@@ -923,11 +933,16 @@ export function KanbanContainer() {
     ]
   );
 
-  const navOptions = {
-    scope: Scope.KANBAN,
-    enabled: isKanbanView,
-    preventDefault: true,
-  };
+  const navOptions = useMemo(
+    () => ({
+      scope: Scope.KANBAN,
+      // Scoped to board focus so arrow keys don't hijack scrolling while the
+      // user works in the open issue panel or elsewhere on the page.
+      enabled: isKanbanView && isBoardFocused,
+      preventDefault: true,
+    }),
+    [isKanbanView, isBoardFocused]
+  );
   useKeyNavUp(() => moveFocus('up'), navOptions);
   useKeyNavDown(() => moveFocus('down'), navOptions);
   useKeyNavLeft(() => moveFocus('left'), navOptions);
@@ -945,19 +960,31 @@ export function KanbanContainer() {
     },
     {
       scopes: [Scope.KANBAN],
-      enabled: isKanbanView && !!cursorIssueId,
+      enabled: isKanbanView && isBoardFocused && !!cursorIssueId,
       enableOnFormTags: false,
     },
-    [cursorIssueId, selectedKanbanIssueId, handleCardClick, isKanbanView]
+    [
+      cursorIssueId,
+      selectedKanbanIssueId,
+      handleCardClick,
+      isKanbanView,
+      isBoardFocused,
+    ]
   );
 
-  // Keep the focused card scrolled into view as the cursor moves.
+  // As the cursor moves, scroll the card into view. While the board owns focus
+  // (the user is navigating it), also move real DOM focus onto the card so the
+  // focus-scoped arrow/Enter hotkeys stay active. Never pull focus when the
+  // board isn't focused (e.g. on load with the issue panel open) to avoid
+  // stealing focus from the panel. Desktop cards are focusable via the dnd
+  // drag handle; on mobile focus() is a harmless no-op.
   useEffect(() => {
     if (!cursorIssueId) return;
-    cardRefs.current
-      .get(cursorIssueId)
-      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [cursorIssueId]);
+    const node = cardRefs.current.get(cursorIssueId);
+    if (!node) return;
+    if (isBoardFocused) node.focus({ preventScroll: true });
+    node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [cursorIssueId, isBoardFocused]);
 
   const handleToggleSelectionMode = useCallback(() => {
     if (isSelectionMode) {
@@ -1151,7 +1178,17 @@ export function KanbanContainer() {
             <p className="text-low">{t('kanban.noVisibleStatuses')}</p>
           </div>
         ) : (
-          <div className="flex-1 overflow-x-auto px-double">
+          <div
+            className="flex-1 overflow-x-auto px-double"
+            onFocus={() => setIsBoardFocused(true)}
+            onBlur={(e) => {
+              // Only blur when focus leaves the board entirely, not when moving
+              // between cards within it.
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setIsBoardFocused(false);
+              }
+            }}
+          >
             <KanbanProvider onDragEnd={handleDragEnd}>
               {visibleStatuses.map((status) => {
                 const issueIds = items[status.id] ?? [];

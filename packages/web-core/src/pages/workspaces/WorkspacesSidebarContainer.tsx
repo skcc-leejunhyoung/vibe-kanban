@@ -637,7 +637,13 @@ export function WorkspacesSidebarContainer({
 
   const moveWorkspaceFocus = useCallback(
     (delta: 1 | -1) => {
-      const ids = displayedWorkspaceIds;
+      // Only navigate to rows that are actually rendered. Collapsed accordion
+      // sections unmount their rows (CollapsibleSectionHeader renders children
+      // only while expanded), so an id without a live DOM node would move the
+      // cursor onto an invisible workspace.
+      const ids = displayedWorkspaceIds.filter((id) =>
+        workspaceRefs.current.has(id)
+      );
       if (ids.length === 0) return;
       // Start from the cursor, falling back to the open workspace, then either
       // end depending on direction.
@@ -661,12 +667,13 @@ export function WorkspacesSidebarContainer({
   const isListVisible = !isMobile || mobileActiveTab === 'workspaces';
 
   // Arrow-key navigation is scoped to the sidebar via the ref returned by
-  // useHotkeys: it only fires while keyboard focus is inside this container (a
-  // row is a <button>, so clicking/tabbing a workspace focuses it). This leaves
-  // arrow-key scrolling intact when the user is working in the main/right
-  // panels. enableOnFormTags:false additionally exempts the search input.
-  // The cast aligns react-hotkeys-hook's RefObject<T | null> return (React 19
-  // ref typing) with the RefObject<T> shape @types/react 18 expects.
+  // useHotkeys: it only fires while keyboard focus is inside this container.
+  // Clicking the inner button or arrow-navigating (which moves DOM focus onto
+  // the row container) keeps focus inside the sidebar; this leaves arrow-key
+  // scrolling intact when the user is working in the main/right panels.
+  // enableOnFormTags:false additionally exempts the search input. The cast
+  // aligns react-hotkeys-hook's RefObject<T | null> return (React 19 ref
+  // typing) with the RefObject<T> shape @types/react 18 expects.
   const keyboardNavRef = useHotkeys<HTMLDivElement>(
     ['up', 'down', 'enter'],
     (e) => {
@@ -677,11 +684,11 @@ export function WorkspacesSidebarContainer({
         e.preventDefault();
         moveWorkspaceFocus(1);
       } else if (e.key === 'Enter') {
-        // When the cursor is already on the open workspace, let Enter pass
-        // through instead of re-selecting it.
-        if (!focusedWorkspaceId || focusedWorkspaceId === selectedWorkspaceId) {
-          return;
-        }
+        if (!focusedWorkspaceId) return;
+        // The focused row is a non-interactive container (focus lives on it,
+        // not the inner button), so this hotkey is the only Enter handler.
+        // handleSelectWorkspace already no-ops into a scroll-to-bottom when the
+        // cursor is on the already-open workspace.
         e.preventDefault();
         handleSelectWorkspace(focusedWorkspaceId);
       }
@@ -690,22 +697,32 @@ export function WorkspacesSidebarContainer({
     [
       moveWorkspaceFocus,
       focusedWorkspaceId,
-      selectedWorkspaceId,
       handleSelectWorkspace,
       isListVisible,
     ]
   ) as RefObject<HTMLDivElement>;
 
-  // Drop the cursor if its workspace disappears; otherwise scroll it into view.
+  // When the cursor MOVES (user navigation), move real DOM focus onto the row
+  // so the cursor and keyboard focus stay in lockstep: this keeps the
+  // sidebar-scoped hotkeys active and makes native Enter agree with the cursor
+  // (the row container is non-interactive, so Enter is handled solely by the
+  // hotkey). Keyed on focusedWorkspaceId only, so background list updates don't
+  // steal focus from elsewhere on the page.
   useEffect(() => {
     if (!focusedWorkspaceId) return;
-    if (!displayedWorkspaceIds.includes(focusedWorkspaceId)) {
+    const node = workspaceRefs.current.get(focusedWorkspaceId);
+    if (!node) return;
+    node.focus({ preventScroll: true });
+    node.scrollIntoView({ block: 'nearest' });
+  }, [focusedWorkspaceId]);
+
+  // Drop the cursor if its row stops being rendered (collapsed section,
+  // filtered out, or removed) so it can't point at an invisible workspace.
+  useEffect(() => {
+    if (!focusedWorkspaceId) return;
+    if (!workspaceRefs.current.has(focusedWorkspaceId)) {
       setFocusedWorkspaceId(null);
-      return;
     }
-    workspaceRefs.current
-      .get(focusedWorkspaceId)
-      ?.scrollIntoView({ block: 'nearest' });
   }, [focusedWorkspaceId, displayedWorkspaceIds]);
 
   const handleAddWorkspace = useCallback(() => {

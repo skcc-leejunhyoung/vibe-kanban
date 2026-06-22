@@ -92,8 +92,14 @@ export function WorkspaceSummary({
   return (
     <div
       ref={forwardedRef}
+      // tabIndex=-1 makes the row programmatically focusable so keyboard
+      // navigation can move real DOM focus here (keeping the sidebar's hotkey
+      // scope active and letting native Enter agree with the cursor). It stays
+      // out of the Tab order — the inner button is the tab stop. outline-none
+      // hides the native focus ring in favor of the isFocused brand ring.
+      tabIndex={-1}
       className={cn(
-        'group relative rounded-sm transition-all duration-100 overflow-hidden',
+        'group relative rounded-sm transition-all duration-100 overflow-hidden outline-none',
         isActive ? 'bg-tertiary' : '',
         isFocused && 'ring-1 ring-inset ring-brand',
         className

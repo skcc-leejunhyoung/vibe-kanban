@@ -114,14 +114,17 @@ export const KanbanCard = ({
             className={cn(
               'p-base outline-none flex-col border -mt-[1px] -mx-[1px] bg-primary',
               snapshot.isDragging && 'cursor-grabbing shadow-lg',
-              // Precedence: multi-select > keyboard cursor > opened panel.
-              // cn() is clsx-only (no tailwind-merge), so apply exactly one
-              // ring variant to avoid conflicting ring-* classes.
+              // Precedence: multi-select > opened panel > keyboard cursor.
+              // The opened card is always also the cursor (opening an issue
+              // syncs the cursor via setAnchor), so "opened" must outrank
+              // "focused" or the opened-panel ring would never appear. cn() is
+              // clsx-only (no tailwind-merge), so apply exactly one ring variant
+              // to avoid conflicting ring-* classes.
               isSelected
                 ? 'ring-2 ring-accent ring-inset bg-accent/5'
-                : isFocused
-                  ? 'ring-2 ring-brand ring-inset'
-                  : isOpen && 'ring-2 ring-secondary-foreground ring-inset',
+                : isOpen
+                  ? 'ring-2 ring-secondary-foreground ring-inset'
+                  : isFocused && 'ring-2 ring-brand ring-inset',
               className
             )}
             ref={setRefs}
