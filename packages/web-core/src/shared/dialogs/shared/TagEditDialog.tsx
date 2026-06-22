@@ -145,6 +145,17 @@ const TagEditDialogImpl = create<TagEditDialogProps>(({ tag }) => {
                   setTagNameError(null);
                 }
               }}
+              onKeyDown={(e) => {
+                if (
+                  e.key === 'Enter' &&
+                  !saving &&
+                  !tagNameError &&
+                  formData.content.trim()
+                ) {
+                  e.preventDefault();
+                  handleSave();
+                }
+              }}
               placeholder={t(
                 'settings.general.tags.dialog.tagName.placeholder'
               )}

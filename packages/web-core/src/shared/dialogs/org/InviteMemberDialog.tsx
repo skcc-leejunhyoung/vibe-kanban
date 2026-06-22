@@ -126,6 +126,16 @@ const InviteMemberDialogImpl = create<InviteMemberDialogProps>((props) => {
                 setEmail(e.target.value);
                 setError(null);
               }}
+              onKeyDown={(e) => {
+                if (
+                  e.key === 'Enter' &&
+                  email.trim() &&
+                  !createInvitation.isPending
+                ) {
+                  e.preventDefault();
+                  handleInvite();
+                }
+              }}
               placeholder={t('inviteDialog.emailPlaceholder')}
               autoFocus
               disabled={createInvitation.isPending}

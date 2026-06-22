@@ -108,6 +108,12 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
                   setConfigName(e.target.value);
                   setError(null);
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && configName.trim()) {
+                    e.preventDefault();
+                    handleCreate();
+                  }
+                }}
                 placeholder="e.g., PRODUCTION, DEVELOPMENT"
                 maxLength={40}
                 autoFocus

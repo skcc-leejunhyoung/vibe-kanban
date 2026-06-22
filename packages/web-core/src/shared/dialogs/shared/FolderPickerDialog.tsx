@@ -165,6 +165,12 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
                   <Input
                     value={manualPath}
                     onChange={handleManualPathChange}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && manualPath.trim()) {
+                        e.preventDefault();
+                        handleManualPathSubmit();
+                      }
+                    }}
                     placeholder="/path/to/your/project"
                     className="flex-1 min-w-0"
                   />

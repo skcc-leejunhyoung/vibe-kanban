@@ -147,6 +147,17 @@ const CreateOrganizationDialogImpl = create<NoProps>(() => {
                 setName(e.target.value);
                 setError(null);
               }}
+              onKeyDown={(e) => {
+                if (
+                  e.key === 'Enter' &&
+                  name.trim() &&
+                  slug.trim() &&
+                  !createOrganization.isPending
+                ) {
+                  e.preventDefault();
+                  handleCreate();
+                }
+              }}
               placeholder={t('createDialog.namePlaceholder')}
               maxLength={50}
               autoFocus

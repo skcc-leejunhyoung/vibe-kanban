@@ -339,6 +339,12 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
                   onChange={(e) => handleUrlChange(e.target.value)}
                   onBlur={handleUrlBlur}
                   onPaste={handleUrlPaste}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && canLink) {
+                      e.preventDefault();
+                      void handleLink();
+                    }
+                  }}
                 />
               </div>
 

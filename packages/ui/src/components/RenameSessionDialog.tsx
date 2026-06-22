@@ -99,6 +99,7 @@ const RenameSessionDialogImpl = NiceModal.create<RenameSessionDialogProps>(
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !isSubmitting) {
+                    e.preventDefault();
                     void handleConfirm();
                   }
                 }}

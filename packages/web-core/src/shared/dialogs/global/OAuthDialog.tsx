@@ -290,6 +290,17 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
                     type="password"
                     value={localPassword}
                     onChange={(event) => setLocalPassword(event.target.value)}
+                    onKeyDown={(e) => {
+                      if (
+                        e.key === 'Enter' &&
+                        localEmail.trim() &&
+                        localPassword &&
+                        !isSubmittingLocal
+                      ) {
+                        e.preventDefault();
+                        void handleLocalLogin();
+                      }
+                    }}
                     placeholder="Password"
                     autoComplete="current-password"
                   />
