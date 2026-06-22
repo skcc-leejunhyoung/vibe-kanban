@@ -150,6 +150,12 @@ export function useWorkspaceShortcuts() {
     [overrides]
   );
   useReboundHotkey(
+    seq('seq-git-commit'),
+    () => execute(Actions.GitCommit),
+    OPTIONS,
+    [overrides]
+  );
+  useReboundHotkey(
     seq('seq-git-rebase'),
     () => execute(Actions.GitRebase),
     OPTIONS,

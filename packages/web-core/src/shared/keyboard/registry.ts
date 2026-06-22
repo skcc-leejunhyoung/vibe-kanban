@@ -189,6 +189,14 @@ export const sequentialBindings: SequentialBinding[] = [
     actionId: 'git-merge',
   },
   {
+    id: 'seq-git-commit',
+    keys: ['x', 'c'],
+    scopes: [Scope.WORKSPACE],
+    description: 'Commit uncommitted changes',
+    group: 'Git',
+    actionId: 'git-commit',
+  },
+  {
     id: 'seq-git-rebase',
     keys: ['x', 'r'],
     scopes: [Scope.WORKSPACE],

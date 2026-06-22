@@ -70,6 +70,8 @@ import {
   QueueStatus,
   PrCommentsResponse,
   MergeWorkspaceRequest,
+  CommitWorkspaceRequest,
+  CommitWorkspaceResponse,
   PushWorkspaceRequest,
   RepoBranchStatus,
   AbortConflictsRequest,
@@ -626,6 +628,20 @@ export const workspacesApi = {
       }
     );
     return handleApiResponse<void>(response);
+  },
+
+  commit: async (
+    workspaceId: string,
+    data: CommitWorkspaceRequest
+  ): Promise<CommitWorkspaceResponse> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/commit`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<CommitWorkspaceResponse>(response);
   },
 
   push: async (
