@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { cloneDeep, isEqual, merge } from 'lodash';
 import {
   FolderSimpleIcon,
+  PaletteIcon,
   SpeakerHighIcon,
   SpinnerIcon,
 } from '@phosphor-icons/react';
@@ -41,9 +42,10 @@ import {
   DEFAULT_THEME_VARIANT,
   type MobileFontScale,
   useMobileFontScale,
+  useThemePresets,
   useThemeVariant,
 } from '@/shared/stores/useUiPreferencesStore';
-import { useThemeManifest } from '@/shared/lib/themeVariant';
+import { ThemeVariantEditorDialog } from '@/shared/dialogs/settings/ThemeVariantEditorDialog';
 import { cn, playSound } from '@/shared/lib/utils';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { IconButton } from '@vibe/ui/components/IconButton';
@@ -73,10 +75,11 @@ export function GeneralSettingsSection() {
   const appRuntime = useAppRuntime();
   const isLocalRuntime = appRuntime === 'local';
   const [mobileFontScale, setMobileFontScale] = useMobileFontScale();
-  // Theme variants ("skins") are a local-web-only feature; the CSS files are
-  // served by the local web's public dir and the apply hook only runs there.
+  // Theme variants ("skins") are a local-web-only feature: token-only presets
+  // (built-in + user-defined) injected as a scoped <style>. The apply hook only
+  // runs on the local web.
   const [themeVariant, setThemeVariant] = useThemeVariant();
-  const { themes: themeVariantManifest } = useThemeManifest();
+  const themePresets = useThemePresets();
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
       ns: 'common',
@@ -282,9 +285,9 @@ export function GeneralSettingsSection() {
       value: DEFAULT_THEME_VARIANT,
       label: t('settings.general.appearance.themeVariant.default'),
     },
-    ...themeVariantManifest.map((variant) => ({
-      value: variant.id,
-      label: variant.name,
+    ...themePresets.map((preset) => ({
+      value: preset.id,
+      label: preset.name,
     })),
   ];
 
@@ -339,6 +342,15 @@ export function GeneralSettingsSection() {
               value={themeVariant}
               options={themeVariantOptions}
               onChange={(value) => setThemeVariant(value)}
+              actions={[
+                {
+                  label: t('settings.general.themeEditor.manage'),
+                  icon: PaletteIcon,
+                  onClick: () => {
+                    void ThemeVariantEditorDialog.show();
+                  },
+                },
+              ]}
             />
           </SettingsField>
         )}

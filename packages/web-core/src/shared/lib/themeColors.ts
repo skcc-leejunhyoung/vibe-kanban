@@ -78,6 +78,64 @@ function formatHsl({ h, s, l }: HslColor): string {
   return `${h} ${s}% ${l}%`;
 }
 
+// --- HSL triple <-> hex conversion (used by the theme preset editor) ---
+//
+// Design tokens are stored either as an HSL triple ("211 60% 7%", consumed by
+// `hsl(var(--token))`) or as a hex string ("#ff7b9c", for syntax colors). The
+// editor speaks hex (native <input type="color">), so we convert in both
+// directions here.
+
+const HSL_TRIPLE_RE =
+  /^\s*(-?\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)%\s+(\d+(?:\.\d+)?)%\s*$/;
+
+export function isHslTriple(value: string): boolean {
+  return HSL_TRIPLE_RE.test(value);
+}
+
+function parseHslTriple(value: string): HslColor | null {
+  const match = value.match(HSL_TRIPLE_RE);
+  if (!match) return null;
+  return {
+    h: Number(match[1]),
+    s: Number(match[2]),
+    l: Number(match[3]),
+  };
+}
+
+function hslToRgb({ h, s, l }: HslColor): [number, number, number] {
+  const sat = s / 100;
+  const lum = l / 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = sat * Math.min(lum, 1 - lum);
+  const f = (n: number) =>
+    lum - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [
+    Math.round(f(0) * 255),
+    Math.round(f(8) * 255),
+    Math.round(f(4) * 255),
+  ];
+}
+
+function toHexChannel(value: number): string {
+  return Math.max(0, Math.min(255, value)).toString(16).padStart(2, '0');
+}
+
+/** Convert an HSL triple ("211 60% 7%") to a hex string ("#0a1622"). */
+export function hslTripleToHex(value: string): string {
+  const hsl = parseHslTriple(value);
+  if (!hsl) {
+    // Already hex (or unparseable) — normalize and return.
+    return normalizeHexColor(value);
+  }
+  const [r, g, b] = hslToRgb(hsl);
+  return `#${toHexChannel(r)}${toHexChannel(g)}${toHexChannel(b)}`;
+}
+
+/** Convert a hex string ("#0a1622") to an HSL triple ("211 60% 7%"). */
+export function hexToHslTriple(hexColor: string): string {
+  return formatHsl(hexToHsl(hexColor));
+}
+
 export function isValidPrimaryColor(color: string): boolean {
   return HEX_COLOR_RE.test(color.trim());
 }

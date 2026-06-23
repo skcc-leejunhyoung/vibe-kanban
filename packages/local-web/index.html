@@ -15,18 +15,22 @@
     <title>Vibe Kanban</title>
     <script>
       // Apply the persisted theme variant ("skin") before first paint to avoid
-      // a flash of the default theme. Mirrors applyThemeVariant() in
-      // shared/lib/themeVariant.ts; the React effect keeps it in sync after.
+      // a flash of the default theme. Theme presets are runtime-generated CSS
+      // (see shared/lib/themePresets.ts); applyThemeVariant() caches the active
+      // preset's CSS in 'vk-theme-variant-css', which we re-inject here. The
+      // React effect (useApplyThemeVariant) re-applies and refreshes the cache.
       (function () {
         try {
           var v = localStorage.getItem('vk-theme-variant');
           if (v && v !== 'default') {
             document.documentElement.dataset.themeVariant = v;
-            var link = document.createElement('link');
-            link.id = 'vk-theme-variant';
-            link.rel = 'stylesheet';
-            link.href = '/themes/' + v + '.css';
-            document.head.appendChild(link);
+            var css = localStorage.getItem('vk-theme-variant-css');
+            if (css) {
+              var style = document.createElement('style');
+              style.id = 'vk-theme-variant';
+              style.textContent = css;
+              document.head.appendChild(style);
+            }
           }
         } catch (e) {
           /* localStorage may be unavailable */

@@ -3,6 +3,15 @@ import { create } from 'zustand';
 import type { RepoAction } from '@vibe/ui/components/RepoCard';
 import type { IssuePriority } from 'shared/remote-types';
 import type { PreviewShortcutData } from 'shared/types';
+import {
+  BUILTIN_PRESET_IDS,
+  DEFAULT_THEME_VARIANT,
+  loadStoredPresets,
+  mergePresets,
+  persistStoredPresets,
+  type ThemePreset,
+  type ThemeVariant,
+} from '@/shared/lib/themePresets';
 
 /**
  * Bucket key used to store preview shortcuts for workspaces that aren't
@@ -45,12 +54,14 @@ const loadMobileFontScale = (): MobileFontScale => {
   return 'default';
 };
 
-// Theme variant ("skin") is a client-side visual preference applied on top
-// of the Light/Dark/System mode. 'default' means no extra theme (the built-in
-// look). Other values map to a drop-in CSS file under /themes/<id>.css.
-// Local web only — gated by the runtime in the settings UI + apply hook.
-export type ThemeVariant = string;
-export const DEFAULT_THEME_VARIANT: ThemeVariant = 'default';
+// Theme variant ("skin") is a client-side visual preference applied on top of
+// the Light/Dark/System mode. 'default' means no extra skin (the built-in
+// look); other values select a theme preset (built-in or user-defined) whose
+// design-token overrides are injected as a scoped <style>. Local web only —
+// gated by the runtime in the settings UI + apply hook. The preset catalogue,
+// persistence, and CSS generation live in shared/lib/themePresets.ts.
+export { DEFAULT_THEME_VARIANT };
+export type { ThemeVariant, ThemePreset };
 
 const THEME_VARIANT_KEY = 'vk-theme-variant';
 
@@ -384,6 +395,11 @@ type State = {
   // Theme variant ("skin"), applied on top of the light/dark mode
   themeVariant: ThemeVariant;
 
+  // User-added presets + overrides of built-in presets (persisted locally).
+  // The effective list (built-ins merged with these) is derived via the
+  // useThemePresets() hook.
+  customThemePresets: ThemePreset[];
+
   // Last selected organization and project (persisted via scratch store)
   selectedOrgId: string | null;
   selectedProjectId: string | null;
@@ -478,6 +494,10 @@ type State = {
 
   // Theme variant actions
   setThemeVariant: (variant: ThemeVariant) => void;
+  // Insert or update a preset (matched by id). Built-in ids become overrides.
+  saveThemePreset: (preset: ThemePreset) => void;
+  // Remove a custom preset, or reset a built-in override back to its default.
+  deleteThemePreset: (id: string) => void;
 
   // Last selected organization and project actions
   setSelectedOrgId: (orgId: string | null) => void;
@@ -526,6 +546,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
 
   // Theme variant
   themeVariant: loadThemeVariant(),
+  customThemePresets: loadStoredPresets(),
 
   // Last selected organization and project
   selectedOrgId: null,
@@ -903,6 +924,39 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     set({ themeVariant: variant });
   },
 
+  saveThemePreset: (preset) =>
+    set((s) => {
+      const without = s.customThemePresets.filter((p) => p.id !== preset.id);
+      const next = [...without, preset];
+      persistStoredPresets(next);
+      return { customThemePresets: next };
+    }),
+
+  deleteThemePreset: (id) =>
+    set((s) => {
+      const next = s.customThemePresets.filter((p) => p.id !== id);
+      persistStoredPresets(next);
+      // If the removed preset was selected, fall back to the default skin.
+      // (Resetting a built-in override keeps it selected — it still resolves
+      // to the built-in default — so only clear when nothing resolves to it.)
+      const stillExists =
+        BUILTIN_PRESET_IDS.has(id) ||
+        next.some((p) => p.id === id) ||
+        id === DEFAULT_THEME_VARIANT;
+      if (s.themeVariant === id && !stillExists) {
+        try {
+          localStorage.removeItem(THEME_VARIANT_KEY);
+        } catch {
+          // localStorage may be unavailable
+        }
+        return {
+          customThemePresets: next,
+          themeVariant: DEFAULT_THEME_VARIANT,
+        };
+      }
+      return { customThemePresets: next };
+    }),
+
   // Last selected organization and project actions
   setSelectedOrgId: (orgId) => set({ selectedOrgId: orgId }),
   clearSelectedOrgId: () => set({ selectedOrgId: null }),
@@ -1019,6 +1073,21 @@ export function useThemeVariant() {
   const variant = useUiPreferencesStore((s) => s.themeVariant);
   const set = useUiPreferencesStore((s) => s.setThemeVariant);
   return [variant, set] as const;
+}
+
+// Hook returning the effective theme preset list (built-ins merged with the
+// user's stored overrides/additions). Memoized on the raw custom presets so it
+// only recomputes when those change.
+export function useThemePresets(): ThemePreset[] {
+  const custom = useUiPreferencesStore((s) => s.customThemePresets);
+  return useMemo(() => mergePresets(custom), [custom]);
+}
+
+// Hook exposing the preset CRUD actions.
+export function useThemePresetActions() {
+  const save = useUiPreferencesStore((s) => s.saveThemePreset);
+  const remove = useUiPreferencesStore((s) => s.deleteThemePreset);
+  return { saveThemePreset: save, deleteThemePreset: remove };
 }
 
 // Hook for workspace-specific panel state

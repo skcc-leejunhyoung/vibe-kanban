@@ -1,130 +1,104 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import {
   DEFAULT_THEME_VARIANT,
-  type ThemeVariant,
+  findPreset,
+  presetToCss,
+  type ThemePreset,
+} from '@/shared/lib/themePresets';
+import {
+  useThemePresets,
   useThemeVariant,
 } from '@/shared/stores/useUiPreferencesStore';
 
 /**
- * Theme variants ("skins") are drop-in CSS files served from
- * `/themes/<id>.css`, listed in `/themes/index.json`. Each file scopes its
- * token overrides to `html[data-theme-variant="<id>"]`, so selecting a
- * variant is a matter of:
+ * Theme presets ("skins") are token-only palette swaps applied on top of the
+ * Light/Dark/System mode. Selecting one means:
  *   1. setting `document.documentElement.dataset.themeVariant`, and
- *   2. ensuring the matching stylesheet is loaded.
+ *   2. injecting a `<style>` whose rule is scoped to
+ *      `html[data-theme-variant="<id>"]` and sets the preset's token overrides.
  *
- * Variants are applied on top of the Light/Dark/System mode and are a purely
- * client-side preference (persisted to localStorage via the UI prefs store).
- * This is a local-web-only feature; the apply hook + settings UI are gated on
- * the local runtime so the remote web is unaffected.
+ * This replaces the older drop-in `/themes/<id>.css` files: presets are now
+ * editable data (see `themePresets.ts`), so we generate the CSS at runtime
+ * rather than loading a static stylesheet. This also lets the editor preview an
+ * unsaved preset by calling `applyThemeVariant()` directly.
+ *
+ * Local-web only — the apply hook + settings UI are gated on the local runtime
+ * so the remote web is unaffected.
  */
 
-export type ThemeManifestEntry = {
-  id: string;
-  name: string;
-  description?: string;
-};
+const STYLE_ID = 'vk-theme-variant';
 
-type ThemeManifest = {
-  themes: ThemeManifestEntry[];
-};
-
-const MANIFEST_URL = '/themes/index.json';
-const themeHref = (id: string) => `/themes/${id}.css`;
-
-const LINK_ID = 'vk-theme-variant';
+// The generated CSS for the *selected* preset is cached here so the pre-paint
+// bootstrap in index.html can re-inject it before React mounts (avoiding a
+// flash of the default theme). Mirrored only on the real selection, never on
+// the editor's transient preview.
+const CSS_CACHE_KEY = 'vk-theme-variant-css';
 
 /**
  * Inject (or remove) the variant stylesheet and reflect the active variant on
- * the <html> element. Idempotent and safe to call repeatedly.
+ * the <html> element. Pass `null` (or the default preset) to clear it.
+ * Idempotent and safe to call repeatedly — used both by the store-driven hook
+ * and by the editor's live preview.
+ *
+ * `cache` controls whether the generated CSS is mirrored to localStorage for
+ * the pre-paint bootstrap. The hook passes `true`; the editor preview passes
+ * `false` so a previewed-but-unsaved palette never sticks across reloads.
  */
-export function applyThemeVariant(variant: ThemeVariant): void {
+export function applyThemeVariant(
+  preset: ThemePreset | null,
+  cache = true
+): void {
   if (typeof document === 'undefined') return;
 
   const root = document.documentElement;
-  const existing = document.getElementById(LINK_ID) as HTMLLinkElement | null;
+  const existing = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
 
-  if (!variant || variant === DEFAULT_THEME_VARIANT) {
+  if (!preset || preset.id === DEFAULT_THEME_VARIANT) {
     delete root.dataset.themeVariant;
     existing?.remove();
+    if (cache) safeRemoveCache();
     return;
   }
 
-  root.dataset.themeVariant = variant;
+  root.dataset.themeVariant = preset.id;
 
-  const href = themeHref(variant);
+  const css = presetToCss(preset);
+  if (cache) safeSetCache(css);
   if (existing) {
-    if (!existing.href.endsWith(href)) existing.href = href;
+    if (existing.textContent !== css) existing.textContent = css;
   } else {
-    const link = document.createElement('link');
-    link.id = LINK_ID;
-    link.rel = 'stylesheet';
-    link.href = href;
-    document.head.appendChild(link);
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+}
+
+function safeSetCache(css: string): void {
+  try {
+    localStorage.setItem(CSS_CACHE_KEY, css);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function safeRemoveCache(): void {
+  try {
+    localStorage.removeItem(CSS_CACHE_KEY);
+  } catch {
+    // localStorage may be unavailable
   }
 }
 
 /**
- * Keep the DOM in sync with the selected theme variant. Call once near the
- * app root (local web only).
+ * Keep the DOM in sync with the selected theme variant + preset data. Call once
+ * near the app root (local web only). Re-applies whenever the selection or the
+ * preset definitions change (e.g. after an edit).
  */
 export function useApplyThemeVariant(): void {
   const [variant] = useThemeVariant();
+  const presets = useThemePresets();
   useEffect(() => {
-    applyThemeVariant(variant);
-  }, [variant]);
-}
-
-let manifestCache: ThemeManifestEntry[] | null = null;
-
-/**
- * Fetch the list of available theme variants from the manifest. Results are
- * cached for the session. Always resolves (returns [] on failure) so the
- * settings UI degrades gracefully.
- */
-export async function fetchThemeManifest(): Promise<ThemeManifestEntry[]> {
-  if (manifestCache) return manifestCache;
-  try {
-    const res = await fetch(MANIFEST_URL, { cache: 'no-cache' });
-    if (!res.ok) return [];
-    const data = (await res.json()) as ThemeManifest;
-    const themes = Array.isArray(data?.themes) ? data.themes : [];
-    manifestCache = themes.filter((t) => t && typeof t.id === 'string');
-    return manifestCache;
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Hook returning the available theme variants from the manifest (excluding the
- * implicit "default" entry, which callers should prepend as needed).
- */
-export function useThemeManifest(): {
-  themes: ThemeManifestEntry[];
-  loading: boolean;
-} {
-  const [themes, setThemes] = useState<ThemeManifestEntry[]>(
-    manifestCache ?? []
-  );
-  const [loading, setLoading] = useState(manifestCache === null);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (manifestCache) {
-      setThemes(manifestCache);
-      setLoading(false);
-      return;
-    }
-    fetchThemeManifest().then((list) => {
-      if (cancelled) return;
-      setThemes(list);
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return { themes, loading };
+    applyThemeVariant(findPreset(presets, variant) ?? null);
+  }, [variant, presets]);
 }

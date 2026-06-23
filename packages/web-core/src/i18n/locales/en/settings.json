@@ -82,7 +82,7 @@
         },
         "themeVariant": {
           "label": "Theme variant",
-          "helper": "Optional CRT/terminal skin applied on top of the light/dark mode. Applies immediately.",
+          "helper": "Optional color skin applied on top of the light/dark mode. Use the palette menu to edit or add presets. Applies immediately.",
           "default": "Default"
         },
         "primaryColor": {
@@ -94,6 +94,44 @@
           "label": "Language",
           "placeholder": "Select language",
           "helper": "Choose your preferred language. Browser Default follows your system language."
+        }
+      },
+      "themeEditor": {
+        "manage": "Edit theme presets…",
+        "title": "Theme presets",
+        "description": "Customize the colors each preset applies. Selecting a preset activates it; edits apply and save instantly.",
+        "newPreset": "New preset",
+        "name": "Name",
+        "colorScheme": "Base mode",
+        "scheme": {
+          "dark": "Dark",
+          "light": "Light"
+        },
+        "mono": "Monospace font",
+        "reset": "Reset to default",
+        "delete": "Delete preset",
+        "defaultHint": "The default skin uses the built-in palette and can't be edited. Create a preset to customize colors.",
+        "copyName": "{{name}} copy",
+        "badge": {
+          "builtin": "Built-in",
+          "modified": "Edited",
+          "custom": "Custom"
+        },
+        "groups": {
+          "surfaces": "Surfaces",
+          "text": "Text",
+          "brand": "Brand & accent",
+          "status": "Status",
+          "console": "Console",
+          "syntax": "Syntax highlighting"
+        },
+        "resetConfirm": {
+          "title": "Reset preset?",
+          "message": "Reset \"{{name}}\" to its built-in default colors? Your edits to this preset will be discarded."
+        },
+        "deleteConfirm": {
+          "title": "Delete preset?",
+          "message": "Delete \"{{name}}\"? This can't be undone."
         }
       },
       "taskExecution": {

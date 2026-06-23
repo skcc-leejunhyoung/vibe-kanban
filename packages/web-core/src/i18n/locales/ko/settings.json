@@ -74,7 +74,7 @@
         },
         "themeVariant": {
           "label": "테마 변형",
-          "helper": "Light/Dark 모드 위에 적용되는 선택적 CRT/터미널 스킨입니다. 즉시 적용됩니다.",
+          "helper": "Light/Dark 모드 위에 적용되는 선택적 색상 스킨입니다. 팔레트 메뉴에서 프리셋을 편집하거나 추가할 수 있으며 즉시 적용됩니다.",
           "default": "기본값"
         },
         "primaryColor": {
@@ -86,6 +86,44 @@
           "label": "언어",
           "placeholder": "언어 선택",
           "helper": "선호하는 언어를 선택하세요. 브라우저 기본값은 시스템 언어를 따릅니다."
+        }
+      },
+      "themeEditor": {
+        "manage": "테마 프리셋 편집…",
+        "title": "테마 프리셋",
+        "description": "각 프리셋이 적용하는 색상을 사용자 정의하세요. 프리셋을 선택하면 활성화되며, 편집은 즉시 적용·저장됩니다.",
+        "newPreset": "새 프리셋",
+        "name": "이름",
+        "colorScheme": "기본 모드",
+        "scheme": {
+          "dark": "다크",
+          "light": "라이트"
+        },
+        "mono": "고정폭 글꼴",
+        "reset": "기본값으로 복원",
+        "delete": "프리셋 삭제",
+        "defaultHint": "기본 스킨은 내장 팔레트를 사용하며 편집할 수 없습니다. 색상을 사용자 정의하려면 프리셋을 만드세요.",
+        "copyName": "{{name}} 복사본",
+        "badge": {
+          "builtin": "내장",
+          "modified": "수정됨",
+          "custom": "사용자"
+        },
+        "groups": {
+          "surfaces": "표면",
+          "text": "텍스트",
+          "brand": "브랜드 & 강조",
+          "status": "상태",
+          "console": "콘솔",
+          "syntax": "구문 강조"
+        },
+        "resetConfirm": {
+          "title": "프리셋을 복원할까요?",
+          "message": "\"{{name}}\"을(를) 내장 기본 색상으로 복원합니다. 이 프리셋의 편집 내용이 삭제됩니다."
+        },
+        "deleteConfirm": {
+          "title": "프리셋을 삭제할까요?",
+          "message": "\"{{name}}\"을(를) 삭제합니다. 되돌릴 수 없습니다."
         }
       },
       "taskExecution": {
