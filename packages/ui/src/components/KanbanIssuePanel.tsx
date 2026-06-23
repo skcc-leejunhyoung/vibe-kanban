@@ -213,10 +213,22 @@ export function KanbanIssuePanel({
   const [isDescriptionEditing, setIsDescriptionEditing] =
     useState(isCreateMode);
   const descriptionContainerRef = useRef<HTMLDivElement>(null);
+  const panelRootRef = useRef<HTMLDivElement>(null);
 
   // Reset description editing state when switching between create/edit mode or when issue changes
   useEffect(() => {
     setIsDescriptionEditing(isCreateMode);
+  }, [isCreateMode, issueId]);
+
+  // Edit mode: move focus into the panel when it opens (or when switching
+  // issues) so pressing Escape closes it. Nothing inside the panel is
+  // autofocused in edit mode, so without this the keydown handler below never
+  // receives Escape (focus stays on the board card that was clicked). Create
+  // mode focuses the title input instead (handled by the container), so leave
+  // focus alone there.
+  useEffect(() => {
+    if (isCreateMode) return;
+    panelRootRef.current?.focus({ preventScroll: true });
   }, [isCreateMode, issueId]);
 
   // Click outside the description area to exit editing
@@ -260,6 +272,7 @@ export function KanbanIssuePanel({
 
   return (
     <div
+      ref={panelRootRef}
       className="flex flex-col h-full overflow-hidden outline-none"
       onKeyDown={handleKeyDown}
       tabIndex={-1}
