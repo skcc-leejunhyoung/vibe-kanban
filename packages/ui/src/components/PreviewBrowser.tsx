@@ -189,12 +189,6 @@ export function PreviewBrowser({
       onAddShortcut?.();
     }
   };
-  const ScreenSizeIcon =
-    screenSize === 'mobile'
-      ? DeviceMobileIcon
-      : screenSize === 'responsive'
-        ? ArrowsOutCardinalIcon
-        : MonitorIcon;
 
   const getIframeContainerStyle = (): CSSProperties => {
     switch (screenSize) {
@@ -556,33 +550,34 @@ export function PreviewBrowser({
                 )}
               </div>
 
-              {/* Screen size dropdown (desktop / mobile / responsive) */}
+              {/* Open in new tab */}
+              <IconButtonGroup>
+                <IconButtonGroupItem
+                  icon={ArrowSquareOutIcon}
+                  onClick={onOpenInNewTab}
+                  disabled={!isServerRunning}
+                  aria-label={t('preview.toolbar.openInTab')}
+                  title={t('preview.toolbar.openInTab')}
+                />
+              </IconButtonGroup>
+
+              {/* Overflow menu: screen size / inspect / devtools / copy / reset */}
               <IconButtonGroup>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       disabled={!isServerRunning}
-                      aria-label={t('preview.toolbar.screenSize')}
-                      title={t('preview.toolbar.screenSize')}
+                      aria-label={t('preview.toolbar.more')}
+                      title={t('preview.toolbar.more')}
                       className={cn(
-                        'flex items-center gap-half p-half transition-colors',
+                        'p-half transition-colors',
                         !isServerRunning
                           ? 'opacity-40 cursor-not-allowed text-low'
                           : 'text-low hover:text-normal hover:bg-secondary/50'
                       )}
                     >
-                      <ScreenSizeIcon
-                        className="size-icon-sm"
-                        weight="bold"
-                      />
-                      {screenSize === 'responsive' && (
-                        <span className="text-xs text-low font-mono whitespace-nowrap">
-                          {Math.round(localDimensions.width)}&times;
-                          {Math.round(localDimensions.height)}
-                        </span>
-                      )}
-                      <CaretDownIcon className="size-3" weight="bold" />
+                      <DotsThreeIcon className="size-icon-sm" weight="bold" />
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
@@ -628,30 +623,7 @@ export function PreviewBrowser({
                         <CheckIcon className="size-icon-sm" weight="bold" />
                       )}
                     </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </IconButtonGroup>
-
-              {/* Overflow menu: inspect / devtools / copy / open / reset */}
-              <IconButtonGroup>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      disabled={!isServerRunning}
-                      aria-label={t('preview.toolbar.more')}
-                      title={t('preview.toolbar.more')}
-                      className={cn(
-                        'p-half transition-colors',
-                        !isServerRunning
-                          ? 'opacity-40 cursor-not-allowed text-low'
-                          : 'text-low hover:text-normal hover:bg-secondary/50'
-                      )}
-                    >
-                      <DotsThreeIcon className="size-icon-sm" weight="bold" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onSelect={onToggleInspectMode}
                       className="gap-base"
@@ -685,19 +657,6 @@ export function PreviewBrowser({
                       <CopyIcon className="size-icon-sm" weight="bold" />
                       <span className="flex-1">
                         {t('preview.toolbar.copyUrl')}
-                      </span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={onOpenInNewTab}
-                      disabled={!isServerRunning}
-                      className="gap-base"
-                    >
-                      <ArrowSquareOutIcon
-                        className="size-icon-sm"
-                        weight="bold"
-                      />
-                      <span className="flex-1">
-                        {t('preview.toolbar.openInTab')}
                       </span>
                     </DropdownMenuItem>
                     {isUsingOverride && (

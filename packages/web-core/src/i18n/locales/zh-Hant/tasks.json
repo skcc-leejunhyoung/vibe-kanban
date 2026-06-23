@@ -69,7 +69,6 @@
       "openInTab": "在新分頁開啟",
       "stopDevServer": "停止開發伺服器",
       "resetUrl": "重設為偵測到的 URL",
-      "clearUrlOverride": "清除 URL 覆寫",
       "desktopView": "桌面檢視",
       "mobileView": "行動裝置檢視 (390x844)",
       "responsiveView": "響應式檢視（可調整大小）",

@@ -230,7 +230,6 @@
       "refresh": "Actualizar vista previa",
       "stopDevServer": "Detener servidor de desarrollo",
       "resetUrl": "Restablecer a URL detectada",
-      "clearUrlOverride": "Limpiar anulación de URL",
       "desktopView": "Vista de escritorio",
       "mobileView": "Vista móvil (390x844)",
       "responsiveView": "Vista adaptable (redimensionable)",

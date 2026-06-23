@@ -62,7 +62,6 @@
       "openInTab": "Open in new tab",
       "stopDevServer": "Stop dev server",
       "resetUrl": "Reset to detected URL",
-      "clearUrlOverride": "Clear URL override",
       "desktopView": "Desktop view",
       "mobileView": "Mobile view (390x844)",
       "responsiveView": "Responsive view (resizable)",
@@ -72,7 +71,6 @@
       "addShortcut": "Add page shortcut",
       "removeShortcut": "Remove page shortcut",
       "shortcuts": "Shortcuts",
-      "screenSize": "Screen size",
       "more": "More",
       "inspectElement": "Select element"
     },

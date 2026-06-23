@@ -226,7 +226,6 @@
       "refresh": "미리보기 새로고침",
       "stopDevServer": "개발 서버 중지",
       "resetUrl": "감지된 URL로 재설정",
-      "clearUrlOverride": "URL 오버라이드 지우기",
       "desktopView": "데스크탑 보기",
       "mobileView": "모바일 보기 (390x844)",
       "responsiveView": "반응형 보기 (크기 조절 가능)",
@@ -236,7 +235,6 @@
       "addShortcut": "웹페이지 바로가기 등록",
       "removeShortcut": "웹페이지 바로가기 제거",
       "shortcuts": "바로가기",
-      "screenSize": "화면 크기",
       "more": "더 보기",
       "inspectElement": "요소 선택"
     },

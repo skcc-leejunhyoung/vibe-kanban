@@ -69,7 +69,6 @@
       "openInTab": "在新标签页中打开",
       "stopDevServer": "停止开发服务器",
       "resetUrl": "重置为检测到的 URL",
-      "clearUrlOverride": "清除 URL 覆盖",
       "desktopView": "桌面视图",
       "mobileView": "移动视图 (390x844)",
       "responsiveView": "响应式视图（可调整大小）",

@@ -62,7 +62,6 @@
       "openInTab": "Ouvrir dans un nouvel onglet",
       "stopDevServer": "Arrêter le serveur de développement",
       "resetUrl": "Réinitialiser à l'URL détectée",
-      "clearUrlOverride": "Effacer le remplacement d'URL",
       "desktopView": "Vue bureau",
       "mobileView": "Vue mobile (390x844)",
       "responsiveView": "Vue responsive (redimensionnable)",

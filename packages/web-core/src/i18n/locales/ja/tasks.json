@@ -230,7 +230,6 @@
       "refresh": "プレビューを更新",
       "stopDevServer": "開発サーバーを停止",
       "resetUrl": "検出されたURLにリセット",
-      "clearUrlOverride": "URL オーバーライドをクリア",
       "desktopView": "デスクトップ表示",
       "mobileView": "モバイル表示 (390x844)",
       "responsiveView": "レスポンシブ表示（リサイズ可能）",
