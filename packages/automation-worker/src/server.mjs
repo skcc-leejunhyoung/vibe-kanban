@@ -1119,6 +1119,41 @@ async function createVibeIssue(connectorId, input, event, rule) {
       }
     }
   }
+  // Structurally link the GitHub PR to the Vibe issue (pull_request_issues join),
+  // not just as a URL in the description body — Vibe's review mode only activates
+  // when this join row exists; a plain URL in the body is ignored. The stored
+  // html_url matches what the local gh `listOpenPrs` returns, so review mode's
+  // URL match succeeds. Best-effort: a failure here must not undo the created
+  // issue, so it is logged like the tag-attach path above.
+  if (createdId && event && event.type === 'pr' && event.url) {
+    const prRaw = (event.raw && event.raw.pull_request) || null;
+    const mergedAt = prRaw && prRaw.merged_at ? prRaw.merged_at : null;
+    const status =
+      event.state === 'closed' ? (mergedAt ? 'merged' : 'closed') : 'open';
+    try {
+      await vibeApi(connector, 'POST', '/v1/pull_request_issues', {
+        issue_id: createdId,
+        url: event.url,
+        number: event.number,
+        status,
+        merged_at: mergedAt,
+        merge_commit_sha: null,
+        target_branch_name: event.baseRef || 'main',
+      });
+      await log('info', 'vibe PR linked to issue', {
+        connectorId,
+        issueId: createdId,
+        prUrl: event.url,
+      });
+    } catch (error) {
+      await log('warn', 'vibe PR link failed', {
+        connectorId,
+        issueId: createdId,
+        prUrl: event.url,
+        error: errorMessage(error),
+      });
+    }
+  }
   await log('info', 'vibe issue created', {
     connectorId,
     ruleId: rule.id,
