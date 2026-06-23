@@ -561,6 +561,14 @@ export function PreviewBrowser({
                 />
               </IconButtonGroup>
 
+              {/* Live dimensions readout (responsive mode only) */}
+              {screenSize === 'responsive' && (
+                <span className="font-mono text-xs text-low whitespace-nowrap tabular-nums">
+                  {Math.round(localDimensions.width)}&times;
+                  {Math.round(localDimensions.height)}
+                </span>
+              )}
+
               {/* Overflow menu: screen size / inspect / devtools / copy / reset */}
               <IconButtonGroup>
                 <DropdownMenu>
