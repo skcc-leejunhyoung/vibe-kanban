@@ -473,6 +473,20 @@ export function persistStoredPresets(presets: ThemePreset[]): void {
 }
 
 /**
+ * Insert `preset`, or replace the existing entry with the same id *in place*.
+ * In-place matters: the editor autosaves on every keystroke, so appending would
+ * make an edited preset jump to the bottom of the list on each change.
+ */
+export function upsertPreset(
+  list: ThemePreset[],
+  preset: ThemePreset
+): ThemePreset[] {
+  return list.some((p) => p.id === preset.id)
+    ? list.map((p) => (p.id === preset.id ? preset : p))
+    : [...list, preset];
+}
+
+/**
  * The effective preset list shown to the user: every built-in (with a stored
  * override merged on top of its base tokens, if any), followed by user-added
  * presets in insertion order.

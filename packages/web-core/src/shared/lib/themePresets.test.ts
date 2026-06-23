@@ -16,6 +16,7 @@ import {
   tokenDefFor,
   tokenFromHex,
   tokenToHex,
+  upsertPreset,
 } from './themePresets';
 
 const navy = () => BUILTIN_PRESETS.find((p) => p.id === 'navy-hud')!;
@@ -178,6 +179,32 @@ describe('clonePreset', () => {
     // mutating the clone must not touch the source
     clone.tokens['--brand'] = '1 2% 3%';
     expect(navy().tokens['--brand']).not.toBe('1 2% 3%');
+  });
+});
+
+describe('upsertPreset', () => {
+  const mk = (id: string, name = id): ThemePreset => ({
+    id,
+    name,
+    builtIn: false,
+    colorScheme: 'dark',
+    mono: false,
+    tokens: {},
+  });
+
+  it('appends a brand-new preset', () => {
+    expect(upsertPreset([mk('a')], mk('b')).map((p) => p.id)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('replaces an existing preset in place without reordering', () => {
+    const list = [mk('a'), mk('b'), mk('c')];
+    const next = upsertPreset(list, mk('b', 'B edited'));
+    // Order preserved — an edited preset must not jump to the end of the list.
+    expect(next.map((p) => p.id)).toEqual(['a', 'b', 'c']);
+    expect(next[1].name).toBe('B edited');
   });
 });
 

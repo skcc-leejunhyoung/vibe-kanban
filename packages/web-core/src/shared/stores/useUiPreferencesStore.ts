@@ -9,6 +9,7 @@ import {
   loadStoredPresets,
   mergePresets,
   persistStoredPresets,
+  upsertPreset,
   type ThemePreset,
   type ThemeVariant,
 } from '@/shared/lib/themePresets';
@@ -926,8 +927,9 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
 
   saveThemePreset: (preset) =>
     set((s) => {
-      const without = s.customThemePresets.filter((p) => p.id !== preset.id);
-      const next = [...without, preset];
+      // Upsert in place so editing a preset doesn't reorder the list (autosave
+      // fires per keystroke). New presets are appended.
+      const next = upsertPreset(s.customThemePresets, preset);
       persistStoredPresets(next);
       return { customThemePresets: next };
     }),
