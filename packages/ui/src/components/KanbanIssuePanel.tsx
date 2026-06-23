@@ -221,11 +221,10 @@ export function KanbanIssuePanel({
   }, [isCreateMode, issueId]);
 
   // Edit mode: move focus into the panel when it opens (or when switching
-  // issues) so pressing Escape closes it. Nothing inside the panel is
-  // autofocused in edit mode, so without this the keydown handler below never
-  // receives Escape (focus stays on the board card that was clicked). Create
-  // mode focuses the title input instead (handled by the container), so leave
-  // focus alone there.
+  // issues) so keyboard focus starts inside the panel rather than on the board
+  // card that was clicked. (Escape-to-close is handled at the container level
+  // and no longer depends on this.) Create mode focuses the title input instead
+  // (handled by the container), so leave focus alone there.
   useEffect(() => {
     if (isCreateMode) return;
     panelRootRef.current?.focus({ preventScroll: true });
@@ -238,29 +237,32 @@ export function KanbanIssuePanel({
     }
   }, [isCreateMode]);
 
+  // While a field inside the panel is focused, intercept Escape to leave the
+  // field (exit description editing, then blur) instead of closing: the first
+  // Escape blurs, and a second Escape — now on the non-editable panel root —
+  // bubbles to the container's Escape-to-close handler. stopPropagation keeps
+  // that container handler from closing the panel mid-edit. When nothing
+  // editable is focused, let Escape bubble straight through so the container
+  // closes the panel.
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      const target = e.target as HTMLElement;
-      const isEditable =
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.isContentEditable;
-      if (isEditable) {
-        // If editing description, exit edit mode first
-        if (
-          isDescriptionEditing &&
-          !isCreateMode &&
-          descriptionContainerRef.current?.contains(target)
-        ) {
-          setIsDescriptionEditing(false);
-        }
-        target.blur();
-        (e.currentTarget as HTMLElement).focus();
-        e.stopPropagation();
-      } else {
-        onClose();
-      }
+    if (e.key !== 'Escape') return;
+    const target = e.target as HTMLElement;
+    const isEditable =
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable;
+    if (!isEditable) return;
+    // If editing description, exit edit mode first
+    if (
+      isDescriptionEditing &&
+      !isCreateMode &&
+      descriptionContainerRef.current?.contains(target)
+    ) {
+      setIsDescriptionEditing(false);
     }
+    target.blur();
+    (e.currentTarget as HTMLElement).focus();
+    e.stopPropagation();
   };
 
   const handleTitleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
