@@ -18,8 +18,6 @@ export interface VirtualizedProcessLogsProps {
   currentMatchIndex: number;
 }
 
-type LogEntryWithKey = LogEntry & { key: string; originalIndex: number };
-
 interface SearchContext {
   searchQuery: string;
   matchIndices: number[];
@@ -28,14 +26,16 @@ interface SearchContext {
 
 function LogItem({
   data,
+  index,
   context,
 }: {
-  data: LogEntryWithKey;
+  data: LogEntry;
+  index: number;
   context: SearchContext;
 }) {
-  const isMatch = context.matchIndices.includes(data.originalIndex);
+  const isMatch = context.matchIndices.includes(index);
   const isCurrentMatch =
-    context.matchIndices[context.currentMatchIndex] === data.originalIndex;
+    context.matchIndices[context.currentMatchIndex] === index;
 
   return (
     <RawLogText
@@ -57,36 +57,30 @@ export function VirtualizedProcessLogs({
   currentMatchIndex,
 }: VirtualizedProcessLogsProps) {
   const { t } = useTranslation('tasks');
-  const [logEntries, setLogEntries] = useState<LogEntryWithKey[]>([]);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const hasInitializedRef = useRef(false);
   const prevCurrentMatchRef = useRef<number | undefined>(undefined);
+  // Whether the viewport is pinned to the newest log. Starts true so we follow
+  // output immediately; it only flips to false once the user scrolls up to
+  // inspect history, at which point we stop yanking them back down.
   const [isAtBottom, setIsAtBottom] = useState(true);
 
+  // Keep the latest log in view while the user hasn't scrolled away from the
+  // bottom. This covers both the initial burst (e.g. a dev server replaying its
+  // whole history at once) and incremental appends — relying on Virtuoso's
+  // followOutput alone can leave the viewport stuck at the top on that first
+  // burst.
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      const logsWithKeys: LogEntryWithKey[] = logs.map((entry, index) => ({
-        ...entry,
-        key: `log-${index}`,
-        originalIndex: index,
-      }));
-      setLogEntries(logsWithKeys);
-    }, 100);
-
-    return () => clearTimeout(timeoutId);
-  }, [logs]);
-
-  useEffect(() => {
-    if (!hasInitializedRef.current && logEntries.length > 0) {
-      hasInitializedRef.current = true;
-      requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({
-          index: logEntries.length - 1,
-          align: 'end',
-        });
-      });
+    if (!isAtBottom || logs.length === 0) {
+      return;
     }
-  }, [logEntries.length]);
+    const raf = requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: logs.length - 1,
+        align: 'end',
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isAtBottom, logs.length]);
 
   // Scroll to current match when it changes
   useEffect(() => {
@@ -133,17 +127,18 @@ export function VirtualizedProcessLogs({
   };
 
   return (
-    <Virtuoso<LogEntryWithKey, SearchContext>
+    <Virtuoso<LogEntry, SearchContext>
       ref={virtuosoRef}
       className="h-full overflow-hidden"
-      data={logEntries}
+      data={logs}
       context={context}
-      computeItemKey={(_index, entry) => entry.key}
-      itemContent={(_index, entry, itemContext) => (
-        <LogItem data={entry} context={itemContext} />
+      computeItemKey={(index) => `log-${index}`}
+      itemContent={(index, entry, itemContext) => (
+        <LogItem data={entry} index={index} context={itemContext} />
       )}
+      initialTopMostItemIndex={Math.max(0, logs.length - 1)}
       atBottomStateChange={setIsAtBottom}
-      followOutput={isAtBottom ? 'smooth' : false}
+      followOutput={(atBottom) => (atBottom ? 'smooth' : false)}
       increaseViewportBy={{ top: 0, bottom: 600 }}
     />
   );
