@@ -1179,7 +1179,14 @@ export function KanbanContainer() {
           </div>
         ) : (
           <div
-            className="flex-1 overflow-x-auto px-double"
+            // tabIndex=-1 lets a click on empty board space (column gaps,
+            // padding, area below short columns — anything that isn't a card)
+            // focus this scroll container, so arrow/Enter navigation turns on
+            // there too, not only when a card receives focus. It stays out of
+            // the Tab order; outline-none hides the native focus ring in favor
+            // of the per-card focus ring.
+            tabIndex={-1}
+            className="flex-1 overflow-x-auto px-double outline-none"
             onFocus={() => setIsBoardFocused(true)}
             onBlur={(e) => {
               // Only blur when focus leaves the board entirely, not when moving
