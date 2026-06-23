@@ -275,17 +275,24 @@ export const Actions = {
       const workspace = await getWorkspace(ctx.queryClient, workspaceId);
       const wasArchived = workspace.archived;
 
-      // Calculate next workspace before archiving
-      const nextWorkspaceId = !wasArchived
-        ? getNextWorkspaceId(ctx.activeWorkspaces, workspaceId)
-        : null;
+      // Only jump to a neighbouring workspace when archiving the one the user is
+      // currently viewing. Archiving any other workspace — from the sidebar
+      // three-dot menu, or from the mobile workspace list where no workspace is
+      // open (`currentWorkspaceId` is null) — must leave the current view in
+      // place instead of navigating into a different workspace. Mirrors the
+      // `isCurrentWorkspace` guard in DeleteWorkspace.
+      const isCurrentWorkspace = ctx.currentWorkspaceId === workspaceId;
+      const nextWorkspaceId =
+        !wasArchived && isCurrentWorkspace
+          ? getNextWorkspaceId(ctx.activeWorkspaces, workspaceId)
+          : null;
 
       // Perform the archive/unarchive
       await workspacesApi.update(workspaceId, { archived: !wasArchived });
       invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
 
       // Select next workspace after successful archive
-      if (!wasArchived && nextWorkspaceId) {
+      if (nextWorkspaceId) {
         ctx.selectWorkspace(nextWorkspaceId);
       }
     },
