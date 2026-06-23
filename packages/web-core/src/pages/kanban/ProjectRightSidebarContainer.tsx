@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useHotkeys } from 'react-hotkeys-hook';
 import { ArrowDownIcon, ArrowsOutIcon, XIcon } from '@phosphor-icons/react';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useUserContext } from '@/shared/hooks/useUserContext';
@@ -29,6 +30,7 @@ import { RetryUiProvider } from '@/features/workspace-chat/model/contexts/RetryU
 import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
+import { Scope } from '@/shared/keyboard/registry';
 import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
@@ -139,6 +141,29 @@ function WorkspaceSessionPanel({
   workspaceId,
   onClose,
 }: WorkspaceSessionPanelProps) {
+  // Close the panel on Escape, matching the X button (and the dialog Escape
+  // behavior users expect). Scoped to KANBAN so an open KeyboardDialog — which
+  // disables the kanban scope while open — keeps first claim on Escape and this
+  // never closes the panel out from under a dialog. enableOnFormTags /
+  // enableOnContentEditable are set because the chat editor autofocuses, so
+  // Escape must fire while it holds focus; the defaultPrevented guard yields to
+  // in-editor Escape (e.g. exiting a code block) and to the kanban
+  // clear-selection handler.
+  useHotkeys(
+    'escape',
+    (e) => {
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      onClose();
+    },
+    {
+      scopes: [Scope.KANBAN],
+      enableOnFormTags: true,
+      enableOnContentEditable: true,
+    },
+    [onClose]
+  );
+
   const appNavigation = useAppNavigation();
   const { projectId, getIssue } = useProjectContext();
   const routeState = useCurrentKanbanRouteState();
