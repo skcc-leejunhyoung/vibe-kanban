@@ -21,7 +21,10 @@ use deployment::Deployment;
 use executors::profile::ExecutorConfig;
 use serde::Deserialize;
 use serde_json::json;
-use services::services::{config::DEFAULT_SPEC_INTAKE_PROMPT, container::ContainerService};
+use services::services::{
+    config::DEFAULT_SPEC_INTAKE_PROMPT,
+    container::{ContainerService, assistant_message_in_store},
+};
 use utils::response::ApiResponse;
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
@@ -65,7 +68,9 @@ pub async fn generate_spec(
 
     let brief = brief.trim().to_string();
     if brief.is_empty() {
-        return Err(ApiError::BadRequest("A task brief is required.".to_string()));
+        return Err(ApiError::BadRequest(
+            "A task brief is required.".to_string(),
+        ));
     }
     if repos.is_empty() {
         return Err(ApiError::BadRequest(
@@ -153,7 +158,18 @@ async fn run_intake(
         .await?;
 
     let pool = &deployment.db().pool;
+    // Hold our own Arc to the agent's MsgStore. The exit-monitor teardown
+    // removes the store from the live `msg_stores` map almost immediately after
+    // marking the process Completed, which would race our post-completion read
+    // and yield "no spec output". Keeping our own Arc makes the final message
+    // readable regardless of teardown timing. The store is created when the
+    // agent starts (before any output), but we also re-grab it inside the loop
+    // in case it isn't registered the instant we first look.
+    let mut msg_store = deployment.container().get_msg_store_by_id(&ep.id).await;
     loop {
+        if msg_store.is_none() {
+            msg_store = deployment.container().get_msg_store_by_id(&ep.id).await;
+        }
         let current = ExecutionProcess::find_by_id(pool, ep.id)
             .await?
             .ok_or_else(|| {
@@ -170,10 +186,9 @@ async fn run_intake(
         }
     }
 
-    let message = deployment
-        .container()
-        .latest_assistant_message(&ep.id)
-        .await
+    let message = msg_store
+        .as_deref()
+        .and_then(assistant_message_in_store)
         .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| ApiError::BadGateway("The agent produced no spec output.".to_string()))?;
 

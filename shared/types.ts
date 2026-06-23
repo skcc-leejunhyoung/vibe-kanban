@@ -170,9 +170,21 @@ export type CreateScratch = { payload: ScratchPayload, };
 
 export type UpdateScratch = { payload: ScratchPayload, };
 
-export type Workspace = { id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
+export type Workspace = { id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean,
+/**
+ * Throwaway workspace (e.g. spec-intake generation). Excluded from list/
+ * kanban queries and event streams; skips normal finalize side effects;
+ * reaped on startup.
+ */
+ephemeral: boolean, };
 
-export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
+export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean,
+/**
+ * Throwaway workspace (e.g. spec-intake generation). Excluded from list/
+ * kanban queries and event streams; skips normal finalize side effects;
+ * reaped on startup.
+ */
+ephemeral: boolean, };
 
 export type Session = { id: string, workspace_id: string, name: string | null, executor: string | null, agent_working_dir: string | null, created_at: string, updated_at: string,
 /**
@@ -346,6 +358,15 @@ export type AddWorkspaceRepoResponse = { workspace: Workspace, repo: RepoWithTar
 
 export type MergeWorkspaceRequest = { repo_id: string, };
 
+export type CommitWorkspaceRequest = { repo_id: string, };
+
+export type CommitWorkspaceResponse = {
+/**
+ * Whether a new commit was created. `false` means the worktree was clean
+ * (nothing to commit) — not an error.
+ */
+committed: boolean, };
+
 export type PushWorkspaceRequest = { repo_id: string, };
 
 export type RenameBranchRequest = { new_branch_name: string, };
@@ -454,6 +475,34 @@ export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array
 pr_review: PrReviewInput | null, };
 
 export type CreateAndStartWorkspaceResponse = { workspace: Workspace, execution_process: ExecutionProcess, };
+
+export type GenerateSpecRequest = {
+/**
+ * Project the card will belong to. Provenance/context only — the local
+ * backend does not validate remote repo membership against it.
+ */
+project_id: string,
+/**
+ * The rough, minimal task brief from the user.
+ */
+brief: string,
+/**
+ * Selected agent parameters (executor/variant/model), same shape as
+ * the create-workspace flow.
+ */
+executor_config: ExecutorConfig,
+/**
+ * Repos (with target branch) to mount in the ephemeral workspace so the
+ * agent can explore the codebase.
+ */
+repos: Array<WorkspaceRepoInput>, };
+
+export type GenerateSpecResponse = { title: string, description: string,
+/**
+ * `{ "intake": { brief, executor_config, repos } }` — drop verbatim into
+ * `CreateIssueRequest.extension_metadata`.
+ */
+intake_metadata: JsonValue, };
 
 export type CreateWorkspaceWithoutStartingRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, attachment_ids: Array<string> | null, };
 

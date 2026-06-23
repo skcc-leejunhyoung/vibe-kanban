@@ -87,6 +87,28 @@ pub enum ContainerError {
     Other(#[from] AnyhowError), // Catches any unclassified errors
 }
 
+/// Extract the last non-empty assistant message from a MsgStore the caller
+/// already holds an `Arc` to. Pure over `get_history()`, so it keeps working
+/// after the store has been removed from the live `msg_stores` map by
+/// exit-monitor teardown — as long as the caller grabbed its Arc earlier. The
+/// spec-intake flow relies on this to read the agent's final JSON-fenced output
+/// without racing teardown (which removes the store almost immediately after
+/// the process is marked Completed).
+pub fn assistant_message_in_store(msg_store: &MsgStore) -> Option<String> {
+    for msg in msg_store.get_history().iter().rev() {
+        if let LogMsg::JsonPatch(patch) = msg
+            && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+            && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+        {
+            let content = entry.content.trim();
+            if !content.is_empty() {
+                return Some(content.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[async_trait]
 pub trait ContainerService {
     fn msg_stores(&self) -> &Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>;
@@ -1115,22 +1137,10 @@ pub trait ContainerService {
 
     /// Return the last non-empty assistant message from the in-memory MsgStore
     /// for an execution process, or `None` if the store is gone or has no
-    /// assistant text. Used by the spec-intake flow to read the agent's final
-    /// JSON-fenced output.
+    /// assistant text.
     async fn latest_assistant_message(&self, exec_id: &Uuid) -> Option<String> {
         let msg_store = self.get_msg_store_by_id(exec_id).await?;
-        for msg in msg_store.get_history().iter().rev() {
-            if let LogMsg::JsonPatch(patch) = msg
-                && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
-                && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
-            {
-                let content = entry.content.trim();
-                if !content.is_empty() {
-                    return Some(content.to_string());
-                }
-            }
-        }
-        None
+        assistant_message_in_store(&msg_store)
     }
 
     async fn start_workspace(
