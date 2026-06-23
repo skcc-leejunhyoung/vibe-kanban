@@ -82,10 +82,12 @@ const EditorSelectionDialogImpl = create<EditorSelectionDialogProps>(
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={handleCancel}>
+            <Button type="button" variant="outline" onClick={handleCancel}>
               Cancel
             </Button>
-            <Button onClick={handleConfirm}>Open Editor</Button>
+            <Button type="submit" onClick={handleConfirm}>
+              Open Editor
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

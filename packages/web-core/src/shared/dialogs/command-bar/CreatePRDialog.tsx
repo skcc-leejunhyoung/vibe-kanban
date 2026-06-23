@@ -455,10 +455,15 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
               </div>
             )}
             <DialogFooter>
-              <Button variant="outline" onClick={handleCancelCreatePR}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCancelCreatePR}
+              >
                 {t('common:buttons.cancel')}
               </Button>
               <Button
+                type="submit"
                 onClick={handleConfirmCreatePR}
                 disabled={creatingPR || !prTitle.trim()}
                 className="bg-blue-600 hover:bg-blue-700"

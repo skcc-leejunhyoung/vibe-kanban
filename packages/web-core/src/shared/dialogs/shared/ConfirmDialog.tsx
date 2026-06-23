@@ -71,10 +71,14 @@ const ConfirmDialogImpl = create<ConfirmDialogProps>((props) => {
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={handleCancel}>
+          <Button type="button" variant="outline" onClick={handleCancel}>
             {cancelText}
           </Button>
-          <Button variant={getConfirmButtonVariant()} onClick={handleConfirm}>
+          <Button
+            type="submit"
+            variant={getConfirmButtonVariant()}
+            onClick={handleConfirm}
+          >
             {confirmText}
           </Button>
         </DialogFooter>

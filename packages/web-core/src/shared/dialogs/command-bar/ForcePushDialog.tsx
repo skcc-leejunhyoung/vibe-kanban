@@ -87,6 +87,7 @@ const ForcePushDialogImpl = create<ForcePushDialogProps>((props) => {
         <DialogFooter className="gap-2">
           <Button
             variant="outline"
+            type="button"
             onClick={handleCancel}
             disabled={isProcessing}
           >
@@ -94,6 +95,7 @@ const ForcePushDialogImpl = create<ForcePushDialogProps>((props) => {
           </Button>
           <Button
             variant="destructive"
+            type="submit"
             onClick={handleConfirm}
             disabled={isProcessing}
           >

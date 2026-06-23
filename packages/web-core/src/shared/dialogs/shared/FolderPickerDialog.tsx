@@ -299,6 +299,7 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
                 {t('buttons.cancel')}
               </Button>
               <Button
+                type="submit"
                 onClick={handleSelectManual}
                 disabled={!manualPath.trim()}
               >

@@ -549,12 +549,13 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
         <DialogFooter>
           <Button
             variant="outline"
+            type="button"
             onClick={() => modal.hide()}
             disabled={isLinking}
           >
             {t('common:buttons.cancel')}
           </Button>
-          <Button onClick={handleLink} disabled={!canLink}>
+          <Button type="submit" onClick={handleLink} disabled={!canLink}>
             {isLinking ? t('linkPrToIssue.linking') : t('linkPrToIssue.linkPr')}
           </Button>
         </DialogFooter>

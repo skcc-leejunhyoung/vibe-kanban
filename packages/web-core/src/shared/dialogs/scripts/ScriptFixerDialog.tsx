@@ -399,11 +399,12 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
           </div>
 
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={handleClose}>
+            <Button type="button" variant="outline" onClick={handleClose}>
               {t('common:buttons.close')}
             </Button>
             <Button
               variant="outline"
+              type="button"
               onClick={handleSave}
               disabled={!hasChanges || isSaving || isTesting}
             >
@@ -411,6 +412,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
               {t('scriptFixer.saveButton')}
             </Button>
             <Button
+              type="submit"
               onClick={handleSaveAndTest}
               disabled={isSaving || isTesting}
             >

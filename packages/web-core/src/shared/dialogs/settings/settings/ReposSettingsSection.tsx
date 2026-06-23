@@ -106,10 +106,10 @@ const RemoveRepoDialogImpl = create<RemoveRepoDialogProps>(({ repoName }) => {
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={handleCancel}>
+          <Button type="button" variant="outline" onClick={handleCancel}>
             {t('common:buttons.cancel')}
           </Button>
-          <Button variant="destructive" onClick={handleRemove}>
+          <Button type="submit" variant="destructive" onClick={handleRemove}>
             {t('settings:settings.repos.remove.confirm')}
           </Button>
         </DialogFooter>

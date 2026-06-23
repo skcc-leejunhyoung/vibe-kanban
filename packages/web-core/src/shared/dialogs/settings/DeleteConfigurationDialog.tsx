@@ -78,6 +78,7 @@ const DeleteConfigurationDialogImpl = create<DeleteConfigurationDialogProps>(
           <DialogFooter>
             <Button
               variant="outline"
+              type="button"
               onClick={handleCancel}
               disabled={isDeleting}
             >
@@ -85,6 +86,7 @@ const DeleteConfigurationDialogImpl = create<DeleteConfigurationDialogProps>(
             </Button>
             <Button
               variant="destructive"
+              type="submit"
               onClick={handleDelete}
               disabled={isDeleting}
             >

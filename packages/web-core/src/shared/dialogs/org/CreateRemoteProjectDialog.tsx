@@ -199,12 +199,14 @@ const CreateRemoteProjectDialogImpl = create<CreateRemoteProjectDialogProps>(
           <DialogFooter>
             <Button
               variant="outline"
+              type="button"
               onClick={handleCancel}
               disabled={isCreating}
             >
               {t('common:buttons.cancel', 'Cancel')}
             </Button>
             <Button
+              type="submit"
               onClick={handleCreate}
               disabled={!name.trim() || isCreating}
             >

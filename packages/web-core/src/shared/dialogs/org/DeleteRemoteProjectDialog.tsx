@@ -83,6 +83,7 @@ const DeleteRemoteProjectDialogImpl = create<DeleteRemoteProjectDialogProps>(
           <DialogFooter>
             <Button
               variant="outline"
+              type="button"
               onClick={handleCancel}
               disabled={isDeleting}
             >
@@ -90,6 +91,7 @@ const DeleteRemoteProjectDialogImpl = create<DeleteRemoteProjectDialogProps>(
             </Button>
             <Button
               variant="destructive"
+              type="submit"
               onClick={handleDelete}
               disabled={isDeleting}
             >

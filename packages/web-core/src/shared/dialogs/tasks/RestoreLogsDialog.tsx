@@ -575,11 +575,12 @@ const RestoreLogsDialogImpl = create<RestoreLogsDialogProps>(
             </div>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={handleCancel}>
+            <Button type="button" variant="outline" onClick={handleCancel}>
               {t('common:buttons.cancel')}
             </Button>
             <Button
               variant="destructive"
+              type="submit"
               disabled={isConfirmDisabled}
               onClick={handleConfirm}
             >

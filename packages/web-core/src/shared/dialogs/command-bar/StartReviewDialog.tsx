@@ -258,6 +258,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
           <DialogFooter className="sm:!justify-between">
             <Button
               variant="outline"
+              type="button"
               onClick={() => modal.hide()}
               disabled={isSubmitting}
             >
@@ -279,7 +280,11 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
                   {t('startReviewDialog.newSession')}
                 </Label>
               </div>
-              <Button onClick={handleSubmit} disabled={!canSubmit}>
+              <Button
+                type="submit"
+                onClick={handleSubmit}
+                disabled={!canSubmit}
+              >
                 {isSubmitting
                   ? t('actionsMenu.startingReview')
                   : t('actionsMenu.startReview')}

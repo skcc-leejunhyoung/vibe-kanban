@@ -129,12 +129,14 @@ const EditBranchNameDialogImpl = create<EditBranchNameDialogProps>(
           <DialogFooter>
             <Button
               variant="outline"
+              type="button"
               onClick={handleCancel}
               disabled={renameMutation.isPending}
             >
               {t('common:buttons.cancel')}
             </Button>
             <Button
+              type="submit"
               onClick={handleConfirm}
               disabled={renameMutation.isPending || !branchName.trim()}
             >

@@ -66,7 +66,12 @@ const ReleaseNotesDialogImpl = create<NoProps>(() => {
             <div className="flex flex-col items-center justify-center py-12 text-center space-y-3">
               <AlertCircle className="h-8 w-8 text-low" />
               <p className="text-sm text-low">Unable to load release notes.</p>
-              <Button variant="outline" size="sm" onClick={handleOpenInBrowser}>
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={handleOpenInBrowser}
+              >
                 <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
                 View on GitHub
               </Button>
@@ -94,7 +99,12 @@ const ReleaseNotesDialogImpl = create<NoProps>(() => {
         </div>
 
         <DialogFooter className="px-6 py-3 border-t flex-shrink-0">
-          <Button variant="outline" size="sm" onClick={handleOpenInBrowser}>
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={handleOpenInBrowser}
+          >
             <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
             Open on GitHub
           </Button>

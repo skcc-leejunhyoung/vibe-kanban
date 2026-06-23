@@ -79,12 +79,14 @@ const ChangeTargetBranchDialogImpl = create<ChangeTargetBranchDialogProps>(
           <DialogFooter>
             <Button
               variant="outline"
+              type="button"
               onClick={handleCancel}
               disabled={isChangingTargetBranch}
             >
               {t('common:buttons.cancel')}
             </Button>
             <Button
+              type="submit"
               onClick={handleConfirm}
               disabled={isChangingTargetBranch || !selectedBranch}
             >

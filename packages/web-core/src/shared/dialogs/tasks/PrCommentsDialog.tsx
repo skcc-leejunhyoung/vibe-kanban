@@ -197,10 +197,18 @@ const PrCommentsDialogImpl = create<PrCommentsDialogProps>(
 
           {!errorMessage && !isLoading && comments.length > 0 && (
             <DialogFooter className="px-4 py-3 border-t">
-              <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => handleOpenChange(false)}
+              >
                 {t('common:buttons.cancel')}
               </Button>
-              <Button onClick={handleConfirm} disabled={selectedIds.size === 0}>
+              <Button
+                type="submit"
+                onClick={handleConfirm}
+                disabled={selectedIds.size === 0}
+              >
                 {t('tasks:prComments.dialog.add')}
                 {selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}
               </Button>

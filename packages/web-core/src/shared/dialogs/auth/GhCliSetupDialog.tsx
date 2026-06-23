@@ -236,7 +236,7 @@ const GhCliSetupDialogImpl = create<GhCliSetupDialogProps>(
             )}
           </div>
           <DialogFooter>
-            <Button onClick={handleRunSetup} disabled={isRunning}>
+            <Button type="submit" onClick={handleRunSetup} disabled={isRunning}>
               {isRunning ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -248,6 +248,7 @@ const GhCliSetupDialogImpl = create<GhCliSetupDialogProps>(
             </Button>
             <Button
               variant="outline"
+              type="button"
               onClick={handleClose}
               disabled={isRunning}
             >

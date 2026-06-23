@@ -376,12 +376,13 @@ const CreateWorkspaceFromPrDialogImpl =
           <DialogFooter>
             <Button
               variant="outline"
+              type="button"
               onClick={() => modal.hide()}
               disabled={createMutation.isPending}
             >
               {t('common:buttons.cancel')}
             </Button>
-            <Button onClick={handleCreate} disabled={!canCreate}>
+            <Button type="submit" onClick={handleCreate} disabled={!canCreate}>
               {createMutation.isPending
                 ? t('createWorkspaceFromPr.creating')
                 : t('createWorkspaceFromPr.createWorkspace')}

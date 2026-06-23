@@ -177,12 +177,14 @@ const InviteMemberDialogImpl = create<InviteMemberDialogProps>((props) => {
         <DialogFooter>
           <Button
             variant="outline"
+            type="button"
             onClick={handleCancel}
             disabled={createInvitation.isPending}
           >
             {t('common:buttons.cancel')}
           </Button>
           <Button
+            type="submit"
             onClick={handleInvite}
             disabled={!email.trim() || createInvitation.isPending}
           >

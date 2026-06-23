@@ -154,10 +154,14 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={handleCancel}>
+            <Button type="button" variant="outline" onClick={handleCancel}>
               Cancel
             </Button>
-            <Button onClick={handleCreate} disabled={!configName.trim()}>
+            <Button
+              type="submit"
+              onClick={handleCreate}
+              disabled={!configName.trim()}
+            >
               Create Configuration
             </Button>
           </DialogFooter>

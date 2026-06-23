@@ -198,10 +198,16 @@ const TagEditDialogImpl = create<TagEditDialogProps>(({ tag }) => {
           {error && <Alert variant="destructive">{error}</Alert>}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={handleCancel} disabled={saving}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleCancel}
+            disabled={saving}
+          >
             {t('settings.general.tags.dialog.buttons.cancel')}
           </Button>
           <Button
+            type="submit"
             onClick={handleSave}
             disabled={saving || !!tagNameError || !formData.content.trim()}
           >

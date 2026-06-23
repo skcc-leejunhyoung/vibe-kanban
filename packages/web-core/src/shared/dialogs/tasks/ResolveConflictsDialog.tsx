@@ -303,6 +303,7 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
           <DialogFooter className="sm:!justify-between">
             <Button
               variant="outline"
+              type="button"
               onClick={handleCancel}
               disabled={isSubmitting}
             >
@@ -328,7 +329,11 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
                   </Label>
                 </div>
               )}
-              <Button onClick={handleSubmit} disabled={!canSubmit}>
+              <Button
+                type="submit"
+                onClick={handleSubmit}
+                disabled={!canSubmit}
+              >
                 {isSubmitting
                   ? t('resolveConflicts.dialog.resolving', 'Starting...')
                   : t('resolveConflicts.dialog.resolve', 'Resolve Conflicts')}

@@ -191,12 +191,14 @@ const CreateOrganizationDialogImpl = create<NoProps>(() => {
         <DialogFooter>
           <Button
             variant="outline"
+            type="button"
             onClick={handleCancel}
             disabled={createOrganization.isPending}
           >
             {t('common:buttons.cancel')}
           </Button>
           <Button
+            type="submit"
             onClick={handleCreate}
             disabled={
               !name.trim() || !slug.trim() || createOrganization.isPending
