@@ -138,7 +138,14 @@ export function VirtualizedProcessLogs({
       )}
       initialTopMostItemIndex={Math.max(0, logs.length - 1)}
       atBottomStateChange={setIsAtBottom}
-      followOutput={(atBottom) => (atBottom ? 'smooth' : false)}
+      // Stay pinned generously: a large threshold means small height jitter
+      // (line wrapping / async measurement) or a tiny nudge won't flip us off
+      // the bottom — only a deliberate scroll up does.
+      atBottomThreshold={120}
+      // Jump instead of smooth-animate: fast log bursts grow the content
+      // faster than a smooth scroll can chase, which would otherwise let the
+      // viewport fall behind the bottom and detach auto-follow.
+      followOutput={(atBottom) => (atBottom ? 'auto' : false)}
       increaseViewportBy={{ top: 0, bottom: 600 }}
     />
   );
