@@ -50,6 +50,7 @@ import { stripLineEnding, splitLines } from '@/shared/lib/string';
 import { ReviewCommentRenderer } from './ReviewCommentRenderer';
 import { GitHubCommentRenderer } from './GitHubCommentRenderer';
 import { CommentWidgetLine } from './CommentWidgetLine';
+import { CommitSelector } from './CommitSelector';
 import type { Diff, DiffChangeKind } from 'shared/types';
 
 function workerFactory() {
@@ -857,24 +858,27 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
       poolOptions={POOL_OPTIONS}
       highlighterOptions={HIGHLIGHTER_OPTIONS}
     >
-      <Virtualizer
-        {...({ ref: virtualizerRef } as Record<string, unknown>)}
-        className={`w-full h-full overflow-auto bg-secondary px-base pt-1 ${className}`}
-        contentClassName="flex flex-col gap-1"
-        style={{ contain: 'layout style paint' }}
-      >
-        {itemsToRender.map(({ diff, initialExpanded }) => {
-          const path = diff.newPath || diff.oldPath || '';
-          return (
-            <DiffFileItem
-              key={path}
-              diff={diff}
-              initialExpanded={initialExpanded}
-              workspaceId={workspaceId}
-            />
-          );
-        })}
-      </Virtualizer>
+      <div className={`flex flex-col h-full min-h-0 bg-secondary ${className}`}>
+        <CommitSelector workspaceId={workspaceId} />
+        <Virtualizer
+          {...({ ref: virtualizerRef } as Record<string, unknown>)}
+          className="w-full flex-1 min-h-0 overflow-auto px-base pt-1"
+          contentClassName="flex flex-col gap-1"
+          style={{ contain: 'layout style paint' }}
+        >
+          {itemsToRender.map(({ diff, initialExpanded }) => {
+            const path = diff.newPath || diff.oldPath || '';
+            return (
+              <DiffFileItem
+                key={path}
+                diff={diff}
+                initialExpanded={initialExpanded}
+                workspaceId={workspaceId}
+              />
+            );
+          })}
+        </Virtualizer>
+      </div>
     </WorkerPoolContextProvider>
   );
 });

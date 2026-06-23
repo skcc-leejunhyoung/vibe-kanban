@@ -74,6 +74,8 @@ import {
   CommitWorkspaceResponse,
   PushWorkspaceRequest,
   RepoBranchStatus,
+  WorkspaceCommit,
+  Diff,
   AbortConflictsRequest,
   ContinueRebaseRequest,
   Session,
@@ -635,6 +637,25 @@ export const workspacesApi = {
       `/api/workspaces/${workspaceId}/git/status`
     );
     return handleApiResponse<RepoBranchStatus[]>(response);
+  },
+
+  getCommits: async (workspaceId: string): Promise<WorkspaceCommit[]> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/commits`
+    );
+    return handleApiResponse<WorkspaceCommit[]>(response);
+  },
+
+  getCommitDiff: async (
+    workspaceId: string,
+    repoId: string,
+    sha: string
+  ): Promise<Diff[]> => {
+    const params = new URLSearchParams({ repo_id: repoId, sha });
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/commit-diff?${params.toString()}`
+    );
+    return handleApiResponse<Diff[]>(response);
   },
 
   getRepos: async (workspaceId: string): Promise<RepoWithTargetBranch[]> => {

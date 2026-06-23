@@ -8,9 +8,11 @@ import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useWorkspaceSessions } from '@/shared/hooks/useWorkspaceSessions';
 import { useGitHubComments } from '@/shared/hooks/useGitHubComments';
 import { useDiffStream } from '@/shared/hooks/useDiffStream';
+import { useCommitDiff } from '@/shared/hooks/useCommitDiff';
 import { workspacesApi } from '@/shared/lib/api';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
-import type { DiffStats } from 'shared/types';
+import { useSelectedCommit } from '@/shared/stores/useChangesCommitStore';
+import type { Diff, DiffStats } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 
@@ -19,6 +21,9 @@ import { WorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 interface WorkspaceProviderProps {
   children: ReactNode;
 }
+
+// Stable reference so an empty commit-diff result doesn't churn downstream memos.
+const EMPTY_DIFFS: Diff[] = [];
 
 export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const { workspaceId } = useParams({ strict: false });
@@ -77,7 +82,26 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     enabled: !isCreateMode && hasPrAttached,
   });
 
-  const { diffs } = useDiffStream(workspaceId ?? null, !isCreateMode);
+  // When the Changes view is scoped to a single commit, swap the live worktree
+  // diff stream for that commit's (immutable) diff. The live stream is paused
+  // while a commit is selected so we don't hold an idle socket open.
+  const selectedCommit = useSelectedCommit(workspaceId);
+
+  const { diffs: liveDiffs } = useDiffStream(
+    workspaceId ?? null,
+    !isCreateMode && !selectedCommit
+  );
+
+  const { data: commitDiffs } = useCommitDiff(
+    workspaceId,
+    selectedCommit?.repoId,
+    selectedCommit?.sha,
+    !isCreateMode && !!selectedCommit
+  );
+
+  const diffs: Diff[] = selectedCommit
+    ? (commitDiffs ?? EMPTY_DIFFS)
+    : liveDiffs;
 
   const diffPaths = useMemo(
     () =>

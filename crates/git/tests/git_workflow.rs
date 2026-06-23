@@ -417,3 +417,73 @@ fn ff_merge_libgit2_moves_base_to_task_tip() {
     assert_eq!(name.as_deref(), Some("Other Author"));
     assert_eq!(email.as_deref(), Some("other@example.com"));
 }
+
+#[test]
+fn list_commits_and_get_commit_diffs() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+
+    // A base commit on main that the feature branch builds on.
+    write_file(&repo_path, "a.txt", "one\n");
+    add_path(&repo_path, "a.txt");
+    s.commit(&repo_path, "base on main").unwrap();
+
+    // Feature branch with two added commits.
+    create_branch(&repo_path, "feature");
+    checkout_branch(&repo_path, "feature");
+
+    write_file(&repo_path, "b.txt", "hello\n");
+    add_path(&repo_path, "b.txt");
+    s.commit(&repo_path, "add b").unwrap();
+
+    write_file(&repo_path, "a.txt", "one\ntwo\n");
+    add_path(&repo_path, "a.txt");
+    s.commit(&repo_path, "extend a").unwrap();
+
+    // list_commits returns only the two commits the branch added, newest first.
+    let commits = s.list_commits(&repo_path, "feature", "main", 50).unwrap();
+    assert_eq!(commits.len(), 2);
+    assert_eq!(commits[0].subject, "extend a");
+    assert_eq!(commits[1].subject, "add b");
+    assert_eq!(commits[0].short_sha.len(), 8);
+    assert!(commits[0].sha.starts_with(&commits[0].short_sha));
+    assert!(!commits[0].committed_at.is_empty());
+
+    // Newest commit: a.txt modified one -> one+two.
+    let latest_diffs = s.get_commit_diffs(&repo_path, &commits[0].sha).unwrap();
+    assert_eq!(latest_diffs.len(), 1);
+    let d = &latest_diffs[0];
+    assert_eq!(d.new_path.as_deref(), Some("a.txt"));
+    assert!(matches!(d.change, DiffChangeKind::Modified));
+    assert_eq!(d.old_content.as_deref(), Some("one\n"));
+    assert_eq!(d.new_content.as_deref(), Some("one\ntwo\n"));
+    assert_eq!(d.additions, Some(1));
+    assert_eq!(d.deletions, Some(0));
+
+    // First feature commit: b.txt added.
+    let first_diffs = s.get_commit_diffs(&repo_path, &commits[1].sha).unwrap();
+    assert_eq!(first_diffs.len(), 1);
+    let added = &first_diffs[0];
+    assert_eq!(added.new_path.as_deref(), Some("b.txt"));
+    assert_eq!(added.old_path, None);
+    assert!(matches!(added.change, DiffChangeKind::Added));
+    assert_eq!(added.new_content.as_deref(), Some("hello\n"));
+}
+
+#[test]
+fn list_commits_empty_when_branch_has_no_extra_commits() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+
+    write_file(&repo_path, "a.txt", "one\n");
+    add_path(&repo_path, "a.txt");
+    s.commit(&repo_path, "base on main").unwrap();
+
+    // Branch points at the same commit as main: nothing added.
+    create_branch(&repo_path, "feature");
+
+    let commits = s.list_commits(&repo_path, "feature", "main", 50).unwrap();
+    assert!(commits.is_empty());
+}

@@ -93,6 +93,18 @@ pub struct HeadInfo {
     pub oid: String,
 }
 
+/// Lightweight metadata for a single commit, used to list the commits a
+/// workspace branch added on top of its base branch.
+#[derive(Debug, Clone)]
+pub struct CommitInfo {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author: String,
+    /// Commit time as an RFC 3339 string (UTC).
+    pub committed_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Commit(git2::Oid);
 
@@ -369,6 +381,180 @@ impl GitService {
             )
             .map_err(|e| GitServiceError::InvalidRepository(format!("git diff failed: {e}")))?;
         Ok(entries.into_iter().map(|e| e.path).collect())
+    }
+
+    /// List the commits that `branch_name` added on top of `base_branch_name`
+    /// (i.e. everything reachable from the branch tip but not from the base),
+    /// newest first. This is the set of commits "added" by a workspace.
+    pub fn list_commits(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+        base_branch_name: &str,
+        limit: usize,
+    ) -> Result<Vec<CommitInfo>, GitServiceError> {
+        let repo = Repository::open(repo_path)?;
+        let head_oid = Self::find_branch(&repo, branch_name)?
+            .get()
+            .peel_to_commit()?
+            .id();
+        // Hide everything reachable from the merge-base so only the commits the
+        // branch added remain. The merge-base is robust to diverged branches.
+        let base_commit = self.get_base_commit(repo_path, branch_name, base_branch_name)?;
+
+        let mut revwalk = repo.revwalk()?;
+        revwalk.set_sorting(Sort::TIME)?;
+        revwalk.push(head_oid)?;
+        // If the branch is at (or behind) the base, there are simply no commits.
+        let _ = revwalk.hide(base_commit.as_oid());
+
+        let mut commits = Vec::new();
+        for oid in revwalk.take(limit) {
+            let oid = oid?;
+            let commit = repo.find_commit(oid)?;
+            commits.push(Self::commit_to_info(&commit));
+        }
+        Ok(commits)
+    }
+
+    fn commit_to_info(commit: &git2::Commit) -> CommitInfo {
+        let sha = commit.id().to_string();
+        let short_sha = sha.chars().take(8).collect::<String>();
+        let subject = commit.summary().unwrap_or("").to_string();
+        let author = commit
+            .author()
+            .name()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let committed_at = DateTime::from_timestamp(commit.time().seconds(), 0)
+            .unwrap_or_else(Utc::now)
+            .to_rfc3339();
+        CommitInfo {
+            sha,
+            short_sha,
+            subject,
+            author,
+            committed_at,
+        }
+    }
+
+    /// Get the diffs introduced by a single commit (the commit's tree vs its
+    /// first parent). Contents are read from the commit's blobs, so this works
+    /// for any historical commit, not just the current worktree state.
+    pub fn get_commit_diffs(
+        &self,
+        repo_path: &Path,
+        commit_sha: &str,
+    ) -> Result<Vec<Diff>, GitServiceError> {
+        let repo = Repository::open(repo_path)?;
+        let oid = git2::Oid::from_str(commit_sha).map_err(|e| {
+            GitServiceError::InvalidRepository(format!("invalid commit sha '{commit_sha}': {e}"))
+        })?;
+        let commit = repo.find_commit(oid)?;
+        let new_tree = commit.tree()?;
+        // Root commit (no parent) diffs against the empty tree.
+        let old_tree = if commit.parent_count() > 0 {
+            Some(commit.parent(0)?.tree()?)
+        } else {
+            None
+        };
+
+        let mut diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+        // Detect renames/copies so they render as such instead of add+delete.
+        let mut find_opts = git2::DiffFindOptions::new();
+        find_opts.renames(true).copies(true);
+        diff.find_similar(Some(&mut find_opts))?;
+
+        Ok(diff
+            .deltas()
+            .map(|delta| Self::tree_delta_to_diff(&repo, &delta))
+            .collect())
+    }
+
+    /// Build a `Diff` from a tree-to-tree delta, reading both sides from git
+    /// blobs (with the same size/binary guards as `status_entry_to_diff`).
+    fn tree_delta_to_diff(repo: &Repository, delta: &git2::DiffDelta) -> Diff {
+        let mut change = match delta.status() {
+            git2::Delta::Added => DiffChangeKind::Added,
+            git2::Delta::Deleted => DiffChangeKind::Deleted,
+            git2::Delta::Renamed => DiffChangeKind::Renamed,
+            git2::Delta::Copied => DiffChangeKind::Copied,
+            // Treat modifications, type changes and anything else as modified.
+            _ => DiffChangeKind::Modified,
+        };
+
+        let old_file = delta.old_file();
+        let new_file = delta.new_file();
+        let old_path = old_file.path().map(|p| p.to_string_lossy().to_string());
+        let new_path = new_file.path().map(|p| p.to_string_lossy().to_string());
+
+        // The change kind decides which sides are meaningful; for added files we
+        // drop any stale old path, and for deleted files any stale new path.
+        let (old_path_opt, new_path_opt) = match change {
+            DiffChangeKind::Added => (None, new_path),
+            DiffChangeKind::Deleted => (old_path, None),
+            _ => (old_path, new_path),
+        };
+
+        // Read blob content for one side, flagging oversized blobs as omitted.
+        let read_blob = |id: git2::Oid| -> (Option<String>, bool) {
+            if id == git2::Oid::zero() {
+                return (None, false);
+            }
+            match repo.find_blob(id) {
+                Ok(blob) if blob.is_binary() => (None, false),
+                Ok(blob) if blob.size() > MAX_INLINE_DIFF_BYTES => (None, true),
+                Ok(blob) => (Self::blob_to_string(&blob), false),
+                Err(_) => (None, false),
+            }
+        };
+
+        let (mut old_content, old_omitted) = if old_path_opt.is_some() {
+            read_blob(old_file.id())
+        } else {
+            (None, false)
+        };
+        let (mut new_content, new_omitted) = if new_path_opt.is_some() {
+            read_blob(new_file.id())
+        } else {
+            (None, false)
+        };
+
+        let content_omitted = old_omitted || new_omitted;
+        if content_omitted {
+            old_content = None;
+            new_content = None;
+        }
+
+        // A modification with identical content is a permission/mode-only change.
+        if matches!(change, DiffChangeKind::Modified)
+            && old_content.is_some()
+            && old_content == new_content
+        {
+            change = DiffChangeKind::PermissionChange;
+        }
+
+        let (additions, deletions) = match (&old_content, &new_content) {
+            (Some(old), Some(new)) => {
+                let (adds, dels) = compute_line_change_counts(old, new);
+                (Some(adds), Some(dels))
+            }
+            (Some(old), None) => (Some(0), Some(old.lines().count())),
+            (None, Some(new)) => (Some(new.lines().count()), Some(0)),
+            (None, None) => (None, None),
+        };
+
+        Diff {
+            change,
+            old_path: old_path_opt,
+            new_path: new_path_opt,
+            old_content,
+            new_content,
+            content_omitted,
+            additions,
+            deletions,
+            repo_id: None,
+        }
     }
 
     /// Extract file path from a Diff (for indexing and ConversationPatch)

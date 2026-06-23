@@ -533,6 +533,12 @@ export type RepoBranchStatus = { repo_id: string, repo_name: string,
  */
 repo_missing: boolean, commits_behind: number | null, commits_ahead: number | null, has_uncommitted_changes: boolean | null, head_oid: string | null, uncommitted_count: number | null, untracked_count: number | null, target_branch_name: string, remote_commits_behind: number | null, remote_commits_ahead: number | null, merges: Array<Merge>, is_rebase_in_progress: boolean, conflict_op: ConflictOp | null, conflicted_files: Array<string>, is_target_remote: boolean, };
 
+export type WorkspaceCommit = { repo_id: string, repo_name: string, sha: string, short_sha: string, subject: string, author: string,
+/**
+ * RFC 3339 timestamp (UTC).
+ */
+committed_at: string, };
+
 export type UpdateWorkspace = { archived: boolean | null, pinned: boolean | null, name: string | null, };
 
 export type UpdateSession = { name: string | null, };

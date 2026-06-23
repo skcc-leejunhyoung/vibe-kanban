@@ -5,7 +5,7 @@ use std::{
 
 use axum::{
     Extension, Json, Router,
-    extract::State,
+    extract::{Query, State},
     response::{IntoResponse, Json as ResponseJson},
     routing::{get, post},
 };
@@ -20,7 +20,7 @@ use git::{ConflictOp, GitCliError, GitServiceError};
 use serde::{Deserialize, Serialize};
 use services::services::{container::ContainerService, diff_stream, remote_sync};
 use ts_rs::TS;
-use utils::response::ApiResponse;
+use utils::{diff::Diff, response::ApiResponse};
 use uuid::Uuid;
 
 use super::streams::{DiffStreamQuery, stream_workspace_diff_ws};
@@ -114,6 +114,26 @@ pub struct RepoBranchStatus {
     pub status: BranchStatus,
 }
 
+/// A single commit added by a workspace branch on top of its base branch,
+/// across one of the workspace's repos.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkspaceCommit {
+    pub repo_id: Uuid,
+    pub repo_name: String,
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+    pub author: String,
+    /// RFC 3339 timestamp (UTC).
+    pub committed_at: String,
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct CommitDiffQuery {
+    pub repo_id: Uuid,
+    pub sha: String,
+}
+
 #[derive(Deserialize, Debug, TS)]
 pub struct ChangeTargetBranchRequest {
     pub repo_id: Uuid,
@@ -153,6 +173,8 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/status", get(get_workspace_branch_status))
         .route("/diff/ws", get(stream_diff_ws))
+        .route("/commits", get(list_workspace_commits))
+        .route("/commit-diff", get(get_workspace_commit_diff))
         .route("/merge", post(merge_workspace))
         .route("/commit", post(commit_workspace))
         .route("/push", post(push_workspace_branch))
@@ -172,6 +194,101 @@ pub async fn stream_diff_ws(
     deployment: State<DeploymentImpl>,
 ) -> impl IntoResponse {
     stream_workspace_diff_ws(ws, query, workspace, deployment).await
+}
+
+/// Upper bound on how many added commits we surface per repo. Workspaces are
+/// short-lived branches, so this is generous; it just guards pathological cases.
+const COMMIT_LIST_LIMIT: usize = 200;
+
+/// List the commits each repo's workspace branch added on top of its target
+/// branch, newest first across all repos.
+#[axum::debug_handler]
+pub async fn list_workspace_commits(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Vec<WorkspaceCommit>>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let repositories = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
+    let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id).await?;
+    let target_branches: HashMap<_, _> = workspace_repos
+        .iter()
+        .map(|wr| (wr.repo_id, wr.target_branch.clone()))
+        .collect();
+
+    let mut commits: Vec<WorkspaceCommit> = Vec::new();
+    for repo in repositories {
+        // Skip repos whose source folder is gone (mirrors get_workspace_branch_status).
+        if !deployment.git().is_repo_openable(&repo.path) {
+            continue;
+        }
+        let Some(target_branch) = target_branches.get(&repo.id) else {
+            continue;
+        };
+
+        match deployment.git().list_commits(
+            &repo.path,
+            &workspace.branch,
+            target_branch,
+            COMMIT_LIST_LIMIT,
+        ) {
+            Ok(list) => {
+                for c in list {
+                    commits.push(WorkspaceCommit {
+                        repo_id: repo.id,
+                        repo_name: repo.name.clone(),
+                        sha: c.sha,
+                        short_sha: c.short_sha,
+                        subject: c.subject,
+                        author: c.author,
+                        committed_at: c.committed_at,
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to list commits for repo {}: {}", repo.name, e);
+            }
+        }
+    }
+
+    // RFC 3339 UTC timestamps sort lexicographically in chronological order.
+    commits.sort_by(|a, b| b.committed_at.cmp(&a.committed_at));
+
+    Ok(ResponseJson(ApiResponse::success(commits)))
+}
+
+/// Return the diffs introduced by a single commit, shaped identically to the
+/// live diff stream (repo-name-prefixed paths, repo id tagged) so the existing
+/// Changes UI can render them without special-casing.
+#[axum::debug_handler]
+pub async fn get_workspace_commit_diff(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<CommitDiffQuery>,
+) -> Result<ResponseJson<ApiResponse<Vec<Diff>>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    // Ensure the requested repo actually belongs to this workspace.
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, query.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+
+    let mut diffs = deployment.git().get_commit_diffs(&repo.path, &query.sha)?;
+    for diff in &mut diffs {
+        if let Some(old) = diff.old_path.take() {
+            diff.old_path = Some(format!("{}/{}", repo.name, old));
+        }
+        if let Some(new) = diff.new_path.take() {
+            diff.new_path = Some(format!("{}/{}", repo.name, new));
+        }
+        diff.repo_id = Some(repo.id);
+    }
+
+    Ok(ResponseJson(ApiResponse::success(diffs)))
 }
 
 #[axum::debug_handler]
