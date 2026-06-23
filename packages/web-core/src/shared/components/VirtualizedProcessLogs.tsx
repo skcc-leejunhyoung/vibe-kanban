@@ -59,18 +59,55 @@ export function VirtualizedProcessLogs({
   const { t } = useTranslation('tasks');
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const prevCurrentMatchRef = useRef<number | undefined>(undefined);
-  // Whether the viewport is pinned to the newest log. Starts true so we follow
-  // output immediately; it only flips to false once the user scrolls up to
-  // inspect history, at which point we stop yanking them back down.
-  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [scroller, setScroller] = useState<HTMLElement | Window | null>(null);
+  // Whether we keep the viewport pinned to the newest log. Starts true. It only
+  // flips to false when the user *deliberately* scrolls up (wheel / touch drag);
+  // a flood of incoming logs must never unpin us. It flips back to true once the
+  // user scrolls back down to the bottom.
+  const [pinnedToBottom, setPinnedToBottom] = useState(true);
 
-  // Keep the latest log in view while the user hasn't scrolled away from the
-  // bottom. This covers both the initial burst (e.g. a dev server replaying its
-  // whole history at once) and incremental appends — relying on Virtuoso's
-  // followOutput alone can leave the viewport stuck at the top on that first
-  // burst.
+  // Detect a deliberate upward scroll from raw input on the scroller element.
+  // We watch wheel/touch gestures rather than scroll position, so Virtuoso's own
+  // content-driven scrollTop changes (item measurement, fast appends) can never
+  // be mistaken for the user scrolling away from the bottom.
   useEffect(() => {
-    if (!isAtBottom || logs.length === 0) {
+    if (!scroller || scroller instanceof Window) {
+      return;
+    }
+    const unpin = () => setPinnedToBottom(false);
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        unpin();
+      }
+    };
+    let lastTouchY = 0;
+    const onTouchStart = (e: TouchEvent) => {
+      lastTouchY = e.touches[0]?.clientY ?? 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY ?? 0;
+      // Finger moving down scrolls content up — the user is reading history.
+      if (y > lastTouchY + 2) {
+        unpin();
+      }
+      lastTouchY = y;
+    };
+    scroller.addEventListener('wheel', onWheel, { passive: true });
+    scroller.addEventListener('touchstart', onTouchStart, { passive: true });
+    scroller.addEventListener('touchmove', onTouchMove, { passive: true });
+    return () => {
+      scroller.removeEventListener('wheel', onWheel);
+      scroller.removeEventListener('touchstart', onTouchStart);
+      scroller.removeEventListener('touchmove', onTouchMove);
+    };
+  }, [scroller]);
+
+  // Keep the latest log in view while pinned. This covers both the initial burst
+  // (e.g. a dev server replaying its whole history at once) and incremental
+  // appends — relying on Virtuoso's followOutput alone can leave the viewport
+  // stuck at the top on that first burst.
+  useEffect(() => {
+    if (!pinnedToBottom || logs.length === 0) {
       return;
     }
     const raf = requestAnimationFrame(() => {
@@ -80,7 +117,7 @@ export function VirtualizedProcessLogs({
       });
     });
     return () => cancelAnimationFrame(raf);
-  }, [isAtBottom, logs.length]);
+  }, [pinnedToBottom, logs.length]);
 
   // Scroll to current match when it changes
   useEffect(() => {
@@ -129,6 +166,7 @@ export function VirtualizedProcessLogs({
   return (
     <Virtuoso<LogEntry, SearchContext>
       ref={virtuosoRef}
+      scrollerRef={setScroller}
       className="h-full overflow-hidden"
       data={logs}
       context={context}
@@ -137,15 +175,24 @@ export function VirtualizedProcessLogs({
         <LogItem data={entry} index={index} context={itemContext} />
       )}
       initialTopMostItemIndex={Math.max(0, logs.length - 1)}
-      atBottomStateChange={setIsAtBottom}
-      // Stay pinned generously: a large threshold means small height jitter
-      // (line wrapping / async measurement) or a tiny nudge won't flip us off
-      // the bottom — only a deliberate scroll up does.
+      // Re-pin when the user scrolls back to the bottom. We deliberately ignore
+      // the `false` direction: a fast log burst can momentarily report
+      // not-at-bottom, but only a deliberate upward scroll (detected via
+      // wheel/touch above) is allowed to unpin.
+      atBottomStateChange={(atBottom) => {
+        if (atBottom) {
+          setPinnedToBottom(true);
+        }
+      }}
+      // Generous threshold so re-pinning kicks in as soon as the user gets near
+      // the bottom again, and so small height jitter never affects the readout.
       atBottomThreshold={120}
-      // Jump instead of smooth-animate: fast log bursts grow the content
-      // faster than a smooth scroll can chase, which would otherwise let the
-      // viewport fall behind the bottom and detach auto-follow.
-      followOutput={(atBottom) => (atBottom ? 'auto' : false)}
+      // While pinned, always chase the bottom with an instant jump regardless of
+      // transient at-bottom state, so a flood of logs can never outrun the
+      // scroll. When unpinned, disable following entirely — this also disables
+      // Virtuoso's size-increase trap, so incoming logs can't yank the user back
+      // down while they read history.
+      followOutput={pinnedToBottom ? () => 'auto' : false}
       increaseViewportBy={{ top: 0, bottom: 600 }}
     />
   );
