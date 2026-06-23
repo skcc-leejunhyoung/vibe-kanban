@@ -137,12 +137,14 @@ const BranchRebaseDialogImpl = create<BranchRebaseDialogProps>(
           <DialogFooter>
             <Button
               variant="outline"
+              type="button"
               onClick={handleCancel}
               disabled={isRebasing}
             >
               {t('common:buttons.cancel')}
             </Button>
             <Button
+              type="submit"
               onClick={handleConfirm}
               disabled={isRebasing || !selectedBranch}
             >

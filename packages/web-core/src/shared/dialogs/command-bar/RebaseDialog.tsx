@@ -313,12 +313,14 @@ function RebaseDialogContent({
         <DialogFooter>
           <Button
             variant="outline"
+            type="button"
             onClick={handleCancel}
             disabled={isRebasePending}
           >
             {t('common:buttons.cancel')}
           </Button>
           <Button
+            type="submit"
             onClick={handleConfirm}
             disabled={isInitialLoading || isRebasePending || !selectedBranch}
           >
