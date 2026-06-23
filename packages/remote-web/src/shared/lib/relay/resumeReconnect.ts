@@ -1,5 +1,8 @@
 import { getActiveRelayHostId } from "@remote/shared/lib/relay/activeHostContext";
-import { invalidateAllRemoteSessionIds } from "@remote/shared/lib/relay/context";
+import {
+  invalidateAllRemoteSessionIds,
+  refreshActiveHostSigningSessionForResume,
+} from "@remote/shared/lib/relay/context";
 import {
   getWebRtcConnection,
   resetWebRtcConnectionsForResume,
@@ -38,9 +41,13 @@ export function installRelayResumeReconnect(): void {
     // (network never dropped, just the idle signing session expired) would have
     // nothing to re-trigger the connection until the user interacts.
     const activeHostId = getActiveRelayHostId();
-    if (activeHostId) {
+    if (!activeHostId) return;
+    // Refresh the (likely expired) signing session first so the WebRTC offer
+    // lands on a valid session on the first try, then rebuild the data channel.
+    // Best-effort: rebuild regardless of whether the refresh succeeds.
+    void refreshActiveHostSigningSessionForResume(activeHostId).finally(() => {
       getWebRtcConnection(activeHostId);
-    }
+    });
   };
 
   document.addEventListener("visibilitychange", () => {

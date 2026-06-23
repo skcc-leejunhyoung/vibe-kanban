@@ -55,37 +55,104 @@ export function invalidateAllRemoteSessionIds(): void {
   remoteSessionIdCache.clear();
 }
 
+// In-flight signing-session refresh per host. Entering a workspace fires ~6
+// host requests at once; on an expired session they all 401 and would each kick
+// off an independent refresh — wasteful and liable to trip the host's 30/min
+// refresh rate limit, after which every refresh fails and the app spins. Share
+// one refresh per host so the burst collapses to a single network round-trip.
+const inFlightRefreshByHost = new Map<
+  string,
+  Promise<PairedRelayHost | null>
+>();
+
 export async function tryRefreshRelayHostSigningSession(
   context: RelayHostContext,
 ): Promise<RelayHostContext | null> {
-  const clientId = context.pairedHost.client_id;
+  const hostId = context.pairedHost.host_id;
+
+  let pending = inFlightRefreshByHost.get(hostId);
+  if (!pending) {
+    pending = refreshSigningSessionForHost(context).finally(() => {
+      inFlightRefreshByHost.delete(hostId);
+    });
+    inFlightRefreshByHost.set(hostId, pending);
+  }
+
+  const refreshedPairedHost = await pending;
+  if (!refreshedPairedHost) {
+    return null;
+  }
+
+  // Share the refreshed signing session across every concurrent caller while
+  // preserving each caller's own relay session id.
+  return {
+    ...context,
+    pairedHost: { ...context.pairedHost, ...refreshedPairedHost },
+  };
+}
+
+async function refreshSigningSessionForHost(
+  context: RelayHostContext,
+): Promise<PairedRelayHost | null> {
+  const { pairedHost, sessionId } = context;
+  const clientId = pairedHost.client_id;
   if (!clientId) {
+    // Pairings created before client_id was persisted can never refresh (the
+    // host identifies the client by client_id). This is unrecoverable without a
+    // re-pair, so surface it clearly instead of failing silently.
+    console.warn(
+      "[relay] cannot refresh signing session: paired host has no client_id; re-pairing required",
+      { hostId: pairedHost.host_id },
+    );
     return null;
   }
 
   try {
     const payload = await buildRelaySigningSessionRefreshPayload(
       clientId,
-      context.pairedHost.private_key_jwk,
+      pairedHost.private_key_jwk,
     );
     const refreshed = await refreshRelaySigningSession(
-      context.pairedHost.host_id,
-      context.sessionId,
+      pairedHost.host_id,
+      sessionId,
       payload,
     );
     const updatedPairedHost: PairedRelayHost = {
-      ...context.pairedHost,
+      ...pairedHost,
       signing_session_id: refreshed.signing_session_id,
     };
     await savePairedRelayHost(updatedPairedHost);
-
-    return {
-      ...context,
-      pairedHost: updatedPairedHost,
-    };
+    return updatedPairedHost;
   } catch (error) {
-    console.warn("Failed to refresh relay signing session", error);
+    console.warn("[relay] failed to refresh signing session", {
+      hostId: pairedHost.host_id,
+      error,
+    });
     return null;
+  }
+}
+
+/**
+ * Proactively refresh the active host's signing session on PWA resume.
+ *
+ * The host's signing session has a 15-min idle TTL and lives only in host
+ * memory, so a suspended PWA wakes up with an expired session. Refreshing it
+ * before the next relayed request avoids the first wave of 401s entirely (the
+ * WebRTC offer included), so the data channel rebuilds on the first try instead
+ * of bouncing off an auth failure. Best-effort: failures are logged and the
+ * caller proceeds to rebuild the connection regardless.
+ */
+export async function refreshActiveHostSigningSessionForResume(
+  hostId: string,
+): Promise<void> {
+  try {
+    const context = await resolveRemoteHostContext(hostId);
+    await tryRefreshRelayHostSigningSession(context);
+  } catch (error) {
+    console.warn("[relay] resume signing-session refresh skipped", {
+      hostId,
+      error,
+    });
   }
 }
 
