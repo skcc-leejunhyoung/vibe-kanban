@@ -133,8 +133,19 @@ impl QueuedMessageService {
     /// Mark a session as being steered: its currently-running turn is about to be
     /// killed by a "send now" request, and the front queued message must still be
     /// drained when that kill completes (instead of being discarded).
-    pub fn mark_steering(&self, session_id: Uuid) {
-        self.steering.insert(session_id);
+    ///
+    /// Returns `true` only if this call set the flag — i.e. no steer was already
+    /// in flight for the session. Callers use this as a compare-and-set so the
+    /// first steer owns the interrupt (kills the running turn) and concurrent
+    /// steers queue behind it instead of starting a second kill.
+    pub fn mark_steering(&self, session_id: Uuid) -> bool {
+        self.steering.insert(session_id)
+    }
+
+    /// Whether a steer is currently in flight for the session — the flag is set
+    /// but not yet consumed by the drain. Non-consuming peek.
+    pub fn is_steering(&self, session_id: Uuid) -> bool {
+        self.steering.contains(&session_id)
     }
 
     /// Consume the steering flag for a session, returning whether it was set.
@@ -241,9 +252,18 @@ mod tests {
         let svc = QueuedMessageService::new();
         let session = Uuid::new_v4();
 
+        assert!(!svc.is_steering(session));
         assert!(!svc.take_steering(session));
-        svc.mark_steering(session);
+
+        // First mark wins (returns true); a concurrent mark loses (false) so it
+        // won't start a second kill.
+        assert!(svc.mark_steering(session));
+        assert!(svc.is_steering(session));
+        assert!(!svc.mark_steering(session));
+
+        // `take` consumes the flag exactly once.
         assert!(svc.take_steering(session));
+        assert!(!svc.is_steering(session));
         assert!(!svc.take_steering(session));
     }
 }

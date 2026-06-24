@@ -115,7 +115,9 @@ async fn get_queue_status(
 /// session as steering, then kill the turn in the background — the kill's exit
 /// handler drains that front message as a follow-up (continuing the session).
 /// When nothing is running (idle, or the turn just finished) there is nothing to
-/// interrupt, so we start the follow-up directly.
+/// interrupt, so we start the follow-up directly. A second steer that lands while
+/// an earlier one's kill is still in flight just queues behind it rather than
+/// killing again or starting a duplicate turn.
 async fn steer_message(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -148,12 +150,28 @@ async fn steer_message(
 
     match running {
         Some(proc) => {
+            // Compare-and-set: only the first steer for this session owns the
+            // interrupt. `mark_steering` returns false when a steer is already in
+            // flight (a previous turn was killed but its drain hasn't started the
+            // follow-up yet, so it briefly leaves nothing in `running`). In that
+            // case don't kill again — queue this message at the back and let the
+            // in-flight drain/finalize chain run it in order. Killing again could
+            // start two turns on the same session at once.
+            if !deployment
+                .queued_message_service()
+                .mark_steering(session.id)
+            {
+                deployment
+                    .queued_message_service()
+                    .enqueue(session.id, data);
+                return Ok(ResponseJson(ApiResponse::success(
+                    deployment.queued_message_service().get_status(session.id),
+                )));
+            }
+
             deployment
                 .queued_message_service()
                 .enqueue_front(session.id, data);
-            deployment
-                .queued_message_service()
-                .mark_steering(session.id);
 
             // Kill the running turn in the background so "send now" returns
             // immediately; the exit handler drains the steered message.
@@ -195,11 +213,20 @@ async fn steer_message(
             });
         }
         None => {
-            // Nothing to interrupt — run it now.
-            deployment
-                .container()
-                .start_followup_for_session(&session, &workspace, &data)
-                .await?;
+            // Nothing is running. But a steer kill may still be in flight that
+            // already moved its turn out of `running`; starting a follow-up now
+            // would double up with that kill's pending drain. In that case just
+            // queue and let the in-flight chain run it. Truly idle → run it now.
+            if deployment.queued_message_service().is_steering(session.id) {
+                deployment
+                    .queued_message_service()
+                    .enqueue(session.id, data);
+            } else {
+                deployment
+                    .container()
+                    .start_followup_for_session(&session, &workspace, &data)
+                    .await?;
+            }
         }
     }
 
