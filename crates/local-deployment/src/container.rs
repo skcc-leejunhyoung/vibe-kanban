@@ -2182,6 +2182,10 @@ impl ContainerService for LocalContainerService {
         &self.notification_service
     }
 
+    fn queued_message_service(&self) -> &QueuedMessageService {
+        &self.queued_message_service
+    }
+
     async fn touch(&self, workspace: &Workspace) -> Result<(), ContainerError> {
         let now = Instant::now();
 

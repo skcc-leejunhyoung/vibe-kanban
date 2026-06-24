@@ -62,7 +62,9 @@ use utils::{
 use uuid::Uuid;
 use worktree_manager::WorktreeError;
 
-use crate::services::{execution_process, notification::NotificationService};
+use crate::services::{
+    execution_process, notification::NotificationService, queued_message::QueuedMessageService,
+};
 pub type ContainerRef = String;
 
 #[derive(Debug, Error)]
@@ -120,6 +122,8 @@ pub trait ContainerService {
     fn git(&self) -> &GitService;
 
     fn notification_service(&self) -> &NotificationService;
+
+    fn queued_message_service(&self) -> &QueuedMessageService;
 
     async fn touch(&self, workspace: &Workspace) -> Result<(), ContainerError>;
 
@@ -1336,6 +1340,23 @@ pub trait ContainerService {
         workspace: &Workspace,
         data: &DraftFollowUpData,
     ) -> Result<ExecutionProcess, ContainerError> {
+        // Concurrency guard: never start a second coding-agent turn for a session
+        // that already has one running. A steer kill's fallback path (when
+        // `stop_execution` returns child-not-found) and the natural-completion
+        // exit monitor can briefly race to drain the queue; without this they
+        // could both reach here and start two turns on the same session at once.
+        // If a turn is already running, push this message back to the front of
+        // the queue so the in-flight turn's finalize drains it in order, and
+        // return that running process instead of starting a new one.
+        if let Some(running) =
+            ExecutionProcess::find_running_coding_agent_for_session(&self.db().pool, session.id)
+                .await?
+        {
+            self.queued_message_service()
+                .enqueue_front(session.id, data.clone());
+            return Ok(running);
+        }
+
         let executor_profile_id = data.executor_config.profile_id();
 
         // Validate executor matches session if session has prior executions
