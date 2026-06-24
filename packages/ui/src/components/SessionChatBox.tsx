@@ -53,7 +53,6 @@ export type ExecutionStatus =
   | 'idle'
   | 'sending'
   | 'running'
-  | 'queued'
   | 'stopping'
   | 'queue-loading'
   | 'feedback'
@@ -331,11 +330,10 @@ export function SessionChatBox<TExecutor extends string = string>({
     editor.value.trim().length > 0 || (reviewComments?.count ?? 0) > 0;
   const canSend =
     hasContent && !['sending', 'stopping', 'queue-loading'].includes(status);
-  const isQueued = status === 'queued';
-  const isRunning = status === 'running' || status === 'queued';
-  const areContentInsertActionsDisabled = isDisabled || isQueued;
+  const isRunning = status === 'running';
+  const areContentInsertActionsDisabled = isDisabled;
   const showRunningAnimation =
-    (status === 'running' || status === 'queued' || status === 'sending') &&
+    (status === 'running' || status === 'sending') &&
     !isInApprovalMode &&
     !isInAskQuestionMode &&
     editor.value.trim().length === 0;
@@ -581,23 +579,6 @@ export function SessionChatBox<TExecutor extends string = string>({
               onClick={actions.onQueue}
               disabled={!canSend}
               value={t('conversation.actions.queue')}
-            />
-          </>
-        );
-
-      case 'queued':
-        return (
-          <>
-            <PrimaryButton
-              onClick={actions.onCancelQueue}
-              value={t('conversation.actions.cancelQueue')}
-              actionIcon={XIcon}
-            />
-            <PrimaryButton
-              onClick={actions.onStop}
-              variant="secondary"
-              value={t('conversation.actions.stop')}
-              actionIcon="spinner"
             />
           </>
         );
