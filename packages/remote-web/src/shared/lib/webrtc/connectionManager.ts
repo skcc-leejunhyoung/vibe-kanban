@@ -1,5 +1,14 @@
 import { WebRtcConnection } from "./connection";
 
+// Some browsers hide host ICE candidates behind mDNS (`.local`), and overlay /
+// L3 networks don't carry mDNS multicast, so the host (webrtc-rs, which does
+// not resolve mDNS) never learns the peer's address. With no TURN configured,
+// WebRTC P2P cannot establish in such setups, leaving the data channel unopened
+// and workspace entry stuck. We route all local API traffic over the relay
+// HTTP/WS path instead — a first-class path, not a degraded fallback. Flip to
+// `true` to re-enable WebRTC where direct P2P actually works (e.g. same LAN).
+export const WEBRTC_ENABLED = false;
+
 const FAILED_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 
 type HostEntry =

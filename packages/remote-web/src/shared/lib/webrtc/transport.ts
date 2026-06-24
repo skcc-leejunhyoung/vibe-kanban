@@ -14,7 +14,7 @@ import type {
   LocalApiRequestOptions,
   LocalApiWebSocketOptions,
 } from "@/shared/lib/localApiTransport";
-import { getWebRtcConnection } from "./connectionManager";
+import { getWebRtcConnection, WEBRTC_ENABLED } from "./connectionManager";
 import { createDataChannelWebSocket } from "./dataChannelWebSocket";
 
 function resolveHostId(
@@ -62,6 +62,10 @@ export async function requestLocalApiViaWebRtc(
 
   if (!shouldRelayApiPath(pathAndQuery)) {
     return fetch(pathOrUrl, requestInit);
+  }
+
+  if (!WEBRTC_ENABLED) {
+    return requestLocalApiViaRelay(pathOrUrl, requestInit);
   }
 
   const hostId = resolveHostId(requestInit);
@@ -125,6 +129,10 @@ export async function openLocalApiWebSocketViaWebRtc(
 
   if (!shouldRelayApiPath(pathAndQuery)) {
     return new WebSocket(normalizeWebSocketUrl(pathOrUrl));
+  }
+
+  if (!WEBRTC_ENABLED) {
+    return openLocalApiWebSocketViaRelay(pathOrUrl, options);
   }
 
   const hostId = resolveHostId(options);

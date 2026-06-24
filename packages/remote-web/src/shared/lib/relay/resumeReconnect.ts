@@ -6,6 +6,7 @@ import {
 import {
   getWebRtcConnection,
   resetWebRtcConnectionsForResume,
+  WEBRTC_ENABLED,
 } from "@remote/shared/lib/webrtc/connectionManager";
 
 // Only treat a visibility change as a "resume" if the app was hidden at least
@@ -42,11 +43,14 @@ export function installRelayResumeReconnect(): void {
     // nothing to re-trigger the connection until the user interacts.
     const activeHostId = getActiveRelayHostId();
     if (!activeHostId) return;
-    // Refresh the (likely expired) signing session first so the WebRTC offer
-    // lands on a valid session on the first try, then rebuild the data channel.
-    // Best-effort: rebuild regardless of whether the refresh succeeds.
+    // Refresh the (likely expired) signing session so the next relayed request
+    // lands on a valid session on the first try. When WebRTC is enabled, also
+    // proactively rebuild the data channel (focus-only resume has nothing else
+    // to re-trigger it). With WebRTC off, relay requests resume on their own.
     void refreshActiveHostSigningSessionForResume(activeHostId).finally(() => {
-      getWebRtcConnection(activeHostId);
+      if (WEBRTC_ENABLED) {
+        getWebRtcConnection(activeHostId);
+      }
     });
   };
 

@@ -236,6 +236,10 @@ impl RelayPairingServer {
         &self,
         payload: RefreshRelaySigningSessionRequest,
     ) -> Result<RefreshRelaySigningSessionResponse, ApiError> {
+        tracing::info!(
+            client_id = %payload.client_id,
+            "relay signing-session refresh requested"
+        );
         self.trusted_key_auth
             .enforce_rate_limit(
                 "relay-auth:signing-refresh:global",
@@ -249,7 +253,13 @@ impl RelayPairingServer {
             .trusted_key_auth
             .find_trusted_client(payload.client_id)
             .await?
-            .ok_or(ApiError::Unauthorized)?;
+            .ok_or_else(|| {
+                tracing::warn!(
+                    client_id = %payload.client_id,
+                    "relay signing-session refresh rejected: client_id not in trusted keys (re-pair needed)"
+                );
+                ApiError::Unauthorized
+            })?;
 
         let client_public_key = parse_public_key_base64(&trusted_client.public_key_b64)
             .map_err(|_| ApiError::Unauthorized)?;
@@ -264,6 +274,12 @@ impl RelayPairingServer {
         verify_refresh_signature(&client_public_key, &refresh_message, &payload.signature_b64)?;
 
         let signing_session_id = self.relay_signing.create_session(client_public_key).await;
+
+        tracing::info!(
+            client_id = %payload.client_id,
+            %signing_session_id,
+            "relay signing-session refresh succeeded: new session registered in host memory"
+        );
 
         Ok(RefreshRelaySigningSessionResponse { signing_session_id })
     }

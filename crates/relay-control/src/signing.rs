@@ -121,14 +121,26 @@ impl RelaySignatureValidationError {
 }
 
 const RELAY_SIGNATURE_MAX_TIMESTAMP_DRIFT_SECS: i64 = 30;
-const RELAY_SIGNING_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
-const RELAY_SIGNING_SESSION_IDLE_TTL: Duration = Duration::from_secs(15 * 60);
+// Self-hosted deployment. The original 60-min absolute / 15-min idle TTLs
+// caused frequent "missing or expired signing session" 401s whenever the PWA
+// was idle (the session lived only in host memory and the client's auto-refresh
+// did not always re-register in time over the relay path). For a self-hosted,
+// trusted setup these short windows buy little, so sessions are now persisted
+// to disk (see read/write_persisted_sessions) AND given long TTLs (7-day idle /
+// 30-day absolute) — a paired client survives host restarts and normal idle
+// without re-pairing, while still expiring eventually. seen_nonces (the replay
+// window) stays in-memory and short-lived.
+const RELAY_SIGNING_SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const RELAY_SIGNING_SESSION_IDLE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const RELAY_NONCE_TTL: Duration = Duration::from_secs(2 * 60);
 
 #[derive(Clone)]
 pub struct RelaySigningService {
     sessions: Arc<RwLock<HashMap<Uuid, RelaySigningSession>>>,
     server_signing_key: Arc<SigningKey>,
+    /// When set, registered sessions are persisted here so they survive a host
+    /// restart. `None` for client-side / in-memory-only instances.
+    persist_path: Option<Arc<std::path::PathBuf>>,
 }
 
 impl RelaySigningService {
@@ -136,6 +148,7 @@ impl RelaySigningService {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             server_signing_key: Arc::new(server_signing_key),
+            persist_path: None,
         }
     }
 
@@ -168,7 +181,16 @@ impl RelaySigningService {
             key
         };
 
-        Ok(Self::new(key))
+        // Persist signing sessions alongside the server key so paired clients
+        // survive a host restart (sessions otherwise live only in memory).
+        let persist_path = key_path.with_file_name("relay_signing_sessions");
+        let sessions = read_persisted_sessions(&persist_path);
+
+        Ok(Self {
+            sessions: Arc::new(RwLock::new(sessions)),
+            server_signing_key: Arc::new(key),
+            persist_path: Some(Arc::new(persist_path)),
+        })
     }
 
     pub fn server_public_key(&self) -> VerifyingKey {
@@ -222,6 +244,26 @@ impl RelaySigningService {
                 seen_nonces: HashMap::new(),
             },
         );
+        self.persist_sessions().await;
+    }
+
+    /// Snapshot the current sessions (id + peer public key) to disk so they
+    /// survive a host restart. No-op for in-memory-only (client) instances.
+    async fn persist_sessions(&self) {
+        let Some(path) = self.persist_path.clone() else {
+            return;
+        };
+        let snapshot: Vec<(Uuid, [u8; 32])> = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .iter()
+                .map(|(id, session)| (*id, *session.peer_public_key.as_bytes()))
+                .collect()
+        };
+        let _ = tokio::task::spawn_blocking(move || {
+            write_persisted_sessions(&path, &snapshot);
+        })
+        .await;
     }
 
     /// Verify an HTTP request signature against a signing session.
@@ -304,6 +346,67 @@ impl RelaySigningService {
     }
 }
 
+/// Read persisted (session_id, peer_public_key) pairs from disk into a fresh
+/// session map. `created_at`/`last_used_at` are reset to now and `seen_nonces`
+/// is empty — only the identity binding is persisted, not the replay window.
+/// Malformed lines are skipped so a partially-corrupt file degrades gracefully.
+fn read_persisted_sessions(path: &Path) -> HashMap<Uuid, RelaySigningSession> {
+    let mut map = HashMap::new();
+    let Ok(content) = fs::read_to_string(path) else {
+        return map;
+    };
+    let now = Instant::now();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((id_str, key_str)) = line.split_once(',') else {
+            continue;
+        };
+        let Ok(id) = Uuid::parse_str(id_str) else {
+            continue;
+        };
+        let Ok(bytes) = BASE64_STANDARD.decode(key_str) else {
+            continue;
+        };
+        let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            continue;
+        };
+        let Ok(peer_public_key) = VerifyingKey::from_bytes(&arr) else {
+            continue;
+        };
+        map.insert(
+            id,
+            RelaySigningSession {
+                peer_public_key,
+                created_at: now,
+                last_used_at: now,
+                seen_nonces: HashMap::new(),
+            },
+        );
+    }
+    map
+}
+
+/// Atomically write the session snapshot to disk (`0600`, via temp + rename).
+fn write_persisted_sessions(path: &Path, sessions: &[(Uuid, [u8; 32])]) {
+    let mut out = String::from("# vk relay signing sessions v1\n");
+    for (id, key) in sessions {
+        out.push_str(&format!("{id},{}\n", BASE64_STANDARD.encode(key)));
+    }
+    let tmp = path.with_extension("tmp");
+    if fs::write(&tmp, out).is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+    }
+    let _ = fs::rename(&tmp, path);
+}
+
 fn validate_timestamp(timestamp: i64) -> Result<(), RelaySignatureValidationError> {
     let now_secs = i64::try_from(
         SystemTime::now()
@@ -325,4 +428,90 @@ fn parse_signature_b64(signature_b64: &str) -> Result<Signature, RelaySignatureV
         .decode(signature_b64)
         .map_err(|_| RelaySignatureValidationError::InvalidSignature)?;
     Signature::from_slice(&sig_bytes).map_err(|_| RelaySignatureValidationError::InvalidSignature)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("vk-signing-test-{tag}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn persisted_sessions_round_trip() {
+        let key = SigningKey::generate(&mut OsRng);
+        let pubkey = key.verifying_key();
+        let id = Uuid::new_v4();
+        let path = tmp_path("round-trip");
+
+        write_persisted_sessions(&path, &[(id, *pubkey.as_bytes())]);
+        let map = read_persisted_sessions(&path);
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get(&id)
+                .expect("session restored")
+                .peer_public_key
+                .as_bytes(),
+            pubkey.as_bytes(),
+        );
+    }
+
+    #[test]
+    fn read_persisted_skips_malformed_and_missing() {
+        // Missing file → empty map (no panic).
+        assert!(read_persisted_sessions(&tmp_path("missing")).is_empty());
+
+        // Garbage / comment lines are skipped; only the valid line survives.
+        let key = SigningKey::generate(&mut OsRng);
+        let id = Uuid::new_v4();
+        let path = tmp_path("malformed");
+        let contents = format!(
+            "# header\nnot-a-line\n{id},not-base64\n{id},{}\n",
+            BASE64_STANDARD.encode(key.verifying_key().as_bytes())
+        );
+        fs::write(&path, contents).unwrap();
+        let map = read_persisted_sessions(&path);
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn registered_session_verifies_after_reload() {
+        // A session registered (and persisted) by one service instance must be
+        // accepted by a fresh instance that loads the same file — the host-restart
+        // path that previously 401'd.
+        let path = tmp_path("reload");
+        let server_key = SigningKey::generate(&mut OsRng);
+        let client_key = SigningKey::generate(&mut OsRng);
+
+        let writer = RelaySigningService {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            server_signing_key: Arc::new(server_key.clone()),
+            persist_path: Some(Arc::new(path.clone())),
+        };
+        let session_id = writer.create_session(client_key.verifying_key()).await;
+
+        // Fresh instance loads persisted sessions from disk.
+        let reloaded = RelaySigningService {
+            sessions: Arc::new(RwLock::new(read_persisted_sessions(&path))),
+            server_signing_key: Arc::new(server_key),
+            persist_path: Some(Arc::new(path.clone())),
+        };
+        let _ = fs::remove_file(&path);
+
+        // Sign a request with the client key and verify against the reloaded service.
+        let sig = build_request_signature(&client_key, session_id, "GET", "/api/info", b"");
+        assert!(
+            reloaded
+                .verify_request(&sig, "GET", "/api/info", b"")
+                .await
+                .is_ok(),
+            "session persisted by one instance must verify after reload",
+        );
+    }
 }
