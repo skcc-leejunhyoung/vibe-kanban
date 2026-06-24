@@ -1775,6 +1775,41 @@ export const queueApi = {
   },
 
   /**
+   * Steer an already-queued message: promote it to the front and run it next,
+   * interrupting the current turn instead of waiting its turn in the queue.
+   */
+  steerQueued: async (
+    sessionId: string,
+    messageId: string
+  ): Promise<QueueStatus> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/queue/steer-queued`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ message_id: messageId }),
+      }
+    );
+    return handleApiResponse<QueueStatus>(response);
+  },
+
+  /**
+   * Reorder the queue to the given message id order (front first).
+   */
+  reorder: async (
+    sessionId: string,
+    messageIds: string[]
+  ): Promise<QueueStatus> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/queue/reorder`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ message_ids: messageIds }),
+      }
+    );
+    return handleApiResponse<QueueStatus>(response);
+  },
+
+  /**
    * Cancel all queued follow-up messages
    */
   cancel: async (sessionId: string): Promise<QueueStatus> => {

@@ -175,42 +175,7 @@ async fn steer_message(
 
             // Kill the running turn in the background so "send now" returns
             // immediately; the exit handler drains the steered message.
-            let deployment_bg = deployment.clone();
-            let session_for_fallback = session.clone();
-            let workspace_for_fallback = workspace.clone();
-            tokio::spawn(async move {
-                let session_id = session_for_fallback.id;
-                if let Err(e) = deployment_bg
-                    .container()
-                    .stop_execution(&proc, ExecutionProcessStatus::Killed)
-                    .await
-                {
-                    tracing::warn!(
-                        "Steer: failed to stop running execution for session {session_id}: {e}"
-                    );
-                    // The exit monitor may never fire (child already gone). If the
-                    // session is still marked steering, drain the message directly
-                    // so it isn't stranded.
-                    if deployment_bg
-                        .queued_message_service()
-                        .take_steering(session_id)
-                        && let Some(msg) =
-                            deployment_bg.queued_message_service().take_next(session_id)
-                        && let Err(e) = deployment_bg
-                            .container()
-                            .start_followup_for_session(
-                                &session_for_fallback,
-                                &workspace_for_fallback,
-                                &msg.data,
-                            )
-                            .await
-                    {
-                        tracing::error!(
-                            "Steer: fallback follow-up failed for session {session_id}: {e}"
-                        );
-                    }
-                }
-            });
+            spawn_steer_kill(deployment.clone(), session.clone(), workspace, proc);
         }
         None => {
             // Nothing is running. But a steer kill may still be in flight that
@@ -235,6 +200,165 @@ async fn steer_message(
     )))
 }
 
+/// Request body for "send now" on a message already in the queue.
+#[derive(Debug, Deserialize)]
+struct SteerQueuedRequest {
+    pub message_id: Uuid,
+}
+
+/// Request body for reordering the queue: the desired id order (front first).
+#[derive(Debug, Deserialize)]
+struct ReorderQueueRequest {
+    pub message_ids: Vec<Uuid>,
+}
+
+/// Spawn the background kill of a running coding-agent turn for a steer
+/// ("send now"). Returning immediately keeps the HTTP handler snappy: the
+/// kill's exit handler normally drains the front (steered) message and starts
+/// it as a follow-up. If the kill errors because the child is already gone the
+/// exit monitor may never fire, so as a fallback we consume the steering flag
+/// and drain the front message directly so it isn't stranded.
+fn spawn_steer_kill(
+    deployment: DeploymentImpl,
+    session: Session,
+    workspace: Workspace,
+    proc: ExecutionProcess,
+) {
+    tokio::spawn(async move {
+        let session_id = session.id;
+        if let Err(e) = deployment
+            .container()
+            .stop_execution(&proc, ExecutionProcessStatus::Killed)
+            .await
+        {
+            tracing::warn!("Steer: failed to stop running execution for session {session_id}: {e}");
+            if deployment
+                .queued_message_service()
+                .take_steering(session_id)
+                && let Some(msg) = deployment.queued_message_service().take_next(session_id)
+                && let Err(e) = deployment
+                    .container()
+                    .start_followup_for_session(&session, &workspace, &msg.data)
+                    .await
+            {
+                tracing::error!("Steer: fallback follow-up failed for session {session_id}: {e}");
+            }
+        }
+    });
+}
+
+/// "Send now" for a message already in the queue: promote it to the front and
+/// run it next, interrupting the current turn instead of waiting in line.
+///
+/// Mirrors [`steer_message`] but acts on an existing queued message (by id)
+/// rather than a freshly composed one: when a turn is running we promote the
+/// message to the front and kill the turn (its exit handler drains the front);
+/// when idle we pull the message out of the queue and start it directly. The
+/// same compare-and-set on the steering flag prevents a second concurrent kill.
+async fn steer_queued_message(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<SteerQueuedRequest>,
+) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let message_id = payload.message_id;
+
+    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+        .await?
+        .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
+            "Workspace not found".to_string(),
+        )))?;
+
+    let running = ExecutionProcess::find_running_coding_agent_for_session(pool, session.id).await?;
+
+    deployment
+        .track_if_analytics_allowed(
+            "follow_up_steered",
+            serde_json::json!({
+                "session_id": session.id.to_string(),
+                "workspace_id": session.workspace_id.to_string(),
+                "interrupted": running.is_some(),
+                "from_queue": true,
+            }),
+        )
+        .await;
+
+    match running {
+        Some(proc) => {
+            // Only the first steer owns the interrupt (see `steer_message`). A
+            // concurrent one just reorders the message to the front and lets the
+            // in-flight drain run it — no second kill.
+            if !deployment
+                .queued_message_service()
+                .mark_steering(session.id)
+            {
+                deployment
+                    .queued_message_service()
+                    .promote_to_front(session.id, message_id);
+                return Ok(ResponseJson(ApiResponse::success(
+                    deployment.queued_message_service().get_status(session.id),
+                )));
+            }
+
+            // Move the chosen message to the front so the kill's drain picks it
+            // up. If it's already gone (drained/cancelled) there's nothing to
+            // steer, so release the flag instead of killing a turn for nothing.
+            if !deployment
+                .queued_message_service()
+                .promote_to_front(session.id, message_id)
+            {
+                deployment
+                    .queued_message_service()
+                    .take_steering(session.id);
+                return Ok(ResponseJson(ApiResponse::success(
+                    deployment.queued_message_service().get_status(session.id),
+                )));
+            }
+
+            spawn_steer_kill(deployment.clone(), session.clone(), workspace, proc);
+        }
+        None => {
+            // A steer kill may still be in flight; just ensure this message
+            // drains next rather than starting a duplicate turn. Truly idle →
+            // pull it out of the queue and run it immediately.
+            if deployment.queued_message_service().is_steering(session.id) {
+                deployment
+                    .queued_message_service()
+                    .promote_to_front(session.id, message_id);
+            } else if let Some(msg) = deployment
+                .queued_message_service()
+                .cancel_message(session.id, message_id)
+            {
+                deployment
+                    .container()
+                    .start_followup_for_session(&session, &workspace, &msg.data)
+                    .await?;
+            }
+        }
+    }
+
+    Ok(ResponseJson(ApiResponse::success(
+        deployment.queued_message_service().get_status(session.id),
+    )))
+}
+
+/// Reorder the session's queue to the given id order (front first). Drained
+/// one at a time as each terminal turn finishes, so the new order takes effect
+/// for the messages that haven't run yet.
+async fn reorder_queue(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<ReorderQueueRequest>,
+) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    deployment
+        .queued_message_service()
+        .reorder(session.id, &payload.message_ids);
+
+    Ok(ResponseJson(ApiResponse::success(
+        deployment.queued_message_service().get_status(session.id),
+    )))
+}
+
 pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     Router::new()
         .route(
@@ -244,6 +368,8 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
                 .delete(delete_queued_message),
         )
         .route("/steer", post(steer_message))
+        .route("/steer-queued", post(steer_queued_message))
+        .route("/reorder", post(reorder_queue))
         .layer(from_fn_with_state(
             deployment.clone(),
             load_session_middleware,

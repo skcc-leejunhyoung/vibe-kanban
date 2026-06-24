@@ -406,6 +406,8 @@
       "sendNow": "지금 보내기",
       "cancelQueue": "대기열 비우기",
       "removeQueued": "대기열에서 제거",
+      "moveUp": "위로 이동",
+      "moveDown": "아래로 이동",
       "requestChanges": "변경 요청",
       "approve": "승인",
       "clearReviewComments": "리뷰 댓글 지우기",

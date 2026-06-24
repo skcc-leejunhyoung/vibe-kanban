@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
@@ -94,6 +97,51 @@ impl QueuedMessageService {
         });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
         removed
+    }
+
+    /// Move an already-queued message to the front of its session's queue, so a
+    /// "send now" on a queued item runs it next. Returns `true` if the message
+    /// was found (and is now at the front), `false` if it isn't queued anymore.
+    pub fn promote_to_front(&self, session_id: Uuid, message_id: Uuid) -> bool {
+        let Some(mut q) = self.queue.get_mut(&session_id) else {
+            return false;
+        };
+        let Some(pos) = q.iter().position(|m| m.id == message_id) else {
+            return false;
+        };
+        if pos == 0 {
+            return true; // already at the front
+        }
+        if let Some(msg) = q.remove(pos) {
+            q.push_front(msg);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reorder a session's queue to match `ordered_ids` (front first).
+    ///
+    /// Robust against a stale client view: ids in `ordered_ids` that are no
+    /// longer queued are ignored, and queued messages whose id is *absent* from
+    /// `ordered_ids` are kept and appended after the reordered ones (preserving
+    /// their previous relative order) rather than silently dropped. Returns the
+    /// resulting queue.
+    pub fn reorder(&self, session_id: Uuid, ordered_ids: &[Uuid]) -> Vec<QueuedMessage> {
+        let Some(mut q) = self.queue.get_mut(&session_id) else {
+            return Vec::new();
+        };
+        // Desired position per id; first occurrence wins, duplicates ignored.
+        let mut rank: HashMap<Uuid, usize> = HashMap::new();
+        for (i, id) in ordered_ids.iter().enumerate() {
+            rank.entry(*id).or_insert(i);
+        }
+        let mut items: Vec<QueuedMessage> = q.drain(..).collect();
+        // Stable sort: known ids by their requested rank, unknown ids after
+        // (kept in their original order because the sort is stable).
+        items.sort_by_key(|m| rank.get(&m.id).copied().unwrap_or(usize::MAX));
+        *q = items.iter().cloned().collect();
+        items
     }
 
     /// Remove all queued messages for a session, returning them in order.
@@ -232,6 +280,58 @@ mod tests {
         svc.cancel_message(session, b.id);
         assert!(!svc.has_queued(session));
         assert!(matches!(svc.get_status(session), QueueStatus::Empty));
+    }
+
+    #[test]
+    fn promote_to_front_moves_existing_message() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+
+        svc.enqueue(session, sample_data("a"));
+        let b = svc.enqueue(session, sample_data("b"));
+        svc.enqueue(session, sample_data("c"));
+
+        assert!(svc.promote_to_front(session, b.id));
+        let queued = svc.get_queued(session);
+        assert_eq!(queued[0].data.message, "b");
+        assert_eq!(queued[1].data.message, "a");
+        assert_eq!(queued[2].data.message, "c");
+
+        // Promoting the front message is a no-op success.
+        assert!(svc.promote_to_front(session, b.id));
+        assert_eq!(svc.get_queued(session)[0].data.message, "b");
+
+        // Unknown id (or empty session) returns false.
+        assert!(!svc.promote_to_front(session, Uuid::new_v4()));
+        assert!(!svc.promote_to_front(Uuid::new_v4(), b.id));
+    }
+
+    #[test]
+    fn reorder_applies_requested_order_and_keeps_unlisted() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+
+        let a = svc.enqueue(session, sample_data("a"));
+        let b = svc.enqueue(session, sample_data("b"));
+        let c = svc.enqueue(session, sample_data("c"));
+
+        // Reverse the order explicitly.
+        svc.reorder(session, &[c.id, b.id, a.id]);
+        let queued = svc.get_queued(session);
+        assert_eq!(queued[0].data.message, "c");
+        assert_eq!(queued[1].data.message, "b");
+        assert_eq!(queued[2].data.message, "a");
+
+        // A partial/stale list: only `a` is named (+ an unknown id). `a` goes to
+        // the front; the unnamed ones (c, b) follow in their current order.
+        svc.reorder(session, &[a.id, Uuid::new_v4()]);
+        let queued = svc.get_queued(session);
+        assert_eq!(queued[0].data.message, "a");
+        assert_eq!(queued[1].data.message, "c");
+        assert_eq!(queued[2].data.message, "b");
+
+        // Reorder on an empty/unknown session is a harmless no-op.
+        assert!(svc.reorder(Uuid::new_v4(), &[a.id]).is_empty());
     }
 
     #[test]

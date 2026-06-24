@@ -555,6 +555,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isQueueLoading,
     queueMessage,
     steer,
+    steerQueued,
+    reorderQueue,
     cancelQueue,
     cancelOne,
     refreshQueueStatus,
@@ -698,6 +700,22 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       void cancelOne(messageId);
     },
     [cancelOne]
+  );
+
+  // "Send now" on an already-queued message: run it next, interrupting the turn
+  const handleSteerQueued = useCallback(
+    (messageId: string) => {
+      void steerQueued(messageId);
+    },
+    [steerQueued]
+  );
+
+  // Reorder the queue to a new id order (driven by the up/down arrows)
+  const handleReorderQueued = useCallback(
+    (messageIds: string[]) => {
+      void reorderQueue(messageIds);
+    },
+    [reorderQueue]
   );
 
   // Editor change handler
@@ -1150,6 +1168,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         message: m.data.message,
       }))}
       onRemoveQueued={handleRemoveQueued}
+      onSteerQueued={handleSteerQueued}
+      onReorderQueued={handleReorderQueued}
       session={{
         sessions,
         selectedSessionId: sessionId,

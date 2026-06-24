@@ -147,6 +147,8 @@
       "sendNow": "Send now",
       "cancelQueue": "Clear queue",
       "removeQueued": "Remove from queue",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
       "requestChanges": "Request Changes",
       "approve": "Approve",
       "clearReviewComments": "Clear review comments",

@@ -402,6 +402,8 @@
       "sendNow": "Enviar ahora",
       "cancelQueue": "Vaciar cola",
       "removeQueued": "Quitar de la cola",
+      "moveUp": "Subir",
+      "moveDown": "Bajar",
       "requestChanges": "Solicitar cambios",
       "approve": "Aprobar",
       "clearReviewComments": "Limpiar comentarios de revisión",

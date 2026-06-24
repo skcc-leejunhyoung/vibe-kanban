@@ -142,6 +142,8 @@
       "sendNow": "Envoyer maintenant",
       "cancelQueue": "Vider la file",
       "removeQueued": "Retirer de la file",
+      "moveUp": "Monter",
+      "moveDown": "Descendre",
       "requestChanges": "Demander des modifications",
       "approve": "Approuver",
       "clearReviewComments": "Effacer les commentaires de révision",

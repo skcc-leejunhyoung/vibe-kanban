@@ -401,6 +401,8 @@
       "sendNow": "今すぐ送信",
       "cancelQueue": "キューをクリア",
       "removeQueued": "キューから削除",
+      "moveUp": "上に移動",
+      "moveDown": "下に移動",
       "requestChanges": "変更を依頼",
       "approve": "承認",
       "clearReviewComments": "レビューコメントをクリア",

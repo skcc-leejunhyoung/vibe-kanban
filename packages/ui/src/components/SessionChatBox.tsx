@@ -17,6 +17,8 @@ import {
   TrashIcon,
   WarningIcon,
   ArrowUpIcon,
+  ArrowDownIcon,
+  LightningIcon,
   ArrowsOutIcon,
   ArrowsClockwiseIcon,
   GithubLogoIcon,
@@ -193,6 +195,10 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   queuedMessages?: QueuedMessageItem[];
   /** Remove a single queued message by id */
   onRemoveQueued?: (id: string) => void;
+  /** "Send now" on a queued message: run it next, interrupting the current turn */
+  onSteerQueued?: (id: string) => void;
+  /** Reorder the queue to this exact id order (front first) */
+  onReorderQueued?: (ids: string[]) => void;
   session: SessionProps<TExecutor>;
   stats?: StatsProps;
   feedbackMode?: FeedbackModeProps;
@@ -264,6 +270,8 @@ export function SessionChatBox<TExecutor extends string = string>({
   actions,
   queuedMessages,
   onRemoveQueued,
+  onSteerQueued,
+  onReorderQueued,
   session,
   stats,
   feedbackMode,
@@ -376,6 +384,16 @@ export function SessionChatBox<TExecutor extends string = string>({
     } else if (status === 'idle' && canSend) {
       actions.onSend();
     }
+  };
+
+  // Move a queued message from one index to another and push the new order up.
+  const moveQueued = (from: number, to: number) => {
+    if (!onReorderQueued || !queuedMessages) return;
+    if (to < 0 || to >= queuedMessages.length) return;
+    const ids = queuedMessages.map((m) => m.id);
+    const [moved] = ids.splice(from, 1);
+    ids.splice(to, 0, moved);
+    onReorderQueued(ids);
   };
 
   // File input handlers
@@ -671,26 +689,67 @@ export function SessionChatBox<TExecutor extends string = string>({
               </button>
             )}
           </div>
-          {queuedMessages.map((queued, index) => (
-            <div
-              key={queued.id}
-              className="flex items-start gap-base pl-[1.5rem]"
-            >
-              <span className="text-xs text-low tabular-nums mt-[2px]">
-                {index + 1}.
-              </span>
-              <span className="text-sm text-normal flex-1 line-clamp-2 break-words whitespace-pre-wrap">
-                {queued.message}
-              </span>
-              <button
-                onClick={() => onRemoveQueued?.(queued.id)}
-                className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0"
-                title={t('conversation.actions.removeQueued')}
+          {queuedMessages.map((queued, index) => {
+            const canReorder = !!onReorderQueued && queuedMessages.length > 1;
+            return (
+              <div
+                key={queued.id}
+                className="flex items-center gap-base pl-[1.5rem]"
               >
-                <XIcon className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
+                <span className="text-xs text-low tabular-nums flex-shrink-0">
+                  {index + 1}.
+                </span>
+                {/* Long messages are truncated to a single line with an ellipsis */}
+                <span className="text-sm text-normal flex-1 min-w-0 truncate">
+                  {queued.message}
+                </span>
+                {canReorder && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => moveQueued(index, index - 1)}
+                      disabled={index === 0}
+                      className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0 disabled:opacity-30 disabled:hover:text-low disabled:cursor-default"
+                      title={t('conversation.actions.moveUp')}
+                      aria-label={t('conversation.actions.moveUp')}
+                    >
+                      <ArrowUpIcon className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveQueued(index, index + 1)}
+                      disabled={index === queuedMessages.length - 1}
+                      className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0 disabled:opacity-30 disabled:hover:text-low disabled:cursor-default"
+                      title={t('conversation.actions.moveDown')}
+                      aria-label={t('conversation.actions.moveDown')}
+                    >
+                      <ArrowDownIcon className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                )}
+                {onSteerQueued && (
+                  <button
+                    type="button"
+                    onClick={() => onSteerQueued(queued.id)}
+                    className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0"
+                    title={t('conversation.actions.sendNow')}
+                    aria-label={t('conversation.actions.sendNow')}
+                  >
+                    <LightningIcon className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onRemoveQueued?.(queued.id)}
+                  className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0"
+                  title={t('conversation.actions.removeQueued')}
+                  aria-label={t('conversation.actions.removeQueued')}
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       );
     }

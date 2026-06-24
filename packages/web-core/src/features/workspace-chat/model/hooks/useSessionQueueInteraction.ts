@@ -22,6 +22,10 @@ interface UseSessionQueueInteractionResult {
   ) => Promise<void>;
   /** Interrupt the running turn and run this message immediately */
   steer: (message: string, executorConfig: ExecutorConfig) => Promise<void>;
+  /** Interrupt the running turn and run an already-queued message immediately */
+  steerQueued: (messageId: string) => Promise<void>;
+  /** Reorder the queue to the given message id order (front first) */
+  reorderQueue: (messageIds: string[]) => Promise<void>;
   /** Cancel all queued messages */
   cancelQueue: () => Promise<void>;
   /** Cancel a single queued message by id */
@@ -92,6 +96,46 @@ export function useSessionQueueInteraction({
     onSuccess: applyStatus,
   });
 
+  // Mutation for steering an already-queued message ("send now" on a queued row)
+  const steerQueuedMutation = useMutation({
+    mutationFn: (messageId: string) =>
+      queueApi.steerQueued(sessionId!, messageId),
+    onSuccess: applyStatus,
+  });
+
+  // Mutation for reordering the queue. Optimistic so the up/down arrows feel
+  // instant; the server response replaces the optimistic order on success.
+  const reorderMutation = useMutation({
+    mutationFn: (messageIds: string[]) =>
+      queueApi.reorder(sessionId!, messageIds),
+    onMutate: async (messageIds: string[]) => {
+      await queryClient.cancelQueries({
+        queryKey: [QUEUE_STATUS_KEY, sessionId],
+      });
+      const previous = queryClient.getQueryData<QueueStatus>([
+        QUEUE_STATUS_KEY,
+        sessionId,
+      ]);
+      if (previous && previous.status === 'queued') {
+        const byId = new Map(previous.messages.map((m) => [m.id, m]));
+        const ordered = messageIds
+          .map((id) => byId.get(id))
+          .filter((m): m is QueuedMessage => m !== undefined);
+        // Keep any messages not named in the new order (guards against a stale
+        // client list silently dropping a message).
+        for (const m of previous.messages) {
+          if (!messageIds.includes(m.id)) ordered.push(m);
+        }
+        applyStatus({ status: 'queued', messages: ordered });
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) applyStatus(context.previous);
+    },
+    onSuccess: applyStatus,
+  });
+
   // Mutation for cancelling the whole queue
   const cancelMutation = useMutation({
     mutationFn: () => queueApi.cancel(sessionId!),
@@ -119,6 +163,22 @@ export function useSessionQueueInteraction({
       await steerMutation.mutateAsync({ message, executorConfig });
     },
     [sessionId, steerMutation]
+  );
+
+  const steerQueued = useCallback(
+    async (messageId: string) => {
+      if (!sessionId) return;
+      await steerQueuedMutation.mutateAsync(messageId);
+    },
+    [sessionId, steerQueuedMutation]
+  );
+
+  const reorderQueue = useCallback(
+    async (messageIds: string[]) => {
+      if (!sessionId) return;
+      await reorderMutation.mutateAsync(messageIds);
+    },
+    [sessionId, reorderMutation]
   );
 
   const cancelQueue = useCallback(async () => {
@@ -149,6 +209,8 @@ export function useSessionQueueInteraction({
       cancelOneMutation.isPending,
     queueMessage,
     steer,
+    steerQueued,
+    reorderQueue,
     cancelQueue,
     cancelOne,
     refreshQueueStatus,

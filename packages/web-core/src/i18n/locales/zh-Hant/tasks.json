@@ -401,6 +401,8 @@
       "sendNow": "立即傳送",
       "cancelQueue": "清空佇列",
       "removeQueued": "從佇列中移除",
+      "moveUp": "上移",
+      "moveDown": "下移",
       "requestChanges": "請求變更",
       "approve": "核准",
       "clearReviewComments": "清除審查評論",
