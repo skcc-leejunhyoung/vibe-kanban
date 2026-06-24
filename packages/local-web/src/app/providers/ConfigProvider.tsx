@@ -3,6 +3,7 @@ import { configApi } from '@/shared/lib/api';
 import { updateLanguageFromConfig } from '@/i18n/config';
 import { setRemoteApiBase } from '@/shared/lib/remoteApi';
 import { useUserSystemController } from '@/shared/hooks/useUserSystemController';
+import { useConfigPreferenceSync } from '@/shared/hooks/useConfigPreferenceSync';
 import { UserSystemContext } from '@/shared/hooks/useUserSystem';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';
 
@@ -40,6 +41,10 @@ export function UserSystemProvider({ children }: UserSystemProviderProps) {
   useEffect(() => {
     tokenManager.syncRecoveryState();
   }, [value.loginStatus?.status, value.remoteAuthDegraded]);
+
+  // Sync device-local UI preferences (keyboard shortcuts, theme variant/presets,
+  // diff view) with config so they persist server-side + across devices.
+  useConfigPreferenceSync(value.config, value.updateAndSaveConfig);
 
   return (
     <UserSystemContext.Provider value={value}>

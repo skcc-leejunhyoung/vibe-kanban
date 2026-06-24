@@ -609,7 +609,24 @@ export type Config = { config_version: string, theme: ThemeMode, executor_profil
 /**
  * Coding agents the user has hidden from agent selection.
  */
-disabled_executors: Array<BaseCodingAgent>, };
+disabled_executors: Array<BaseCodingAgent>,
+/**
+ * User overrides for keyboard shortcuts, keyed by binding id; values use
+ * react-hotkeys-hook syntax. Mirrors the web `useKeyboardShortcutsStore`.
+ */
+keyboard_shortcuts: { [key in string]?: string },
+/**
+ * Selected theme preset ("skin") id, or "default" for none.
+ */
+theme_variant: string,
+/**
+ * Opaque `ThemePreset[]`, validated client-side.
+ */
+theme_presets: JsonValue,
+/**
+ * Opaque diff viewer preferences ({ mode, ignoreWhitespace, wrapText }).
+ */
+diff_view: JsonValue, };
 
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 

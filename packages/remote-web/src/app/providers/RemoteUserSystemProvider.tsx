@@ -3,6 +3,7 @@ import { useParams } from "@tanstack/react-router";
 import { configApi } from "@/shared/lib/api";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserSystemController } from "@/shared/hooks/useUserSystemController";
+import { useConfigPreferenceSync } from "@/shared/hooks/useConfigPreferenceSync";
 import { UserSystemContext } from "@/shared/hooks/useUserSystem";
 import {
   applyPrimaryColor,
@@ -73,6 +74,13 @@ export function RemoteUserSystemProvider({
       persistLanguage(language);
     }
   }, [contextValue.config?.language]);
+
+  // Sync device-local UI preferences (keyboard shortcuts, theme variant/presets,
+  // diff view) with config so they persist + surface across devices.
+  useConfigPreferenceSync(
+    contextValue.config,
+    contextValue.updateAndSaveConfig,
+  );
 
   return (
     <UserSystemContext.Provider value={contextValue}>

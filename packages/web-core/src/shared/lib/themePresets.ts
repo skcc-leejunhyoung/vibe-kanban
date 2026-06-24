@@ -445,16 +445,21 @@ function sanitizePreset(raw: unknown): ThemePreset | null {
 
 const PRESETS_KEY = 'vk-theme-presets';
 
+/**
+ * Sanitize a raw array of presets, dropping any malformed entries. Shared by
+ * localStorage loading and config sync (where presets arrive as opaque JSON).
+ */
+export function sanitizeStoredPresets(parsed: unknown): ThemePreset[] {
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map(sanitizePreset).filter((p): p is ThemePreset => p !== null);
+}
+
 /** Raw stored presets: user-added presets + overrides of built-in ones. */
 export function loadStoredPresets(): ThemePreset[] {
   try {
     const raw = localStorage.getItem(PRESETS_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map(sanitizePreset)
-      .filter((p): p is ThemePreset => p !== null);
+    return sanitizeStoredPresets(JSON.parse(raw));
   } catch {
     return [];
   }
