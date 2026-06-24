@@ -329,10 +329,22 @@ async fn steer_queued_message(
                 .queued_message_service()
                 .cancel_message(session.id, message_id)
             {
-                deployment
+                // The message is now out of the queue. If starting it fails
+                // (e.g. executor mismatch), put it back at the front instead of
+                // dropping it: unlike `steer_message`, this was a message the
+                // user had safely queued, so losing it on error would be silent
+                // data loss. `start_followup_for_session` only re-enqueues on
+                // its Ok (already-running) path, so this never double-inserts.
+                if let Err(e) = deployment
                     .container()
                     .start_followup_for_session(&session, &workspace, &msg.data)
-                    .await?;
+                    .await
+                {
+                    deployment
+                        .queued_message_service()
+                        .enqueue_front(session.id, msg.data);
+                    return Err(e.into());
+                }
             }
         }
     }
