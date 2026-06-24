@@ -1363,48 +1363,51 @@ impl LocalContainerService {
         let mut started_queued_follow_up = false;
 
         // Only execute queued messages if the execution succeeded.
-        // If it failed or was killed, just clear the queue and finalize.
+        // If it failed or was killed, discard the queue and finalize.
         let should_execute_queued =
             Self::should_execute_queued_message(&ctx.execution_process.status);
 
-        if let Some(queued_msg) = self.queued_message_service.take_next(ctx.session.id) {
-            if should_execute_queued {
+        if !should_execute_queued {
+            // Execution failed or was killed - discard the ENTIRE queue (not just
+            // the front of a multi-message queue) so no follow-ups are left
+            // stranded to resurface on a later turn, then finalize.
+            let discarded = self.queued_message_service.clear_queue(ctx.session.id);
+            if !discarded.is_empty() {
                 tracing::info!(
-                    "Found queued message for session {}, starting follow-up execution",
-                    ctx.session.id
-                );
-
-                // Delete the scratch since we're consuming the queued message.
-                // Only meaningful for the last message; further drained messages
-                // have no scratch backing, so the delete is a harmless no-op.
-                if let Err(e) =
-                    Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp)
-                        .await
-                {
-                    tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
-                }
-
-                // Execute the queued follow-up
-                if let Err(e) = self
-                    .start_followup_for_session(&ctx.session, &ctx.workspace, &queued_msg.data)
-                    .await
-                {
-                    tracing::error!("Failed to start queued follow-up: {}", e);
-                    // Fall back to finalization if follow-up fails
-                    self.finalize_task(ctx).await;
-                    self.vibe_on_finalize(ctx).await;
-                } else {
-                    started_queued_follow_up = true;
-                }
-            } else {
-                // Execution failed or was killed - discard the queued message and finalize
-                tracing::info!(
-                    "Discarding queued message for session {} due to execution status {:?}",
+                    "Discarding {} queued message(s) for session {} due to execution status {:?}",
+                    discarded.len(),
                     ctx.session.id,
                     ctx.execution_process.status
                 );
+            }
+            self.finalize_task(ctx).await;
+            self.vibe_on_finalize(ctx).await;
+        } else if let Some(queued_msg) = self.queued_message_service.take_next(ctx.session.id) {
+            tracing::info!(
+                "Found queued message for session {}, starting follow-up execution",
+                ctx.session.id
+            );
+
+            // Delete the scratch since we're consuming the queued message.
+            // Only meaningful for the last message; further drained messages
+            // have no scratch backing, so the delete is a harmless no-op.
+            if let Err(e) =
+                Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp).await
+            {
+                tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
+            }
+
+            // Execute the queued follow-up
+            if let Err(e) = self
+                .start_followup_for_session(&ctx.session, &ctx.workspace, &queued_msg.data)
+                .await
+            {
+                tracing::error!("Failed to start queued follow-up: {}", e);
+                // Fall back to finalization if follow-up fails
                 self.finalize_task(ctx).await;
                 self.vibe_on_finalize(ctx).await;
+            } else {
+                started_queued_follow_up = true;
             }
         } else {
             self.finalize_task(ctx).await;
