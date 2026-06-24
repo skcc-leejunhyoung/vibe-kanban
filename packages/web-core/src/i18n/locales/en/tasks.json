@@ -111,7 +111,8 @@
     "logsCopied": "Copied!"
   },
   "followUp": {
-    "queuedMessage": "Message queued - will execute when current run finishes"
+    "queuedCount_one": "{{count}} message queued",
+    "queuedCount_other": "{{count}} messages queued"
   },
   "todoPopup": {
     "title": "Tasks",
@@ -143,7 +144,9 @@
       "send": "Send",
       "sending": "Sending",
       "queue": "Queue",
-      "cancelQueue": "Cancel Queue",
+      "sendNow": "Send now",
+      "cancelQueue": "Clear queue",
+      "removeQueued": "Remove from queue",
       "requestChanges": "Request Changes",
       "approve": "Approve",
       "clearReviewComments": "Clear review comments",

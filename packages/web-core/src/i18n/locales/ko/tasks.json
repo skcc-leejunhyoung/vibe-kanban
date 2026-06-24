@@ -112,7 +112,7 @@
     "filesChanged_other": "{{count}} files changed"
   },
   "followUp": {
-    "queuedMessage": "메시지가 대기열에 추가됨 - 현재 실행이 완료되면 실행됩니다"
+    "queuedCount_other": "대기 중인 메시지 {{count}}개"
   },
   "git": {
     "labels": {
@@ -403,7 +403,9 @@
       "send": "보내기",
       "sending": "보내는 중",
       "queue": "대기열에 추가",
-      "cancelQueue": "대기열 취소",
+      "sendNow": "지금 보내기",
+      "cancelQueue": "대기열 비우기",
+      "removeQueued": "대기열에서 제거",
       "requestChanges": "변경 요청",
       "approve": "승인",
       "clearReviewComments": "리뷰 댓글 지우기",

@@ -62,9 +62,17 @@ export type ExecutionStatus =
 interface ActionsProps {
   onSend: () => void;
   onQueue: () => void;
+  /** "Send now" / steer: interrupt the running turn and run this message now */
+  onSteer: () => void;
   onCancelQueue: () => void;
   onStop: () => void;
   onPasteFiles: (files: File[]) => void;
+}
+
+/** A single queued follow-up message, shown in the queued-messages list. */
+export interface QueuedMessageItem {
+  id: string;
+  message: string;
 }
 
 export interface SessionOption<TExecutor extends string = string> {
@@ -182,6 +190,10 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
     props: SessionChatBoxEditorRenderProps<TExecutor>
   ) => ReactNode;
   actions: ActionsProps;
+  /** Messages queued to run after the current turn(s), oldest first */
+  queuedMessages?: QueuedMessageItem[];
+  /** Remove a single queued message by id */
+  onRemoveQueued?: (id: string) => void;
   session: SessionProps<TExecutor>;
   stats?: StatsProps;
   feedbackMode?: FeedbackModeProps;
@@ -251,6 +263,8 @@ export function SessionChatBox<TExecutor extends string = string>({
   editor,
   renderEditor,
   actions,
+  queuedMessages,
+  onRemoveQueued,
   session,
   stats,
   feedbackMode,
@@ -552,15 +566,21 @@ export function SessionChatBox<TExecutor extends string = string>({
         return (
           <>
             <PrimaryButton
-              onClick={actions.onQueue}
-              disabled={!canSend}
-              value={t('conversation.actions.queue')}
-            />
-            <PrimaryButton
               onClick={actions.onStop}
               variant="secondary"
               value={t('conversation.actions.stop')}
               actionIcon="spinner"
+            />
+            <PrimaryButton
+              onClick={actions.onSteer}
+              disabled={!canSend}
+              variant="secondary"
+              value={t('conversation.actions.sendNow')}
+            />
+            <PrimaryButton
+              onClick={actions.onQueue}
+              disabled={!canSend}
+              value={t('conversation.actions.queue')}
             />
           </>
         );
@@ -647,17 +667,49 @@ export function SessionChatBox<TExecutor extends string = string>({
       );
     }
 
-    // Queued message banner
-    if (isQueued) {
+    // Queued messages list — drained one at a time as each turn finishes.
+    // Each row can be removed individually; "clear all" appears for 2+.
+    if (queuedMessages && queuedMessages.length > 0) {
       banners.push(
         <div
-          key="queued"
-          className="bg-secondary border-b px-double py-base flex items-center gap-base"
+          key="queued-list"
+          className="bg-secondary border-b px-double py-base flex flex-col gap-half"
         >
-          <ClockIcon className="h-4 w-4 text-low" />
-          <span className="text-sm text-low">
-            {t('followUp.queuedMessage')}
-          </span>
+          <div className="flex items-center gap-base">
+            <ClockIcon className="h-4 w-4 text-low flex-shrink-0" />
+            <span className="text-sm text-low flex-1">
+              {t('followUp.queuedCount', { count: queuedMessages.length })}
+            </span>
+            {queuedMessages.length > 1 && (
+              <button
+                onClick={actions.onCancelQueue}
+                className="text-xs text-low hover:text-normal transition-colors"
+                title={t('conversation.actions.cancelQueue')}
+              >
+                {t('conversation.actions.cancelQueue')}
+              </button>
+            )}
+          </div>
+          {queuedMessages.map((queued, index) => (
+            <div
+              key={queued.id}
+              className="flex items-start gap-base pl-[1.5rem]"
+            >
+              <span className="text-xs text-low tabular-nums mt-[2px]">
+                {index + 1}.
+              </span>
+              <span className="text-sm text-normal flex-1 line-clamp-2 break-words whitespace-pre-wrap">
+                {queued.message}
+              </span>
+              <button
+                onClick={() => onRemoveQueued?.(queued.id)}
+                className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0"
+                title={t('conversation.actions.removeQueued')}
+              >
+                <XIcon className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
         </div>
       );
     }

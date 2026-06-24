@@ -22,8 +22,8 @@ use db::{
         merge::{Merge, MergeStatus},
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
-        scratch::{DraftFollowUpData, Scratch, ScratchType},
-        session::{CreateSession, Session, SessionError},
+        scratch::{Scratch, ScratchType},
+        session::{CreateSession, Session},
         vibe_run::VibeRun,
         workspace::Workspace,
         workspace_repo::WorkspaceRepo,
@@ -706,7 +706,7 @@ impl LocalContainerService {
 
                     if !has_running_agent
                         && let Some(queued_msg) =
-                            container.queued_message_service.take_queued(ctx.session.id)
+                            container.queued_message_service.take_next(ctx.session.id)
                     {
                         tracing::info!(
                             "Parallel setup script finished with queued message for session {}, starting follow-up",
@@ -724,7 +724,11 @@ impl LocalContainerService {
                         }
 
                         if let Err(e) = container
-                            .start_queued_follow_up(&ctx, &queued_msg.data)
+                            .start_followup_for_session(
+                                &ctx.session,
+                                &ctx.workspace,
+                                &queued_msg.data,
+                            )
                             .await
                         {
                             tracing::error!(
@@ -1201,6 +1205,46 @@ impl LocalContainerService {
         ctx: &ExecutionContext,
         exit_code: Option<i64>,
     ) -> Result<(), ContainerError> {
+        // "Send now" / steer: this coding-agent turn was interrupted by a steer
+        // request (the steer route killed it after pushing the steering message to
+        // the front of the queue). Skip the normal commit / next-action / finalize
+        // flow and immediately drain that front message as a follow-up so the
+        // session continues from where it was. Any uncommitted partial work stays
+        // on disk for the follow-up turn to build on and commit at its own
+        // completion. Only coding-agent turns can be steered; the one-shot
+        // `take_steering` flag distinguishes a steer-kill from a plain user stop
+        // (which discards the queue). On a drain failure we fall through to normal
+        // completion handling so the turn still finalizes.
+        if matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CodingAgent
+        ) && self.queued_message_service.take_steering(ctx.session.id)
+            && let Some(queued_msg) = self.queued_message_service.take_next(ctx.session.id)
+        {
+            tracing::info!(
+                "Steer: starting interrupting follow-up for session {}",
+                ctx.session.id
+            );
+            if let Err(e) =
+                Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp).await
+            {
+                tracing::warn!("Failed to delete scratch after consuming steered message: {e}");
+            }
+            match self
+                .start_followup_for_session(&ctx.session, &ctx.workspace, &queued_msg.data)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to start steered follow-up for session {}: {}; falling back to normal completion handling",
+                        ctx.session.id,
+                        e
+                    );
+                }
+            }
+        }
+
         // vibe: capture the agent's `VIBE_RESULT:` self-report from the FULL
         // in-memory final message now — while the coding process's MsgStore is
         // still alive and before the truncated turn-summary path could drop a
@@ -1323,14 +1367,16 @@ impl LocalContainerService {
         let should_execute_queued =
             Self::should_execute_queued_message(&ctx.execution_process.status);
 
-        if let Some(queued_msg) = self.queued_message_service.take_queued(ctx.session.id) {
+        if let Some(queued_msg) = self.queued_message_service.take_next(ctx.session.id) {
             if should_execute_queued {
                 tracing::info!(
                     "Found queued message for session {}, starting follow-up execution",
                     ctx.session.id
                 );
 
-                // Delete the scratch since we're consuming the queued message
+                // Delete the scratch since we're consuming the queued message.
+                // Only meaningful for the last message; further drained messages
+                // have no scratch backing, so the delete is a harmless no-op.
                 if let Err(e) =
                     Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp)
                         .await
@@ -1339,7 +1385,10 @@ impl LocalContainerService {
                 }
 
                 // Execute the queued follow-up
-                if let Err(e) = self.start_queued_follow_up(ctx, &queued_msg.data).await {
+                if let Err(e) = self
+                    .start_followup_for_session(&ctx.session, &ctx.workspace, &queued_msg.data)
+                    .await
+                {
                     tracing::error!("Failed to start queued follow-up: {}", e);
                     // Fall back to finalization if follow-up fails
                     self.finalize_task(ctx).await;
@@ -1381,79 +1430,6 @@ impl LocalContainerService {
                 e
             );
         }
-    }
-
-    /// Start a follow-up execution from a queued message
-    async fn start_queued_follow_up(
-        &self,
-        ctx: &ExecutionContext,
-        queued_data: &DraftFollowUpData,
-    ) -> Result<ExecutionProcess, ContainerError> {
-        let executor_profile_id = queued_data.executor_config.profile_id();
-
-        // Validate executor matches session if session has prior executions
-        let expected_executor: Option<String> =
-            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, ctx.session.id)
-                .await?
-                .map(|profile| profile.executor.to_string())
-                .or_else(|| ctx.session.executor.clone());
-
-        if let Some(expected) = expected_executor {
-            let actual = executor_profile_id.executor.to_string();
-            if expected != actual {
-                return Err(SessionError::ExecutorMismatch { expected, actual }.into());
-            }
-        }
-
-        if ctx.session.executor.is_none() {
-            Session::update_executor(
-                &self.db.pool,
-                ctx.session.id,
-                &executor_profile_id.executor.to_string(),
-            )
-            .await?;
-        }
-
-        // Get latest agent turn for session continuity (from coding agent turns)
-        let latest_session_info =
-            CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
-
-        let repos =
-            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
-        let cleanup_action = self.cleanup_actions_for_repos(&repos);
-
-        let working_dir = ctx
-            .session
-            .agent_working_dir
-            .as_ref()
-            .filter(|dir| !dir.is_empty())
-            .cloned();
-
-        let action_type = if let Some(info) = latest_session_info {
-            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-                prompt: queued_data.message.clone(),
-                session_id: info.session_id,
-                reset_to_message_id: None,
-                executor_config: queued_data.executor_config.clone(),
-                working_dir: working_dir.clone(),
-            })
-        } else {
-            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-                prompt: queued_data.message.clone(),
-                executor_config: queued_data.executor_config.clone(),
-                working_dir,
-            })
-        };
-
-        let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
-
-        self.start_execution(
-            &ctx.workspace,
-            &ctx.session,
-            &action,
-            &ExecutionProcessRunReason::CodingAgent,
-        )
-        .await
     }
 
     /// Entry point for the automated `vibe` workflow, called at every terminal

@@ -76,7 +76,6 @@ function computeExecutionStatus(params: {
   isStopping: boolean;
   isQueueLoading: boolean;
   isSendingFollowUp: boolean;
-  isQueued: boolean;
   isAttemptRunning: boolean;
 }): ExecutionStatus {
   if (params.isInFeedbackMode) return 'feedback';
@@ -84,7 +83,9 @@ function computeExecutionStatus(params: {
   if (params.isStopping) return 'stopping';
   if (params.isQueueLoading) return 'queue-loading';
   if (params.isSendingFollowUp) return 'sending';
-  if (params.isQueued) return 'queued';
+  // A non-empty queue no longer locks the composer: while the agent runs the
+  // box stays in 'running' so more messages can be queued or steered. Queued
+  // messages are shown as a separate, removable list above the input.
   if (params.isAttemptRunning) return 'running';
   return 'idle';
 }
@@ -550,12 +551,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Queue interaction
   const {
-    isQueued,
-    queuedMessage,
-    queuedConfig,
+    queuedMessages,
     isQueueLoading,
     queueMessage,
+    steer,
     cancelQueue,
+    cancelOne,
     refreshQueueStatus,
   } = useSessionQueueInteraction({ sessionId });
 
@@ -629,7 +630,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
   }, [isAttemptRunning, workspaceId, processes.length, refreshQueueStatus]);
 
-  // Queue message handler
+  // Queue message handler — append the composed message to the back of the queue
   const handleQueueMessage = useCallback(async () => {
     // Allow queueing if there's a message OR review comments, and we have a config
     if ((!localMessage.trim() && !reviewMarkdown) || !executorConfig) return;
@@ -637,29 +638,71 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
 
     cancelDebouncedSave();
-    await saveToScratch(localMessage, executorConfig);
     await queueMessage(prompt, executorConfig);
 
-    // Clear local state after queueing (same as handleSend)
+    // Clear local state after queueing (same as handleSend). The message now
+    // lives in the server-side queue, so drop the local draft too.
     setLocalMessage('');
     clearUploadedAttachments();
     reviewContext?.clearComments();
+    await clearDraft();
   }, [
     localMessage,
     reviewMarkdown,
     executorConfig,
     queueMessage,
     cancelDebouncedSave,
-    saveToScratch,
     setLocalMessage,
     clearUploadedAttachments,
     reviewContext,
+    clearDraft,
   ]);
+
+  // Steer / "send now" handler — interrupt the running turn (or, when idle,
+  // behave like a normal send) and run the composed message immediately.
+  const handleSteer = useCallback(async () => {
+    if (!isAttemptRunning) {
+      await handleSend();
+      return;
+    }
+    if ((!localMessage.trim() && !reviewMarkdown) || !executorConfig) return;
+
+    const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
+
+    cancelDebouncedSave();
+    onScrollToBottom('auto');
+    await steer(prompt, executorConfig);
+
+    setLocalMessage('');
+    clearUploadedAttachments();
+    reviewContext?.clearComments();
+    await clearDraft();
+  }, [
+    isAttemptRunning,
+    handleSend,
+    localMessage,
+    reviewMarkdown,
+    executorConfig,
+    steer,
+    cancelDebouncedSave,
+    onScrollToBottom,
+    setLocalMessage,
+    clearUploadedAttachments,
+    reviewContext,
+    clearDraft,
+  ]);
+
+  // Remove a single queued message by id
+  const handleRemoveQueued = useCallback(
+    (messageId: string) => {
+      void cancelOne(messageId);
+    },
+    [cancelOne]
+  );
 
   // Editor change handler
   const handleEditorChange = useCallback(
     (value: string) => {
-      if (isQueued) cancelQueue();
       if (executorConfig) {
         handleMessageChange(value, executorConfig);
       } else {
@@ -668,8 +711,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       if (sendError) clearError();
     },
     [
-      isQueued,
-      cancelQueue,
       handleMessageChange,
       executorConfig,
       sendError,
@@ -702,22 +743,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     feedbackContext?.exitFeedbackMode();
   }, [feedbackContext]);
 
-  // Handle cancel queue - restore message to editor
+  // Handle cancel queue - clear all queued messages
   const handleCancelQueue = useCallback(async () => {
-    if (queuedMessage) {
-      setLocalMessage(queuedMessage);
-    }
-    if (queuedConfig) {
-      setExecutorOverrides(queuedConfig);
-    }
     await cancelQueue();
-  }, [
-    queuedMessage,
-    queuedConfig,
-    setLocalMessage,
-    setExecutorOverrides,
-    cancelQueue,
-  ]);
+  }, [cancelQueue]);
 
   // Message edit retry mutation
   const editRetryMutation = useMessageEditRetry(sessionId ?? '', () => {
@@ -729,7 +758,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const areAttachmentInputsDisabled =
     mode === 'placeholder' ||
-    isQueued ||
     isSending ||
     isStopping ||
     !!feedbackContext?.isSubmitting ||
@@ -959,23 +987,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isStopping,
     isQueueLoading,
     isSendingFollowUp: isSending,
-    isQueued,
     isAttemptRunning,
   });
 
-  // During loading, render with empty editor to preserve container UI
-  // In approval mode, don't show queued message - it's for follow-up, not approval response
+  // During loading, render with empty editor to preserve container UI.
+  // The editor always shows the local draft; queued messages live in their own
+  // list above the input.
   const editorValue = useMemo(() => {
     if (isScratchLoading || !hasInitialValue) return '';
-    if (pendingApproval) return localMessage;
-    return queuedMessage ?? localMessage;
-  }, [
-    isScratchLoading,
-    hasInitialValue,
-    pendingApproval,
-    queuedMessage,
-    localMessage,
-  ]);
+    return localMessage;
+  }, [isScratchLoading, hasInitialValue, localMessage]);
 
   const renderEditor = useCallback(
     ({
@@ -1053,6 +1074,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         actions={{
           onSend: () => {},
           onQueue: () => {},
+          onSteer: () => {},
           onCancelQueue: () => {},
           onStop: () => {},
           onPasteFiles: () => {},
@@ -1118,10 +1140,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       actions={{
         onSend: handleSend,
         onQueue: handleQueueMessage,
+        onSteer: handleSteer,
         onCancelQueue: handleCancelQueue,
         onStop: stopExecution,
         onPasteFiles: uploadFiles,
       }}
+      queuedMessages={queuedMessages.map((m) => ({
+        id: m.id,
+        message: m.data.message,
+      }))}
+      onRemoveQueued={handleRemoveQueued}
       session={{
         sessions,
         selectedSessionId: sessionId,

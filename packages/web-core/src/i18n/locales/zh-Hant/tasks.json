@@ -109,7 +109,7 @@
     "logsCopied": "已複製！"
   },
   "followUp": {
-    "queuedMessage": "訊息已加入佇列 - 會在目前執行完成後處理"
+    "queuedCount_other": "{{count}} 則訊息排隊中"
   },
   "todoPopup": {
     "title": "任務",
@@ -398,7 +398,9 @@
       "send": "傳送",
       "sending": "傳送中",
       "queue": "加入佇列",
-      "cancelQueue": "取消佇列",
+      "sendNow": "立即傳送",
+      "cancelQueue": "清空佇列",
+      "removeQueued": "從佇列中移除",
       "requestChanges": "請求變更",
       "approve": "核准",
       "clearReviewComments": "清除審查評論",

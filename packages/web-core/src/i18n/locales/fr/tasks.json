@@ -106,7 +106,8 @@
     "logsCopied": "Copié !"
   },
   "followUp": {
-    "queuedMessage": "Message en file d'attente - s'exécutera lorsque l'exécution actuelle sera terminée"
+    "queuedCount_one": "{{count}} message en file d'attente",
+    "queuedCount_other": "{{count}} messages en file d'attente"
   },
   "todoPopup": {
     "title": "Tâches",
@@ -138,7 +139,9 @@
       "send": "Envoyer",
       "sending": "Envoi en cours",
       "queue": "File d'attente",
-      "cancelQueue": "Annuler la file",
+      "sendNow": "Envoyer maintenant",
+      "cancelQueue": "Vider la file",
+      "removeQueued": "Retirer de la file",
       "requestChanges": "Demander des modifications",
       "approve": "Approuver",
       "clearReviewComments": "Effacer les commentaires de révision",

@@ -112,7 +112,7 @@
     "filesChanged_other": "{{count}} files changed"
   },
   "followUp": {
-    "queuedMessage": "メッセージがキューに追加されました - 現在の実行が完了すると実行されます"
+    "queuedCount_other": "{{count}} 件のメッセージが待機中"
   },
   "git": {
     "branch": {
@@ -398,7 +398,9 @@
       "send": "送信",
       "sending": "送信中",
       "queue": "キューに追加",
-      "cancelQueue": "キューをキャンセル",
+      "sendNow": "今すぐ送信",
+      "cancelQueue": "キューをクリア",
+      "removeQueued": "キューから削除",
       "requestChanges": "変更を依頼",
       "approve": "承認",
       "clearReviewComments": "レビューコメントをクリア",

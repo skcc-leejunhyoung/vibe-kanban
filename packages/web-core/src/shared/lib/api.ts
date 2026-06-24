@@ -1757,12 +1757,46 @@ export const queueApi = {
   },
 
   /**
-   * Cancel a queued follow-up message
+   * Steer / "send now": interrupt the running turn and run this message
+   * immediately instead of waiting for the current turn to finish.
+   */
+  steer: async (
+    sessionId: string,
+    data: DraftFollowUpData
+  ): Promise<QueueStatus> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/queue/steer`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<QueueStatus>(response);
+  },
+
+  /**
+   * Cancel all queued follow-up messages
    */
   cancel: async (sessionId: string): Promise<QueueStatus> => {
     const response = await makeRequest(`/api/sessions/${sessionId}/queue`, {
       method: 'DELETE',
     });
+    return handleApiResponse<QueueStatus>(response);
+  },
+
+  /**
+   * Cancel a single queued follow-up message by id
+   */
+  cancelOne: async (
+    sessionId: string,
+    messageId: string
+  ): Promise<QueueStatus> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/queue?message_id=${encodeURIComponent(messageId)}`,
+      {
+        method: 'DELETE',
+      }
+    );
     return handleApiResponse<QueueStatus>(response);
   },
 

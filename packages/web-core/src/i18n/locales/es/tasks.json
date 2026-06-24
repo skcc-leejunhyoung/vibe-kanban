@@ -112,7 +112,8 @@
     "filesChanged_other": "{{count}} files changed"
   },
   "followUp": {
-    "queuedMessage": "Mensaje en cola - se ejecutará cuando finalice la ejecución actual"
+    "queuedCount_one": "{{count}} mensaje en cola",
+    "queuedCount_other": "{{count}} mensajes en cola"
   },
   "git": {
     "branch": {
@@ -398,7 +399,9 @@
       "send": "Enviar",
       "sending": "Enviando",
       "queue": "Poner en cola",
-      "cancelQueue": "Cancelar cola",
+      "sendNow": "Enviar ahora",
+      "cancelQueue": "Vaciar cola",
+      "removeQueued": "Quitar de la cola",
       "requestChanges": "Solicitar cambios",
       "approve": "Aprobar",
       "clearReviewComments": "Limpiar comentarios de revisión",

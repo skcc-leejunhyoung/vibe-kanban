@@ -18,6 +18,7 @@ use db::{
             CreateExecutionProcessRepoState, ExecutionProcessRepoState,
         },
         repo::Repo,
+        scratch::DraftFollowUpData,
         session::{CreateSession, Session, SessionError},
         workspace::{Workspace, WorkspaceError},
         workspace_repo::WorkspaceRepo,
@@ -30,6 +31,7 @@ use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
         ExecutorAction, ExecutorActionType,
+        coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
     },
@@ -1321,6 +1323,82 @@ pub trait ContainerService {
         self.finish_execution_spawn(workspace, session, &execution_process, executor_action)
             .await?;
         Ok(execution_process)
+    }
+
+    /// Start a coding-agent follow-up for a session from a [`DraftFollowUpData`]
+    /// payload (a queued message, or a "send now"/steer message). Resumes the
+    /// latest agent turn when one exists, otherwise starts an initial request.
+    /// Shared by the queue-drain finalize path and the steer route's
+    /// no-running-execution fallback.
+    async fn start_followup_for_session(
+        &self,
+        session: &Session,
+        workspace: &Workspace,
+        data: &DraftFollowUpData,
+    ) -> Result<ExecutionProcess, ContainerError> {
+        let executor_profile_id = data.executor_config.profile_id();
+
+        // Validate executor matches session if session has prior executions
+        let expected_executor: Option<String> =
+            ExecutionProcess::latest_executor_profile_for_session(&self.db().pool, session.id)
+                .await?
+                .map(|profile| profile.executor.to_string())
+                .or_else(|| session.executor.clone());
+
+        if let Some(expected) = expected_executor {
+            let actual = executor_profile_id.executor.to_string();
+            if expected != actual {
+                return Err(SessionError::ExecutorMismatch { expected, actual }.into());
+            }
+        }
+
+        if session.executor.is_none() {
+            Session::update_executor(
+                &self.db().pool,
+                session.id,
+                &executor_profile_id.executor.to_string(),
+            )
+            .await?;
+        }
+
+        // Get latest agent turn for session continuity (from coding agent turns)
+        let latest_session_info =
+            CodingAgentTurn::find_latest_session_info(&self.db().pool, session.id).await?;
+
+        let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
+        let cleanup_action = self.cleanup_actions_for_repos(&repos);
+
+        let working_dir = session
+            .agent_working_dir
+            .as_ref()
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+
+        let action_type = if let Some(info) = latest_session_info {
+            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+                prompt: data.message.clone(),
+                session_id: info.session_id,
+                reset_to_message_id: None,
+                executor_config: data.executor_config.clone(),
+                working_dir: working_dir.clone(),
+            })
+        } else {
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: data.message.clone(),
+                executor_config: data.executor_config.clone(),
+                working_dir,
+            })
+        };
+
+        let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
+
+        self.start_execution(
+            workspace,
+            session,
+            &action,
+            &ExecutionProcessRunReason::CodingAgent,
+        )
+        .await
     }
 
     /// Creates the `execution_process` row (plus repo state / coding-agent turn /
