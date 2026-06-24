@@ -3,6 +3,7 @@ import { type OrganizationWithRole } from 'shared/types';
 import { organizationsApi } from '@/shared/lib/api';
 import { createShapeCollection } from '@/shared/lib/electric/collections';
 import { getFirstProjectByOrder } from '@/shared/lib/projectOrder';
+import { shouldUseSavedProject } from '@/shared/lib/savedProjectDestination';
 import type { AppDestination } from '@/shared/lib/routes/appNavigation';
 
 const FIRST_PROJECT_LOOKUP_TIMEOUT_MS = 3000;
@@ -78,6 +79,34 @@ export async function getFirstProjectDestination(
   savedProjectId?: string | null
 ): Promise<AppDestination | null> {
   try {
+    // Fast path: reuse the last-selected org+project and skip the blocking
+    // remote org/project lookup. On a cold PWA start the Electric collection
+    // isn't ready, so we navigate optimistically; on a warm tab it's ready and
+    // we verify the saved project still exists (stale → fall through).
+    if (savedOrgId && savedProjectId) {
+      const savedCollection = createShapeCollection(PROJECTS_SHAPE, {
+        organization_id: savedOrgId,
+      });
+      const collectionReady = savedCollection.isReady();
+      const savedProjectExists = collectionReady
+        ? (savedCollection.toArray as unknown as Project[]).some(
+            (p) => p.id === savedProjectId
+          )
+        : false;
+
+      if (
+        shouldUseSavedProject({
+          savedOrgId,
+          savedProjectId,
+          collectionReady,
+          savedProjectExists,
+        })
+      ) {
+        setSelectedOrgId(savedOrgId);
+        return { kind: 'project', projectId: savedProjectId };
+      }
+    }
+
     const organizationsResponse = await organizationsApi.getUserOrganizations();
     const organizations = organizationsResponse.organizations ?? [];
 
