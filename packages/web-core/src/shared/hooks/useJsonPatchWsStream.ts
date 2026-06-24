@@ -3,6 +3,11 @@ import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
+import {
+  shouldReconnectOnResume,
+  FREEZE_SUSPECT_MS,
+  RESUME_CONNECT_TIMEOUT_MS,
+} from '@/shared/lib/wsStreamResume';
 
 type WsJsonPatchMsg = { JsonPatch: Operation[] };
 type WsReadyMsg = { Ready: true };
@@ -53,6 +58,12 @@ export const useJsonPatchWsStream = <T extends object>(
   const [retryNonce, setRetryNonce] = useState(0);
   const finishedRef = useRef<boolean>(false);
   const connectWatchdogRef = useRef<number | null>(null);
+  // Timestamp (ms) the document last became hidden, used by the resume handler
+  // to tell a brief tab switch apart from a (possibly freezing) long background.
+  const hiddenSinceRef = useRef<number | null>(null);
+  // Set when the next connection is a resume reconnect, so the connect watchdog
+  // uses the shorter resume timeout instead of the cold-connect timeout.
+  const resumeReconnectRef = useRef<boolean>(false);
   // Mirrors of the connection state, read by the resume handler without making
   // it a dependency (which would re-bind listeners on every status change).
   const isConnectedRef = useRef<boolean>(false);
@@ -136,6 +147,9 @@ export const useJsonPatchWsStream = <T extends object>(
 
           ws.onopen = () => {
             clearConnectWatchdog();
+            // Back to a normal connection: subsequent reconnects (if any) use
+            // the cold-connect watchdog again until the next resume.
+            resumeReconnectRef.current = false;
             setError(null);
             setIsConnected(true);
             // Reset backoff on successful connection
@@ -224,7 +238,12 @@ export const useJsonPatchWsStream = <T extends object>(
 
           // Connect watchdog: if the socket never reaches OPEN, abandon it and
           // reconnect instead of waiting on the browser's multi-minute timeout.
+          // A resume reconnect (freeze recovery) uses a shorter timeout since
+          // its socket tends to zombie again and the user is already waiting.
           clearConnectWatchdog();
+          const connectTimeoutMs = resumeReconnectRef.current
+            ? RESUME_CONNECT_TIMEOUT_MS
+            : CONNECT_TIMEOUT_MS;
           connectWatchdogRef.current = window.setTimeout(() => {
             connectWatchdogRef.current = null;
             if (cancelled || finishedRef.current) return;
@@ -247,7 +266,7 @@ export const useJsonPatchWsStream = <T extends object>(
             setIsConnected(false);
             retryAttemptsRef.current += 1;
             scheduleReconnect();
-          }, CONNECT_TIMEOUT_MS);
+          }, connectTimeoutMs);
         } catch (error) {
           if (cancelled) {
             return;
@@ -303,16 +322,43 @@ export const useJsonPatchWsStream = <T extends object>(
     if (typeof document === 'undefined') return;
 
     const onResume = (evt?: Event) => {
-      // `pageshow` also fires on the initial load; only treat bfcache restores
-      // as a resume so we don't churn the first connection.
-      if (evt?.type === 'pageshow' && !(evt as PageTransitionEvent).persisted) {
-        return;
+      // Record when we go hidden so the resume decision can measure how long we
+      // were backgrounded (a long hide may mean the OS froze us).
+      if (evt?.type === 'visibilitychange') {
+        if (document.visibilityState === 'hidden') {
+          hiddenSinceRef.current = Date.now();
+          return;
+        }
       }
-      if (finishedRef.current) return;
-      if (document.visibilityState !== 'visible') return;
-      // Already healthy → nothing to do.
-      if (isConnectedRef.current && isInitializedRef.current) return;
 
+      const hiddenSince = hiddenSinceRef.current;
+      const hiddenDurationMs =
+        hiddenSince != null ? Date.now() - hiddenSince : 0;
+
+      const reconnect = shouldReconnectOnResume({
+        enabled,
+        hasEndpoint: !!endpoint,
+        finished: finishedRef.current,
+        eventType: evt?.type ?? 'visibilitychange',
+        persisted: (evt as PageTransitionEvent | undefined)?.persisted ?? false,
+        visibilityState: document.visibilityState,
+        isConnected: isConnectedRef.current,
+        isInitialized: isInitializedRef.current,
+        hiddenDurationMs,
+        freezeSuspectMs: FREEZE_SUSPECT_MS,
+      });
+
+      // Clear the hidden marker once visible so a later online/pageshow on the
+      // same foreground session doesn't re-use a stale duration.
+      if (document.visibilityState === 'visible') {
+        hiddenSinceRef.current = null;
+      }
+
+      if (!reconnect) return;
+
+      // The socket we're about to open is a freeze-recovery reconnect → use the
+      // shorter resume watchdog.
+      resumeReconnectRef.current = true;
       retryAttemptsRef.current = 0;
       if (retryTimerRef.current) {
         window.clearTimeout(retryTimerRef.current);
