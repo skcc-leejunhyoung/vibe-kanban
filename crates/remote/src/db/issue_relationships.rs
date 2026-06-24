@@ -27,7 +27,8 @@ impl IssueRelationshipRepository {
                 issue_id          AS "issue_id!: Uuid",
                 related_issue_id  AS "related_issue_id!: Uuid",
                 relationship_type AS "relationship_type!: IssueRelationshipType",
-                created_at        AS "created_at!: DateTime<Utc>"
+                created_at        AS "created_at!: DateTime<Utc>",
+                project_id        AS "project_id!: Uuid"
             FROM issue_relationships
             WHERE id = $1
             "#,
@@ -51,7 +52,8 @@ impl IssueRelationshipRepository {
                 issue_id          AS "issue_id!: Uuid",
                 related_issue_id  AS "related_issue_id!: Uuid",
                 relationship_type AS "relationship_type!: IssueRelationshipType",
-                created_at        AS "created_at!: DateTime<Utc>"
+                created_at        AS "created_at!: DateTime<Utc>",
+                project_id        AS "project_id!: Uuid"
             FROM issue_relationships
             WHERE issue_id = $1
             "#,
@@ -77,7 +79,8 @@ impl IssueRelationshipRepository {
                 issue_id          AS "issue_id!: Uuid",
                 related_issue_id  AS "related_issue_id!: Uuid",
                 relationship_type AS "relationship_type!: IssueRelationshipType",
-                created_at        AS "created_at!: DateTime<Utc>"
+                created_at        AS "created_at!: DateTime<Utc>",
+                project_id        AS "project_id!: Uuid"
             FROM issue_relationships
             WHERE related_issue_id = $1
             "#,
@@ -101,9 +104,10 @@ impl IssueRelationshipRepository {
                 issue_id          AS "issue_id!: Uuid",
                 related_issue_id  AS "related_issue_id!: Uuid",
                 relationship_type AS "relationship_type!: IssueRelationshipType",
-                created_at        AS "created_at!: DateTime<Utc>"
+                created_at        AS "created_at!: DateTime<Utc>",
+                project_id        AS "project_id!: Uuid"
             FROM issue_relationships
-            WHERE issue_id IN (SELECT id FROM issues WHERE project_id = $1)
+            WHERE project_id = $1
             "#,
             project_id
         )
@@ -124,14 +128,15 @@ impl IssueRelationshipRepository {
         let data = sqlx::query_as!(
             IssueRelationship,
             r#"
-            INSERT INTO issue_relationships (id, issue_id, related_issue_id, relationship_type)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO issue_relationships (id, issue_id, related_issue_id, relationship_type, project_id)
+            VALUES ($1, $2, $3, $4, (SELECT project_id FROM issues WHERE id = $2))
             RETURNING
                 id                AS "id!: Uuid",
                 issue_id          AS "issue_id!: Uuid",
                 related_issue_id  AS "related_issue_id!: Uuid",
                 relationship_type AS "relationship_type!: IssueRelationshipType",
-                created_at        AS "created_at!: DateTime<Utc>"
+                created_at        AS "created_at!: DateTime<Utc>",
+                project_id        AS "project_id!: Uuid"
             "#,
             id,
             issue_id,

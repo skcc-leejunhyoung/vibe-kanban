@@ -21,6 +21,7 @@ pub struct IssueRelationship {
     pub related_issue_id: Uuid,
     pub relationship_type: IssueRelationshipType,
     pub created_at: DateTime<Utc>,
+    pub project_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

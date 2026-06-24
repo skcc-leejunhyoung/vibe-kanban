@@ -9,6 +9,7 @@ pub struct IssueAssignee {
     pub issue_id: Uuid,
     pub user_id: Uuid,
     pub assigned_at: DateTime<Utc>,
+    pub project_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -22,7 +22,7 @@ export type Tag = { id: string, project_id: string, name: string, color: string,
 
 export type Issue = { id: string, project_id: string, issue_number: number, simple_id: string, status_id: string, title: string, description: string | null, priority: IssuePriority | null, start_date: string | null, target_date: string | null, completed_at: string | null, sort_order: number, parent_issue_id: string | null, parent_issue_sort_order: number | null, extension_metadata: JsonValue, creator_user_id: string | null, created_at: string, updated_at: string, };
 
-export type IssueAssignee = { id: string, issue_id: string, user_id: string, assigned_at: string, };
+export type IssueAssignee = { id: string, issue_id: string, user_id: string, assigned_at: string, project_id: string, };
 
 export type Blob = { id: string, project_id: string, blob_path: string, thumbnail_blob_path: string | null, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, width: number | null, height: number | null, created_at: string, updated_at: string, };
 
@@ -30,11 +30,11 @@ export type Attachment = { id: string, blob_id: string, issue_id: string | null,
 
 export type AttachmentWithBlob = { id: string, blob_id: string, issue_id: string | null, comment_id: string | null, created_at: string, expires_at: string | null, blob_path: string, thumbnail_blob_path: string | null, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, width: number | null, height: number | null, };
 
-export type IssueFollower = { id: string, issue_id: string, user_id: string, };
+export type IssueFollower = { id: string, issue_id: string, user_id: string, project_id: string, };
 
 export type IssueTag = { id: string, issue_id: string, tag_id: string, project_id: string, };
 
-export type IssueRelationship = { id: string, issue_id: string, related_issue_id: string, relationship_type: IssueRelationshipType, created_at: string, };
+export type IssueRelationship = { id: string, issue_id: string, related_issue_id: string, relationship_type: IssueRelationshipType, created_at: string, project_id: string, };
 
 export type IssueRelationshipType = "blocking" | "related" | "has_duplicate";
 
@@ -56,7 +56,7 @@ export type PullRequestStatus = "open" | "merged" | "closed";
 
 export type PullRequest = { id: string, url: string, number: number, status: PullRequestStatus, merged_at: string | null, merge_commit_sha: string | null, target_branch_name: string, project_id: string, issue_id: string, workspace_id: string | null, created_at: string, updated_at: string, };
 
-export type PullRequestIssue = { id: string, pull_request_id: string, issue_id: string, };
+export type PullRequestIssue = { id: string, pull_request_id: string, issue_id: string, project_id: string, };
 
 export type CreatePullRequestIssueRequest = { 
 /**

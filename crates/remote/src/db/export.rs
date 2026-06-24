@@ -164,7 +164,8 @@ impl ExportRepository {
                 ia.id          AS "id!: Uuid",
                 ia.issue_id    AS "issue_id!: Uuid",
                 ia.user_id     AS "user_id!: Uuid",
-                ia.assigned_at AS "assigned_at!: DateTime<Utc>"
+                ia.assigned_at AS "assigned_at!: DateTime<Utc>",
+                ia.project_id  AS "project_id!: Uuid"
             FROM issue_assignees ia
             INNER JOIN issues i ON i.id = ia.issue_id
             WHERE i.project_id = ANY($1)

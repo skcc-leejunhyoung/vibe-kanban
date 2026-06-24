@@ -26,7 +26,8 @@ impl PullRequestIssueRepository {
             SELECT
                 id              AS "id!: Uuid",
                 pull_request_id AS "pull_request_id!: Uuid",
-                issue_id        AS "issue_id!: Uuid"
+                issue_id        AS "issue_id!: Uuid",
+                project_id      AS "project_id!: Uuid"
             FROM pull_request_issues
             WHERE id = $1
             "#,
@@ -47,7 +48,8 @@ impl PullRequestIssueRepository {
             SELECT
                 id              AS "id!: Uuid",
                 pull_request_id AS "pull_request_id!: Uuid",
-                issue_id        AS "issue_id!: Uuid"
+                issue_id        AS "issue_id!: Uuid",
+                project_id      AS "project_id!: Uuid"
             FROM pull_request_issues
             WHERE issue_id = $1
             "#,
@@ -66,12 +68,12 @@ impl PullRequestIssueRepository {
             PullRequestIssue,
             r#"
             SELECT
-                pri.id              AS "id!: Uuid",
-                pri.pull_request_id AS "pull_request_id!: Uuid",
-                pri.issue_id        AS "issue_id!: Uuid"
-            FROM pull_request_issues pri
-            INNER JOIN issues i ON pri.issue_id = i.id
-            WHERE i.project_id = $1
+                id              AS "id!: Uuid",
+                pull_request_id AS "pull_request_id!: Uuid",
+                issue_id        AS "issue_id!: Uuid",
+                project_id      AS "project_id!: Uuid"
+            FROM pull_request_issues
+            WHERE project_id = $1
             "#,
             project_id
         )
@@ -93,14 +95,15 @@ impl PullRequestIssueRepository {
         let record = sqlx::query_as!(
             PullRequestIssue,
             r#"
-            INSERT INTO pull_request_issues (id, pull_request_id, issue_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO pull_request_issues (id, pull_request_id, issue_id, project_id)
+            VALUES ($1, $2, $3, (SELECT project_id FROM issues WHERE id = $3))
             ON CONFLICT (pull_request_id, issue_id) DO UPDATE
                 SET pull_request_id = EXCLUDED.pull_request_id
             RETURNING
                 id              AS "id!: Uuid",
                 pull_request_id AS "pull_request_id!: Uuid",
-                issue_id        AS "issue_id!: Uuid"
+                issue_id        AS "issue_id!: Uuid",
+                project_id      AS "project_id!: Uuid"
             "#,
             id,
             pull_request_id,

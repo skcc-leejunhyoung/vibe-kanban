@@ -7,6 +7,7 @@ pub struct IssueFollower {
     pub id: Uuid,
     pub issue_id: Uuid,
     pub user_id: Uuid,
+    pub project_id: Uuid,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]

@@ -26,7 +26,8 @@ impl IssueAssigneeRepository {
                 id          AS "id!: Uuid",
                 issue_id    AS "issue_id!: Uuid",
                 user_id     AS "user_id!: Uuid",
-                assigned_at AS "assigned_at!: DateTime<Utc>"
+                assigned_at AS "assigned_at!: DateTime<Utc>",
+                project_id  AS "project_id!: Uuid"
             FROM issue_assignees
             WHERE id = $1
             "#,
@@ -49,7 +50,8 @@ impl IssueAssigneeRepository {
                 id          AS "id!: Uuid",
                 issue_id    AS "issue_id!: Uuid",
                 user_id     AS "user_id!: Uuid",
-                assigned_at AS "assigned_at!: DateTime<Utc>"
+                assigned_at AS "assigned_at!: DateTime<Utc>",
+                project_id  AS "project_id!: Uuid"
             FROM issue_assignees
             WHERE issue_id = $1
             "#,
@@ -72,9 +74,10 @@ impl IssueAssigneeRepository {
                 id          AS "id!: Uuid",
                 issue_id    AS "issue_id!: Uuid",
                 user_id     AS "user_id!: Uuid",
-                assigned_at AS "assigned_at!: DateTime<Utc>"
+                assigned_at AS "assigned_at!: DateTime<Utc>",
+                project_id  AS "project_id!: Uuid"
             FROM issue_assignees
-            WHERE issue_id IN (SELECT id FROM issues WHERE project_id = $1)
+            WHERE project_id = $1
             "#,
             project_id
         )
@@ -94,13 +97,14 @@ impl IssueAssigneeRepository {
         let data = sqlx::query_as!(
             IssueAssignee,
             r#"
-            INSERT INTO issue_assignees (id, issue_id, user_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO issue_assignees (id, issue_id, user_id, project_id)
+            VALUES ($1, $2, $3, (SELECT project_id FROM issues WHERE id = $2))
             RETURNING
                 id          AS "id!: Uuid",
                 issue_id    AS "issue_id!: Uuid",
                 user_id     AS "user_id!: Uuid",
-                assigned_at AS "assigned_at!: DateTime<Utc>"
+                assigned_at AS "assigned_at!: DateTime<Utc>",
+                project_id  AS "project_id!: Uuid"
             "#,
             id,
             issue_id,

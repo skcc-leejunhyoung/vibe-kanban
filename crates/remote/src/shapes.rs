@@ -95,7 +95,7 @@ pub const PROJECT_WORKSPACES_SHAPE: ShapeDefinition<Workspace> = crate::define_s
 pub const PROJECT_ISSUE_ASSIGNEES_SHAPE: ShapeDefinition<IssueAssignee> = crate::define_shape!(
     name: "PROJECT_ISSUE_ASSIGNEES_SHAPE",
     table: "issue_assignees",
-    where_clause: r#""issue_id" IN (SELECT id FROM issues WHERE "project_id" = $1)"#,
+    where_clause: r#""project_id" = $1"#,
     url: "/shape/project/{project_id}/issue_assignees",
     params: ["project_id"],
 );
@@ -103,7 +103,7 @@ pub const PROJECT_ISSUE_ASSIGNEES_SHAPE: ShapeDefinition<IssueAssignee> = crate:
 pub const PROJECT_ISSUE_FOLLOWERS_SHAPE: ShapeDefinition<IssueFollower> = crate::define_shape!(
     name: "PROJECT_ISSUE_FOLLOWERS_SHAPE",
     table: "issue_followers",
-    where_clause: r#""issue_id" IN (SELECT id FROM issues WHERE "project_id" = $1)"#,
+    where_clause: r#""project_id" = $1"#,
     url: "/shape/project/{project_id}/issue_followers",
     params: ["project_id"],
 );
@@ -119,7 +119,7 @@ pub const PROJECT_ISSUE_TAGS_SHAPE: ShapeDefinition<IssueTag> = crate::define_sh
 pub const PROJECT_ISSUE_RELATIONSHIPS_SHAPE: ShapeDefinition<IssueRelationship> = crate::define_shape!(
     name: "PROJECT_ISSUE_RELATIONSHIPS_SHAPE",
     table: "issue_relationships",
-    where_clause: r#""issue_id" IN (SELECT id FROM issues WHERE "project_id" = $1)"#,
+    where_clause: r#""project_id" = $1"#,
     url: "/shape/project/{project_id}/issue_relationships",
     params: ["project_id"],
 );
@@ -135,7 +135,7 @@ pub const PROJECT_PULL_REQUESTS_SHAPE: ShapeDefinition<PullRequest> = crate::def
 pub const PROJECT_PULL_REQUEST_ISSUES_SHAPE: ShapeDefinition<PullRequestIssue> = crate::define_shape!(
     name: "PROJECT_PULL_REQUEST_ISSUES_SHAPE",
     table: "pull_request_issues",
-    where_clause: r#""issue_id" IN (SELECT id FROM issues WHERE "project_id" = $1)"#,
+    where_clause: r#""project_id" = $1"#,
     url: "/shape/project/{project_id}/pull_request_issues",
     params: ["project_id"],
 );

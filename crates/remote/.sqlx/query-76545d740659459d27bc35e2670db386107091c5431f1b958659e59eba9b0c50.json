@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                ia.id          AS \"id!: Uuid\",\n                ia.issue_id    AS \"issue_id!: Uuid\",\n                ia.user_id     AS \"user_id!: Uuid\",\n                ia.assigned_at AS \"assigned_at!: DateTime<Utc>\"\n            FROM issue_assignees ia\n            INNER JOIN issues i ON i.id = ia.issue_id\n            WHERE i.project_id = ANY($1)\n            ORDER BY ia.assigned_at ASC\n            ",
+  "query": "\n            SELECT\n                id          AS \"id!: Uuid\",\n                issue_id    AS \"issue_id!: Uuid\",\n                user_id     AS \"user_id!: Uuid\",\n                assigned_at AS \"assigned_at!: DateTime<Utc>\",\n                project_id  AS \"project_id!: Uuid\"\n            FROM issue_assignees\n            WHERE id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -22,19 +22,25 @@
         "ordinal": 3,
         "name": "assigned_at!: DateTime<Utc>",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "project_id!: Uuid",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
       "Left": [
-        "UuidArray"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "e97576f60f79df1152dbf5c46e3adbc5a36003b5be2a4cf53997440454673840"
+  "hash": "76545d740659459d27bc35e2670db386107091c5431f1b958659e59eba9b0c50"
 }

@@ -36,6 +36,7 @@ pub struct PullRequestIssue {
     pub id: Uuid,
     pub pull_request_id: Uuid,
     pub issue_id: Uuid,
+    pub project_id: Uuid,
 }
 
 #[derive(Debug, Clone, Deserialize)]

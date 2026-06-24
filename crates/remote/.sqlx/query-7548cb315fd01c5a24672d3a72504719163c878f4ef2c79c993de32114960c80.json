@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id                AS \"id!: Uuid\",\n                issue_id          AS \"issue_id!: Uuid\",\n                related_issue_id  AS \"related_issue_id!: Uuid\",\n                relationship_type AS \"relationship_type!: IssueRelationshipType\",\n                created_at        AS \"created_at!: DateTime<Utc>\"\n            FROM issue_relationships\n            WHERE related_issue_id = $1\n            ",
+  "query": "\n            SELECT\n                id                AS \"id!: Uuid\",\n                issue_id          AS \"issue_id!: Uuid\",\n                related_issue_id  AS \"related_issue_id!: Uuid\",\n                relationship_type AS \"relationship_type!: IssueRelationshipType\",\n                created_at        AS \"created_at!: DateTime<Utc>\",\n                project_id        AS \"project_id!: Uuid\"\n            FROM issue_relationships\n            WHERE related_issue_id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,11 @@
         "ordinal": 4,
         "name": "created_at!: DateTime<Utc>",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "project_id!: Uuid",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -50,8 +55,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "423f19858a7b9d035b1b9ca82e707b96fea336ee9f23a457c95cc3d8c186bd06"
+  "hash": "7548cb315fd01c5a24672d3a72504719163c878f4ef2c79c993de32114960c80"
 }

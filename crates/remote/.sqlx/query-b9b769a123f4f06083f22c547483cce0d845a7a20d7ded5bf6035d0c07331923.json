@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id          AS \"id!: Uuid\",\n                issue_id    AS \"issue_id!: Uuid\",\n                user_id     AS \"user_id!: Uuid\",\n                assigned_at AS \"assigned_at!: DateTime<Utc>\"\n            FROM issue_assignees\n            WHERE issue_id IN (SELECT id FROM issues WHERE project_id = $1)\n            ",
+  "query": "\n            SELECT\n                id         AS \"id!: Uuid\",\n                issue_id   AS \"issue_id!: Uuid\",\n                user_id    AS \"user_id!: Uuid\",\n                project_id AS \"project_id!: Uuid\"\n            FROM issue_followers\n            WHERE project_id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -20,8 +20,8 @@
       },
       {
         "ordinal": 3,
-        "name": "assigned_at!: DateTime<Utc>",
-        "type_info": "Timestamptz"
+        "name": "project_id!: Uuid",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "e2bf31db16ca8adc105f79f00c26d6af8b542f1f1e57e947ae39197d94dd3fed"
+  "hash": "b9b769a123f4f06083f22c547483cce0d845a7a20d7ded5bf6035d0c07331923"
 }

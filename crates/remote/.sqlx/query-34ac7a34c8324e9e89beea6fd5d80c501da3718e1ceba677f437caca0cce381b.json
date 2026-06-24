@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO issue_relationships (id, issue_id, related_issue_id, relationship_type, project_id)\n            VALUES ($1, $2, $3, $4, (SELECT project_id FROM issues WHERE id = $2))\n            RETURNING\n                id                AS \"id!: Uuid\",\n                issue_id          AS \"issue_id!: Uuid\",\n                related_issue_id  AS \"related_issue_id!: Uuid\",\n                relationship_type AS \"relationship_type!: IssueRelationshipType\",\n                created_at        AS \"created_at!: DateTime<Utc>\",\n                project_id        AS \"project_id!: Uuid\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "issue_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "related_issue_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "relationship_type!: IssueRelationshipType",
+        "type_info": {
+          "Custom": {
+            "name": "issue_relationship_type",
+            "kind": {
+              "Enum": [
+                "blocking",
+                "related",
+                "has_duplicate"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at!: DateTime<Utc>",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "project_id!: Uuid",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "issue_relationship_type",
+            "kind": {
+              "Enum": [
+                "blocking",
+                "related",
+                "has_duplicate"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "34ac7a34c8324e9e89beea6fd5d80c501da3718e1ceba677f437caca0cce381b"
+}
