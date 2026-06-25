@@ -5,6 +5,7 @@ import {
   ArrowLeftIcon,
   ArchiveIcon,
   StackIcon,
+  CardsIcon,
   SpinnerIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
@@ -16,6 +17,11 @@ import {
   CollapsibleSectionHeader,
   type SectionAction,
 } from './CollapsibleSectionHeader';
+import {
+  WorkspacesIssueGroupedList,
+  type WorkspaceIssueGroup,
+  type WorkspaceIssueStatusSection,
+} from './WorkspacesIssueGroupedList';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
@@ -71,6 +77,16 @@ export interface WorkspacesSidebarProps {
   layoutMode?: WorkspaceLayoutMode;
   /** Handler for toggling layout mode */
   onToggleLayoutMode?: () => void;
+  /** Whether the issue-grouped view is active */
+  isIssueGrouped?: boolean;
+  /** Handler for toggling the issue-grouped view */
+  onToggleIssueGrouped?: () => void;
+  /** Flat issue groups (issue mode, layout = flat) */
+  issueGroups?: WorkspaceIssueGroup[];
+  /** Status sections (issue mode, layout = accordion); null = flat issue mode */
+  issueSections?: WorkspaceIssueStatusSection[] | null;
+  /** Persist-key prefix for issue status sections */
+  issueSectionPersistPrefix?: string;
   /** Handler to load more workspaces on scroll */
   onLoadMore?: () => void;
   /** Whether there are more workspaces to load */
@@ -229,6 +245,11 @@ export function WorkspacesSidebar({
   onShowArchiveChange,
   layoutMode = 'flat',
   onToggleLayoutMode,
+  isIssueGrouped = false,
+  onToggleIssueGrouped,
+  issueGroups = [],
+  issueSections = null,
+  issueSectionPersistPrefix = 'workspaces-issue-status-',
   onLoadMore,
   hasMoreWorkspaces = false,
   searchControls,
@@ -269,11 +290,26 @@ export function WorkspacesSidebar({
     [workspaces]
   );
 
+  // Draft/create-mode placeholder card, shared across layouts.
+  const draftCard = draftTitle ? (
+    <WorkspaceSummary
+      name={draftTitle}
+      isActive={isCreateMode}
+      isDraft={true}
+      onClick={onSelectCreate}
+    />
+  ) : null;
+
   const headerActions: SectionAction[] = [
     {
       icon: StackIcon,
       onClick: () => onToggleLayoutMode?.(),
       isActive: layoutMode === 'accordion',
+    },
+    {
+      icon: CardsIcon,
+      onClick: () => onToggleIssueGrouped?.(),
+      isActive: isIssueGrouped,
     },
     {
       icon: PlusIcon,
@@ -408,6 +444,20 @@ export function WorkspacesSidebar({
               ))
             )}
           </div>
+        ) : isIssueGrouped ? (
+          /* Issue-grouped view (optionally split into status sections) */
+          <WorkspacesIssueGroupedList
+            sections={layoutMode === 'accordion' ? issueSections : null}
+            groups={issueGroups}
+            selectedWorkspaceId={selectedWorkspaceId}
+            onSelectWorkspace={onSelectWorkspace}
+            onOpenWorkspaceActions={handleOpenWorkspaceActions}
+            focusedWorkspaceId={focusedWorkspaceId}
+            registerWorkspaceRef={registerWorkspaceRef}
+            sectionPersistPrefix={issueSectionPersistPrefix}
+            draftSlot={draftCard}
+            emptyLabel={t('common:workspaces.noWorkspaces')}
+          />
         ) : layoutMode === 'accordion' ? (
           /* Accordion layout view */
           <div className="flex flex-col gap-base">

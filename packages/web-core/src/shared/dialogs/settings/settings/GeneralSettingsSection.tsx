@@ -40,10 +40,12 @@ import { TagManager } from '@/shared/components/TagManager';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
   DEFAULT_THEME_VARIANT,
+  DEFAULT_WORKSPACE_ISSUE_STATUSES,
   type MobileFontScale,
   useMobileFontScale,
   useThemePresets,
   useThemeVariant,
+  useWorkspaceIssueStatuses,
 } from '@/shared/stores/useUiPreferencesStore';
 import { ThemeVariantEditorDialog } from '@/shared/dialogs/settings/ThemeVariantEditorDialog';
 import { cn, playSound } from '@/shared/lib/utils';
@@ -66,6 +68,7 @@ import {
   SettingsTextarea,
 } from './SettingsComponents';
 import { useSettingsDirty } from './SettingsDirtyContext';
+import { WorkspaceStatusListEditor } from './WorkspaceStatusListEditor';
 
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
@@ -80,6 +83,7 @@ export function GeneralSettingsSection() {
   // runs on the local web.
   const [themeVariant, setThemeVariant] = useThemeVariant();
   const themePresets = useThemePresets();
+  const [issueStatuses, setIssueStatuses] = useWorkspaceIssueStatuses();
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
       ns: 'common',
@@ -966,6 +970,23 @@ export function GeneralSettingsSection() {
             onChange={(value: SendMessageShortcut) =>
               updateDraft({ send_message_shortcut: value })
             }
+          />
+        </SettingsField>
+      </SettingsCard>
+
+      {/* Workspace List */}
+      <SettingsCard
+        title={t('settings.general.workspaceList.title')}
+        description={t('settings.general.workspaceList.description')}
+      >
+        <SettingsField
+          label={t('settings.general.workspaceList.statusesLabel')}
+          description={t('settings.general.workspaceList.statusesHelper')}
+        >
+          <WorkspaceStatusListEditor
+            statuses={issueStatuses}
+            onChange={setIssueStatuses}
+            defaultStatuses={DEFAULT_WORKSPACE_ISSUE_STATUSES}
           />
         </SettingsField>
       </SettingsCard>

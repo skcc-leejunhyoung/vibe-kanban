@@ -297,6 +297,19 @@
           "enterLabel": "Enter (Shift+Enter로 새 줄)"
         }
       },
+      "workspaceList": {
+        "title": "워크스페이스 목록",
+        "description": "워크스페이스 사이드바의 구성 방식을 설정합니다.",
+        "statusesLabel": "이슈 그룹화 상태",
+        "statusesHelper": "워크스페이스를 이슈 단위로 묶을 때, 상태 아코디언이 이슈를 여기 나열한 순서대로 분류합니다. 각 이슈의 상태 이름과 일치하면 해당 칸으로, 일치하지 않으면 \"알 수 없는 상태\"로 모입니다.",
+        "empty": "설정된 상태가 없습니다.",
+        "addPlaceholder": "상태 이름 (예: In review)",
+        "add": "추가",
+        "reset": "기본값으로 초기화",
+        "moveUp": "위로",
+        "moveDown": "아래로",
+        "remove": "삭제"
+      },
       "privacy": {
         "title": "개인정보 보호",
         "description": "익명 사용 데이터를 공유하여 Vibe-Kanban 개선에 도움을 주세요.",

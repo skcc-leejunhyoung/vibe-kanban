@@ -247,6 +247,54 @@ export type WorkspacePrFilter = 'all' | 'has_pr' | 'no_pr';
 export type WorkspaceSortBy = 'updated_at' | 'created_at';
 export type WorkspaceSortOrder = 'asc' | 'desc';
 
+// How the workspace sidebar groups its rows. 'workspace' keeps the original
+// behaviour (flat list, or accordion by run state); 'issue' groups workspaces
+// under the remote issue they're linked to.
+export type WorkspaceGroupMode = 'workspace' | 'issue';
+
+export const DEFAULT_WORKSPACE_GROUP_MODE: WorkspaceGroupMode = 'workspace';
+
+// Status names shown (and their order) when grouping workspaces by issue with
+// the status-accordion enabled. An issue whose status name doesn't match any of
+// these falls into the "unknown" bucket. Names are matched case-insensitively.
+export const DEFAULT_WORKSPACE_ISSUE_STATUSES = [
+  'To do',
+  'In progress',
+  'In review',
+  'Done',
+];
+
+const WORKSPACE_GROUP_MODE_KEY = 'vk-workspace-group-mode';
+const WORKSPACE_ISSUE_STATUSES_KEY = 'vk-workspace-issue-statuses';
+
+const loadWorkspaceGroupMode = (): WorkspaceGroupMode => {
+  try {
+    const stored = localStorage.getItem(WORKSPACE_GROUP_MODE_KEY);
+    if (stored === 'issue' || stored === 'workspace') return stored;
+  } catch {
+    // localStorage may be unavailable
+  }
+  return DEFAULT_WORKSPACE_GROUP_MODE;
+};
+
+const loadWorkspaceIssueStatuses = (): string[] => {
+  try {
+    const stored = localStorage.getItem(WORKSPACE_ISSUE_STATUSES_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (
+        Array.isArray(parsed) &&
+        parsed.every((entry) => typeof entry === 'string')
+      ) {
+        return parsed;
+      }
+    }
+  } catch {
+    // localStorage unavailable or malformed JSON
+  }
+  return [...DEFAULT_WORKSPACE_ISSUE_STATUSES];
+};
+
 export type WorkspaceFilterState = {
   projectIds: string[]; // remote project IDs
   prFilter: WorkspacePrFilter;
@@ -383,6 +431,11 @@ type State = {
   workspaceFilters: WorkspaceFilterState;
   workspaceSort: WorkspaceSortState;
 
+  // Workspace sidebar grouping mode (by run state vs. by issue)
+  workspaceGroupMode: WorkspaceGroupMode;
+  // Status names (ordered) used when grouping the issue view by status
+  workspaceIssueStatuses: string[];
+
   // Kanban view mode state
   kanbanViewMode: KanbanViewMode;
   listViewStatusFilter: string | null;
@@ -483,6 +536,11 @@ type State = {
   setWorkspaceSortBy: (sortBy: WorkspaceSortBy) => void;
   setWorkspaceSortOrder: (sortOrder: WorkspaceSortOrder) => void;
 
+  // Workspace sidebar grouping actions
+  setWorkspaceGroupMode: (mode: WorkspaceGroupMode) => void;
+  toggleWorkspaceGroupMode: () => void;
+  setWorkspaceIssueStatuses: (statuses: string[]) => void;
+
   // Kanban view mode actions
   setKanbanViewMode: (mode: KanbanViewMode) => void;
   setListViewStatusFilter: (statusId: string | null) => void;
@@ -534,6 +592,10 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Workspace sidebar filter state
   workspaceFilters: DEFAULT_WORKSPACE_FILTER_STATE,
   workspaceSort: DEFAULT_WORKSPACE_SORT_STATE,
+
+  // Workspace sidebar grouping
+  workspaceGroupMode: loadWorkspaceGroupMode(),
+  workspaceIssueStatuses: loadWorkspaceIssueStatuses(),
 
   // Kanban view mode state
   kanbanViewMode: 'kanban' as KanbanViewMode,
@@ -888,6 +950,48 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       workspaceSort: { ...s.workspaceSort, sortOrder },
     })),
 
+  // Workspace sidebar grouping actions
+  setWorkspaceGroupMode: (mode) => {
+    try {
+      if (mode === DEFAULT_WORKSPACE_GROUP_MODE) {
+        localStorage.removeItem(WORKSPACE_GROUP_MODE_KEY);
+      } else {
+        localStorage.setItem(WORKSPACE_GROUP_MODE_KEY, mode);
+      }
+    } catch {
+      // localStorage may be unavailable
+    }
+    set({ workspaceGroupMode: mode });
+  },
+
+  toggleWorkspaceGroupMode: () =>
+    set((s) => {
+      const next: WorkspaceGroupMode =
+        s.workspaceGroupMode === 'issue' ? 'workspace' : 'issue';
+      try {
+        if (next === DEFAULT_WORKSPACE_GROUP_MODE) {
+          localStorage.removeItem(WORKSPACE_GROUP_MODE_KEY);
+        } else {
+          localStorage.setItem(WORKSPACE_GROUP_MODE_KEY, next);
+        }
+      } catch {
+        // localStorage may be unavailable
+      }
+      return { workspaceGroupMode: next };
+    }),
+
+  setWorkspaceIssueStatuses: (statuses) => {
+    try {
+      localStorage.setItem(
+        WORKSPACE_ISSUE_STATUSES_KEY,
+        JSON.stringify(statuses)
+      );
+    } catch {
+      // localStorage may be unavailable
+    }
+    set({ workspaceIssueStatuses: statuses });
+  },
+
   // Kanban view mode actions
   setKanbanViewMode: (mode) => set({ kanbanViewMode: mode }),
 
@@ -1075,6 +1179,21 @@ export function useThemeVariant() {
   const variant = useUiPreferencesStore((s) => s.themeVariant);
   const set = useUiPreferencesStore((s) => s.setThemeVariant);
   return [variant, set] as const;
+}
+
+// Hook for the workspace sidebar grouping mode (run-state vs. issue)
+export function useWorkspaceGroupMode() {
+  const mode = useUiPreferencesStore((s) => s.workspaceGroupMode);
+  const set = useUiPreferencesStore((s) => s.setWorkspaceGroupMode);
+  const toggle = useUiPreferencesStore((s) => s.toggleWorkspaceGroupMode);
+  return { mode, setMode: set, toggle };
+}
+
+// Hook for the ordered status names used to bucket the issue-grouped sidebar
+export function useWorkspaceIssueStatuses() {
+  const statuses = useUiPreferencesStore((s) => s.workspaceIssueStatuses);
+  const set = useUiPreferencesStore((s) => s.setWorkspaceIssueStatuses);
+  return [statuses, set] as const;
 }
 
 // Hook returning the effective theme preset list (built-ins merged with the

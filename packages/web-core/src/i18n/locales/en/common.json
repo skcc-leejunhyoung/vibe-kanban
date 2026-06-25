@@ -138,6 +138,8 @@
     "needsAttention": "Needs Attention",
     "idle": "Idle",
     "running": "Running",
+    "unknownStatus": "Unknown status",
+    "unlinkedIssues": "No issue",
     "pin": "Pin",
     "unpin": "Unpin",
     "archive": "Archive",

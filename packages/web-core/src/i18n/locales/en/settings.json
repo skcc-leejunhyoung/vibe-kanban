@@ -305,6 +305,19 @@
           "enterLabel": "Enter (Shift+Enter for new line)"
         }
       },
+      "workspaceList": {
+        "title": "Workspace List",
+        "description": "Customize how the workspace sidebar is organized.",
+        "statusesLabel": "Issue grouping statuses",
+        "statusesHelper": "When grouping workspaces by issue, the status accordion buckets issues into these statuses, in this order. A name is matched to each issue's status; anything that doesn't match falls under \"Unknown\".",
+        "empty": "No statuses configured.",
+        "addPlaceholder": "Status name (e.g. In review)",
+        "add": "Add",
+        "reset": "Reset to default",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "remove": "Remove"
+      },
       "privacy": {
         "title": "Privacy",
         "description": "Help improve Vibe-Kanban by sharing anonymous usage data.",

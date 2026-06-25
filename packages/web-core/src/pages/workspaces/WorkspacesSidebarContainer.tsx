@@ -23,11 +23,18 @@ import {
   PERSIST_KEYS,
   usePersistedExpanded,
   useUiPreferencesStore,
+  useWorkspaceGroupMode,
+  useWorkspaceIssueStatuses,
   type WorkspacePrFilter,
   type WorkspaceSortBy,
   type WorkspaceSortOrder,
 } from '@/shared/stores/useUiPreferencesStore';
 import type { Workspace } from '@/shared/hooks/useWorkspaces';
+import { useWorkspaceIssueGrouping } from '@/shared/hooks/useWorkspaceIssueGrouping';
+import {
+  groupWorkspacesByIssue,
+  bucketIssueGroupsByStatus,
+} from '@/shared/lib/workspaceIssueGrouping';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import {
@@ -298,6 +305,12 @@ export function WorkspacesSidebarContainer({
     : 'flat';
   const toggleLayoutMode = () => setAccordionLayout(!isAccordionLayout);
 
+  // Issue-grouped view: groups workspaces under their linked remote issue.
+  const { mode: groupMode, toggle: toggleGroupMode } = useWorkspaceGroupMode();
+  const [issueStatusNames] = useWorkspaceIssueStatuses();
+  const isIssueGrouped = groupMode === 'issue';
+  const workspaceIssueMeta = useWorkspaceIssueGrouping(isIssueGrouped);
+
   // Workspace sidebar filters + sort
   const workspaceFilters = useUiPreferencesStore((s) => s.workspaceFilters);
   const setWorkspaceProjectFilter = useUiPreferencesStore(
@@ -546,6 +559,27 @@ export function WorkspacesSidebarContainer({
     [sortedArchivedWorkspaces, displayLimit, isSearching]
   );
 
+  // Issue-grouped structures (only computed in issue mode). The status sections
+  // are only used when the accordion layout is also active.
+  const issueGroups = useMemo(
+    () =>
+      isIssueGrouped
+        ? groupWorkspacesByIssue(paginatedActiveWorkspaces, workspaceIssueMeta)
+        : [],
+    [isIssueGrouped, paginatedActiveWorkspaces, workspaceIssueMeta]
+  );
+
+  const issueSections = useMemo(
+    () =>
+      isIssueGrouped && isAccordionLayout
+        ? bucketIssueGroupsByStatus(issueGroups, issueStatusNames, {
+            unknown: t('workspaces.unknownStatus'),
+            unlinked: t('workspaces.unlinkedIssues'),
+          })
+        : null,
+    [isIssueGrouped, isAccordionLayout, issueGroups, issueStatusNames, t]
+  );
+
   // Check if there are more workspaces to load
   const hasMoreWorkspaces = showArchive
     ? sortedArchivedWorkspaces.length > displayLimit
@@ -618,6 +652,14 @@ export function WorkspacesSidebarContainer({
     if (showArchive) {
       return paginatedArchivedWorkspaces.map((w) => w.id);
     }
+    if (isIssueGrouped) {
+      // Follow the issue-grouped display order (status sections when present,
+      // otherwise the flat issue groups).
+      const source = issueSections
+        ? issueSections.flatMap((s) => s.groups)
+        : issueGroups;
+      return source.flatMap((g) => g.workspaces.map((w) => w.id));
+    }
     if (layoutMode === 'accordion') {
       const { raisedHandWorkspaces, runningWorkspaces, idleWorkspaces } =
         categorizeWorkspaces(paginatedActiveWorkspaces);
@@ -630,6 +672,9 @@ export function WorkspacesSidebarContainer({
     return paginatedActiveWorkspaces.map((w) => w.id);
   }, [
     showArchive,
+    isIssueGrouped,
+    issueSections,
+    issueGroups,
     layoutMode,
     paginatedActiveWorkspaces,
     paginatedArchivedWorkspaces,
@@ -831,6 +876,10 @@ export function WorkspacesSidebarContainer({
       onShowArchiveChange={setShowArchive}
       layoutMode={layoutMode}
       onToggleLayoutMode={toggleLayoutMode}
+      isIssueGrouped={isIssueGrouped}
+      onToggleIssueGrouped={toggleGroupMode}
+      issueGroups={issueGroups}
+      issueSections={issueSections}
       onLoadMore={handleLoadMore}
       hasMoreWorkspaces={hasMoreWorkspaces && !isSearching}
       searchControls={searchControls}
