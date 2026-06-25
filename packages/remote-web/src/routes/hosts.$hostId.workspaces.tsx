@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   createFileRoute,
   useNavigate,
@@ -9,6 +9,11 @@ import { WorkspacesLanding } from "@/pages/workspaces/WorkspacesLanding";
 import { RemoteWorkspacesPageShell } from "@remote/pages/RemoteWorkspacesPageShell";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
 import { useWorkspaceContext } from "@/shared/hooks/useWorkspaceContext";
+import { useWorkspaceSortFilter } from "@/shared/hooks/useWorkspaceSortFilter";
+import {
+  WorkspacesSortDialog,
+  WorkspacesFilterDialog,
+} from "@/pages/workspaces/WorkspacesSortFilterDialogs";
 import { cn } from "@/shared/lib/utils";
 import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog";
 import {
@@ -24,7 +29,12 @@ import {
   DotsThreeIcon,
   ArchiveIcon,
   ArrowLeftIcon,
+  FunnelIcon,
+  SortAscendingIcon,
+  SortDescendingIcon,
 } from "@phosphor-icons/react";
+import { IconButton } from "@vibe/ui/components/IconButton";
+import { InputField } from "@vibe/ui/components/InputField";
 import { RunningDots } from "@vibe/ui/components/RunningDots";
 
 export const Route = createFileRoute("/hosts/$hostId/workspaces")({
@@ -49,7 +59,21 @@ function MobileWorkspacesList() {
   const { activeWorkspaces, archivedWorkspaces, selectWorkspace } =
     useWorkspaceContext();
   const [showArchive, setShowArchive] = useState(false);
-  const workspaces = showArchive ? archivedWorkspaces : activeWorkspaces;
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSortDialogOpen, setIsSortDialogOpen] = useState(false);
+  const [isFilterDialogOpen, setIsFilterDialogOpen] = useState(false);
+
+  // Shared sort/filter model (same as the desktop/local sidebar).
+  const sortFilter = useWorkspaceSortFilter();
+  const { filterAndSort } = sortFilter;
+  const sortDialogTitle = "Sort workspaces";
+  const filterDialogTitle = "Filter workspaces";
+
+  const baseWorkspaces = showArchive ? archivedWorkspaces : activeWorkspaces;
+  const workspaces = useMemo(
+    () => filterAndSort(baseWorkspaces, searchQuery),
+    [filterAndSort, baseWorkspaces, searchQuery],
+  );
 
   const handleSelectWorkspace = (id: string) => {
     selectWorkspace(id);
@@ -83,14 +107,56 @@ function MobileWorkspacesList() {
         </button>
       </div>
 
+      {/* Search + sort + filter — mirrors the desktop sidebar controls */}
+      <div className="flex items-stretch gap-half border-b border-border px-base py-half">
+        <div className="min-w-0 flex-1">
+          <InputField
+            variant="search"
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search..."
+          />
+        </div>
+        <IconButton
+          icon={
+            sortFilter.sort.sortOrder === "asc"
+              ? SortAscendingIcon
+              : SortDescendingIcon
+          }
+          onClick={() => setIsSortDialogOpen(true)}
+          aria-label={sortDialogTitle}
+          title={sortDialogTitle}
+          className={cn(
+            "!h-cta !px-half !py-0",
+            sortFilter.hasNonDefaultSort && "text-brand hover:text-brand",
+          )}
+          iconClassName="size-icon-lg"
+        />
+        <IconButton
+          icon={FunnelIcon}
+          onClick={() => setIsFilterDialogOpen(true)}
+          aria-label={filterDialogTitle}
+          title={filterDialogTitle}
+          className="!h-cta !px-half !py-0"
+          iconClassName={cn(
+            "size-icon-lg",
+            sortFilter.hasActiveFilters && "text-brand",
+          )}
+        />
+      </div>
+
       {/* Workspace list */}
       <div className="flex-1 overflow-y-auto">
         {workspaces.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full px-double text-center">
             <p className="text-low text-sm">
-              {showArchive ? "No archived workspaces" : "No workspaces yet"}
+              {searchQuery
+                ? "No matching workspaces"
+                : showArchive
+                  ? "No archived workspaces"
+                  : "No workspaces yet"}
             </p>
-            {!showArchive && (
+            {!showArchive && !searchQuery && (
               <button
                 onClick={handleCreateWorkspace}
                 className="mt-base text-brand text-sm font-medium active:opacity-80"
@@ -272,6 +338,26 @@ function MobileWorkspacesList() {
           )}
         </button>
       </div>
+
+      <WorkspacesSortDialog
+        open={isSortDialogOpen}
+        onOpenChange={setIsSortDialogOpen}
+        sortBy={sortFilter.sort.sortBy}
+        sortOrder={sortFilter.sort.sortOrder}
+        onSortByChange={sortFilter.sort.setSortBy}
+        onSortOrderChange={sortFilter.sort.setSortOrder}
+      />
+      <WorkspacesFilterDialog
+        open={isFilterDialogOpen}
+        onOpenChange={setIsFilterDialogOpen}
+        projectOptions={sortFilter.projectOptions}
+        projectIds={sortFilter.filter.projectIds}
+        prFilter={sortFilter.filter.prFilter}
+        hasActiveFilters={sortFilter.hasActiveFilters}
+        onProjectFilterChange={sortFilter.filter.setProjectFilter}
+        onPrFilterChange={sortFilter.filter.setPrFilter}
+        onClearFilters={sortFilter.filter.clearFilters}
+      />
     </div>
   );
 }
