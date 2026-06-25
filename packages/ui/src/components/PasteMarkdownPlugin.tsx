@@ -12,6 +12,7 @@ import {
   $convertFromMarkdownString,
   type Transformer,
 } from '@lexical/markdown';
+import { $toggleLink, LinkNode } from '@lexical/link';
 import { getTauriInvoke, isTauriRuntime } from '../lib/platform';
 
 type Props = {
@@ -19,9 +20,28 @@ type Props = {
 };
 
 /**
+ * True when `text` is a single http(s) URL with no surrounding whitespace.
+ * Used to decide whether pasting over a non-empty selection should wrap the
+ * selected text in a link (Notion-style) instead of replacing it. Requiring a
+ * whitespace-free, parseable http(s) URL means plain-text pastes (which may
+ * contain spaces, newlines, or markdown) are never mistaken for a link.
+ */
+function isSingleHttpUrl(text: string): boolean {
+  if (!text || /\s/.test(text)) return false;
+  try {
+    const url = new URL(text);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Plugin that handles paste with markdown conversion.
  *
  * Behavior:
+ * - CMD+V with a bare URL over a non-empty selection: wrap the selection in a
+ *   link ([selected](url))
  * - CMD+V with HTML: Let default Lexical handling work
  * - CMD+V with plain text: Convert markdown to formatted nodes, insert at cursor
  * - CMD+SHIFT+V: Insert plain text as-is (raw paste)
@@ -131,6 +151,30 @@ export function PasteMarkdownPlugin({ transformers }: Props) {
           });
           shiftHeldRef.current = false;
           return true;
+        }
+
+        // Notion-style link paste: when the clipboard holds a bare http(s) URL
+        // and the user has a non-empty selection, wrap the selected text in a
+        // link ([selected](url)) instead of replacing it. Only a single,
+        // whitespace-free URL triggers this, so ordinary text pastes are
+        // unaffected. Runs before the HTML branch so it wins even when the
+        // clipboard also carries an HTML flavor of the URL. Gated on LinkNode
+        // being registered so the plugin stays safe in link-less editors.
+        const urlCandidate = plainText.trim();
+        if (isSingleHttpUrl(urlCandidate) && editor.hasNodes([LinkNode])) {
+          let wrappedInLink = false;
+          editor.update(() => {
+            const selection = $getSelection();
+            if ($isRangeSelection(selection) && !selection.isCollapsed()) {
+              $toggleLink(urlCandidate);
+              wrappedInLink = true;
+            }
+          });
+          if (wrappedInLink) {
+            event.preventDefault();
+            shiftHeldRef.current = false;
+            return true;
+          }
         }
 
         // If HTML exists, let default Lexical handling work.
