@@ -1955,10 +1955,38 @@ impl LocalContainerService {
                 any_review_ready = true;
                 continue;
             }
-            // Idempotency: a direct merge already recorded → already merged.
+            // Idempotency: a direct merge was already recorded for this
+            // workspace — but that alone does NOT mean the branch is fully
+            // merged *now*. If the workspace was merged once and then gained
+            // more commits (e.g. a manual merge, more work, then a review →
+            // approve), those new commits are still unmerged and must land.
+            // Only skip when the branch has not advanced past its target
+            // (`ahead == 0`); otherwise fall through to the merge below.
+            // Skipping unconditionally stranded post-merge commits, leaving an
+            // approved review marked "merged → In review" without merging them.
             if merges.iter().any(|m| matches!(m, Merge::Direct(_))) {
-                any_review_ready = true;
-                continue;
+                match self.git.get_branch_status(
+                    &repo.path,
+                    &workspace.branch,
+                    &workspace_repo.target_branch,
+                ) {
+                    // No commits ahead of target → everything already merged.
+                    Ok((0, _)) => {
+                        any_review_ready = true;
+                        continue;
+                    }
+                    // Commits added since the recorded merge → merge them below.
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(
+                            "vibe merge: branch status failed for {}: {}",
+                            repo.name,
+                            e
+                        );
+                        any_other_failure = true;
+                        continue;
+                    }
+                }
             }
 
             match self
