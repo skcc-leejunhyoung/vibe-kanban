@@ -497,28 +497,32 @@ export function AppBar({
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
       className={cn(
-        'flex flex-col items-center h-full min-h-0 overflow-y-auto p-base gap-base',
+        'flex flex-col items-center h-full min-h-0 overflow-hidden p-base gap-base',
         'bg-secondary border-r border-border'
       )}
     >
-      {sections.map((section) => (
-        <div key={section.key} className="flex flex-col items-center gap-1">
-          <AppBarSectionLabel>{section.label}</AppBarSectionLabel>
-          {section.items.map((item) => (
-            <div
-              key={item.key}
-              className={
-                'wrapperClassName' in item ? item.wrapperClassName : undefined
-              }
-            >
-              {renderSectionItem(item)}
-            </div>
-          ))}
-        </div>
-      ))}
+      {/* Scrollable nav sections so the bottom section (notifications + user)
+          stays reachable even when the viewport is vertically short. */}
+      <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-base overflow-y-auto">
+        {sections.map((section) => (
+          <div key={section.key} className="flex flex-col items-center gap-1">
+            <AppBarSectionLabel>{section.label}</AppBarSectionLabel>
+            {section.items.map((item) => (
+              <div
+                key={item.key}
+                className={
+                  'wrapperClassName' in item ? item.wrapperClassName : undefined
+                }
+              >
+                {renderSectionItem(item)}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
 
-      {/* Bottom section: Notifications + User popover */}
-      <div className="mt-auto pt-base flex flex-col items-center gap-4">
+      {/* Bottom section: Notifications + User popover — pinned, always visible */}
+      <div className="shrink-0 pt-base flex flex-col items-center gap-4">
         {notificationBell}
         {userPopover}
         {updateVersion ? (
