@@ -68,6 +68,9 @@ interface ActionsProps {
   onCancelQueue: () => void;
   onStop: () => void;
   onPasteFiles: (files: File[]) => void;
+  /** Start an automated `vibe` review session. When provided, a "review" button
+   * is shown next to send while idle. */
+  onVibeReview?: () => void;
 }
 
 /** A single queued follow-up message, shown in the queued-messages list. */
@@ -562,11 +565,20 @@ export function SessionChatBox<TExecutor extends string = string>({
     switch (status) {
       case 'idle':
         return (
-          <PrimaryButton
-            onClick={actions.onSend}
-            disabled={!canSend}
-            value={t('conversation.actions.send')}
-          />
+          <>
+            {actions.onVibeReview && (
+              <PrimaryButton
+                variant="secondary"
+                onClick={actions.onVibeReview}
+                value={t('conversation.actions.review')}
+              />
+            )}
+            <PrimaryButton
+              onClick={actions.onSend}
+              disabled={!canSend}
+              value={t('conversation.actions.send')}
+            />
+          </>
         );
 
       case 'sending':

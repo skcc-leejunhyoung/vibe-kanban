@@ -387,6 +387,18 @@ export const sessionsApi = {
     return handleApiResponse<ExecutionProcess, ReviewError>(response);
   },
 
+  /** Manually start an automated `vibe` review session for the workspace, as if
+   * the coding agent had reported `VIBE_RESULT: done`. Returns the new session. */
+  vibeReview: async (sessionId: string): Promise<Session> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/vibe-review`,
+      {
+        method: 'POST',
+      }
+    );
+    return handleApiResponse<Session, ReviewError>(response);
+  },
+
   reset: async (
     sessionId: string,
     data: ResetProcessRequest

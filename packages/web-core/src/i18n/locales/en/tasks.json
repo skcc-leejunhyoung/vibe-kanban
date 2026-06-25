@@ -142,6 +142,7 @@
       "stopping": "Stopping",
       "loading": "Loading",
       "send": "Send",
+      "review": "Review",
       "sending": "Sending",
       "queue": "Queue",
       "sendNow": "Send now",
@@ -156,6 +157,10 @@
       "scrollToPreviousMessage": "Go to previous message",
       "reset": "Reset",
       "resetTooltip": "Reset to this point"
+    },
+    "review": {
+      "failedTitle": "Couldn't start review",
+      "failedDescription": "An error occurred while starting the review session."
     },
     "autoResume": {
       "toggleLabel": "Toggle auto-resume on usage limit",

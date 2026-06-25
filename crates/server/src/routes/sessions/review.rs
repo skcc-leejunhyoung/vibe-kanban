@@ -138,3 +138,58 @@ pub async fn start_review(
 
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }
+
+/// Manually start a `vibe` review session for the current workspace, behaving as
+/// if its coding agent had just reported `VIBE_RESULT: done`. Spawns a fresh
+/// dedicated review session (and hands the rest of the automated workflow off to
+/// the backend) instead of a one-shot review of the current session.
+#[axum::debug_handler]
+pub async fn vibe_review(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Session, ReviewError>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+        .await?
+        .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
+            "Workspace not found".to_string(),
+        )))?;
+
+    if workspace.task_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "리뷰는 이슈에 연결된 워크스페이스에서만 시작할 수 있습니다".to_string(),
+        ));
+    }
+
+    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
+        .await?
+    {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            ReviewError::ProcessAlreadyRunning,
+        )));
+    }
+
+    deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+
+    let review_session = deployment
+        .container()
+        .vibe_manual_start_review(&workspace, &session)
+        .await?;
+
+    deployment
+        .track_if_analytics_allowed(
+            "vibe_review_started",
+            serde_json::json!({
+                "workspace_id": workspace.id.to_string(),
+                "session_id": session.id.to_string(),
+                "review_session_id": review_session.id.to_string(),
+            }),
+        )
+        .await;
+
+    Ok(ResponseJson(ApiResponse::success(review_session)))
+}

@@ -1660,7 +1660,8 @@ impl LocalContainerService {
                     .await;
                 let prompt =
                     vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
-                self.vibe_start_review_session(ctx, &prompt).await?;
+                self.vibe_start_review_session(&ctx.workspace, &ctx.session, &prompt)
+                    .await?;
             }
 
             VibeAction::ReviewFollowup { turn } => {
@@ -1837,15 +1838,17 @@ impl LocalContainerService {
     /// the `review` phase pointing at a session that never ran.
     async fn vibe_start_review_session(
         &self,
-        ctx: &ExecutionContext,
+        workspace: &Workspace,
+        session: &Session,
         prompt: &str,
-    ) -> Result<(), ContainerError> {
+    ) -> Result<Session, ContainerError> {
         // See `vibe_send_followup`: a missing profile must error, not no-op, so
-        // the run is not silently abandoned in a non-terminal phase.
-        let Some(executor_config) = self.vibe_executor_config(ctx.session.id).await else {
+        // the run is not silently abandoned in a non-terminal phase. The review
+        // session inherits the source session's executor config.
+        let Some(executor_config) = self.vibe_executor_config(session.id).await else {
             return Err(ContainerError::Other(anyhow!(
                 "vibe: no executor profile for session {}, cannot start review",
-                ctx.session.id
+                session.id
             )));
         };
 
@@ -1854,15 +1857,15 @@ impl LocalContainerService {
             executor: Some(executor_config.executor.to_string()),
             name: Some("vibe-review".to_string()),
         };
-        let session = Session::create(&self.db.pool, &create, session_id, ctx.workspace.id).await?;
+        let review_session =
+            Session::create(&self.db.pool, &create, session_id, workspace.id).await?;
 
-        let working_dir = session
+        let working_dir = review_session
             .agent_working_dir
             .as_ref()
             .filter(|dir| !dir.is_empty())
             .cloned();
-        let repos =
-            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
+        let repos = WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id).await?;
         let cleanup_action = self.cleanup_actions_for_repos(&repos);
         let action = ExecutorAction::new(
             ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
@@ -1873,8 +1876,8 @@ impl LocalContainerService {
             cleanup_action.map(Box::new),
         );
         self.start_execution(
-            &ctx.workspace,
-            &session,
+            workspace,
+            &review_session,
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
@@ -1886,10 +1889,10 @@ impl LocalContainerService {
         // StartReview — instead of being stranded in `review` pointing at a
         // session that never ran (previously recoverable only by the 15-minute
         // orphan watcher).
-        VibeRun::begin_review(&self.db.pool, ctx.workspace.id, session.id)
+        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id)
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
-        Ok(())
+        Ok(review_session)
     }
 
     /// Rule 5: fast-forward merge each qualifying repo into its target branch,
@@ -2721,6 +2724,46 @@ impl ContainerService for LocalContainerService {
         }
 
         Ok(())
+    }
+
+    /// Manually drive a workspace into the automated `vibe` review phase, as if
+    /// its coding agent had just emitted `VIBE_RESULT: done`. Used by the "review"
+    /// button next to send: it materializes the run row (so the review verdict →
+    /// merge half of the workflow takes over), mirrors the `vibe`/`vibe-done`
+    /// issue tags, and spawns the dedicated review session.
+    async fn vibe_manual_start_review(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+    ) -> Result<Session, ContainerError> {
+        let Some(task_id) = workspace.task_id else {
+            return Err(ContainerError::Other(anyhow!(
+                "리뷰는 이슈에 연결된 워크스페이스에서만 시작할 수 있습니다"
+            )));
+        };
+        let Some(client) = self.remote_client.clone() else {
+            return Err(ContainerError::Other(anyhow!(
+                "vibe: remote client unavailable, cannot start review"
+            )));
+        };
+
+        // Materialize the run row so the rest of the automated workflow (review
+        // verdict → merge) takes over from here, exactly as it would after an
+        // organic `VIBE_RESULT: done`.
+        VibeRun::get_or_create(&self.db.pool, workspace.id, task_id)
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!("vibe get_or_create failed: {e}")))?;
+
+        // Best-effort issue tags mirroring the organic coding→review transition:
+        // `vibe` opts the issue into the workflow, `vibe-done` marks coding done.
+        self.vibe_tag(&client, task_id, vibe_orchestrator::TAG_VIBE)
+            .await;
+        self.vibe_tag(&client, task_id, vibe_orchestrator::TAG_DONE)
+            .await;
+
+        let prompt = vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
+        self.vibe_start_review_session(workspace, session, &prompt)
+            .await
     }
 }
 fn success_exit_status() -> std::process::ExitStatus {

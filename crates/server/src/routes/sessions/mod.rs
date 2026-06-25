@@ -612,6 +612,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/reset", post(reset_process))
         .route("/setup", post(run_setup_script))
         .route("/review", post(review::start_review))
+        .route("/vibe-review", post(review::vibe_review))
         .layer(from_fn_with_state(
             deployment.clone(),
             load_session_middleware,

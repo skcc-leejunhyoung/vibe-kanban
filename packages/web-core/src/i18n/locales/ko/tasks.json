@@ -401,6 +401,7 @@
       "stopping": "중지 중",
       "loading": "로딩 중",
       "send": "보내기",
+      "review": "리뷰",
       "sending": "보내는 중",
       "queue": "대기열에 추가",
       "sendNow": "지금 보내기",
@@ -415,6 +416,10 @@
       "scrollToPreviousMessage": "Go to previous message",
       "reset": "초기화",
       "resetTooltip": "이 시점으로 초기화"
+    },
+    "review": {
+      "failedTitle": "리뷰를 시작할 수 없습니다",
+      "failedDescription": "리뷰 세션을 시작하는 중 오류가 발생했습니다."
     },
     "autoResume": {
       "toggleLabel": "사용량 한도 도달 시 자동 재개 전환",

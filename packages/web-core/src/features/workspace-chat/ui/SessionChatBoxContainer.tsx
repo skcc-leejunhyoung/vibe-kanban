@@ -612,6 +612,28 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     reviewContext,
   ]);
 
+  // Start an automated `vibe` review (as if the coding agent had reported
+  // VIBE_RESULT: done): the backend spawns a dedicated review session and drives
+  // the review → merge workflow. Switch to the new session so the user can watch.
+  const handleVibeReview = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const reviewSession = await sessionsApi.vibeReview(sessionId);
+      await queryClient.invalidateQueries({
+        queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+      });
+      onSelectSession?.(reviewSession.id);
+    } catch (error) {
+      void ErrorDialog.show({
+        title: t('conversation.review.failedTitle'),
+        message:
+          error instanceof Error
+            ? error.message
+            : t('conversation.review.failedDescription'),
+      });
+    }
+  }, [sessionId, workspaceId, hostId, queryClient, onSelectSession, t]);
+
   // Track previous process count for queue refresh
   const prevProcessCountRef = useRef(processes.length);
 
@@ -1162,6 +1184,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onCancelQueue: handleCancelQueue,
         onStop: stopExecution,
         onPasteFiles: uploadFiles,
+        onVibeReview: sessionId ? handleVibeReview : undefined,
       }}
       queuedMessages={queuedMessages.map((m) => ({
         id: m.id,

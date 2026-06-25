@@ -782,6 +782,16 @@ pub trait ContainerService {
 
     async fn is_container_clean(&self, workspace: &Workspace) -> Result<bool, ContainerError>;
 
+    /// Manually enter the automated `vibe` review phase for a workspace, exactly
+    /// as if its coding agent had just reported `VIBE_RESULT: done`: ensure a
+    /// `vibe_runs` row exists, tag the linked issue (`vibe` + `vibe-done`), and
+    /// spawn a fresh dedicated review session. Returns the new review session.
+    async fn vibe_manual_start_review(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+    ) -> Result<Session, ContainerError>;
+
     async fn start_execution_inner(
         &self,
         workspace: &Workspace,
