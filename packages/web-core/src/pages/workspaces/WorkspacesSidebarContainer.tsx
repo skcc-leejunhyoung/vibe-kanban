@@ -56,10 +56,20 @@ const PAGE_SIZE = 50;
 
 interface WorkspacesSidebarContainerProps {
   onScrollToBottom?: (behavior?: 'auto' | 'smooth') => void;
+  /**
+   * Override workspace selection. Remote mobile navigates to a workspace route
+   * instead of switching the mobile tab; when provided, the default
+   * select-then-switch-tab behaviour is skipped.
+   */
+  onSelectWorkspaceOverride?: (id: string) => void;
+  /** Override the add-workspace action (remote mobile routes to create). */
+  onAddWorkspaceOverride?: () => void;
 }
 
 export function WorkspacesSidebarContainer({
   onScrollToBottom = () => {},
+  onSelectWorkspaceOverride,
+  onAddWorkspaceOverride,
 }: WorkspacesSidebarContainerProps) {
   const {
     workspaceId: selectedWorkspaceId,
@@ -209,6 +219,10 @@ export function WorkspacesSidebarContainer({
   // Handle workspace selection - scroll to bottom if re-selecting same workspace
   const handleSelectWorkspace = useCallback(
     (id: string) => {
+      if (onSelectWorkspaceOverride) {
+        onSelectWorkspaceOverride(id);
+        return;
+      }
       if (id === selectedWorkspaceId) {
         onScrollToBottom();
       } else {
@@ -219,6 +233,7 @@ export function WorkspacesSidebarContainer({
       }
     },
     [
+      onSelectWorkspaceOverride,
       selectedWorkspaceId,
       selectWorkspace,
       onScrollToBottom,
@@ -365,11 +380,15 @@ export function WorkspacesSidebarContainer({
   }, [focusedWorkspaceId, displayedWorkspaceIds]);
 
   const handleAddWorkspace = useCallback(() => {
+    if (onAddWorkspaceOverride) {
+      onAddWorkspaceOverride();
+      return;
+    }
     navigateToCreate();
     if (isMobile) {
       setMobileActiveTab('chat');
     }
-  }, [navigateToCreate, isMobile, setMobileActiveTab]);
+  }, [onAddWorkspaceOverride, navigateToCreate, isMobile, setMobileActiveTab]);
 
   const handleOpenWorkspaceActions = useCallback((workspaceId: string) => {
     CommandBarDialog.show({
