@@ -150,28 +150,30 @@ async fn steer_message(
 
     match running {
         Some(proc) => {
+            // Push the message to the front and pin it as the steer target. The
+            // exit handler drains by this id (not by queue position), so a
+            // reorder/promote that lands before the kill fires can't divert the
+            // interrupt to a different message.
+            let queued = deployment
+                .queued_message_service()
+                .enqueue_front(session.id, data);
+
             // Compare-and-set: only the first steer for this session owns the
             // interrupt. `mark_steering` returns false when a steer is already in
             // flight (a previous turn was killed but its drain hasn't started the
             // follow-up yet, so it briefly leaves nothing in `running`). In that
-            // case don't kill again — queue this message at the back and let the
-            // in-flight drain/finalize chain run it in order. Killing again could
-            // start two turns on the same session at once.
+            // case don't kill again — the in-flight steer's id-based drain runs
+            // its own pinned target and the finalize chain runs this message in
+            // turn. Killing again could start two turns on the same session at
+            // once.
             if !deployment
                 .queued_message_service()
-                .mark_steering(session.id)
+                .mark_steering(session.id, queued.id)
             {
-                deployment
-                    .queued_message_service()
-                    .enqueue(session.id, data);
                 return Ok(ResponseJson(ApiResponse::success(
                     deployment.queued_message_service().get_status(session.id),
                 )));
             }
-
-            deployment
-                .queued_message_service()
-                .enqueue_front(session.id, data);
 
             // Kill the running turn in the background so "send now" returns
             // immediately; the exit handler drains the steered message.
@@ -214,10 +216,10 @@ struct ReorderQueueRequest {
 
 /// Spawn the background kill of a running coding-agent turn for a steer
 /// ("send now"). Returning immediately keeps the HTTP handler snappy: the
-/// kill's exit handler normally drains the front (steered) message and starts
+/// kill's exit handler normally drains the pinned (steered) message and starts
 /// it as a follow-up. If the kill errors because the child is already gone the
-/// exit monitor may never fire, so as a fallback we consume the steering flag
-/// and drain the front message directly so it isn't stranded.
+/// exit monitor may never fire, so as a fallback we consume the steering target
+/// and drain that pinned message directly so it isn't stranded.
 fn spawn_steer_kill(
     deployment: DeploymentImpl,
     session: Session,
@@ -232,10 +234,12 @@ fn spawn_steer_kill(
             .await
         {
             tracing::warn!("Steer: failed to stop running execution for session {session_id}: {e}");
-            if deployment
+            if let Some(steered_id) = deployment
                 .queued_message_service()
                 .take_steering(session_id)
-                && let Some(msg) = deployment.queued_message_service().take_next(session_id)
+                && let Some(msg) = deployment
+                    .queued_message_service()
+                    .take_steered_or_front(session_id, steered_id)
                 && let Err(e) = deployment
                     .container()
                     .start_followup_for_session(&session, &workspace, &msg.data)
@@ -286,11 +290,12 @@ async fn steer_queued_message(
     match running {
         Some(proc) => {
             // Only the first steer owns the interrupt (see `steer_message`). A
-            // concurrent one just reorders the message to the front and lets the
-            // in-flight drain run it — no second kill.
+            // concurrent one just bumps this message toward the front and lets
+            // the in-flight steer's id-pinned drain run its own target — no
+            // second kill.
             if !deployment
                 .queued_message_service()
-                .mark_steering(session.id)
+                .mark_steering(session.id, message_id)
             {
                 deployment
                     .queued_message_service()
@@ -300,9 +305,11 @@ async fn steer_queued_message(
                 )));
             }
 
-            // Move the chosen message to the front so the kill's drain picks it
-            // up. If it's already gone (drained/cancelled) there's nothing to
-            // steer, so release the flag instead of killing a turn for nothing.
+            // We pinned `message_id` as the steer target, so the kill's drain
+            // picks exactly it regardless of later reordering. Move it to the
+            // front too so it's visibly next; if it's already gone
+            // (drained/cancelled) there's nothing to steer, so release the
+            // target instead of killing a turn for nothing.
             if !deployment
                 .queued_message_service()
                 .promote_to_front(session.id, message_id)

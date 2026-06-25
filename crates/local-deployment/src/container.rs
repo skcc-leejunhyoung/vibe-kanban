@@ -1218,8 +1218,10 @@ impl LocalContainerService {
         if matches!(
             ctx.execution_process.run_reason,
             ExecutionProcessRunReason::CodingAgent
-        ) && self.queued_message_service.take_steering(ctx.session.id)
-            && let Some(queued_msg) = self.queued_message_service.take_next(ctx.session.id)
+        ) && let Some(steered_id) = self.queued_message_service.take_steering(ctx.session.id)
+            && let Some(queued_msg) = self
+                .queued_message_service
+                .take_steered_or_front(ctx.session.id, steered_id)
         {
             tracing::info!(
                 "Steer: starting interrupting follow-up for session {}",

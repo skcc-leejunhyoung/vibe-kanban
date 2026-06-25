@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use dashmap::{DashMap, DashSet};
+use dashmap::{DashMap, mapref::entry::Entry};
 use db::models::scratch::DraftFollowUpData;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -38,21 +38,24 @@ pub enum QueueStatus {
 ///
 /// Each session owns an ordered queue (oldest at the front). Messages are
 /// drained one at a time as each terminal turn finishes, so a session can have
-/// several follow-ups stacked up. The `steering` set marks sessions whose
-/// currently-running turn was interrupted by a "send now" request — those
-/// sessions drain their front message even though the execution was killed
+/// several follow-ups stacked up. The `steering` map marks sessions whose
+/// currently-running turn was interrupted by a "send now" request, and records
+/// *which* queued message id that steer pinned — those sessions drain that
+/// specific message even though the execution was killed, regardless of any
+/// reorder/promote that landed in the meantime
 /// (see `LocalContainerService::handle_execution_post_completion`).
 #[derive(Clone)]
 pub struct QueuedMessageService {
     queue: Arc<DashMap<Uuid, VecDeque<QueuedMessage>>>,
-    steering: Arc<DashSet<Uuid>>,
+    /// session id -> the queued message id the in-flight steer kill must drain.
+    steering: Arc<DashMap<Uuid, Uuid>>,
 }
 
 impl QueuedMessageService {
     pub fn new() -> Self {
         Self {
             queue: Arc::new(DashMap::new()),
-            steering: Arc::new(DashSet::new()),
+            steering: Arc::new(DashMap::new()),
         }
     }
 
@@ -84,6 +87,28 @@ impl QueuedMessageService {
             .queue
             .get_mut(&session_id)
             .and_then(|mut q| q.pop_front());
+        self.queue.remove_if(&session_id, |_, q| q.is_empty());
+        msg
+    }
+
+    /// Remove and return the steered message `message_id` if it's still queued,
+    /// otherwise fall back to the front message. Used by the steer-kill exit
+    /// handler so the interrupt drains the message the user actually steered
+    /// regardless of its current queue position (a concurrent reorder/promote
+    /// may have moved it), while still draining *something* — and thus
+    /// preserving the rest of the queue — if the steered message was cancelled
+    /// out from under us.
+    pub fn take_steered_or_front(
+        &self,
+        session_id: Uuid,
+        message_id: Uuid,
+    ) -> Option<QueuedMessage> {
+        let msg = self.queue.get_mut(&session_id).and_then(|mut q| {
+            match q.iter().position(|m| m.id == message_id) {
+                Some(pos) => q.remove(pos),
+                None => q.pop_front(),
+            }
+        });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
         msg
     }
@@ -178,27 +203,39 @@ impl QueuedMessageService {
         }
     }
 
-    /// Mark a session as being steered: its currently-running turn is about to be
-    /// killed by a "send now" request, and the front queued message must still be
-    /// drained when that kill completes (instead of being discarded).
+    /// Mark a session as being steered toward `message_id`: its currently-running
+    /// turn is about to be killed by a "send now", and when that kill completes
+    /// the exit handler must drain *this specific message* (by id) as the
+    /// interrupting follow-up — not merely whatever sits at the queue front.
+    /// Pinning the target by id means a concurrent reorder/promote/cancel can't
+    /// divert the interrupt to a different message.
     ///
-    /// Returns `true` only if this call set the flag — i.e. no steer was already
-    /// in flight for the session. Callers use this as a compare-and-set so the
-    /// first steer owns the interrupt (kills the running turn) and concurrent
-    /// steers queue behind it instead of starting a second kill.
-    pub fn mark_steering(&self, session_id: Uuid) -> bool {
-        self.steering.insert(session_id)
+    /// Returns `true` only if this call set the target — i.e. no steer was
+    /// already in flight for the session. Callers use this as a compare-and-set
+    /// so the first steer owns the interrupt (kills the running turn) and
+    /// concurrent steers queue behind it instead of starting a second kill.
+    pub fn mark_steering(&self, session_id: Uuid, message_id: Uuid) -> bool {
+        match self.steering.entry(session_id) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(e) => {
+                e.insert(message_id);
+                true
+            }
+        }
     }
 
-    /// Whether a steer is currently in flight for the session — the flag is set
+    /// Whether a steer is currently in flight for the session — the target is set
     /// but not yet consumed by the drain. Non-consuming peek.
     pub fn is_steering(&self, session_id: Uuid) -> bool {
-        self.steering.contains(&session_id)
+        self.steering.contains_key(&session_id)
     }
 
-    /// Consume the steering flag for a session, returning whether it was set.
-    pub fn take_steering(&self, session_id: Uuid) -> bool {
-        self.steering.remove(&session_id).is_some()
+    /// Consume the steering target for a session, returning the steered message
+    /// id if one was set.
+    pub fn take_steering(&self, session_id: Uuid) -> Option<Uuid> {
+        self.steering
+            .remove(&session_id)
+            .map(|(_, message_id)| message_id)
     }
 
     fn new_message(session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
@@ -307,6 +344,41 @@ mod tests {
     }
 
     #[test]
+    fn take_steered_or_front_drains_pinned_id_then_falls_back() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+
+        let a = svc.enqueue(session, sample_data("a"));
+        let b = svc.enqueue(session, sample_data("b"));
+        let c = svc.enqueue(session, sample_data("c"));
+
+        // The pinned id is drained regardless of its queue position (here the
+        // middle), leaving the rest of the queue intact and in order — this is
+        // what stops a concurrent reorder/promote from diverting the interrupt.
+        assert_eq!(svc.take_steered_or_front(session, b.id).unwrap().id, b.id);
+        let queued = svc.get_queued(session);
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[0].id, a.id);
+        assert_eq!(queued[1].id, c.id);
+
+        // If the pinned id is gone (e.g. cancelled), fall back to the front so
+        // the queue still drains rather than stranding the remaining messages.
+        assert_eq!(
+            svc.take_steered_or_front(session, Uuid::new_v4())
+                .unwrap()
+                .id,
+            a.id
+        );
+
+        // Draining the last one cleans up the session entry.
+        assert_eq!(svc.take_steered_or_front(session, c.id).unwrap().id, c.id);
+        assert!(!svc.has_queued(session));
+
+        // Empty/unknown session yields None (no panic, nothing to fall back to).
+        assert!(svc.take_steered_or_front(Uuid::new_v4(), a.id).is_none());
+    }
+
+    #[test]
     fn reorder_applies_requested_order_and_keeps_unlisted() {
         let svc = QueuedMessageService::new();
         let session = Uuid::new_v4();
@@ -351,19 +423,22 @@ mod tests {
     fn steering_flag_is_one_shot() {
         let svc = QueuedMessageService::new();
         let session = Uuid::new_v4();
+        let msg = Uuid::new_v4();
+        let other = Uuid::new_v4();
 
         assert!(!svc.is_steering(session));
-        assert!(!svc.take_steering(session));
+        assert_eq!(svc.take_steering(session), None);
 
-        // First mark wins (returns true); a concurrent mark loses (false) so it
-        // won't start a second kill.
-        assert!(svc.mark_steering(session));
+        // First mark wins (returns true) and pins the steered message id; a
+        // concurrent mark loses (false) so it won't start a second kill — and it
+        // does not overwrite the pinned target.
+        assert!(svc.mark_steering(session, msg));
         assert!(svc.is_steering(session));
-        assert!(!svc.mark_steering(session));
+        assert!(!svc.mark_steering(session, other));
 
-        // `take` consumes the flag exactly once.
-        assert!(svc.take_steering(session));
+        // `take` consumes the target exactly once, returning the pinned id.
+        assert_eq!(svc.take_steering(session), Some(msg));
         assert!(!svc.is_steering(session));
-        assert!(!svc.take_steering(session));
+        assert_eq!(svc.take_steering(session), None);
     }
 }
