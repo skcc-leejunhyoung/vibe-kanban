@@ -9,7 +9,6 @@ import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
 import { useReviewMode } from '@/shared/hooks/useReviewMode';
 import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
-import { saveProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
 import { getSortedExecutorVariantKeys } from '@/shared/lib/executor';
 import {
   toPrettyCase,
@@ -264,31 +263,17 @@ export function CreateChatBoxContainer({
     [linkedIssue]
   );
 
+  // Workspace creation must not mutate the project's saved repo defaults.
+  // The picked repos/branches are a per-workspace override; project defaults
+  // only change via the project settings dialog.
   const finishWorkspaceCreated = useCallback(
-    async (
-      workspaceId: string,
-      workspaceRepos: { repo_id: string; target_branch: string }[]
-    ) => {
+    async (workspaceId: string) => {
       onWorkspaceCreated(workspaceId);
-
-      if (linkedIssue?.remoteProjectId) {
-        saveProjectRepoDefaults(
-          linkedIssue.remoteProjectId,
-          workspaceRepos
-        ).catch((err) =>
-          console.warn('Failed to save project repo defaults:', err)
-        );
-      }
 
       clearAttachments();
       await clearDraft();
     },
-    [
-      onWorkspaceCreated,
-      linkedIssue?.remoteProjectId,
-      clearAttachments,
-      clearDraft,
-    ]
+    [onWorkspaceCreated, clearAttachments, clearDraft]
   );
 
   // Handle submit
@@ -315,7 +300,7 @@ export function CreateChatBoxContainer({
     });
 
     if (result.workspace) {
-      await finishWorkspaceCreated(result.workspace.id, workspaceRepos);
+      await finishWorkspaceCreated(result.workspace.id);
     }
   }, [
     canSubmit,
@@ -349,7 +334,7 @@ export function CreateChatBoxContainer({
     });
 
     if (result.workspace) {
-      await finishWorkspaceCreated(result.workspace.id, workspaceRepos);
+      await finishWorkspaceCreated(result.workspace.id);
     }
   }, [
     canCreateOnly,
