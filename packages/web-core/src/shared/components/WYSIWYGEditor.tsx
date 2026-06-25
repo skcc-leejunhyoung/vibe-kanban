@@ -411,8 +411,13 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
           quote:
             'my-3 border-l-4 border-primary-foreground pl-4 text-muted-foreground',
           list: {
-            ul: 'my-1 list-disc pl-6',
-            ol: 'my-1 list-decimal pl-6',
+            // ml-3 shifts the whole list inward so the outside marker is drawn
+            // within the editor instead of hugging (or overflowing past) the
+            // left edge when "1. "/"- " auto-converts. pl-6 keeps the marker
+            // gutter wide enough for multi-digit numbers; `outside` preserves
+            // hanging indentation when an item wraps.
+            ul: 'my-1 ml-3 list-disc pl-6',
+            ol: 'my-1 ml-3 list-decimal pl-6',
             listitem: '',
             nested: {
               // Hide the structural wrapper marker Lexical adds for nested items.
