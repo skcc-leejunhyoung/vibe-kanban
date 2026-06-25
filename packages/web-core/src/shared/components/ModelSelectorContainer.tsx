@@ -48,13 +48,22 @@ interface ModelSelectorContainerProps {
   agent: BaseCodingAgent | null;
   workspaceId: string | undefined;
   sessionId?: string;
-  onAdvancedSettings: () => void;
+  onAdvancedSettings?: () => void;
   presets: string[];
   selectedPreset: string | null;
-  onPresetSelect: (presetId: string | null) => void;
+  onPresetSelect?: (presetId: string | null) => void;
   onOverrideChange: (partial: Partial<ExecutorConfig>) => void;
   executorConfig: ExecutorConfig | null;
   presetOptions: ExecutorConfig | null | undefined;
+  /** Show the preset (variant) dropdown. Hidden in Settings, where the variant
+   * is already chosen by the surrounding picker. */
+  showPreset?: boolean;
+  /** Show the permission-policy dropdown. Hidden in Settings, where the policy
+   * maps to executor-specific fields edited via the raw JSON form. */
+  showPermissions?: boolean;
+  /** Persist the picked model/effort to the recently-used LRU. Disabled in
+   * Settings, which owns its own save flow. */
+  persistRecent?: boolean;
 }
 
 export function ModelSelectorContainer({
@@ -68,6 +77,9 @@ export function ModelSelectorContainer({
   onOverrideChange,
   executorConfig,
   presetOptions,
+  showPreset = true,
+  showPermissions = true,
+  persistRecent = true,
 }: ModelSelectorContainerProps) {
   const { t } = useTranslation('common');
   const { theme } = useTheme();
@@ -242,6 +254,7 @@ export function ModelSelectorContainer({
   const pendingReasoningRef = useRef<string | null>(null);
 
   const persistPendingSelections = useCallback(() => {
+    if (!persistRecent) return;
     if (!profiles || !agent) return;
     if (!pendingModelRef.current && !pendingReasoningRef.current) return;
 
@@ -282,6 +295,7 @@ export function ModelSelectorContainer({
   }, [
     agent,
     config,
+    persistRecent,
     profiles,
     reloadSystem,
     selectedModelId,
@@ -432,38 +446,44 @@ export function ModelSelectorContainer({
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTriggerButton
-          size="sm"
-          icon={SlidersHorizontalIcon}
-          label={
-            resolvedPreset?.toLowerCase() !== 'default'
-              ? presetLabel
-              : undefined
-          }
-          showCaret={false}
-        />
-        <DropdownMenuContent align="start">
-          <DropdownMenuLabel>{t('modelSelector.preset')}</DropdownMenuLabel>
-          {presets.length > 0 ? (
-            presets.map((preset) => (
-              <DropdownMenuItem
-                key={preset}
-                icon={preset === resolvedPreset ? CheckIcon : undefined}
-                onClick={() => onPresetSelect?.(preset)}
-              >
-                {toPrettyCase(preset)}
-              </DropdownMenuItem>
-            ))
-          ) : (
-            <DropdownMenuItem disabled>{presetLabel}</DropdownMenuItem>
-          )}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem icon={GearIcon} onClick={onAdvancedSettings}>
-            {t('modelSelector.custom')}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {showPreset && (
+        <DropdownMenu>
+          <DropdownMenuTriggerButton
+            size="sm"
+            icon={SlidersHorizontalIcon}
+            label={
+              resolvedPreset?.toLowerCase() !== 'default'
+                ? presetLabel
+                : undefined
+            }
+            showCaret={false}
+          />
+          <DropdownMenuContent align="start">
+            <DropdownMenuLabel>{t('modelSelector.preset')}</DropdownMenuLabel>
+            {presets.length > 0 ? (
+              presets.map((preset) => (
+                <DropdownMenuItem
+                  key={preset}
+                  icon={preset === resolvedPreset ? CheckIcon : undefined}
+                  onClick={() => onPresetSelect?.(preset)}
+                >
+                  {toPrettyCase(preset)}
+                </DropdownMenuItem>
+              ))
+            ) : (
+              <DropdownMenuItem disabled>{presetLabel}</DropdownMenuItem>
+            )}
+            {onAdvancedSettings && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem icon={GearIcon} onClick={onAdvancedSettings}>
+                  {t('modelSelector.custom')}
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       {showModelSelector && (
         <ModelSelectorPopover
@@ -495,7 +515,7 @@ export function ModelSelectorContainer({
         />
       )}
 
-      {permissionPolicy && config.permissions.length > 0 && (
+      {showPermissions && permissionPolicy && config.permissions.length > 0 && (
         <DropdownMenu>
           <DropdownMenuTriggerButton
             size="sm"

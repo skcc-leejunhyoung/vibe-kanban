@@ -409,6 +409,7 @@
       },
       "editor": {
         "formLabel": "Edit JSON",
+        "modelLabel": "Model & reasoning",
         "agentLabel": "Agent",
         "agentPlaceholder": "Select executor type",
         "configLabel": "Configuration",

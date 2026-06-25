@@ -15,6 +15,12 @@ import {
 } from '@vibe/ui/components/Dropdown';
 import { Switch } from '@vibe/ui/components/Switch';
 import { ExecutorConfigForm } from './ExecutorConfigForm';
+import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
+import {
+  applyModelConfigToProfile,
+  getModelSelectorProfileFields,
+  profileToExecutorConfig,
+} from '@/shared/lib/profileModelConfig';
 import { useMachineProfiles } from '@/shared/hooks/useProfiles';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { CreateConfigurationDialog } from '../CreateConfigurationDialog';
@@ -535,27 +541,70 @@ export function AgentsSettingsSection() {
           </TwoColumnPicker>
 
           {/* Config form */}
-          {selectedExecutorType && selectedConfiguration && (
-            <div className="bg-secondary/50 border border-border rounded-sm p-4">
-              <ExecutorConfigForm
-                key={`${selectedExecutorType}-${selectedConfiguration}`}
-                executor={selectedExecutorType}
-                value={
-                  (executorsMap?.[selectedExecutorType]?.[
-                    selectedConfiguration
-                  ]?.[selectedExecutorType] as Record<string, unknown>) || {}
-                }
-                onChange={(formData) =>
-                  handleExecutorConfigChange(
-                    selectedExecutorType,
-                    selectedConfiguration,
-                    formData
-                  )
-                }
-                disabled={profilesSaving}
-              />
-            </div>
-          )}
+          {selectedExecutorType &&
+            selectedConfiguration &&
+            (() => {
+              const executorType = selectedExecutorType;
+              const configuration = selectedConfiguration;
+              const profileData =
+                (executorsMap?.[executorType]?.[configuration]?.[
+                  executorType
+                ] as Record<string, unknown>) || {};
+              return (
+                <div className="bg-secondary/50 border border-border rounded-sm p-4 space-y-4">
+                  {/* Model & effort — same selector as the workspace chat */}
+                  <div className="space-y-base">
+                    <label className="block text-sm font-medium text-normal">
+                      {t('settings.agents.editor.modelLabel')}
+                    </label>
+                    <div className="flex flex-wrap items-center gap-base">
+                      <ModelSelectorContainer
+                        key={`${executorType}-${configuration}`}
+                        agent={executorType}
+                        workspaceId={undefined}
+                        executorConfig={profileToExecutorConfig(
+                          executorType,
+                          configuration,
+                          profileData
+                        )}
+                        presetOptions={null}
+                        onOverrideChange={(partial) =>
+                          handleExecutorConfigChange(
+                            executorType,
+                            configuration,
+                            applyModelConfigToProfile(
+                              executorType,
+                              profileData,
+                              partial
+                            )
+                          )
+                        }
+                        presets={[]}
+                        selectedPreset={configuration}
+                        showPreset={false}
+                        showPermissions={false}
+                        persistRecent={false}
+                      />
+                    </div>
+                  </div>
+
+                  <ExecutorConfigForm
+                    key={`${executorType}-${configuration}`}
+                    executor={executorType}
+                    value={profileData}
+                    hiddenFields={getModelSelectorProfileFields(executorType)}
+                    onChange={(formData) =>
+                      handleExecutorConfigChange(
+                        executorType,
+                        configuration,
+                        formData
+                      )
+                    }
+                    disabled={profilesSaving}
+                  />
+                </div>
+              );
+            })()}
         </div>
       ) : null}
 

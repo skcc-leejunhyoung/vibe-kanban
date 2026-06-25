@@ -17,6 +17,10 @@ interface ExecutorConfigFormProps {
   disabled?: boolean;
   saving?: boolean;
   isDirty?: boolean;
+  /** Schema fields to hide from the raw form because they are edited elsewhere
+   * (e.g. model/effort/agent owned by the model selector). Their values are
+   * still preserved in the saved form data. */
+  hiddenFields?: string[];
 }
 
 import schemas from 'virtual:executor-schemas';
@@ -30,6 +34,7 @@ export function ExecutorConfigForm({
   disabled = false,
   saving = false,
   isDirty = false,
+  hiddenFields,
 }: ExecutorConfigFormProps) {
   const { t } = useTranslation('settings');
   const [formData, setFormData] = useState<unknown>(value || {});
@@ -56,8 +61,8 @@ export function ExecutorConfigForm({
     [formData, onChange]
   );
 
-  const uiSchema = useMemo(
-    () => ({
+  const uiSchema = useMemo(() => {
+    const schema: Record<string, unknown> = {
       env: {
         'ui:field': 'KeyValueField',
       },
@@ -65,9 +70,12 @@ export function ExecutorConfigForm({
         'ui:title': t('settings.agents.autoResume.label'),
         'ui:description': t('settings.agents.autoResume.help'),
       },
-    }),
-    [t]
-  );
+    };
+    for (const field of hiddenFields ?? []) {
+      schema[field] = { ...(schema[field] as object), 'ui:widget': 'hidden' };
+    }
+    return schema;
+  }, [t, hiddenFields]);
 
   // Pass the env update handler via formContext
   const formContext = useMemo(

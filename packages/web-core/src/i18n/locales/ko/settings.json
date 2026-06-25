@@ -401,6 +401,7 @@
       },
       "editor": {
         "formLabel": "JSON 편집",
+        "modelLabel": "모델 및 추론",
         "agentLabel": "에이전트",
         "agentPlaceholder": "실행자 유형 선택",
         "configLabel": "구성",
