@@ -17,14 +17,20 @@ import {
   TrashIcon,
   WarningIcon,
   ArrowUpIcon,
-  ArrowDownIcon,
   LightningIcon,
   ArrowsOutIcon,
   ArrowsClockwiseIcon,
   GithubLogoIcon,
   PencilSimpleIcon,
+  DotsSixVerticalIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
+import {
+  DragDropContext,
+  Droppable,
+  Draggable,
+  type DropResult,
+} from '@hello-pangea/dnd';
 import { ChatBoxBase, VisualVariant, type DropzoneProps } from './ChatBoxBase';
 import { type EditorProps, type ExecutorProps } from './CreateChatBox';
 import type { AskUserQuestionItem, QuestionAnswer } from 'shared/types';
@@ -392,13 +398,14 @@ export function SessionChatBox<TExecutor extends string = string>({
     }
   };
 
-  // Move a queued message from one index to another and push the new order up.
-  const moveQueued = (from: number, to: number) => {
+  // Reorder the queue when a drag-handle drop finishes, pushing the new order up.
+  const handleQueueDragEnd = (result: DropResult) => {
     if (!onReorderQueued || !queuedMessages) return;
-    if (to < 0 || to >= queuedMessages.length) return;
+    const { source, destination } = result;
+    if (!destination || source.index === destination.index) return;
     const ids = queuedMessages.map((m) => m.id);
-    const [moved] = ids.splice(from, 1);
-    ids.splice(to, 0, moved);
+    const [moved] = ids.splice(source.index, 1);
+    ids.splice(destination.index, 0, moved);
     onReorderQueued(ids);
   };
 
@@ -685,7 +692,9 @@ export function SessionChatBox<TExecutor extends string = string>({
 
     // Queued messages list — drained one at a time as each turn finishes.
     // Each row can be removed individually; "clear all" appears for 2+.
+    // A left-edge handle lets you drag a row up or down to reorder the queue.
     if (queuedMessages && queuedMessages.length > 0) {
+      const canReorder = !!onReorderQueued && queuedMessages.length > 1;
       banners.push(
         <div
           key="queued-list"
@@ -706,67 +715,85 @@ export function SessionChatBox<TExecutor extends string = string>({
               </button>
             )}
           </div>
-          {queuedMessages.map((queued, index) => {
-            const canReorder = !!onReorderQueued && queuedMessages.length > 1;
-            return (
-              <div
-                key={queued.id}
-                className="flex items-center gap-base pl-[1.5rem]"
-              >
-                <span className="text-xs text-low tabular-nums flex-shrink-0">
-                  {index + 1}.
-                </span>
-                {/* Long messages are truncated to a single line with an ellipsis */}
-                <span className="text-sm text-normal flex-1 min-w-0 truncate">
-                  {queued.message}
-                </span>
-                {canReorder && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => moveQueued(index, index - 1)}
-                      disabled={index === 0}
-                      className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0 disabled:opacity-30 disabled:hover:text-low disabled:cursor-default"
-                      title={t('conversation.actions.moveUp')}
-                      aria-label={t('conversation.actions.moveUp')}
-                    >
-                      <ArrowUpIcon className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => moveQueued(index, index + 1)}
-                      disabled={index === queuedMessages.length - 1}
-                      className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0 disabled:opacity-30 disabled:hover:text-low disabled:cursor-default"
-                      title={t('conversation.actions.moveDown')}
-                      aria-label={t('conversation.actions.moveDown')}
-                    >
-                      <ArrowDownIcon className="h-3.5 w-3.5" />
-                    </button>
-                  </>
-                )}
-                {onSteerQueued && (
-                  <button
-                    type="button"
-                    onClick={() => onSteerQueued(queued.id)}
-                    className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0"
-                    title={t('conversation.actions.sendNow')}
-                    aria-label={t('conversation.actions.sendNow')}
-                  >
-                    <LightningIcon className="h-3.5 w-3.5" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => onRemoveQueued?.(queued.id)}
-                  className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0"
-                  title={t('conversation.actions.removeQueued')}
-                  aria-label={t('conversation.actions.removeQueued')}
+          <DragDropContext onDragEnd={handleQueueDragEnd}>
+            <Droppable droppableId="queued-messages">
+              {(dropProvided) => (
+                <div
+                  ref={dropProvided.innerRef}
+                  {...dropProvided.droppableProps}
+                  className="flex flex-col gap-half"
                 >
-                  <XIcon className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            );
-          })}
+                  {queuedMessages.map((queued, index) => (
+                    <Draggable
+                      key={queued.id}
+                      draggableId={queued.id}
+                      index={index}
+                      isDragDisabled={!canReorder}
+                    >
+                      {(dragProvided, dragSnapshot) => (
+                        <div
+                          ref={dragProvided.innerRef}
+                          {...dragProvided.draggableProps}
+                          className={cn(
+                            'flex items-center gap-base rounded-sm',
+                            dragSnapshot.isDragging && 'bg-panel shadow-lg'
+                          )}
+                        >
+                          {/* Drag handle — grab here to reorder the queue.
+                              Aligns under the header clock icon (both h-4 w-4),
+                              so the row numbers line up with the count above. */}
+                          <div
+                            {...dragProvided.dragHandleProps}
+                            className={cn(
+                              'flex items-center flex-shrink-0',
+                              canReorder
+                                ? 'cursor-grab text-low hover:text-normal transition-colors'
+                                : 'invisible'
+                            )}
+                            title={t('conversation.actions.reorderQueued')}
+                            aria-label={t('conversation.actions.reorderQueued')}
+                          >
+                            <DotsSixVerticalIcon
+                              className="h-4 w-4"
+                              weight="bold"
+                            />
+                          </div>
+                          <span className="text-xs text-low tabular-nums flex-shrink-0">
+                            {index + 1}.
+                          </span>
+                          {/* Long messages are truncated to a single line with an ellipsis */}
+                          <span className="text-sm text-normal flex-1 min-w-0 truncate">
+                            {queued.message}
+                          </span>
+                          {onSteerQueued && (
+                            <button
+                              type="button"
+                              onClick={() => onSteerQueued(queued.id)}
+                              className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0"
+                              title={t('conversation.actions.sendNow')}
+                              aria-label={t('conversation.actions.sendNow')}
+                            >
+                              <LightningIcon className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onRemoveQueued?.(queued.id)}
+                            className="text-low hover:text-normal transition-colors p-1 -m-1 flex-shrink-0"
+                            title={t('conversation.actions.removeQueued')}
+                            aria-label={t('conversation.actions.removeQueued')}
+                          >
+                            <XIcon className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
+                    </Draggable>
+                  ))}
+                  {dropProvided.placeholder}
+                </div>
+              )}
+            </Droppable>
+          </DragDropContext>
         </div>
       );
     }
