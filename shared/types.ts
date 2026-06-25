@@ -412,6 +412,8 @@ export type AttachmentMetadata = { exists: boolean, file_name: string | null, pa
 
 export type WorkspaceRepoInput = { repo_id: string, target_branch: string, };
 
+export type WorkingBranchInput = { "mode": "auto" } | { "mode": "new", name: string, } | { "mode": "existing", name: string, };
+
 export type PrReviewInput = {
 /**
  * Repo whose PR is being reviewed. Must match the single entry in `repos`.
@@ -472,7 +474,12 @@ export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array
  * When set, work directly on an existing PR's head branch (review mode)
  * instead of creating a new `vk/` worktree branch. Absent for normal runs.
  */
-pr_review: PrReviewInput | null, };
+pr_review: PrReviewInput | null,
+/**
+ * Working branch setup (auto / new name / existing branch). Defaults to
+ * `Auto` when omitted by older clients.
+ */
+working_branch: WorkingBranchInput, };
 
 export type CreateAndStartWorkspaceResponse = { workspace: Workspace, execution_process: ExecutionProcess, };
 
@@ -504,7 +511,12 @@ export type GenerateSpecResponse = { title: string, description: string,
  */
 intake_metadata: JsonValue, };
 
-export type CreateWorkspaceWithoutStartingRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, attachment_ids: Array<string> | null, };
+export type CreateWorkspaceWithoutStartingRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, attachment_ids: Array<string> | null,
+/**
+ * Working branch setup (auto / new name / existing branch). Defaults to
+ * `Auto` when omitted by older clients.
+ */
+working_branch: WorkingBranchInput, };
 
 export type CreateWorkspaceWithoutStartingResponse = { workspace: Workspace, };
 
@@ -605,7 +617,12 @@ export type DirectoryListResponse = { entries: Array<DirectoryEntry>, current_pa
 
 export type SearchMode = "taskform" | "settings";
 
-export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, remote_onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, primary_color: string,
+export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, remote_onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string,
+/**
+ * Template for deriving a working branch name from a linked issue
+ * (rendered client-side). Empty string disables issue-based naming.
+ */
+git_branch_name_template: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, primary_color: string,
 /**
  * Coding agents the user has hidden from agent selection.
  */

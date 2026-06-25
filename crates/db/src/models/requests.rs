@@ -48,6 +48,24 @@ pub struct LinkedIssueInfo {
     pub issue_id: Uuid,
 }
 
+/// How the workspace's working (worktree) branch should be set up. Distinct
+/// from each repo's `target_branch`, which is the base / merge target. The
+/// frontend resolves the final name — including issue-template expansion —
+/// so the create-time preview matches exactly what gets created.
+#[derive(Debug, Default, Serialize, Deserialize, TS)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum WorkingBranchInput {
+    /// Auto-generate the branch name (`{prefix}/{uuid}-{title}`). Default.
+    #[default]
+    Auto,
+    /// Create a new branch with this exact name, forked from each repo's
+    /// target branch. Rejected if the branch already exists (conflict).
+    New { name: String },
+    /// Check out an existing branch with this name instead of creating one
+    /// (continue work). Single-repo only; rejected if the branch is missing.
+    Existing { name: String },
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct CreateAndStartWorkspaceRequest {
     pub name: Option<String>,
@@ -59,6 +77,10 @@ pub struct CreateAndStartWorkspaceRequest {
     /// When set, work directly on an existing PR's head branch (review mode)
     /// instead of creating a new `vk/` worktree branch. Absent for normal runs.
     pub pr_review: Option<PrReviewInput>,
+    /// Working branch setup (auto / new name / existing branch). Defaults to
+    /// `Auto` when omitted by older clients.
+    #[serde(default)]
+    pub working_branch: WorkingBranchInput,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -102,6 +124,10 @@ pub struct CreateWorkspaceWithoutStartingRequest {
     pub repos: Vec<WorkspaceRepoInput>,
     pub linked_issue: Option<LinkedIssueInfo>,
     pub attachment_ids: Option<Vec<Uuid>>,
+    /// Working branch setup (auto / new name / existing branch). Defaults to
+    /// `Auto` when omitted by older clients.
+    #[serde(default)]
+    pub working_branch: WorkingBranchInput,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

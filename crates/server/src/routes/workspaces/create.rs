@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
     pending_execution_start::PendingExecutionStart,
+    repo::Repo,
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
         CreateWorkspaceWithoutStartingRequest, CreateWorkspaceWithoutStartingResponse,
-        LinkedIssueInfo, PrReviewInput, WorkspaceRepoInput,
+        LinkedIssueInfo, PrReviewInput, WorkingBranchInput, WorkspaceRepoInput,
     },
     workspace::{CreateWorkspace, Workspace},
 };
@@ -30,16 +31,22 @@ use crate::{
 pub(crate) async fn create_workspace_record(
     deployment: &DeploymentImpl,
     name: Option<String>,
+    branch_override: Option<String>,
 ) -> Result<Workspace, ApiError> {
     let workspace_id = Uuid::new_v4();
-    let branch_label = name
-        .as_deref()
-        .filter(|branch_label| !branch_label.is_empty())
-        .unwrap_or("workspace");
-    let git_branch_name = deployment
-        .container()
-        .git_branch_from_workspace(&workspace_id, branch_label)
-        .await;
+    let git_branch_name = match branch_override {
+        Some(branch) => branch,
+        None => {
+            let branch_label = name
+                .as_deref()
+                .filter(|branch_label| !branch_label.is_empty())
+                .unwrap_or("workspace");
+            deployment
+                .container()
+                .git_branch_from_workspace(&workspace_id, branch_label)
+                .await
+        }
+    };
 
     let workspace = Workspace::create(
         &deployment.db().pool,
@@ -58,7 +65,7 @@ pub async fn create_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateWorkspaceApiRequest>,
 ) -> Result<ResponseJson<ApiResponse<Workspace>>, ApiError> {
-    let workspace = create_workspace_record(&deployment, payload.name).await?;
+    let workspace = create_workspace_record(&deployment, payload.name, None).await?;
 
     deployment
         .track_if_analytics_allowed(
@@ -216,6 +223,59 @@ fn rewrite_imported_issue_attachments_markdown(
     rewritten
 }
 
+/// Validate the requested working-branch setup against the repos and return the
+/// branch-name override to use (`None` = auto-generate). Enforces the conflict
+/// and existence rules: a `New` name must not already exist in any repo; an
+/// `Existing` name must exist and is single-repo only.
+async fn resolve_working_branch(
+    deployment: &DeploymentImpl,
+    repos: &[WorkspaceRepoInput],
+    working_branch: WorkingBranchInput,
+) -> Result<Option<String>, ApiError> {
+    let (name, reuse_existing) = match working_branch {
+        WorkingBranchInput::Auto => return Ok(None),
+        WorkingBranchInput::New { name } => (name, false),
+        WorkingBranchInput::Existing { name } => (name, true),
+    };
+
+    let branch = name.trim();
+    if branch.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Working branch name must not be empty".to_string(),
+        ));
+    }
+
+    if reuse_existing && repos.len() != 1 {
+        return Err(ApiError::BadRequest(
+            "Reusing an existing branch is only supported for single-repo workspaces".to_string(),
+        ));
+    }
+
+    for repo_input in repos {
+        let repo = Repo::find_by_id(&deployment.db().pool, repo_input.repo_id)
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
+        let exists = deployment
+            .git()
+            .check_branch_exists(&repo.path, branch)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        if reuse_existing && !exists {
+            return Err(ApiError::BadRequest(format!(
+                "Branch '{branch}' does not exist in repository '{}'",
+                repo.name
+            )));
+        }
+        if !reuse_existing && exists {
+            return Err(ApiError::BadRequest(format!(
+                "Branch '{branch}' already exists in repository '{}'",
+                repo.name
+            )));
+        }
+    }
+
+    Ok(Some(branch.to_string()))
+}
+
 async fn create_workspace_with_repos(
     deployment: &DeploymentImpl,
     name: Option<String>,
@@ -223,6 +283,7 @@ async fn create_workspace_with_repos(
     linked_issue: Option<&LinkedIssueInfo>,
     attachment_ids: Option<Vec<Uuid>>,
     pr_review: Option<&PrReviewInput>,
+    working_branch: WorkingBranchInput,
 ) -> Result<ManagedWorkspace, ApiError> {
     if repos.is_empty() {
         return Err(ApiError::BadRequest(
@@ -233,12 +294,16 @@ async fn create_workspace_with_repos(
     let managed_workspace = match review_mode::plan_branch_setup(&repos, pr_review)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?
     {
-        // Default: a fresh `vk/`-prefixed worktree branch forked from each
-        // repo's selected target branch.
+        // Default: a working branch forked from each repo's selected target
+        // branch — auto-named, or an explicit/existing name per `working_branch`.
         BranchSetup::NewWorktreeBranch => {
+            let branch_override =
+                resolve_working_branch(deployment, &repos, working_branch).await?;
             let mut managed_workspace = deployment
                 .workspace_manager()
-                .load_managed_workspace(create_workspace_record(deployment, name).await?)
+                .load_managed_workspace(
+                    create_workspace_record(deployment, name, branch_override).await?,
+                )
                 .await?;
 
             for repo in &repos {
@@ -302,6 +367,7 @@ pub async fn create_workspace_without_starting(
         repos,
         linked_issue,
         attachment_ids,
+        working_branch,
     } = payload;
 
     let managed_workspace = create_workspace_with_repos(
@@ -311,6 +377,7 @@ pub async fn create_workspace_without_starting(
         linked_issue.as_ref(),
         attachment_ids,
         None,
+        working_branch,
     )
     .await?;
     let workspace = managed_workspace.workspace;
@@ -341,6 +408,7 @@ pub async fn create_and_start_workspace(
         prompt,
         attachment_ids,
         pr_review,
+        working_branch,
     } = payload;
 
     let mut workspace_prompt = normalize_prompt(&prompt).ok_or_else(|| {
@@ -356,6 +424,7 @@ pub async fn create_and_start_workspace(
         linked_issue.as_ref(),
         attachment_ids,
         pr_review.as_ref(),
+        working_branch,
     )
     .await?;
 

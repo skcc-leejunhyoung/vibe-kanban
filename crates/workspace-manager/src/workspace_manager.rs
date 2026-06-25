@@ -307,6 +307,7 @@ impl WorkspaceManager {
         tokio::fs::create_dir_all(workspace_dir).await?;
 
         let mut created_worktrees: Vec<RepoWorktree> = Vec::new();
+        let git = GitService::new();
 
         for input in repos {
             let worktree_path = workspace_dir.join(&input.repo.name);
@@ -317,12 +318,16 @@ impl WorkspaceManager {
                 worktree_path.display()
             );
 
+            // Reuse the branch when it already exists (continue-work mode);
+            // otherwise fork a new one from the target branch.
+            let create_branch = !git.check_branch_exists(&input.repo.path, branch_name)?;
+
             match WorktreeManager::create_worktree(
                 &input.repo.path,
                 branch_name,
                 &worktree_path,
                 &input.target_branch,
-                true,
+                create_branch,
             )
             .await
             {

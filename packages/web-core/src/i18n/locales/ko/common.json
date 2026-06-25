@@ -504,6 +504,23 @@
       "setupHintDismiss": "닫기",
       "setupHintLink": "Configure in Settings"
     },
+    "workingBranch": {
+      "label": "작업 브랜치",
+      "modes": {
+        "auto": "자동 생성",
+        "new": "직접 입력",
+        "existing": "기존 브랜치"
+      },
+      "autoPreviewPrefixed": "{{prefix}}/… (자동)",
+      "autoPreviewPlain": "자동 생성",
+      "newPlaceholder": "예: feature/login",
+      "singleRepoOnly": "(단일 레포)",
+      "errors": {
+        "empty": "브랜치 이름을 입력하세요",
+        "invalidChars": "사용할 수 없는 문자가 있습니다",
+        "invalidSequence": "올바르지 않은 브랜치 이름입니다"
+      }
+    },
     "workspaceOnly": {
       "create": "워크스페이스만 만들기",
       "creating": "워크스페이스 만드는 중..."

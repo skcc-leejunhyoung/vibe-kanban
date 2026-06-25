@@ -240,6 +240,11 @@
             "controlChars": "제어 문자가 포함되어 있습니다."
           }
         },
+        "branchTemplate": {
+          "label": "이슈 브랜치 템플릿",
+          "helper": "연결된 이슈에서 작업 브랜치 이름을 만들 때 쓰는 템플릿입니다. 변수: {issueNumber}, {issueTitle}, {shortId}. 비워두면 이슈 기반 이름 생성을 끕니다.",
+          "placeholder": "{issueNumber}-{issueTitle}"
+        },
         "workspaceDir": {
           "label": "워크스페이스 디렉토리",
           "placeholder": "~/",

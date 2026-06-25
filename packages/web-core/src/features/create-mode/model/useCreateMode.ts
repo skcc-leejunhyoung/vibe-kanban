@@ -5,6 +5,7 @@ import type {
   Repo,
   ExecutorConfig,
 } from 'shared/types';
+import type { WorkingBranchSelection } from '@/features/create-mode/model/workingBranch';
 
 interface LinkedIssue {
   issueId: string;
@@ -39,6 +40,10 @@ export interface CreateModeContextValue {
   attachments: DraftWorkspaceAttachment[];
   /** Update draft attachments (triggers debounced scratch save) */
   setAttachments: (attachments: DraftWorkspaceAttachment[]) => void;
+  /** Working branch setup (auto / new name / existing branch) */
+  workingBranch: WorkingBranchSelection;
+  /** Update the working branch setup */
+  setWorkingBranch: (workingBranch: WorkingBranchSelection) => void;
 }
 
 export const CreateModeContext =

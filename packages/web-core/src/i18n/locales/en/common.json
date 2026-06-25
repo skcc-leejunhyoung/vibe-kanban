@@ -518,6 +518,23 @@
       "setupHintDismiss": "Dismiss",
       "setupHintLink": "Configure in Settings"
     },
+    "workingBranch": {
+      "label": "Working branch",
+      "modes": {
+        "auto": "Auto",
+        "new": "Custom name",
+        "existing": "Existing branch"
+      },
+      "autoPreviewPrefixed": "{{prefix}}/… (auto)",
+      "autoPreviewPlain": "Auto-generated",
+      "newPlaceholder": "e.g. feature/login",
+      "singleRepoOnly": "(single repo only)",
+      "errors": {
+        "empty": "Branch name is required",
+        "invalidChars": "Contains invalid characters",
+        "invalidSequence": "Invalid branch name"
+      }
+    },
     "workspaceOnly": {
       "create": "Workspace only",
       "creating": "Creating workspace..."

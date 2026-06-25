@@ -29,6 +29,10 @@ import type {
   CreateModeInitialState,
   LinkedIssue,
 } from '@/shared/types/createMode';
+import {
+  AUTO_WORKING_BRANCH,
+  type WorkingBranchSelection,
+} from '@/features/create-mode/model/workingBranch';
 
 // ============================================================================
 // Types
@@ -50,6 +54,7 @@ interface DraftState {
   linkedIssue: LinkedIssue | null;
   executorConfig: ExecutorConfig | null;
   attachments: DraftWorkspaceAttachment[];
+  workingBranch: WorkingBranchSelection;
 }
 
 type DraftAction =
@@ -72,7 +77,8 @@ type DraftAction =
       type: 'SET_EXECUTOR_CONFIG';
       config: ExecutorConfig | null;
     }
-  | { type: 'SET_ATTACHMENTS'; attachments: DraftWorkspaceAttachment[] };
+  | { type: 'SET_ATTACHMENTS'; attachments: DraftWorkspaceAttachment[] }
+  | { type: 'SET_WORKING_BRANCH'; workingBranch: WorkingBranchSelection };
 
 // ============================================================================
 // Reducer
@@ -86,6 +92,7 @@ const draftInitialState: DraftState = {
   linkedIssue: null,
   executorConfig: null,
   attachments: [],
+  workingBranch: AUTO_WORKING_BRANCH,
 };
 
 function draftReducer(state: DraftState, action: DraftAction): DraftState {
@@ -170,6 +177,9 @@ function draftReducer(state: DraftState, action: DraftAction): DraftState {
     case 'SET_ATTACHMENTS':
       return { ...state, attachments: action.attachments };
 
+    case 'SET_WORKING_BRANCH':
+      return { ...state, workingBranch: action.workingBranch };
+
     default:
       return state;
   }
@@ -243,6 +253,8 @@ interface UseCreateModeStateResult {
   setExecutorConfig: (config: ExecutorConfig | null) => void;
   attachments: DraftWorkspaceAttachment[];
   setAttachments: (attachments: DraftWorkspaceAttachment[]) => void;
+  workingBranch: WorkingBranchSelection;
+  setWorkingBranch: (workingBranch: WorkingBranchSelection) => void;
 }
 
 export function useCreateModeState({
@@ -638,6 +650,13 @@ export function useCreateModeState({
     []
   );
 
+  const setWorkingBranch = useCallback(
+    (workingBranch: WorkingBranchSelection) => {
+      dispatch({ type: 'SET_WORKING_BRANCH', workingBranch });
+    },
+    []
+  );
+
   return {
     repos,
     targetBranches,
@@ -658,5 +677,7 @@ export function useCreateModeState({
     setExecutorConfig,
     attachments: state.attachments,
     setAttachments,
+    workingBranch: state.workingBranch,
+    setWorkingBranch,
   };
 }

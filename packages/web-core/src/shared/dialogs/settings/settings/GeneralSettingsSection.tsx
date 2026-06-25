@@ -751,6 +751,19 @@ export function GeneralSettingsSection() {
         </SettingsField>
 
         <SettingsField
+          label={t('settings.general.git.branchTemplate.label')}
+          description={t('settings.general.git.branchTemplate.helper')}
+        >
+          <SettingsInput
+            value={draft?.git_branch_name_template ?? ''}
+            onChange={(value) =>
+              updateDraft({ git_branch_name_template: value })
+            }
+            placeholder={t('settings.general.git.branchTemplate.placeholder')}
+          />
+        </SettingsField>
+
+        <SettingsField
           label={t('settings.general.git.workspaceDir.label')}
           description={t('settings.general.git.workspaceDir.helper')}
         >

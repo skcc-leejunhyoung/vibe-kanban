@@ -30,6 +30,7 @@ import {
   buildBranchSelectionPages,
   type BranchSelectionResult,
 } from '@/shared/dialogs/command-bar/selections/branchSelection';
+import { WorkingBranchRow } from '@/shared/components/WorkingBranchRow';
 
 function toRepoItem(repo: Repo): RepoItem {
   return {
@@ -302,6 +303,8 @@ export function CreateModeRepoPickerBar({
             </div>
           </div>
         )}
+
+        <WorkingBranchRow />
 
         <div className="mt-base flex flex-wrap items-center gap-half">
           <button

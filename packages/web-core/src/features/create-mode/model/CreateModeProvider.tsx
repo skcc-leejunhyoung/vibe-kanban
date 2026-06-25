@@ -67,6 +67,8 @@ export function CreateModeProvider({
       setExecutorConfig: state.setExecutorConfig,
       attachments: state.attachments,
       setAttachments: state.setAttachments,
+      workingBranch: state.workingBranch,
+      setWorkingBranch: state.setWorkingBranch,
     }),
     [
       state.repos,
@@ -87,6 +89,8 @@ export function CreateModeProvider({
       state.setExecutorConfig,
       state.attachments,
       state.setAttachments,
+      state.workingBranch,
+      state.setWorkingBranch,
     ]
   );
 
