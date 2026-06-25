@@ -109,6 +109,37 @@ const Dialog = React.forwardRef<
     return () => document.removeEventListener('keydown', handleEscape);
   }, [open, uncloseable, onOpenChange]);
 
+  // Move focus into the dialog when it opens. KeyboardDialog is a custom (non-
+  // Radix) implementation with no built-in focus management, so otherwise focus
+  // stays on whatever was focused before — e.g. the workspace chat input (a
+  // Lexical contentEditable). react-hotkeys-hook ignores keys fired from form
+  // fields/contentEditable, so the dialog's Enter shortcut never ran and the
+  // keystroke leaked into the chat box instead. Focusing the dialog container
+  // (unless the dialog autofocused a field of its own) fixes both, and we
+  // restore the prior focus on close so the chat input stays usable.
+  React.useEffect(() => {
+    if (!open) return;
+    const active = document.activeElement as HTMLElement | null;
+    // Remember external focus (e.g. the chat input) to restore on close; ignore
+    // focus that's already inside the dialog (a field it autofocused itself).
+    const previouslyFocused =
+      active && !dialogRef.current?.contains(active) ? active : null;
+
+    const raf = requestAnimationFrame(() => {
+      const el = dialogRef.current;
+      if (el && !el.contains(document.activeElement)) {
+        el.focus();
+      }
+    });
+
+    return () => {
+      cancelAnimationFrame(raf);
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus?.();
+      }
+    };
+  }, [open]);
+
   useHotkeys(
     'enter',
     (e) => {
@@ -167,8 +198,9 @@ const Dialog = React.forwardRef<
       />
       <div
         ref={setDialogRef}
+        tabIndex={-1}
         className={cn(
-          'relative z-[10000] flex flex-col w-full max-w-xl gap-4 bg-primary p-6 shadow-lg duration-200 sm:rounded-lg my-8',
+          'relative z-[10000] flex flex-col w-full max-w-xl gap-4 bg-primary p-6 shadow-lg duration-200 sm:rounded-lg my-8 outline-none',
           className
         )}
         {...props}
