@@ -357,6 +357,14 @@ impl McpServer {
 }
 
 impl McpServer {
+    /// Build the executor config for a `run_session_prompt` follow-up.
+    ///
+    /// Only the executor identity is known here. The remaining fields are left
+    /// empty on purpose: the `/follow-up` endpoint inherits the session's
+    /// last-used variant/model/reasoning/agent overrides for such a bare config
+    /// (see `resolve_followup_executor_config` in the server's sessions route),
+    /// so a resumed turn keeps the session's model instead of silently
+    /// downgrading to the executor default.
     fn executor_config_payload_for_session(
         session: &Session,
     ) -> Result<ExecutorConfigPayload, super::ToolError> {

@@ -134,9 +134,12 @@ async fn trigger_pr_description_follow_up(
             }
         };
 
-    // Get executor profile from the latest coding agent process in this session
-    let Some(executor_profile_id) =
-        ExecutionProcess::latest_executor_profile_for_session(&deployment.db().pool, session.id)
+    // Carry the full executor config (model / reasoning / agent overrides) from
+    // the session's latest coding agent process, not just the profile identity —
+    // otherwise this backend-driven follow-up silently downgrades to the default
+    // model.
+    let Some(executor_config) =
+        ExecutionProcess::latest_executor_config_for_session(&deployment.db().pool, session.id)
             .await?
     else {
         tracing::warn!(
@@ -162,13 +165,13 @@ async fn trigger_pr_description_follow_up(
             prompt,
             session_id: info.session_id,
             reset_to_message_id: None,
-            executor_config: executors::profile::ExecutorConfig::from(executor_profile_id.clone()),
+            executor_config: executor_config.clone(),
             working_dir: working_dir.clone(),
         })
     } else {
         ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
             prompt,
-            executor_config: executors::profile::ExecutorConfig::from(executor_profile_id.clone()),
+            executor_config: executor_config.clone(),
             working_dir,
         })
     };

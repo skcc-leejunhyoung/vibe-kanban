@@ -306,6 +306,32 @@ pub struct ResetProcessRequest {
     pub perform_git_reset: Option<bool>,
 }
 
+/// Resolve the executor config for a follow-up turn.
+///
+/// A "bare" request — executor identity only, with no variant and no
+/// model/reasoning/agent/permission overrides — is what backend-driven resumes
+/// such as the `run_session_prompt` MCP tool send. Treat it as "resume with
+/// whatever the session was last using" and inherit the full config from the
+/// session's latest coding-agent execution; otherwise the turn silently
+/// downgrades to the executor's default model and variant.
+///
+/// The web UI always sends a fully-resolved config (it carries the last-used
+/// model forward), so interactive follow-ups keep the caller's config untouched.
+/// Inheritance only applies when the latest config uses the same executor.
+fn resolve_followup_executor_config(
+    requested: ExecutorConfig,
+    latest: Option<ExecutorConfig>,
+) -> ExecutorConfig {
+    if requested.variant.is_none()
+        && !requested.has_overrides()
+        && let Some(latest) = latest
+        && latest.executor == requested.executor
+    {
+        return latest;
+    }
+    requested
+}
+
 pub async fn follow_up(
     Extension(mut session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -327,17 +353,19 @@ pub async fn follow_up(
         .ensure_container_exists(&workspace)
         .await?;
 
-    let executor_profile_id = payload.executor_config.profile_id();
+    // Full config from the session's most recent coding-agent execution, which
+    // carries the user's model / variant / reasoning / agent overrides.
+    let latest_executor_config =
+        ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?;
 
     // Validate executor matches session if session has prior executions
-    let expected_executor: Option<String> =
-        ExecutionProcess::latest_executor_profile_for_session(pool, session.id)
-            .await?
-            .map(|profile| profile.executor.to_string())
-            .or_else(|| session.executor.clone());
+    let expected_executor: Option<String> = latest_executor_config
+        .as_ref()
+        .map(|config| config.executor.to_string())
+        .or_else(|| session.executor.clone());
 
     if let Some(expected) = expected_executor {
-        let actual = executor_profile_id.executor.to_string();
+        let actual = payload.executor_config.executor.to_string();
         if expected != actual {
             return Err(ApiError::Session(SessionError::ExecutorMismatch {
                 expected,
@@ -345,6 +373,14 @@ pub async fn follow_up(
             }));
         }
     }
+
+    // A "bare" request config (executor identity only) inherits the session's
+    // last-used config so backend-driven resumes keep their model and variant
+    // instead of silently dropping to the executor default. See
+    // `resolve_followup_executor_config`.
+    let executor_config =
+        resolve_followup_executor_config(payload.executor_config, latest_executor_config);
+    let executor_profile_id = executor_config.profile_id();
 
     if session.executor.is_none() {
         Session::update_executor(pool, session.id, &executor_profile_id.executor.to_string())
@@ -383,14 +419,14 @@ pub async fn follow_up(
             prompt: prompt.clone(),
             session_id: info.session_id,
             reset_to_message_id: if is_reset { info.message_id } else { None },
-            executor_config: payload.executor_config.clone(),
+            executor_config: executor_config.clone(),
             working_dir: working_dir.clone(),
         })
     } else {
         ExecutorActionType::CodingAgentInitialRequest(
             executors::actions::coding_agent_initial::CodingAgentInitialRequest {
                 prompt,
-                executor_config: payload.executor_config.clone(),
+                executor_config: executor_config.clone(),
                 working_dir,
             },
         )
@@ -587,4 +623,74 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .nest("/{session_id}/queue", queue::router(deployment));
 
     Router::new().nest("/sessions", sessions_router)
+}
+
+#[cfg(test)]
+mod tests {
+    use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
+
+    use super::resolve_followup_executor_config;
+
+    /// A session whose last turn ran Opus on the PLAN variant with high reasoning.
+    fn opus_plan_config() -> ExecutorConfig {
+        ExecutorConfig {
+            executor: BaseCodingAgent::ClaudeCode,
+            variant: Some("PLAN".to_string()),
+            model_id: Some("claude-opus-4".to_string()),
+            agent_id: None,
+            reasoning_id: Some("high".to_string()),
+            permission_policy: None,
+        }
+    }
+
+    #[test]
+    fn bare_request_inherits_latest_full_config() {
+        // `run_session_prompt` sends executor-only: it must inherit the session's
+        // model and variant rather than fall back to the executor default.
+        let requested = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
+        let resolved = resolve_followup_executor_config(requested, Some(opus_plan_config()));
+        assert_eq!(resolved, opus_plan_config());
+    }
+
+    #[test]
+    fn request_with_model_override_is_left_untouched() {
+        // The web UI sends a fully-resolved config; never override the caller.
+        let requested = ExecutorConfig {
+            model_id: Some("claude-sonnet-4".to_string()),
+            ..ExecutorConfig::new(BaseCodingAgent::ClaudeCode)
+        };
+        let resolved =
+            resolve_followup_executor_config(requested.clone(), Some(opus_plan_config()));
+        assert_eq!(resolved, requested);
+    }
+
+    #[test]
+    fn request_with_explicit_variant_is_left_untouched() {
+        // An explicit variant (even the default) means the caller chose a profile.
+        let requested = ExecutorConfig {
+            variant: Some("DEFAULT".to_string()),
+            ..ExecutorConfig::new(BaseCodingAgent::ClaudeCode)
+        };
+        let resolved =
+            resolve_followup_executor_config(requested.clone(), Some(opus_plan_config()));
+        assert_eq!(resolved, requested);
+    }
+
+    #[test]
+    fn bare_request_with_no_history_keeps_executor_default() {
+        // First turn of a session: nothing to inherit, so the bare config stands.
+        let requested = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
+        let resolved = resolve_followup_executor_config(requested.clone(), None);
+        assert_eq!(resolved, requested);
+    }
+
+    #[test]
+    fn does_not_inherit_across_executors() {
+        // Executor mismatch is rejected upstream; defensively never graft a
+        // different executor's model onto the request even if we reach here.
+        let requested = ExecutorConfig::new(BaseCodingAgent::Codex);
+        let resolved =
+            resolve_followup_executor_config(requested.clone(), Some(opus_plan_config()));
+        assert_eq!(resolved, requested);
+    }
 }
