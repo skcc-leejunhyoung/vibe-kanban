@@ -160,7 +160,9 @@
     },
     "review": {
       "failedTitle": "Couldn't start review",
-      "failedDescription": "An error occurred while starting the review session."
+      "failedDescription": "An error occurred while starting the review session.",
+      "alreadyRunning": "Another process is already running in this workspace. Stop it before starting a review.",
+      "noLinkedIssue": "Review can only be started on a workspace linked to an issue."
     },
     "autoResume": {
       "toggleLabel": "Toggle auto-resume on usage limit",

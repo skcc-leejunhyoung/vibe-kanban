@@ -96,7 +96,10 @@ impl VibeRun {
         Ok(())
     }
 
-    /// Move to the review phase and record the dedicated review session.
+    /// Move to the review phase and record the dedicated review session. Also
+    /// clears `last_result` so the fresh review verdict drives the merge
+    /// decision — a stale token (e.g. an earlier `approve`) must not survive into
+    /// the new review and short-circuit it straight to a merge.
     pub async fn begin_review(
         pool: &SqlitePool,
         workspace_id: Uuid,
@@ -105,7 +108,7 @@ impl VibeRun {
         sqlx::query(
             "UPDATE vibe_runs \
              SET phase = 'review', review_session_id = ?, review_turns = 0, \
-                 updated_at = datetime('now','subsec') \
+                 last_result = NULL, updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
         .bind(review_session_id)

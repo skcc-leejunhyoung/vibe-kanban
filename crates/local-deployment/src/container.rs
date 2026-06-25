@@ -2738,7 +2738,7 @@ impl ContainerService for LocalContainerService {
     ) -> Result<Session, ContainerError> {
         let Some(task_id) = workspace.task_id else {
             return Err(ContainerError::Other(anyhow!(
-                "리뷰는 이슈에 연결된 워크스페이스에서만 시작할 수 있습니다"
+                "vibe: cannot start review for a workspace with no linked issue"
             )));
         };
         let Some(client) = self.remote_client.clone() else {

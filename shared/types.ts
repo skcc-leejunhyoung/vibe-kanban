@@ -380,7 +380,7 @@ export type RenameBranchResponse = { branch: string, };
 
 export type StartReviewRequest = { executor_config: ExecutorConfig, additional_prompt: string | null, use_all_workspace_commits: boolean, };
 
-export type ReviewError = { "type": "process_already_running" };
+export type ReviewError = { "type": "process_already_running" } | { "type": "no_linked_issue" };
 
 export type OpenEditorRequest = { editor_type: string | null, file_path: string | null,
 /**

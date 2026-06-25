@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
@@ -8,6 +8,7 @@ import {
   type Session,
   type BaseCodingAgent,
   ExecutionProcessStatus,
+  type ReviewError,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -63,7 +64,8 @@ import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityCo
 import { PrCommentsDialog } from '@/shared/dialogs/tasks/PrCommentsDialog';
 import type { NormalizedComment } from '@vibe/ui/components/pr-comment-node';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
-import { sessionsApi } from '@/shared/lib/api';
+import { sessionsApi, ApiError } from '@/shared/lib/api';
+import { useWorkspace } from '@/shared/hooks/useWorkspace';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
@@ -144,6 +146,22 @@ type SessionChatBoxContainerProps =
   | NewSessionProps
   | PlaceholderProps;
 
+/** Map a vibe-review API failure to a localized message key. */
+function reviewErrorKey(error: unknown): string {
+  const data =
+    error instanceof ApiError
+      ? (error.error_data as ReviewError | undefined)
+      : undefined;
+  switch (data?.type) {
+    case 'process_already_running':
+      return 'conversation.review.alreadyRunning';
+    case 'no_linked_issue':
+      return 'conversation.review.noLinkedIssue';
+    default:
+      return 'conversation.review.failedDescription';
+  }
+}
+
 export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const {
     mode,
@@ -177,6 +195,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const queryClient = useQueryClient();
   const hostId = useHostId();
   const { t } = useTranslation('tasks');
+  const [isReviewing, setIsReviewing] = useState(false);
+  // Only issue-linked workspaces can enter the automated vibe review workflow;
+  // gate the review button on a linked issue so it never advertises a call that
+  // the backend is guaranteed to reject.
+  const { data: reviewWorkspace } = useWorkspace(workspaceId);
+  const hasLinkedIssue = reviewWorkspace?.task_id != null;
 
   const handleRenameSession = useCallback(
     (targetSessionId: string, currentName: string) => {
@@ -616,7 +640,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // VIBE_RESULT: done): the backend spawns a dedicated review session and drives
   // the review → merge workflow. Switch to the new session so the user can watch.
   const handleVibeReview = useCallback(async () => {
-    if (!sessionId) return;
+    if (!sessionId || isReviewing) return;
+    setIsReviewing(true);
     try {
       const reviewSession = await sessionsApi.vibeReview(sessionId);
       await queryClient.invalidateQueries({
@@ -626,13 +651,20 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     } catch (error) {
       void ErrorDialog.show({
         title: t('conversation.review.failedTitle'),
-        message:
-          error instanceof Error
-            ? error.message
-            : t('conversation.review.failedDescription'),
+        message: t(reviewErrorKey(error)),
       });
+    } finally {
+      setIsReviewing(false);
     }
-  }, [sessionId, workspaceId, hostId, queryClient, onSelectSession, t]);
+  }, [
+    sessionId,
+    isReviewing,
+    workspaceId,
+    hostId,
+    queryClient,
+    onSelectSession,
+    t,
+  ]);
 
   // Track previous process count for queue refresh
   const prevProcessCountRef = useRef(processes.length);
@@ -1184,7 +1216,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onCancelQueue: handleCancelQueue,
         onStop: stopExecution,
         onPasteFiles: uploadFiles,
-        onVibeReview: sessionId ? handleVibeReview : undefined,
+        onVibeReview:
+          sessionId && hasLinkedIssue ? handleVibeReview : undefined,
+        isReviewing,
       }}
       queuedMessages={queuedMessages.map((m) => ({
         id: m.id,

@@ -71,6 +71,9 @@ interface ActionsProps {
   /** Start an automated `vibe` review session. When provided, a "review" button
    * is shown next to send while idle. */
   onVibeReview?: () => void;
+  /** True while a vibe review request is in flight; disables the review button
+   * and shows a spinner so a double-click can't fire a second request. */
+  isReviewing?: boolean;
 }
 
 /** A single queued follow-up message, shown in the queued-messages list. */
@@ -570,6 +573,8 @@ export function SessionChatBox<TExecutor extends string = string>({
               <PrimaryButton
                 variant="secondary"
                 onClick={actions.onVibeReview}
+                disabled={actions.isReviewing}
+                actionIcon={actions.isReviewing ? 'spinner' : undefined}
                 value={t('conversation.actions.review')}
               />
             )}

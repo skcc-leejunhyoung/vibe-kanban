@@ -37,6 +37,7 @@ pub struct StartReviewRequest {
 #[ts(tag = "type", rename_all = "snake_case")]
 pub enum ReviewError {
     ProcessAlreadyRunning,
+    NoLinkedIssue,
 }
 
 #[axum::debug_handler]
@@ -157,9 +158,9 @@ pub async fn vibe_review(
         )))?;
 
     if workspace.task_id.is_none() {
-        return Err(ApiError::BadRequest(
-            "리뷰는 이슈에 연결된 워크스페이스에서만 시작할 수 있습니다".to_string(),
-        ));
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            ReviewError::NoLinkedIssue,
+        )));
     }
 
     if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
