@@ -3,12 +3,13 @@ import type { LinkedIssue } from '@/shared/types/createMode';
 
 /**
  * Port of the backend `git_branch_id` (crates/utils/src/text.rs): lowercase,
- * replace runs of non-alphanumerics with hyphens, trim hyphens, cap at 16
- * chars. Keeps the issue-template preview identical to the auto-generated
- * backend name.
+ * collapse runs of characters git can't use in a ref into hyphens, trim
+ * hyphens, cap at 16 chars. `\p{L}`/`\p{N}` keep Unicode letters and digits
+ * (e.g. Hangul) so non-ASCII titles survive. Keeps the issue-template preview
+ * identical to the auto-generated backend name.
  */
 export function gitBranchId(input: string): string {
-  const slug = input.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const slug = input.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-');
   const trimmed = slug.replace(/^-+|-+$/g, '');
   const cut = Array.from(trimmed).slice(0, 16).join('');
   return cut.replace(/-+$/g, '');

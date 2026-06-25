@@ -5,8 +5,13 @@ pub fn git_branch_id(input: &str) -> String {
     // 1. lowercase
     let lower = input.to_lowercase();
 
-    // 2. replace non-alphanumerics with hyphens
-    let re = Regex::new(r"[^a-z0-9]+").unwrap();
+    // 2. collapse runs of unsupported characters into a single hyphen.
+    //    `\p{L}`/`\p{N}` keep all Unicode letters and digits (e.g. Hangul,
+    //    Kana, accented Latin) so non-ASCII titles survive instead of being
+    //    wiped out. Everything `git check-ref-format` forbids — spaces,
+    //    `~^:?*[\`, `/`, `.`, control chars — is non-alphanumeric and so
+    //    collapses to a hyphen here.
+    let re = Regex::new(r"[^\p{L}\p{N}]+").unwrap();
     let slug = re.replace_all(&lower, "-");
 
     // 3. trim extra hyphens
@@ -42,6 +47,26 @@ pub fn truncate_to_char_boundary(content: &str, max_len: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_git_branch_id() {
+        use super::git_branch_id;
+
+        // ASCII titles behave as before (lowercase, hyphenated, capped at 16).
+        assert_eq!(git_branch_id("Fix the login bug"), "fix-the-login-bu");
+
+        // Hangul titles are preserved instead of collapsing to an empty slug.
+        assert_eq!(git_branch_id("로그인 버그 수정"), "로그인-버그-수정");
+
+        // Mixed scripts keep both, and git-illegal punctuation is stripped.
+        assert_eq!(git_branch_id("버그 fix #123!"), "버그-fix-123");
+
+        // Characters git refs forbid collapse to single hyphens.
+        assert_eq!(git_branch_id("a~b:c?d*e"), "a-b-c-d-e");
+
+        // Symbol-only titles still yield an empty slug (caller adds a prefix).
+        assert_eq!(git_branch_id("!@#$%"), "");
+    }
 
     #[test]
     fn test_truncate_to_char_boundary() {
