@@ -23,8 +23,9 @@ import {
  * rather than loading a static stylesheet. This also lets the editor preview an
  * unsaved preset by calling `applyThemeVariant()` directly.
  *
- * Local-web only — the apply hook + settings UI are gated on the local runtime
- * so the remote web is unaffected.
+ * Applied on both the local and remote web: the apply hook runs from each
+ * app root, and the selection/presets sync through config so a skin chosen on
+ * one surface shows on the other.
  */
 
 const STYLE_ID = 'vk-theme-variant';
@@ -97,8 +98,8 @@ function safeRemoveCache(): void {
 
 /**
  * Keep the DOM in sync with the selected theme variant + preset data. Call once
- * near the app root (local web only). Re-applies whenever the selection or the
- * preset definitions change (e.g. after an edit).
+ * near each app root (local + remote web). Re-applies whenever the selection or
+ * the preset definitions change (e.g. after an edit).
  */
 export function useApplyThemeVariant(): void {
   const [variant] = useThemeVariant();

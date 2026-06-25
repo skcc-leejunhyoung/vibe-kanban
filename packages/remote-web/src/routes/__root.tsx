@@ -20,6 +20,7 @@ import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useKanbanIssueComposerScratch } from "@/shared/hooks/useKanbanIssueComposerScratch";
 import { useServiceWorkerNavigation } from "@/shared/hooks/useServiceWorkerNavigation";
 import { useUiPreferencesScratch } from "@/shared/hooks/useUiPreferencesScratch";
+import { useApplyThemeVariant } from "@/shared/lib/themeVariant";
 import { useWorkspaceContext } from "@/shared/hooks/useWorkspaceContext";
 import { AppNavigationProvider } from "@/shared/hooks/useAppNavigation";
 import {
@@ -111,6 +112,9 @@ function RootLayout() {
   useUiPreferencesScratch();
   useKanbanIssueComposerScratch();
   useServiceWorkerNavigation();
+  // Inject the selected theme variant ("skin") CSS. The selection + presets
+  // come from config (synced via useConfigPreferenceSync), matching local web.
+  useApplyThemeVariant();
   const { isSignedIn } = useAuth();
   const location = useLocation();
   const { hostId } = useParams({ strict: false });

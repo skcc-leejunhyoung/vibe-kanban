@@ -58,9 +58,10 @@ const loadMobileFontScale = (): MobileFontScale => {
 // Theme variant ("skin") is a client-side visual preference applied on top of
 // the Light/Dark/System mode. 'default' means no extra skin (the built-in
 // look); other values select a theme preset (built-in or user-defined) whose
-// design-token overrides are injected as a scoped <style>. Local web only —
-// gated by the runtime in the settings UI + apply hook. The preset catalogue,
-// persistence, and CSS generation live in shared/lib/themePresets.ts.
+// design-token overrides are injected as a scoped <style>. Applied on both the
+// local and remote web (settings picker + apply hook), with the selection and
+// presets synced through config. The preset catalogue, persistence, and CSS
+// generation live in shared/lib/themePresets.ts.
 export { DEFAULT_THEME_VARIANT };
 export type { ThemeVariant, ThemePreset };
 

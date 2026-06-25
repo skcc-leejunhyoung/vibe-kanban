@@ -35,7 +35,6 @@ import {
 } from '@/shared/lib/executor';
 import { useTheme } from '@/shared/hooks/useTheme';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { TagManager } from '@/shared/components/TagManager';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
@@ -75,12 +74,11 @@ export function GeneralSettingsSection() {
   const { setDirty: setContextDirty } = useSettingsDirty();
 
   const isMobile = useIsMobile();
-  const appRuntime = useAppRuntime();
-  const isLocalRuntime = appRuntime === 'local';
   const [mobileFontScale, setMobileFontScale] = useMobileFontScale();
-  // Theme variants ("skins") are a local-web-only feature: token-only presets
-  // (built-in + user-defined) injected as a scoped <style>. The apply hook only
-  // runs on the local web.
+  // Theme variants ("skins") are token-only presets (built-in + user-defined)
+  // injected as a scoped <style>, applied on top of the Light/Dark mode. The
+  // selection + presets sync through config (useConfigPreferenceSync), so the
+  // picker is shown on both the local and remote web.
   const [themeVariant, setThemeVariant] = useThemeVariant();
   const themePresets = useThemePresets();
   const [issueStatuses, setIssueStatuses] = useWorkspaceIssueStatuses();
@@ -337,27 +335,25 @@ export function GeneralSettingsSection() {
           />
         </SettingsField>
 
-        {isLocalRuntime && (
-          <SettingsField
-            label={t('settings.general.appearance.themeVariant.label')}
-            description={t('settings.general.appearance.themeVariant.helper')}
-          >
-            <SettingsSelect
-              value={themeVariant}
-              options={themeVariantOptions}
-              onChange={(value) => setThemeVariant(value)}
-              actions={[
-                {
-                  label: t('settings.general.themeEditor.manage'),
-                  icon: PaletteIcon,
-                  onClick: () => {
-                    void ThemeVariantEditorDialog.show();
-                  },
+        <SettingsField
+          label={t('settings.general.appearance.themeVariant.label')}
+          description={t('settings.general.appearance.themeVariant.helper')}
+        >
+          <SettingsSelect
+            value={themeVariant}
+            options={themeVariantOptions}
+            onChange={(value) => setThemeVariant(value)}
+            actions={[
+              {
+                label: t('settings.general.themeEditor.manage'),
+                icon: PaletteIcon,
+                onClick: () => {
+                  void ThemeVariantEditorDialog.show();
                 },
-              ]}
-            />
-          </SettingsField>
-        )}
+              },
+            ]}
+          />
+        </SettingsField>
 
         <SettingsField
           label={t('settings.general.appearance.primaryColor.label')}
