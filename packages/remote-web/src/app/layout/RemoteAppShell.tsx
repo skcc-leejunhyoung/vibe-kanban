@@ -19,6 +19,8 @@ import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
 import { cn } from "@/shared/lib/utils";
+import { useUiPreferencesStore } from "@/shared/stores/useUiPreferencesStore";
+import { WorkspaceSidebarHoverPreview } from "@/shared/components/ui-new/containers/WorkspaceSidebarHoverPreview";
 import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
@@ -35,6 +37,8 @@ import {
   resolveRelayNavigationHostId,
   useRelayAppBarHosts,
 } from "@remote/shared/hooks/useRelayAppBarHosts";
+import { resolveRemoteDestinationFromPath } from "@remote/app/navigation/AppNavigation";
+import { isWorkspacesDestination } from "@/shared/lib/routes/appNavigation";
 import {
   CreateRemoteProjectDialog,
   type CreateRemoteProjectResult,
@@ -69,6 +73,10 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   useMarkNotificationsReadOnView();
   const isMobile = useIsMobile();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isAppBarHovered, setIsAppBarHovered] = useState(false);
+  const isLeftSidebarVisible = useUiPreferencesStore(
+    (s) => s.isLeftSidebarVisible,
+  );
 
   const { data: organizationsData } = useUserOrganizations();
   const organizations = organizationsData?.organizations ?? [];
@@ -133,6 +141,17 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       ?.name ?? null;
 
   const isWorkspacesActive = location.pathname.includes("/workspaces");
+  // Gate the hover preview on the resolved workspaces *destination* rather than
+  // a loose pathname match: WorkspacesSidebarContainer reads WorkspaceContext,
+  // which the root only mounts on workspace/project destinations. A workspaces
+  // destination is always provider-backed, so the container never mounts
+  // without its provider.
+  const isWorkspaceSidebarPreviewEnabled =
+    !isMobile &&
+    isWorkspacesDestination(
+      resolveRemoteDestinationFromPath(location.pathname),
+    ) &&
+    !isLeftSidebarVisible;
   const activeHostId = routeHostId ?? null;
   const preferredHostId = useMemo(
     () => resolveRelayNavigationHostId(relayHosts, { routeHostId }),
@@ -240,9 +259,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     <div
       className={cn(
         "flex flex-col bg-primary",
-        isMobile
-          ? "fixed inset-0 pb-[env(safe-area-inset-bottom)]"
-          : "h-dvh",
+        isMobile ? "fixed inset-0 pb-[env(safe-area-inset-bottom)]" : "h-dvh",
       )}
     >
       <div className="flex min-h-0 flex-1">
@@ -266,6 +283,8 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
             onSignIn={() => {
               navigate({ to: "/account" });
             }}
+            onHoverStart={() => setIsAppBarHovered(true)}
+            onHoverEnd={() => setIsAppBarHovered(false)}
             notificationBell={
               isSignedIn ? <AppBarNotificationBellContainer /> : undefined
             }
@@ -492,7 +511,13 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
           {!isMobile && (isWorkspaceContextRoute || isProjectRoute) && (
             <RemoteDesktopNavbar />
           )}
-          <div className="min-h-0 flex-1">{children}</div>
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <WorkspaceSidebarHoverPreview
+              enabled={isWorkspaceSidebarPreviewEnabled}
+              isAppBarHovered={isAppBarHovered}
+            />
+            {children}
+          </div>
         </div>
       </div>
     </div>

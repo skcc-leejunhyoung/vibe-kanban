@@ -113,46 +113,6 @@ export interface WorkspacesSidebarProps {
   onOpenRemoteHostSettings?: () => void;
 }
 
-export interface WorkspacesSidebarReopenTagProps {
-  active?: boolean;
-  onHoverStart?: () => void;
-  onHoverEnd?: () => void;
-  ariaLabel?: string;
-  className?: string;
-}
-
-export function WorkspacesSidebarReopenTag({
-  active = false,
-  onHoverStart,
-  onHoverEnd,
-  ariaLabel,
-  className,
-}: WorkspacesSidebarReopenTagProps) {
-  return (
-    <button
-      type="button"
-      onMouseEnter={onHoverStart}
-      onMouseLeave={onHoverEnd}
-      aria-label={ariaLabel ?? 'Preview workspaces sidebar'}
-      title={ariaLabel ?? 'Preview workspaces sidebar'}
-      className={cn(
-        'group inline-flex h-24 w-4 items-center justify-center rounded-md border border-border bg-secondary/95 shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 cursor-e-resize',
-        active ? 'bg-panel text-normal' : 'text-low hover:text-normal',
-        className
-      )}
-    >
-      <span className="grid grid-cols-2 gap-[2px]">
-        <span className="size-dot rounded-full bg-low/70 group-hover:bg-low" />
-        <span className="size-dot rounded-full bg-low/70 group-hover:bg-low" />
-        <span className="size-dot rounded-full bg-low/70 group-hover:bg-low" />
-        <span className="size-dot rounded-full bg-low/70 group-hover:bg-low" />
-        <span className="size-dot rounded-full bg-low/70 group-hover:bg-low" />
-        <span className="size-dot rounded-full bg-low/70 group-hover:bg-low" />
-      </span>
-    </button>
-  );
-}
-
 /**
  * Split workspaces into accordion sections in display order
  * (Needs attention → Running → Idle). Exported so containers can derive the

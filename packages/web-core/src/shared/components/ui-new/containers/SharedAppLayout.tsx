@@ -39,7 +39,6 @@ import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { useCommandBarShortcut } from '@/shared/hooks/useCommandBarShortcut';
 import { useMarkNotificationsReadOnView } from '@/shared/hooks/useMarkNotificationsReadOnView';
-import { useWorkspaceSidebarPreviewController } from '@/shared/hooks/useWorkspaceSidebarPreviewController';
 import { useShape } from '@/shared/integrations/electric/hooks';
 import { sortProjectsByOrder } from '@/shared/lib/projectOrder';
 import {
@@ -48,8 +47,7 @@ import {
   type Project as RemoteProject,
 } from 'shared/remote-types';
 import { AppBarNotificationBellContainer } from '@/pages/workspaces/AppBarNotificationBellContainer';
-import { WorkspacesSidebarContainer } from '@/pages/workspaces/WorkspacesSidebarContainer';
-import { WorkspacesSidebarReopenTag } from '@vibe/ui/components/WorkspacesSidebar';
+import { WorkspaceSidebarHoverPreview } from './WorkspaceSidebarHoverPreview';
 import { useRemoteCloudHostsAppBarModel } from '@/shared/hooks/useRemoteCloudHosts';
 
 export function SharedAppLayout() {
@@ -173,10 +171,6 @@ export function SharedAppLayout() {
   const activeProjectId = projectDestination?.projectId ?? null;
   const activeHostId =
     getDestinationHostId(currentDestination) ?? routeHostId ?? null;
-  const sidebarPreview = useWorkspaceSidebarPreviewController({
-    enabled: isWorkspaceSidebarPreviewEnabled,
-    isAppBarHovered,
-  });
 
   // Persist last selected project to scratch store
   const setSelectedProjectId = useUiPreferencesStore(
@@ -349,33 +343,10 @@ export function SharedAppLayout() {
             />
             {/* Desktop content. */}
             <div className="relative flex min-h-0 min-w-0 flex-col overflow-hidden pb-base">
-              {isWorkspaceSidebarPreviewEnabled && (
-                <div className="absolute inset-y-0 left-0 z-20 flex items-center">
-                  <WorkspacesSidebarReopenTag
-                    active={sidebarPreview.isPreviewOpen}
-                    onHoverStart={sidebarPreview.handleHandleHoverStart}
-                    onHoverEnd={sidebarPreview.handleHandleHoverEnd}
-                    ariaLabel="Workspaces"
-                  />
-                </div>
-              )}
-
-              {isWorkspaceSidebarPreviewEnabled && (
-                <div
-                  className={cn(
-                    'absolute left-0 top-0 z-30 h-full w-[300px] transition-transform duration-150 ease-out',
-                    sidebarPreview.isPreviewOpen
-                      ? 'translate-x-0 pointer-events-auto'
-                      : '-translate-x-full pointer-events-none'
-                  )}
-                  onMouseEnter={sidebarPreview.handlePreviewHoverStart}
-                  onMouseLeave={sidebarPreview.handlePreviewHoverEnd}
-                >
-                  <div className="h-full w-full overflow-hidden border-r border-border bg-secondary shadow-lg">
-                    <WorkspacesSidebarContainer />
-                  </div>
-                </div>
-              )}
+              <WorkspaceSidebarHoverPreview
+                enabled={isWorkspaceSidebarPreviewEnabled}
+                isAppBarHovered={isAppBarHovered}
+              />
 
               <div className="min-h-0 flex-1 overflow-hidden">
                 <Outlet />
