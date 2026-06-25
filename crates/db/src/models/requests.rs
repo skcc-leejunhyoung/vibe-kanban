@@ -52,7 +52,7 @@ pub struct LinkedIssueInfo {
 /// from each repo's `target_branch`, which is the base / merge target. The
 /// frontend resolves the final name — including issue-template expansion —
 /// so the create-time preview matches exactly what gets created.
-#[derive(Debug, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum WorkingBranchInput {
     /// Auto-generate the branch name (`{prefix}/{uuid}-{title}`). Default.

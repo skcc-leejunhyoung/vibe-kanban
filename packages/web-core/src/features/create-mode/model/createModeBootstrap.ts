@@ -9,6 +9,7 @@ import type {
   CreateModeInitialState,
   LinkedIssue,
 } from '@/shared/types/createMode';
+import type { WorkingBranchSelection } from '@/features/create-mode/model/workingBranch';
 
 export interface BootstrapSelectedRepo {
   repo: Repo;
@@ -21,6 +22,7 @@ export interface CreateModeBootstrapData {
   repos?: BootstrapSelectedRepo[];
   executorConfig?: ExecutorConfig | null;
   attachments?: DraftWorkspaceAttachment[];
+  workingBranch?: WorkingBranchSelection;
 }
 
 export interface ResolveCreateModeBootstrapParams {
@@ -158,6 +160,10 @@ export async function resolveCreateModeBootstrap({
 
     if (scratchData.attachments?.length > 0) {
       data.attachments = scratchData.attachments;
+    }
+
+    if (scratchData.working_branch) {
+      data.workingBranch = scratchData.working_branch;
     }
 
     if (scratchData.repos?.length > 0) {

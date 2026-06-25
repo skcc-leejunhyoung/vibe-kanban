@@ -17,13 +17,12 @@ export function gitBranchId(input: string): string {
 export interface BranchTemplateVars {
   issueNumber?: string | null;
   issueTitle?: string | null;
-  shortId?: string | null;
 }
 
 /**
  * Render a working-branch-name template. `{issueTitle}` is sanitized via
- * {@link gitBranchId}; `{issueNumber}` / `{shortId}` are inserted as-is.
- * Collapses repeated/edge hyphens while preserving `/` path separators.
+ * {@link gitBranchId}; `{issueNumber}` is inserted as-is. Collapses
+ * repeated/edge hyphens while preserving `/` path separators.
  */
 export function renderBranchTemplate(
   template: string,
@@ -34,8 +33,7 @@ export function renderBranchTemplate(
     .replace(
       /\{issueTitle\}/g,
       vars.issueTitle ? gitBranchId(vars.issueTitle) : ''
-    )
-    .replace(/\{shortId\}/g, vars.shortId ?? '');
+    );
   return replaced.replace(/-{2,}/g, '-').replace(/(^-|-$)/g, '');
 }
 

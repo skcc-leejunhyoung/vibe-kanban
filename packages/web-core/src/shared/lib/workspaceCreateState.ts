@@ -94,6 +94,8 @@ export function toDraftWorkspaceData(
         }
       : null,
     attachments: [],
+    // Seeded drafts always start on the auto working branch.
+    working_branch: null,
   };
 }
 

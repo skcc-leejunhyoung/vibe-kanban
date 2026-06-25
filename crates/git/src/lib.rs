@@ -1369,10 +1369,38 @@ impl GitService {
         Ok(repo.find_branch(branch_name, BranchType::Local).is_ok())
     }
 
-    /// Validate a branch name against git's own ref-format rules
-    /// (`refs/heads/<name>`). Returns false for empty or malformed names.
-    pub fn is_valid_branch_name(branch_name: &str) -> bool {
-        git2::Branch::name_is_valid(branch_name).unwrap_or(false)
+    /// Returns true if `branch_name` is currently checked out in any worktree of
+    /// this repository — the main working copy or a linked worktree. Git allows a
+    /// branch in only one worktree at a time, so callers can reject such a reuse
+    /// request up front instead of failing late inside `git worktree add`.
+    pub fn is_branch_checked_out(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+    ) -> Result<bool, GitServiceError> {
+        let repo = self.open_repo(repo_path)?;
+        let target = format!("refs/heads/{branch_name}");
+        let head_is_target = |r: &Repository| -> bool {
+            r.head()
+                .ok()
+                .and_then(|h| h.name().map(|n| n == target))
+                .unwrap_or(false)
+        };
+
+        if head_is_target(&repo) {
+            return Ok(true);
+        }
+        if let Ok(names) = repo.worktrees() {
+            for name in names.iter().flatten() {
+                if let Ok(worktree) = repo.find_worktree(name)
+                    && let Ok(wt_repo) = Repository::open_from_worktree(&worktree)
+                    && head_is_target(&wt_repo)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     pub fn rename_local_branch(

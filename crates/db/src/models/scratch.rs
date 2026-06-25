@@ -7,6 +7,8 @@ use thiserror::Error;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::models::requests::WorkingBranchInput;
+
 #[derive(Debug, Error)]
 pub enum ScratchError {
     #[error(transparent)]
@@ -210,6 +212,10 @@ pub struct DraftWorkspaceData {
     pub linked_issue: Option<DraftWorkspaceLinkedIssue>,
     #[serde(default)]
     pub attachments: Vec<DraftWorkspaceAttachment>,
+    /// Working branch setup (auto / new name / existing branch). Absent for
+    /// older drafts; restored as auto when omitted.
+    #[serde(default)]
+    pub working_branch: Option<WorkingBranchInput>,
 }
 
 /// Repository entry in a draft workspace

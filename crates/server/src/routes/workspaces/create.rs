@@ -225,9 +225,16 @@ fn rewrite_imported_issue_attachments_markdown(
 }
 
 /// Validate the requested working-branch setup against the repos and return the
-/// branch-name override to use (`None` = auto-generate). Enforces the conflict
-/// and existence rules: a `New` name must not already exist in any repo; an
-/// `Existing` name must exist and is single-repo only.
+/// branch name to use as the workspace's working branch (`None` = auto-generate).
+///
+/// - `New`: a fresh branch forked from each repo's target branch. Rejected when
+///   the name collides with an existing *local* branch (a remote-only name can
+///   still be forked into a fresh local branch).
+/// - `Existing`: continue work on an existing branch (single-repo only). A local
+///   branch is reused as-is; a remote-tracking selection (`origin/<name>`, the
+///   form the branch picker surfaces) is materialized into a local tracking
+///   branch so the worktree checks out a real branch instead of a detached HEAD.
+///   Rejected when the branch is missing or already checked out elsewhere.
 async fn resolve_working_branch(
     deployment: &DeploymentImpl,
     repos: &[WorkspaceRepoInput],
@@ -246,50 +253,106 @@ async fn resolve_working_branch(
         ));
     }
 
+    let git = deployment.git();
+
     // Validate the name server-side too — the client-side check only covers the
     // local UI, not the MCP/API or older clients.
-    if !GitService::is_valid_branch_name(branch) {
+    if !git.is_branch_name_valid(branch) {
         return Err(ApiError::BadRequest(format!(
             "'{branch}' is not a valid git branch name"
         )));
     }
 
-    if reuse_existing && repos.len() != 1 {
+    // New branch: forked from each repo's target branch. Reject only when the
+    // name collides with an existing *local* branch.
+    if !reuse_existing {
+        for repo_input in repos {
+            let repo = Repo::find_by_id(&deployment.db().pool, repo_input.repo_id)
+                .await?
+                .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
+            if git
+                .check_local_branch_exists(&repo.path, branch)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?
+            {
+                return Err(ApiError::BadRequest(format!(
+                    "Branch '{branch}' already exists in repository '{}'",
+                    repo.name
+                )));
+            }
+        }
+        return Ok(Some(branch.to_string()));
+    }
+
+    // Continue-work on an existing branch — single repo only.
+    if repos.len() != 1 {
         return Err(ApiError::BadRequest(
             "Reusing an existing branch is only supported for single-repo workspaces".to_string(),
         ));
     }
+    let repo = Repo::find_by_id(&deployment.db().pool, repos[0].repo_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
 
-    for repo_input in repos {
-        let repo = Repo::find_by_id(&deployment.db().pool, repo_input.repo_id)
-            .await?
-            .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
-        // A *new* branch collides only with an existing local branch — a
-        // remote-only name can still be forked into a fresh local branch.
-        // Continue-work mode accepts a local or remote branch.
-        let exists = if reuse_existing {
-            deployment.git().check_branch_exists(&repo.path, branch)
-        } else {
-            deployment
-                .git()
-                .check_local_branch_exists(&repo.path, branch)
-        }
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-        if reuse_existing && !exists {
+    let working = if git
+        .check_local_branch_exists(&repo.path, branch)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?
+    {
+        // A real local branch — check it out as-is.
+        branch.to_string()
+    } else {
+        // Not a local branch. The picker surfaces remote branches as
+        // `<remote>/<name>`; handing that straight to `git worktree add` would
+        // check out a detached HEAD. Materialize a local branch tracking the
+        // remote one so the worktree lands on a real branch.
+        if !git
+            .check_branch_exists(&repo.path, branch)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?
+        {
             return Err(ApiError::BadRequest(format!(
                 "Branch '{branch}' does not exist in repository '{}'",
                 repo.name
             )));
         }
-        if !reuse_existing && exists {
-            return Err(ApiError::BadRequest(format!(
-                "Branch '{branch}' already exists in repository '{}'",
-                repo.name
-            )));
+        let local_name = strip_remote_prefix(git, &repo.path, branch)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        if !git
+            .check_local_branch_exists(&repo.path, &local_name)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?
+        {
+            git.create_branch(&repo.path, &local_name, branch)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
         }
+        local_name
+    };
+
+    // Git allows a branch in only one worktree at a time; reject up front rather
+    // than failing late inside worktree creation.
+    if git
+        .is_branch_checked_out(&repo.path, &working)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?
+    {
+        return Err(ApiError::BadRequest(format!(
+            "Branch '{working}' is already checked out in another worktree"
+        )));
     }
 
-    Ok(Some(branch.to_string()))
+    Ok(Some(working))
+}
+
+/// Strip a leading `<remote>/` from a remote-tracking branch name (e.g.
+/// `origin/feature` -> `feature`) so a local tracking branch can be forked from
+/// it. Returns the name unchanged when it matches no configured remote.
+fn strip_remote_prefix(
+    git: &GitService,
+    repo_path: &std::path::Path,
+    branch: &str,
+) -> Result<String, git::GitServiceError> {
+    for remote in git.list_remotes(repo_path)? {
+        if let Some(stripped) = branch.strip_prefix(&format!("{}/", remote.name)) {
+            return Ok(stripped.to_string());
+        }
+    }
+    Ok(branch.to_string())
 }
 
 async fn create_workspace_with_repos(

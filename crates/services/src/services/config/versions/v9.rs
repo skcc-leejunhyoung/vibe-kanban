@@ -16,8 +16,8 @@ fn default_git_branch_prefix() -> String {
 }
 
 /// Default template used to derive a working branch name from a linked issue.
-/// Rendered client-side; supports `{issueNumber}`, `{issueTitle}` (sanitized),
-/// and `{shortId}` placeholders.
+/// Rendered client-side; supports `{issueNumber}` and `{issueTitle}`
+/// (sanitized) placeholders.
 fn default_git_branch_name_template() -> String {
     "{issueNumber}-{issueTitle}".to_string()
 }

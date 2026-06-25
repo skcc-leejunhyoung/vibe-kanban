@@ -242,7 +242,7 @@
         },
         "branchTemplate": {
           "label": "이슈 브랜치 템플릿",
-          "helper": "연결된 이슈에서 작업 브랜치 이름을 만들 때 쓰는 템플릿입니다. 변수: {issueNumber}, {issueTitle}, {shortId}. 비워두면 이슈 기반 이름 생성을 끕니다.",
+          "helper": "연결된 이슈에서 작업 브랜치 이름을 만들 때 쓰는 템플릿입니다. 변수: {issueNumber}, {issueTitle}. 비워두면 이슈 기반 이름 생성을 끕니다.",
           "placeholder": "{issueNumber}-{issueTitle}"
         },
         "workspaceDir": {

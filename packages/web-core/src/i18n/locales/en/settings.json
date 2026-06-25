@@ -250,7 +250,7 @@
         },
         "branchTemplate": {
           "label": "Issue Branch Template",
-          "helper": "Template for the working branch name derived from a linked issue. Variables: {issueNumber}, {issueTitle}, {shortId}. Leave empty to disable issue-based naming.",
+          "helper": "Template for the working branch name derived from a linked issue. Variables: {issueNumber}, {issueTitle}. Leave empty to disable issue-based naming.",
           "placeholder": "{issueNumber}-{issueTitle}"
         },
         "workspaceDir": {

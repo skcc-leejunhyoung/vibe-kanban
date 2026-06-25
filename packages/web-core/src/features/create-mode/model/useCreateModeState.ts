@@ -547,6 +547,7 @@ export function useCreateModeState({
           }
         : null,
       attachments: state.attachments,
+      working_branch: state.workingBranch,
     });
   }, [
     state.phase,
@@ -555,6 +556,7 @@ export function useCreateModeState({
     state.linkedIssue,
     state.executorConfig,
     state.attachments,
+    state.workingBranch,
     debouncedSave,
   ]);
 
