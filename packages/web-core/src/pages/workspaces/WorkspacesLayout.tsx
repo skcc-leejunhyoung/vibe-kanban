@@ -131,7 +131,6 @@ export function WorkspacesLayout() {
     isLeftMainPanelVisible,
     isRightSidebarVisible,
     rightMainPanelMode,
-    setLeftSidebarVisible,
     setLeftMainPanelVisible,
   } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
 
@@ -158,18 +157,16 @@ export function WorkspacesLayout() {
     WorkspacesGuideDialog.show().finally(() => WorkspacesGuideDialog.hide());
   }, [configLoading, config, updateAndSaveConfig]);
 
-  // Ensure left panels visible when right main panel hidden
+  // Ensure the left main panel stays visible when the right main panel is
+  // hidden, so the layout always has visible content. The left sidebar's
+  // open/closed state is intentionally left untouched here — it is a global
+  // preference, not workspace layout, so it must persist across workspace
+  // switches rather than being forced open when a workspace has no right panel.
   useEffect(() => {
-    if (rightMainPanelMode === null) {
-      setLeftSidebarVisible(true);
-      if (!isLeftMainPanelVisible) setLeftMainPanelVisible(true);
+    if (rightMainPanelMode === null && !isLeftMainPanelVisible) {
+      setLeftMainPanelVisible(true);
     }
-  }, [
-    isLeftMainPanelVisible,
-    rightMainPanelMode,
-    setLeftSidebarVisible,
-    setLeftMainPanelVisible,
-  ]);
+  }, [isLeftMainPanelVisible, rightMainPanelMode, setLeftMainPanelVisible]);
 
   const [rightMainPanelSize, setRightMainPanelSize] = usePaneSize(
     PERSIST_KEYS.rightMainPanel,
