@@ -7,10 +7,38 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Single (non-media) theme-color kept in sync with the in-app theme by
+         syncThemeColorMeta() (themeColors.ts) so the installed PWA title/status
+         bar matches the page even when the OS color-scheme differs. Light is the
+         boot fallback; the inline script below switches it to dark for OS-dark
+         users before the bundle loads. -->
+    <meta name="theme-color" content="#f2f2f2" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Vibe Kanban" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Vibe Kanban Remote</title>
+    <script>
+      // Pre-paint the PWA theme-color to the OS-preferred shade so OS-dark users
+      // don't flash the light default before the bundle loads (Bootstrap then
+      // syncs it to the real in-app theme via applyTheme/syncThemeColorMeta).
+      (function () {
+        try {
+          if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            var tc = document.querySelector(
+              'meta[name="theme-color"]:not([media])'
+            );
+            if (tc) tc.setAttribute('content', '#212121');
+          }
+        } catch (e) {
+          /* matchMedia may be unavailable */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

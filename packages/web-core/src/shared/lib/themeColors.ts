@@ -197,10 +197,39 @@ const THEME_STORAGE_KEY = 'vk-theme';
 let systemThemeQuery: MediaQueryList | null = null;
 let systemThemeHandler: ((event: MediaQueryListEvent) => void) | null = null;
 
+// Paint the browser / installed-PWA chrome to match the app's *active*
+// background. macOS Safari PWAs color the window title bar from
+// `<meta name="theme-color">`; iOS/Android use it for the status / address bar.
+// A media-scoped meta only follows the OS color-scheme, so it drifts whenever
+// the in-app theme differs from the OS (e.g. OS light + app forced dark, or a
+// theme-variant "skin"). Reading the computed background of <body> instead
+// tracks the real rendered theme — light/dark mode, skins, and any host
+// override — so the title bar always matches the page.
+export function syncThemeColorMeta() {
+  if (typeof document === 'undefined') return;
+  const el = document.body ?? document.documentElement;
+  if (!el) return;
+  const color = window.getComputedStyle(el).backgroundColor;
+  // Skip transparent/empty values (e.g. before styles load) so we don't paint
+  // the chrome black.
+  if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') return;
+  let meta = document.head.querySelector<HTMLMetaElement>(
+    'meta[name="theme-color"]:not([media])'
+  );
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.appendChild(meta);
+  }
+  if (meta.content !== color) meta.content = color;
+}
+
 function setThemeClass(resolved: 'light' | 'dark') {
   const root = window.document.documentElement;
   root.classList.remove('light', 'dark');
   root.classList.add(resolved);
+  // The class drives `bg-background`, so the computed background is now correct.
+  syncThemeColorMeta();
 }
 
 // Apply the theme to <html>. SYSTEM (or unset) follows prefers-color-scheme and

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { syncThemeColorMeta } from '@/shared/lib/themeColors';
 import {
   DEFAULT_THEME_VARIANT,
   findPreset,
@@ -57,6 +58,8 @@ export function applyThemeVariant(
     delete root.dataset.themeVariant;
     existing?.remove();
     if (cache) safeRemoveCache();
+    // The skin changed `--background`; repaint the PWA title-bar color.
+    syncThemeColorMeta();
     return;
   }
 
@@ -72,6 +75,8 @@ export function applyThemeVariant(
     style.textContent = css;
     document.head.appendChild(style);
   }
+  // The skin changed `--background`; repaint the PWA title-bar color.
+  syncThemeColorMeta();
 }
 
 function safeSetCache(css: string): void {

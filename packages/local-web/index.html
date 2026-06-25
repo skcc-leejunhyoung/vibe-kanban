@@ -8,10 +8,16 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/site.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark">
+    <!-- Single (non-media) theme-color: kept in sync with the *in-app* theme at
+         runtime by syncThemeColorMeta() so the macOS PWA title bar matches the
+         page even when the OS color-scheme differs. Light is the boot fallback;
+         the pre-paint script below switches it to dark for OS-dark users. -->
+    <meta name="theme-color" content="#f2f2f2">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <meta name="theme-color" content="#f2f2f2" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#212121" media="(prefers-color-scheme: dark)">
+    <meta name="apple-mobile-web-app-title" content="Vibe Kanban">
     <title>Vibe Kanban</title>
     <script>
       // Apply the persisted theme variant ("skin") before first paint to avoid
@@ -34,6 +40,19 @@
           }
         } catch (e) {
           /* localStorage may be unavailable */
+        }
+        // Paint the PWA title-bar theme-color to the OS-preferred shade before
+        // the app boots, so OS-dark users don't see a light flash. React then
+        // keeps it synced with the real in-app theme (syncThemeColorMeta).
+        try {
+          if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            var tc = document.querySelector(
+              'meta[name="theme-color"]:not([media])'
+            );
+            if (tc) tc.setAttribute('content', '#212121');
+          }
+        } catch (e) {
+          /* matchMedia may be unavailable */
         }
       })();
     </script>

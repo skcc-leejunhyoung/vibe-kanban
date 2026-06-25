@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ThemeMode } from 'shared/types';
 import { ThemeProviderContext } from '@/shared/hooks/useTheme';
-import { applyPrimaryColor } from '@/shared/lib/themeColors';
+import { applyPrimaryColor, applyTheme } from '@/shared/lib/themeColors';
 
 type ThemeProviderProps = {
   children: React.ReactNode;
@@ -26,22 +26,11 @@ export function ThemeProvider({
     applyPrimaryColor(initialPrimaryColor);
   }, [initialPrimaryColor]);
 
+  // Delegate to the shared applyTheme so the resolved light/dark class, the OS
+  // live-update listener (SYSTEM mode), and the PWA theme-color meta sync all
+  // stay in one place (see themeColors.ts).
   useEffect(() => {
-    const root = window.document.documentElement;
-
-    root.classList.remove('light', 'dark');
-
-    if (theme === ThemeMode.SYSTEM) {
-      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
-        .matches
-        ? 'dark'
-        : 'light';
-
-      root.classList.add(systemTheme);
-      return;
-    }
-
-    root.classList.add(theme.toLowerCase());
+    applyTheme(theme);
   }, [theme]);
 
   const setTheme = (newTheme: ThemeMode) => {
