@@ -303,6 +303,7 @@
       "sendMessage": "Enviar mensaje",
       "settings": "Ir a Ajustes",
       "new-workspace": "Ir a Nuevo espacio de trabajo",
+      "new-session": "Nueva sesión",
       "duplicate-workspace": "Duplicar espacio de trabajo",
       "rename-workspace": "Renombrar espacio de trabajo",
       "pin-workspace": "Fijar/Desfijar espacio de trabajo",

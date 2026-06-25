@@ -306,6 +306,7 @@
       "sendMessage": "메시지 보내기",
       "settings": "설정으로 이동",
       "new-workspace": "새 워크스페이스로 이동",
+      "new-session": "새 세션",
       "duplicate-workspace": "워크스페이스 복제",
       "rename-workspace": "워크스페이스 이름 변경",
       "pin-workspace": "워크스페이스 고정/해제",

@@ -19,17 +19,19 @@ const OPTIONS = {
 
 export function useWorkspaceShortcuts() {
   const { executeAction } = useActions();
-  const { workspaceId, repos } = useWorkspaceContext();
+  const { workspaceId, repos, startNewSession } = useWorkspaceContext();
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   const workspaceIdRef = useRef(workspaceId);
   const reposRef = useRef(repos);
   const executeActionRef = useRef(executeAction);
+  const startNewSessionRef = useRef(startNewSession);
 
   useEffect(() => {
     workspaceIdRef.current = workspaceId;
     reposRef.current = repos;
     executeActionRef.current = executeAction;
+    startNewSessionRef.current = startNewSession;
   });
 
   const execute = useCallback((action: ActionDefinition) => {
@@ -69,6 +71,12 @@ export function useWorkspaceShortcuts() {
     [overrides]
   );
 
+  useReboundHotkey(
+    seq('seq-workspace-new-session'),
+    () => startNewSessionRef.current(),
+    OPTIONS,
+    [overrides]
+  );
   useReboundHotkey(
     seq('seq-workspace-duplicate'),
     () => execute(Actions.DuplicateWorkspace),

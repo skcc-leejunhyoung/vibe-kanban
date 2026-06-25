@@ -303,6 +303,7 @@
       "sendMessage": "メッセージを送信",
       "settings": "設定に移動",
       "new-workspace": "新しいワークスペースに移動",
+      "new-session": "新規セッション",
       "duplicate-workspace": "ワークスペースを複製",
       "rename-workspace": "ワークスペースの名前を変更",
       "pin-workspace": "ワークスペースをピン留め/解除",

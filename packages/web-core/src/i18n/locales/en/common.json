@@ -320,6 +320,7 @@
       "sendMessage": "Send message",
       "settings": "Go to Settings",
       "new-workspace": "Go to New Workspace",
+      "new-session": "New session",
       "duplicate-workspace": "Duplicate workspace",
       "rename-workspace": "Rename workspace",
       "pin-workspace": "Pin/Unpin workspace",

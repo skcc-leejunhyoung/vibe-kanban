@@ -92,6 +92,13 @@ export const sequentialBindings: SequentialBinding[] = [
 
   // Workspace (W)
   {
+    id: 'seq-workspace-new-session',
+    keys: ['w', 's'],
+    description: 'New session',
+    group: 'Workspace',
+    actionId: 'new-session',
+  },
+  {
     id: 'seq-workspace-duplicate',
     keys: ['w', 'd'],
     description: 'Duplicate workspace',
