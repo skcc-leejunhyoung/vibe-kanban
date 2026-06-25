@@ -1356,6 +1356,25 @@ impl GitService {
         }
     }
 
+    /// Returns true only if a **local** branch with this name exists, ignoring
+    /// remote-tracking branches. Use this when deciding whether a *new* branch
+    /// name would collide: a name that exists only on the remote can still be
+    /// forked into a fresh local branch, so it must not be treated as taken.
+    pub fn check_local_branch_exists(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+    ) -> Result<bool, GitServiceError> {
+        let repo = self.open_repo(repo_path)?;
+        Ok(repo.find_branch(branch_name, BranchType::Local).is_ok())
+    }
+
+    /// Validate a branch name against git's own ref-format rules
+    /// (`refs/heads/<name>`). Returns false for empty or malformed names.
+    pub fn is_valid_branch_name(branch_name: &str) -> bool {
+        git2::Branch::name_is_valid(branch_name).unwrap_or(false)
+    }
+
     pub fn rename_local_branch(
         &self,
         worktree_path: &Path,

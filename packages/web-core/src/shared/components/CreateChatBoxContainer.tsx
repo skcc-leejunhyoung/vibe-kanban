@@ -2,10 +2,7 @@ import { useMemo, useCallback, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
-import {
-  toWorkingBranchInput,
-  validateBranchName,
-} from '@/features/create-mode/model/workingBranch';
+import { validateBranchName } from '@/features/create-mode/model/workingBranch';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
@@ -177,13 +174,14 @@ export function CreateChatBoxContainer({
     (repo) => !!targetBranches[repo.id]
   );
 
-  // A `new` working branch needs a valid non-empty name; `existing` needs a
-  // picked branch; `auto` is always fine.
+  // `auto` is always fine; `existing` just needs a picked (non-empty) branch;
+  // `new` needs a name that passes validation (which also rejects empty).
   const isWorkingBranchValid =
-    workingBranch.mode === 'auto' ||
-    (workingBranch.name.trim().length > 0 &&
-      (workingBranch.mode === 'existing' ||
-        validateBranchName(workingBranch.name) === null));
+    workingBranch.mode === 'auto'
+      ? true
+      : workingBranch.mode === 'existing'
+        ? workingBranch.name.trim().length > 0
+        : validateBranchName(workingBranch.name) === null;
 
   // Determine if we can submit
   const canSubmit =
@@ -268,18 +266,6 @@ export function CreateChatBoxContainer({
     [linkedIssue]
   );
 
-  // Resolve the UI selection into the request payload, expanding "auto" into a
-  // concrete issue-template name when a linked issue is present.
-  const getWorkingBranchPayload = useCallback(
-    () =>
-      toWorkingBranchInput(
-        workingBranch,
-        config?.git_branch_name_template ?? '',
-        linkedIssue
-      ),
-    [workingBranch, config?.git_branch_name_template, linkedIssue]
-  );
-
   const getLinkToIssue = useCallback(
     () =>
       linkedIssue
@@ -325,7 +311,7 @@ export function CreateChatBoxContainer({
       // Review mode: work on the issue's open PR head branch instead of a new
       // `vk/` branch, and auto-link the PR. Null for normal workspace creation.
       pr_review: reviewMode.prReviewPayload,
-      working_branch: getWorkingBranchPayload(),
+      working_branch: workingBranch,
     };
 
     const result = await createWorkspace.mutateAsync({
@@ -344,7 +330,6 @@ export function CreateChatBoxContainer({
     getWorkspaceName,
     getWorkspaceRepos,
     getLinkedIssuePayload,
-    getWorkingBranchPayload,
     getAttachmentIds,
     getLinkToIssue,
     finishWorkspaceCreated,
@@ -361,7 +346,7 @@ export function CreateChatBoxContainer({
       repos: workspaceRepos,
       linked_issue: getLinkedIssuePayload(),
       attachment_ids: getAttachmentIds(),
-      working_branch: getWorkingBranchPayload(),
+      working_branch: workingBranch,
     };
 
     const result = await createWorkspaceOnly.mutateAsync({
@@ -378,7 +363,6 @@ export function CreateChatBoxContainer({
     getWorkspaceName,
     getWorkspaceRepos,
     getLinkedIssuePayload,
-    getWorkingBranchPayload,
     getAttachmentIds,
     getLinkToIssue,
     finishWorkspaceCreated,

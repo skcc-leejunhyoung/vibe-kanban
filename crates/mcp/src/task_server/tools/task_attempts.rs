@@ -1,6 +1,6 @@
 use db::models::requests::{
     CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, LinkedIssueInfo,
-    WorkspaceRepoInput,
+    WorkingBranchInput, WorkspaceRepoInput,
 };
 use executors::profile::ExecutorConfig;
 use rmcp::{
@@ -192,6 +192,8 @@ impl McpServer {
             attachment_ids: None,
             // MCP-created workspaces always branch normally (no PR review mode).
             pr_review: None,
+            // MCP uses auto-generated worktree branch names (uuid-prefixed).
+            working_branch: WorkingBranchInput::Auto,
         };
 
         let create_and_start_url = self.url("/api/workspaces/start");

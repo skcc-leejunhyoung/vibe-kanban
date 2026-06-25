@@ -40,9 +40,9 @@ export function renderBranchTemplate(
 }
 
 /**
- * The branch name the "auto" mode produces from a linked issue, or `null` when
- * there is no issue or the template is empty (the backend then falls back to
- * `vk/{uuid}-{name}`).
+ * The issue-template branch name suggested for the "new" mode, or `null` when
+ * there is no linked issue or the template is empty. Offered as a one-click
+ * suggestion; the `auto` mode itself defers to the backend's uuid-based name.
  */
 export function resolveAutoWorkingBranchName(
   template: string,
@@ -61,21 +61,12 @@ export type WorkingBranchSelection = WorkingBranchInput;
 
 export const AUTO_WORKING_BRANCH: WorkingBranchSelection = { mode: 'auto' };
 
-/**
- * Convert the UI selection into the request payload, expanding "auto" into a
- * concrete issue-based name when a linked issue is present.
- */
-export function toWorkingBranchInput(
-  selection: WorkingBranchSelection,
-  template: string,
-  issue: Pick<LinkedIssue, 'simpleId' | 'title'> | null
-): WorkingBranchInput {
-  if (selection.mode === 'auto') {
-    const name = resolveAutoWorkingBranchName(template, issue);
-    return name ? { mode: 'new', name } : { mode: 'auto' };
-  }
-  return selection;
-}
+// NOTE: the UI selection is sent to the backend as-is — `auto` stays `auto`.
+// The backend then generates a uuid-prefixed name (`{prefix}/{uuid}-{slug}`)
+// that is always unique. Resolving the issue template into a concrete `new`
+// name here would drop the uuid and make re-creating a workspace for the same
+// issue collide, so the template is only offered as a suggestion when the user
+// picks "new" mode (see WorkingBranchRow), never substituted for `auto`.
 
 export type BranchNameError = 'empty' | 'invalidChars' | 'invalidSequence';
 

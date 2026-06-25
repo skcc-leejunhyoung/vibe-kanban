@@ -13,6 +13,7 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::model_selector::PermissionPolicy;
+use git::GitService;
 use services::services::{container::ContainerService, issue_gating, vibe_orchestrator, vibe_tags};
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -245,6 +246,14 @@ async fn resolve_working_branch(
         ));
     }
 
+    // Validate the name server-side too — the client-side check only covers the
+    // local UI, not the MCP/API or older clients.
+    if !GitService::is_valid_branch_name(branch) {
+        return Err(ApiError::BadRequest(format!(
+            "'{branch}' is not a valid git branch name"
+        )));
+    }
+
     if reuse_existing && repos.len() != 1 {
         return Err(ApiError::BadRequest(
             "Reusing an existing branch is only supported for single-repo workspaces".to_string(),
@@ -255,10 +264,17 @@ async fn resolve_working_branch(
         let repo = Repo::find_by_id(&deployment.db().pool, repo_input.repo_id)
             .await?
             .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
-        let exists = deployment
-            .git()
-            .check_branch_exists(&repo.path, branch)
-            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        // A *new* branch collides only with an existing local branch — a
+        // remote-only name can still be forked into a fresh local branch.
+        // Continue-work mode accepts a local or remote branch.
+        let exists = if reuse_existing {
+            deployment.git().check_branch_exists(&repo.path, branch)
+        } else {
+            deployment
+                .git()
+                .check_local_branch_exists(&repo.path, branch)
+        }
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
         if reuse_existing && !exists {
             return Err(ApiError::BadRequest(format!(
                 "Branch '{branch}' does not exist in repository '{}'",

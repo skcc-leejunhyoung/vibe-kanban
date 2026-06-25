@@ -10,7 +10,7 @@ import {
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { Repo } from 'shared/types';
-import type { BranchItem, RepoItem } from '@/shared/types/selectionItems';
+import type { RepoItem } from '@/shared/types/selectionItems';
 import { repoApi } from '@/shared/lib/api';
 import { cn } from '@/shared/lib/utils';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
@@ -26,26 +26,13 @@ import {
   buildRepoSelectionPages,
   type RepoSelectionResult,
 } from '@/shared/dialogs/command-bar/selections/repoSelection';
-import {
-  buildBranchSelectionPages,
-  type BranchSelectionResult,
-} from '@/shared/dialogs/command-bar/selections/branchSelection';
 import { WorkingBranchRow } from '@/shared/components/WorkingBranchRow';
+import { pickBranchForRepo } from '@/shared/lib/branchPicker';
 
 function toRepoItem(repo: Repo): RepoItem {
   return {
     id: repo.id,
     display_name: repo.display_name || repo.name,
-  };
-}
-
-function toBranchItem(branch: {
-  name: string;
-  is_current: boolean;
-}): BranchItem {
-  return {
-    name: branch.name,
-    isCurrent: branch.is_current,
   };
 }
 
@@ -95,24 +82,6 @@ export function CreateModeRepoPickerBar({
     [repos]
   );
 
-  const pickBranchForRepo = useCallback(async (repo: Repo) => {
-    // Fetch from the remote first so the list reflects the latest branches
-    // pushed to origin, not just what was known locally at clone time.
-    const branches = await repoApi.getBranches(repo.id, undefined, {
-      fetch: true,
-    });
-    const branchItems = branches.map(toBranchItem);
-    const branchResult = (await SelectionDialog.show({
-      initialPageId: 'selectBranch',
-      pages: buildBranchSelectionPages(
-        branchItems,
-        getRepoDisplayName(repo)
-      ) as Record<string, SelectionPage>,
-    })) as BranchSelectionResult | undefined;
-
-    return branchResult?.branch ?? null;
-  }, []);
-
   const runPickerAction = useCallback(
     async (
       action: Exclude<PendingAction, null>,
@@ -150,7 +119,7 @@ export function CreateModeRepoPickerBar({
       setTargetBranch(repo.id, selectedBranch);
       return true;
     },
-    [addRepo, pickBranchForRepo, selectedRepoIds, setTargetBranch]
+    [addRepo, selectedRepoIds, setTargetBranch]
   );
 
   const handleChooseRepo = useCallback(async () => {
@@ -245,7 +214,7 @@ export function CreateModeRepoPickerBar({
         'Failed to load branches'
       );
     },
-    [pickBranchForRepo, runPickerAction, setTargetBranch]
+    [runPickerAction, setTargetBranch]
   );
 
   return (

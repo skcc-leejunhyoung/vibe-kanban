@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CaretDownIcon, GitBranchIcon } from '@phosphor-icons/react';
 import { Input } from '@vibe/ui/components/Input';
@@ -10,15 +10,7 @@ import {
 } from '@vibe/ui/components/DropdownMenu';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
-import { repoApi } from '@/shared/lib/api';
-import {
-  SelectionDialog,
-  type SelectionPage,
-} from '@/shared/dialogs/command-bar/SelectionDialog';
-import {
-  buildBranchSelectionPages,
-  type BranchSelectionResult,
-} from '@/shared/dialogs/command-bar/selections/branchSelection';
+import { pickBranchForRepo } from '@/shared/lib/branchPicker';
 import {
   resolveAutoWorkingBranchName,
   validateBranchName,
@@ -43,42 +35,44 @@ export function WorkingBranchRow() {
   const prefix = config?.git_branch_prefix ?? '';
   const singleRepo = repos.length === 1;
 
-  const autoPreview = useMemo(() => {
-    const issueName = resolveAutoWorkingBranchName(template, linkedIssue);
-    if (issueName) return issueName;
-    return prefix
-      ? t('createMode.workingBranch.autoPreviewPrefixed', { prefix })
-      : t('createMode.workingBranch.autoPreviewPlain');
-  }, [template, linkedIssue, prefix, t]);
+  // `auto` defers to the backend, which appends a uuid we can't know here, so
+  // the preview is intentionally an approximation rather than the exact name.
+  const autoPreview = prefix
+    ? t('createMode.workingBranch.autoPreviewPrefixed', { prefix })
+    : t('createMode.workingBranch.autoPreviewPlain');
+
+  // Existing-branch reuse is single-repo only. If the repo set grows past one
+  // while an existing branch is selected, fall back to auto so we never submit
+  // a request the backend would reject.
+  useEffect(() => {
+    if (workingBranch.mode === 'existing' && !singleRepo) {
+      setWorkingBranch({ mode: 'auto' });
+      setNameError(null);
+    }
+  }, [singleRepo, workingBranch.mode, setWorkingBranch]);
 
   const selectAuto = useCallback(() => {
     setNameError(null);
     setWorkingBranch({ mode: 'auto' });
   }, [setWorkingBranch]);
 
+  // Pre-fill the issue-template name as a suggestion so issue-based naming is
+  // one click away, even though `auto` itself no longer applies the template.
   const selectNew = useCallback(() => {
-    setNameError(null);
-    setWorkingBranch({ mode: 'new', name: '' });
-  }, [setWorkingBranch]);
+    const suggested = resolveAutoWorkingBranchName(template, linkedIssue) ?? '';
+    setWorkingBranch({ mode: 'new', name: suggested });
+    setNameError(suggested ? validateBranchName(suggested) : null);
+  }, [setWorkingBranch, template, linkedIssue]);
 
   const pickExisting = useCallback(async () => {
     const repo = repos[0];
     if (!repo) return;
     setPickingExisting(true);
     try {
-      const branches = await repoApi.getBranches(repo.id, undefined, {
-        fetch: true,
-      });
-      const result = (await SelectionDialog.show({
-        initialPageId: 'selectBranch',
-        pages: buildBranchSelectionPages(
-          branches.map((b) => ({ name: b.name, isCurrent: b.is_current })),
-          repo.display_name || repo.name
-        ) as Record<string, SelectionPage>,
-      })) as BranchSelectionResult | undefined;
-      if (result?.branch) {
+      const branch = await pickBranchForRepo(repo);
+      if (branch) {
         setNameError(null);
-        setWorkingBranch({ mode: 'existing', name: result.branch });
+        setWorkingBranch({ mode: 'existing', name: branch });
       }
     } finally {
       setPickingExisting(false);
