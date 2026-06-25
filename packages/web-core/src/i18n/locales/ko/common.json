@@ -518,7 +518,8 @@
       "errors": {
         "empty": "브랜치 이름을 입력하세요",
         "invalidChars": "사용할 수 없는 문자가 있습니다",
-        "invalidSequence": "올바르지 않은 브랜치 이름입니다"
+        "invalidSequence": "올바르지 않은 브랜치 이름입니다",
+        "loadFailed": "브랜치를 불러오지 못했습니다"
       }
     },
     "workspaceOnly": {

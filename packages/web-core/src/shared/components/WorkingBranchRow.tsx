@@ -30,6 +30,7 @@ export function WorkingBranchRow() {
   const { config } = useUserSystem();
   const [pickingExisting, setPickingExisting] = useState(false);
   const [nameError, setNameError] = useState<BranchNameError | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
 
   const template = config?.git_branch_name_template ?? '';
   const prefix = config?.git_branch_prefix ?? '';
@@ -53,6 +54,7 @@ export function WorkingBranchRow() {
 
   const selectAuto = useCallback(() => {
     setNameError(null);
+    setPickError(null);
     setWorkingBranch({ mode: 'auto' });
   }, [setWorkingBranch]);
 
@@ -60,6 +62,7 @@ export function WorkingBranchRow() {
   // one click away, even though `auto` itself no longer applies the template.
   const selectNew = useCallback(() => {
     const suggested = resolveAutoWorkingBranchName(template, linkedIssue) ?? '';
+    setPickError(null);
     setWorkingBranch({ mode: 'new', name: suggested });
     setNameError(suggested ? validateBranchName(suggested) : null);
   }, [setWorkingBranch, template, linkedIssue]);
@@ -67,6 +70,7 @@ export function WorkingBranchRow() {
   const pickExisting = useCallback(async () => {
     const repo = repos[0];
     if (!repo) return;
+    setPickError(null);
     setPickingExisting(true);
     try {
       const branch = await pickBranchForRepo(repo);
@@ -74,10 +78,16 @@ export function WorkingBranchRow() {
         setNameError(null);
         setWorkingBranch({ mode: 'existing', name: branch });
       }
+    } catch (error) {
+      setPickError(
+        error instanceof Error
+          ? error.message
+          : t('createMode.workingBranch.errors.loadFailed')
+      );
     } finally {
       setPickingExisting(false);
     }
-  }, [repos, setWorkingBranch]);
+  }, [repos, setWorkingBranch, t]);
 
   const handleNameChange = useCallback(
     (value: string) => {
@@ -162,6 +172,7 @@ export function WorkingBranchRow() {
           {t(`createMode.workingBranch.errors.${nameError}`)}
         </p>
       )}
+      {pickError && <p className="mt-half text-xs text-error">{pickError}</p>}
     </div>
   );
 }

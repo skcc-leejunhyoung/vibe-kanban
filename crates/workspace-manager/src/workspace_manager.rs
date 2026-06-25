@@ -318,9 +318,14 @@ impl WorkspaceManager {
                 worktree_path.display()
             );
 
-            // Reuse the branch when it already exists (continue-work mode);
-            // otherwise fork a new one from the target branch.
-            let create_branch = !git.check_branch_exists(&input.repo.path, branch_name)?;
+            // Reuse the branch only when it already exists *locally* — a
+            // continue-work selection (already materialized into a local branch
+            // by `resolve_working_branch`) or a worktree being recreated on
+            // restart. Otherwise fork a fresh branch from the target. Checking
+            // local-only, matching the New-mode validation, keeps a name that
+            // exists solely as a remote branch from being silently checked out
+            // via git's worktree DWIM instead of forked from the target branch.
+            let create_branch = !git.check_local_branch_exists(&input.repo.path, branch_name)?;
 
             match WorktreeManager::create_worktree(
                 &input.repo.path,

@@ -81,11 +81,19 @@ export function validateBranchName(name: string): BranchNameError | null {
   if (
     trimmed.includes('..') ||
     trimmed.includes('@{') ||
+    trimmed === '@' ||
+    trimmed.includes('//') ||
     trimmed.startsWith('/') ||
     trimmed.endsWith('/') ||
-    trimmed.startsWith('.') ||
-    trimmed.endsWith('.lock')
+    trimmed.endsWith('.')
   )
     return 'invalidSequence';
+  // `git check-ref-format` rules apply to each slash-separated component, not
+  // just the whole string: no component may start with '.' or end with '.lock'.
+  for (const component of trimmed.split('/')) {
+    if (component.startsWith('.') || component.endsWith('.lock')) {
+      return 'invalidSequence';
+    }
+  }
   return null;
 }

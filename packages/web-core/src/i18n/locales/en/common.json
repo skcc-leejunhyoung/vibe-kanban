@@ -532,7 +532,8 @@
       "errors": {
         "empty": "Branch name is required",
         "invalidChars": "Contains invalid characters",
-        "invalidSequence": "Invalid branch name"
+        "invalidSequence": "Invalid branch name",
+        "loadFailed": "Failed to load branches"
       }
     },
     "workspaceOnly": {
