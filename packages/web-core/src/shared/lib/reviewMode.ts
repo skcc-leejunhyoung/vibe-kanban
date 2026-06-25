@@ -47,6 +47,23 @@ export function buildPrReviewInput(
 }
 
 /**
+ * Instruction appended below the user's prompt when a workspace is created in
+ * review mode, telling the agent to review the resolved PR.
+ */
+export const REVIEW_PROMPT_INSTRUCTION = 'Review the checked-out PR.';
+
+/**
+ * Append the review instruction below the user's prompt. Only used when review
+ * mode is actually active (a `pr_review` payload is being sent).
+ */
+export function appendReviewInstruction(message: string): string {
+  const base = message.trimEnd();
+  return base.length > 0
+    ? `${base}\n\n${REVIEW_PROMPT_INSTRUCTION}`
+    : REVIEW_PROMPT_INSTRUCTION;
+}
+
+/**
  * Resolve review mode from already-fetched data. Returns the `pr_review` payload
  * when the issue is review-tagged AND has an open PR for the repo, otherwise
  * null (→ normal new-branch workspace creation).

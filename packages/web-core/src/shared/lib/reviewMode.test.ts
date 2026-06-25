@@ -3,6 +3,7 @@ import type { Tag } from 'shared/remote-types';
 import type { PullRequestDetail } from 'shared/types';
 
 import {
+  appendReviewInstruction,
   buildPrReviewInput,
   findOpenPrDetailForIssue,
   hasReviewTag,
@@ -90,6 +91,24 @@ describe('buildPrReviewInput', () => {
     expect(
       buildPrReviewInput('repo-1', prDetail(), null).remote_name
     ).toBeNull();
+  });
+});
+
+describe('appendReviewInstruction', () => {
+  it('appends the instruction below the prompt', () => {
+    expect(appendReviewInstruction('Look at this')).toBe(
+      'Look at this\n\nReview the checked-out PR.'
+    );
+  });
+
+  it('trims trailing whitespace before appending', () => {
+    expect(appendReviewInstruction('Look at this\n\n')).toBe(
+      'Look at this\n\nReview the checked-out PR.'
+    );
+  });
+
+  it('returns just the instruction for an empty prompt', () => {
+    expect(appendReviewInstruction('   ')).toBe('Review the checked-out PR.');
   });
 });
 

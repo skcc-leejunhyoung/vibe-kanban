@@ -7,6 +7,7 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
 import { useReviewMode } from '@/shared/hooks/useReviewMode';
+import { appendReviewInstruction } from '@/shared/lib/reviewMode';
 import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { getSortedExecutorVariantKeys } from '@/shared/lib/executor';
@@ -285,7 +286,12 @@ export function CreateChatBoxContainer({
     const data = {
       executor_config: executorConfig,
       name: getWorkspaceName(),
-      prompt: message,
+      // In review mode, append "Review the checked-out PR." below the user's prompt
+      // so the agent reviews the resolved PR. Gated on the same payload that
+      // sends `pr_review`, so it is omitted when no PR is being reviewed.
+      prompt: reviewMode.prReviewPayload
+        ? appendReviewInstruction(message)
+        : message,
       repos: workspaceRepos,
       linked_issue: getLinkedIssuePayload(),
       attachment_ids: getAttachmentIds(),
