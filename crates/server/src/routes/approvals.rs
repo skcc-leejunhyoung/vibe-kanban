@@ -65,19 +65,22 @@ async fn stream_approvals_ws(
 /// SSE sibling of `stream_approvals_ws`. Emits the snapshot patch, a `Ready`,
 /// then live patches — the patch_stream's first item is the snapshot.
 async fn stream_approvals_sse(State(deployment): State<DeploymentImpl>) -> impl IntoResponse {
-    let event_stream = deployment
-        .approvals()
-        .patch_stream()
-        .enumerate()
-        .flat_map(|(i, patch)| {
-            let mut items: Vec<Result<Event, BoxError>> =
-                vec![Ok(LogMsg::JsonPatch(patch).to_sse_event())];
-            if i == 0 {
-                items.push(Ok(LogMsg::Ready.to_sse_event()));
-            }
-            futures_util::stream::iter(items)
-        })
-        .boxed();
+    let mut stream = deployment.approvals().patch_stream();
+
+    // Mirror `handle_approvals_ws`: take the snapshot first and, if the stream
+    // is already closed, end the SSE response immediately instead of holding the
+    // connection open. Otherwise emit snapshot + `Ready`, then the live patches.
+    let prelude: Vec<Result<Event, BoxError>> = match stream.next().await {
+        Some(snapshot) => vec![
+            Ok(LogMsg::JsonPatch(snapshot).to_sse_event()),
+            Ok(LogMsg::Ready.to_sse_event()),
+        ],
+        None => vec![],
+    };
+
+    let live = stream
+        .map(|patch| -> Result<Event, BoxError> { Ok(LogMsg::JsonPatch(patch).to_sse_event()) });
+    let event_stream = futures_util::stream::iter(prelude).chain(live).boxed();
     Sse::new(event_stream).keep_alive(KeepAlive::default())
 }
 
