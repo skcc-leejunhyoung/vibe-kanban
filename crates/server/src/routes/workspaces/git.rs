@@ -642,7 +642,13 @@ pub async fn pull_workspace_branch_from_remote(
         .container()
         .ensure_container_exists(&workspace)
         .await?;
-    let worktree_path = Path::new(&container_ref).join(&repo.name);
+    // In-place ("quick chat") workspaces run in the repo root itself, so the
+    // worktree path IS `container_ref` rather than a per-repo subdir.
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        Path::new(&container_ref).join(&repo.name)
+    };
 
     let outcome = deployment
         .git()
@@ -699,7 +705,13 @@ pub async fn update_workspace_from_base(
         .container()
         .ensure_container_exists(&workspace)
         .await?;
-    let worktree_path = Path::new(&container_ref).join(&repo.name);
+    // In-place ("quick chat") workspaces run in the repo root itself, so the
+    // worktree path IS `container_ref` rather than a per-repo subdir.
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        Path::new(&container_ref).join(&repo.name)
+    };
 
     let result = match payload.strategy {
         UpdateFromBaseStrategy::Merge => deployment
