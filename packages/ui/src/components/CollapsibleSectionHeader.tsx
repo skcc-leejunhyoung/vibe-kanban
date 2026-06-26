@@ -117,8 +117,9 @@ export function CollapsibleSectionHeader({
               onKeyDown={(e) => handleActionKeyDown(e, action.onClick)}
               className={cn(
                 'flex items-center justify-center hover:text-normal',
-                // Roomier tap target (padding) on mobile.
-                largeActions && 'p-1.5 rounded-sm',
+                // Mobile: match the search-bar filter/sort buttons' size exactly
+                // (same classes, so remote-web's Tailwind build covers them too).
+                largeActions && '!h-cta !px-half !py-0 rounded-sm',
                 action.isActive ? 'text-brand' : 'text-low'
               )}
             >
