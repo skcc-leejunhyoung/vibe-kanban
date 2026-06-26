@@ -551,6 +551,23 @@ pub async fn create_and_start_workspace(
 
     let workspace = managed_workspace.workspace.clone();
 
+    // A review-mode workspace (checked out from an existing PR's head branch)
+    // means the issue is now actively under review, so move it to "In review"
+    // here. The remote intentionally skips the PR-open → "In review" transition
+    // for `review`-tagged issues so the move lands at workspace creation instead.
+    if pr_review.is_some()
+        && let Some(linked) = &linked_issue
+        && let Ok(client) = deployment.remote_client()
+    {
+        if let Err(e) = client.mark_issue_for_review(linked.issue_id).await {
+            tracing::warn!(
+                "Failed to mark issue {} In review after review-mode workspace creation: {}",
+                linked.issue_id,
+                e
+            );
+        }
+    }
+
     // If the linked issue carries the `vibe` tag, opt this run into the
     // automated workflow: force permission_policy=Auto so approvals never block,
     // and append the self-report instruction so the agent emits a `VIBE_RESULT:`

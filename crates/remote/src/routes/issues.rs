@@ -46,6 +46,10 @@ pub fn router() -> axum::Router<AppState> {
         .router()
         .route("/issues/search", post(search_issues))
         .route("/issues/bulk", post(bulk_update_issues))
+        .route(
+            "/issues/{issue_id}/mark_for_review",
+            post(mark_issue_for_review),
+        )
 }
 
 async fn notify_issue_update_changes(
@@ -254,6 +258,44 @@ async fn get_issue(
     ensure_project_access(state.pool(), ctx.user.id, issue.project_id).await?;
 
     Ok(Json(issue))
+}
+
+/// Forces an issue into "In review". Called by the local host when a review-mode
+/// workspace is created for the issue, so the move happens on workspace creation
+/// rather than when the PR opens (see `IssueRepository::sync_status_from_pull_request`).
+#[instrument(
+    name = "issues.mark_for_review",
+    skip(state, ctx),
+    fields(issue_id = %issue_id, user_id = %ctx.user.id)
+)]
+async fn mark_issue_for_review(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(issue_id): Path<Uuid>,
+) -> Result<StatusCode, ErrorResponse> {
+    let issue = IssueRepository::find_by_id(state.pool(), issue_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, %issue_id, "failed to load issue");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to load issue")
+        })?
+        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "issue not found"))?;
+
+    ensure_project_access(state.pool(), ctx.user.id, issue.project_id).await?;
+
+    let mut conn = state.pool().acquire().await.map_err(|error| {
+        tracing::error!(?error, "failed to acquire connection");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    IssueRepository::mark_for_review(&mut conn, issue_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, %issue_id, "failed to mark issue for review");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[instrument(

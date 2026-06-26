@@ -590,7 +590,8 @@ impl IssueRepository {
     }
 
     /// Syncs issue status based on the current pull-request status.
-    /// - Open PR => move issue to "In review"
+    /// - Open PR => move issue to "In review" (skipped for `review`-tagged issues,
+    ///   which only enter "In review" once their review-mode workspace is created)
     /// - Merged/closed PR => if all linked PRs are merged, move issue to "Done"
     pub async fn sync_status_from_pull_request(
         conn: &mut PgConnection,
@@ -598,6 +599,12 @@ impl IssueRepository {
         pr_status: PullRequestStatus,
     ) -> Result<(), IssueError> {
         let signal = if pr_status == PullRequestStatus::Open {
+            // A `review`-tagged issue must not jump to "In review" the moment its
+            // PR opens; it enters "In review" only when a review-mode workspace is
+            // created for it (see `mark_for_review`). Leave its status untouched.
+            if Self::has_review_tag(conn, issue_id).await? {
+                return Ok(());
+            }
             IssueWorkflowSignal::ReviewStarted
         } else {
             IssueWorkflowSignal::WorkMerged
@@ -614,8 +621,9 @@ impl IssueRepository {
             .await
     }
 
-    /// Forces an issue into "In review" — used when an automated merge fails so
-    /// a human is asked to step in.
+    /// Forces an issue into "In review". Used when an automated merge fails (a
+    /// human is asked to step in) and when a review-mode workspace is created for
+    /// the issue.
     pub async fn mark_for_review(
         conn: &mut PgConnection,
         issue_id: Uuid,
@@ -633,6 +641,29 @@ impl IssueRepository {
                 FROM issue_tags it
                 JOIN tags t ON t.id = it.tag_id
                 WHERE it.issue_id = $1 AND t.name = 'vibe'
+            ) AS "exists!"
+            "#,
+            issue_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(exists)
+    }
+
+    /// Returns true if the issue carries the "review" tag. Normalized (trim +
+    /// lowercase) to match the case-insensitive comparison used elsewhere
+    /// (`REVIEW_TAG_NAME`).
+    pub async fn has_review_tag(
+        conn: &mut PgConnection,
+        issue_id: Uuid,
+    ) -> Result<bool, IssueError> {
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM issue_tags it
+                JOIN tags t ON t.id = it.tag_id
+                WHERE it.issue_id = $1 AND lower(trim(t.name)) = 'review'
             ) AS "exists!"
             "#,
             issue_id

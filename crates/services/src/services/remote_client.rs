@@ -799,6 +799,20 @@ impl RemoteClient {
         Ok(())
     }
 
+    /// Forces an issue into "In review" by issue id. Used when a review-mode
+    /// workspace is created, so the move does not depend on the workspace already
+    /// being registered on the remote.
+    pub async fn mark_issue_for_review(&self, issue_id: Uuid) -> Result<(), RemoteClientError> {
+        self.send(
+            reqwest::Method::POST,
+            &format!("/v1/issues/{issue_id}/mark_for_review"),
+            true,
+            None::<&()>,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Creates a workspace on the remote server, linking it to a local workspace and an issue.
     pub async fn create_workspace(
         &self,

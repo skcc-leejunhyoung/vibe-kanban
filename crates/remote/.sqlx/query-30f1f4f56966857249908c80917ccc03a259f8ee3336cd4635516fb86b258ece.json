@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1\n                FROM issue_tags it\n                JOIN tags t ON t.id = it.tag_id\n                WHERE it.issue_id = $1 AND lower(trim(t.name)) = 'review'\n            ) AS \"exists!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "30f1f4f56966857249908c80917ccc03a259f8ee3336cd4635516fb86b258ece"
+}
