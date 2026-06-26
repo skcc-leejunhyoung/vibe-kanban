@@ -38,6 +38,7 @@ import {
 import { OAuthDialog } from '@/shared/dialogs/global/OAuthDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
+import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
 import { useCommandBarShortcut } from '@/shared/hooks/useCommandBarShortcut';
 import { useMarkNotificationsReadOnView } from '@/shared/hooks/useMarkNotificationsReadOnView';
 import { useShape } from '@/shared/integrations/electric/hooks';
@@ -315,6 +316,7 @@ export function SharedAppLayout() {
               onCreateProject={handleCreateProject}
               onExportClick={handleExportClick}
               onWorkspacesClick={handleWorkspacesClick}
+              onQuickChatClick={() => void QuickChatDialog.show()}
               onHostClick={handleHostClick}
               onPairHostClick={handlePairHostClick}
               onProjectClick={handleProjectClick}

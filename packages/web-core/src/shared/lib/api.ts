@@ -96,6 +96,7 @@ import {
   CreateFromPrError,
   CreateAndStartWorkspaceRequest,
   CreateAndStartWorkspaceResponse,
+  CreateQuickChatRequest,
   GenerateSpecRequest,
   GenerateSpecResponse,
   CreateWorkspaceWithoutStartingRequest,
@@ -513,6 +514,20 @@ export const workspacesApi = {
     data: CreateAndStartWorkspaceRequest
   ): Promise<CreateAndStartWorkspaceResponse> => {
     const response = await makeRequest(`/api/workspaces/start`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleApiResponse<CreateAndStartWorkspaceResponse>(response);
+  },
+
+  /**
+   * "Quick chat": run an agent directly in a repo's existing checkout (in-place,
+   * no `vk/` worktree, no new branch). Returns the same shape as createAndStart.
+   */
+  quickChat: async (
+    data: CreateQuickChatRequest
+  ): Promise<CreateAndStartWorkspaceResponse> => {
+    const response = await makeRequest(`/api/workspaces/quick-chat`, {
       method: 'POST',
       body: JSON.stringify(data),
     });

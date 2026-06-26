@@ -1195,7 +1195,13 @@ pub trait ContainerService {
 
         let all_parallel = repos_with_setup.iter().all(|r| r.parallel_setup_script);
 
-        let cleanup_action = self.cleanup_actions_for_repos(&repos);
+        // In-place ("quick chat") is a pure single coding-agent run: no setup or
+        // cleanup scripts execute in the user's real checkout.
+        let cleanup_action = if workspace.in_place {
+            None
+        } else {
+            self.cleanup_actions_for_repos(&repos)
+        };
 
         let working_dir = session
             .agent_working_dir
@@ -1212,7 +1218,16 @@ pub trait ContainerService {
             cleanup_action.map(Box::new),
         );
 
-        let execution_process = if all_parallel {
+        let execution_process = if workspace.in_place {
+            // Skip all setup-script orchestration; run the coding agent directly.
+            self.start_execution(
+                &workspace,
+                &session,
+                &coding_action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?
+        } else if all_parallel {
             // All parallel: start each setup independently, then start coding agent
             for repo in &repos_with_setup {
                 if let Some(action) = Self::setup_action_for_repo(repo)

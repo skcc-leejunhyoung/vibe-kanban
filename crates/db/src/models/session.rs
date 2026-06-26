@@ -5,7 +5,7 @@ use thiserror::Error;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::workspace_repo::WorkspaceRepo;
+use super::{workspace::Workspace, workspace_repo::WorkspaceRepo};
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -185,6 +185,14 @@ impl Session {
         pool: &SqlitePool,
         workspace_id: Uuid,
     ) -> Result<Option<String>, sqlx::Error> {
+        // In-place ("quick chat") workspaces set `container_ref` to the repo root
+        // itself, so the agent runs there directly with no per-repo subdir offset.
+        if let Some(workspace) = Workspace::find_by_id(pool, workspace_id).await?
+            && workspace.in_place
+        {
+            return Ok(None);
+        }
+
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace_id).await?;
         if repos.len() != 1 {
             return Ok(None);

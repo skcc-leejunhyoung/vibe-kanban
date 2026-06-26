@@ -12,6 +12,7 @@ import {
   PlusIcon,
   KanbanIcon,
   SpinnerIcon,
+  LightningIcon,
   type Icon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -43,6 +44,8 @@ interface AppBarProps {
   onCreateProject: () => void;
   onExportClick?: () => void;
   onWorkspacesClick: () => void;
+  /** Opens the Quick chat launcher. When omitted, the entry is hidden. */
+  onQuickChatClick?: () => void;
   onHostClick?: (hostId: string, status: AppBarHostStatus) => void;
   showWorkspacesButton?: boolean;
   onProjectClick: (projectId: string) => void;
@@ -191,6 +194,7 @@ export function AppBar({
   onCreateProject,
   onExportClick,
   onWorkspacesClick,
+  onQuickChatClick,
   onHostClick,
   showWorkspacesButton = true,
   onProjectClick,
@@ -226,6 +230,17 @@ export function AppBar({
           isActive: isWorkspacesActive,
           onClick: onWorkspacesClick,
         },
+        ...(onQuickChatClick
+          ? [
+              {
+                key: 'quick-chat',
+                kind: 'icon-button' as const,
+                label: 'Quick chat',
+                icon: LightningIcon,
+                onClick: onQuickChatClick,
+              },
+            ]
+          : []),
       ],
     });
   }

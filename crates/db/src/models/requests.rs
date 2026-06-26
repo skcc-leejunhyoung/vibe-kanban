@@ -89,6 +89,21 @@ pub struct CreateAndStartWorkspaceResponse {
     pub execution_process: ExecutionProcess,
 }
 
+/// "Quick chat" payload: run an agent directly in an existing checkout without
+/// creating a `vk/` worktree branch. The workspace is marked `in_place`, its
+/// `container_ref` points at the repo's real path, no worktree is materialized,
+/// and the agent's edits stay uncommitted in the user's working tree. Reuses
+/// [`CreateAndStartWorkspaceResponse`].
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct CreateQuickChatRequest {
+    /// Registered repo whose existing checkout the agent runs in directly.
+    pub repo_id: Uuid,
+    pub executor_config: ExecutorConfig,
+    pub prompt: String,
+    /// Optional explicit name; defaults to the first line of the prompt.
+    pub name: Option<String>,
+}
+
 /// Request to expand a rough brief into a development-ready technical task by
 /// running a coding agent in a throwaway (ephemeral) multi-repo workspace.
 #[derive(Debug, Serialize, Deserialize, TS)]

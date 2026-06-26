@@ -89,6 +89,13 @@ export const sequentialBindings: SequentialBinding[] = [
     group: 'Navigation',
     actionId: 'new-workspace',
   },
+  {
+    id: 'seq-go-quick-chat',
+    keys: ['g', 'q'],
+    description: 'Open Quick Chat',
+    group: 'Navigation',
+    actionId: 'quick-chat',
+  },
 
   // Workspace (W)
   {

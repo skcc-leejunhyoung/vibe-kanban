@@ -181,7 +181,15 @@ export type Workspace = { id: string, task_id: string | null, container_ref: str
  * kanban queries and event streams; skips normal finalize side effects;
  * reaped on startup.
  */
-ephemeral: boolean, };
+ephemeral: boolean,
+/**
+ * "Quick chat" workspace: the agent runs directly in an existing checkout
+ * (`container_ref` points at the chosen folder) instead of a fresh `vk/`
+ * worktree. No worktree is materialized, no branch is forked, the agent's
+ * edits stay uncommitted in the user's working tree, and the destructive
+ * expiry/delete cleanup is skipped so it can never remove the real repo.
+ */
+in_place: boolean, };
 
 export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean,
 /**
@@ -189,7 +197,15 @@ export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id
  * kanban queries and event streams; skips normal finalize side effects;
  * reaped on startup.
  */
-ephemeral: boolean, };
+ephemeral: boolean,
+/**
+ * "Quick chat" workspace: the agent runs directly in an existing checkout
+ * (`container_ref` points at the chosen folder) instead of a fresh `vk/`
+ * worktree. No worktree is materialized, no branch is forked, the agent's
+ * edits stay uncommitted in the user's working tree, and the destructive
+ * expiry/delete cleanup is skipped so it can never remove the real repo.
+ */
+in_place: boolean, };
 
 export type Session = { id: string, workspace_id: string, name: string | null, executor: string | null, agent_working_dir: string | null, created_at: string, updated_at: string,
 /**
@@ -495,6 +511,16 @@ pr_review: PrReviewInput | null,
 working_branch: WorkingBranchInput, };
 
 export type CreateAndStartWorkspaceResponse = { workspace: Workspace, execution_process: ExecutionProcess, };
+
+export type CreateQuickChatRequest = {
+/**
+ * Registered repo whose existing checkout the agent runs in directly.
+ */
+repo_id: string, executor_config: ExecutorConfig, prompt: string,
+/**
+ * Optional explicit name; defaults to the first line of the prompt.
+ */
+name: string | null, };
 
 export type GenerateSpecRequest = {
 /**

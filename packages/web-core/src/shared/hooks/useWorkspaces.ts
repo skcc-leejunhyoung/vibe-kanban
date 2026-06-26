@@ -25,6 +25,8 @@ export interface SidebarWorkspace {
   isRunning?: boolean;
   isPinned?: boolean;
   isArchived?: boolean;
+  /** Quick-chat ("in-place") workspace: runs in an existing checkout, no worktree. */
+  isInPlace?: boolean;
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
   hasUnseenActivity?: boolean;
@@ -73,6 +75,7 @@ function toSidebarWorkspace(
     isRunning: ws.is_running,
     isPinned: ws.pinned,
     isArchived: ws.archived,
+    isInPlace: ws.in_place,
     // Additional data from summary
     hasPendingApproval: summary?.has_pending_approval,
     hasRunningDevServer: summary?.has_running_dev_server,

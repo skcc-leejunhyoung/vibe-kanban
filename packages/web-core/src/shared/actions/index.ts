@@ -51,6 +51,7 @@ import {
   LinkIcon,
   ArrowBendUpRightIcon,
   ProhibitIcon,
+  LightningIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -80,6 +81,7 @@ import posthog from 'posthog-js';
 import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
+import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
 
@@ -418,6 +420,18 @@ export const Actions = {
       ctx.appNavigation.goToWorkspacesCreate();
     },
   },
+
+  QuickChat: {
+    id: 'quick-chat',
+    label: 'Quick Chat',
+    icon: LightningIcon,
+    shortcut: 'G Q',
+    keywords: ['quick chat', 'agent', 'folder', 'in place'],
+    requiresTarget: ActionTargetType.NONE,
+    execute: async () => {
+      await QuickChatDialog.show();
+    },
+  } satisfies GlobalActionDefinition,
 
   CreateWorkspaceFromPR: {
     id: 'create-workspace-from-pr',

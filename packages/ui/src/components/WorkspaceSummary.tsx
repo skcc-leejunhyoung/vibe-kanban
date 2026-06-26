@@ -7,6 +7,7 @@ import {
   CircleIcon,
   GitPullRequestIcon,
   DotsThreeIcon,
+  LightningIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { Ref } from 'react';
@@ -48,6 +49,8 @@ export interface WorkspaceSummaryProps {
   summary?: boolean;
   /** Whether this is a draft workspace (shows "Draft" instead of elapsed time) */
   isDraft?: boolean;
+  /** Quick-chat ("in-place") workspace — shows a lightning tag before the name. */
+  isInPlace?: boolean;
   onOpenWorkspaceActions?: (workspaceId: string) => void;
   /** Keyboard navigation cursor is on this row (arrow/vim key focus) */
   isFocused?: boolean;
@@ -79,6 +82,7 @@ export function WorkspaceSummary({
   className,
   summary = false,
   isDraft = false,
+  isInPlace = false,
   onOpenWorkspaceActions,
   isFocused = false,
   forwardedRef,
@@ -129,19 +133,30 @@ export function WorkspaceSummary({
             : 'text-low sm:opacity-60 sm:hover:opacity-100 sm:hover:text-normal'
         )}
       >
-        <div
-          className={cn(
-            'overflow-hidden whitespace-nowrap pr-double',
-            !summary && 'text-normal'
+        <div className="flex w-full items-center gap-base">
+          {isInPlace && (
+            <span
+              className="inline-flex h-4 shrink-0 items-center rounded-sm bg-brand/10 px-1 text-brand"
+              title="Quick chat — runs directly in your existing checkout"
+              aria-label="Quick chat"
+            >
+              <LightningIcon className="size-icon-xs" weight="fill" />
+            </span>
           )}
-          style={{
-            maskImage:
-              'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
-            WebkitMaskImage:
-              'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
-          }}
-        >
-          {primaryText}
+          <div
+            className={cn(
+              'min-w-0 flex-1 overflow-hidden whitespace-nowrap pr-double',
+              !summary && 'text-normal'
+            )}
+            style={{
+              maskImage:
+                'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+              WebkitMaskImage:
+                'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+            }}
+          >
+            {primaryText}
+          </div>
         </div>
         {(!summary || isActive) && (
           <div className="flex w-full items-center gap-base text-sm h-5">

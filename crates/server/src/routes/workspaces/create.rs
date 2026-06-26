@@ -5,9 +5,10 @@ use db::models::{
     pending_execution_start::PendingExecutionStart,
     repo::Repo,
     requests::{
-        CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
-        CreateWorkspaceWithoutStartingRequest, CreateWorkspaceWithoutStartingResponse,
-        LinkedIssueInfo, PrReviewInput, WorkingBranchInput, WorkspaceRepoInput,
+        CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateQuickChatRequest,
+        CreateWorkspaceApiRequest, CreateWorkspaceWithoutStartingRequest,
+        CreateWorkspaceWithoutStartingResponse, LinkedIssueInfo, PrReviewInput, WorkingBranchInput,
+        WorkspaceRepoInput,
     },
     workspace::{CreateWorkspace, Workspace},
 };
@@ -674,6 +675,100 @@ pub async fn create_and_start_workspace(
             serde_json::json!({
                 "executor": &executor_config.executor,
                 "variant": &executor_config.variant,
+                "workspace_id": workspace.id.to_string(),
+            }),
+        )
+        .await;
+
+    Ok(ResponseJson(ApiResponse::success(
+        CreateAndStartWorkspaceResponse {
+            workspace,
+            execution_process,
+        },
+    )))
+}
+
+/// "Quick chat": create a lightweight in-place workspace and immediately run a
+/// coding agent inside the repo's existing checkout — no `vk/` worktree, no new
+/// branch, no setup/cleanup scripts. The agent's edits stay uncommitted in the
+/// user's working tree, and the workspace is excluded from destructive cleanup
+/// (see `Workspace::in_place`).
+pub async fn create_and_start_quick_chat(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<CreateQuickChatRequest>,
+) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {
+    let CreateQuickChatRequest {
+        repo_id,
+        executor_config,
+        prompt,
+        name,
+    } = payload;
+
+    let prompt = normalize_prompt(&prompt).ok_or_else(|| {
+        ApiError::BadRequest("A prompt is required. Provide a non-empty `prompt`.".to_string())
+    })?;
+
+    let repo = Repo::find_by_id(&deployment.db().pool, repo_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
+
+    // The agent runs directly in the repo's current checkout. Capture its current
+    // branch for display (no checkout happens) and reuse it as the diff base so
+    // the Changes view surfaces exactly the chat's uncommitted edits.
+    let current_branch = deployment
+        .git()
+        .get_current_branch(&repo.path)
+        .map_err(|e| {
+            ApiError::BadRequest(format!(
+                "Could not determine the current branch of '{}': {e}",
+                repo.name
+            ))
+        })?;
+
+    let container_ref = repo.path.to_string_lossy().to_string();
+    let workspace = Workspace::create_in_place(
+        &deployment.db().pool,
+        &CreateWorkspace {
+            branch: current_branch.clone(),
+            name,
+        },
+        Uuid::new_v4(),
+        &container_ref,
+    )
+    .await?;
+
+    let mut managed_workspace = deployment
+        .workspace_manager()
+        .load_managed_workspace(workspace)
+        .await?;
+    managed_workspace
+        .add_repository(
+            &WorkspaceRepoInput {
+                repo_id,
+                target_branch: current_branch,
+            },
+            deployment.git(),
+        )
+        .await
+        .map_err(ApiError::from)?;
+
+    let workspace = managed_workspace.workspace.clone();
+    tracing::info!(
+        "Created in-place quick-chat workspace {} at {}",
+        workspace.id,
+        container_ref
+    );
+
+    let execution_process = deployment
+        .container()
+        .start_workspace(&workspace, executor_config.clone(), prompt)
+        .await?;
+
+    deployment
+        .track_if_analytics_allowed(
+            "quick_chat_started",
+            serde_json::json!({
+                "executor": &executor_config.executor,
                 "workspace_id": workspace.id.to_string(),
             }),
         )

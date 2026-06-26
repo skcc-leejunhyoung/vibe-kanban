@@ -41,6 +41,8 @@ export interface WorkspacesSidebarWorkspace {
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
   /** Most recent prompt sent in this workspace (what it's working on) */
   latestPrompt?: string;
+  /** Quick-chat ("in-place") workspace — runs in an existing checkout. */
+  isInPlace?: boolean;
 }
 
 export interface WorkspacesSidebarPersistKeys {
@@ -184,6 +186,7 @@ function WorkspaceList({
           latestProcessCompletedAt={workspace.latestProcessCompletedAt}
           latestProcessStatus={workspace.latestProcessStatus}
           prStatus={workspace.prStatus}
+          isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={() => onSelectWorkspace(workspace.id)}
         />
@@ -404,6 +407,7 @@ export function WorkspacesSidebar({
                   latestProcessCompletedAt={workspace.latestProcessCompletedAt}
                   latestProcessStatus={workspace.latestProcessStatus}
                   prStatus={workspace.prStatus}
+                  isInPlace={workspace.isInPlace}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
                   onClick={() => onSelectWorkspace(workspace.id)}
                 />
@@ -547,6 +551,7 @@ export function WorkspacesSidebar({
                 latestProcessCompletedAt={workspace.latestProcessCompletedAt}
                 latestProcessStatus={workspace.latestProcessStatus}
                 prStatus={workspace.prStatus}
+                isInPlace={workspace.isInPlace}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
                 onClick={() => onSelectWorkspace(workspace.id)}
               />

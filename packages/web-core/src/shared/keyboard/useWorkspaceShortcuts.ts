@@ -70,6 +70,12 @@ export function useWorkspaceShortcuts() {
     OPTIONS,
     [overrides]
   );
+  useReboundHotkey(
+    seq('seq-go-quick-chat'),
+    () => execute(Actions.QuickChat),
+    OPTIONS,
+    [overrides]
+  );
 
   useReboundHotkey(
     seq('seq-workspace-new-session'),

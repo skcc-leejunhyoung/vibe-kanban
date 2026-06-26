@@ -109,6 +109,7 @@ function WorkspaceRows({
           latestProcessStatus={workspace.latestProcessStatus}
           prStatus={workspace.prStatus}
           latestPrompt={workspace.latestPrompt}
+          isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={() => onSelectWorkspace(workspace.id)}
         />

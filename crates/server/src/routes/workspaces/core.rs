@@ -194,7 +194,18 @@ pub async fn delete_workspace(
         }
     }
 
-    WorkspaceManager::spawn_workspace_deletion_cleanup(deletion_context, query.delete_branches);
+    // SAFETY: in-place ("quick chat") workspaces point `container_ref` at the
+    // user's real checkout. Removing the DB row is fine, but the background
+    // cleanup would `remove_dir_all` that directory and (optionally) delete its
+    // branch — i.e. nuke the user's repository. Never run it for in-place.
+    if managed_workspace.workspace.in_place {
+        tracing::debug!(
+            "Skipping filesystem/branch cleanup for in-place workspace {}",
+            workspace_id
+        );
+    } else {
+        WorkspaceManager::spawn_workspace_deletion_cleanup(deletion_context, query.delete_branches);
+    }
 
     Ok((StatusCode::ACCEPTED, ResponseJson(ApiResponse::success(()))))
 }

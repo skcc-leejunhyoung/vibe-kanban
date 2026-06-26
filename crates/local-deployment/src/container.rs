@@ -282,6 +282,19 @@ impl LocalContainerService {
     }
 
     async fn cleanup_workspace(&self, workspace: &Workspace) {
+        // SAFETY: in-place ("quick chat") workspaces point `container_ref` at the
+        // user's REAL checkout. Removing that directory or its branch here would
+        // delete the user's repository, so cleanup is a strict no-op for them.
+        // (They are also excluded from `find_expired_for_cleanup` up front.)
+        if workspace.in_place {
+            tracing::debug!(
+                "Skipping cleanup for in-place workspace {} (real checkout at {:?})",
+                workspace.id,
+                workspace.container_ref
+            );
+            return;
+        }
+
         let Some(container_ref) = &workspace.container_ref else {
             return;
         };
@@ -2293,6 +2306,11 @@ impl ContainerService for LocalContainerService {
     }
 
     async fn create(&self, workspace: &Workspace) -> Result<ContainerRef, ContainerError> {
+        if workspace.in_place {
+            // In-place ("quick chat") workspaces never materialize a worktree;
+            // `container_ref` already points at the user's existing checkout.
+            return Ok(workspace.container_ref.clone().unwrap_or_default());
+        }
         let label = workspace.name.as_deref().unwrap_or("workspace");
         let workspace_dir_name =
             LocalContainerService::dir_name_from_workspace(&workspace.id, label);
@@ -2377,6 +2395,14 @@ impl ContainerService for LocalContainerService {
                 LocalContainerService::dir_name_from_workspace(&workspace.id, label);
             WorkspaceManager::get_workspace_base_dir().join(&workspace_dir_name)
         };
+
+        // In-place ("quick chat"): the agent runs directly in the user's existing
+        // checkout. There is no worktree to materialize, and we must NOT copy
+        // project files or write CLAUDE.md/AGENTS.md config shims — that would
+        // mutate the real repo. `container_ref` is already set, so just return it.
+        if workspace.in_place {
+            return Ok(workspace_dir.to_string_lossy().to_string());
+        }
 
         WorkspaceManager::ensure_workspace_exists(
             &workspace_dir,
@@ -2620,7 +2646,15 @@ impl ContainerService for LocalContainerService {
         let workspace_root = PathBuf::from(container_ref);
 
         for repo in repositories {
-            let worktree_path = workspace_root.join(&repo.name);
+            // In-place ("quick chat") workspaces run in the repo root itself, so
+            // the worktree path IS `container_ref` (not a per-repo subdir). The
+            // workspace branch equals the repo's current branch, so the diff base
+            // resolves to HEAD and the Changes view shows uncommitted edits.
+            let worktree_path = if workspace.in_place {
+                workspace_root.clone()
+            } else {
+                workspace_root.join(&repo.name)
+            };
             let branch = &workspace.branch;
 
             let Some(target_branch) = target_branches.get(&repo.id) else {
@@ -2674,6 +2708,12 @@ impl ContainerService for LocalContainerService {
     }
 
     async fn try_commit_changes(&self, ctx: &ExecutionContext) -> Result<bool, ContainerError> {
+        // In-place ("quick chat") runs leave the agent's edits uncommitted in the
+        // user's working tree for them to review and commit with their own git.
+        if ctx.workspace.in_place {
+            return Ok(false);
+        }
+
         if !matches!(
             ctx.execution_process.run_reason,
             ExecutionProcessRunReason::CodingAgent | ExecutionProcessRunReason::CleanupScript,

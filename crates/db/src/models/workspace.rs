@@ -55,6 +55,12 @@ pub struct Workspace {
     /// kanban queries and event streams; skips normal finalize side effects;
     /// reaped on startup.
     pub ephemeral: bool,
+    /// "Quick chat" workspace: the agent runs directly in an existing checkout
+    /// (`container_ref` points at the chosen folder) instead of a fresh `vk/`
+    /// worktree. No worktree is materialized, no branch is forked, the agent's
+    /// edits stay uncommitted in the user's working tree, and the destructive
+    /// expiry/delete cleanup is skipped so it can never remove the real repo.
+    pub in_place: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -107,7 +113,8 @@ impl Workspace {
                           pinned AS "pinned!: bool",
                           name,
                           worktree_deleted AS "worktree_deleted!: bool",
-                          ephemeral AS "ephemeral!: bool"
+                          ephemeral AS "ephemeral!: bool",
+                          in_place AS "in_place!: bool"
                    FROM workspaces
                    ORDER BY created_at DESC"#
         )
@@ -226,7 +233,8 @@ impl Workspace {
                        pinned            AS "pinned!: bool",
                        name,
                        worktree_deleted  AS "worktree_deleted!: bool",
-                       ephemeral         AS "ephemeral!: bool"
+                       ephemeral         AS "ephemeral!: bool",
+                       in_place          AS "in_place!: bool"
                FROM    workspaces
                WHERE   id = $1"#,
             id
@@ -249,7 +257,8 @@ impl Workspace {
                        pinned            AS "pinned!: bool",
                        name,
                        worktree_deleted  AS "worktree_deleted!: bool",
-                       ephemeral         AS "ephemeral!: bool"
+                       ephemeral         AS "ephemeral!: bool",
+                       in_place          AS "in_place!: bool"
                FROM    workspaces
                WHERE   rowid = $1"#,
             rowid
@@ -293,12 +302,16 @@ impl Workspace {
                 w.pinned as "pinned!: bool",
                 w.name,
                 w.worktree_deleted as "worktree_deleted!: bool",
-                w.ephemeral as "ephemeral!: bool"
+                w.ephemeral as "ephemeral!: bool",
+                w.in_place as "in_place!: bool"
             FROM workspaces w
             LEFT JOIN sessions s ON w.id = s.workspace_id
             LEFT JOIN execution_processes ep ON s.id = ep.session_id AND ep.completed_at IS NOT NULL
             WHERE w.container_ref IS NOT NULL
                 AND w.worktree_deleted = FALSE
+                -- In-place ("quick chat") workspaces point container_ref at the
+                -- user's real checkout; never select them for destructive cleanup.
+                AND w.in_place = FALSE
                 AND w.id NOT IN (
                     SELECT DISTINCT s2.workspace_id
                     FROM sessions s2
@@ -341,7 +354,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name)
                VALUES ($1, $2, $3, $4, $5, $6)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool""#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool""#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
@@ -365,10 +378,36 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, ephemeral)
                VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool""#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool""#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
+            data.branch,
+            Option::<DateTime<Utc>>::None,
+            data.name
+        )
+        .fetch_one(pool)
+        .await?)
+    }
+
+    /// Create an in-place ("quick chat") workspace whose `container_ref` already
+    /// points at the chosen existing checkout. No worktree is ever materialized
+    /// for it; the agent runs directly in that folder. `branch` is the folder's
+    /// current branch (display only — no checkout happens).
+    pub async fn create_in_place(
+        pool: &SqlitePool,
+        data: &CreateWorkspace,
+        id: Uuid,
+        container_ref: &str,
+    ) -> Result<Self, WorkspaceError> {
+        Ok(sqlx::query_as!(
+            Workspace,
+            r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, in_place)
+               VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool""#,
+            id,
+            Option::<Uuid>::None,
+            container_ref,
             data.branch,
             Option::<DateTime<Utc>>::None,
             data.name
@@ -392,7 +431,8 @@ impl Workspace {
                       pinned AS "pinned!: bool",
                       name,
                       worktree_deleted AS "worktree_deleted!: bool",
-                      ephemeral AS "ephemeral!: bool"
+                      ephemeral AS "ephemeral!: bool",
+                      in_place AS "in_place!: bool"
                FROM workspaces
                WHERE ephemeral = TRUE"#
         )
@@ -589,6 +629,7 @@ impl Workspace {
                 w.name,
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
+                w.in_place AS "in_place!: bool",
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -633,6 +674,7 @@ impl Workspace {
                     name: rec.name,
                     worktree_deleted: rec.worktree_deleted,
                     ephemeral: rec.ephemeral,
+                    in_place: rec.in_place,
                 },
                 is_running: rec.is_running != 0,
                 is_errored: rec.is_errored != 0,
@@ -686,6 +728,7 @@ impl Workspace {
                 w.name,
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
+                w.in_place AS "in_place!: bool",
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -732,6 +775,7 @@ impl Workspace {
                 name: rec.name,
                 worktree_deleted: rec.worktree_deleted,
                 ephemeral: rec.ephemeral,
+                in_place: rec.in_place,
             },
             is_running: rec.is_running != 0,
             is_errored: rec.is_errored != 0,
