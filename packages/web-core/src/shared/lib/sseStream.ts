@@ -272,17 +272,32 @@ export function toSseUrl(wsPathOrUrl: string): string {
 }
 
 /**
- * Whether the local stream transport should use SSE instead of WebSocket.
- * Gated behind a localStorage flag while the WebKit-standalone SSE path rolls
- * out; default is WebSocket (unchanged behaviour) so this is a no-op until a
- * client opts in with `localStorage['vk-stream-transport'] = 'sse'`.
+ * Decide the stream transport from the page protocol and an opt-in flag.
+ *
+ * Over HTTP/2 (https) SSE multiplexes across a single connection, so the
+ * browser's HTTP/1.1 6-connection-per-host limit doesn't apply and SSE both
+ * fixes the WebKit-standalone WebSocket hang and scales past 6 streams. Over
+ * plain HTTP/1.1 SSE would instead starve on that 6-connection limit, so we
+ * stay on WebSocket there unless a client explicitly opts in for testing.
  */
+export function resolveStreamTransport(input: {
+  protocol: string;
+  flag: string | null;
+}): 'sse' | 'ws' {
+  if (input.protocol === 'https:') return 'sse';
+  if (input.flag === 'sse') return 'sse';
+  return 'ws';
+}
+
+/** Whether the local stream transport should use SSE instead of WebSocket. */
 export function shouldUseSseStream(): boolean {
   try {
-    return (
-      typeof localStorage !== 'undefined' &&
-      localStorage.getItem('vk-stream-transport') === 'sse'
-    );
+    const protocol = typeof location !== 'undefined' ? location.protocol : '';
+    const flag =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('vk-stream-transport')
+        : null;
+    return resolveStreamTransport({ protocol, flag }) === 'sse';
   } catch {
     return false;
   }

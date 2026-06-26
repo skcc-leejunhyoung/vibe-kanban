@@ -4,6 +4,7 @@ import {
   sseEventToWsPayload,
   openSseAsWebSocket,
   toSseUrl,
+  resolveStreamTransport,
 } from './sseStream';
 
 // A ReadableStream that emits the given text chunks then closes — stands in for
@@ -269,5 +270,31 @@ describe('toSseUrl', () => {
     expect(
       toSseUrl('/api/execution-processes/stream/session/ws?session_id=abc')
     ).toBe('/api/execution-processes/stream/session/sse?session_id=abc');
+  });
+});
+
+describe('resolveStreamTransport', () => {
+  it('uses SSE over https (HTTP/2 multiplexes past the 6-connection limit)', () => {
+    expect(resolveStreamTransport({ protocol: 'https:', flag: null })).toBe(
+      'sse'
+    );
+  });
+
+  it('stays on WebSocket over plain http by default', () => {
+    expect(resolveStreamTransport({ protocol: 'http:', flag: null })).toBe(
+      'ws'
+    );
+  });
+
+  it('opts into SSE over http via the flag (manual testing)', () => {
+    expect(resolveStreamTransport({ protocol: 'http:', flag: 'sse' })).toBe(
+      'sse'
+    );
+  });
+
+  it('https takes precedence over a ws flag', () => {
+    expect(resolveStreamTransport({ protocol: 'https:', flag: 'ws' })).toBe(
+      'sse'
+    );
   });
 });
