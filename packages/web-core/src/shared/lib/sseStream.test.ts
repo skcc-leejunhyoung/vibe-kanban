@@ -166,6 +166,46 @@ describe('openSseAsWebSocket', () => {
     );
   });
 
+  // streamJsonPatchEntries (used by useConversationHistory) subscribes through
+  // addEventListener rather than the onX setters, so the adapter must deliver
+  // events to that surface too — otherwise the conversation stream throws
+  // "addEventListener is not a function" the moment SSE is enabled.
+  it('delivers events to addEventListener subscribers', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: bodyOf([
+        'event: ready\ndata: \n\n',
+        'event: json_patch\ndata: [{"op":"add","path":"/x","value":1}]\n\n',
+      ]),
+    } as Response);
+
+    const socket = openSseAsWebSocket(
+      '/api/x',
+      fetchMock as unknown as typeof fetch
+    );
+    const messages: string[] = [];
+    let opened = false;
+    let closed = false;
+    socket.addEventListener('open', () => {
+      opened = true;
+    });
+    socket.addEventListener('message', (e) =>
+      messages.push((e as { data: string }).data)
+    );
+    socket.addEventListener('close', () => {
+      closed = true;
+    });
+
+    await vi.waitFor(() => expect(closed).toBe(true));
+
+    expect(opened).toBe(true);
+    expect(messages).toEqual([
+      '{"Ready":true}',
+      '{"JsonPatch":[{"op":"add","path":"/x","value":1}]}',
+    ]);
+  });
+
   it('reports an error close when the response is not ok', async () => {
     const fetchMock = vi
       .fn()

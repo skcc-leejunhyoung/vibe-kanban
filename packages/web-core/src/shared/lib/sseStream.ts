@@ -121,6 +121,10 @@ export function sseEventToWsPayload(
 // The minimal WebSocket surface that useJsonPatchWsStream / streamJsonPatchEntries
 // actually drive. The SSE adapter implements exactly this so the consumers can
 // treat it like a socket and keep their watchdog/backoff/resume logic unchanged.
+//
+// Two consumers, two subscription styles: useJsonPatchWsStream / useLogStream
+// assign the `onX` setters, while streamJsonPatchEntries subscribes via
+// `addEventListener`. The adapter has to honour both to stand in for a WebSocket.
 export interface SseSocketLike {
   onopen: (() => void) | null;
   onmessage: ((ev: { data: string }) => void) | null;
@@ -128,6 +132,8 @@ export interface SseSocketLike {
   onclose: ((ev: { code?: number; wasClean?: boolean }) => void) | null;
   readyState: number;
   close(code?: number, reason?: string): void;
+  addEventListener(type: string, listener: (ev?: unknown) => void): void;
+  removeEventListener(type: string, listener: (ev?: unknown) => void): void;
 }
 
 // WebSocket.readyState values, replicated so this module needs no DOM constant.
@@ -150,6 +156,13 @@ export function openSseAsWebSocket(
   const controller = new AbortController();
   let closed = false;
 
+  const listeners: Record<string, Set<(ev?: unknown) => void>> = {
+    open: new Set(),
+    message: new Set(),
+    error: new Set(),
+    close: new Set(),
+  };
+
   const socket: SseSocketLike = {
     onopen: null,
     onmessage: null,
@@ -162,6 +175,31 @@ export function openSseAsWebSocket(
       socket.readyState = CLOSED;
       controller.abort();
     },
+    addEventListener(type, listener) {
+      listeners[type]?.add(listener);
+    },
+    removeEventListener(type, listener) {
+      listeners[type]?.delete(listener);
+    },
+  };
+
+  // Dispatch to both the onX setter and any addEventListener subscribers so
+  // consumers using either WebSocket API style receive every event.
+  const fireOpen = () => {
+    socket.onopen?.();
+    for (const l of listeners.open) l();
+  };
+  const fireMessage = (data: string) => {
+    socket.onmessage?.({ data });
+    for (const l of listeners.message) l({ data });
+  };
+  const fireError = () => {
+    socket.onerror?.();
+    for (const l of listeners.error) l();
+  };
+  const fireClose = (ev: { code?: number; wasClean?: boolean }) => {
+    socket.onclose?.(ev);
+    for (const l of listeners.close) l(ev);
   };
 
   void (async () => {
@@ -175,8 +213,8 @@ export function openSseAsWebSocket(
     } catch {
       if (closed) return;
       socket.readyState = CLOSED;
-      socket.onerror?.();
-      socket.onclose?.({ wasClean: false });
+      fireError();
+      fireClose({ wasClean: false });
       return;
     }
 
@@ -184,13 +222,13 @@ export function openSseAsWebSocket(
 
     if (!response.ok || !response.body) {
       socket.readyState = CLOSED;
-      socket.onerror?.();
-      socket.onclose?.({ code: response.status, wasClean: false });
+      fireError();
+      fireClose({ code: response.status, wasClean: false });
       return;
     }
 
     socket.readyState = OPEN;
-    socket.onopen?.();
+    fireOpen();
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -203,14 +241,14 @@ export function openSseAsWebSocket(
         if (done) break;
         for (const ev of parser.feed(decoder.decode(value, { stream: true }))) {
           const payload = sseEventToWsPayload(ev.event, ev.data);
-          if (payload !== null) socket.onmessage?.({ data: payload });
+          if (payload !== null) fireMessage(payload);
         }
       }
     } catch {
       if (closed) return;
       socket.readyState = CLOSED;
-      socket.onerror?.();
-      socket.onclose?.({ wasClean: false });
+      fireError();
+      fireClose({ wasClean: false });
       return;
     }
 
@@ -218,7 +256,7 @@ export function openSseAsWebSocket(
     // Server ended the stream → mirror a clean WebSocket close so the consumer
     // does not treat it as an error and reconnect.
     socket.readyState = CLOSED;
-    socket.onclose?.({ code: 1000, wasClean: true });
+    fireClose({ code: 1000, wasClean: true });
   })();
 
   return socket;
