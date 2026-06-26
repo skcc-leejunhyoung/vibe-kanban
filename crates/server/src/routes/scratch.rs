@@ -1,7 +1,11 @@
 use axum::{
-    Json, Router,
+    BoxError, Json, Router,
     extract::{Path, State, ws::Message},
-    response::{IntoResponse, Json as ResponseJson},
+    http::StatusCode,
+    response::{
+        IntoResponse, Json as ResponseJson, Sse,
+        sse::{Event, KeepAlive},
+    },
     routing::get,
 };
 use db::models::scratch::{CreateScratch, Scratch, ScratchType, UpdateScratch};
@@ -113,6 +117,24 @@ pub async fn stream_scratch_ws(
     })
 }
 
+/// SSE sibling of `stream_scratch_ws` (see streams.rs for the WS→SSE rationale).
+pub async fn stream_scratch_sse(
+    State(deployment): State<DeploymentImpl>,
+    Path(ScratchPath { scratch_type, id }): Path<ScratchPath>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, BoxError>>>, StatusCode> {
+    let stream = deployment
+        .events()
+        .stream_scratch_raw(id, &scratch_type)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Sse::new(
+        stream
+            .map_ok(|msg| msg.to_sse_event())
+            .map_err(|e| -> BoxError { Box::new(e) }),
+    )
+    .keep_alive(KeepAlive::default()))
+}
+
 async fn handle_scratch_ws(
     mut socket: MaybeSignedWebSocket,
     deployment: DeploymentImpl,
@@ -167,5 +189,9 @@ pub fn router(_deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route(
             "/scratch/{scratch_type}/{id}/stream/ws",
             get(stream_scratch_ws),
+        )
+        .route(
+            "/scratch/{scratch_type}/{id}/stream/sse",
+            get(stream_scratch_sse),
         )
 }

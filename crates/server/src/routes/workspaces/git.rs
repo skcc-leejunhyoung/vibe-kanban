@@ -23,7 +23,7 @@ use ts_rs::TS;
 use utils::{diff::Diff, response::ApiResponse};
 use uuid::Uuid;
 
-use super::streams::{DiffStreamQuery, stream_workspace_diff_ws};
+use super::streams::{DiffStreamQuery, stream_workspace_diff_sse, stream_workspace_diff_ws};
 use crate::{DeploymentImpl, error::ApiError, middleware::signed_ws::SignedWsUpgrade};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -173,6 +173,7 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/status", get(get_workspace_branch_status))
         .route("/diff/ws", get(stream_diff_ws))
+        .route("/diff/sse", get(stream_diff_sse))
         .route("/commits", get(list_workspace_commits))
         .route("/commit-diff", get(get_workspace_commit_diff))
         .route("/merge", post(merge_workspace))
@@ -194,6 +195,14 @@ pub async fn stream_diff_ws(
     deployment: State<DeploymentImpl>,
 ) -> impl IntoResponse {
     stream_workspace_diff_ws(ws, query, workspace, deployment).await
+}
+
+pub async fn stream_diff_sse(
+    query: axum::extract::Query<DiffStreamQuery>,
+    workspace: Extension<Workspace>,
+    deployment: State<DeploymentImpl>,
+) -> impl IntoResponse {
+    stream_workspace_diff_sse(query, workspace, deployment).await
 }
 
 /// Upper bound on how many added commits we surface per repo. Workspaces are

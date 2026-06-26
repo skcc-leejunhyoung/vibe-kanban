@@ -2,11 +2,14 @@ use std::collections::HashMap;
 
 use api_types::LoginStatus;
 use axum::{
-    Json, Router,
+    BoxError, Json, Router,
     body::Body,
     extract::{Path, Query, State, ws::Message},
     http,
-    response::{IntoResponse, Json as ResponseJson, Response},
+    response::{
+        IntoResponse, Json as ResponseJson, Response, Sse,
+        sse::{Event, KeepAlive},
+    },
     routing::{get, put},
 };
 use deployment::{Deployment, DeploymentError};
@@ -56,6 +59,10 @@ pub fn router() -> Router<DeploymentImpl> {
         .route(
             "/agents/discovered-options/ws",
             get(stream_executor_discovered_options_ws),
+        )
+        .route(
+            "/agents/discovered-options/sse",
+            get(stream_executor_discovered_options_sse),
         )
 }
 
@@ -608,6 +615,43 @@ pub async fn stream_executor_discovered_options_ws(
             tracing::warn!("discovered options WS closed: {}", e);
         }
     })
+}
+
+/// SSE sibling of `stream_executor_discovered_options_ws`. `Ready` is sent
+/// first so the stream is initialized even when discovery yields no options.
+pub async fn stream_executor_discovered_options_sse(
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<ExecutorDiscoveredOptionsStreamQuery>,
+) -> impl IntoResponse {
+    use futures_util::StreamExt;
+
+    let event_stream: futures_util::stream::BoxStream<'static, Result<Event, BoxError>> =
+        match deployment
+            .container()
+            .discover_executor_options(
+                ExecutorProfileId::new(query.executor),
+                query.session_id,
+                query.workspace_id,
+                query.repo_id,
+            )
+            .await
+        {
+            Ok(Some(stream)) => futures_util::stream::once(async {
+                Ok::<Event, BoxError>(LogMsg::Ready.to_sse_event())
+            })
+            .chain(
+                stream.map(|patch| Ok::<Event, BoxError>(LogMsg::JsonPatch(patch).to_sse_event())),
+            )
+            .boxed(),
+            Ok(None) => {
+                futures_util::stream::once(async { Ok(LogMsg::Ready.to_sse_event()) }).boxed()
+            }
+            Err(e) => {
+                tracing::warn!("Failed to start discovered options SSE stream: {}", e);
+                futures_util::stream::empty().boxed()
+            }
+        };
+    Sse::new(event_stream).keep_alive(KeepAlive::default())
 }
 
 async fn handle_executor_discovered_options_ws(

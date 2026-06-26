@@ -1,8 +1,11 @@
 use axum::{
-    Router,
+    BoxError, Router,
     extract::{State, ws::Message},
     http::StatusCode,
-    response::{IntoResponse, Json as ResponseJson},
+    response::{
+        IntoResponse, Json as ResponseJson, Sse,
+        sse::{Event, KeepAlive},
+    },
     routing::{get, post},
 };
 use deployment::Deployment;
@@ -59,6 +62,25 @@ async fn stream_approvals_ws(
     })
 }
 
+/// SSE sibling of `stream_approvals_ws`. Emits the snapshot patch, a `Ready`,
+/// then live patches — the patch_stream's first item is the snapshot.
+async fn stream_approvals_sse(State(deployment): State<DeploymentImpl>) -> impl IntoResponse {
+    let event_stream = deployment
+        .approvals()
+        .patch_stream()
+        .enumerate()
+        .flat_map(|(i, patch)| {
+            let mut items: Vec<Result<Event, BoxError>> =
+                vec![Ok(LogMsg::JsonPatch(patch).to_sse_event())];
+            if i == 0 {
+                items.push(Ok(LogMsg::Ready.to_sse_event()));
+            }
+            futures_util::stream::iter(items)
+        })
+        .boxed();
+    Sse::new(event_stream).keep_alive(KeepAlive::default())
+}
+
 async fn handle_approvals_ws(
     mut socket: MaybeSignedWebSocket,
     deployment: DeploymentImpl,
@@ -110,4 +132,5 @@ pub(super) fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/approvals/{id}/respond", post(respond_to_approval))
         .route("/approvals/stream/ws", get(stream_approvals_ws))
+        .route("/approvals/stream/sse", get(stream_approvals_sse))
 }

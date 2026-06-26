@@ -1,9 +1,14 @@
 use axum::{
-    Extension,
+    BoxError, Extension,
     extract::{Query, State, ws::Message},
-    response::IntoResponse,
+    http::StatusCode,
+    response::{
+        IntoResponse, Sse,
+        sse::{Event, KeepAlive},
+    },
 };
 use deployment::Deployment;
+use futures_util::TryStreamExt;
 use serde::Deserialize;
 use services::services::container::ContainerService;
 
@@ -50,6 +55,46 @@ pub async fn stream_workspace_diff_ws(
             tracing::warn!("diff WS closed: {}", e);
         }
     })
+}
+
+/// SSE sibling of `stream_workspaces_ws`. WebKit standalone PWAs can't open the
+/// concurrent WebSockets a workspace needs, so the same LogMsg stream is offered
+/// over HTTP/SSE. Unidirectional, so no `select!`/recv loop is needed.
+pub async fn stream_workspaces_sse(
+    Query(query): Query<WorkspaceStreamQuery>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, BoxError>>>, StatusCode> {
+    let stream = deployment
+        .events()
+        .stream_workspaces_raw(query.archived, query.limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Sse::new(
+        stream
+            .map_ok(|msg| msg.to_sse_event())
+            .map_err(|e| -> BoxError { Box::new(e) }),
+    )
+    .keep_alive(KeepAlive::default()))
+}
+
+/// SSE sibling of `stream_workspace_diff_ws`.
+pub async fn stream_workspace_diff_sse(
+    Query(params): Query<DiffStreamQuery>,
+    Extension(workspace): Extension<db::models::workspace::Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, BoxError>>>, StatusCode> {
+    let _ = deployment.container().touch(&workspace).await;
+    let stream = deployment
+        .container()
+        .stream_diff(&workspace, params.stats_only)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Sse::new(
+        stream
+            .map_ok(|msg| msg.to_sse_event())
+            .map_err(|e| -> BoxError { Box::new(e) }),
+    )
+    .keep_alive(KeepAlive::default()))
 }
 
 async fn handle_workspace_diff_ws(

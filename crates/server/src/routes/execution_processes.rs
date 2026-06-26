@@ -1,9 +1,13 @@
 use anyhow;
 use axum::{
-    Extension, Router,
+    BoxError, Extension, Router,
     extract::{Path, Query, State, ws::Message},
+    http::StatusCode,
     middleware::from_fn_with_state,
-    response::{IntoResponse, Json as ResponseJson},
+    response::{
+        IntoResponse, Json as ResponseJson, Sse,
+        sse::{Event, KeepAlive},
+    },
     routing::{get, post},
 };
 use db::models::{
@@ -135,6 +139,48 @@ async fn handle_raw_logs_ws(
     Ok(())
 }
 
+/// SSE sibling of `stream_raw_logs_ws`. Same Stdout/Stderr→ConversationPatch
+/// mapping; "no logs" yields a single `finished` event for a clean close.
+async fn stream_raw_logs_sse(
+    State(deployment): State<DeploymentImpl>,
+    Path(exec_id): Path<Uuid>,
+) -> impl IntoResponse {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use executors::logs::utils::patch::ConversationPatch;
+
+    let event_stream: futures_util::stream::BoxStream<'static, Result<Event, BoxError>> =
+        match deployment.container().stream_raw_logs(&exec_id).await {
+            Some(raw_stream) => {
+                let counter = Arc::new(AtomicUsize::new(0));
+                raw_stream
+                    .map_ok(move |m| match m {
+                        LogMsg::Stdout(content) => {
+                            let index = counter.fetch_add(1, Ordering::SeqCst);
+                            LogMsg::JsonPatch(ConversationPatch::add_stdout(index, content))
+                                .to_sse_event()
+                        }
+                        LogMsg::Stderr(content) => {
+                            let index = counter.fetch_add(1, Ordering::SeqCst);
+                            LogMsg::JsonPatch(ConversationPatch::add_stderr(index, content))
+                                .to_sse_event()
+                        }
+                        LogMsg::Finished => LogMsg::Finished.to_sse_event(),
+                        _ => unreachable!("Raw stream should only have Stdout/Stderr/Finished"),
+                    })
+                    .map_err(|e| -> BoxError { Box::new(e) })
+                    .boxed()
+            }
+            None => {
+                futures_util::stream::once(async { Ok(LogMsg::Finished.to_sse_event()) }).boxed()
+            }
+        };
+    Sse::new(event_stream).keep_alive(KeepAlive::default())
+}
+
 async fn stream_normalized_logs_ws(
     ws: SignedWsUpgrade,
     State(deployment): State<DeploymentImpl>,
@@ -200,6 +246,28 @@ async fn handle_normalized_logs_ws(
     Ok(())
 }
 
+/// SSE sibling of `stream_normalized_logs_ws`.
+async fn stream_normalized_logs_sse(
+    State(deployment): State<DeploymentImpl>,
+    Path(exec_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let event_stream: futures_util::stream::BoxStream<'static, Result<Event, BoxError>> =
+        match deployment
+            .container()
+            .stream_normalized_logs(&exec_id)
+            .await
+        {
+            Some(stream) => stream
+                .map_ok(|m| m.to_sse_event())
+                .map_err(|e| -> BoxError { Box::new(e) })
+                .boxed(),
+            None => {
+                futures_util::stream::once(async { Ok(LogMsg::Finished.to_sse_event()) }).boxed()
+            }
+        };
+    Sse::new(event_stream).keep_alive(KeepAlive::default())
+}
+
 async fn stop_execution_process(
     Extension(execution_process): Extension<ExecutionProcess>,
     State(deployment): State<DeploymentImpl>,
@@ -229,6 +297,27 @@ async fn stream_execution_processes_by_session_ws(
             tracing::warn!("execution processes by session WS closed: {}", e);
         }
     })
+}
+
+/// SSE sibling of `stream_execution_processes_by_session_ws`.
+async fn stream_execution_processes_by_session_sse(
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<SessionExecutionProcessQuery>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, BoxError>>>, StatusCode> {
+    let stream = deployment
+        .events()
+        .stream_execution_processes_for_session_raw(
+            query.session_id,
+            query.show_soft_deleted.unwrap_or(false),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Sse::new(
+        stream
+            .map_ok(|msg| msg.to_sse_event())
+            .map_err(|e| -> BoxError { Box::new(e) }),
+    )
+    .keep_alive(KeepAlive::default()))
 }
 
 async fn handle_execution_processes_by_session_ws(
@@ -289,7 +378,9 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/stop", post(stop_execution_process))
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
+        .route("/raw-logs/sse", get(stream_raw_logs_sse))
         .route("/normalized-logs/ws", get(stream_normalized_logs_ws))
+        .route("/normalized-logs/sse", get(stream_normalized_logs_sse))
         .layer(from_fn_with_state(
             deployment.clone(),
             load_execution_process_middleware,
@@ -299,6 +390,10 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route(
             "/stream/session/ws",
             get(stream_execution_processes_by_session_ws),
+        )
+        .route(
+            "/stream/session/sse",
+            get(stream_execution_processes_by_session_sse),
         )
         .nest("/{id}", workspace_id_router);
 
