@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import type { PatchType } from 'shared/types';
-import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
+import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 
 type LogEntry = Extract<PatchType, { type: 'STDOUT' } | { type: 'STDERR' }>;
 
@@ -46,7 +46,7 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
       const capturedProcessId = processId;
       void (async () => {
         try {
-          const ws = await openLocalApiWebSocket(
+          const ws = await openLocalApiStream(
             `/api/execution-processes/${processId}/raw-logs/ws`
           );
 

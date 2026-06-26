@@ -2,7 +2,7 @@
 import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
-import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
+import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 
 type PatchContainer<E = unknown> = { entries: E[] };
 
@@ -238,7 +238,7 @@ export function streamJsonPatchEntries<E = unknown>(
 
     void (async () => {
       try {
-        const opened = await openLocalApiWebSocket(url);
+        const opened = await openLocalApiStream(url);
 
         if (closed || finished || myGen !== generation) {
           opened.close();

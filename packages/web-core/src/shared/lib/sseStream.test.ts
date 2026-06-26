@@ -3,6 +3,7 @@ import {
   SseParser,
   sseEventToWsPayload,
   openSseAsWebSocket,
+  toSseUrl,
 } from './sseStream';
 
 // A ReadableStream that emits the given text chunks then closes — stands in for
@@ -202,5 +203,31 @@ describe('openSseAsWebSocket', () => {
     await vi.waitFor(() => expect(closeEvt).not.toBeNull());
 
     expect(closeEvt).toEqual({ wasClean: false });
+  });
+});
+
+describe('toSseUrl', () => {
+  it('swaps a /ws suffix for /sse, preserving the query', () => {
+    expect(toSseUrl('/api/workspaces/streams/ws?archived=false')).toBe(
+      '/api/workspaces/streams/sse?archived=false'
+    );
+  });
+
+  it('swaps a trailing /ws with no query', () => {
+    expect(toSseUrl('/api/workspaces/123/git/diff/ws')).toBe(
+      '/api/workspaces/123/git/diff/sse'
+    );
+  });
+
+  it('handles host-scoped paths', () => {
+    expect(toSseUrl('/api/host/H/workspaces/streams/ws')).toBe(
+      '/api/host/H/workspaces/streams/sse'
+    );
+  });
+
+  it('only rewrites the trailing /ws segment, not "ws" inside words', () => {
+    expect(
+      toSseUrl('/api/execution-processes/stream/session/ws?session_id=abc')
+    ).toBe('/api/execution-processes/stream/session/sse?session_id=abc');
   });
 });

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
-import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
+import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 import {
   shouldReconnectOnResume,
   FREEZE_SUSPECT_MS,
@@ -138,7 +138,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
       void (async () => {
         try {
-          const ws = await openLocalApiWebSocket(endpoint);
+          const ws = await openLocalApiStream(endpoint);
 
           if (cancelled) {
             ws.close();

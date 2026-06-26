@@ -223,3 +223,29 @@ export function openSseAsWebSocket(
 
   return socket;
 }
+
+/**
+ * Map a WebSocket stream endpoint to its SSE sibling. The server exposes each
+ * JSON-patch stream at both `/.../ws` and `/.../sse`, so only the final path
+ * segment changes; query strings are preserved.
+ */
+export function toSseUrl(wsPathOrUrl: string): string {
+  return wsPathOrUrl.replace(/\/ws(\?|$)/, '/sse$1');
+}
+
+/**
+ * Whether the local stream transport should use SSE instead of WebSocket.
+ * Gated behind a localStorage flag while the WebKit-standalone SSE path rolls
+ * out; default is WebSocket (unchanged behaviour) so this is a no-op until a
+ * client opts in with `localStorage['vk-stream-transport'] = 'sse'`.
+ */
+export function shouldUseSseStream(): boolean {
+  try {
+    return (
+      typeof localStorage !== 'undefined' &&
+      localStorage.getItem('vk-stream-transport') === 'sse'
+    );
+  } catch {
+    return false;
+  }
+}

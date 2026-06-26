@@ -1,4 +1,9 @@
 import { getCurrentHostId } from '@/shared/providers/HostIdProvider';
+import {
+  openSseAsWebSocket,
+  shouldUseSseStream,
+  toSseUrl,
+} from '@/shared/lib/sseStream';
 
 export type LocalApiHostScope = 'current' | 'explicit' | 'none';
 
@@ -20,6 +25,15 @@ export interface LocalApiTransport {
     init?: LocalApiRequestOptions
   ) => Promise<Response>;
   openWebSocket: (
+    pathOrUrl: string,
+    options?: LocalApiWebSocketOptions
+  ) => Promise<WebSocket> | WebSocket;
+  /**
+   * Open a JSON-patch stream. Optional: transports that don't implement it
+   * (e.g. the remote WebRTC transport, which already multiplexes) fall back to
+   * `openWebSocket`. The local transport uses this to choose SSE vs WebSocket.
+   */
+  openStream?: (
     pathOrUrl: string,
     options?: LocalApiWebSocketOptions
   ) => Promise<WebSocket> | WebSocket;
@@ -100,6 +114,14 @@ const defaultTransport: LocalApiTransport = {
   },
   openWebSocket: (pathOrUrl, _options = {}) =>
     new WebSocket(toAbsoluteWsUrl(pathOrUrl)),
+  openStream: (pathOrUrl, _options = {}) => {
+    if (shouldUseSseStream()) {
+      // The SSE adapter exposes the same WebSocket-shaped surface the stream
+      // consumers drive, so it's safe to present it as a WebSocket.
+      return openSseAsWebSocket(toSseUrl(pathOrUrl)) as unknown as WebSocket;
+    }
+    return new WebSocket(toAbsoluteWsUrl(pathOrUrl));
+  },
 };
 
 let transport: LocalApiTransport = defaultTransport;
@@ -123,4 +145,20 @@ export async function openLocalApiWebSocket(
     resolveScopedPath(pathOrUrl, options),
     options
   );
+}
+
+/**
+ * Open a JSON-patch stream through the active transport. Uses the transport's
+ * `openStream` (local: SSE-or-WebSocket) when present, otherwise falls back to
+ * `openWebSocket` (remote WebRTC transport, which has no SSE path).
+ */
+export async function openLocalApiStream(
+  pathOrUrl: string,
+  options: LocalApiWebSocketOptions = {}
+): Promise<WebSocket> {
+  const scoped = resolveScopedPath(pathOrUrl, options);
+  if (transport.openStream) {
+    return transport.openStream(scoped, options);
+  }
+  return transport.openWebSocket(scoped, options);
 }
