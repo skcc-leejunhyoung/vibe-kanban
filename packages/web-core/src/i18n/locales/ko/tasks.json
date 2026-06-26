@@ -152,21 +152,7 @@
       "forcePush": "강제 푸시",
       "forcePushing": "강제 푸시 중...",
       "creating": "생성 중...",
-      "createPr": "PR 생성",
-      "pull": "풀",
-      "pulling": "풀 받는 중...",
-      "updateFromBase": "업데이트",
-      "updating": "업데이트 중...",
-      "updated": "업데이트됨!"
-    },
-    "pull": {
-      "pulled_one": "커밋 {{count}}개 받음",
-      "pulled_other": "커밋 {{count}}개 받음",
-      "upToDate": "이미 최신 상태",
-      "diverged": "원격과 갈라짐 — 베이스에서 업데이트하거나 리베이스하세요"
-    },
-    "updateFromBase": {
-      "tooltip": "{{branch}}을(를) 이 브랜치에 병합"
+      "createPr": "PR 생성"
     },
     "errors": {
       "changeTargetBranch": "대상 브랜치를 변경하지 못했습니다",
@@ -183,6 +169,7 @@
     "actions": {
       "title": "Git 작업",
       "changeTarget": "대상 변경",
+      "updateFromBase": "베이스에서 업데이트",
       "prMerged": "PR #{{number}}은(는) 이미 병합되었습니다",
       "loginRequired": {
         "title": "Git 작업을 관리하려면 로그인하세요",

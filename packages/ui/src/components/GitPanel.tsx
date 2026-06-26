@@ -83,6 +83,9 @@ export function GitPanel({
             }
             onChangeTarget={() => onActionsClick?.(repo.id, 'change-target')}
             onRebase={() => onActionsClick?.(repo.id, 'rebase')}
+            onUpdateFromBase={() =>
+              onActionsClick?.(repo.id, 'update-from-base')
+            }
             onActionsClick={(action) => onActionsClick?.(repo.id, action)}
             onPushClick={() => onPushClick?.(repo.id)}
             onMoreClick={() => onMoreClick?.(repo.id)}

@@ -141,6 +141,8 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.GitCreatePR },
           { type: 'action', action: Actions.GitLinkPR },
           { type: 'action', action: Actions.GitMerge },
+          { type: 'action', action: Actions.GitPull },
+          { type: 'action', action: Actions.GitUpdateFromBase },
           { type: 'action', action: Actions.GitPush },
           { type: 'action', action: Actions.GitRebase },
           { type: 'action', action: Actions.GitChangeTarget },

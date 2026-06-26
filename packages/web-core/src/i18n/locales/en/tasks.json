@@ -266,21 +266,7 @@
       "forcePush": "Force Push",
       "forcePushing": "Force Pushing...",
       "creating": "Creating...",
-      "createPr": "Create PR",
-      "pull": "Pull",
-      "pulling": "Pulling...",
-      "updateFromBase": "Update",
-      "updating": "Updating...",
-      "updated": "Updated!"
-    },
-    "pull": {
-      "pulled_one": "Pulled {{count}} commit",
-      "pulled_other": "Pulled {{count}} commits",
-      "upToDate": "Already up to date",
-      "diverged": "Diverged from remote — update from base or rebase"
-    },
-    "updateFromBase": {
-      "tooltip": "Merge {{branch}} into this branch"
+      "createPr": "Create PR"
     },
     "errors": {
       "changeTargetBranch": "Failed to change target branch",
@@ -297,6 +283,7 @@
     "actions": {
       "title": "Git Actions",
       "changeTarget": "Change target",
+      "updateFromBase": "Update from base",
       "prMerged": "PR #{{number}} is already merged",
       "loginRequired": {
         "title": "Sign in to manage git actions",

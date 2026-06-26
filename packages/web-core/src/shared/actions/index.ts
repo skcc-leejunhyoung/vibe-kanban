@@ -39,6 +39,7 @@ import {
   DesktopIcon,
   PencilSimpleIcon,
   ArrowUpIcon,
+  ArrowDownIcon,
   HighlighterIcon,
   ListIcon,
   MegaphoneIcon,
@@ -1071,6 +1072,145 @@ export const Actions = {
         workspaceId: workspaceId,
         repoId,
       });
+    },
+  },
+
+  // Fast-forward the work branch to its own remote (git pull --ff-only). Never
+  // touches the remote, so it is safe on shared PR branches; reports when a
+  // fast-forward is impossible (diverged) instead of changing anything.
+  GitPull: {
+    id: 'git-pull',
+    label: 'Pull',
+    icon: ArrowDownIcon,
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
+    execute: async (ctx, workspaceId, repoId) => {
+      const outcome = await workspacesApi.pull(workspaceId, {
+        repo_id: repoId,
+      });
+      ctx.queryClient.invalidateQueries({
+        queryKey: ['branchStatus', workspaceId],
+      });
+
+      if (outcome.type === 'fast_forwarded') {
+        invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+        await ConfirmDialog.show({
+          title: 'Pull complete',
+          message: `Fast-forwarded ${outcome.commits} commit${
+            outcome.commits === 1 ? '' : 's'
+          } from the remote.`,
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'success',
+        });
+      } else if (outcome.type === 'diverged') {
+        await ConfirmDialog.show({
+          title: 'Cannot fast-forward',
+          message: `Your branch has diverged from the remote (${outcome.ahead} ahead, ${outcome.behind} behind), so a fast-forward pull is not possible. Use "Update from base" or "Rebase", or reconcile manually.`,
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'info',
+        });
+      } else {
+        await ConfirmDialog.show({
+          title: 'Already up to date',
+          message: 'Your branch already matches its remote.',
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'info',
+        });
+      }
+    },
+  },
+
+  // Bring the target (base) branch into the work branch via merge. Unlike
+  // GitRebase this preserves history, so it is the safe default for shared PR
+  // branches. Conflicts are surfaced through the existing resolve-conflicts flow.
+  GitUpdateFromBase: {
+    id: 'git-update-from-base',
+    label: 'Update from base',
+    icon: GitMergeIcon,
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
+    execute: async (ctx, workspaceId, repoId) => {
+      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const repoStatus = branchStatus?.find((s) => s.repo_id === repoId);
+
+      // Already mid-conflict: open the resolver instead of starting a new merge.
+      const hasConflicts =
+        repoStatus?.is_rebase_in_progress ||
+        (repoStatus?.conflicted_files?.length ?? 0) > 0;
+      if (hasConflicts && repoStatus) {
+        const isRunning = ctx.activeWorkspaces.find(
+          (w) => w.id === workspaceId
+        )?.isRunning;
+        if (isRunning) return;
+
+        const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+        await ResolveConflictsDialog.show({
+          workspaceId,
+          conflictOp: repoStatus.conflict_op ?? 'merge',
+          sourceBranch: repoStatus.target_branch_name,
+          targetBranch: workspace.branch,
+          conflictedFiles: repoStatus.conflicted_files ?? [],
+          repoName: repoStatus.repo_name,
+        });
+        invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+        return;
+      }
+
+      const commitsBehind = repoStatus?.commits_behind ?? 0;
+      if (commitsBehind === 0) {
+        await ConfirmDialog.show({
+          title: 'Already up to date',
+          message:
+            'This branch already contains every commit from its base branch.',
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'info',
+        });
+        return;
+      }
+
+      const confirmResult = await ConfirmDialog.show({
+        title: 'Update from base',
+        message: `Merge "${
+          repoStatus?.target_branch_name ?? 'the base branch'
+        }" into this branch? Your branch is ${commitsBehind} commit${
+          commitsBehind === 1 ? '' : 's'
+        } behind.`,
+        confirmText: 'Update',
+        cancelText: 'Cancel',
+      });
+      if (confirmResult !== 'confirmed') return;
+
+      const result = await workspacesApi.updateFromBase(workspaceId, {
+        repo_id: repoId,
+        strategy: 'merge',
+      });
+      ctx.queryClient.invalidateQueries({
+        queryKey: ['branchStatus', workspaceId],
+      });
+
+      if (!result.success) {
+        const err = result.error;
+        if (err?.type === 'merge_conflicts') {
+          const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+          await ResolveConflictsDialog.show({
+            workspaceId,
+            conflictOp: 'merge',
+            sourceBranch: err.target_branch,
+            targetBranch: workspace.branch,
+            conflictedFiles: err.conflicted_files ?? [],
+            repoName: repoStatus?.repo_name,
+          });
+          invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+          return;
+        }
+        throw new Error(result.message || 'Failed to update from base');
+      }
+
+      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
     },
   },
 

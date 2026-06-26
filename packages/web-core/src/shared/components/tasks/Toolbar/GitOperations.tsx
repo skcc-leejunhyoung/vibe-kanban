@@ -1,9 +1,7 @@
 import {
   ArrowRight,
-  ArrowDownToLine,
   GitBranch as GitBranchIcon,
   GitCommitVertical,
-  GitMerge as GitMergeIcon,
   GitPullRequest,
   RefreshCw,
   Settings,
@@ -19,12 +17,7 @@ import {
   TooltipTrigger,
 } from '@vibe/ui/components/RadixTooltip';
 import { useCallback, useMemo, useState } from 'react';
-import type {
-  RepoBranchStatus,
-  Merge,
-  Workspace,
-  PullWorkspaceResponse,
-} from 'shared/types';
+import type { RepoBranchStatus, Merge, Workspace } from 'shared/types';
 import { ChangeTargetBranchDialog } from '@/shared/dialogs/command-bar/ChangeTargetBranchDialog';
 import RepoSelector from '@/shared/components/tasks/RepoSelector';
 import { BranchRebaseDialog } from '@/shared/dialogs/command-bar/BranchRebaseDialog';
@@ -70,17 +63,9 @@ function GitOperations({
   const [committing, setCommitting] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [rebasing, setRebasing] = useState(false);
-  const [pulling, setPulling] = useState(false);
-  const [updating, setUpdating] = useState(false);
   const [mergeSuccess, setMergeSuccess] = useState(false);
   const [commitSuccess, setCommitSuccess] = useState(false);
   const [pushSuccess, setPushSuccess] = useState(false);
-  const [updateSuccess, setUpdateSuccess] = useState(false);
-  // Transient outcome of the last pull (up-to-date / fast-forwarded / diverged),
-  // shown as a chip for a few seconds since a pull may legitimately do nothing.
-  const [pullOutcome, setPullOutcome] = useState<PullWorkspaceResponse | null>(
-    null
-  );
 
   // Target branch change handlers
   const handleChangeTargetBranchClick = async (newBranch: string) => {
@@ -124,15 +109,6 @@ function GitOperations({
 
   const hasConflictsCalculated =
     (selectedRepoStatus?.conflicted_files?.length ?? 0) > 0;
-
-  // How far the local work branch trails its own remote (only known when a PR is
-  // open, where the backend refreshes remote-tracking state) and the base branch.
-  const remoteCommitsBehind = selectedRepoStatus?.remote_commits_behind ?? 0;
-  const commitsBehindBase = selectedRepoStatus?.commits_behind ?? 0;
-  const blockGitOps =
-    isAttemptRunning ||
-    hasConflictsCalculated ||
-    (selectedRepoStatus?.is_rebase_in_progress ?? false);
 
   // Memoize merge status information to avoid repeated calculations
   const mergeInfo = useMemo(() => {
@@ -187,17 +163,6 @@ function GitOperations({
     if (rebasing) return t('git.states.rebasing');
     return t('git.states.rebase');
   }, [rebasing, t]);
-
-  const pullButtonLabel = useMemo(() => {
-    if (pulling) return t('git.states.pulling');
-    return t('git.states.pull');
-  }, [pulling, t]);
-
-  const updateButtonLabel = useMemo(() => {
-    if (updateSuccess) return t('git.states.updated');
-    if (updating) return t('git.states.updating');
-    return t('git.states.updateFromBase');
-  }, [updating, updateSuccess, t]);
 
   const prButtonLabel = useMemo(() => {
     if (mergeInfo.hasOpenPR) {
@@ -256,40 +221,6 @@ function GitOperations({
       setTimeout(() => setMergeSuccess(false), 2000);
     } finally {
       setMerging(false);
-    }
-  };
-
-  const handlePullClick = async () => {
-    try {
-      setPulling(true);
-      setPullOutcome(null);
-      const repoId = getSelectedRepoId();
-      if (!repoId) return;
-      const outcome = await git.actions.pull({ repoId });
-      // `pull` resolves `undefined` only when there is no workspace id.
-      if (outcome) {
-        setPullOutcome(outcome);
-        setTimeout(() => setPullOutcome(null), 5000);
-      }
-    } finally {
-      setPulling(false);
-    }
-  };
-
-  const handleUpdateFromBaseClick = async () => {
-    try {
-      setUpdating(true);
-      const repoId = getSelectedRepoId();
-      if (!repoId) return;
-      await git.actions.updateFromBase({ repoId, strategy: 'merge' });
-      // A thrown (rejected) Result means conflicts/in-progress — handled by the
-      // branch-status banner, so only flag success when the merge completed.
-      setUpdateSuccess(true);
-      setTimeout(() => setUpdateSuccess(false), 2000);
-    } catch {
-      // Conflict / in-progress: surfaced via branch status; no success flash.
-    } finally {
-      setUpdating(false);
     }
   };
 
@@ -562,75 +493,6 @@ function GitOperations({
           </div>
         ) : selectedRepoStatus ? (
           <div className={actionsClasses}>
-            {pullOutcome && (
-              <span
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full shrink-0 ${
-                  pullOutcome.type === 'fast_forwarded'
-                    ? 'bg-emerald-100/70 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
-                    : pullOutcome.type === 'diverged'
-                      ? 'bg-amber-100/60 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
-                      : 'bg-muted text-muted-foreground'
-                }`}
-              >
-                {pullOutcome.type === 'fast_forwarded'
-                  ? t('git.pull.pulled', { count: pullOutcome.commits })
-                  : pullOutcome.type === 'diverged'
-                    ? t('git.pull.diverged')
-                    : t('git.pull.upToDate')}
-              </span>
-            )}
-
-            {remoteCommitsBehind > 0 && (
-              <Button
-                onClick={handlePullClick}
-                disabled={pulling || blockGitOps}
-                variant="outline"
-                size="xs"
-                className="border-info text-info hover:bg-info gap-1 shrink-0"
-                aria-label={pullButtonLabel}
-              >
-                <ArrowDownToLine
-                  className={`h-3.5 w-3.5 ${pulling ? 'animate-pulse' : ''}`}
-                />
-                <span className="truncate max-w-[10ch]">{pullButtonLabel}</span>
-                {!pulling && (
-                  <span className="font-semibold">{remoteCommitsBehind}</span>
-                )}
-              </Button>
-            )}
-
-            {commitsBehindBase > 0 && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      onClick={handleUpdateFromBaseClick}
-                      disabled={updating || blockGitOps}
-                      variant="outline"
-                      size="xs"
-                      className="border-warning text-warning hover:bg-warning gap-1 shrink-0"
-                      aria-label={updateButtonLabel}
-                    >
-                      <GitMergeIcon className="h-3.5 w-3.5" />
-                      <span className="truncate max-w-[12ch]">
-                        {updateButtonLabel}
-                      </span>
-                      {!updating && !updateSuccess && (
-                        <span className="font-semibold">
-                          {commitsBehindBase}
-                        </span>
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    {t('git.updateFromBase.tooltip', {
-                      branch: getSelectedRepoStatus()?.target_branch_name ?? '',
-                    })}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
-
             <Button
               onClick={handleCommitClick}
               disabled={

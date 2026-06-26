@@ -223,6 +223,8 @@ export function GitPanelContainer({
         'link-pr': Actions.GitLinkPR,
         merge: Actions.GitMerge,
         rebase: Actions.GitRebase,
+        'update-from-base': Actions.GitUpdateFromBase,
+        pull: Actions.GitPull,
         'change-target': Actions.GitChangeTarget,
         push: Actions.GitPush,
       };

@@ -31,6 +31,8 @@ export type RepoAction =
   | 'merge'
   | 'change-target'
   | 'rebase'
+  | 'update-from-base'
+  | 'pull'
   | 'push';
 
 const repoActionOptions: SplitButtonOption<RepoAction>[] = [
@@ -42,6 +44,7 @@ const repoActionOptions: SplitButtonOption<RepoAction>[] = [
   },
   { value: 'link-pr', label: 'Link pull request', icon: LinkIcon },
   { value: 'merge', label: 'Merge', icon: GitMergeIcon },
+  { value: 'pull', label: 'Pull', icon: ArrowDownIcon },
 ];
 
 interface RepoCardProps {
@@ -64,6 +67,7 @@ interface RepoCardProps {
   onSelectedActionChange?: (action: RepoAction) => void;
   onChangeTarget?: () => void;
   onRebase?: () => void;
+  onUpdateFromBase?: () => void;
   onActionsClick?: (action: RepoAction) => void;
   onPushClick?: () => void;
   onMoreClick?: () => void;
@@ -88,6 +92,7 @@ export function RepoCard({
   onSelectedActionChange,
   onChangeTarget,
   onRebase,
+  onUpdateFromBase,
   onActionsClick,
   onPushClick,
   onMoreClick,
@@ -146,6 +151,12 @@ export function RepoCard({
                     onClick={onChangeTarget}
                   >
                     {t('git.actions.changeTarget')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    icon={GitMergeIcon}
+                    onClick={onUpdateFromBase}
+                  >
+                    {t('git.actions.updateFromBase')}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     icon={ArrowsClockwiseIcon}
