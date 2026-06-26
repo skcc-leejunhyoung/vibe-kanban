@@ -506,6 +506,7 @@ export function WorkspacesSidebarContainer({
       persistKeys={sidebarPersistKeys}
       activeRemoteHost={activeRemoteHost}
       onOpenRemoteHostSettings={handleOpenRemoteHostSettings}
+      isMobile={isMobile}
     />
   );
 }

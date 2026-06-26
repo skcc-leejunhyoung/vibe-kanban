@@ -34,6 +34,12 @@ interface CollapsibleSectionHeaderProps {
   defaultExpanded?: boolean;
   collapsible?: boolean;
   actions?: SectionAction[];
+  /**
+   * Bigger, more spaced-out action buttons with a real tap target. Driven at
+   * runtime (not a `sm:` breakpoint) so it works in remote-web, whose Tailwind
+   * build doesn't scan this package and would drop responsive variants.
+   */
+  largeActions?: boolean;
   headerExtra?: ReactNode;
   children?: ReactNode;
   className?: string;
@@ -45,6 +51,7 @@ export function CollapsibleSectionHeader({
   defaultExpanded = true,
   collapsible = true,
   actions = [],
+  largeActions = false,
   headerExtra,
   children,
   className,
@@ -92,7 +99,12 @@ export function CollapsibleSectionHeader({
   const headerContent = (
     <>
       <span className="font-medium truncate text-normal">{title}</span>
-      <div className="flex items-center gap-half">
+      <div
+        className={cn(
+          'flex items-center',
+          largeActions ? 'gap-base' : 'gap-half'
+        )}
+      >
         {headerExtra}
         {actions.map((action, index) => {
           const ActionIcon = action.icon;
@@ -104,11 +116,16 @@ export function CollapsibleSectionHeader({
               onClick={(e) => handleActionClick(e, action.onClick)}
               onKeyDown={(e) => handleActionKeyDown(e, action.onClick)}
               className={cn(
-                'hover:text-normal',
+                'flex items-center justify-center hover:text-normal',
+                // Roomier tap target (padding) on mobile.
+                largeActions && 'p-1.5 rounded-sm',
                 action.isActive ? 'text-brand' : 'text-low'
               )}
             >
-              <ActionIcon className="size-icon-xs" weight="bold" />
+              <ActionIcon
+                className={largeActions ? 'size-icon-lg' : 'size-icon-xs'}
+                weight="bold"
+              />
             </span>
           );
         })}

@@ -113,6 +113,8 @@ export interface WorkspacesSidebarProps {
     status: AppBarHostStatus;
   } | null;
   onOpenRemoteHostSettings?: () => void;
+  /** Enlarge the header action buttons (group / issue / add) for touch. */
+  isMobile?: boolean;
 }
 
 /**
@@ -222,6 +224,7 @@ export function WorkspacesSidebar({
   persistKeys = DEFAULT_PERSIST_KEYS,
   activeRemoteHost = null,
   onOpenRemoteHostSettings,
+  isMobile = false,
 }: WorkspacesSidebarProps) {
   const { t } = useTranslation(['tasks', 'common']);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -295,6 +298,7 @@ export function WorkspacesSidebar({
           title={t('common:workspaces.title')}
           collapsible={false}
           actions={headerActions}
+          largeActions={isMobile}
           className="border-b"
         />
         {!isLoading && (
