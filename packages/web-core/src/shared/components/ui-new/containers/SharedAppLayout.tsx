@@ -7,6 +7,7 @@ import {
   LayoutIcon,
   KanbanIcon,
   DownloadSimpleIcon,
+  BellIcon,
 } from '@phosphor-icons/react';
 import { SyncErrorProvider } from '@/shared/providers/SyncErrorProvider';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
@@ -403,6 +404,21 @@ export function SharedAppLayout() {
               <LayoutIcon className="h-4 w-4" />
               Workspaces
             </button>
+
+            {/* Notifications link */}
+            {isSignedIn && (
+              <button
+                type="button"
+                onClick={() => {
+                  void navigate({ to: '/notifications' });
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <BellIcon className="h-4 w-4" />
+                Notifications
+              </button>
+            )}
 
             {/* Divider */}
             <div className="border-t border-border mx-4" />
