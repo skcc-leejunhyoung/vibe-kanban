@@ -374,6 +374,14 @@ committed: boolean, };
 
 export type PushWorkspaceRequest = { repo_id: string, };
 
+export type PullWorkspaceRequest = { repo_id: string, };
+
+export type PullWorkspaceResponse = { "type": "up_to_date" } | { "type": "fast_forwarded", commits: number, } | { "type": "diverged", ahead: number, behind: number, };
+
+export type UpdateFromBaseStrategy = "merge" | "rebase";
+
+export type UpdateFromBaseRequest = { repo_id: string, strategy: UpdateFromBaseStrategy, };
+
 export type RenameBranchRequest = { new_branch_name: string, };
 
 export type RenameBranchResponse = { branch: string, };

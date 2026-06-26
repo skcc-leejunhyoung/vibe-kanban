@@ -659,6 +659,49 @@ impl GitCli {
         Ok(sha)
     }
 
+    /// Fast-forward the branch currently checked out in `worktree_path` to
+    /// `target` (a ref name or sha). Unlike [`merge_ff_only`], this does not
+    /// switch branches — it advances the current HEAD in place, which is what a
+    /// `git pull --ff-only` does. Fails if a fast-forward is not possible.
+    /// Returns the new HEAD sha.
+    pub fn merge_ff_only_current(
+        &self,
+        worktree_path: &Path,
+        target: &str,
+    ) -> Result<String, GitCliError> {
+        self.git(worktree_path, ["merge", "--ff-only", target])
+            .map(|_| ())?;
+        let sha = self
+            .git(worktree_path, ["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        Ok(sha)
+    }
+
+    /// Merge `from_ref` into the branch currently checked out in
+    /// `worktree_path`, creating a merge commit when the histories have
+    /// diverged (or fast-forwarding when possible). Used to bring base-branch
+    /// changes into a work branch without rewriting history. On conflicts git
+    /// leaves the worktree in a merge-conflict state and this returns
+    /// `CommandFailed` with the conflict output.
+    pub fn merge_branch_into_current(
+        &self,
+        worktree_path: &Path,
+        from_ref: &str,
+        message: &str,
+    ) -> Result<String, GitCliError> {
+        self.git(
+            worktree_path,
+            ["merge", "--no-edit", "-m", message, from_ref],
+        )
+        .map(|_| ())?;
+        let sha = self
+            .git(worktree_path, ["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        Ok(sha)
+    }
+
     /// Update a ref to a specific sha in the repo.
     pub fn update_ref(
         &self,

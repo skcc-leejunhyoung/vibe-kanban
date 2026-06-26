@@ -96,6 +96,67 @@ struct McpDeleteWorkspaceResponse {
     delete_branches: bool,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct McpSyncWorkspaceBranchRequest {
+    #[schemars(
+        description = "Workspace ID to sync. Optional if running inside that workspace context."
+    )]
+    workspace_id: Option<Uuid>,
+    #[schemars(
+        description = "Repository ID to sync. Optional when the workspace has exactly one repo."
+    )]
+    repo_id: Option<Uuid>,
+    #[schemars(
+        description = "How to sync the work branch: 'pull' fast-forwards it to its own remote (git pull --ff-only, never touches the remote, safe on shared PR branches); 'merge_base' merges the target/base branch into the work branch (preserves history); 'rebase_base' rebases the work branch onto the target/base branch (rewrites history — needs a force-push afterwards)."
+    )]
+    mode: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct McpSyncWorkspaceBranchResponse {
+    success: bool,
+    workspace_id: String,
+    repo_id: String,
+    mode: String,
+    /// Human-readable result, e.g. "Fast-forwarded 2 commits" or "Already up to date".
+    outcome: String,
+}
+
+/// Minimal projection of the workspace repos endpoint — we only need the id.
+#[derive(Debug, Deserialize)]
+struct McpRepoRef {
+    id: Uuid,
+}
+
+/// Mirror of `PullWorkspaceResponse` (server) for deserialization.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum McpPullOutcome {
+    UpToDate,
+    FastForwarded { commits: usize },
+    Diverged { ahead: usize, behind: usize },
+}
+
+/// Mirror of `GitOperationError` (server) so conflicts produce a useful message.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum McpGitOperationError {
+    MergeConflicts {
+        message: String,
+        #[serde(default)]
+        conflicted_files: Vec<String>,
+    },
+    RebaseInProgress,
+}
+
+/// Envelope used to surface typed conflict errors from update-from-base.
+#[derive(Debug, Deserialize)]
+struct McpUpdateFromBaseEnvelope {
+    success: bool,
+    message: Option<String>,
+    error_data: Option<McpGitOperationError>,
+}
+
 #[tool_router(router = workspaces_tools_router, vis = "pub")]
 impl McpServer {
     #[tool(description = "List local workspaces with optional filters and pagination.")]
@@ -245,6 +306,160 @@ impl McpServer {
             workspace_id: workspace_id.to_string(),
             delete_remote,
             delete_branches,
+        })
+    }
+
+    #[tool(
+        description = "Sync a workspace's git work branch when it has fallen behind. mode='pull' fast-forwards the branch to its own remote (safe on shared PR branches; reports 'diverged' when a fast-forward is impossible). mode='merge_base' / 'rebase_base' brings the target (base) branch into the work branch. `workspace_id` is optional inside a workspace context; `repo_id` is optional when the workspace has a single repo."
+    )]
+    async fn sync_workspace_branch(
+        &self,
+        Parameters(McpSyncWorkspaceBranchRequest {
+            workspace_id,
+            repo_id,
+            mode,
+        }): Parameters<McpSyncWorkspaceBranchRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let workspace_id = match self.resolve_workspace_id(workspace_id) {
+            Ok(id) => id,
+            Err(error_result) => return Ok(Self::tool_error(error_result)),
+        };
+        if let Err(error_result) = self.scope_allows_workspace(workspace_id) {
+            return Ok(Self::tool_error(error_result));
+        }
+
+        let mode = mode.trim().to_ascii_lowercase();
+        let strategy = match mode.as_str() {
+            "pull" => None,
+            "merge_base" => Some("merge"),
+            "rebase_base" => Some("rebase"),
+            other => {
+                return Self::err(
+                    format!("Unknown mode '{other}'. Use 'pull', 'merge_base', or 'rebase_base'."),
+                    None::<String>,
+                );
+            }
+        };
+
+        // Resolve the repo: explicit, or the sole repo of a single-repo workspace.
+        let repo_id = match repo_id {
+            Some(id) => id,
+            None => {
+                let url = self.url(&format!("/api/workspaces/{workspace_id}/repos"));
+                let repos: Vec<McpRepoRef> = match self.send_json(self.client.get(&url)).await {
+                    Ok(repos) => repos,
+                    Err(e) => return Ok(Self::tool_error(e)),
+                };
+                match repos.as_slice() {
+                    [single] => single.id,
+                    [] => {
+                        return Self::err("Workspace has no repositories to sync.", None::<&str>);
+                    }
+                    _ => {
+                        return Self::err(
+                            "Workspace has multiple repositories; specify `repo_id`.",
+                            None::<&str>,
+                        );
+                    }
+                }
+            }
+        };
+
+        let outcome = if let Some(strategy) = strategy {
+            // Update from base (merge / rebase). Conflicts come back as typed
+            // error_data, which we translate into an actionable message.
+            let url = self.url(&format!(
+                "/api/workspaces/{workspace_id}/git/update-from-base"
+            ));
+            let resp = match self
+                .client
+                .post(&url)
+                .json(&serde_json::json!({ "repo_id": repo_id, "strategy": strategy }))
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    return Self::err(
+                        "Failed to connect to VK API".to_string(),
+                        Some(e.to_string()),
+                    );
+                }
+            };
+            if !resp.status().is_success() {
+                return Self::err(
+                    format!("VK API returned error status: {}", resp.status()),
+                    None::<String>,
+                );
+            }
+            let envelope: McpUpdateFromBaseEnvelope = match resp.json().await {
+                Ok(env) => env,
+                Err(e) => {
+                    return Self::err(
+                        "Failed to parse VK API response".to_string(),
+                        Some(e.to_string()),
+                    );
+                }
+            };
+            if !envelope.success {
+                let message = match envelope.error_data {
+                    Some(McpGitOperationError::MergeConflicts {
+                        message,
+                        conflicted_files,
+                    }) => {
+                        if conflicted_files.is_empty() {
+                            message
+                        } else {
+                            format!(
+                                "{message} Conflicted files: {}",
+                                conflicted_files.join(", ")
+                            )
+                        }
+                    }
+                    Some(McpGitOperationError::RebaseInProgress) => {
+                        "A rebase is already in progress; resolve or abort it first.".to_string()
+                    }
+                    None => envelope
+                        .message
+                        .unwrap_or_else(|| "Update from base failed.".to_string()),
+                };
+                return Self::err(message, None::<String>);
+            }
+            match strategy {
+                "rebase" => format!("Rebased onto the base branch ({mode})"),
+                _ => format!("Merged the base branch into the work branch ({mode})"),
+            }
+        } else {
+            // Fast-forward pull.
+            let url = self.url(&format!("/api/workspaces/{workspace_id}/git/pull"));
+            let pull: McpPullOutcome = match self
+                .send_json(
+                    self.client
+                        .post(&url)
+                        .json(&serde_json::json!({ "repo_id": repo_id })),
+                )
+                .await
+            {
+                Ok(outcome) => outcome,
+                Err(e) => return Ok(Self::tool_error(e)),
+            };
+            match pull {
+                McpPullOutcome::UpToDate => "Already up to date with remote".to_string(),
+                McpPullOutcome::FastForwarded { commits } => {
+                    format!("Fast-forwarded {commits} commit(s) from remote")
+                }
+                McpPullOutcome::Diverged { ahead, behind } => format!(
+                    "Diverged from remote ({ahead} ahead, {behind} behind) — a fast-forward is impossible. Use mode 'merge_base' or 'rebase_base', or reconcile manually."
+                ),
+            }
+        };
+
+        McpServer::success(&McpSyncWorkspaceBranchResponse {
+            success: true,
+            workspace_id: workspace_id.to_string(),
+            repo_id: repo_id.to_string(),
+            mode,
+            outcome,
         })
     }
 }

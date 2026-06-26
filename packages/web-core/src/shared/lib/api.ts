@@ -73,6 +73,9 @@ import {
   CommitWorkspaceRequest,
   CommitWorkspaceResponse,
   PushWorkspaceRequest,
+  PullWorkspaceRequest,
+  PullWorkspaceResponse,
+  UpdateFromBaseRequest,
   RepoBranchStatus,
   WorkspaceCommit,
   Diff,
@@ -744,6 +747,36 @@ export const workspacesApi = {
   ): Promise<Result<void, GitOperationError>> => {
     const response = await makeRequest(
       `/api/workspaces/${workspaceId}/git/rebase`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponseAsResult<void, GitOperationError>(response);
+  },
+
+  /** Fast-forward the work branch to its own remote (`git pull --ff-only`). */
+  pull: async (
+    workspaceId: string,
+    data: PullWorkspaceRequest
+  ): Promise<PullWorkspaceResponse> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/pull`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<PullWorkspaceResponse>(response);
+  },
+
+  /** Bring the target (base) branch into the work branch via merge or rebase. */
+  updateFromBase: async (
+    workspaceId: string,
+    data: UpdateFromBaseRequest
+  ): Promise<Result<void, GitOperationError>> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/update-from-base`,
       {
         method: 'POST',
         body: JSON.stringify(data),

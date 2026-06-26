@@ -16,7 +16,7 @@ use db::models::{
     workspace_repo::WorkspaceRepo,
 };
 use deployment::Deployment;
-use git::{ConflictOp, GitCliError, GitServiceError};
+use git::{ConflictOp, GitCliError, GitServiceError, PullOutcome};
 use serde::{Deserialize, Serialize};
 use services::services::{container::ContainerService, diff_stream, remote_sync};
 use ts_rs::TS;
@@ -76,6 +76,42 @@ pub struct CommitWorkspaceResponse {
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct PushWorkspaceRequest {
     pub repo_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct PullWorkspaceRequest {
+    pub repo_id: Uuid,
+}
+
+/// Outcome of fast-forwarding the work branch to its own remote. `diverged` is
+/// not an error — it tells the UI a fast-forward was impossible (the remote was
+/// left untouched) so it can offer rebase / update-from-base instead.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(tag = "type", rename_all = "snake_case")]
+pub enum PullWorkspaceResponse {
+    UpToDate,
+    FastForwarded { commits: usize },
+    Diverged { ahead: usize, behind: usize },
+}
+
+/// How to bring the target (base) branch into the work branch.
+#[derive(Debug, Deserialize, Serialize, TS, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UpdateFromBaseStrategy {
+    /// Merge the base into the work branch (preserves history; safe on shared
+    /// PR branches).
+    Merge,
+    /// Rebase the work branch onto the base (rewrites history; requires a
+    /// force-push afterwards).
+    Rebase,
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct UpdateFromBaseRequest {
+    pub repo_id: Uuid,
+    pub strategy: UpdateFromBaseStrategy,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -180,6 +216,8 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/commit", post(commit_workspace))
         .route("/push", post(push_workspace_branch))
         .route("/push/force", post(force_push_workspace_branch))
+        .route("/pull", post(pull_workspace_branch_from_remote))
+        .route("/update-from-base", post(update_workspace_from_base))
         .route("/rebase", post(rebase_workspace))
         .route("/rebase/continue", post(continue_workspace_rebase))
         .route("/conflicts/abort", post(abort_workspace_conflicts))
@@ -555,6 +593,182 @@ pub async fn force_push_workspace_branch(
             remote_sync::sync_workspace_to_remote(&client, ws.id, None, None, stats.as_ref()).await;
         });
     }
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+/// Recompute the workspace's diff stats and push them to the remote (best
+/// effort, in the background). Used after operations that change the work
+/// branch tip (pull, update-from-base) so the cloud view stays accurate.
+fn spawn_workspace_stats_sync(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+    container_ref: &str,
+) {
+    if let Ok(client) = deployment.remote_client() {
+        let pool = deployment.db().pool.clone();
+        let git = deployment.git().clone();
+        let mut ws = workspace.clone();
+        ws.container_ref = Some(container_ref.to_string());
+        tokio::spawn(async move {
+            let stats = diff_stream::compute_diff_stats(&pool, &git, &ws).await;
+            remote_sync::sync_workspace_to_remote(&client, ws.id, None, None, stats.as_ref()).await;
+        });
+    }
+}
+
+/// Fast-forward the work branch to its own remote (`git pull --ff-only`). Never
+/// touches the remote, so it is safe on shared PR branches: it only advances the
+/// local branch when the remote is strictly ahead, and reports `diverged`
+/// otherwise so the caller can fall back to update-from-base.
+#[axum::debug_handler]
+pub async fn pull_workspace_branch_from_remote(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<PullWorkspaceRequest>,
+) -> Result<ResponseJson<ApiResponse<PullWorkspaceResponse>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+    let worktree_path = Path::new(&container_ref).join(&repo.name);
+
+    let outcome = deployment
+        .git()
+        .pull_workspace_branch(&worktree_path, &workspace.branch)?;
+
+    let response = match outcome {
+        PullOutcome::UpToDate => PullWorkspaceResponse::UpToDate,
+        PullOutcome::FastForwarded { commits, .. } => {
+            spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
+            deployment
+                .track_if_analytics_allowed(
+                    "task_attempt_pulled",
+                    serde_json::json!({
+                        "workspace_id": workspace.id.to_string(),
+                        "repo_id": request.repo_id.to_string(),
+                        "commits": commits,
+                    }),
+                )
+                .await;
+            PullWorkspaceResponse::FastForwarded { commits }
+        }
+        PullOutcome::Diverged { ahead, behind } => {
+            PullWorkspaceResponse::Diverged { ahead, behind }
+        }
+    };
+
+    Ok(ResponseJson(ApiResponse::success(response)))
+}
+
+/// Bring the target (base) branch into the work branch via merge (default,
+/// history-preserving) or rebase (opt-in, rewrites history). Conflicts surface
+/// as a typed `GitOperationError` so the existing conflict-resolution UI lights
+/// up, identical to the rebase flow.
+#[axum::debug_handler]
+pub async fn update_workspace_from_base(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<UpdateFromBaseRequest>,
+) -> Result<ResponseJson<ApiResponse<(), GitOperationError>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, payload.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+
+    let target_branch = workspace_repo.target_branch.clone();
+
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+    let worktree_path = Path::new(&container_ref).join(&repo.name);
+
+    let result = match payload.strategy {
+        UpdateFromBaseStrategy::Merge => deployment
+            .git()
+            .merge_base_into_workspace(
+                &repo.path,
+                &worktree_path,
+                &workspace.branch,
+                &target_branch,
+            )
+            .map(|_| ()),
+        UpdateFromBaseStrategy::Rebase => deployment
+            .git()
+            .rebase_branch(
+                &repo.path,
+                &worktree_path,
+                &target_branch,
+                &target_branch,
+                &workspace.branch,
+            )
+            .map(|_| ()),
+    };
+
+    if let Err(e) = result {
+        return match e {
+            GitServiceError::MergeConflicts {
+                message,
+                conflicted_files,
+            } => {
+                let op = match payload.strategy {
+                    UpdateFromBaseStrategy::Merge => ConflictOp::Merge,
+                    UpdateFromBaseStrategy::Rebase => ConflictOp::Rebase,
+                };
+                Ok(ResponseJson(
+                    ApiResponse::<(), GitOperationError>::error_with_data(
+                        GitOperationError::MergeConflicts {
+                            message,
+                            op,
+                            conflicted_files,
+                            target_branch,
+                        },
+                    ),
+                ))
+            }
+            GitServiceError::RebaseInProgress => Ok(ResponseJson(ApiResponse::<
+                (),
+                GitOperationError,
+            >::error_with_data(
+                GitOperationError::RebaseInProgress,
+            ))),
+            other => Err(ApiError::GitService(other)),
+        };
+    }
+
+    spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
+
+    deployment
+        .track_if_analytics_allowed(
+            "task_attempt_updated_from_base",
+            serde_json::json!({
+                "workspace_id": workspace.id.to_string(),
+                "repo_id": payload.repo_id.to_string(),
+                "strategy": match payload.strategy {
+                    UpdateFromBaseStrategy::Merge => "merge",
+                    UpdateFromBaseStrategy::Rebase => "rebase",
+                },
+            }),
+        )
+        .await;
 
     Ok(ResponseJson(ApiResponse::success(())))
 }

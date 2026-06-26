@@ -3,6 +3,8 @@ import { useMerge } from '@/shared/hooks/useMerge';
 import { useCommit } from '@/shared/hooks/useCommit';
 import { usePush } from '@/shared/hooks/usePush';
 import { useForcePush } from '@/shared/hooks/useForcePush';
+import { usePull } from '@/shared/hooks/usePull';
+import { useUpdateFromBase } from '@/shared/hooks/useUpdateFromBase';
 import { useChangeTargetBranch } from '@/shared/hooks/useChangeTargetBranch';
 import { useGitOperationsError } from '@/shared/hooks/GitOperationsContext';
 import { Result } from '@/shared/lib/api';
@@ -89,6 +91,37 @@ export function useGitOperations(
     }
   );
 
+  const pull = usePull(
+    workspaceId,
+    () => setError(null),
+    (err: unknown) => {
+      const message =
+        err && typeof err === 'object' && 'message' in err
+          ? String(err.message)
+          : 'Failed to pull';
+      setError(message);
+    }
+  );
+
+  const updateFromBase = useUpdateFromBase(
+    workspaceId,
+    repoId,
+    () => setError(null),
+    (err: Result<void, GitOperationError>) => {
+      if (!err.success) {
+        const data = err?.error;
+        // Conflicts surface via branch status (merge/rebase in progress); don't
+        // also raise them as a generic error banner.
+        const isConflict =
+          data?.type === 'merge_conflicts' ||
+          data?.type === 'rebase_in_progress';
+        if (!isConflict) {
+          setError(err.message || 'Failed to update from base');
+        }
+      }
+    }
+  );
+
   const changeTargetBranch = useChangeTargetBranch(
     workspaceId,
     repoId,
@@ -108,6 +141,8 @@ export function useGitOperations(
     commit.isPending ||
     push.isPending ||
     forcePush.isPending ||
+    pull.isPending ||
+    updateFromBase.isPending ||
     changeTargetBranch.isPending;
 
   return {
@@ -117,6 +152,8 @@ export function useGitOperations(
       commit: commit.mutateAsync,
       push: push.mutateAsync,
       forcePush: forcePush.mutateAsync,
+      pull: pull.mutateAsync,
+      updateFromBase: updateFromBase.mutateAsync,
       changeTargetBranch: changeTargetBranch.mutateAsync,
     },
     isAnyLoading,
@@ -126,6 +163,8 @@ export function useGitOperations(
       commitPending: commit.isPending,
       pushPending: push.isPending,
       forcePushPending: forcePush.isPending,
+      pullPending: pull.isPending,
+      updateFromBasePending: updateFromBase.isPending,
       changeTargetBranchPending: changeTargetBranch.isPending,
     },
   };
