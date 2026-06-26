@@ -28,6 +28,38 @@ const formatRelativeElapsed = (dateString: string): string => {
   return `${diffDays}d ago`;
 };
 
+/** Coarse activity status used for the color-coded issue-card display. */
+export type WorkspaceActivityStatus = 'running' | 'attention' | 'idle';
+
+export function getWorkspaceActivityStatus(ws: {
+  isRunning?: boolean;
+  hasPendingApproval?: boolean;
+  hasUnseenActivity?: boolean;
+  latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
+}): WorkspaceActivityStatus {
+  const isFailed =
+    ws.latestProcessStatus === 'failed' || ws.latestProcessStatus === 'killed';
+  // Needs attention: waiting on the user (a tool approval), or finished with
+  // something unseen/failed while not actively running.
+  const needsAttention =
+    ws.hasPendingApproval ||
+    (!ws.isRunning && (ws.hasUnseenActivity || isFailed));
+  if (needsAttention) return 'attention';
+  if (ws.isRunning) return 'running';
+  return 'idle';
+}
+
+/**
+ * Raw HSL triple CSS variable for each status accent (null for idle). Applied
+ * via inline style so it works in every app regardless of whether the Tailwind
+ * `warning` color is registered (remote-web has no theme config).
+ */
+const STATUS_ACCENT_VAR: Record<WorkspaceActivityStatus, string | null> = {
+  running: 'var(--brand)',
+  attention: 'var(--warning)',
+  idle: null,
+};
+
 export interface WorkspaceSummaryProps {
   name: string;
   workspaceId?: string;
@@ -53,6 +85,14 @@ export interface WorkspaceSummaryProps {
   isFocused?: boolean;
   /** Ref to the row container, used to scroll the focused row into view */
   forwardedRef?: Ref<HTMLDivElement>;
+  /** Most recent prompt — preferred over name when emphasizeStatus is set */
+  latestPrompt?: string;
+  /**
+   * Issue-card mode: replace the animated running dots with an explicit,
+   * color-coded status (running / attention / idle) and prefer the latest
+   * prompt over the workspace name (which often duplicates the issue title).
+   */
+  emphasizeStatus?: boolean;
 }
 
 export function WorkspaceSummary({
@@ -77,11 +117,32 @@ export function WorkspaceSummary({
   onOpenWorkspaceActions,
   isFocused = false,
   forwardedRef,
+  latestPrompt,
+  emphasizeStatus = false,
 }: WorkspaceSummaryProps) {
   const { t } = useTranslation('common');
   const hasChanges = filesChanged !== undefined && filesChanged > 0;
   const isFailed =
     latestProcessStatus === 'failed' || latestProcessStatus === 'killed';
+
+  // Color-coded status for the issue-card display. accentVar is the raw HSL
+  // triple ("25 82% 54%") applied via inline style; null when idle (no accent).
+  const activityStatus = getWorkspaceActivityStatus({
+    isRunning,
+    hasPendingApproval,
+    hasUnseenActivity,
+    latestProcessStatus,
+  });
+  const accentVar = emphasizeStatus ? STATUS_ACCENT_VAR[activityStatus] : null;
+  // Prefer the latest prompt over the name in issue-card mode (the name often
+  // just repeats the issue title shown on the card header).
+  const primaryText =
+    emphasizeStatus && latestPrompt?.trim() ? latestPrompt.trim() : name;
+  // Left tab color: status accent in issue-card mode, falling back to the brand
+  // selection color when an idle row is active.
+  const barAccentVar = emphasizeStatus
+    ? (accentVar ?? (isActive ? 'var(--brand)' : null))
+    : null;
 
   const handleOpenCommandBar = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -104,13 +165,28 @@ export function WorkspaceSummary({
         isFocused && 'ring-1 ring-inset ring-brand',
         className
       )}
+      // Issue-card mode: tint the whole row with the status color (attention a
+      // touch stronger than running) so its state reads without parsing icons.
+      style={
+        emphasizeStatus && !isActive && accentVar
+          ? {
+              backgroundColor: `hsl(${accentVar} / ${
+                activityStatus === 'attention' ? 0.1 : 0.05
+              })`,
+            }
+          : undefined
+      }
     >
-      {/* Selection indicator - thin colored tab on the left */}
+      {/* Left tab: selection indicator, or color-coded status in issue-card mode */}
       <div
         className={cn(
-          'absolute left-0 top-1 bottom-1 w-0.5 rounded-full transition-colors duration-100',
-          isActive ? 'bg-brand' : 'bg-transparent'
+          'absolute left-0 top-1 bottom-1 rounded-full transition-colors duration-100',
+          emphasizeStatus ? 'w-1' : 'w-0.5',
+          !emphasizeStatus && (isActive ? 'bg-brand' : 'bg-transparent')
         )}
+        style={
+          barAccentVar ? { backgroundColor: `hsl(${barAccentVar})` } : undefined
+        }
       />
       <button
         onClick={onClick}
@@ -133,7 +209,7 @@ export function WorkspaceSummary({
               'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
           }}
         >
-          {name}
+          {primaryText}
         </div>
         {(!summary || isActive) && (
           <div className="flex w-full items-center gap-base text-sm h-5">
@@ -145,31 +221,52 @@ export function WorkspaceSummary({
               />
             )}
 
-            {/* Failed/killed status (only when not running) */}
-            {!isRunning && isFailed && (
-              <TriangleIcon
-                className="size-icon-xs text-error shrink-0"
-                weight="fill"
-              />
-            )}
-
-            {/* Running dots OR hand icon for pending approval */}
-            {isRunning &&
-              (hasPendingApproval ? (
+            {emphasizeStatus ? (
+              /* Issue-card mode: a single explicit, color-coded status marker
+                 (no animation) so running / attention / idle read at a glance.
+                 Pending approval keeps the hand icon (in the attention color). */
+              hasPendingApproval ? (
                 <HandIcon
-                  className="size-icon-xs text-brand shrink-0"
+                  className="size-icon-xs shrink-0"
                   weight="fill"
+                  style={{ color: 'hsl(var(--warning))' }}
                 />
-              ) : (
-                <RunningDots />
-              ))}
+              ) : accentVar ? (
+                <span
+                  className="size-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: `hsl(${accentVar})` }}
+                  aria-hidden="true"
+                />
+              ) : null
+            ) : (
+              <>
+                {/* Failed/killed status (only when not running) */}
+                {!isRunning && isFailed && (
+                  <TriangleIcon
+                    className="size-icon-xs text-error shrink-0"
+                    weight="fill"
+                  />
+                )}
 
-            {/* Unseen activity indicator (only when not running and not failed) */}
-            {hasUnseenActivity && !isRunning && !isFailed && (
-              <CircleIcon
-                className="size-icon-xs text-brand shrink-0"
-                weight="fill"
-              />
+                {/* Running dots OR hand icon for pending approval */}
+                {isRunning &&
+                  (hasPendingApproval ? (
+                    <HandIcon
+                      className="size-icon-xs text-brand shrink-0"
+                      weight="fill"
+                    />
+                  ) : (
+                    <RunningDots />
+                  ))}
+
+                {/* Unseen activity indicator (only when not running and not failed) */}
+                {hasUnseenActivity && !isRunning && !isFailed && (
+                  <CircleIcon
+                    className="size-icon-xs text-brand shrink-0"
+                    weight="fill"
+                  />
+                )}
+              </>
             )}
 
             {/* PR status icon */}

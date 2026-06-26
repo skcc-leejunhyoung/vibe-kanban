@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace_id as \"workspace_id!: Uuid\", prompt as \"prompt!\"\n               FROM (\n                   SELECT s.workspace_id AS workspace_id,\n                          cat.prompt AS prompt,\n                          ROW_NUMBER() OVER (\n                              PARTITION BY s.workspace_id\n                              ORDER BY cat.created_at DESC, cat.id DESC\n                          ) AS rn\n                   FROM coding_agent_turns cat\n                   JOIN execution_processes ep ON cat.execution_process_id = ep.id\n                   JOIN sessions s ON ep.session_id = s.id\n                   JOIN workspaces w ON s.workspace_id = w.id\n                   WHERE w.archived = $1\n                     AND cat.prompt IS NOT NULL\n                     AND TRIM(cat.prompt) <> ''\n               ) ranked\n               WHERE rn = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace_id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "prompt!",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "166c84a3e797561e1da84e767736ea4644b6fbdd34e4ea152fddc36c77b58750"
+}

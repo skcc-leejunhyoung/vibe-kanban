@@ -39,6 +39,8 @@ export interface WorkspacesSidebarWorkspace {
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
+  /** Most recent prompt sent in this workspace (what it's working on) */
+  latestPrompt?: string;
 }
 
 export interface WorkspacesSidebarPersistKeys {

@@ -33,6 +33,8 @@ export interface SidebarWorkspace {
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
   prNumber?: number;
   prUrl?: string;
+  /** Most recent prompt sent in this workspace (what it's working on) */
+  latestPrompt?: string;
 }
 
 // Keep the old export name for backwards compatibility
@@ -81,6 +83,7 @@ function toSidebarWorkspace(
     prNumber:
       summary?.pr_number != null ? Number(summary.pr_number) : undefined,
     prUrl: summary?.pr_url ?? undefined,
+    latestPrompt: summary?.latest_prompt ?? undefined,
   };
 }
 

@@ -252,4 +252,40 @@ impl CodingAgentTurn {
 
         Ok(result.into_iter().collect())
     }
+
+    /// Find the most recent non-empty prompt for each workspace with the given
+    /// archived status. Returns a map of workspace_id -> latest prompt text.
+    /// Used to surface what each workspace is working on in the sidebar.
+    pub async fn find_latest_prompts_for_workspaces(
+        pool: &SqlitePool,
+        archived: bool,
+    ) -> Result<std::collections::HashMap<Uuid, String>, sqlx::Error> {
+        let rows = sqlx::query!(
+            r#"SELECT workspace_id as "workspace_id!: Uuid", prompt as "prompt!"
+               FROM (
+                   SELECT s.workspace_id AS workspace_id,
+                          cat.prompt AS prompt,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY s.workspace_id
+                              ORDER BY cat.created_at DESC, cat.id DESC
+                          ) AS rn
+                   FROM coding_agent_turns cat
+                   JOIN execution_processes ep ON cat.execution_process_id = ep.id
+                   JOIN sessions s ON ep.session_id = s.id
+                   JOIN workspaces w ON s.workspace_id = w.id
+                   WHERE w.archived = $1
+                     AND cat.prompt IS NOT NULL
+                     AND TRIM(cat.prompt) <> ''
+               ) ranked
+               WHERE rn = 1"#,
+            archived
+        )
+        .fetch_all(pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.workspace_id, r.prompt))
+            .collect())
+    }
 }

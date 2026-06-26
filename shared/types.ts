@@ -608,6 +608,10 @@ has_running_dev_server: boolean,
  */
 has_unseen_turns: boolean,
 /**
+ * The most recent prompt sent in this workspace (what it's working on)
+ */
+latest_prompt: string | null,
+/**
  * PR status for this workspace (if any PR exists)
  */
 pr_status: MergeStatus | null,
