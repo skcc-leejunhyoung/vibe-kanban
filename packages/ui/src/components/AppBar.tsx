@@ -91,7 +91,7 @@ function getHostStatusIndicatorClass(status: AppBarHostStatus): string {
 
 function AppBarSectionLabel({ children }: { children: ReactNode }) {
   return (
-    <p className="w-10 text-center text-[9px] font-medium leading-none tracking-wide text-low">
+    <p className="text-center text-[9px] font-medium leading-none tracking-wide text-low whitespace-nowrap">
       {children}
     </p>
   );
@@ -503,7 +503,7 @@ export function AppBar({
     >
       {/* Scrollable nav sections so the bottom section (notifications + user)
           stays reachable even when the viewport is vertically short. */}
-      <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-base overflow-y-auto">
+      <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-base overflow-y-auto overflow-x-hidden">
         {sections.map((section) => (
           <div key={section.key} className="flex flex-col items-center gap-1">
             <AppBarSectionLabel>{section.label}</AppBarSectionLabel>
