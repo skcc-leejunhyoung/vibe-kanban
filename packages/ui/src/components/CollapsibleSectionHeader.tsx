@@ -117,14 +117,15 @@ export function CollapsibleSectionHeader({
               onKeyDown={(e) => handleActionKeyDown(e, action.onClick)}
               className={cn(
                 'flex items-center justify-center hover:text-normal',
-                // Mobile: match the search-bar filter/sort buttons' size exactly
-                // (same classes, so remote-web's Tailwind build covers them too).
-                largeActions && '!h-cta !px-half !py-0 rounded-sm',
+                // Mobile: a modest tap target — a touch bigger than the compact
+                // desktop icon, but smaller/quieter than the search-bar buttons
+                // for header consistency.
+                largeActions && 'p-half rounded-sm',
                 action.isActive ? 'text-brand' : 'text-low'
               )}
             >
               <ActionIcon
-                className={largeActions ? 'size-icon-lg' : 'size-icon-xs'}
+                className={largeActions ? 'size-icon-base' : 'size-icon-xs'}
                 weight="bold"
               />
             </span>
