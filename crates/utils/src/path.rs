@@ -223,12 +223,12 @@ mod tests {
         // A clearly persistent path is not.
         assert!(!is_under_volatile_temp_dir("/Users/someone/VSC/c2"));
         // The home worktree base must not be flagged (would defeat the redirect).
-        if let Some(home) = dirs::home_dir() {
-            if !home.starts_with(&temp) {
-                assert!(!is_under_volatile_temp_dir(
-                    home.join(".vibe-kanban/worktrees/foo")
-                ));
-            }
+        if let Some(home) = dirs::home_dir()
+            && !home.starts_with(&temp)
+        {
+            assert!(!is_under_volatile_temp_dir(
+                home.join(".vibe-kanban/worktrees/foo")
+            ));
         }
     }
 
