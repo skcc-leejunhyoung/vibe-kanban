@@ -11,16 +11,6 @@
   "actions": {
     "addTask": "작업 추가"
   },
-  "editBranchName": {
-    "dialog": {
-      "title": "브랜치 이름 편집",
-      "description": "브랜치의 새 이름을 입력하세요. 열려있는 PR이 있으면 이름을 변경할 수 없습니다.",
-      "branchNameLabel": "브랜치 이름",
-      "placeholder": "예: feature/my-branch",
-      "renaming": "이름 변경 중...",
-      "action": "브랜치 이름 변경"
-    }
-  },
   "startReviewDialog": {
     "title": "리뷰 시작",
     "description": "코딩 에이전트에게 변경 사항을 검토하고 피드백을 제공하도록 요청합니다.",
@@ -97,15 +87,6 @@
         "title": "대상 브랜치 변경"
       }
     }
-  },
-  "repos": {
-    "selector": {
-      "placeholder": "저장소 선택",
-      "empty": "사용 가능한 저장소가 없습니다"
-    }
-  },
-  "repoBranchSelector": {
-    "label": "기본 브랜치"
   },
   "diff": {
     "filesChanged_one": "{{count}} file changed",
@@ -252,24 +233,7 @@
   },
   "processes": {
     "noLogsAvailable": "로그가 없습니다",
-    "agent": "Agent:",
-    "backToList": "Back to list",
-    "completed": "Completed: {{date}}",
-    "deleted": "Deleted",
-    "deletedTooltip": "Deleted by restore: timeline was restored to a checkpoint and later executions were removed",
-    "detailsTitle": "Process Details",
-    "errorLoadingDetails": "Failed to load process details. Please try again.",
-    "errorLoadingUpdates": "Failed to load live updates for processes.",
-    "exit": "Exit: {{code}}",
-    "loading": "Loading execution processes...",
-    "loadingDetails": "Loading process details...",
-    "noProcesses": "No execution processes found for this attempt.",
-    "processId": "Process ID: {{id}}",
-    "reconnecting": "Reconnecting...",
-    "selectAttempt": "Select an attempt to view execution processes.",
-    "started": "Started: {{date}}",
-    "copyLogs": "로그 복사",
-    "logsCopied": "복사됨!"
+    "noProcesses": "No execution processes found for this attempt."
   },
   "rebase": {
     "common": {
@@ -290,9 +254,6 @@
     "title": "작업",
     "progress": "{{completed}}/{{total}} 완료",
     "noTasks": "작업 없음"
-  },
-  "viewProcessesDialog": {
-    "title": "Execution processes"
   },
   "prComments": {
     "dialog": {

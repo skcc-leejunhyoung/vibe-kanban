@@ -220,9 +220,6 @@
     "selectGitRepository": "Select Git Repository",
     "chooseExistingRepo": "Choose an existing repository from your file system"
   },
-  "empty": {
-    "noChanges": "No changes to display"
-  },
   "commandBar": {
     "noResults": "No results found.",
     "back": "Back",

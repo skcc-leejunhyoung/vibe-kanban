@@ -38,15 +38,6 @@
       }
     }
   },
-  "repos": {
-    "selector": {
-      "placeholder": "选择仓库",
-      "empty": "没有可用的仓库"
-    }
-  },
-  "repoBranchSelector": {
-    "label": "基础分支"
-  },
   "preview": {
     "noServer": {
       "title": "没有运行开发服务器",
@@ -89,24 +80,7 @@
   },
   "processes": {
     "noLogsAvailable": "没有可用的日志",
-    "selectAttempt": "选择尝试以查看执行进程。",
-    "errorLoadingUpdates": "加载进程的实时更新失败。",
-    "reconnecting": "重新连接中...",
-    "loading": "加载执行进程中...",
-    "noProcesses": "未找到此尝试的执行进程。",
-    "processId": "进程 ID：{{id}}",
-    "deleted": "已删除",
-    "deletedTooltip": "因恢复而删除：时间轴已恢复到检查点，后续执行已被移除",
-    "agent": "代理：",
-    "exit": "退出：{{code}}",
-    "started": "开始：{{date}}",
-    "completed": "完成：{{date}}",
-    "detailsTitle": "进程详情",
-    "backToList": "返回列表",
-    "loadingDetails": "加载进程详情中...",
-    "errorLoadingDetails": "加载进程详情失败。请重试。",
-    "copyLogs": "复制日志",
-    "logsCopied": "已复制！"
+    "noProcesses": "未找到此尝试的执行进程。"
   },
   "followUp": {
     "queuedCount_other": "{{count}} 条消息排队中"
@@ -212,19 +186,6 @@
       "states": {
         "creating": "创建中..."
       }
-    }
-  },
-  "viewProcessesDialog": {
-    "title": "执行进程"
-  },
-  "editBranchName": {
-    "dialog": {
-      "title": "编辑分支名称",
-      "description": "输入分支的新名称。如果存在未关闭的 PR，则无法重命名。",
-      "branchNameLabel": "分支名称",
-      "placeholder": "例如：feature/my-branch",
-      "renaming": "重命名中...",
-      "action": "重命名分支"
     }
   },
   "startReviewDialog": {

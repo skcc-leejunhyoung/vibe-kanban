@@ -38,12 +38,6 @@
       }
     }
   },
-  "repos": {
-    "selector": {
-      "placeholder": "Sélectionner un dépôt",
-      "empty": "Aucun dépôt disponible"
-    }
-  },
   "preview": {
     "noServer": {
       "title": "Aucun serveur de développement en cours d'exécution",
@@ -86,24 +80,7 @@
   },
   "processes": {
     "noLogsAvailable": "Aucun log disponible",
-    "selectAttempt": "Sélectionnez une tentative pour voir les processus d'exécution.",
-    "errorLoadingUpdates": "Échec du chargement des mises à jour en direct pour les processus.",
-    "reconnecting": "Reconnexion...",
-    "loading": "Chargement des processus d'exécution...",
-    "noProcesses": "Aucun processus d'exécution trouvé pour cette tentative.",
-    "processId": "ID du processus : {{id}}",
-    "deleted": "Supprimé",
-    "deletedTooltip": "Supprimé par restauration : la timeline a été restaurée à un point de contrôle et les exécutions ultérieures ont été supprimées",
-    "agent": "Agent :",
-    "exit": "Sortie : {{code}}",
-    "started": "Démarré : {{date}}",
-    "completed": "Terminé : {{date}}",
-    "detailsTitle": "Détails du processus",
-    "backToList": "Retour à la liste",
-    "loadingDetails": "Chargement des détails du processus...",
-    "errorLoadingDetails": "Échec du chargement des détails du processus. Veuillez réessayer.",
-    "copyLogs": "Copier les logs",
-    "logsCopied": "Copié !"
+    "noProcesses": "Aucun processus d'exécution trouvé pour cette tentative."
   },
   "followUp": {
     "queuedCount_one": "{{count}} message en file d'attente",
@@ -300,22 +277,6 @@
       "states": {
         "creating": "Création en cours..."
       }
-    }
-  },
-  "repoBranchSelector": {
-    "label": "Branche de base"
-  },
-  "viewProcessesDialog": {
-    "title": "Processus d'exécution"
-  },
-  "editBranchName": {
-    "dialog": {
-      "title": "Modifier le nom de la branche",
-      "description": "Saisissez un nouveau nom pour la branche. Impossible de renommer s'il existe une PR ouverte.",
-      "branchNameLabel": "Nom de la branche",
-      "placeholder": "ex: feature/ma-branche",
-      "renaming": "Renommage en cours...",
-      "action": "Renommer la branche"
     }
   },
   "startReviewDialog": {

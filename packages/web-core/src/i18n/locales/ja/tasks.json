@@ -11,16 +11,6 @@
   "actions": {
     "addTask": "タスクを追加"
   },
-  "editBranchName": {
-    "dialog": {
-      "title": "ブランチ名を編集",
-      "description": "ブランチの新しい名前を入力してください。オープンなPRが存在する場合は名前を変更できません。",
-      "branchNameLabel": "ブランチ名",
-      "placeholder": "例: feature/my-branch",
-      "renaming": "名前を変更中...",
-      "action": "ブランチ名を変更"
-    }
-  },
   "startReviewDialog": {
     "title": "レビューを開始",
     "description": "コーディングエージェントに変更のレビューとフィードバックを依頼します。",
@@ -97,15 +87,6 @@
         "title": "ターゲットブランチを変更"
       }
     }
-  },
-  "repos": {
-    "selector": {
-      "placeholder": "リポジトリを選択",
-      "empty": "利用可能なリポジトリがありません"
-    }
-  },
-  "repoBranchSelector": {
-    "label": "ベースブランチ"
   },
   "diff": {
     "filesChanged_one": "{{count}} file changed",
@@ -246,24 +227,7 @@
   },
   "processes": {
     "noLogsAvailable": "ログがありません",
-    "agent": "Agent:",
-    "backToList": "Back to list",
-    "completed": "Completed: {{date}}",
-    "deleted": "Deleted",
-    "deletedTooltip": "Deleted by restore: timeline was restored to a checkpoint and later executions were removed",
-    "detailsTitle": "Process Details",
-    "errorLoadingDetails": "Failed to load process details. Please try again.",
-    "errorLoadingUpdates": "Failed to load live updates for processes.",
-    "exit": "Exit: {{code}}",
-    "loading": "Loading execution processes...",
-    "loadingDetails": "Loading process details...",
-    "noProcesses": "No execution processes found for this attempt.",
-    "processId": "Process ID: {{id}}",
-    "reconnecting": "Reconnecting...",
-    "selectAttempt": "Select an attempt to view execution processes.",
-    "started": "Started: {{date}}",
-    "copyLogs": "ログをコピー",
-    "logsCopied": "コピーしました！"
+    "noProcesses": "No execution processes found for this attempt."
   },
   "rebase": {
     "common": {
@@ -284,9 +248,6 @@
     "title": "タスク",
     "progress": "{{completed}}/{{total}} 完了",
     "noTasks": "タスクなし"
-  },
-  "viewProcessesDialog": {
-    "title": "Execution processes"
   },
   "prComments": {
     "dialog": {

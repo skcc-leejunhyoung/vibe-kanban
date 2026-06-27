@@ -11,16 +11,6 @@
   "actions": {
     "addTask": "Agregar tarea"
   },
-  "editBranchName": {
-    "dialog": {
-      "title": "Editar nombre de rama",
-      "description": "Ingrese un nuevo nombre para la rama. No se puede renombrar si existe un PR abierto.",
-      "branchNameLabel": "Nombre de rama",
-      "placeholder": "ej., feature/mi-rama",
-      "renaming": "Renombrando...",
-      "action": "Renombrar rama"
-    }
-  },
   "startReviewDialog": {
     "title": "Iniciar revisión",
     "description": "Pide al agente de codificación que revise tus cambios y proporcione comentarios.",
@@ -97,15 +87,6 @@
         "title": "Cambiar rama de destino"
       }
     }
-  },
-  "repos": {
-    "selector": {
-      "placeholder": "Seleccionar repositorio",
-      "empty": "No hay repositorios disponibles"
-    }
-  },
-  "repoBranchSelector": {
-    "label": "Rama base"
   },
   "diff": {
     "filesChanged_one": "{{count}} file changed",
@@ -247,24 +228,7 @@
   },
   "processes": {
     "noLogsAvailable": "No hay registros disponibles",
-    "agent": "Agent:",
-    "backToList": "Back to list",
-    "completed": "Completed: {{date}}",
-    "deleted": "Deleted",
-    "deletedTooltip": "Deleted by restore: timeline was restored to a checkpoint and later executions were removed",
-    "detailsTitle": "Process Details",
-    "errorLoadingDetails": "Failed to load process details. Please try again.",
-    "errorLoadingUpdates": "Failed to load live updates for processes.",
-    "exit": "Exit: {{code}}",
-    "loading": "Loading execution processes...",
-    "loadingDetails": "Loading process details...",
-    "noProcesses": "No execution processes found for this attempt.",
-    "processId": "Process ID: {{id}}",
-    "reconnecting": "Reconnecting...",
-    "selectAttempt": "Select an attempt to view execution processes.",
-    "started": "Started: {{date}}",
-    "copyLogs": "Copiar registros",
-    "logsCopied": "¡Copiado!"
+    "noProcesses": "No execution processes found for this attempt."
   },
   "rebase": {
     "common": {
@@ -285,9 +249,6 @@
     "title": "Tareas",
     "progress": "{{completed}}/{{total}} completadas",
     "noTasks": "Sin tareas"
-  },
-  "viewProcessesDialog": {
-    "title": "Execution processes"
   },
   "prComments": {
     "dialog": {

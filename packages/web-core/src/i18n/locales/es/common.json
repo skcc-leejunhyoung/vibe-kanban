@@ -204,9 +204,6 @@
     "selectGitRepository": "Seleccionar repositorio Git",
     "chooseExistingRepo": "Elige un repositorio existente de tu sistema de archivos"
   },
-  "empty": {
-    "noChanges": "No hay cambios para mostrar"
-  },
   "commandBar": {
     "noResults": "No se encontraron resultados.",
     "back": "Atrás",

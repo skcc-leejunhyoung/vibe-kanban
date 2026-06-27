@@ -204,9 +204,6 @@
     "selectGitRepository": "Gitリポジトリを選択",
     "chooseExistingRepo": "ファイルシステムから既存のリポジトリを選択してください"
   },
-  "empty": {
-    "noChanges": "表示する変更がありません"
-  },
   "commandBar": {
     "noResults": "結果が見つかりません。",
     "back": "戻る",

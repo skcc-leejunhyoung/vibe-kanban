@@ -38,15 +38,6 @@
       }
     }
   },
-  "repos": {
-    "selector": {
-      "placeholder": "選擇儲存庫",
-      "empty": "沒有可用的儲存庫"
-    }
-  },
-  "repoBranchSelector": {
-    "label": "基底分支"
-  },
   "preview": {
     "noServer": {
       "title": "沒有執行中的開發伺服器",
@@ -89,24 +80,7 @@
   },
   "processes": {
     "noLogsAvailable": "沒有可用的日誌",
-    "selectAttempt": "選擇嘗試以查看執行程序。",
-    "errorLoadingUpdates": "載入程序的即時更新失敗。",
-    "reconnecting": "重新連線中...",
-    "loading": "載入執行程序中...",
-    "noProcesses": "找不到此嘗試的執行程序。",
-    "processId": "程序 ID：{{id}}",
-    "deleted": "已刪除",
-    "deletedTooltip": "因復原而刪除：時間軸已回復到檢查點，後續執行已移除",
-    "agent": "代理：",
-    "exit": "退出：{{code}}",
-    "started": "開始：{{date}}",
-    "completed": "完成：{{date}}",
-    "detailsTitle": "程序詳情",
-    "backToList": "返回列表",
-    "loadingDetails": "載入程序詳情中...",
-    "errorLoadingDetails": "載入程序詳情失敗。請重試。",
-    "copyLogs": "複製日誌",
-    "logsCopied": "已複製！"
+    "noProcesses": "找不到此嘗試的執行程序。"
   },
   "followUp": {
     "queuedCount_other": "{{count}} 則訊息排隊中"
@@ -212,19 +186,6 @@
       "states": {
         "creating": "建立中..."
       }
-    }
-  },
-  "viewProcessesDialog": {
-    "title": "執行程序"
-  },
-  "editBranchName": {
-    "dialog": {
-      "title": "編輯分支名稱",
-      "description": "輸入分支的新名稱。如果有未關閉的 PR，則無法重新命名。",
-      "branchNameLabel": "分支名稱",
-      "placeholder": "例如：feature/my-branch",
-      "renaming": "重新命名中...",
-      "action": "重新命名分支"
     }
   },
   "startReviewDialog": {
