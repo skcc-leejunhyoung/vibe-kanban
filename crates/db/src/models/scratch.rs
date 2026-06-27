@@ -98,6 +98,16 @@ pub enum WorkspaceSortOrderData {
     Desc,
 }
 
+/// Workspace activity status, mirrored on the frontend
+/// (getWorkspaceActivityStatus). Used by the sidebar status filter.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceActivityStatusData {
+    Running,
+    Attention,
+    Idle,
+}
+
 /// Workspace sidebar filter state
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
 pub struct WorkspaceFilterStateData {
@@ -105,6 +115,8 @@ pub struct WorkspaceFilterStateData {
     pub project_ids: Vec<String>,
     #[serde(default)]
     pub pr_filter: WorkspacePrFilterData,
+    #[serde(default)]
+    pub status_filters: Vec<WorkspaceActivityStatusData>,
 }
 
 /// Workspace sidebar sort state

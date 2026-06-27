@@ -16,8 +16,14 @@ import {
   MultiSelectDropdown,
   type MultiSelectDropdownOption,
 } from '@vibe/ui/components/MultiSelectDropdown';
-import { FolderIcon, GitPullRequestIcon, XIcon } from '@phosphor-icons/react';
+import {
+  FolderIcon,
+  GitPullRequestIcon,
+  PulseIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import type {
+  WorkspaceActivityStatus,
   WorkspacePrFilter,
   WorkspaceSortBy,
   WorkspaceSortOrder,
@@ -28,6 +34,11 @@ export const PR_FILTER_OPTIONS: WorkspacePrFilter[] = [
   'all',
   'has_pr',
   'no_pr',
+];
+export const STATUS_FILTER_OPTIONS: WorkspaceActivityStatus[] = [
+  'running',
+  'attention',
+  'idle',
 ];
 export const SORT_BY_OPTIONS: WorkspaceSortBy[] = ['updated_at', 'created_at'];
 
@@ -114,9 +125,11 @@ export interface WorkspacesFilterDialogProps {
   projectOptions: MultiSelectDropdownOption<string>[];
   projectIds: string[];
   prFilter: WorkspacePrFilter;
+  statusFilters: WorkspaceActivityStatus[];
   hasActiveFilters: boolean;
   onProjectFilterChange: (projectIds: string[]) => void;
   onPrFilterChange: (prFilter: WorkspacePrFilter) => void;
+  onStatusFilterChange: (statusFilters: WorkspaceActivityStatus[]) => void;
   onClearFilters: () => void;
 }
 
@@ -126,9 +139,11 @@ export function WorkspacesFilterDialog({
   projectOptions,
   projectIds,
   prFilter,
+  statusFilters,
   hasActiveFilters,
   onProjectFilterChange,
   onPrFilterChange,
+  onStatusFilterChange,
   onClearFilters,
 }: WorkspacesFilterDialogProps) {
   const { t } = useTranslation('common');
@@ -170,6 +185,21 @@ export function WorkspacesFilterDialog({
               onChange={onPrFilterChange}
               icon={GitPullRequestIcon}
               label={t('kanban.workspaceSidebar.prFilterLabel')}
+            />
+            <MultiSelectDropdown
+              values={statusFilters}
+              options={STATUS_FILTER_OPTIONS.map((option) => ({
+                value: option,
+                label:
+                  option === 'running'
+                    ? t('kanban.workspaceSidebar.statusRunning')
+                    : option === 'attention'
+                      ? t('kanban.workspaceSidebar.statusAttention')
+                      : t('kanban.workspaceSidebar.statusIdle'),
+              }))}
+              onChange={onStatusFilterChange}
+              icon={PulseIcon}
+              label={t('kanban.workspaceSidebar.statusFilterLabel')}
             />
             {hasActiveFilters && (
               <div className="self-end">

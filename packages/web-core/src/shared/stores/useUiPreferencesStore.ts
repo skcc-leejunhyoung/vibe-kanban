@@ -245,6 +245,9 @@ export const resolveKanbanProjectState = (
 
 // Workspace sidebar filter state
 export type WorkspacePrFilter = 'all' | 'has_pr' | 'no_pr';
+// Coarse workspace activity buckets, mirrored from @vibe/ui
+// (getWorkspaceActivityStatus). Empty selection = no status filtering.
+export type WorkspaceActivityStatus = 'running' | 'attention' | 'idle';
 export type WorkspaceSortBy = 'updated_at' | 'created_at';
 export type WorkspaceSortOrder = 'asc' | 'desc';
 
@@ -299,6 +302,7 @@ const loadWorkspaceIssueStatuses = (): string[] => {
 export type WorkspaceFilterState = {
   projectIds: string[]; // remote project IDs
   prFilter: WorkspacePrFilter;
+  statusFilters: WorkspaceActivityStatus[]; // empty = all statuses
 };
 
 export type WorkspaceSortState = {
@@ -309,6 +313,7 @@ export type WorkspaceSortState = {
 const DEFAULT_WORKSPACE_FILTER_STATE: WorkspaceFilterState = {
   projectIds: [],
   prFilter: 'all',
+  statusFilters: [],
 };
 
 const DEFAULT_WORKSPACE_SORT_STATE: WorkspaceSortState = {
@@ -533,6 +538,7 @@ type State = {
   // Workspace sidebar filter actions
   setWorkspaceProjectFilter: (projectIds: string[]) => void;
   setWorkspacePrFilter: (prFilter: WorkspacePrFilter) => void;
+  setWorkspaceStatusFilter: (statusFilters: WorkspaceActivityStatus[]) => void;
   clearWorkspaceFilters: () => void;
   setWorkspaceSortBy: (sortBy: WorkspaceSortBy) => void;
   setWorkspaceSortOrder: (sortOrder: WorkspaceSortOrder) => void;
@@ -936,6 +942,11 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   setWorkspacePrFilter: (prFilter) =>
     set((s) => ({
       workspaceFilters: { ...s.workspaceFilters, prFilter },
+    })),
+
+  setWorkspaceStatusFilter: (statusFilters) =>
+    set((s) => ({
+      workspaceFilters: { ...s.workspaceFilters, statusFilters },
     })),
 
   clearWorkspaceFilters: () =>

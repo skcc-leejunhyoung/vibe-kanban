@@ -448,6 +448,10 @@
       "prFilterAll": "All",
       "prFilterHasPr": "Has PR",
       "prFilterNoPr": "No PR",
+      "statusFilterLabel": "Status",
+      "statusRunning": "Running",
+      "statusAttention": "Needs attention",
+      "statusIdle": "Idle",
       "noProject": "No project",
       "sortButtonTitle": "Sort workspaces",
       "filterButtonTitle": "Filter workspaces"

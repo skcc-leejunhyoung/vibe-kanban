@@ -75,11 +75,13 @@ is_left_main_panel_visible: boolean, };
 
 export type WorkspacePrFilterData = "all" | "has_pr" | "no_pr";
 
+export type WorkspaceActivityStatusData = "running" | "attention" | "idle";
+
 export type WorkspaceSortByData = "updated_at" | "created_at";
 
 export type WorkspaceSortOrderData = "asc" | "desc";
 
-export type WorkspaceFilterStateData = { project_ids: Array<string>, pr_filter: WorkspacePrFilterData, };
+export type WorkspaceFilterStateData = { project_ids: Array<string>, pr_filter: WorkspacePrFilterData, status_filters: Array<WorkspaceActivityStatusData>, };
 
 export type WorkspaceSortStateData = { sort_by: WorkspaceSortByData, sort_order: WorkspaceSortOrderData, };
 

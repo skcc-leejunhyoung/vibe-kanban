@@ -18,6 +18,7 @@ import {
   type WorkspacePanelState,
   type WorkspaceFilterState,
   type WorkspaceSortState,
+  type WorkspaceActivityStatus,
   type WorkspacePrFilter,
   type WorkspaceSortBy,
   type WorkspaceSortOrder,
@@ -79,6 +80,7 @@ function storeToScratchData(state: {
     workspace_filters: {
       project_ids: state.workspaceFilters.projectIds,
       pr_filter: state.workspaceFilters.prFilter,
+      status_filters: state.workspaceFilters.statusFilters,
     },
     workspace_sort: {
       sort_by: state.workspaceSort.sortBy,
@@ -193,6 +195,9 @@ function scratchDataToStore(data: UiPreferencesData): {
       projectIds: data.workspace_filters?.project_ids ?? [],
       prFilter:
         (data.workspace_filters?.pr_filter as WorkspacePrFilter) ?? 'all',
+      statusFilters:
+        (data.workspace_filters?.status_filters as WorkspaceActivityStatus[]) ??
+        [],
     },
     workspaceSort: {
       sortBy: (data.workspace_sort?.sort_by as WorkspaceSortBy) ?? 'updated_at',

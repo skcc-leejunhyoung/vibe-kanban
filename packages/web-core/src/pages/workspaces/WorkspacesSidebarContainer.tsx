@@ -451,9 +451,11 @@ export function WorkspacesSidebarContainer({
         projectOptions={sortFilter.projectOptions}
         projectIds={sortFilter.filter.projectIds}
         prFilter={sortFilter.filter.prFilter}
+        statusFilters={sortFilter.filter.statusFilters}
         hasActiveFilters={sortFilter.hasActiveFilters}
         onProjectFilterChange={sortFilter.filter.setProjectFilter}
         onPrFilterChange={sortFilter.filter.setPrFilter}
+        onStatusFilterChange={sortFilter.filter.setStatusFilter}
         onClearFilters={sortFilter.filter.clearFilters}
       />
     </>

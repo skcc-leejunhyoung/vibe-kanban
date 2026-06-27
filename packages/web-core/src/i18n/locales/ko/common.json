@@ -434,6 +434,10 @@
       "prFilterAll": "All",
       "prFilterHasPr": "Has PR",
       "prFilterNoPr": "No PR",
+      "statusFilterLabel": "상태",
+      "statusRunning": "진행 중",
+      "statusAttention": "주의 필요",
+      "statusIdle": "대기 중",
       "noProject": "No project",
       "sortButtonTitle": "Sort workspaces",
       "filterButtonTitle": "Filter workspaces"

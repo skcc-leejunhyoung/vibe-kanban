@@ -2,12 +2,14 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Project } from 'shared/remote-types';
 import type { MultiSelectDropdownOption } from '@vibe/ui/components/MultiSelectDropdown';
+import { getWorkspaceActivityStatus } from '@vibe/ui/components/WorkspacesSidebar';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useAllOrganizationProjects } from '@/shared/hooks/useAllOrganizationProjects';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
 import type { Workspace } from '@/shared/hooks/useWorkspaces';
 import {
   useUiPreferencesStore,
+  type WorkspaceActivityStatus,
   type WorkspacePrFilter,
   type WorkspaceSortBy,
   type WorkspaceSortOrder,
@@ -60,8 +62,10 @@ export interface WorkspaceSortFilterModel {
   filter: {
     projectIds: string[];
     prFilter: WorkspacePrFilter;
+    statusFilters: WorkspaceActivityStatus[];
     setProjectFilter: (projectIds: string[]) => void;
     setPrFilter: (prFilter: WorkspacePrFilter) => void;
+    setStatusFilter: (statusFilters: WorkspaceActivityStatus[]) => void;
     clearFilters: () => void;
   };
 }
@@ -82,6 +86,9 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
   );
   const setWorkspacePrFilter = useUiPreferencesStore(
     (s) => s.setWorkspacePrFilter
+  );
+  const setWorkspaceStatusFilter = useUiPreferencesStore(
+    (s) => s.setWorkspaceStatusFilter
   );
   const clearWorkspaceFilters = useUiPreferencesStore(
     (s) => s.clearWorkspaceFilters
@@ -171,7 +178,8 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
 
   const hasActiveFilters =
     workspaceFilters.projectIds.length > 0 ||
-    workspaceFilters.prFilter !== 'all';
+    workspaceFilters.prFilter !== 'all' ||
+    workspaceFilters.statusFilters.length > 0;
   const hasNonDefaultSort =
     workspaceSort.sortBy !== DEFAULT_WORKSPACE_SORT.sortBy ||
     workspaceSort.sortOrder !== DEFAULT_WORKSPACE_SORT.sortOrder;
@@ -199,6 +207,16 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
         result = result.filter((ws) => !!ws.prStatus);
       } else if (workspaceFilters.prFilter === 'no_pr') {
         result = result.filter((ws) => !ws.prStatus);
+      }
+
+      // Status filter (running / attention / idle) — same buckets as the
+      // sidebar sections, via the shared getWorkspaceActivityStatus helper.
+      if (workspaceFilters.statusFilters.length > 0) {
+        result = result.filter((ws) =>
+          workspaceFilters.statusFilters.includes(
+            getWorkspaceActivityStatus(ws)
+          )
+        );
       }
 
       // Search filter (name or branch)
@@ -260,8 +278,10 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
     filter: {
       projectIds: workspaceFilters.projectIds,
       prFilter: workspaceFilters.prFilter,
+      statusFilters: workspaceFilters.statusFilters,
       setProjectFilter: setWorkspaceProjectFilter,
       setPrFilter: setWorkspacePrFilter,
+      setStatusFilter: setWorkspaceStatusFilter,
       clearFilters: clearWorkspaceFilters,
     },
   };

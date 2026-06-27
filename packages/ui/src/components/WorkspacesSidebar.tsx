@@ -119,6 +119,27 @@ export interface WorkspacesSidebarProps {
   isMobile?: boolean;
 }
 
+/** Coarse activity status used for sections and the status filter. */
+export type WorkspaceActivityStatus = 'running' | 'attention' | 'idle';
+
+/**
+ * Classify one workspace into a coarse activity bucket. Needs attention wins
+ * (pending approval, or unseen activity while not running); otherwise running,
+ * otherwise idle. Single source of truth for categorizeWorkspaces and the
+ * status filter so the sidebar sections and filter always agree.
+ */
+export function getWorkspaceActivityStatus(ws: {
+  isRunning?: boolean;
+  hasPendingApproval?: boolean;
+  hasUnseenActivity?: boolean;
+}): WorkspaceActivityStatus {
+  if (ws.hasPendingApproval || (ws.hasUnseenActivity && !ws.isRunning)) {
+    return 'attention';
+  }
+  if (ws.isRunning) return 'running';
+  return 'idle';
+}
+
 /**
  * Split workspaces into accordion sections in display order
  * (Needs attention → Running → Idle). Exported so containers can derive the
@@ -131,19 +152,16 @@ export function categorizeWorkspaces(
   runningWorkspaces: WorkspacesSidebarWorkspace[];
   idleWorkspaces: WorkspacesSidebarWorkspace[];
 } {
-  // Running workspaces stay in the "Running" section even if unseen.
-  const needsAttention = (ws: WorkspacesSidebarWorkspace) =>
-    ws.hasPendingApproval || (ws.hasUnseenActivity && !ws.isRunning);
-
-  return {
-    raisedHandWorkspaces: workspaces.filter((ws) => needsAttention(ws)),
-    runningWorkspaces: workspaces.filter(
-      (ws) => ws.isRunning && !needsAttention(ws)
-    ),
-    idleWorkspaces: workspaces.filter(
-      (ws) => !ws.isRunning && !needsAttention(ws)
-    ),
-  };
+  const raisedHandWorkspaces: WorkspacesSidebarWorkspace[] = [];
+  const runningWorkspaces: WorkspacesSidebarWorkspace[] = [];
+  const idleWorkspaces: WorkspacesSidebarWorkspace[] = [];
+  for (const ws of workspaces) {
+    const status = getWorkspaceActivityStatus(ws);
+    if (status === 'attention') raisedHandWorkspaces.push(ws);
+    else if (status === 'running') runningWorkspaces.push(ws);
+    else idleWorkspaces.push(ws);
+  }
+  return { raisedHandWorkspaces, runningWorkspaces, idleWorkspaces };
 }
 
 function WorkspaceList({
