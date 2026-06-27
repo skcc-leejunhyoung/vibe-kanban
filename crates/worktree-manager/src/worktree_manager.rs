@@ -92,6 +92,20 @@ impl WorktreeManager {
     ) -> Result<(), WorktreeError> {
         let path_str = worktree_path.to_string_lossy().to_string();
 
+        // Guard (volatile-temp): warn loudly if a worktree is about to be created
+        // under the OS volatile temp dir. get_worktree_base_dir already steers new
+        // worktrees to the persistent home, but a path built by a caller that
+        // bypasses it (or produced by an older binary) would otherwise be purged
+        // by macOS mid-work with no trace.
+        if utils::path::is_under_volatile_temp_dir(worktree_path) {
+            tracing::warn!(
+                "Worktree path '{}' is under the volatile system temp dir ($TMPDIR); \
+                 macOS may purge it mid-work. Expected the persistent \
+                 '~/.vibe-kanban/worktrees' base.",
+                path_str
+            );
+        }
+
         // Get or create a lock for this specific worktree path
         let lock = {
             let mut locks = WORKTREE_CREATION_LOCKS.lock().unwrap();
@@ -509,12 +523,37 @@ impl WorktreeManager {
 
     /// Get the base directory for vibe-kanban worktrees
     pub fn get_worktree_base_dir() -> std::path::PathBuf {
-        if let Some(override_path) = WORKSPACE_DIR_OVERRIDE.get() {
+        let base = if let Some(override_path) = WORKSPACE_DIR_OVERRIDE.get() {
             // Always use app-owned subdirectory within custom path for safety.
             // This ensures orphan cleanup never touches user's existing folders.
-            return override_path.join(".vibe-kanban-workspaces");
+            override_path.join(".vibe-kanban-workspaces")
+        } else {
+            Self::get_default_worktree_base_dir()
+        };
+
+        // Safety net: never hand back a base under the OS volatile temp dir
+        // ($TMPDIR / /var/folders/.../T on macOS). macOS periodically purges it,
+        // silently deleting in-progress worktrees (.git, lockfiles, venvs). If the
+        // base ever resolves there — an override pointed at $TMPDIR, or a home-dir
+        // lookup that fell back to temp — redirect to the persistent home.
+        if utils::path::is_under_volatile_temp_dir(&base) {
+            let safe = Self::get_default_worktree_base_dir();
+            if !utils::path::is_under_volatile_temp_dir(&safe) {
+                tracing::warn!(
+                    "Worktree base '{}' is under the volatile system temp dir; \
+                     redirecting to persistent '{}' to avoid tmp-cleanup data loss",
+                    base.display(),
+                    safe.display()
+                );
+                return safe;
+            }
+            tracing::warn!(
+                "Worktree base '{}' is under the volatile system temp dir and no \
+                 persistent home is available; worktrees may be purged by the OS",
+                base.display()
+            );
         }
-        Self::get_default_worktree_base_dir()
+        base
     }
 
     /// Get the default base directory (ignoring any override).

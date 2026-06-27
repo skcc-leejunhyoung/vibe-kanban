@@ -113,7 +113,10 @@ pub fn get_vibe_kanban_temp_dir() -> std::path::PathBuf {
     };
 
     if cfg!(target_os = "macos") {
-        // macOS already uses /var/folders/... which is persistent storage
+        // macOS $TMPDIR is /var/folders/.../T — the *volatile* temp area that
+        // dirhelper/tmp_cleaner purges after a few days of no access. Use it only
+        // for genuinely disposable data; persistent worktrees/state belong under
+        // get_vibe_kanban_home_dir() (guard via is_under_volatile_temp_dir).
         std::env::temp_dir().join(dir_name)
     } else if cfg!(target_os = "linux") {
         // Linux: use /var/tmp instead of /tmp to avoid RAM usage
@@ -140,6 +143,21 @@ pub fn get_vibe_kanban_home_dir() -> std::path::PathBuf {
     dirs::home_dir()
         .map(|home| home.join(dir_name))
         .unwrap_or_else(get_vibe_kanban_temp_dir)
+}
+
+/// Returns `true` when `path` resides under the OS *volatile* temp directory —
+/// macOS `$TMPDIR` (`/var/folders/.../T`), or the system temp dir elsewhere.
+///
+/// macOS periodically purges `$TMPDIR` (via `dirhelper`/`tmp_cleaner`), silently
+/// deleting files untouched for a few days. Long-running git worktrees placed
+/// there lose `.git`, lockfiles and venvs mid-work, so callers creating
+/// persistent state must avoid (or redirect away from) such paths. Comparison
+/// normalizes the macOS `/private` alias so `/private/var/folders/...` and
+/// `/var/folders/...` match.
+pub fn is_under_volatile_temp_dir<P: AsRef<Path>>(path: P) -> bool {
+    let path = normalize_macos_private_alias(path.as_ref());
+    let temp = normalize_macos_private_alias(std::env::temp_dir());
+    path.starts_with(&temp)
 }
 
 /// Expand leading ~ to user's home directory.
@@ -193,5 +211,35 @@ mod tests {
             make_path_relative(&path_under_var, &worktree_private),
             "hello-world.txt"
         );
+    }
+
+    #[test]
+    fn test_is_under_volatile_temp_dir() {
+        let temp = std::env::temp_dir();
+        // Anything inside the system temp dir is volatile.
+        assert!(is_under_volatile_temp_dir(
+            temp.join("vibe-kanban/worktrees/foo")
+        ));
+        // A clearly persistent path is not.
+        assert!(!is_under_volatile_temp_dir("/Users/someone/VSC/c2"));
+        // The home worktree base must not be flagged (would defeat the redirect).
+        if let Some(home) = dirs::home_dir() {
+            if !home.starts_with(&temp) {
+                assert!(!is_under_volatile_temp_dir(
+                    home.join(".vibe-kanban/worktrees/foo")
+                ));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_is_under_volatile_temp_dir_private_alias() {
+        // The /private alias of $TMPDIR must still be detected as volatile, since
+        // git/worktree paths frequently surface as /private/var/folders/...
+        let temp = std::env::temp_dir();
+        let private =
+            PathBuf::from(format!("/private{}", temp.display())).join("vibe-kanban/worktrees/ef34");
+        assert!(is_under_volatile_temp_dir(&private));
     }
 }
