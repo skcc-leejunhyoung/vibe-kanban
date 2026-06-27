@@ -39,6 +39,14 @@ struct RelayParams {
 /// Resolve all preconditions for starting the relay. Returns `None` if any
 /// requirement is missing (config, env, login, server info).
 async fn resolve_relay_params(deployment: &DeploymentImpl) -> Option<RelayParams> {
+    // The dev backend (pnpm run dev) sets this so it never registers on the
+    // relay. machine_id == user_id (see below), so a dev server would otherwise
+    // claim the same relay host as the production menubar server on this
+    // machine, making remote-web routing flap between the two.
+    if std::env::var("VK_DISABLE_RELAY").is_ok() {
+        tracing::debug!("Relay disabled via VK_DISABLE_RELAY env");
+        return None;
+    }
     let config = deployment.config().read().await;
     if !config.relay_enabled {
         tracing::debug!("Relay disabled by config");
