@@ -99,7 +99,9 @@ export default defineConfig({
     ],
   },
   server: {
-    port: 3002,
+    // Honor REMOTE_FRONTEND_PORT (set by the `dev:web` script) so remote-web
+    // can run alongside local-web; falls back to 3002 when run standalone.
+    port: parseInt(process.env.REMOTE_FRONTEND_PORT || "3002", 10),
     allowedHosts: [
       ".trycloudflare.com", // allow all cloudflared tunnels
     ],
