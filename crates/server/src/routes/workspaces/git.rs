@@ -561,6 +561,15 @@ pub async fn force_push_workspace_branch(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<PushWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), PushError>>, ApiError> {
+    // SAFETY: in-place ("quick chat") workspaces run on the user's actual branch;
+    // a force-push would rewrite the remote history of their real branch.
+    if workspace.in_place {
+        return Err(ApiError::BadRequest(
+            "Force-push isn't available for quick chats — they run on your existing branch."
+                .to_string(),
+        ));
+    }
+
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -1035,6 +1044,15 @@ pub async fn rename_branch(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<RenameBranchRequest>,
 ) -> Result<ResponseJson<ApiResponse<RenameBranchResponse, RenameBranchError>>, ApiError> {
+    // SAFETY: in-place ("quick chat") workspaces run on the user's actual branch;
+    // renaming it would rename their real branch out from under them.
+    if workspace.in_place {
+        return Err(ApiError::BadRequest(
+            "Renaming the branch isn't available for quick chats — they run on your existing branch."
+                .to_string(),
+        ));
+    }
+
     let new_branch_name = payload.new_branch_name.trim();
 
     if new_branch_name.is_empty() {

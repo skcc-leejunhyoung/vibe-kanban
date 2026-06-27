@@ -95,9 +95,15 @@ function CommandBarContent({
             hasWorkspace: true,
             workspaceArchived:
               workspace?.archived ?? visibilityContext.workspaceArchived,
+            isInPlace: workspace?.in_place ?? visibilityContext.isInPlace,
           }
         : visibilityContext,
-    [effectiveWorkspaceId, visibilityContext, workspace?.archived]
+    [
+      effectiveWorkspaceId,
+      visibilityContext,
+      workspace?.archived,
+      workspace?.in_place,
+    ]
   );
 
   // State machine

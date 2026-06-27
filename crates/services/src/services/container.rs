@@ -691,6 +691,12 @@ pub trait ContainerService {
             .await?
             .ok_or_else(|| ContainerError::Other(anyhow!("Workspace not found")))?;
 
+        // SAFETY: in-place ("quick chat") runs in the user's real checkout. A hard
+        // `git reset` would discard their uncommitted work, so never reset the tree
+        // for in-place — regardless of what the caller requested. (History-only
+        // bookkeeping below still runs so retry/restore navigation works.)
+        let perform_git_reset = perform_git_reset && !workspace.in_place;
+
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
         let repo_states =
             ExecutionProcessRepoState::find_by_execution_process_id(pool, target_process_id)

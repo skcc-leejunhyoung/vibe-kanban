@@ -118,6 +118,8 @@ export interface ActionVisibilityContext {
   // Workspace state
   hasWorkspace: boolean;
   workspaceArchived: boolean;
+  /** Quick-chat ("in-place") workspace — runs on the user's existing branch. */
+  isInPlace: boolean;
 
   // Diff state
   hasDiffs: boolean;
@@ -238,11 +240,27 @@ export function isSpecialIcon(icon: ActionIcon): icon is SpecialIconType {
   return icon === 'ide-icon' || icon === 'copy-icon';
 }
 
+// Branch-integration actions hidden for in-place ("quick chat") workspaces: they
+// run directly on the user's existing branch (branch == target, no `vk/`
+// worktree), so opening a PR (head == base), merging, or rebasing onto itself is
+// meaningless. Remote-sync actions (pull / push / update-from-base / change
+// target), commit, and repo-utility actions (open in IDE, settings) stay
+// available — they operate normally on the existing branch.
+const IN_PLACE_HIDDEN_ACTION_IDS = new Set<string>([
+  'git-create-pr',
+  'git-link-pr',
+  'git-merge',
+  'git-rebase',
+]);
+
 // Pure action helper functions
 export function isActionVisible(
   action: ActionDefinition,
   ctx: ActionVisibilityContext
 ): boolean {
+  if (ctx.isInPlace && IN_PLACE_HIDDEN_ACTION_IDS.has(action.id)) {
+    return false;
+  }
   return action.isVisible ? action.isVisible(ctx) : true;
 }
 

@@ -167,13 +167,32 @@ impl ManagedWorkspace {
     }
 
     pub async fn prepare_deletion_context(&self) -> Result<WorkspaceDeletionContext, sqlx::Error> {
-        let repositories =
-            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, self.workspace.id).await?;
         let session_ids = Session::find_by_workspace_id(&self.db.pool, self.workspace.id)
             .await?
             .into_iter()
             .map(|session| session.id)
             .collect::<Vec<_>>();
+
+        // SAFETY: an in-place ("quick chat") workspace's `container_ref` IS the
+        // user's real checkout, and `branch` is the branch they actually have
+        // checked out. Deleting it must ONLY remove session process logs — never
+        // the directory and never the branch. Zero out `workspace_dir` and
+        // `repo_paths` so `spawn_workspace_deletion_cleanup` is structurally
+        // incapable of `remove_dir_all`-ing the repo or deleting the branch,
+        // regardless of the `delete_branches` flag or which caller invokes it.
+        if self.workspace.in_place {
+            return Ok(WorkspaceDeletionContext {
+                workspace_id: self.workspace.id,
+                branch_name: self.workspace.branch.clone(),
+                workspace_dir: None,
+                repositories: Vec::new(),
+                repo_paths: Vec::new(),
+                session_ids,
+            });
+        }
+
+        let repositories =
+            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, self.workspace.id).await?;
         let repo_paths = repositories
             .iter()
             .map(|repo| repo.path.clone())

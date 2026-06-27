@@ -135,6 +135,7 @@ export function useActionVisibilityContext(
       isCreateMode,
       hasWorkspace: !!workspace,
       workspaceArchived: workspace?.archived ?? false,
+      isInPlace: workspace?.in_place ?? false,
       hasDiffs: diffPathsSet.size > 0,
       diffViewMode,
       isAllDiffsExpanded,
