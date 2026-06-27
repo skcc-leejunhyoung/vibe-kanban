@@ -444,7 +444,13 @@ pub async fn commit_workspace(
         .ensure_container_exists(&workspace)
         .await?;
     let workspace_path = Path::new(&container_ref);
-    let worktree_path = workspace_path.join(&repo.name);
+    // In-place ("quick chat") workspaces run in the repo root itself, so the
+    // worktree path IS `container_ref` rather than a per-repo subdir.
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        workspace_path.join(&repo.name)
+    };
 
     // Refuse to commit while the worktree is mid-rebase or has unresolved
     // conflicts — committing there would capture a half-resolved state.
@@ -523,7 +529,13 @@ pub async fn push_workspace_branch(
         .ensure_container_exists(&workspace)
         .await?;
     let workspace_path = Path::new(&container_ref);
-    let worktree_path = workspace_path.join(&repo.name);
+    // In-place ("quick chat") workspaces run in the repo root itself, so the
+    // worktree path IS `container_ref` rather than a per-repo subdir.
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        workspace_path.join(&repo.name)
+    };
 
     match deployment
         .git()
@@ -879,7 +891,13 @@ pub async fn get_workspace_branch_status(
             continue;
         }
 
-        let worktree_path = workspace_dir.as_ref().map(|dir| dir.join(&repo.name));
+        // In-place ("quick chat") workspaces run in the repo root itself, so the
+        // worktree path IS `container_ref` rather than a per-repo subdir.
+        let worktree_path = if workspace.in_place {
+            workspace_dir.clone()
+        } else {
+            workspace_dir.as_ref().map(|dir| dir.join(&repo.name))
+        };
 
         let head_oid = worktree_path
             .as_ref()

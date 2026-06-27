@@ -125,7 +125,14 @@ pub async fn start_dev_server(
                 script: repo.dev_server_script.clone().unwrap(),
                 language: ScriptRequestLanguage::Bash,
                 context: ScriptContext::DevServer,
-                working_dir: Some(repo.name.clone()),
+                // In-place ("quick chat") workspaces run in the repo root itself
+                // (`container_ref` IS the repo), so there is no per-repo subdir to
+                // descend into — run the dev script at the root.
+                working_dir: if workspace.in_place {
+                    None
+                } else {
+                    Some(repo.name.clone())
+                },
             }),
             None,
         );
