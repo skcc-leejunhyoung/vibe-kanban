@@ -8,6 +8,7 @@ import {
   KanbanIcon,
   DownloadSimpleIcon,
   BellIcon,
+  LightningIcon,
 } from '@phosphor-icons/react';
 import { SyncErrorProvider } from '@/shared/providers/SyncErrorProvider';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
@@ -405,6 +406,19 @@ export function SharedAppLayout() {
             >
               <LayoutIcon className="h-4 w-4" />
               Workspaces
+            </button>
+
+            {/* Quick chat link */}
+            <button
+              type="button"
+              onClick={() => {
+                void QuickChatDialog.show();
+                setIsDrawerOpen(false);
+              }}
+              className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+            >
+              <LightningIcon className="h-4 w-4" />
+              Quick chat
             </button>
 
             {/* Notifications link */}
