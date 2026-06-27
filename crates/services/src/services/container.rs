@@ -944,7 +944,13 @@ pub trait ContainerService {
                     }
                 };
 
-            if let Err(err) = self.ensure_container_exists(&workspace).await {
+            // A worktree-deleted workspace (archived / cleaned up) only needs its
+            // stored logs here. Don't recreate its checkout: that can fail
+            // indefinitely when its branch is now held by another worktree, which
+            // spun a fail-retry loop. Normalize against whatever directory we have.
+            if !workspace.worktree_deleted
+                && let Err(err) = self.ensure_container_exists(&workspace).await
+            {
                 tracing::warn!(
                     "Failed to recreate worktree before log normalization for workspace {}: {}",
                     workspace.id,

@@ -2642,6 +2642,15 @@ impl ContainerService for LocalContainerService {
 
         let mut streams = Vec::new();
 
+        // A worktree-deleted workspace (archived / cleaned up) has no live
+        // checkout to diff. Recreating it here is undesirable (it's archived)
+        // and can fail indefinitely when its branch is now held by another
+        // worktree — which spun a fail-retry loop in the diff WS. Show an empty
+        // diff instead. In-place workspaces never have a deletable worktree.
+        if workspace.worktree_deleted && !workspace.in_place {
+            return Ok(Box::pin(futures::stream::empty()));
+        }
+
         let container_ref = self.ensure_container_exists(workspace).await?;
         let workspace_root = PathBuf::from(container_ref);
 
