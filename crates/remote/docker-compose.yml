@@ -218,4 +218,10 @@ volumes:
   remote-db-data:
   electric-data:
   azurite-data:
+  # Reuse the standalone worker's existing volume so connectors, rules, tokens
+  # and the GitHub seenIds set carry over on cutover (no re-import / re-config).
+  # `external` means compose never creates or deletes it: the data outlives the
+  # stack and the volume must already exist (it does — the standalone worker's).
   automation-worker-data:
+    external: true
+    name: automation-worker_automation-worker-data
