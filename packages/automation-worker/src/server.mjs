@@ -84,6 +84,10 @@ const defaultGithubRuleScript = `async function handle(event, ctx) {
 }`;
 
 const defaultState = {
+  // Master switch. When false, scheduleAll() installs no poll timers, so the
+  // worker stays up (and configurable from the Vibe Kanban settings page) but
+  // does no polling/rule work. This is the "turn the worker off" control in the UI.
+  enabled: true,
   connectors: [
     {
       id: 'slack-default',
@@ -198,6 +202,7 @@ async function bootstrap() {
 }
 
 function ensureDefaults() {
+  if (typeof state.enabled !== 'boolean') state.enabled = true;
   state.connectors ||= [];
   state.rules ||= [];
   state.retryQueue ||= [];
@@ -215,8 +220,21 @@ function ensureDefaults() {
 
 async function route(req, res) {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  // Health probe for container orchestration. No auth: it exposes no state and
+  // must answer before the admin token is wired up downstream.
+  if (url.pathname === '/health' && req.method === 'GET') {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // The worker no longer ships its own web UI — it is configured from the Vibe
+  // Kanban settings page, which proxies the /api/* routes below. Root just
+  // points there instead of serving an editor.
   if (url.pathname === '/' && req.method === 'GET') {
-    sendHtml(res, pageHtml());
+    sendJson(res, 200, {
+      service: 'vibe-automation-worker',
+      managedBy: 'Vibe Kanban settings',
+    });
     return;
   }
 
@@ -231,6 +249,18 @@ async function route(req, res) {
   }
 
   if (url.pathname === '/api/state' && req.method === 'GET') {
+    sendState(res);
+    return;
+  }
+
+  // Master on/off switch (the "disable the worker" control in the settings UI).
+  // Off leaves the worker running but installs no poll timers (see scheduleAll).
+  if (url.pathname === '/api/settings' && req.method === 'PATCH') {
+    const patch = await readBodyJson(req);
+    if ('enabled' in patch) state.enabled = Boolean(patch.enabled);
+    await persistState();
+    scheduleAll();
+    await log('info', 'worker settings updated', { enabled: state.enabled });
     sendState(res);
     return;
   }
@@ -496,6 +526,9 @@ function findRule(id) {
 function scheduleAll() {
   for (const timer of timers.values()) clearInterval(timer);
   timers.clear();
+
+  // Master switch off: leave every timer cleared so the worker idles.
+  if (state.enabled === false) return;
 
   for (const connector of state.connectors) {
     if (!connector.enabled || !POLLABLE_TYPES.has(connector.type)) continue;
@@ -1381,11 +1414,6 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-function sendHtml(res, html) {
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(html);
-}
-
 function slug(value) {
   return String(value || '')
     .trim()
@@ -1428,330 +1456,4 @@ function withTimeout(promise, ms, message) {
 
 function maxSlackTs(a, b) {
   return Number(a || 0) >= Number(b || 0) ? a : b;
-}
-
-function pageHtml() {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Automation Worker</title>
-  <style>
-    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f6f6f3; color: #1d1d1b; }
-    header { height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid #d9d8d1; background: #fff; }
-    h1 { font-size: 16px; margin: 0; font-weight: 650; }
-    main { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 55px); }
-    nav { border-right: 1px solid #d9d8d1; padding: 14px; background: #fbfbf8; }
-    nav button { width: 100%; display: block; text-align: left; margin-bottom: 8px; padding: 9px 10px; border: 1px solid #d1d0c8; border-radius: 6px; background: #fff; color: inherit; cursor: pointer; }
-    nav button.active { border-color: #2b65d9; background: #eef4ff; }
-    section { padding: 18px; display: none; }
-    section.active { display: block; }
-    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-    button, input, select, textarea { font: inherit; }
-    button.primary { background: #1f5fcf; color: white; border-color: #1f5fcf; }
-    button.danger { color: #9d1d20; }
-    button { border: 1px solid #c9c7bd; border-radius: 6px; background: #fff; padding: 8px 10px; cursor: pointer; }
-    input, select, textarea { box-sizing: border-box; border: 1px solid #c9c7bd; border-radius: 6px; background: #fff; color: inherit; padding: 8px; }
-    textarea { width: 100%; min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; }
-    .grid { display: grid; grid-template-columns: 260px 1fr; gap: 12px; }
-    .list { border: 1px solid #d9d8d1; border-radius: 8px; background: #fff; overflow: hidden; }
-    .row { padding: 10px; border-bottom: 1px solid #ecebe5; cursor: pointer; }
-    .row:last-child { border-bottom: 0; }
-    .row.selected { background: #eef4ff; }
-    .muted { color: #676762; font-size: 12px; }
-    .pill { display: inline-block; border-radius: 999px; padding: 2px 7px; font-size: 11px; border: 1px solid #d0cec4; margin-left: 6px; }
-    .enabled { color: #0b6b35; }
-    .disabled { color: #8a5a00; }
-    .form { display: grid; gap: 8px; }
-    .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-    pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 12px; }
-    .log { border-bottom: 1px solid #ecebe5; padding: 10px; }
-    .error { color: #9d1d20; }
-    .warn { color: #8a5a00; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #181816; color: #ecebe5; }
-      header, nav, .list, button, input, select, textarea { background: #20201d; border-color: #3a3933; }
-      nav button.active, .row.selected { background: #1e335c; }
-      .muted { color: #aaa79b; }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Automation Worker</h1>
-    <div class="toolbar">
-      <input id="token" placeholder="Admin token" style="width: 180px">
-      <button onclick="saveToken()">Set token</button>
-      <button onclick="load()">Refresh</button>
-    </div>
-  </header>
-  <main>
-    <nav>
-      <button class="active" onclick="tab('connectors')">Connectors</button>
-      <button onclick="tab('rules')">Rules</button>
-      <button onclick="tab('retries')">Retries</button>
-      <button onclick="tab('logs')">Logs</button>
-      <p class="muted">Edit connectors and JavaScript rules here. Changes are saved to /data/state.json.</p>
-    </nav>
-    <section id="connectors" class="active">
-      <div class="toolbar">
-        <button class="primary" onclick="newConnector('slack')">Add Slack</button>
-        <button class="primary" onclick="newConnector('vibe_kanban')">Add Vibe Kanban</button>
-        <button class="primary" onclick="newConnector('github')">Add GitHub</button>
-        <button onclick="pollSelected()">Poll selected</button>
-      </div>
-      <div class="grid">
-        <div id="connectorList" class="list"></div>
-        <div class="form">
-          <div class="split">
-            <input id="connectorId" placeholder="id">
-            <input id="connectorName" placeholder="name">
-          </div>
-          <div class="split">
-            <select id="connectorType">
-              <option value="slack">slack</option>
-              <option value="vibe_kanban">vibe_kanban</option>
-              <option value="github">github</option>
-            </select>
-            <select id="connectorEnabled">
-              <option value="true">enabled</option>
-              <option value="false">disabled</option>
-            </select>
-          </div>
-          <textarea id="connectorConfig" spellcheck="false"></textarea>
-          <div class="toolbar">
-            <button class="primary" onclick="saveConnector()">Save connector</button>
-            <button class="danger" onclick="deleteConnector()">Delete</button>
-          </div>
-        </div>
-      </div>
-    </section>
-    <section id="rules">
-      <div class="toolbar">
-        <button class="primary" onclick="newRule()">Add rule</button>
-        <button onclick="testEvent()">Run test event</button>
-      </div>
-      <div class="grid">
-        <div id="ruleList" class="list"></div>
-        <div class="form">
-          <div class="split">
-            <input id="ruleId" placeholder="id">
-            <input id="ruleName" placeholder="name">
-          </div>
-          <select id="ruleEnabled">
-            <option value="true">enabled</option>
-            <option value="false">disabled</option>
-          </select>
-          <textarea id="ruleScript" spellcheck="false"></textarea>
-          <div class="toolbar">
-            <button class="primary" onclick="saveRule()">Save rule</button>
-            <button class="danger" onclick="deleteRule()">Delete</button>
-          </div>
-        </div>
-      </div>
-    </section>
-    <section id="retries">
-      <div class="toolbar">
-        <button class="primary" onclick="processRetries(false)">Retry due now</button>
-        <button onclick="processRetries(true)">Retry exhausted too</button>
-        <button onclick="loadRetries()">Refresh</button>
-        <span class="muted">Failed registrations re-attempt automatically each poll (backoff). "Retry exhausted too" forces leftover misses that hit the attempt cap.</span>
-      </div>
-      <div id="retryList" class="list"></div>
-    </section>
-    <section id="logs">
-      <div id="logList" class="list"></div>
-    </section>
-  </main>
-  <script>
-    let state = { connectors: [], rules: [] };
-    let selectedConnector = null;
-    let selectedRule = null;
-    const tokenInput = document.getElementById('token');
-    tokenInput.value = localStorage.getItem('automationToken') || '';
-
-    function headers() {
-      const token = localStorage.getItem('automationToken') || '';
-      return token ? { authorization: 'Bearer ' + token } : {};
-    }
-    function saveToken() {
-      localStorage.setItem('automationToken', tokenInput.value);
-      load();
-    }
-    function tab(id) {
-      document.querySelectorAll('nav button').forEach((button) => button.classList.remove('active'));
-      event.target.classList.add('active');
-      document.querySelectorAll('section').forEach((section) => section.classList.remove('active'));
-      document.getElementById(id).classList.add('active');
-      if (id === 'logs') loadLogs();
-      if (id === 'retries') loadRetries();
-    }
-    async function api(path, options = {}) {
-      const response = await fetch(path, {
-        ...options,
-        headers: { 'content-type': 'application/json', ...headers(), ...(options.headers || {}) },
-      });
-      if (!response.ok) throw new Error(await response.text());
-      return response.json();
-    }
-    async function load() {
-      state = await api('/api/state');
-      renderConnectors();
-      renderRules();
-      loadLogs();
-    }
-    function renderConnectors() {
-      const root = document.getElementById('connectorList');
-      root.innerHTML = state.connectors.map((connector) => '<div class="row ' + (connector.id === selectedConnector ? 'selected' : '') + '" data-connector-id="' + escapeHtml(connector.id) + '"><strong>' + escapeHtml(connector.name) + '</strong><span class="pill">' + escapeHtml(connector.type) + '</span><div class="muted ' + (connector.enabled ? 'enabled' : 'disabled') + '">' + (connector.enabled ? 'enabled' : 'disabled') + ' · ' + escapeHtml(connector.id) + '</div></div>').join('');
-      if (!selectedConnector && state.connectors[0]) selectConnector(state.connectors[0].id);
-    }
-    function selectConnector(id) {
-      selectedConnector = id;
-      const connector = state.connectors.find((item) => item.id === id);
-      if (!connector) return;
-      document.getElementById('connectorId').value = connector.id;
-      document.getElementById('connectorName').value = connector.name;
-      document.getElementById('connectorType').value = connector.type;
-      document.getElementById('connectorEnabled').value = String(Boolean(connector.enabled));
-      document.getElementById('connectorConfig').value = JSON.stringify(connector.config || {}, null, 2);
-      renderConnectors();
-    }
-    function newConnector(type) {
-      selectedConnector = null;
-      const names = { slack: 'Slack channel polling', vibe_kanban: 'Vibe Kanban issue creator', github: 'GitHub issue poller' };
-      const configs = {
-        slack: { token: '', channelId: '', intervalSeconds: 60, cursorTs: '0', limit: 25 },
-        vibe_kanban: { baseUrl: '', tokenUrl: '', bearerToken: '', projectId: '', statusId: '' },
-        github: { token: '', owner: '', repo: '', filter: 'assigned', state: 'open', intervalSeconds: 120, cursorTs: '', seenIds: [], limit: 50, includePullRequests: false, reviewPrs: false, backfill: false },
-      };
-      document.getElementById('connectorId').value = type + '-' + Math.random().toString(16).slice(2, 8);
-      document.getElementById('connectorName').value = names[type] || type;
-      document.getElementById('connectorType').value = type;
-      document.getElementById('connectorEnabled').value = 'false';
-      document.getElementById('connectorConfig').value = JSON.stringify(configs[type] || {}, null, 2);
-    }
-    async function saveConnector() {
-      const connector = {
-        id: document.getElementById('connectorId').value.trim(),
-        name: document.getElementById('connectorName').value.trim(),
-        type: document.getElementById('connectorType').value,
-        enabled: document.getElementById('connectorEnabled').value === 'true',
-        config: JSON.parse(document.getElementById('connectorConfig').value || '{}'),
-      };
-      state = await api('/api/connectors', { method: 'POST', body: JSON.stringify(connector) });
-      selectedConnector = connector.id;
-      renderConnectors();
-    }
-    async function deleteConnector() {
-      if (!selectedConnector || !confirm('Delete connector?')) return;
-      state = await api('/api/connectors/' + encodeURIComponent(selectedConnector), { method: 'DELETE' });
-      selectedConnector = null;
-      renderConnectors();
-    }
-    async function pollSelected() {
-      if (!selectedConnector) return;
-      await api('/api/poll/' + encodeURIComponent(selectedConnector), { method: 'POST' });
-      await load();
-    }
-    function renderRules() {
-      const root = document.getElementById('ruleList');
-      root.innerHTML = state.rules.map((rule) => '<div class="row ' + (rule.id === selectedRule ? 'selected' : '') + '" data-rule-id="' + escapeHtml(rule.id) + '"><strong>' + escapeHtml(rule.name) + '</strong><div class="muted ' + (rule.enabled ? 'enabled' : 'disabled') + '">' + (rule.enabled ? 'enabled' : 'disabled') + ' · ' + escapeHtml(rule.id) + '</div></div>').join('');
-      if (!selectedRule && state.rules[0]) selectRule(state.rules[0].id);
-    }
-    function selectRule(id) {
-      selectedRule = id;
-      const rule = state.rules.find((item) => item.id === id);
-      if (!rule) return;
-      document.getElementById('ruleId').value = rule.id;
-      document.getElementById('ruleName').value = rule.name;
-      document.getElementById('ruleEnabled').value = String(Boolean(rule.enabled));
-      document.getElementById('ruleScript').value = rule.script || '';
-      renderRules();
-    }
-    function newRule() {
-      selectedRule = null;
-      document.getElementById('ruleId').value = 'rule-' + Math.random().toString(16).slice(2, 8);
-      document.getElementById('ruleName').value = 'Untitled rule';
-      document.getElementById('ruleEnabled').value = 'true';
-      document.getElementById('ruleScript').value = 'async function handle(event, ctx) {\\n  ctx.log("info", "event received", { event });\\n}';
-    }
-    async function saveRule() {
-      const rule = {
-        id: document.getElementById('ruleId').value.trim(),
-        name: document.getElementById('ruleName').value.trim(),
-        enabled: document.getElementById('ruleEnabled').value === 'true',
-        script: document.getElementById('ruleScript').value,
-      };
-      state = await api('/api/rules', { method: 'POST', body: JSON.stringify(rule) });
-      selectedRule = rule.id;
-      renderRules();
-    }
-    async function deleteRule() {
-      if (!selectedRule || !confirm('Delete rule?')) return;
-      state = await api('/api/rules/' + encodeURIComponent(selectedRule), { method: 'DELETE' });
-      selectedRule = null;
-      renderRules();
-    }
-    async function testEvent() {
-      await api('/api/test-event', {
-        method: 'POST',
-        body: JSON.stringify({
-          source: 'slack',
-          type: 'message',
-          connectorId: 'manual-test',
-          channelId: 'test',
-          text: '#issue Test issue | Created from the test event button',
-          ts: String(Date.now() / 1000),
-        }),
-      });
-      await loadLogs();
-    }
-    async function loadRetries() {
-      const items = await api('/api/retry-queue');
-      const root = document.getElementById('retryList');
-      if (!items.length) {
-        root.innerHTML = '<p class="muted">No items queued for retry.</p>';
-        return;
-      }
-      root.innerHTML = items.map((item) => '<div class="log"><strong class="' + (item.status === 'exhausted' ? 'error' : 'warn') + '">' + item.status.toUpperCase() + '</strong> <span class="muted">' + escapeHtml(item.ruleId) + ' · ' + (item.attempts || 0) + '/' + (item.maxAttempts || 0) + ' attempts</span><div>' + escapeHtml(item.label || '(no title)') + '</div><div class="muted">' + escapeHtml(item.lastError || '') + '</div><div class="toolbar"><button data-retry-discard="' + escapeHtml(item.id) + '">Discard</button></div></div>').join('');
-    }
-    async function processRetries(includeExhausted) {
-      const result = await api('/api/retry-queue/process', {
-        method: 'POST',
-        body: JSON.stringify({ includeExhausted }),
-      });
-      await loadRetries();
-      await loadLogs();
-      alert('Retried ' + result.retried + ' · succeeded ' + result.succeeded + ' · failed ' + result.failed + ' · exhausted ' + result.exhausted + ' · remaining ' + result.remaining);
-    }
-    async function discardRetry(id) {
-      if (!confirm('Discard this retry item?')) return;
-      await api('/api/retry-queue/' + encodeURIComponent(id), { method: 'DELETE' });
-      await loadRetries();
-    }
-    async function loadLogs() {
-      const items = await api('/api/logs');
-      document.getElementById('logList').innerHTML = items.map((item) => '<div class="log"><strong class="' + item.level + '">' + item.level.toUpperCase() + '</strong> <span class="muted">' + item.ts + '</span><div>' + escapeHtml(item.message) + '</div><pre>' + escapeHtml(JSON.stringify(item.meta || {}, null, 2)) + '</pre></div>').join('');
-    }
-    function escapeHtml(value) {
-      return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-    }
-    document.getElementById('connectorList').addEventListener('click', (clickEvent) => {
-      const row = clickEvent.target.closest('[data-connector-id]');
-      if (row) selectConnector(row.getAttribute('data-connector-id'));
-    });
-    document.getElementById('ruleList').addEventListener('click', (clickEvent) => {
-      const row = clickEvent.target.closest('[data-rule-id]');
-      if (row) selectRule(row.getAttribute('data-rule-id'));
-    });
-    document.getElementById('retryList').addEventListener('click', (clickEvent) => {
-      const button = clickEvent.target.closest('[data-retry-discard]');
-      if (button) discardRetry(button.getAttribute('data-retry-discard'));
-    });
-    load().catch((error) => alert(error.message));
-  </script>
-</body>
-</html>`;
 }

@@ -36,7 +36,9 @@
         "remote-projects": "Projects",
         "remote-projectsDesc": "Manage projects",
         "relay": "Remote Access",
-        "relayDesc": "Relay tunnel and enrollment"
+        "relayDesc": "Relay tunnel and enrollment",
+        "automation": "Automation",
+        "automationDesc": "Connectors and rules for the automation worker"
       }
     },
     "keyboardShortcuts": {

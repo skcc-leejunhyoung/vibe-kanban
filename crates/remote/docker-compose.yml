@@ -186,7 +186,36 @@ services:
       retries: 10
       start_period: 10s
 
+  # Standalone automation worker (packages/automation-worker). Opt-in via the
+  # `automation` profile so a .env.remote without ADMIN_TOKEN doesn't break the
+  # core stack. It is configured from the Vibe Kanban settings page, which the
+  # local server proxies to this container (default 127.0.0.1:8787).
+  automation-worker:
+    profiles: ["automation"]
+    build:
+      context: ../..
+      dockerfile: packages/automation-worker/Dockerfile
+    environment:
+      PORT: 8787
+      HOST: 0.0.0.0
+      AUTOMATION_DATA_DIR: /data
+      # Required: the worker refuses to start without a token (rules run as
+      # trusted code, so the token is the gate). Set ADMIN_TOKEN in .env.remote.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    ports:
+      - "${AUTOMATION_WORKER_PORTS:-127.0.0.1:8787:8787}"
+    restart: unless-stopped
+    volumes:
+      - automation-worker-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8787/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   remote-db-data:
   electric-data:
   azurite-data:
+  automation-worker-data:

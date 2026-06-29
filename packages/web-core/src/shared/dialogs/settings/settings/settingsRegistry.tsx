@@ -8,6 +8,7 @@ import {
   BroadcastIcon,
   BellIcon,
   KeyboardIcon,
+  RobotIcon,
 } from '@phosphor-icons/react';
 import type { Icon } from '@phosphor-icons/react';
 import { GeneralSettingsSection } from './GeneralSettingsSection';
@@ -19,6 +20,7 @@ import { McpSettingsSection } from './McpSettingsSection';
 import { RelaySettingsSectionContent } from './RelaySettingsSection';
 import { AccountNotificationsSettingsSection } from './AccountNotificationsSettingsSection';
 import { KeyboardShortcutsSettingsSection } from './KeyboardShortcutsSettingsSection';
+import { AutomationSettingsSection } from './AutomationSettingsSection';
 
 export type SettingsSectionType =
   | 'general'
@@ -29,7 +31,8 @@ export type SettingsSectionType =
   | 'agents'
   | 'mcp'
   | 'relay'
-  | 'keyboard-shortcuts';
+  | 'keyboard-shortcuts'
+  | 'automation';
 
 export type SettingsSectionGroup = 'host' | 'universal';
 
@@ -45,6 +48,7 @@ export type SettingsSectionInitialState = {
   mcp: undefined;
   relay: { hostId?: string } | undefined;
   'keyboard-shortcuts': undefined;
+  automation: undefined;
 };
 
 export interface SettingsSectionDefinition {
@@ -58,6 +62,7 @@ export const SETTINGS_SECTION_DEFINITIONS: SettingsSectionDefinition[] = [
   { id: 'repos', icon: GitBranchIcon, group: 'host' },
   { id: 'agents', icon: CpuIcon, group: 'host' },
   { id: 'mcp', icon: PlugIcon, group: 'host' },
+  { id: 'automation', icon: RobotIcon, group: 'host' },
   { id: 'organizations', icon: BuildingsIcon, group: 'universal' },
   { id: 'notifications', icon: BellIcon, group: 'universal' },
   { id: 'keyboard-shortcuts', icon: KeyboardIcon, group: 'universal' },
@@ -113,6 +118,8 @@ export function renderSettingsSection(
       );
     case 'keyboard-shortcuts':
       return <KeyboardShortcutsSettingsSection />;
+    case 'automation':
+      return <AutomationSettingsSection />;
     default:
       return <GeneralSettingsSection />;
   }

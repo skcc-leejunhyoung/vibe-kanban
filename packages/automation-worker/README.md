@@ -1,8 +1,10 @@
 # Vibe Automation Worker
 
 Standalone connector worker for lightweight automations. It runs as one Docker
-container with a small web UI, JSON persistence, polling jobs, editable
-JavaScript rules, and logs.
+container with JSON persistence, polling jobs, editable JavaScript rules, and
+logs. It has **no web UI of its own** — configure it from the Vibe Kanban
+settings page (Settings → Automation), which the local Vibe Kanban server
+proxies to this worker's `/api/*` routes.
 
 ## Run
 
@@ -20,7 +22,9 @@ docker run --rm -p 8787:8787 \
   vibe-automation-worker
 ```
 
-Open `http://localhost:8787`, then enter the token in the header.
+The worker exposes an admin-token-gated JSON API on `:8787` (plus an
+unauthenticated `GET /health` for orchestration). Drive it from the Vibe Kanban
+settings page rather than calling the API directly.
 
 ### Environment
 
@@ -98,3 +102,21 @@ Secrets are stored in the same JSON file, so mount `/data` on a private volume.
 The API masks credential fields (`token`, `bearerToken`, `authHeaderValue`) as
 `__stored__` in responses; saving a connector with that placeholder keeps the
 stored secret, so edit other fields freely without re-entering tokens.
+
+## Vibe Kanban integration
+
+The worker is built and shipped with the Vibe Kanban stack: it is a service in
+`crates/remote/docker-compose.yml` under the `automation` profile, so the
+menubar build/redeploy can bring it up alongside the remote stack
+(`docker compose --profile automation …`).
+
+Its settings UI lives in the Vibe Kanban app under **Settings → Automation**.
+The local Vibe Kanban server reverse-proxies `/api/automation/*` to this worker,
+injecting the admin token server-side, so the browser never holds the token and
+the same UI works from the local and remote web apps. The proxy reads:
+
+- `AUTOMATION_WORKER_URL` — worker base URL (default `http://127.0.0.1:8787`).
+- `AUTOMATION_WORKER_TOKEN` — admin token to send (falls back to `ADMIN_TOKEN`).
+
+The master on/off toggle on that settings page flips the worker's `enabled`
+flag: when off, the worker stays up but installs no poll timers (it idles).

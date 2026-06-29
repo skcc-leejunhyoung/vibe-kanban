@@ -33,6 +33,8 @@
         "remote-projectsDesc": "프로젝트 관리",
         "relay": "Remote Access",
         "relayDesc": "Relay tunnel and enrollment",
+        "automation": "자동화",
+        "automationDesc": "자동화 워커의 커넥터 및 규칙",
         "machineSettings": "Machine Settings",
         "accountSettings": "Account Settings",
         "pairOtherMachines": "Pair other machines",

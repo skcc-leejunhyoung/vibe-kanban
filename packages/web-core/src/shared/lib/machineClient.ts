@@ -14,6 +14,13 @@ import {
   makeLocalApiRequest,
   type LocalApiRequestOptions,
 } from './localApiTransport';
+import type {
+  AutomationConnector,
+  AutomationLogEntry,
+  AutomationRetryItem,
+  AutomationRule,
+  AutomationState,
+} from './automationWorker';
 
 export type MachineTarget =
   | {
@@ -49,6 +56,21 @@ export interface MachineClient {
     query: McpServerQuery,
     data: UpdateMcpServersBody
   ) => Promise<void>;
+  // Automation worker (packages/automation-worker), proxied via /api/automation/*.
+  // It returns raw JSON (not the ApiResponse envelope), so these use a dedicated
+  // parser instead of handleApiResponse.
+  getAutomationState: () => Promise<AutomationState>;
+  setAutomationEnabled: (enabled: boolean) => Promise<AutomationState>;
+  saveAutomationConnector: (
+    connector: AutomationConnector
+  ) => Promise<AutomationState>;
+  deleteAutomationConnector: (id: string) => Promise<AutomationState>;
+  saveAutomationRule: (rule: AutomationRule) => Promise<AutomationState>;
+  deleteAutomationRule: (id: string) => Promise<AutomationState>;
+  pollAutomationConnector: (id: string) => Promise<unknown>;
+  getAutomationLogs: () => Promise<AutomationLogEntry[]>;
+  getAutomationRetryQueue: () => Promise<AutomationRetryItem[]>;
+  processAutomationRetries: (includeExhausted: boolean) => Promise<unknown>;
 }
 
 function getMachineRequestOptions(
@@ -90,6 +112,17 @@ async function makeMachineRequest(
     headers,
     ...getMachineRequestOptions(runtime, target),
   });
+}
+
+// The automation worker replies with bare JSON (its own state model), not the
+// Vibe Kanban ApiResponse envelope, so parse it directly. A non-2xx surfaces the
+// worker's error text (or the proxy's gateway message when it is unreachable).
+async function readAutomationJson<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `Automation worker error (${response.status})`);
+  }
+  return (await response.json()) as T;
 }
 
 export function createMachineClient(
@@ -184,5 +217,91 @@ export function createMachineClient(
         )
       );
     },
+    getAutomationState: async () =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(runtime, target, '/api/automation/state', {
+          cache: 'no-store',
+        })
+      ),
+    setAutomationEnabled: async (enabled) =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(runtime, target, '/api/automation/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ enabled }),
+        })
+      ),
+    saveAutomationConnector: async (connector) =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/automation/connectors',
+          {
+            method: 'POST',
+            body: JSON.stringify(connector),
+          }
+        )
+      ),
+    deleteAutomationConnector: async (id) =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/automation/connectors/${encodeURIComponent(id)}`,
+          { method: 'DELETE' }
+        )
+      ),
+    saveAutomationRule: async (rule) =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(runtime, target, '/api/automation/rules', {
+          method: 'POST',
+          body: JSON.stringify(rule),
+        })
+      ),
+    deleteAutomationRule: async (id) =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/automation/rules/${encodeURIComponent(id)}`,
+          { method: 'DELETE' }
+        )
+      ),
+    pollAutomationConnector: async (id) =>
+      readAutomationJson<unknown>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/automation/poll/${encodeURIComponent(id)}`,
+          { method: 'POST' }
+        )
+      ),
+    getAutomationLogs: async () =>
+      readAutomationJson<AutomationLogEntry[]>(
+        await makeMachineRequest(runtime, target, '/api/automation/logs', {
+          cache: 'no-store',
+        })
+      ),
+    getAutomationRetryQueue: async () =>
+      readAutomationJson<AutomationRetryItem[]>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/automation/retry-queue',
+          { cache: 'no-store' }
+        )
+      ),
+    processAutomationRetries: async (includeExhausted) =>
+      readAutomationJson<unknown>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/automation/retry-queue/process',
+          {
+            method: 'POST',
+            body: JSON.stringify({ includeExhausted }),
+          }
+        )
+      ),
   };
 }
