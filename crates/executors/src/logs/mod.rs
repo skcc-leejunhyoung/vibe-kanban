@@ -97,6 +97,14 @@ pub enum NormalizedEntryType {
     UserAnsweredQuestions {
         answers: Vec<AnsweredQuestion>,
     },
+    /// The agent left one or more `run_in_background` tasks running and the Stop
+    /// hook held the turn open so the same process waits for them to finish.
+    /// Surfaced inline so the user sees *why* the agent is still running instead
+    /// of just a spinner.
+    BackgroundTasksWaiting {
+        /// Command/description of each background task being awaited.
+        tasks: Vec<String>,
+    },
 }
 
 /// A question–answer pair from a completed AskUserQuestion interaction.

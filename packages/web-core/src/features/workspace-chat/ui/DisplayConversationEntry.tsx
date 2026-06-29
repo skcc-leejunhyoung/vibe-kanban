@@ -65,6 +65,7 @@ import {
   ListMagnifyingGlassIcon,
   GlobeIcon,
   PencilSimpleIcon,
+  SpinnerIcon,
 } from '@phosphor-icons/react';
 
 type Props = {
@@ -433,6 +434,9 @@ function DisplayConversationEntry(props: Props) {
           expansionKey={expansionKey}
         />
       );
+
+    case 'background_tasks_waiting':
+      return <BackgroundWaitingEntry tasks={entryType.tasks} />;
 
     case 'loading':
       return <LoadingEntry />;
@@ -869,6 +873,32 @@ function LoadingEntry() {
         <div className="flex-1 h-3" />
         <div className="flex-1 h-3" />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Inline notice shown while the turn is held open waiting for the agent's
+ * `run_in_background` task(s) to finish. Without it the user only sees the
+ * process spinning with no indication of *why* it hasn't ended.
+ */
+function BackgroundWaitingEntry({ tasks }: { tasks: string[] }) {
+  const { t } = useTranslation('common');
+  return (
+    <div className="px-4 py-2 text-sm text-low">
+      <div className="flex items-center gap-2">
+        <SpinnerIcon className="size-icon-sm animate-spin flex-shrink-0" />
+        <span>{t('conversation.backgroundWaiting')}</span>
+      </div>
+      {tasks.length > 0 && (
+        <ul className="mt-1 ml-6 list-disc space-y-0.5">
+          {tasks.map((task, i) => (
+            <li key={i} className="font-ibm-plex-mono text-xs truncate">
+              {task}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

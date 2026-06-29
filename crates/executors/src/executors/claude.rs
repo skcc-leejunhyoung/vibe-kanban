@@ -743,6 +743,12 @@ const DEFAULT_CLAUDE_CONTEXT_WINDOW: u32 = 200_000;
 /// follows the prefix on the same line. Not part of the Claude CLI protocol.
 pub(crate) const SCHEDULED_WAKEUP_MARKER: &str = "__VK_SCHEDULED_WAKEUP__";
 
+/// Internal stdout marker the Stop hook callback uses to surface that the turn
+/// is being held open while `run_in_background` task(s) finish. A JSON array of
+/// task command/description strings follows the prefix on the same line. Not
+/// part of the Claude CLI protocol.
+pub(crate) const BACKGROUND_WAIT_MARKER: &str = "__VK_BACKGROUND_WAIT__";
+
 /// Handles log processing and interpretation for Claude executor
 pub struct ClaudeLogProcessor {
     model_name: Option<String>,
@@ -835,6 +841,31 @@ impl ClaudeLogProcessor {
                     // ScheduledResume instead of rendering it as agent output.
                     if let Some(crons_json) = trimmed.strip_prefix(SCHEDULED_WAKEUP_MARKER) {
                         msg_store.push_scheduled_resume(crons_json.to_string());
+                        continue;
+                    }
+
+                    // Intercept the internal background-wait marker emitted by the
+                    // Stop hook callback; render it inline as a
+                    // BackgroundTasksWaiting entry so the user sees the agent is
+                    // waiting on its background task(s), not just spinning.
+                    if let Some(tasks_json) = trimmed.strip_prefix(BACKGROUND_WAIT_MARKER) {
+                        let tasks: Vec<String> =
+                            serde_json::from_str(tasks_json).unwrap_or_default();
+                        let entry = NormalizedEntry {
+                            timestamp: None,
+                            entry_type: NormalizedEntryType::BackgroundTasksWaiting {
+                                tasks: tasks.clone(),
+                            },
+                            content: if tasks.is_empty() {
+                                "Waiting for a background task to finish".to_string()
+                            } else {
+                                format!("Waiting for {} background task(s) to finish", tasks.len())
+                            },
+                            metadata: None,
+                        };
+                        let patch_id = entry_index_provider.next();
+                        msg_store
+                            .push_patch(ConversationPatch::add_normalized_entry(patch_id, entry));
                         continue;
                     }
 

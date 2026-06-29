@@ -62,7 +62,8 @@
     "subagent": {
       "defaultType": "Subagente"
     },
-    "loadingEarlierMessages": "Cargando mensajes anteriores"
+    "loadingEarlierMessages": "Cargando mensajes anteriores",
+    "backgroundWaiting": "Esperando a que terminen las tareas en segundo plano"
   },
   "language": {
     "browserDefault": "Predeterminado del navegador"

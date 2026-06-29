@@ -6,7 +6,7 @@ use std::sync::{
 use tokio_util::sync::CancellationToken;
 use workspace_utils::approvals::{ApprovalStatus, QuestionAnswer, QuestionStatus};
 
-use super::{SCHEDULED_WAKEUP_MARKER, types::PermissionMode};
+use super::{BACKGROUND_WAIT_MARKER, SCHEDULED_WAKEUP_MARKER, types::PermissionMode};
 use crate::{
     approvals::{ExecutorApprovalError, ExecutorApprovalService},
     env::RepoContext,
@@ -420,6 +420,21 @@ impl ClaudeAgentClient {
                 let consecutive = self.background_block_count.fetch_add(1, Ordering::SeqCst);
                 let total = self.background_block_total.fetch_add(1, Ordering::SeqCst);
                 if consecutive < MAX_CONSECUTIVE_BLOCKS && total < MAX_TOTAL_BLOCKS {
+                    // Surface the wait to the UI once at the start of each wait.
+                    // Only the first block emits: continuing tasks are re-reported
+                    // on every later block (no duplicate entry), while a fresh wait
+                    // re-emits because the per-task count was reset to 0 when the
+                    // previous tasks went idle.
+                    if consecutive == 0 {
+                        let descriptions: Vec<&String> =
+                            running.iter().map(|(_, what)| what).collect();
+                        if let Ok(payload) = serde_json::to_string(&descriptions) {
+                            let _ = self
+                                .log_writer
+                                .log_raw(&format!("{BACKGROUND_WAIT_MARKER}{payload}"))
+                                .await;
+                        }
+                    }
                     return Ok(background_wait_block(&running));
                 }
                 // Safety valve: either one task waited too long, or a flapping

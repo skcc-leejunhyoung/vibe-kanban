@@ -62,7 +62,8 @@
     "subagent": {
       "defaultType": "서브에이전트"
     },
-    "loadingEarlierMessages": "이전 메시지 불러오는 중"
+    "loadingEarlierMessages": "이전 메시지 불러오는 중",
+    "backgroundWaiting": "백그라운드 작업이 끝나길 기다리는 중"
   },
   "language": {
     "browserDefault": "브라우저 기본값"
