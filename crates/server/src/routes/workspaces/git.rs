@@ -1319,7 +1319,13 @@ pub async fn abort_workspace_conflicts(
         .ensure_container_exists(&workspace)
         .await?;
     let workspace_path = Path::new(&container_ref);
-    let worktree_path = workspace_path.join(&repo.name);
+    // In-place ("quick chat") workspaces run in the repo root itself, so the
+    // worktree path IS `container_ref` rather than a per-repo subdir.
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        workspace_path.join(&repo.name)
+    };
 
     deployment.git().abort_conflicts(&worktree_path)?;
 
@@ -1343,7 +1349,13 @@ pub async fn continue_workspace_rebase(
         .ensure_container_exists(&workspace)
         .await?;
     let workspace_path = Path::new(&container_ref);
-    let worktree_path = workspace_path.join(&repo.name);
+    // In-place ("quick chat") workspaces run in the repo root itself, so the
+    // worktree path IS `container_ref` rather than a per-repo subdir.
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        workspace_path.join(&repo.name)
+    };
 
     deployment.git().continue_rebase(&worktree_path)?;
 
