@@ -64,6 +64,19 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     };
   }, [modal.visible, repo]);
 
+  // nice-modal keeps this component mounted under the app layout, so React
+  // state survives `hide()`. Reset on dismissal so a reopen starts clean —
+  // otherwise a successful send leaves `submitting` stuck (Send is permanently
+  // disabled showing "Starting…") and the previous prompt pre-filled.
+  useEffect(() => {
+    if (!modal.visible) {
+      setRepo(null);
+      setPrompt('');
+      setSubmitting(false);
+      setError(null);
+    }
+  }, [modal.visible]);
+
   const close = () => {
     modal.resolve(null);
     modal.hide();
