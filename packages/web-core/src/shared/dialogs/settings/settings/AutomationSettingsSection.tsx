@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import { cn } from '@/shared/lib/utils';
 import {
   SettingsCard,
@@ -554,7 +555,12 @@ export function AutomationSettingsSection() {
                   >
                     {log.level}
                   </span>
-                  <span className="text-low">{log.ts}</span>
+                  <span className="text-low">
+                    {new Date(log.ts).toLocaleString(
+                      undefined,
+                      withDisplayTimeZone()
+                    )}
+                  </span>
                 </div>
                 <div className="text-normal">{log.message}</div>
               </div>
