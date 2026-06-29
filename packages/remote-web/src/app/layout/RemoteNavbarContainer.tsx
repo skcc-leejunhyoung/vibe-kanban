@@ -186,7 +186,10 @@ export function RemoteNavbarContainer({
     mobileWorkspaceTitle,
   ]);
 
-  const mobileShowBack = isOnWorkspaceView || isOnWorkspaceList;
+  // The workspace list is the host's top-level screen, so it opens the drawer
+  // (like local mobile) instead of a back button — this is the only mobile path
+  // to the Quick chat entry. The workspace detail view keeps the back button.
+  const mobileShowBack = isOnWorkspaceView;
 
   const handleNavigateBack = useCallback(() => {
     if (isOnProjectPage && projectId) {
@@ -225,7 +228,9 @@ export function RemoteNavbarContainer({
       mobileShowBack={mobileShowBack}
       onOpenSettings={handleOpenSettings}
       onOpenCommandBar={handleOpenCommandBar}
-      onOpenDrawer={isOnProjectPage ? onOpenDrawer : undefined}
+      onOpenDrawer={
+        isOnProjectPage || isOnWorkspaceList ? onOpenDrawer : undefined
+      }
       mobileActiveTab={mobileActiveTab as MobileTabId}
       onMobileTabChange={(tab) => setMobileActiveTab(tab)}
       mobileTabs={remoteMobileTabs}
