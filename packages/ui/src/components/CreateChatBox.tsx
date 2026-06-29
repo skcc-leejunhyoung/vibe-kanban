@@ -84,6 +84,11 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   repoSummaryLabel: string;
   repoSummaryTitle: string;
   linkedIssue?: LinkedIssueBadgeProps | null;
+  /** Hide the attach-file control (e.g. quick chat, which has no attachments). */
+  showAttachments?: boolean;
+  /** Override the primary button label (defaults to "Create"/"Creating"). */
+  sendLabel?: string;
+  sendingLabel?: string;
 }
 
 /**
@@ -120,6 +125,9 @@ export function CreateChatBox<TExecutor extends string = string>({
   repoSummaryLabel,
   repoSummaryTitle,
   linkedIssue,
+  showAttachments = true,
+  sendLabel,
+  sendingLabel,
 }: CreateChatBoxProps<TExecutor>) {
   const { t } = useTranslation(['common', 'tasks']);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -198,20 +206,24 @@ export function CreateChatBox<TExecutor extends string = string>({
       }
       footerLeft={
         <>
-          <ToolbarIconButton
-            icon={PaperclipIcon}
-            aria-label={t('tasks:taskFormDialog.attachFile')}
-            title={t('tasks:taskFormDialog.attachFile')}
-            onClick={handleAttachClick}
-            disabled={isDisabled}
-          />
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileInputChange}
-          />
+          {showAttachments && (
+            <>
+              <ToolbarIconButton
+                icon={PaperclipIcon}
+                aria-label={t('tasks:taskFormDialog.attachFile')}
+                title={t('tasks:taskFormDialog.attachFile')}
+                onClick={handleAttachClick}
+                disabled={isDisabled}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={handleFileInputChange}
+              />
+            </>
+          )}
           <button
             type="button"
             onClick={onEditRepos}
@@ -265,8 +277,8 @@ export function CreateChatBox<TExecutor extends string = string>({
             actionIcon={isSending ? 'spinner' : undefined}
             value={
               isSending
-                ? t('tasks:conversation.workspace.creating')
-                : t('tasks:conversation.workspace.create')
+                ? (sendingLabel ?? t('tasks:conversation.workspace.creating'))
+                : (sendLabel ?? t('tasks:conversation.workspace.create'))
             }
           />
         </>

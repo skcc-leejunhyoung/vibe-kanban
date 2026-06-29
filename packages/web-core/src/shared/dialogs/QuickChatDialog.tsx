@@ -1,18 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { create, useModal } from '@ebay/nice-modal-react';
-import { FolderIcon, LightningIcon } from '@phosphor-icons/react';
-import { Button } from '@vibe/ui/components/Button';
-import { Textarea } from '@vibe/ui/components/Textarea';
+import { LightningIcon } from '@phosphor-icons/react';
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
-import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
-import type { ExecutorProfileId, Repo } from 'shared/types';
+import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
+import type { BaseCodingAgent, ExecutorConfig, Repo } from 'shared/types';
 import {
   defineModal,
   getErrorMessage,
@@ -21,7 +17,12 @@ import {
 import { repoApi, workspacesApi } from '@/shared/lib/api';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
-import { AgentSelector } from '@/shared/components/tasks/AgentSelector';
+import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
+import { toPrettyCase } from '@/shared/lib/string';
+import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
+import { AgentIcon } from '@/shared/components/AgentIcon';
+import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
+import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 
 /**
@@ -29,6 +30,11 @@ import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
  * folder. On send it creates an in-place workspace (no `vk/` worktree, no new
  * branch — the agent edits the real working tree) and navigates into the
  * standard workspace conversation view.
+ *
+ * The input reuses the workspace-create card (`CreateChatBox`) for a consistent
+ * look: WYSIWYG editor, agent + model selectors, and the primary send button.
+ * The repo-summary slot doubles as the folder picker; attachments are hidden
+ * (in-place has no isolated tree to stage them in).
  */
 const QuickChatDialogImpl = create<NoProps>(() => {
   const modal = useModal();
@@ -37,16 +43,28 @@ const QuickChatDialogImpl = create<NoProps>(() => {
 
   const [repo, setRepo] = useState<Repo | null>(null);
   const [prompt, setPrompt] = useState('');
-  const [profileId, setProfileId] = useState<ExecutorProfileId | null>(null);
+  const [scratchConfig, setScratchConfig] = useState<ExecutorConfig | null>(
+    null
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Default the agent to the user's configured executor once config loads.
-  useEffect(() => {
-    if (!profileId && config?.executor_profile) {
-      setProfileId(config.executor_profile);
-    }
-  }, [config, profileId]);
+  const {
+    executorConfig,
+    effectiveExecutor,
+    selectedVariant,
+    executorOptions,
+    variantOptions,
+    presetOptions,
+    setOverrides,
+  } = useExecutorConfig({
+    profiles,
+    lastUsedConfig: config?.executor_profile ?? null,
+    scratchConfig,
+    configExecutorProfile: config?.executor_profile,
+    disabledExecutors: config?.disabled_executors,
+    onPersist: setScratchConfig,
+  });
 
   // Pre-fill the folder with the most recently used repo so the common case is
   // a single keystroke (type + send).
@@ -64,25 +82,12 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     };
   }, [modal.visible, repo]);
 
-  // nice-modal keeps this component mounted under the app layout, so React
-  // state survives `hide()`. Reset on dismissal so a reopen starts clean —
-  // otherwise a successful send leaves `submitting` stuck (Send is permanently
-  // disabled showing "Starting…") and the previous prompt pre-filled.
-  useEffect(() => {
-    if (!modal.visible) {
-      setRepo(null);
-      setPrompt('');
-      setSubmitting(false);
-      setError(null);
-    }
-  }, [modal.visible]);
-
   const close = () => {
     modal.resolve(null);
     modal.hide();
   };
 
-  const pickFolder = async () => {
+  const pickFolder = useCallback(async () => {
     setError(null);
     const path = await FolderPickerDialog.show({
       value: repo?.path,
@@ -99,21 +104,41 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           'That folder could not be opened. It must be a git repository.'
       );
     }
-  };
+  }, [repo?.path]);
 
-  const canSend = Boolean(repo && profileId && prompt.trim() && !submitting);
+  const handleExecutorChange = useCallback((executor: BaseCodingAgent) => {
+    setScratchConfig(
+      (prev) => ({ ...(prev ?? {}), executor, variant: null }) as ExecutorConfig
+    );
+  }, []);
 
-  const handleSend = async () => {
-    if (!repo || !profileId || !prompt.trim()) return;
+  const handlePresetSelect = useCallback(
+    (presetId: string | null) => {
+      if (!effectiveExecutor) return;
+      setScratchConfig(
+        (prev) =>
+          ({
+            ...(prev ?? {}),
+            executor: effectiveExecutor,
+            variant: presetId,
+          }) as ExecutorConfig
+      );
+    },
+    [effectiveExecutor]
+  );
+
+  const handleCustomise = useCallback(() => {
+    SettingsDialog.show({ initialSection: 'agents' });
+  }, []);
+
+  const handleSend = useCallback(async () => {
+    if (!repo || !executorConfig || !prompt.trim()) return;
     setSubmitting(true);
     setError(null);
     try {
       const { workspace } = await workspacesApi.quickChat({
         repo_id: repo.id,
-        executor_config: {
-          executor: profileId.executor,
-          variant: profileId.variant ?? null,
-        },
+        executor_config: executorConfig,
         prompt: prompt.trim(),
         name: null,
       });
@@ -124,7 +149,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       setError(getErrorMessage(e) || 'Failed to start quick chat.');
       setSubmitting(false);
     }
-  };
+  }, [repo, executorConfig, prompt, modal, appNavigation]);
 
   return (
     <Dialog
@@ -132,72 +157,89 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       onOpenChange={(open) => {
         if (!open) close();
       }}
+      className="max-w-xl"
+      // KeyboardDialog stacks dialogs at the top (items-start). Quick chat is
+      // short, so center it vertically. Inline style overrides the base `my-8`
+      // (cn is clsx-only, so a `my-auto` class wouldn't win).
+      style={{ marginTop: 'auto', marginBottom: 'auto' }}
     >
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-base">
-            <LightningIcon weight="fill" className="size-icon-sm text-brand" />
-            Quick chat
-          </DialogTitle>
-          <DialogDescription>
-            Run an agent in an existing folder — no new branch, no isolation.
-            Edits land directly in your working tree.
-          </DialogDescription>
-        </DialogHeader>
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-base">
+          <LightningIcon weight="fill" className="size-icon-sm text-brand" />
+          Quick chat
+        </DialogTitle>
+        <DialogDescription>
+          Run an agent in an existing folder — no new branch, no isolation.
+          Edits land directly in your working tree.
+        </DialogDescription>
+      </DialogHeader>
 
-        <div className="flex flex-col gap-base">
-          <div className="flex items-center gap-base">
-            <Button
-              variant="outline"
-              size="sm"
-              className="min-w-0 flex-1 justify-start gap-1.5 text-xs"
-              onClick={pickFolder}
-              disabled={submitting}
-            >
-              <FolderIcon className="size-icon-xs shrink-0" />
-              <span className="truncate">
-                {repo ? repo.name : 'Select a folder…'}
-              </span>
-            </Button>
-            <AgentSelector
-              profiles={profiles}
-              selectedExecutorProfile={profileId}
-              onChange={setProfileId}
-              disabled={submitting}
-              className="flex-1"
+      <div className="@container">
+        <CreateChatBox
+          editor={{ value: prompt, onChange: setPrompt }}
+          renderEditor={({
+            value,
+            onChange,
+            onCmdEnter,
+            disabled,
+            repoIds,
+            repoId,
+            executor,
+          }) => (
+            <WYSIWYGEditor
+              placeholder="What can the agent help with?"
+              value={value}
+              onChange={onChange}
+              onCmdEnter={onCmdEnter}
+              disabled={disabled}
+              className="min-h-double max-h-[40vh] overflow-y-auto"
+              repoIds={repoIds}
+              repoId={repoId}
+              executor={executor}
+              autoFocus
+              sendShortcut={config?.send_message_shortcut}
             />
-          </div>
-
-          <Textarea
-            autoFocus
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                if (canSend) void handleSend();
-              }
-            }}
-            placeholder="What can the agent help with?"
-            className="min-h-[120px] rounded-sm"
-          />
-
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
           )}
-        </div>
-
-        <DialogFooter>
-          <Button variant="ghost" onClick={close} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button onClick={handleSend} disabled={!canSend}>
-            {submitting ? 'Starting…' : 'Send'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
+          agentIcon={
+            <AgentIcon agent={effectiveExecutor} className="size-icon-xl" />
+          }
+          onSend={handleSend}
+          isSending={submitting}
+          disabled={!repo || !effectiveExecutor}
+          executor={{
+            selected: effectiveExecutor,
+            options: executorOptions,
+            onChange: handleExecutorChange,
+          }}
+          formatExecutorLabel={toPrettyCase}
+          error={error}
+          repoId={repo?.id}
+          repoIds={repo ? [repo.id] : []}
+          modelSelector={
+            effectiveExecutor ? (
+              <ModelSelectorContainer
+                agent={effectiveExecutor}
+                workspaceId={undefined}
+                onAdvancedSettings={handleCustomise}
+                presets={variantOptions}
+                selectedPreset={selectedVariant}
+                onPresetSelect={handlePresetSelect}
+                onOverrideChange={setOverrides}
+                executorConfig={executorConfig}
+                presetOptions={presetOptions}
+              />
+            ) : undefined
+          }
+          onEditRepos={pickFolder}
+          repoSummaryLabel={
+            repo ? repo.display_name || repo.name : 'Select a folder…'
+          }
+          repoSummaryTitle={repo?.path ?? 'Select a folder'}
+          showAttachments={false}
+          sendLabel="Send"
+          sendingLabel="Starting…"
+        />
+      </div>
     </Dialog>
   );
 });
