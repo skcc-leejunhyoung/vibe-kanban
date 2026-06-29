@@ -217,32 +217,30 @@ export function AppBar({
   const { t } = useTranslation('common');
   const sections: AppBarSection[] = [];
 
+  // Quick chat is independent of the local-workspaces button: remote uses it
+  // without showing the local-workspaces entry (showWorkspacesButton=false).
+  const localItems: AppBarSectionItem[] = [];
   if (showWorkspacesButton) {
-    sections.push({
-      key: 'local',
-      label: 'Local',
-      items: [
-        {
-          key: 'local-workspaces',
-          kind: 'icon-button',
-          label: 'Local workspaces',
-          icon: LayoutIcon,
-          isActive: isWorkspacesActive,
-          onClick: onWorkspacesClick,
-        },
-        ...(onQuickChatClick
-          ? [
-              {
-                key: 'quick-chat',
-                kind: 'icon-button' as const,
-                label: 'Quick chat',
-                icon: LightningIcon,
-                onClick: onQuickChatClick,
-              },
-            ]
-          : []),
-      ],
+    localItems.push({
+      key: 'local-workspaces',
+      kind: 'icon-button',
+      label: 'Local workspaces',
+      icon: LayoutIcon,
+      isActive: isWorkspacesActive,
+      onClick: onWorkspacesClick,
     });
+  }
+  if (onQuickChatClick) {
+    localItems.push({
+      key: 'quick-chat',
+      kind: 'icon-button',
+      label: 'Quick chat',
+      icon: LightningIcon,
+      onClick: onQuickChatClick,
+    });
+  }
+  if (localItems.length > 0) {
+    sections.push({ key: 'local', label: 'Local', items: localItems });
   }
 
   if (hosts.length > 0 || onPairHostClick) {

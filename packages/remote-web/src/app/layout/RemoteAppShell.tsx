@@ -14,6 +14,7 @@ import {
   HouseIcon,
   KanbanIcon,
   BellIcon,
+  LightningIcon,
 } from "@phosphor-icons/react";
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
@@ -27,6 +28,7 @@ import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
 import { AppBarNotificationBellContainer } from "@/pages/workspaces/AppBarNotificationBellContainer";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog";
+import { QuickChatDialog } from "@/shared/dialogs/QuickChatDialog";
 import { useCommandBarShortcut } from "@/shared/hooks/useCommandBarShortcut";
 import { useMarkNotificationsReadOnView } from "@/shared/hooks/useMarkNotificationsReadOnView";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
@@ -271,6 +273,9 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
             activeHostId={activeHostId}
             onCreateProject={handleCreateProject}
             onWorkspacesClick={handleWorkspacesClick}
+            onQuickChatClick={
+              activeHostId ? () => void QuickChatDialog.show() : undefined
+            }
             onHostClick={handleHostClick}
             showWorkspacesButton={false}
             onProjectClick={handleProjectClick}
@@ -329,6 +334,22 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               <HouseIcon className="h-4 w-4" />
               Home
             </button>
+
+            {/* Quick chat link — only with a host in context, so the agent runs
+                on that paired host's filesystem via the relay proxy. */}
+            {activeHostId && (
+              <button
+                type="button"
+                onClick={() => {
+                  void QuickChatDialog.show();
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <LightningIcon className="h-4 w-4" />
+                Quick chat
+              </button>
+            )}
 
             {/* Notifications link */}
             {isSignedIn && (
