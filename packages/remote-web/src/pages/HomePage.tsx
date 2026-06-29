@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { LightningIcon } from "@phosphor-icons/react";
 import type { Project } from "shared/remote-types";
 import type { OrganizationWithRole } from "shared/types";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
@@ -270,7 +271,23 @@ export default function HomePage() {
             </p>
           </div>
           {isMobile && isSignedIn && (
-            <div className="shrink-0">
+            <div className="flex shrink-0 items-center gap-base">
+              {preferredHostId && (
+                <button
+                  type="button"
+                  aria-label="Quick chat"
+                  onClick={() => {
+                    navigate({
+                      to: "/hosts/$hostId/workspaces",
+                      params: { hostId: preferredHostId },
+                      search: { quickChat: true },
+                    });
+                  }}
+                  className="relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg bg-panel text-normal transition-colors hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                >
+                  <LightningIcon className="h-5 w-5" weight="bold" />
+                </button>
+              )}
               <AppBarNotificationBellContainer />
             </div>
           )}

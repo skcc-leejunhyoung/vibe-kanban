@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   createFileRoute,
   useNavigate,
@@ -9,8 +10,14 @@ import { WorkspacesSidebarContainer } from "@/pages/workspaces/WorkspacesSidebar
 import { RemoteWorkspacesPageShell } from "@remote/pages/RemoteWorkspacesPageShell";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
 import { useWorkspaceContext } from "@/shared/hooks/useWorkspaceContext";
+import { QuickChatDialog } from "@/shared/dialogs/QuickChatDialog";
+
+type WorkspacesSearch = { quickChat?: boolean };
 
 export const Route = createFileRoute("/hosts/$hostId/workspaces")({
+  validateSearch: (search: Record<string, unknown>): WorkspacesSearch => ({
+    quickChat: search.quickChat === true ? true : undefined,
+  }),
   beforeLoad: async ({ location }) => {
     await requireAuthenticated(location);
   },
@@ -19,6 +26,24 @@ export const Route = createFileRoute("/hosts/$hostId/workspaces")({
 
 function WorkspacesRouteComponent() {
   const isMobile = useIsMobile();
+  const { quickChat } = Route.useSearch();
+  const navigate = useNavigate();
+  const { hostId } = useParams({ from: "/hosts/$hostId/workspaces" });
+
+  // Opened via the home page's Quick chat button (?quickChat=true). This route
+  // is host-scoped, so the dialog's API calls + post-send navigation auto-target
+  // this host. Clear the flag afterwards so refresh/back doesn't re-open it.
+  useEffect(() => {
+    if (!quickChat) return;
+    void QuickChatDialog.show();
+    void navigate({
+      to: "/hosts/$hostId/workspaces",
+      params: { hostId },
+      search: {},
+      replace: true,
+    });
+  }, [quickChat, hostId, navigate]);
+
   return (
     <RemoteWorkspacesPageShell>
       {isMobile ? <RemoteMobileWorkspacesSidebar /> : <WorkspacesLanding />}
