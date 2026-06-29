@@ -82,6 +82,21 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     };
   }, [modal.visible, repo]);
 
+  // nice-modal keeps this component mounted under the app layout, so React
+  // state survives `hide()` and the post-send SPA navigation. Reset transient
+  // state on dismissal so a reopen starts clean — otherwise a successful send
+  // leaves `submitting` stuck (Send permanently disabled showing "Starting…")
+  // and the previous prompt pre-filled. The agent/model selection
+  // (`scratchConfig`) is intentionally preserved across reopens.
+  useEffect(() => {
+    if (!modal.visible) {
+      setRepo(null);
+      setPrompt('');
+      setSubmitting(false);
+      setError(null);
+    }
+  }, [modal.visible]);
+
   const close = () => {
     modal.resolve(null);
     modal.hide();
