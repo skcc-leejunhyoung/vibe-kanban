@@ -25,6 +25,11 @@ export interface DeleteWorkspaceDialogProps {
   linkedIssueSimpleId?: string;
   /** Source repository (or one of them) no longer exists on disk. */
   hasMissingRepo?: boolean;
+  /**
+   * In-place ("quick chat") workspace: its branch is the user's real checked-out
+   * branch, so the delete-branch option must never be offered.
+   */
+  isInPlace?: boolean;
 }
 
 export type DeleteWorkspaceDialogResult = {
@@ -40,13 +45,16 @@ const DeleteWorkspaceDialogImpl = NiceModal.create<DeleteWorkspaceDialogProps>(
     isLinkedToIssue = false,
     linkedIssueSimpleId,
     hasMissingRepo = false,
+    isInPlace = false,
   }) => {
     const modal = useModal();
     const { t } = useTranslation();
     const [deleteBranches, setDeleteBranches] = useState(false);
     const [unlinkFromIssue, setUnlinkFromIssue] = useState(true);
 
-    const canDeleteBranches = !hasOpenPR && !hasMissingRepo;
+    // Never offer branch deletion for in-place workspaces: the branch is the
+    // user's real checkout.
+    const canDeleteBranches = !isInPlace && !hasOpenPR && !hasMissingRepo;
 
     const handleConfirm = () => {
       modal.resolve({
@@ -92,41 +100,43 @@ const DeleteWorkspaceDialogImpl = NiceModal.create<DeleteWorkspaceDialogProps>(
                 </span>
               </div>
             )}
-            <div className="flex flex-col gap-1">
-              <div
-                className={`flex items-center gap-3 text-sm font-medium select-none ${
-                  canDeleteBranches
-                    ? 'cursor-pointer'
-                    : 'text-muted-foreground cursor-not-allowed'
-                }`}
-                onClick={() => {
-                  if (canDeleteBranches) setDeleteBranches((v) => !v);
-                }}
-              >
-                <Checkbox
-                  checked={deleteBranches}
-                  disabled={!canDeleteBranches}
-                />
-                <span className="flex items-center gap-2">
-                  <GitBranchIcon className="h-4 w-4" />
-                  {t(
-                    'workspaces.deleteDialog.deleteBranchLabel',
-                    'Delete branch'
-                  )}{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">
-                    {branchName}
-                  </code>
-                </span>
+            {!isInPlace && (
+              <div className="flex flex-col gap-1">
+                <div
+                  className={`flex items-center gap-3 text-sm font-medium select-none ${
+                    canDeleteBranches
+                      ? 'cursor-pointer'
+                      : 'text-muted-foreground cursor-not-allowed'
+                  }`}
+                  onClick={() => {
+                    if (canDeleteBranches) setDeleteBranches((v) => !v);
+                  }}
+                >
+                  <Checkbox
+                    checked={deleteBranches}
+                    disabled={!canDeleteBranches}
+                  />
+                  <span className="flex items-center gap-2">
+                    <GitBranchIcon className="h-4 w-4" />
+                    {t(
+                      'workspaces.deleteDialog.deleteBranchLabel',
+                      'Delete branch'
+                    )}{' '}
+                    <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">
+                      {branchName}
+                    </code>
+                  </span>
+                </div>
+                {hasOpenPR && (
+                  <p className="text-xs text-muted-foreground pl-7">
+                    {t(
+                      'workspaces.deleteDialog.cannotDeleteOpenPr',
+                      'Cannot delete branch while PR is open'
+                    )}
+                  </p>
+                )}
               </div>
-              {hasOpenPR && (
-                <p className="text-xs text-muted-foreground pl-7">
-                  {t(
-                    'workspaces.deleteDialog.cannotDeleteOpenPr',
-                    'Cannot delete branch while PR is open'
-                  )}
-                </p>
-              )}
-            </div>
+            )}
             {isLinkedToIssue && (
               <div
                 className="flex items-center gap-3 text-sm font-medium cursor-pointer select-none"

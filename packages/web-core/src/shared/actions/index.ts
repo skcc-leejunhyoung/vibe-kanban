@@ -330,6 +330,7 @@ export const Actions = {
         isLinkedToIssue: Boolean(remoteWs?.issue_id),
         linkedIssueSimpleId,
         hasMissingRepo,
+        isInPlace: workspace.in_place,
       });
       if (result.action === 'confirmed') {
         // Calculate next workspace before deleting (only if deleting current)
