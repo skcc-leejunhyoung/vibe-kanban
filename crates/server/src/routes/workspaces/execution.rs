@@ -1,3 +1,6 @@
+use std::collections::{HashSet, VecDeque};
+
+use api_types::IssueRelationshipType;
 use axum::{
     Extension, Router,
     extract::State,
@@ -6,6 +9,7 @@ use axum::{
 };
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
+    pending_execution_start::PendingExecutionStart,
     session::{CreateSession, Session},
     workspace::Workspace,
     workspace_repo::WorkspaceRepo,
@@ -167,6 +171,13 @@ pub async fn stop_workspace_execution(
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     deployment.container().try_stop(&workspace, false).await;
 
+    // Cascade: a workspace deferred behind this one (linked via a `blocking`
+    // issue relationship) can never be unblocked by it once it is stopped, so
+    // cancel those waiting starts too — transitively down the dependency graph.
+    if let Some(task_id) = workspace.task_id {
+        cascade_stop_blocked_dependents(&deployment, task_id).await;
+    }
+
     deployment
         .track_if_analytics_allowed(
             "task_attempt_stopped",
@@ -177,6 +188,92 @@ pub async fn stop_workspace_execution(
         .await;
 
     Ok(ResponseJson(ApiResponse::success(())))
+}
+
+/// Cancels every workspace queued behind `root_task_id` via a `blocking` issue
+/// relationship, transitively. When a vibe session is stopped, the issues it was
+/// blocking can no longer become unblocked by it, so their deferred ("waiting")
+/// starts are cancelled too, cascading down the dependency graph.
+///
+/// Only deferred (blocker-gated) starts are stopped — `try_stop` skips processes
+/// that are not `Running`, and a deferred start carries a `pending_execution_starts`
+/// row, so an already-finished or genuinely-running dependent is left as-is.
+/// Best-effort: the relationship graph lives in the cloud, so this no-ops when no
+/// remote client is configured, and individual failures are logged, not raised.
+async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_id: Uuid) {
+    let client = match deployment.remote_client() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let pool = &deployment.db().pool;
+
+    let mut visited: HashSet<Uuid> = HashSet::from([root_task_id]);
+    let mut queue: VecDeque<Uuid> = VecDeque::from([root_task_id]);
+
+    while let Some(task_id) = queue.pop_front() {
+        // Issues that `task_id` blocks (outgoing `blocking` relationships).
+        let relationships = match client.list_issue_relationships(task_id).await {
+            Ok(r) => r.issue_relationships,
+            Err(e) => {
+                tracing::warn!(
+                    "cascade stop: failed to list relationships for issue {}: {}",
+                    task_id,
+                    e
+                );
+                continue;
+            }
+        };
+
+        for rel in relationships {
+            if !matches!(rel.relationship_type, IssueRelationshipType::Blocking) {
+                continue;
+            }
+            let dependent_task = rel.related_issue_id;
+            if !visited.insert(dependent_task) {
+                continue;
+            }
+
+            // Stop any workspace deferred behind this dependent issue.
+            let mut stopped_any = false;
+            match PendingExecutionStart::find_by_task_id(pool, dependent_task).await {
+                Ok(pendings) => {
+                    for pending in pendings {
+                        match Workspace::find_by_id(pool, pending.workspace_id).await {
+                            Ok(Some(dependent_ws)) => {
+                                tracing::info!(
+                                    "cascade stop: cancelling workspace {} waiting on stopped \
+                                     blocker (issue {})",
+                                    dependent_ws.id,
+                                    dependent_task
+                                );
+                                deployment.container().try_stop(&dependent_ws, false).await;
+                                stopped_any = true;
+                            }
+                            Ok(None) => {}
+                            Err(e) => tracing::warn!(
+                                "cascade stop: failed to load workspace {}: {}",
+                                pending.workspace_id,
+                                e
+                            ),
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "cascade stop: failed to find pending starts for issue {}: {}",
+                    dependent_task,
+                    e
+                ),
+            }
+
+            // Only propagate down a chain we actually cut. If this dependent was
+            // not waiting (already running or finished — e.g. its blocker had
+            // resolved), its own descendants are not gated on the stopped blocker
+            // and must be left untouched.
+            if stopped_any {
+                queue.push_back(dependent_task);
+            }
+        }
+    }
 }
 
 #[axum::debug_handler]

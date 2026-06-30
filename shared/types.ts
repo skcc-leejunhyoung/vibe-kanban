@@ -628,6 +628,14 @@ latest_process_completed_at?: string,
  */
 latest_process_status: ExecutionProcessStatus | null,
 /**
+ * True when the latest execution is a blocker-gated deferred start that
+ * hasn't spawned yet — the workspace is "waiting" on its linked issue's
+ * upstream blockers. Its `latest_process_status` is `Running` even though no
+ * agent is actually running, so the UI uses this to show a "waiting" state
+ * (and to allow stopping the wait) instead of a live "running" state.
+ */
+is_waiting_on_blockers: boolean,
+/**
  * Is a dev server currently running?
  */
 has_running_dev_server: boolean,

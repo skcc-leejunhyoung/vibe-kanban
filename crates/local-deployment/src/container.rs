@@ -20,6 +20,7 @@ use db::{
         execution_process_logs::ExecutionProcessLogs,
         execution_process_repo_state::ExecutionProcessRepoState,
         merge::{Merge, MergeStatus},
+        pending_execution_start::PendingExecutionStart,
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
         scratch::{Scratch, ScratchType},
@@ -2427,6 +2428,32 @@ impl ContainerService for LocalContainerService {
         execution_process: &ExecutionProcess,
         status: ExecutionProcessStatus,
     ) -> Result<(), ContainerError> {
+        // Blocker-gated deferred execution: the row exists with status=Running but
+        // no child was ever spawned (the spawn was deferred until the linked
+        // issue's blockers resolve, see `blocker_watcher`). Cancel the pending
+        // start and mark the process finished instead of failing on the missing
+        // child — this is how a user "stops" a waiting vibe session.
+        if PendingExecutionStart::find_by_process_id(&self.db.pool, execution_process.id)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            PendingExecutionStart::delete_by_process_id(&self.db.pool, execution_process.id)
+                .await
+                .map_err(|e| ContainerError::Other(anyhow!(e)))?;
+            ExecutionProcess::update_completion(&self.db.pool, execution_process.id, status, None)
+                .await?;
+            if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
+                msg.push_finished();
+            }
+            tracing::info!(
+                "Cancelled deferred (blocker-gated) execution {}",
+                execution_process.id
+            );
+            return Ok(());
+        }
+
         let child = self
             .get_child_from_store(&execution_process.id)
             .await

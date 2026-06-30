@@ -9,6 +9,7 @@ import {
   DotsThreeIcon,
   LightningIcon,
   ListChecksIcon,
+  HourglassIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { Ref } from 'react';
@@ -38,6 +39,12 @@ export interface WorkspaceSummaryProps {
   linesRemoved?: number;
   isActive?: boolean;
   isRunning?: boolean;
+  /**
+   * Blocker-gated deferred start: the agent hasn't spawned yet because the
+   * linked issue has unresolved blockers. Shown as a "waiting" state (distinct
+   * from running) — the stop button cancels the wait.
+   */
+  isWaiting?: boolean;
   isPinned?: boolean;
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
@@ -76,6 +83,7 @@ export function WorkspaceSummary({
   linesRemoved,
   isActive = false,
   isRunning = false,
+  isWaiting = false,
   isPinned = false,
   hasPendingApproval = false,
   hasRunningDevServer = false,
@@ -99,10 +107,13 @@ export function WorkspaceSummary({
   const hasChanges = filesChanged !== undefined && filesChanged > 0;
   const isFailed =
     latestProcessStatus === 'failed' || latestProcessStatus === 'killed';
+  // A deferred (waiting) start reports latest_process_status='running', so treat
+  // "running" indicators as suppressed while waiting on blockers.
+  const isActuallyRunning = isRunning && !isWaiting;
   // Compact "completed/total" task counter, shown only while the workspace is
   // running and the agent has actually produced a TODO list.
   const showTodoProgress =
-    isRunning && todoTotal !== undefined && todoTotal > 0;
+    isActuallyRunning && todoTotal !== undefined && todoTotal > 0;
   const todoAllDone = showTodoProgress && todoCompleted === todoTotal;
   // Issue-card rows pass latestPrompt and show it in place of the name.
   const primaryText = latestPrompt?.trim() || name;
@@ -180,8 +191,21 @@ export function WorkspaceSummary({
               />
             )}
 
-            {/* Failed/killed status (only when not running) */}
-            {!isRunning && isFailed && (
+            {/* Waiting on upstream blockers — a deferred start that hasn't
+                spawned an agent yet. Distinct from "running"; the stop button
+                cancels the wait. */}
+            {isWaiting && (
+              <span
+                className="shrink-0 flex items-center gap-half text-low"
+                title={t('workspaces.waitingHint')}
+              >
+                <HourglassIcon className="size-icon-xs" weight="fill" />
+                <span>{t('workspaces.waiting')}</span>
+              </span>
+            )}
+
+            {/* Failed/killed status (only when idle) */}
+            {!isActuallyRunning && !isWaiting && isFailed && (
               <TriangleIcon
                 className="size-icon-xs text-error shrink-0"
                 weight="fill"
@@ -189,7 +213,7 @@ export function WorkspaceSummary({
             )}
 
             {/* Running dots OR hand icon for pending approval */}
-            {isRunning &&
+            {isActuallyRunning &&
               (hasPendingApproval ? (
                 <HandIcon
                   className="size-icon-xs text-brand shrink-0"
@@ -215,13 +239,16 @@ export function WorkspaceSummary({
               </span>
             )}
 
-            {/* Unseen activity indicator (only when not running and not failed) */}
-            {hasUnseenActivity && !isRunning && !isFailed && (
-              <CircleIcon
-                className="size-icon-xs text-brand shrink-0"
-                weight="fill"
-              />
-            )}
+            {/* Unseen activity indicator (only when idle and not failed) */}
+            {hasUnseenActivity &&
+              !isActuallyRunning &&
+              !isWaiting &&
+              !isFailed && (
+                <CircleIcon
+                  className="size-icon-xs text-brand shrink-0"
+                  weight="fill"
+                />
+              )}
 
             {/* PR status icon */}
             {prStatus === 'open' && (
@@ -245,8 +272,9 @@ export function WorkspaceSummary({
               />
             )}
 
-            {/* Time elapsed OR "Draft" label (when not running) */}
-            {!isRunning &&
+            {/* Time elapsed OR "Draft" label (only when idle, not waiting) */}
+            {!isActuallyRunning &&
+              !isWaiting &&
               (isDraft ? (
                 <span className="min-w-0 flex-1 truncate">
                   {t('workspaces.draft')}
@@ -259,8 +287,8 @@ export function WorkspaceSummary({
                 <span className="flex-1" />
               ))}
 
-            {/* Spacer when running (no elapsed time shown) */}
-            {isRunning && <span className="flex-1" />}
+            {/* Spacer when running or waiting (no elapsed time shown) */}
+            {(isActuallyRunning || isWaiting) && <span className="flex-1" />}
 
             {/* File count + lines changed on the right */}
             {hasChanges && (

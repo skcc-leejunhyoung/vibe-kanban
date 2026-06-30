@@ -10,6 +10,7 @@ import {
   TriangleIcon,
   CircleIcon,
   ListChecksIcon,
+  HourglassIcon,
 } from '@phosphor-icons/react';
 import { UserAvatar, type UserAvatarUser } from './UserAvatar';
 import { RunningDots } from './RunningDots';
@@ -39,6 +40,8 @@ export interface WorkspaceWithStats {
   updatedAt: string;
   isOwnedByCurrentUser: boolean;
   isRunning?: boolean;
+  /** Blocker-gated deferred start: waiting on the linked issue's blockers. */
+  isWaiting?: boolean;
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
   hasUnseenActivity?: boolean;
@@ -127,6 +130,10 @@ export function IssueWorkspaceCard({
     workspace.latestProcessCompletedAt ?? workspace.updatedAt
   );
   const isRunning = workspace.isRunning ?? false;
+  const isWaiting = workspace.isWaiting ?? false;
+  // A deferred (waiting) start reports latest_process_status='running', so the
+  // running indicators are suppressed while waiting on blockers.
+  const isActuallyRunning = isRunning && !isWaiting;
   const hasPendingApproval = workspace.hasPendingApproval ?? false;
   const hasRunningDevServer = workspace.hasRunningDevServer ?? false;
   const hasUnseenActivity = workspace.hasUnseenActivity ?? false;
@@ -136,13 +143,14 @@ export function IssueWorkspaceCard({
   const todoTotal = workspace.todoTotal;
   const todoCompleted = workspace.todoCompleted;
   const showTodoProgress =
-    isRunning && todoTotal !== undefined && todoTotal > 0;
+    isActuallyRunning && todoTotal !== undefined && todoTotal > 0;
   const todoAllDone = showTodoProgress && todoCompleted === todoTotal;
   const hasLiveStatusIndicator =
     hasRunningDevServer ||
     isFailed ||
-    isRunning ||
-    (hasUnseenActivity && !isRunning);
+    isActuallyRunning ||
+    isWaiting ||
+    (hasUnseenActivity && !isActuallyRunning);
 
   return (
     <IssueWorkspaceCardContainer onClick={onClick} className={className}>
@@ -230,14 +238,24 @@ export function IssueWorkspaceCard({
               />
             )}
 
-            {!isRunning && isFailed && (
+            {isWaiting && (
+              <span
+                className="shrink-0 flex items-center gap-half text-low"
+                title={t('workspaces.waitingHint')}
+              >
+                <HourglassIcon className="size-icon-xs" weight="fill" />
+                <span>{t('workspaces.waiting')}</span>
+              </span>
+            )}
+
+            {!isActuallyRunning && !isWaiting && isFailed && (
               <TriangleIcon
                 className="size-icon-xs text-error shrink-0"
                 weight="fill"
               />
             )}
 
-            {isRunning &&
+            {isActuallyRunning &&
               (hasPendingApproval ? (
                 <HandIcon
                   className="size-icon-xs text-brand shrink-0"
@@ -262,12 +280,15 @@ export function IssueWorkspaceCard({
               </span>
             )}
 
-            {hasUnseenActivity && !isRunning && !isFailed && (
-              <CircleIcon
-                className="size-icon-xs text-brand shrink-0"
-                weight="fill"
-              />
-            )}
+            {hasUnseenActivity &&
+              !isActuallyRunning &&
+              !isWaiting &&
+              !isFailed && (
+                <CircleIcon
+                  className="size-icon-xs text-brand shrink-0"
+                  weight="fill"
+                />
+              )}
           </div>
 
           {hasLiveStatusIndicator && (

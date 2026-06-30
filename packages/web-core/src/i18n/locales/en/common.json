@@ -131,6 +131,8 @@
     "notFound": "Workspace not found",
     "selectToStart": "Select a workspace to get started",
     "draft": "Draft",
+    "waiting": "Waiting",
+    "waitingHint": "Waiting on blocker issues — stop to cancel the wait",
     "viewArchive": "View Archive",
     "backToActive": "Back to Active",
     "noArchived": "No archived workspaces",

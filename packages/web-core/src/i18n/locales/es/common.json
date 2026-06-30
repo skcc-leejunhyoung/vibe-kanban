@@ -117,6 +117,8 @@
     "notFound": "Espacio de trabajo no encontrado",
     "selectToStart": "Selecciona un espacio de trabajo para comenzar",
     "draft": "Borrador",
+    "waiting": "En espera",
+    "waitingHint": "Esperando incidencias bloqueantes — detener para cancelar la espera",
     "viewArchive": "Ver archivo",
     "backToActive": "Volver a activos",
     "noArchived": "No hay espacios de trabajo archivados",

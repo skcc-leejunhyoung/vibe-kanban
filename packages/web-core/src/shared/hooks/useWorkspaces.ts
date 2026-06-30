@@ -23,6 +23,11 @@ export interface SidebarWorkspace {
   linesAdded?: number;
   linesRemoved?: number;
   isRunning?: boolean;
+  /**
+   * Blocker-gated deferred start: the latest execution hasn't spawned because
+   * the linked issue has unresolved blockers. Rendered as a "waiting" state.
+   */
+  isWaiting?: boolean;
   isPinned?: boolean;
   isArchived?: boolean;
   /** Quick-chat ("in-place") workspace: runs in an existing checkout, no worktree. */
@@ -81,6 +86,7 @@ function toSidebarWorkspace(
     isArchived: ws.archived,
     isInPlace: ws.in_place,
     // Additional data from summary
+    isWaiting: summary?.is_waiting_on_blockers ?? undefined,
     hasPendingApproval: summary?.has_pending_approval,
     hasRunningDevServer: summary?.has_running_dev_server,
     hasUnseenActivity: summary?.has_unseen_turns,

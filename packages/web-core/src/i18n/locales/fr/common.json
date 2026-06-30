@@ -117,6 +117,8 @@
     "notFound": "Espace de travail introuvable",
     "selectToStart": "Sélectionnez un espace de travail pour commencer",
     "draft": "Brouillon",
+    "waiting": "En attente",
+    "waitingHint": "En attente des tickets bloquants — arrêter pour annuler l'attente",
     "viewArchive": "Voir les archives",
     "backToActive": "Retour aux actifs",
     "noArchived": "Aucun espace de travail archivé",

@@ -47,6 +47,11 @@ export interface WorkspacesSidebarWorkspace {
   latestPrompt?: string;
   /** Quick-chat ("in-place") workspace — runs in an existing checkout. */
   isInPlace?: boolean;
+  /**
+   * Blocker-gated deferred start: the agent hasn't spawned because the linked
+   * issue has unresolved blockers. Rendered as a "waiting" state.
+   */
+  isWaiting?: boolean;
 }
 
 export interface WorkspacesSidebarPersistKeys {
@@ -201,6 +206,7 @@ function WorkspaceList({
               : undefined
           }
           isRunning={workspace.isRunning}
+          isWaiting={workspace.isWaiting}
           isPinned={workspace.isPinned}
           hasPendingApproval={workspace.hasPendingApproval}
           hasRunningDevServer={workspace.hasRunningDevServer}
@@ -424,6 +430,7 @@ export function WorkspacesSidebar({
                       : undefined
                   }
                   isRunning={workspace.isRunning}
+                  isWaiting={workspace.isWaiting}
                   isPinned={workspace.isPinned}
                   hasPendingApproval={workspace.hasPendingApproval}
                   hasRunningDevServer={workspace.hasRunningDevServer}
@@ -570,6 +577,7 @@ export function WorkspacesSidebar({
                     : undefined
                 }
                 isRunning={workspace.isRunning}
+                isWaiting={workspace.isWaiting}
                 isPinned={workspace.isPinned}
                 hasPendingApproval={workspace.hasPendingApproval}
                 hasRunningDevServer={workspace.hasRunningDevServer}

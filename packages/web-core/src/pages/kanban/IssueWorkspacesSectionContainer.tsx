@@ -100,6 +100,7 @@ export function IssueWorkspacesSectionContainer({
         updatedAt: workspace.updated_at,
         isOwnedByCurrentUser: workspace.owner_user_id === userId,
         isRunning: localWorkspace?.isRunning,
+        isWaiting: localWorkspace?.isWaiting,
         hasPendingApproval: localWorkspace?.hasPendingApproval,
         hasRunningDevServer: localWorkspace?.hasRunningDevServer,
         hasUnseenActivity: localWorkspace?.hasUnseenActivity,

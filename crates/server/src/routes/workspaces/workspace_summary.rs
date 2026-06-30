@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
@@ -6,6 +6,7 @@ use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
     execution_process_logs::ExecutionProcessLogs,
     merge::MergeStatus,
+    pending_execution_start::PendingExecutionStart,
     pull_request::PullRequest,
     workspace::Workspace,
 };
@@ -43,6 +44,12 @@ pub struct WorkspaceSummary {
     pub latest_process_completed_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Status of the latest execution process
     pub latest_process_status: Option<ExecutionProcessStatus>,
+    /// True when the latest execution is a blocker-gated deferred start that
+    /// hasn't spawned yet — the workspace is "waiting" on its linked issue's
+    /// upstream blockers. Its `latest_process_status` is `Running` even though no
+    /// agent is actually running, so the UI uses this to show a "waiting" state
+    /// (and to allow stopping the wait) instead of a live "running" state.
+    pub is_waiting_on_blockers: bool,
     /// Is a dev server currently running?
     pub has_running_dev_server: bool,
     /// Does this workspace have unseen coding agent turns?
@@ -100,6 +107,17 @@ pub async fn get_workspace_summaries(
 
     // 2. Fetch latest process info for workspaces with this archived status
     let latest_processes = ExecutionProcess::find_latest_for_workspaces(pool, archived).await?;
+
+    // 2b. Blocker-gated deferred starts: their execution_process row is Running
+    //     but no agent was actually spawned. Collect their ids so the latest
+    //     process can be surfaced as "waiting" rather than "running".
+    //     Best-effort — on failure no workspace is marked waiting.
+    let pending_ep_ids: HashSet<Uuid> = PendingExecutionStart::find_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.execution_process_id)
+        .collect();
 
     // 3. Check which workspaces have running dev servers
     let dev_server_workspaces =
@@ -193,6 +211,9 @@ pub async fn get_workspace_summaries(
                 lines_removed: stats.map(|s| s.lines_removed),
                 latest_process_completed_at: latest.and_then(|p| p.completed_at),
                 latest_process_status: latest.map(|p| p.status.clone()),
+                is_waiting_on_blockers: latest
+                    .map(|p| pending_ep_ids.contains(&p.execution_process_id))
+                    .unwrap_or(false),
                 has_running_dev_server: dev_server_workspaces.contains(&id),
                 has_unseen_turns: unseen_workspaces.contains(&id),
                 todo_total: todo.map(|t| t.total),

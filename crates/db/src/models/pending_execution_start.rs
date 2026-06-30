@@ -82,6 +82,26 @@ impl PendingExecutionStart {
         Ok(row)
     }
 
+    /// All deferred starts waiting on the given upstream task (cloud issue id).
+    /// Used by the cascade-stop logic to find the workspaces that are queued
+    /// behind a blocker so they can be cancelled together with it.
+    pub async fn find_by_task_id(
+        pool: &SqlitePool,
+        task_id: Uuid,
+    ) -> Result<Vec<Self>, PendingExecutionStartError> {
+        let rows = sqlx::query_as::<_, Self>(
+            "SELECT id, execution_process_id, workspace_id, session_id, task_id, \
+                    created_at, last_checked_at \
+             FROM pending_execution_starts \
+             WHERE task_id = ? \
+             ORDER BY created_at ASC",
+        )
+        .bind(task_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn delete_by_process_id(
         pool: &SqlitePool,
         execution_process_id: Uuid,

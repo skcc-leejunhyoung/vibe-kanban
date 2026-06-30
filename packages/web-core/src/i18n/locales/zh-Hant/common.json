@@ -117,6 +117,8 @@
     "notFound": "找不到工作區",
     "selectToStart": "選擇一個工作區開始",
     "draft": "草稿",
+    "waiting": "等待中",
+    "waitingHint": "正在等待阻塞問題 — 停止以取消等待",
     "viewArchive": "檢視封存",
     "backToActive": "返回活躍",
     "noArchived": "沒有已封存的工作區",

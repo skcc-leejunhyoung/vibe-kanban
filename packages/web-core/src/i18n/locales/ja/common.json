@@ -117,6 +117,8 @@
     "notFound": "ワークスペースが見つかりません",
     "selectToStart": "ワークスペースを選択して開始",
     "draft": "下書き",
+    "waiting": "待機中",
+    "waitingHint": "ブロッカー課題を待機中 — 停止すると待機をキャンセルします",
     "viewArchive": "アーカイブを表示",
     "backToActive": "アクティブに戻る",
     "noArchived": "アーカイブされたワークスペースはありません",
