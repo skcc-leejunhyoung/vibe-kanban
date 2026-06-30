@@ -634,6 +634,8 @@ export function KanbanContainer() {
             hasPendingApproval: localWorkspace?.hasPendingApproval,
             hasRunningDevServer: localWorkspace?.hasRunningDevServer,
             hasUnseenActivity: localWorkspace?.hasUnseenActivity,
+            todoTotal: localWorkspace?.todoTotal,
+            todoCompleted: localWorkspace?.todoCompleted,
             latestProcessCompletedAt: localWorkspace?.latestProcessCompletedAt,
             latestProcessStatus: localWorkspace?.latestProcessStatus,
           };

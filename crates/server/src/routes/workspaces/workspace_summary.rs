@@ -4,11 +4,13 @@ use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    execution_process_logs::ExecutionProcessLogs,
     merge::MergeStatus,
     pull_request::PullRequest,
     workspace::Workspace,
 };
 use deployment::Deployment;
+use executors::logs::{TodoProgress, todo_progress_from_logs};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utils::response::ApiResponse;
@@ -45,6 +47,11 @@ pub struct WorkspaceSummary {
     pub has_running_dev_server: bool,
     /// Does this workspace have unseen coding agent turns?
     pub has_unseen_turns: bool,
+    /// Total items in the agent's latest TODO list. Only computed while the
+    /// workspace is running; `None` when idle or no TODO list exists.
+    pub todo_total: Option<usize>,
+    /// Completed items in the agent's latest TODO list (see `todo_total`).
+    pub todo_completed: Option<usize>,
     /// The most recent prompt sent in this workspace (what it's working on)
     pub latest_prompt: Option<String>,
     /// PR status for this workspace (if any PR exists)
@@ -108,6 +115,31 @@ pub async fn get_workspace_summaries(
         .approvals()
         .get_pending_execution_process_ids(&running_ep_ids);
 
+    // 4b. Compute TODO progress for *running* workspaces only. Parsing logs is
+    //     comparatively expensive, and the indicator is only shown while a
+    //     workspace is running, so idle/finished ones are skipped entirely.
+    let todo_futures: Vec<_> = latest_processes
+        .iter()
+        .filter(|(_, info)| info.status == ExecutionProcessStatus::Running)
+        .map(|(ws_id, info)| {
+            let pool = pool.clone();
+            let ws_id = *ws_id;
+            let ep_id = info.execution_process_id;
+            async move {
+                let records = ExecutionProcessLogs::find_by_execution_id(&pool, ep_id)
+                    .await
+                    .ok()?;
+                let messages = ExecutionProcessLogs::parse_logs(&records).ok()?;
+                todo_progress_from_logs(&messages).map(|progress| (ws_id, progress))
+            }
+        })
+        .collect();
+    let todo_progress: HashMap<Uuid, TodoProgress> = futures_util::future::join_all(todo_futures)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+
     // 5. Check which workspaces have unseen coding agent turns
     let unseen_workspaces = CodingAgentTurn::find_workspaces_with_unseen(pool, archived).await?;
 
@@ -150,6 +182,7 @@ pub async fn get_workspace_summaries(
                 .map(|p| pending_approval_eps.contains(&p.execution_process_id))
                 .unwrap_or(false);
             let stats = diff_stats.get(&id);
+            let todo = todo_progress.get(&id);
 
             WorkspaceSummary {
                 workspace_id: id,
@@ -162,6 +195,8 @@ pub async fn get_workspace_summaries(
                 latest_process_status: latest.map(|p| p.status.clone()),
                 has_running_dev_server: dev_server_workspaces.contains(&id),
                 has_unseen_turns: unseen_workspaces.contains(&id),
+                todo_total: todo.map(|t| t.total),
+                todo_completed: todo.map(|t| t.completed),
                 latest_prompt: latest_prompts.get(&id).cloned(),
                 pr_status: pr_statuses.get(&id).map(|pr| pr.pr_status.clone()),
                 pr_number: pr_statuses.get(&id).map(|pr| pr.pr_number),

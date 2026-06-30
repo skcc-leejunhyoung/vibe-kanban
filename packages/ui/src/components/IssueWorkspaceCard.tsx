@@ -9,6 +9,7 @@ import {
   HandIcon,
   TriangleIcon,
   CircleIcon,
+  ListChecksIcon,
 } from '@phosphor-icons/react';
 import { UserAvatar, type UserAvatarUser } from './UserAvatar';
 import { RunningDots } from './RunningDots';
@@ -41,6 +42,10 @@ export interface WorkspaceWithStats {
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
   hasUnseenActivity?: boolean;
+  /** Total items in the agent's latest TODO list (running workspaces only). */
+  todoTotal?: number;
+  /** Completed items in the agent's latest TODO list (running only). */
+  todoCompleted?: number;
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
 }
@@ -128,6 +133,11 @@ export function IssueWorkspaceCard({
   const isFailed =
     workspace.latestProcessStatus === 'failed' ||
     workspace.latestProcessStatus === 'killed';
+  const todoTotal = workspace.todoTotal;
+  const todoCompleted = workspace.todoCompleted;
+  const showTodoProgress =
+    isRunning && todoTotal !== undefined && todoTotal > 0;
+  const todoAllDone = showTodoProgress && todoCompleted === todoTotal;
   const hasLiveStatusIndicator =
     hasRunningDevServer ||
     isFailed ||
@@ -236,6 +246,21 @@ export function IssueWorkspaceCard({
               ) : (
                 <RunningDots />
               ))}
+
+            {showTodoProgress && (
+              <span
+                className={cn(
+                  'shrink-0 flex items-center gap-half tabular-nums',
+                  todoAllDone ? 'text-success' : 'text-low'
+                )}
+                title={`${todoCompleted ?? 0}/${todoTotal} tasks complete`}
+              >
+                <ListChecksIcon className="size-icon-xs" weight="bold" />
+                <span>
+                  {todoCompleted ?? 0}/{todoTotal}
+                </span>
+              </span>
+            )}
 
             {hasUnseenActivity && !isRunning && !isFailed && (
               <CircleIcon

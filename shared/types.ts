@@ -636,6 +636,15 @@ has_running_dev_server: boolean,
  */
 has_unseen_turns: boolean,
 /**
+ * Total items in the agent's latest TODO list. Only computed while the
+ * workspace is running; `None` when idle or no TODO list exists.
+ */
+todo_total: number | null,
+/**
+ * Completed items in the agent's latest TODO list (see `todo_total`).
+ */
+todo_completed: number | null,
+/**
  * The most recent prompt sent in this workspace (what it's working on)
  */
 latest_prompt: string | null,

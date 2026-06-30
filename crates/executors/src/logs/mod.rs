@@ -1,6 +1,10 @@
+use json_patch::PatchOperation;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
+use workspace_utils::{
+    approvals::{ApprovalStatus, QuestionStatus},
+    log_msg::LogMsg,
+};
 
 use crate::logs::utils::shell_command_parsing::CommandCategory;
 
@@ -193,6 +197,65 @@ pub struct TodoItem {
     pub priority: Option<String>,
 }
 
+/// Progress of the most recent agent TODO list found in a process's logs.
+#[derive(Debug, Clone, Copy)]
+pub struct TodoProgress {
+    pub total: usize,
+    pub completed: usize,
+}
+
+/// Scan normalized-conversation log messages for the latest non-empty TODO list
+/// the agent wrote (`ActionType::TodoManagement`) and report how many of its
+/// items are completed. Returns `None` when the process never produced a TODO
+/// list, so callers can hide the indicator entirely.
+pub fn todo_progress_from_logs(messages: &[LogMsg]) -> Option<TodoProgress> {
+    let mut latest_todos: Option<Vec<TodoItem>> = None;
+    for msg in messages {
+        let LogMsg::JsonPatch(patch) = msg else {
+            continue;
+        };
+        for op in patch.iter() {
+            // Normalized entries arrive as JSON-patch ops on `/entries/<n>`;
+            // a TodoWrite may first `add` an entry then `replace` it as items
+            // complete, so we honor both and keep the last non-empty list.
+            let value = match op {
+                PatchOperation::Add(add) if add.path.strip_prefix("/entries/").is_some() => {
+                    &add.value
+                }
+                PatchOperation::Replace(replace)
+                    if replace.path.strip_prefix("/entries/").is_some() =>
+                {
+                    &replace.value
+                }
+                _ => continue,
+            };
+            if let Ok(NormalizedEntry {
+                entry_type:
+                    NormalizedEntryType::ToolUse {
+                        action_type: ActionType::TodoManagement { todos, .. },
+                        ..
+                    },
+                ..
+            }) = serde_json::from_value::<NormalizedEntry>(value.clone())
+            {
+                if !todos.is_empty() {
+                    latest_todos = Some(todos);
+                }
+            }
+        }
+    }
+
+    let todos = latest_todos?;
+    let completed = todos
+        .iter()
+        .filter(|t| t.status.eq_ignore_ascii_case("completed"))
+        .count();
+    Some(TodoProgress {
+        total: todos.len(),
+        completed,
+    })
+}
+
 /// Types of tool actions that can be performed
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -280,4 +343,89 @@ pub enum FileChange {
         /// Whether line number in the hunks are reliable.
         has_line_numbers: bool,
     },
+}
+
+#[cfg(test)]
+mod todo_progress_tests {
+    use json_patch::Patch;
+    use workspace_utils::log_msg::LogMsg;
+
+    use super::*;
+
+    fn todo_entry_value(items: &[(&str, &str)]) -> serde_json::Value {
+        let todos: Vec<TodoItem> = items
+            .iter()
+            .map(|(content, status)| TodoItem {
+                content: content.to_string(),
+                status: status.to_string(),
+                priority: None,
+            })
+            .collect();
+        let entry = NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::ToolUse {
+                tool_name: "TodoWrite".to_string(),
+                action_type: ActionType::TodoManagement {
+                    todos,
+                    operation: "write".to_string(),
+                },
+                status: ToolStatus::Success,
+            },
+            content: String::new(),
+            metadata: None,
+        };
+        serde_json::to_value(entry).unwrap()
+    }
+
+    fn patch_msg(index: usize, value: serde_json::Value) -> LogMsg {
+        let patch: Patch = serde_json::from_value(serde_json::json!([
+            { "op": "add", "path": format!("/entries/{index}"), "value": value }
+        ]))
+        .unwrap();
+        LogMsg::JsonPatch(patch)
+    }
+
+    #[test]
+    fn none_without_logs() {
+        assert!(todo_progress_from_logs(&[]).is_none());
+    }
+
+    #[test]
+    fn none_without_todo_entries() {
+        let entry = NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::AssistantMessage,
+            content: "hello".to_string(),
+            metadata: None,
+        };
+        let msgs = vec![patch_msg(0, serde_json::to_value(entry).unwrap())];
+        assert!(todo_progress_from_logs(&msgs).is_none());
+    }
+
+    #[test]
+    fn counts_completed_items() {
+        let msgs = vec![patch_msg(
+            0,
+            todo_entry_value(&[("a", "completed"), ("b", "in_progress"), ("c", "pending")]),
+        )];
+        let progress = todo_progress_from_logs(&msgs).unwrap();
+        assert_eq!(progress.total, 3);
+        assert_eq!(progress.completed, 1);
+    }
+
+    #[test]
+    fn uses_latest_nonempty_list() {
+        let msgs = vec![
+            patch_msg(0, todo_entry_value(&[("a", "pending"), ("b", "pending")])),
+            patch_msg(
+                1,
+                todo_entry_value(&[("a", "completed"), ("b", "completed"), ("c", "completed")]),
+            ),
+            // A trailing TodoRead emits an empty list; it must not reset the count.
+            patch_msg(2, todo_entry_value(&[])),
+        ];
+        let progress = todo_progress_from_logs(&msgs).unwrap();
+        assert_eq!(progress.total, 3);
+        assert_eq!(progress.completed, 3);
+    }
 }

@@ -8,6 +8,7 @@ import {
   GitPullRequestIcon,
   DotsThreeIcon,
   LightningIcon,
+  ListChecksIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { Ref } from 'react';
@@ -41,6 +42,10 @@ export interface WorkspaceSummaryProps {
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
   hasUnseenActivity?: boolean;
+  /** Total items in the agent's latest TODO list (running workspaces only). */
+  todoTotal?: number;
+  /** Completed items in the agent's latest TODO list (running only). */
+  todoCompleted?: number;
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
@@ -75,6 +80,8 @@ export function WorkspaceSummary({
   hasPendingApproval = false,
   hasRunningDevServer = false,
   hasUnseenActivity = false,
+  todoTotal,
+  todoCompleted,
   latestProcessCompletedAt,
   latestProcessStatus,
   prStatus,
@@ -92,6 +99,11 @@ export function WorkspaceSummary({
   const hasChanges = filesChanged !== undefined && filesChanged > 0;
   const isFailed =
     latestProcessStatus === 'failed' || latestProcessStatus === 'killed';
+  // Compact "completed/total" task counter, shown only while the workspace is
+  // running and the agent has actually produced a TODO list.
+  const showTodoProgress =
+    isRunning && todoTotal !== undefined && todoTotal > 0;
+  const todoAllDone = showTodoProgress && todoCompleted === todoTotal;
   // Issue-card rows pass latestPrompt and show it in place of the name.
   const primaryText = latestPrompt?.trim() || name;
 
@@ -186,6 +198,22 @@ export function WorkspaceSummary({
               ) : (
                 <RunningDots />
               ))}
+
+            {/* Task progress counter (running + has a TODO list only) */}
+            {showTodoProgress && (
+              <span
+                className={cn(
+                  'shrink-0 flex items-center gap-half tabular-nums',
+                  todoAllDone ? 'text-success' : 'text-low'
+                )}
+                title={`${todoCompleted ?? 0}/${todoTotal} tasks complete`}
+              >
+                <ListChecksIcon className="size-icon-xs" weight="bold" />
+                <span>
+                  {todoCompleted ?? 0}/{todoTotal}
+                </span>
+              </span>
+            )}
 
             {/* Unseen activity indicator (only when not running and not failed) */}
             {hasUnseenActivity && !isRunning && !isFailed && (
