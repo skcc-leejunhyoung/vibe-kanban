@@ -106,3 +106,6 @@ scripts/vibe-kanban-menubar-runner.sh
 
 # Playwright MCP scratch output (browser snapshots/console logs)
 .playwright-mcp/
+
+# local docs (generated from source, not committed)
+docs/local
