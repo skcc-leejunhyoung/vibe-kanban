@@ -15,6 +15,10 @@ pub struct PullRequest {
     pub pr_number: i64,
     pub pr_status: MergeStatus,
     pub target_branch_name: String,
+    /// The PR's head (source) branch. `None` means the workspace's work branch
+    /// (legacy rows), matching the original behavior where every PR's head was
+    /// `workspace.branch`.
+    pub head_branch_name: Option<String>,
     pub merged_at: Option<DateTime<Utc>>,
     pub merge_commit_sha: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -30,15 +34,17 @@ impl PullRequest {
         pr_url: &str,
         pr_number: i64,
         target_branch_name: &str,
+        head_branch_name: Option<&str>,
     ) -> Result<PullRequest, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         sqlx::query!(
-            "INSERT INTO pull_requests (id, workspace_id, repo_id, pr_url, pr_number, pr_status, target_branch_name, created_at)
-            VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+            "INSERT INTO pull_requests (id, workspace_id, repo_id, pr_url, pr_number, pr_status, target_branch_name, head_branch_name, created_at)
+            VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)
             ON CONFLICT(pr_url) DO UPDATE SET
                 workspace_id = COALESCE(pull_requests.workspace_id, excluded.workspace_id),
                 repo_id = COALESCE(pull_requests.repo_id, excluded.repo_id),
+                head_branch_name = COALESCE(pull_requests.head_branch_name, excluded.head_branch_name),
                 updated_at = CURRENT_TIMESTAMP",
             id,
             workspace_id,
@@ -46,6 +52,7 @@ impl PullRequest {
             pr_url,
             pr_number,
             target_branch_name,
+            head_branch_name,
             now,
         )
         .execute(pool)
@@ -64,6 +71,7 @@ impl PullRequest {
         target_branch_name: &str,
         pr_number: i64,
         pr_url: &str,
+        head_branch_name: Option<&str>,
     ) -> Result<PullRequest, sqlx::Error> {
         Self::create(
             pool,
@@ -72,6 +80,7 @@ impl PullRequest {
             pr_url,
             pr_number,
             target_branch_name,
+            head_branch_name,
         )
         .await
     }
@@ -87,6 +96,7 @@ impl PullRequest {
                 pr_number,
                 pr_status AS "pr_status: MergeStatus",
                 target_branch_name,
+                head_branch_name,
                 merged_at AS "merged_at: DateTime<Utc>",
                 merge_commit_sha,
                 created_at AS "created_at!: DateTime<Utc>",
@@ -140,6 +150,7 @@ impl PullRequest {
                 pr_number,
                 pr_status AS "pr_status: MergeStatus",
                 target_branch_name,
+                head_branch_name,
                 merged_at AS "merged_at: DateTime<Utc>",
                 merge_commit_sha,
                 created_at AS "created_at!: DateTime<Utc>",
@@ -167,6 +178,7 @@ impl PullRequest {
                 pr_number,
                 pr_status AS "pr_status: MergeStatus",
                 target_branch_name,
+                head_branch_name,
                 merged_at AS "merged_at: DateTime<Utc>",
                 merge_commit_sha,
                 created_at AS "created_at!: DateTime<Utc>",
@@ -196,6 +208,7 @@ impl PullRequest {
                 pr_number,
                 pr_status AS "pr_status: MergeStatus",
                 target_branch_name,
+                head_branch_name,
                 merged_at AS "merged_at: DateTime<Utc>",
                 merge_commit_sha,
                 created_at AS "created_at!: DateTime<Utc>",
@@ -238,6 +251,7 @@ impl PullRequest {
                 t.pr_number,
                 t.pr_status AS "pr_status: MergeStatus",
                 t.target_branch_name,
+                t.head_branch_name,
                 t.merged_at AS "merged_at: DateTime<Utc>",
                 t.merge_commit_sha,
                 t.created_at AS "created_at!: DateTime<Utc>",
@@ -276,6 +290,7 @@ impl PullRequest {
                 pr_number,
                 pr_status AS "pr_status: MergeStatus",
                 target_branch_name,
+                head_branch_name,
                 merged_at AS "merged_at: DateTime<Utc>",
                 merge_commit_sha,
                 created_at AS "created_at!: DateTime<Utc>",
@@ -300,6 +315,7 @@ impl PullRequest {
                 pr_number,
                 pr_status AS "pr_status: MergeStatus",
                 target_branch_name,
+                head_branch_name,
                 merged_at AS "merged_at: DateTime<Utc>",
                 merge_commit_sha,
                 created_at AS "created_at!: DateTime<Utc>",
@@ -331,6 +347,7 @@ impl PullRequest {
             repo_id: self.repo_id.unwrap_or_else(Uuid::nil),
             created_at: self.created_at,
             target_branch_name: self.target_branch_name.clone(),
+            head_branch_name: self.head_branch_name.clone(),
             pr_info: PullRequestInfo {
                 number: self.pr_number,
                 url: self.pr_url.clone(),

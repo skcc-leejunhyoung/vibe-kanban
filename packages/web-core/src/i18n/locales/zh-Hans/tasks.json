@@ -235,6 +235,8 @@
     "titlePlaceholder": "输入 PR 标题",
     "descriptionLabel": "描述（可选）",
     "descriptionPlaceholder": "输入 PR 描述",
+    "headBranchLabel": "源分支",
+    "selectHeadBranch": "选择源分支",
     "baseBranchLabel": "基础分支",
     "loadingBranches": "加载分支中...",
     "selectBaseBranch": "选择基础分支",

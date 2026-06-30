@@ -179,6 +179,25 @@ function navigateToCreateSubIssue(
   });
 }
 
+// Discover the feature branch a workspace's work branch was directly merged into
+// for the given repo (the pivot of a three-branch workflow: work -> feature ->
+// base via PR). Returns undefined when there's no such direct merge.
+async function findMergedFeatureBranch(
+  workspaceId: string,
+  repoId: string
+): Promise<string | undefined> {
+  try {
+    const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+    const repoStatus = branchStatus.find((s) => s.repo_id === repoId);
+    const directMerge = repoStatus?.merges?.find((m) => m.type === 'direct');
+    return directMerge?.type === 'direct'
+      ? directMerge.target_branch_name
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // All application actions
 export const Actions = {
   // === Workspace Actions ===
@@ -920,6 +939,10 @@ export const Actions = {
       const repos = await workspacesApi.getRepos(workspaceId);
       const repo = repos.find((r) => r.id === repoId);
 
+      // Prefer opening the PR from the feature branch the work branch was merged
+      // into (three-branch workflow); the dialog falls back to the work branch.
+      const featureBranch = await findMergedFeatureBranch(workspaceId, repoId);
+
       // Resolve vibe-kanban identifier from remote workspace + issue
       let issueIdentifier: string | undefined;
       const remoteWs = ctx.remoteWorkspaces.find(
@@ -934,6 +957,8 @@ export const Actions = {
         attempt: workspace,
         repoId,
         targetBranch: repo?.target_branch,
+        headBranch: featureBranch,
+        defaultBaseBranch: repo?.default_target_branch ?? undefined,
         issueIdentifier,
       });
 
@@ -950,9 +975,22 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && !ctx.hasOpenPR,
     execute: async (ctx, workspaceId, repoId) => {
-      const result = await workspacesApi.attachPr(workspaceId, {
+      // In a three-branch flow the linkable PR's head is the feature branch the
+      // work branch was merged into. Try that first, then fall back to the work
+      // branch (backend default when head_branch is null).
+      const featureBranch = await findMergedFeatureBranch(workspaceId, repoId);
+
+      let result = await workspacesApi.attachPr(workspaceId, {
         repo_id: repoId,
+        head_branch: featureBranch ?? null,
       });
+
+      if (featureBranch && result.success && !result.data.pr_attached) {
+        result = await workspacesApi.attachPr(workspaceId, {
+          repo_id: repoId,
+          head_branch: null,
+        });
+      }
 
       if (result.success && result.data.pr_attached && result.data.pr_number) {
         invalidateWorkspaceQueries(ctx.queryClient, workspaceId);

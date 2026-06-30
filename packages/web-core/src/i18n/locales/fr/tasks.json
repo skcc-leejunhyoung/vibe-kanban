@@ -326,6 +326,8 @@
     "titlePlaceholder": "Saisir le titre de la PR",
     "descriptionLabel": "Description (optionnel)",
     "descriptionPlaceholder": "Saisir la description de la PR",
+    "headBranchLabel": "Branche source",
+    "selectHeadBranch": "Sélectionner la branche source",
     "baseBranchLabel": "Branche de base",
     "loadingBranches": "Chargement des branches...",
     "selectBaseBranch": "Sélectionner la branche de base",

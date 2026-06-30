@@ -346,6 +346,8 @@
     "titlePlaceholder": "Enter PR title",
     "descriptionLabel": "Description (optional)",
     "descriptionPlaceholder": "Enter PR description",
+    "headBranchLabel": "Source Branch",
+    "selectHeadBranch": "Select source branch",
     "baseBranchLabel": "Base Branch",
     "loadingBranches": "Loading branches...",
     "selectBaseBranch": "Select base branch",

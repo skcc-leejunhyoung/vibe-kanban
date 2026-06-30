@@ -40,6 +40,17 @@ interface CreatePRDialogProps {
   attempt: Workspace;
   repoId: string;
   targetBranch?: string;
+  /**
+   * Default head (source) branch — typically an intermediate "feature" branch
+   * the work branch was merged into (three-branch workflow). Falls back to the
+   * workspace's work branch when absent or not found in the branch list.
+   */
+  headBranch?: string;
+  /**
+   * Fallback base branch (repo's default target) used when no remembered choice
+   * exists and the head is a feature branch (so `targetBranch` would be wrong).
+   */
+  defaultBaseBranch?: string;
   issueIdentifier?: string;
 }
 
@@ -50,6 +61,26 @@ export type CreatePRDialogResult = {
 
 const PR_TITLE_SUFFIX = ' (vibe-kanban)';
 
+// Remember the last base branch the user actually opened a PR against, per repo,
+// so the next PR (e.g. feature -> develop) defaults to the same base.
+const prBaseStorageKey = (repoId: string) => `vk-pr-base:${repoId}`;
+
+const readRememberedBase = (repoId: string): string | undefined => {
+  try {
+    return localStorage.getItem(prBaseStorageKey(repoId)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const rememberBase = (repoId: string, base: string) => {
+  try {
+    if (base) localStorage.setItem(prBaseStorageKey(repoId), base);
+  } catch {
+    // localStorage may be unavailable (private mode); remembering is best-effort.
+  }
+};
+
 const appendPrTitleSuffix = (title: string): string => {
   const trimmedTitle = title.trim();
   if (!trimmedTitle) return trimmedTitle;
@@ -58,13 +89,21 @@ const appendPrTitleSuffix = (title: string): string => {
 };
 
 const CreatePRDialogImpl = create<CreatePRDialogProps>(
-  ({ attempt, repoId, targetBranch, issueIdentifier }) => {
+  ({
+    attempt,
+    repoId,
+    targetBranch,
+    headBranch,
+    defaultBaseBranch,
+    issueIdentifier,
+  }) => {
     const modal = useModal();
     const { t } = useTranslation('tasks');
     const { isLoaded } = useAuth();
     const { environment, config } = useUserSystem();
     const [prTitle, setPrTitle] = useState('');
     const [prBody, setPrBody] = useState('');
+    const [prHeadBranch, setPrHeadBranch] = useState('');
     const [prBaseBranch, setPrBaseBranch] = useState('');
     const [creatingPR, setCreatingPR] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -78,6 +117,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     const resetFormState = useCallback(() => {
       setPrTitle('');
       setPrBody('');
+      setPrHeadBranch('');
       setPrBaseBranch('');
       setCreatingPR(false);
       setError(null);
@@ -143,31 +183,57 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       };
     }, [attempt.id, modal.visible, isLoaded, issueIdentifier]);
 
-    // Set default base branch when branches are loaded
+    // Set default head (source) branch when branches load. Prefer the feature
+    // branch the work branch was merged into; fall back to the work branch.
     useEffect(() => {
       if (!modal.visible || branches.length === 0) {
         return;
       }
-
-      const hasSelectedBranch = prBaseBranch
-        ? branches.some((branch) => branch.name === prBaseBranch)
-        : false;
-
-      if (hasSelectedBranch) {
+      const exists = (name: string) =>
+        branches.some((branch) => branch.name === name);
+      if (prHeadBranch && exists(prHeadBranch)) {
         return;
       }
+      const desired =
+        headBranch && exists(headBranch) ? headBranch : attempt.branch;
+      setPrHeadBranch(exists(desired) ? desired : '');
+    }, [branches, modal.visible, prHeadBranch, headBranch, attempt.branch]);
 
-      if (
-        targetBranch &&
-        branches.some((branch) => branch.name === targetBranch)
-      ) {
-        setPrBaseBranch(targetBranch);
+    // Set default base branch when branches/head load. Candidates, best first:
+    // a remembered choice, the repo default, then the workspace's current target
+    // (only meaningful when the head is the work branch — for a feature head the
+    // target branch IS the head). Never default the base to the head branch.
+    useEffect(() => {
+      if (!modal.visible || branches.length === 0) {
         return;
       }
-
-      // Leave empty when target branch cannot be resolved; backend falls back to repo target branch.
-      setPrBaseBranch('');
-    }, [branches, modal.visible, prBaseBranch, targetBranch]);
+      const exists = (name: string) =>
+        branches.some((branch) => branch.name === name);
+      const hasValidSelection =
+        prBaseBranch && exists(prBaseBranch) && prBaseBranch !== prHeadBranch;
+      if (hasValidSelection) {
+        return;
+      }
+      const candidates = [
+        readRememberedBase(repoId),
+        defaultBaseBranch ?? undefined,
+        prHeadBranch === attempt.branch ? targetBranch : undefined,
+      ];
+      const pick = candidates.find(
+        (c): c is string => !!c && exists(c) && c !== prHeadBranch
+      );
+      // Leave empty when nothing resolves; backend falls back to repo target branch.
+      setPrBaseBranch(pick ?? '');
+    }, [
+      branches,
+      modal.visible,
+      prBaseBranch,
+      prHeadBranch,
+      repoId,
+      defaultBaseBranch,
+      targetBranch,
+      attempt.branch,
+    ]);
 
     const isMacEnvironment = useMemo(
       () => environment?.os_type?.toLowerCase().includes('mac'),
@@ -211,6 +277,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
           title: prTitle,
           body: prBody || null,
           target_branch: prBaseBranch || null,
+          head_branch: prHeadBranch || null,
           draft: isDraft,
           auto_generate_description: autoGenerateDescription,
           repo_id: repoId,
@@ -230,6 +297,8 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       }
 
       if (result.success) {
+        // Remember the base for next time (per repo) now that it succeeded.
+        if (prBaseBranch) rememberBase(repoId, prBaseBranch);
         setCreatingPR(false);
         modal.resolve({ success: true } as CreatePRDialogResult);
         modal.hide();
@@ -305,6 +374,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     }, [
       attempt,
       repoId,
+      prHeadBranch,
       prBaseBranch,
       prBody,
       prTitle,
@@ -405,6 +475,24 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                       autoGenerateDescription
                         ? 'opacity-50 cursor-not-allowed'
                         : ''
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="pr-head">
+                    {t('createPrDialog.headBranchLabel')}
+                  </Label>
+                  <BranchSelector
+                    branches={branches}
+                    selectedBranch={prHeadBranch}
+                    onBranchSelect={setPrHeadBranch}
+                    placeholder={
+                      branchesLoading
+                        ? t('createPrDialog.loadingBranches')
+                        : t('createPrDialog.selectHeadBranch')
+                    }
+                    className={
+                      branchesLoading ? 'opacity-50 cursor-not-allowed' : ''
                     }
                   />
                 </div>

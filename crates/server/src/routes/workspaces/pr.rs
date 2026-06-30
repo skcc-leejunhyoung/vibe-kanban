@@ -46,6 +46,11 @@ pub struct CreatePrApiRequest {
     pub title: String,
     pub body: Option<String>,
     pub target_branch: Option<String>,
+    /// The PR's head (source) branch. Defaults to the workspace's work branch
+    /// when omitted, preserving the original behavior. Set this to an
+    /// intermediate "feature" branch (one the work branch was merged into) to
+    /// open a PR from feature -> base in a three-branch workflow.
+    pub head_branch: Option<String>,
     pub draft: Option<bool>,
     pub repo_id: Uuid,
     #[serde(default)]
@@ -75,6 +80,10 @@ pub struct AttachPrResponse {
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct AttachExistingPrRequest {
     pub repo_id: Uuid,
+    /// The PR's head (source) branch to search for. Defaults to the workspace's
+    /// work branch when omitted. Set this to an intermediate "feature" branch to
+    /// link a feature -> base PR in a three-branch workflow.
+    pub head_branch: Option<String>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -214,6 +223,17 @@ pub async fn create_pr(
         workspace_repo.target_branch.clone()
     };
 
+    // The PR's head (source) branch. Defaults to the workspace's work branch,
+    // but can be an intermediate "feature" branch the work branch was merged
+    // into (three-branch workflow: work -> feature -> base via this PR).
+    let head_branch = request
+        .head_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace.branch.clone());
+
     let container_ref = deployment
         .container()
         .ensure_container_exists(&workspace)
@@ -222,7 +242,7 @@ pub async fn create_pr(
     let worktree_path = workspace_path.join(&repo.name);
 
     let git = deployment.git();
-    let push_remote = git.resolve_remote_for_branch(&repo_path, &workspace.branch)?;
+    let push_remote = git.resolve_remote_for_branch(&repo_path, &head_branch)?;
 
     // Try to get the remote from the branch name (works for remote-tracking branches like "upstream/main").
     // Fall back to push_remote if the branch doesn't exist locally or isn't a remote-tracking branch.
@@ -259,7 +279,7 @@ pub async fn create_pr(
         Ok(true) => {}
     }
 
-    if let Err(e) = git.push_to_remote(&worktree_path, &workspace.branch, false) {
+    if let Err(e) = git.push_to_remote(&worktree_path, &head_branch, false) {
         tracing::error!("Failed to push branch to remote: {}", e);
         match e {
             GitServiceError::GitCLI(GitCliError::AuthFailed(_)) => {
@@ -297,7 +317,7 @@ pub async fn create_pr(
     let pr_request = CreatePrRequest {
         title: request.title.clone(),
         body: request.body.clone(),
-        head_branch: workspace.branch.clone(),
+        head_branch: head_branch.clone(),
         base_branch: base_branch.clone(),
         draft: request.draft,
         head_repo_url: Some(push_remote.url.clone()),
@@ -316,6 +336,7 @@ pub async fn create_pr(
                 &base_branch,
                 pr_info.number,
                 &pr_info.url,
+                Some(&head_branch),
             )
             .await
             {
@@ -420,6 +441,16 @@ pub async fn attach_existing_pr(
         })));
     }
 
+    // The PR's head (source) branch to search for. Defaults to the work branch,
+    // but can be an intermediate "feature" branch in a three-branch workflow.
+    let head_branch = request
+        .head_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace.branch.clone());
+
     let git = deployment.git();
     let remote = git.resolve_remote_for_branch(&repo.path, &workspace_repo.target_branch)?;
 
@@ -442,7 +473,7 @@ pub async fn attach_existing_pr(
 
     // List all PRs for branch (open, closed, and merged)
     let prs = match git_host
-        .list_prs_for_branch(&repo.path, &remote.url, &workspace.branch)
+        .list_prs_for_branch(&repo.path, &remote.url, &head_branch)
         .await
     {
         Ok(prs) => prs,
@@ -461,14 +492,18 @@ pub async fn attach_existing_pr(
 
     // Take the first PR (prefer open, but also accept merged/closed)
     if let Some(pr_info) = prs.into_iter().next() {
-        // Save PR info locally
+        // Save PR info locally. Use the PR's actual base/head from the host
+        // rather than the workspace's target_branch — in a three-branch flow the
+        // PR's base (e.g. `develop`) differs from the work branch's merge target
+        // (the feature branch).
         PullRequest::create_for_workspace(
             pool,
             workspace.id,
             workspace_repo.repo_id,
-            &workspace_repo.target_branch,
+            &pr_info.base_branch,
             pr_info.number,
             &pr_info.url,
+            Some(&pr_info.head_branch),
         )
         .await?;
 
@@ -502,7 +537,7 @@ pub async fn attach_existing_pr(
                 status: pr_status,
                 merged_at: None,
                 merge_commit_sha: pr_info.merge_commit_sha.clone(),
-                target_branch_name: workspace_repo.target_branch.clone(),
+                target_branch_name: pr_info.base_branch.clone(),
                 local_workspace_id: workspace.id,
             };
             tokio::spawn(async move {
@@ -801,6 +836,7 @@ pub(crate) async fn setup_pr_review_workspace(
         &target_branch_ref,
         pr.pr_number,
         &pr.pr_url,
+        Some(&pr.head_branch),
     )
     .await?;
 

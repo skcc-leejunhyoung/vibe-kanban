@@ -63,6 +63,8 @@
     "titlePlaceholder": "PR 제목 입력",
     "descriptionLabel": "설명 (선택사항)",
     "descriptionPlaceholder": "PR 설명 입력",
+    "headBranchLabel": "소스 브랜치",
+    "selectHeadBranch": "소스 브랜치 선택",
     "baseBranchLabel": "기본 브랜치",
     "loadingBranches": "브랜치 로딩 중...",
     "selectBaseBranch": "기본 브랜치 선택",

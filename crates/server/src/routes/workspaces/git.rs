@@ -356,12 +356,20 @@ pub async fn merge_workspace(
         .ok_or(RepoError::NotFound)?;
 
     let merges = Merge::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id).await?;
-    let has_open_pr = merges
-        .iter()
-        .any(|m| matches!(m, Merge::Pr(pr) if matches!(pr.pr_info.status, MergeStatus::Open)));
-    if has_open_pr {
+    // Only block a direct merge when an open PR originates from THIS work branch.
+    // A PR opened from an intermediate feature branch (head != workspace.branch,
+    // e.g. feature -> develop in a three-branch flow) must not block continued
+    // work-branch -> feature merges. A NULL head means the legacy default
+    // (workspace.branch).
+    let has_open_pr_from_work_branch = merges.iter().any(|m| {
+        matches!(m, Merge::Pr(pr)
+            if matches!(pr.pr_info.status, MergeStatus::Open)
+                && pr.head_branch_name.as_deref().unwrap_or(workspace.branch.as_str())
+                    == workspace.branch)
+    });
+    if has_open_pr_from_work_branch {
         return Err(ApiError::BadRequest(
-            "Cannot merge directly when a pull request is open for this repository.".to_string(),
+            "Cannot merge directly when a pull request is open for this branch.".to_string(),
         ));
     }
 
@@ -1092,10 +1100,17 @@ pub async fn rename_branch(
     let pool = &deployment.db().pool;
 
     let merges = Merge::find_by_workspace_id(pool, workspace.id).await?;
-    let has_open_pr = merges.into_iter().any(|merge| {
-        matches!(merge, Merge::Pr(pr_merge) if matches!(pr_merge.pr_info.status, MergeStatus::Open))
+    // Renaming the work branch only conflicts with an open PR that uses THIS
+    // branch as its head. A PR opened from an intermediate feature branch
+    // (head != workspace.branch) is unaffected. A NULL head means the legacy
+    // default (workspace.branch).
+    let has_open_pr_from_work_branch = merges.into_iter().any(|merge| {
+        matches!(merge, Merge::Pr(pr_merge)
+            if matches!(pr_merge.pr_info.status, MergeStatus::Open)
+                && pr_merge.head_branch_name.as_deref().unwrap_or(workspace.branch.as_str())
+                    == workspace.branch)
     });
-    if has_open_pr {
+    if has_open_pr_from_work_branch {
         return Ok(ResponseJson(ApiResponse::error_with_data(
             RenameBranchError::OpenPullRequest,
         )));

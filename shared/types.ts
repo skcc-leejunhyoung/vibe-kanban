@@ -235,7 +235,13 @@ export type Merge = { "type": "direct" } & DirectMerge | { "type": "pr" } & PrMe
 
 export type DirectMerge = { id: string, workspace_id: string, repo_id: string, merge_commit: string, target_branch_name: string, created_at: string, };
 
-export type PrMerge = { id: string, workspace_id: string, repo_id: string, created_at: string, target_branch_name: string, pr_info: PullRequestInfo, };
+export type PrMerge = { id: string, workspace_id: string, repo_id: string, created_at: string, target_branch_name: string,
+/**
+ * The PR's head (source) branch. `None` means the workspace's work branch
+ * (legacy PRs created before head tracking, where head was always
+ * `workspace.branch`).
+ */
+head_branch_name: string | null, pr_info: PullRequestInfo, };
 
 export type MergeStatus = "open" | "merged" | "closed" | "unknown";
 
@@ -435,7 +441,14 @@ export type CreateWorkspaceApiRequest = { name: string | null, };
 
 export type LinkedIssueInfo = { remote_project_id: string, issue_id: string, };
 
-export type CreatePrApiRequest = { title: string, body: string | null, target_branch: string | null, draft: boolean | null, repo_id: string, auto_generate_description: boolean, };
+export type CreatePrApiRequest = { title: string, body: string | null, target_branch: string | null,
+/**
+ * The PR's head (source) branch. Defaults to the workspace's work branch
+ * when omitted, preserving the original behavior. Set this to an
+ * intermediate "feature" branch (one the work branch was merged into) to
+ * open a PR from feature -> base in a three-branch workflow.
+ */
+head_branch: string | null, draft: boolean | null, repo_id: string, auto_generate_description: boolean, };
 
 export type AttachmentResponse = { id: string, file_path: string, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, created_at: string, updated_at: string, };
 
@@ -492,7 +505,13 @@ export type ImportIssueAttachmentsResponse = { attachment_ids: Array<string>, };
 
 export type AttachPrResponse = { pr_attached: boolean, pr_url: string | null, pr_number: bigint | null, pr_status: MergeStatus | null, };
 
-export type AttachExistingPrRequest = { repo_id: string, };
+export type AttachExistingPrRequest = { repo_id: string,
+/**
+ * The PR's head (source) branch to search for. Defaults to the workspace's
+ * work branch when omitted. Set this to an intermediate "feature" branch to
+ * link a feature -> base PR in a three-branch workflow.
+ */
+head_branch: string | null, };
 
 export type PrCommentsResponse = { comments: Array<UnifiedPrComment>, };
 

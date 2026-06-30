@@ -41,6 +41,10 @@ pub struct PrMerge {
     pub repo_id: Uuid,
     pub created_at: DateTime<Utc>,
     pub target_branch_name: String,
+    /// The PR's head (source) branch. `None` means the workspace's work branch
+    /// (legacy PRs created before head tracking, where head was always
+    /// `workspace.branch`).
+    pub head_branch_name: Option<String>,
     pub pr_info: PullRequestInfo,
 }
 

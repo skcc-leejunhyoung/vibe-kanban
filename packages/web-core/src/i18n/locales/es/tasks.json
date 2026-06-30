@@ -63,6 +63,8 @@
     "titlePlaceholder": "Ingresar título del PR",
     "descriptionLabel": "Descripción (opcional)",
     "descriptionPlaceholder": "Ingresar descripción del PR",
+    "headBranchLabel": "Rama de origen",
+    "selectHeadBranch": "Seleccionar rama de origen",
     "baseBranchLabel": "Rama Base",
     "loadingBranches": "Cargando ramas...",
     "selectBaseBranch": "Seleccionar rama base",

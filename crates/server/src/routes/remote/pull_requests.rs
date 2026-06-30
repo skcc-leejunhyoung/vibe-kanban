@@ -49,6 +49,7 @@ async fn link_pr_to_issue(
         &request.pr_url,
         request.pr_number as i64,
         &request.base_branch,
+        None,
     )
     .await?;
 

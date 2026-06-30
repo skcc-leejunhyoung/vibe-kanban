@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n                id,\n                workspace_id AS \"workspace_id: Uuid\",\n                repo_id AS \"repo_id: Uuid\",\n                pr_url,\n                pr_number,\n                pr_status AS \"pr_status: MergeStatus\",\n                target_branch_name,\n                merged_at AS \"merged_at: DateTime<Utc>\",\n                merge_commit_sha,\n                created_at AS \"created_at!: DateTime<Utc>\",\n                updated_at AS \"updated_at!: DateTime<Utc>\",\n                synced_at AS \"synced_at: DateTime<Utc>\"\n            FROM pull_requests\n            WHERE workspace_id = $1\n            ORDER BY created_at DESC",
+  "query": "SELECT\n                id,\n                workspace_id AS \"workspace_id: Uuid\",\n                repo_id AS \"repo_id: Uuid\",\n                pr_url,\n                pr_number,\n                pr_status AS \"pr_status: MergeStatus\",\n                target_branch_name,\n                head_branch_name,\n                merged_at AS \"merged_at: DateTime<Utc>\",\n                merge_commit_sha,\n                created_at AS \"created_at!: DateTime<Utc>\",\n                updated_at AS \"updated_at!: DateTime<Utc>\",\n                synced_at AS \"synced_at: DateTime<Utc>\"\n            FROM pull_requests\n            WHERE workspace_id = $1 AND repo_id = $2\n            ORDER BY created_at DESC",
   "describe": {
     "columns": [
       {
@@ -39,33 +39,38 @@
         "type_info": "Text"
       },
       {
-        "name": "merged_at: DateTime<Utc>",
+        "name": "head_branch_name",
         "ordinal": 7,
         "type_info": "Text"
       },
       {
-        "name": "merge_commit_sha",
+        "name": "merged_at: DateTime<Utc>",
         "ordinal": 8,
         "type_info": "Text"
       },
       {
-        "name": "created_at!: DateTime<Utc>",
+        "name": "merge_commit_sha",
         "ordinal": 9,
-        "type_info": "Datetime"
+        "type_info": "Text"
       },
       {
-        "name": "updated_at!: DateTime<Utc>",
+        "name": "created_at!: DateTime<Utc>",
         "ordinal": 10,
         "type_info": "Datetime"
       },
       {
-        "name": "synced_at: DateTime<Utc>",
+        "name": "updated_at!: DateTime<Utc>",
         "ordinal": 11,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "synced_at: DateTime<Utc>",
+        "ordinal": 12,
         "type_info": "Datetime"
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 2
     },
     "nullable": [
       false,
@@ -77,10 +82,11 @@
       false,
       true,
       true,
+      true,
       false,
       false,
       true
     ]
   },
-  "hash": "b21ce1663242be3d16c21a076d7b4b584692eb6ae19a3a5f19caba8ad16edce6"
+  "hash": "19158f5e5f31e91c73c087e5f0096f4012f59bcc6899bec59b3bce367404ba0c"
 }
