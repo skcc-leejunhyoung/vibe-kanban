@@ -36,6 +36,10 @@ export interface WorkspacesSidebarWorkspace {
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
   hasUnseenActivity?: boolean;
+  /** Total items in the agent's latest TODO list (running workspaces only). */
+  todoTotal?: number;
+  /** Completed items in the agent's latest TODO list (running only). */
+  todoCompleted?: number;
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
