@@ -200,9 +200,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     }, [branches, modal.visible, prHeadBranch, headBranch, attempt.branch]);
 
     // Set default base branch when branches/head load. Candidates, best first:
-    // a remembered choice, the repo default, then the workspace's current target
-    // (only meaningful when the head is the work branch — for a feature head the
-    // target branch IS the head). Never default the base to the head branch.
+    // a remembered choice, the workspace's current target (only when the head is
+    // the work branch — for a feature head the target branch IS the head, so it's
+    // skipped), then the repo default. Never default the base to the head branch.
     useEffect(() => {
       if (!modal.visible || branches.length === 0) {
         return;
@@ -216,8 +216,11 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       }
       const candidates = [
         readRememberedBase(repoId),
-        defaultBaseBranch ?? undefined,
+        // For a work-branch head, the workspace's explicitly chosen merge target
+        // is the most accurate base. For a feature head the target IS the head,
+        // so it's skipped here and the repo default is used instead.
         prHeadBranch === attempt.branch ? targetBranch : undefined,
+        defaultBaseBranch ?? undefined,
       ];
       const pick = candidates.find(
         (c): c is string => !!c && exists(c) && c !== prHeadBranch
