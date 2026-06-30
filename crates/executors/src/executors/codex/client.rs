@@ -950,13 +950,13 @@ impl JsonRpcCallbacks for AppServerClient {
                 serde_json::from_value::<TurnCompletedNotification>(params).ok()
             });
 
-            if let Some(completed) = completed {
-                if completed.turn.status == TurnStatus::Interrupted {
-                    was_interrupted = true;
-                    tracing::debug!("codex turn interrupted; flushing feedback queue");
-                    if self.flush_pending_feedback().await {
-                        keep_alive = true;
-                    }
+            if let Some(completed) = completed
+                && completed.turn.status == TurnStatus::Interrupted
+            {
+                was_interrupted = true;
+                tracing::debug!("codex turn interrupted; flushing feedback queue");
+                if self.flush_pending_feedback().await {
+                    keep_alive = true;
                 }
             }
 

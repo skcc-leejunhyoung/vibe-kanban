@@ -237,10 +237,9 @@ pub fn todo_progress_from_logs(messages: &[LogMsg]) -> Option<TodoProgress> {
                     },
                 ..
             }) = serde_json::from_value::<NormalizedEntry>(value.clone())
+                && !todos.is_empty()
             {
-                if !todos.is_empty() {
-                    latest_todos = Some(todos);
-                }
+                latest_todos = Some(todos);
             }
         }
     }
