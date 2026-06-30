@@ -276,6 +276,9 @@ pub struct DraftIssueData {
 #[strum_discriminants(ts(use_ts_enum))]
 #[strum_discriminants(serde(rename_all = "SCREAMING_SNAKE_CASE"))]
 #[strum_discriminants(strum(serialize_all = "SCREAMING_SNAKE_CASE"))]
+// Variants carry whole payload structs by design; boxing would churn every
+// construction/match site just to silence a stack-size lint.
+#[allow(clippy::large_enum_variant)]
 pub enum ScratchPayload {
     DraftTask(String),
     DraftFollowUp(DraftFollowUpData),

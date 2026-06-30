@@ -2069,134 +2069,6 @@ impl LocalContainerService {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use executors::logs::{NormalizedEntry, RateLimitInfo, utils::patch::ConversationPatch};
-
-    use super::*;
-
-    fn rate_limit_msg(resets_at: Option<&str>) -> LogMsg {
-        LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
-            0,
-            NormalizedEntry {
-                timestamp: None,
-                entry_type: NormalizedEntryType::RateLimitInfo(RateLimitInfo {
-                    limit_reached: true,
-                    resets_at: resets_at.map(str::to_string),
-                    scope: Some("5h".to_string()),
-                }),
-                content: "Usage rate limit reached".to_string(),
-                metadata: None,
-            },
-        ))
-    }
-
-    #[test]
-    fn rate_limit_reset_hint_detects_in_memory_patch() {
-        let reset_at = "2026-06-18T12:00:00+00:00";
-        let msgs = vec![rate_limit_msg(Some(reset_at))];
-
-        assert_eq!(
-            LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
-            Some(Some(reset_at.to_string()))
-        );
-    }
-
-    #[test]
-    fn rate_limit_reset_hint_requires_limit_reached_entry() {
-        let msgs = vec![LogMsg::Stdout("not a rate-limit patch".to_string())];
-
-        assert_eq!(
-            LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
-            None
-        );
-    }
-
-    /// Regression for the "no changes made" early-finalize path (scenario A).
-    ///
-    /// A coding agent that completes successfully *without* making changes is
-    /// still a terminal turn whose queued follow-up must be executed, not left
-    /// stuck in the in-memory queue forever. Both the normal `should_finalize`
-    /// path and the no-changes early-finalize path now run through
-    /// `finalize_with_queued_followup`, which consumes the queue iff this
-    /// predicate holds — so a `Completed` status (the no-changes success case)
-    /// must execute the queue; only `Failed`/`Killed` discard it.
-    #[test]
-    fn completed_turn_executes_queued_followup_even_without_changes() {
-        assert!(LocalContainerService::should_execute_queued_message(
-            &ExecutionProcessStatus::Completed
-        ));
-        assert!(!LocalContainerService::should_execute_queued_message(
-            &ExecutionProcessStatus::Failed
-        ));
-        assert!(!LocalContainerService::should_execute_queued_message(
-            &ExecutionProcessStatus::Killed
-        ));
-    }
-
-    /// Decision table for [`LocalContainerService::plan_post_completion`].
-    ///
-    /// The scenario-A regression lives in the first case: a turn that completes
-    /// successfully *without* changes (`success_or_cleanup = true`,
-    /// `should_start_next = false`) must take the queue-draining finalize path
-    /// (`finalize_with_queue = Some(false)`), never start a next action, and must
-    /// NOT depend on `should_finalize`/`has_chained` (early-finalize wins). The
-    /// original bug skipped queue consumption entirely on this path.
-    #[test]
-    fn plan_post_completion_decision_table() {
-        // Scenario A: success, no changes -> drain queue via early finalize.
-        // should_finalize/has_chained set true to prove they don't matter here.
-        assert_eq!(
-            LocalContainerService::plan_post_completion(true, false, true, true),
-            PostCompletionPlan {
-                start_next: false,
-                log_skip_cleanup: true,
-                finalize_with_queue: Some(false),
-            }
-        );
-
-        // Success with changes, not the last action -> start next, no finalize yet.
-        assert_eq!(
-            LocalContainerService::plan_post_completion(true, true, false, false),
-            PostCompletionPlan {
-                start_next: true,
-                log_skip_cleanup: false,
-                finalize_with_queue: None,
-            }
-        );
-
-        // Success with changes, last action -> start next then finalize, carrying has_chained.
-        assert_eq!(
-            LocalContainerService::plan_post_completion(true, true, true, true),
-            PostCompletionPlan {
-                start_next: true,
-                log_skip_cleanup: false,
-                finalize_with_queue: Some(true),
-            }
-        );
-
-        // Not in success block (e.g. failed/killed) but should_finalize -> finalize only.
-        assert_eq!(
-            LocalContainerService::plan_post_completion(false, false, true, false),
-            PostCompletionPlan {
-                start_next: false,
-                log_skip_cleanup: false,
-                finalize_with_queue: Some(false),
-            }
-        );
-
-        // Nothing to do (not success, not finalizing) -> no side effects.
-        assert_eq!(
-            LocalContainerService::plan_post_completion(false, false, false, false),
-            PostCompletionPlan {
-                start_next: false,
-                log_skip_cleanup: false,
-                finalize_with_queue: None,
-            }
-        );
-    }
-}
-
 fn failure_exit_status() -> std::process::ExitStatus {
     #[cfg(unix)]
     {
@@ -2853,5 +2725,133 @@ fn success_exit_status() -> std::process::ExitStatus {
     {
         use std::os::windows::process::ExitStatusExt;
         ExitStatusExt::from_raw(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use executors::logs::{NormalizedEntry, RateLimitInfo, utils::patch::ConversationPatch};
+
+    use super::*;
+
+    fn rate_limit_msg(resets_at: Option<&str>) -> LogMsg {
+        LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+            0,
+            NormalizedEntry {
+                timestamp: None,
+                entry_type: NormalizedEntryType::RateLimitInfo(RateLimitInfo {
+                    limit_reached: true,
+                    resets_at: resets_at.map(str::to_string),
+                    scope: Some("5h".to_string()),
+                }),
+                content: "Usage rate limit reached".to_string(),
+                metadata: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn rate_limit_reset_hint_detects_in_memory_patch() {
+        let reset_at = "2026-06-18T12:00:00+00:00";
+        let msgs = vec![rate_limit_msg(Some(reset_at))];
+
+        assert_eq!(
+            LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
+            Some(Some(reset_at.to_string()))
+        );
+    }
+
+    #[test]
+    fn rate_limit_reset_hint_requires_limit_reached_entry() {
+        let msgs = vec![LogMsg::Stdout("not a rate-limit patch".to_string())];
+
+        assert_eq!(
+            LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
+            None
+        );
+    }
+
+    /// Regression for the "no changes made" early-finalize path (scenario A).
+    ///
+    /// A coding agent that completes successfully *without* making changes is
+    /// still a terminal turn whose queued follow-up must be executed, not left
+    /// stuck in the in-memory queue forever. Both the normal `should_finalize`
+    /// path and the no-changes early-finalize path now run through
+    /// `finalize_with_queued_followup`, which consumes the queue iff this
+    /// predicate holds — so a `Completed` status (the no-changes success case)
+    /// must execute the queue; only `Failed`/`Killed` discard it.
+    #[test]
+    fn completed_turn_executes_queued_followup_even_without_changes() {
+        assert!(LocalContainerService::should_execute_queued_message(
+            &ExecutionProcessStatus::Completed
+        ));
+        assert!(!LocalContainerService::should_execute_queued_message(
+            &ExecutionProcessStatus::Failed
+        ));
+        assert!(!LocalContainerService::should_execute_queued_message(
+            &ExecutionProcessStatus::Killed
+        ));
+    }
+
+    /// Decision table for [`LocalContainerService::plan_post_completion`].
+    ///
+    /// The scenario-A regression lives in the first case: a turn that completes
+    /// successfully *without* changes (`success_or_cleanup = true`,
+    /// `should_start_next = false`) must take the queue-draining finalize path
+    /// (`finalize_with_queue = Some(false)`), never start a next action, and must
+    /// NOT depend on `should_finalize`/`has_chained` (early-finalize wins). The
+    /// original bug skipped queue consumption entirely on this path.
+    #[test]
+    fn plan_post_completion_decision_table() {
+        // Scenario A: success, no changes -> drain queue via early finalize.
+        // should_finalize/has_chained set true to prove they don't matter here.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(true, false, true, true),
+            PostCompletionPlan {
+                start_next: false,
+                log_skip_cleanup: true,
+                finalize_with_queue: Some(false),
+            }
+        );
+
+        // Success with changes, not the last action -> start next, no finalize yet.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(true, true, false, false),
+            PostCompletionPlan {
+                start_next: true,
+                log_skip_cleanup: false,
+                finalize_with_queue: None,
+            }
+        );
+
+        // Success with changes, last action -> start next then finalize, carrying has_chained.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(true, true, true, true),
+            PostCompletionPlan {
+                start_next: true,
+                log_skip_cleanup: false,
+                finalize_with_queue: Some(true),
+            }
+        );
+
+        // Not in success block (e.g. failed/killed) but should_finalize -> finalize only.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(false, false, true, false),
+            PostCompletionPlan {
+                start_next: false,
+                log_skip_cleanup: false,
+                finalize_with_queue: Some(false),
+            }
+        );
+
+        // Nothing to do (not success, not finalizing) -> no side effects.
+        assert_eq!(
+            LocalContainerService::plan_post_completion(false, false, false, false),
+            PostCompletionPlan {
+                start_next: false,
+                log_skip_cleanup: false,
+                finalize_with_queue: None,
+            }
+        );
     }
 }

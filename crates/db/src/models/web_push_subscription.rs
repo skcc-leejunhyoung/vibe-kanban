@@ -45,7 +45,7 @@ impl WebPushSubscriptionModel {
         .fetch_one(pool)
         .await?;
 
-        Ok(row_to_subscription(row)?)
+        row_to_subscription(row)
     }
 
     pub async fn list(pool: &SqlitePool) -> Result<Vec<WebPushSubscription>, sqlx::Error> {

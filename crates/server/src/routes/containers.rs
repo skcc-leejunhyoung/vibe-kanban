@@ -21,6 +21,9 @@ struct ContainerInfo {
     pub attempt_id: Uuid,
 }
 
+// ApiError is large app-wide (the single handler error type); boxing it is a
+// cross-cutting change out of scope for these helpers.
+#[allow(clippy::result_large_err)]
 fn maybe_found<T>(result: Result<T, SqlxError>) -> Result<Option<T>, ApiError> {
     match result {
         Ok(value) => Ok(Some(value)),
@@ -29,6 +32,7 @@ fn maybe_found<T>(result: Result<T, SqlxError>) -> Result<Option<T>, ApiError> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn maybe_workspace_found<T>(result: Result<T, WorkspaceError>) -> Result<Option<T>, ApiError> {
     match result {
         Ok(value) => Ok(Some(value)),

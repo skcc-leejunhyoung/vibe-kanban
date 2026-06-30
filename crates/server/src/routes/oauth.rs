@@ -434,33 +434,6 @@ fn simple_html_response(status: StatusCode, message: String) -> Response<String>
         .unwrap()
 }
 
-#[cfg(test)]
-mod tests {
-    use services::services::config::Config;
-
-    use super::should_track_login_identity;
-
-    #[test]
-    fn login_identity_analytics_is_skipped_when_analytics_is_disabled() {
-        let config = Config {
-            analytics_enabled: false,
-            ..Config::default()
-        };
-
-        assert!(!should_track_login_identity(&config));
-    }
-
-    #[test]
-    fn login_identity_analytics_is_allowed_after_explicit_opt_in() {
-        let config = Config {
-            analytics_enabled: true,
-            ..Config::default()
-        };
-
-        assert!(should_track_login_identity(&config));
-    }
-}
-
 fn close_window_response(message: String, skip_auto_close: bool) -> Response<String> {
     let script = if skip_auto_close {
         "" // Desktop app: leave the tab open so the user sees the message
@@ -499,4 +472,31 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
         .header("content-type", "text/html; charset=utf-8")
         .body(body)
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use services::services::config::Config;
+
+    use super::should_track_login_identity;
+
+    #[test]
+    fn login_identity_analytics_is_skipped_when_analytics_is_disabled() {
+        let config = Config {
+            analytics_enabled: false,
+            ..Config::default()
+        };
+
+        assert!(!should_track_login_identity(&config));
+    }
+
+    #[test]
+    fn login_identity_analytics_is_allowed_after_explicit_opt_in() {
+        let config = Config {
+            analytics_enabled: true,
+            ..Config::default()
+        };
+
+        assert!(should_track_login_identity(&config));
+    }
 }

@@ -48,7 +48,9 @@ pub async fn unresolved_blockers(
     for blocker_id in blocker_ids {
         let issue = client.get_issue(blocker_id).await?;
 
-        if !resolved_by_project.contains_key(&issue.project_id) {
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            resolved_by_project.entry(issue.project_id)
+        {
             let statuses = client
                 .list_project_statuses(issue.project_id)
                 .await?
@@ -58,7 +60,7 @@ pub async fn unresolved_blockers(
                 .filter(|s| is_resolved_status_name(&s.name))
                 .map(|s| s.id)
                 .collect();
-            resolved_by_project.insert(issue.project_id, set);
+            e.insert(set);
         }
 
         let resolved = resolved_by_project

@@ -152,6 +152,6 @@ fn request_has_preview_host(request: &Request) -> bool {
     }
     // Reject pure-IP authorities (e.g. `127.0.0.1`) where every remaining
     // label is numeric. Real preview hostnames always contain a domain part.
-    let rest_has_alpha = labels.any(|label| label.chars().any(|c| c.is_ascii_alphabetic()));
-    rest_has_alpha
+
+    labels.any(|label| label.chars().any(|c| c.is_ascii_alphabetic()))
 }

@@ -29,6 +29,9 @@ pub enum HookTables {
 
 #[derive(Serialize, Deserialize, TS)]
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
+// Variants carry whole records by design; boxing them would churn every event
+// producer/matcher just to silence a stack-size lint on a short-lived value.
+#[allow(clippy::large_enum_variant)]
 pub enum RecordTypes {
     Workspace(Workspace),
     ExecutionProcess(ExecutionProcess),

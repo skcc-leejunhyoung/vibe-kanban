@@ -93,10 +93,10 @@ async fn tick(
         // auto-answering would hijack their interaction. A missing run row means
         // the first coding turn hasn't finalized yet (the row is created at
         // finalize), so fall through and keep answering in that case.
-        if let Some(run) = VibeRun::find_by_workspace_id(pool, workspace.id).await? {
-            if matches!(run.phase.as_str(), "blocked" | "done") {
-                continue;
-            }
+        if let Some(run) = VibeRun::find_by_workspace_id(pool, workspace.id).await?
+            && matches!(run.phase.as_str(), "blocked" | "done")
+        {
+            continue;
         }
 
         let response = auto_outcome(info.execution_process_id, info.is_question);

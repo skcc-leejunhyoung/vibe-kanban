@@ -390,10 +390,10 @@ fn handle_open_deep_link(
     if let Some(path) = path {
         if app.get_webview_window("main").is_some() {
             emit_deeplink_path(app, &path);
-        } else if let Some(pending_path) = pending_path {
-            if let Ok(mut pending) = pending_path.lock() {
-                *pending = Some(path);
-            }
+        } else if let Some(pending_path) = pending_path
+            && let Ok(mut pending) = pending_path.lock()
+        {
+            *pending = Some(path);
         }
     }
 }
