@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KanbanBadge } from './KanbanBadge';
 import { WorkspaceSummary } from './WorkspaceSummary';
@@ -56,7 +56,10 @@ export interface WorkspacesIssueGroupedListProps {
   /** Flat issue groups, used when `sections` is null. */
   groups: WorkspaceIssueGroup[];
   selectedWorkspaceId: string | null;
-  onSelectWorkspace: (id: string) => void;
+  onSelectWorkspace: (
+    id: string,
+    event?: MouseEvent<HTMLButtonElement>
+  ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
   focusedWorkspaceId?: string | null;
   registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;
@@ -78,7 +81,10 @@ function WorkspaceRows({
 }: {
   workspaces: WorkspacesSidebarWorkspace[];
   selectedWorkspaceId: string | null;
-  onSelectWorkspace: (id: string) => void;
+  onSelectWorkspace: (
+    id: string,
+    event?: MouseEvent<HTMLButtonElement>
+  ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
   focusedWorkspaceId?: string | null;
   registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;
@@ -113,7 +119,7 @@ function WorkspaceRows({
           latestPrompt={workspace.latestPrompt}
           isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
-          onClick={() => onSelectWorkspace(workspace.id)}
+          onClick={(event) => onSelectWorkspace(workspace.id, event)}
         />
       ))}
     </>
@@ -130,7 +136,10 @@ function IssueGroupBlock({
 }: {
   group: WorkspaceIssueGroup;
   selectedWorkspaceId: string | null;
-  onSelectWorkspace: (id: string) => void;
+  onSelectWorkspace: (
+    id: string,
+    event?: MouseEvent<HTMLButtonElement>
+  ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
   focusedWorkspaceId?: string | null;
   registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;

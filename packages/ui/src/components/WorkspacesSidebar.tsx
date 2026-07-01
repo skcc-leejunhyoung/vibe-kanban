@@ -1,4 +1,4 @@
-import type { ReactNode, Ref } from 'react';
+import type { MouseEvent, ReactNode, Ref } from 'react';
 import { useCallback, useMemo, useRef } from 'react';
 import {
   PlusIcon,
@@ -72,7 +72,10 @@ export interface WorkspacesSidebarProps {
   archivedWorkspaces?: WorkspacesSidebarWorkspace[];
   isLoading?: boolean;
   selectedWorkspaceId: string | null;
-  onSelectWorkspace: (id: string) => void;
+  onSelectWorkspace: (
+    id: string,
+    event?: MouseEvent<HTMLButtonElement>
+  ) => void;
   onAddWorkspace?: () => void;
   searchQuery: string;
   onSearchChange: (value: string) => void;
@@ -183,7 +186,10 @@ function WorkspaceList({
 }: {
   workspaces: WorkspacesSidebarWorkspace[];
   selectedWorkspaceId: string | null;
-  onSelectWorkspace: (id: string) => void;
+  onSelectWorkspace: (
+    id: string,
+    event?: MouseEvent<HTMLButtonElement>
+  ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
   focusedWorkspaceId?: string | null;
   registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;
@@ -218,7 +224,7 @@ function WorkspaceList({
           prStatus={workspace.prStatus}
           isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
-          onClick={() => onSelectWorkspace(workspace.id)}
+          onClick={(event) => onSelectWorkspace(workspace.id, event)}
         />
       ))}
     </>
@@ -442,7 +448,7 @@ export function WorkspacesSidebar({
                   prStatus={workspace.prStatus}
                   isInPlace={workspace.isInPlace}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
-                  onClick={() => onSelectWorkspace(workspace.id)}
+                  onClick={(event) => onSelectWorkspace(workspace.id, event)}
                 />
               ))
             )}
@@ -589,7 +595,7 @@ export function WorkspacesSidebar({
                 prStatus={workspace.prStatus}
                 isInPlace={workspace.isInPlace}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
-                onClick={() => onSelectWorkspace(workspace.id)}
+                onClick={(event) => onSelectWorkspace(workspace.id, event)}
               />
             ))}
           </div>

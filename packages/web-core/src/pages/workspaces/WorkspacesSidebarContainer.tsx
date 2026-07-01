@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   type RefObject,
+  type MouseEvent,
 } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useHotkeys } from 'react-hotkeys-hook';
@@ -61,7 +62,10 @@ interface WorkspacesSidebarContainerProps {
    * instead of switching the mobile tab; when provided, the default
    * select-then-switch-tab behaviour is skipped.
    */
-  onSelectWorkspaceOverride?: (id: string) => void;
+  onSelectWorkspaceOverride?: (
+    id: string,
+    event?: MouseEvent<HTMLButtonElement>
+  ) => void;
   /** Override the add-workspace action (remote mobile routes to create). */
   onAddWorkspaceOverride?: () => void;
 }
@@ -218,9 +222,17 @@ export function WorkspacesSidebarContainer({
 
   // Handle workspace selection - scroll to bottom if re-selecting same workspace
   const handleSelectWorkspace = useCallback(
-    (id: string) => {
+    (id: string, event?: MouseEvent<HTMLButtonElement>) => {
+      if (event?.metaKey || event?.ctrlKey) {
+        event.preventDefault();
+        const path = routeHostId
+          ? `/hosts/${encodeURIComponent(routeHostId)}/workspaces/${encodeURIComponent(id)}`
+          : `/workspaces/${encodeURIComponent(id)}`;
+        window.open(path, '_blank', 'noopener,noreferrer');
+        return;
+      }
       if (onSelectWorkspaceOverride) {
-        onSelectWorkspaceOverride(id);
+        onSelectWorkspaceOverride(id, event);
         return;
       }
       if (id === selectedWorkspaceId) {
@@ -239,6 +251,7 @@ export function WorkspacesSidebarContainer({
       onScrollToBottom,
       isMobile,
       setMobileActiveTab,
+      routeHostId,
     ]
   );
 

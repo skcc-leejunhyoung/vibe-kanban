@@ -12,7 +12,7 @@ import {
   HourglassIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import type { Ref } from 'react';
+import type { MouseEvent, Ref } from 'react';
 import { cn } from '../lib/cn';
 import { RunningDots } from './RunningDots';
 
@@ -56,7 +56,7 @@ export interface WorkspaceSummaryProps {
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
-  onClick?: () => void;
+  onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   className?: string;
   summary?: boolean;
   /** Whether this is a draft workspace (shows "Draft" instead of elapsed time) */
