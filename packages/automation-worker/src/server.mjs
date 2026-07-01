@@ -1423,7 +1423,11 @@ function slug(value) {
 }
 
 function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  // undici's fetch() sets .message to a generic "fetch failed" and hides the
+  // real reason (ECONNRESET/ETIMEDOUT/EAI_AGAIN/TLS...) in .cause. Surface it.
+  const cause = error.cause?.code || error.cause?.message;
+  return cause ? `${error.message} (${cause})` : error.message;
 }
 
 // Strip the admin token before a URL is logged so it never lands in logs.json.
