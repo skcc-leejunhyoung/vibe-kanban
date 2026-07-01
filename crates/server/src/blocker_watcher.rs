@@ -11,8 +11,11 @@
 use std::{path::Path, time::Duration};
 
 use db::models::{
-    execution_process::ExecutionProcess, pending_execution_start::PendingExecutionStart,
-    session::Session, workspace::Workspace, workspace_repo::WorkspaceRepo,
+    execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    pending_execution_start::PendingExecutionStart,
+    session::Session,
+    workspace::Workspace,
+    workspace_repo::WorkspaceRepo,
 };
 use deployment::Deployment;
 use services::services::{container::ContainerService, issue_gating};
@@ -328,6 +331,24 @@ async fn process_one(
     // spawn errors, so leaving the pending row would risk repeated retries on
     // a permanently-broken executor_action.
     PendingExecutionStart::delete_by_process_id(pool, row.execution_process_id).await?;
+
+    // A user may have stopped this waiting session between the blocker check and
+    // now: `stop_execution` cancels the deferred start and marks the process
+    // Killed. Re-read the status right before spawning and bail if we positively
+    // observe it is no longer Running, otherwise we'd spawn an unsupervised
+    // orphan agent whose exit would overwrite the Killed status. On a read error
+    // we fall through to spawn to avoid stranding the session on a transient DB
+    // hiccup. This narrows — but does not fully close — the resume/stop race; a
+    // complete fix needs per-process serialization of the two paths.
+    if let Ok(Some(p)) = ExecutionProcess::find_by_id(pool, row.execution_process_id).await
+        && p.status != ExecutionProcessStatus::Running
+    {
+        tracing::info!(
+            "blocker_watcher: skipping resume of {}; no longer running (stopped?)",
+            row.execution_process_id
+        );
+        return Ok(());
+    }
 
     if let Err(e) = deployment
         .container()
