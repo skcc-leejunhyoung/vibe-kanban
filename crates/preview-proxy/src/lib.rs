@@ -318,7 +318,7 @@ fn rewrite_redirect_like_header_value(
         return Some(normalized_value);
     }
 
-    let mut parsed = if normalized_value.starts_with("//") {
+    let parsed = if normalized_value.starts_with("//") {
         reqwest::Url::parse(&format!("http:{normalized_value}")).ok()?
     } else {
         reqwest::Url::parse(&normalized_value).ok()?
