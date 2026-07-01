@@ -326,6 +326,26 @@ export function PreviewBrowserContainer({
       return remoteUrl.toString();
     }
 
+    // Subdomain-based routing: the proxy extracts the target dev-server port
+    // from the first label of the Host header.
+    const hostToken =
+      hostId != null ? `${devServerPort}--${hostId}` : devServerPort;
+
+    // When the app itself is served over HTTPS behind a reverse proxy (e.g.
+    // Caddy at `vibe-kanban.localhost`), an `http://` preview iframe is blocked
+    // as mixed content and renders blank. Route the preview through a subdomain
+    // of the current HTTPS origin so the same reverse proxy terminates TLS for
+    // it too (requires a `*.<host>` → preview-proxy rule, e.g. in the Caddyfile).
+    const loc = window.location;
+    const hostnameIsIp =
+      /^\d{1,3}(\.\d{1,3}){3}$/.test(loc.hostname) ||
+      loc.hostname.includes(':');
+    if (loc.protocol === 'https:' && !hostnameIsIp) {
+      const httpsProxyUrl = new URL(`https://${hostToken}.${loc.host}${path}`);
+      httpsProxyUrl.searchParams.set('_refresh', String(previewRefreshKey));
+      return httpsProxyUrl.toString();
+    }
+
     // Local mode: loopback dev servers go through the on-machine preview
     // proxy on `previewProxyPort` (browser must be on the same machine).
     if (!previewProxyPort) return undefined;
@@ -337,9 +357,6 @@ export function PreviewBrowserContainer({
       return undefined;
     }
 
-    // Subdomain-based routing: the proxy extracts the port from the Host header
-    const hostToken =
-      hostId != null ? `${devServerPort}--${hostId}` : devServerPort;
     const proxyUrl = new URL(
       `http://${hostToken}.localhost:${previewProxyPort}${path}`
     );

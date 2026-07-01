@@ -200,6 +200,69 @@ fn proxy_host_label(target_port: u16, relay_host_id: Option<Uuid>) -> String {
     }
 }
 
+/// The browser-facing origin used to reach this proxy. Redirect/refresh
+/// rewrites target this origin so they stay on the same scheme + host the
+/// iframe was loaded from — otherwise a dev-server redirect to
+/// `http://localhost:{port}` would be rewritten back to plain HTTP and get
+/// blocked as mixed content when the app is fronted by TLS (e.g. Caddy at
+/// `vibe-kanban.localhost`).
+#[derive(Clone, Debug)]
+struct ExternalOrigin {
+    scheme: String,
+    /// Authority after the first (port) label; may include an explicit `:port`.
+    /// e.g. `localhost:3009` (direct loopback) or `vibe-kanban.localhost` (Caddy).
+    host_suffix: String,
+}
+
+impl ExternalOrigin {
+    /// Default on-machine proxy origin: plain HTTP loopback on the proxy port.
+    fn local(proxy_port: u16) -> Self {
+        Self {
+            scheme: "http".to_string(),
+            host_suffix: format!("localhost:{proxy_port}"),
+        }
+    }
+
+    /// Reconstruct the browser-facing origin from the inbound request. When
+    /// fronted by a TLS reverse proxy the inbound `Host` is `{port}.<suffix>`
+    /// and `X-Forwarded-Proto` is `https`; direct loopback access has no
+    /// forwarded proto and falls back to plain HTTP on the proxy port.
+    fn from_request_headers(headers: &HeaderMap, proxy_port: u16) -> Self {
+        let host_suffix = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|host| host.split_once('.').map(|(_, suffix)| suffix))
+            .filter(|suffix| !suffix.is_empty())
+            .map(|suffix| suffix.to_string());
+
+        let Some(host_suffix) = host_suffix else {
+            return Self::local(proxy_port);
+        };
+
+        let scheme = headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| v == "http" || v == "https")
+            .unwrap_or_else(|| "http".to_string());
+
+        Self {
+            scheme,
+            host_suffix,
+        }
+    }
+
+    /// Full host (label + suffix) for the given preview target.
+    fn proxy_host(&self, target_port: u16, relay_host_id: Option<Uuid>) -> String {
+        format!(
+            "{}.{}",
+            proxy_host_label(target_port, relay_host_id),
+            self.host_suffix
+        )
+    }
+}
+
 fn preview_api_target_path(target_port: u16, path: &str, query: &str) -> String {
     let mut target_path = if path.is_empty() {
         format!("/api/preview/{target_port}")
@@ -234,7 +297,7 @@ fn relay_preview_target_url(
 fn rewrite_redirect_like_header_value(
     value: &str,
     target_port: u16,
-    proxy_port: u16,
+    origin: &ExternalOrigin,
     relay_host_id: Option<Uuid>,
 ) -> Option<String> {
     let original_value = value.trim();
@@ -276,21 +339,27 @@ fn rewrite_redirect_like_header_value(
         return Some(normalized_value);
     }
 
-    parsed.set_scheme("http").ok()?;
-    parsed
-        .set_host(Some(&format!(
-            "{}.localhost",
-            proxy_host_label(target_port, relay_host_id)
-        )))
-        .ok()?;
-    parsed.set_port(Some(proxy_port)).ok()?;
-    Some(parsed.to_string())
+    let mut rebuilt = format!(
+        "{}://{}",
+        origin.scheme,
+        origin.proxy_host(target_port, relay_host_id)
+    );
+    rebuilt.push_str(parsed.path());
+    if let Some(query) = parsed.query() {
+        rebuilt.push('?');
+        rebuilt.push_str(query);
+    }
+    if let Some(fragment) = parsed.fragment() {
+        rebuilt.push('#');
+        rebuilt.push_str(fragment);
+    }
+    Some(rebuilt)
 }
 
 fn rewrite_refresh_header_value(
     value: &str,
     target_port: u16,
-    proxy_port: u16,
+    origin: &ExternalOrigin,
     relay_host_id: Option<Uuid>,
 ) -> Option<String> {
     let mut segments: Vec<String> = value.split(';').map(|s| s.trim().to_string()).collect();
@@ -311,7 +380,7 @@ fn rewrite_refresh_header_value(
         }
 
         if let Some(rewritten) =
-            rewrite_redirect_like_header_value(raw_unquoted, target_port, proxy_port, relay_host_id)
+            rewrite_redirect_like_header_value(raw_unquoted, target_port, origin, relay_host_id)
         {
             *segment = format!("url={rewritten}");
             return Some(segments.join("; "));
@@ -332,10 +401,10 @@ fn is_redirect_like_header_name(name_lower: &str) -> bool {
 fn rewrite_redirect_like_headers(
     headers: &mut [(HeaderName, HeaderValue)],
     target_port: u16,
-    proxy_port: Option<u16>,
+    origin: Option<&ExternalOrigin>,
     relay_host_id: Option<Uuid>,
 ) {
-    let Some(proxy_port) = proxy_port else {
+    let Some(origin) = origin else {
         return;
     };
 
@@ -350,9 +419,9 @@ fn rewrite_redirect_like_headers(
         };
 
         let rewritten = if name_lower == "refresh" {
-            rewrite_refresh_header_value(value_str, target_port, proxy_port, relay_host_id)
+            rewrite_refresh_header_value(value_str, target_port, origin, relay_host_id)
         } else {
-            rewrite_redirect_like_header_value(value_str, target_port, proxy_port, relay_host_id)
+            rewrite_redirect_like_header_value(value_str, target_port, origin, relay_host_id)
         };
 
         if let Some(rewritten) = rewritten
@@ -543,11 +612,12 @@ async fn http_proxy_handler(
         .unwrap_or_default();
     let is_html = content_type.contains("text/html");
 
+    let external_origin = ExternalOrigin::from_request_headers(&headers, proxy_port);
     let mut response_headers = collect_response_headers(response.headers(), is_html);
     rewrite_redirect_like_headers(
         &mut response_headers,
         target.port,
-        Some(proxy_port),
+        Some(&external_origin),
         target.relay_host_id,
     );
 
@@ -656,7 +726,7 @@ async fn http_proxy_handler(
                     rewrite_redirect_like_header_value(
                         &redirect_info.url,
                         target.port,
-                        proxy_port,
+                        &external_origin,
                         target.relay_host_id,
                     )
                     .unwrap_or_else(|| redirect_info.url.clone())
@@ -934,7 +1004,7 @@ mod tests {
         let rewritten = rewrite_redirect_like_header_value(
             "http://localhost:4000/generate?from=auth#done",
             4000,
-            3009,
+            &ExternalOrigin::local(3009),
             None,
         );
 
@@ -947,23 +1017,42 @@ mod tests {
     #[test]
     fn rewrite_redirect_like_header_value_keeps_relative_and_non_loopback_urls() {
         assert_eq!(
-            rewrite_redirect_like_header_value("/generate", 4000, 3009, None),
+            rewrite_redirect_like_header_value(
+                "/generate",
+                4000,
+                &ExternalOrigin::local(3009),
+                None
+            ),
             None
         );
         assert_eq!(
-            rewrite_redirect_like_header_value("?from=auth", 4000, 3009, None),
+            rewrite_redirect_like_header_value(
+                "?from=auth",
+                4000,
+                &ExternalOrigin::local(3009),
+                None
+            ),
             None
         );
         assert_eq!(
-            rewrite_redirect_like_header_value("https://example.com/generate", 4000, 3009, None),
+            rewrite_redirect_like_header_value(
+                "https://example.com/generate",
+                4000,
+                &ExternalOrigin::local(3009),
+                None
+            ),
             None
         );
     }
 
     #[test]
     fn rewrite_redirect_like_header_value_rewrites_scheme_relative_loopback_url() {
-        let rewritten =
-            rewrite_redirect_like_header_value("//localhost:4000/generate", 4000, 3009, None);
+        let rewritten = rewrite_redirect_like_header_value(
+            "//localhost:4000/generate",
+            4000,
+            &ExternalOrigin::local(3009),
+            None,
+        );
 
         assert_eq!(
             rewritten.as_deref(),
@@ -977,7 +1066,7 @@ mod tests {
         let rewritten = rewrite_redirect_like_header_value(
             "http://localhost:4000/generate",
             4000,
-            3009,
+            &ExternalOrigin::local(3009),
             Some(host_id),
         );
 
@@ -988,11 +1077,72 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_redirect_like_header_value_uses_https_forwarded_origin() {
+        // When fronted by TLS (e.g. Caddy), a dev-server redirect to a loopback
+        // URL must be rewritten to the same https host the iframe was loaded
+        // from — not back to plain http (which the browser blocks as mixed
+        // content).
+        let origin = ExternalOrigin {
+            scheme: "https".to_string(),
+            host_suffix: "vibe-kanban.localhost".to_string(),
+        };
+        let rewritten = rewrite_redirect_like_header_value(
+            "http://localhost:4000/generate?from=auth#done",
+            4000,
+            &origin,
+            None,
+        );
+
+        assert_eq!(
+            rewritten.as_deref(),
+            Some("https://4000.vibe-kanban.localhost/generate?from=auth#done")
+        );
+    }
+
+    #[test]
+    fn external_origin_from_headers_prefers_forwarded_https() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("4000.vibe-kanban.localhost"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-forwarded-proto"),
+            HeaderValue::from_static("https"),
+        );
+
+        let origin = ExternalOrigin::from_request_headers(&headers, 3009);
+        assert_eq!(origin.scheme, "https");
+        assert_eq!(origin.host_suffix, "vibe-kanban.localhost");
+        assert_eq!(origin.proxy_host(4000, None), "4000.vibe-kanban.localhost");
+    }
+
+    #[test]
+    fn external_origin_from_headers_falls_back_to_local_proxy() {
+        // No Host / no forwarded proto (direct loopback access) → plain HTTP on
+        // the proxy port, i.e. the pre-existing behaviour.
+        let origin = ExternalOrigin::from_request_headers(&HeaderMap::new(), 3009);
+        assert_eq!(origin.scheme, "http");
+        assert_eq!(origin.host_suffix, "localhost:3009");
+
+        // A direct-mode Host (`{port}.localhost:{proxy_port}`) reproduces the
+        // original loopback rewrite target.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("4000.localhost:3009"),
+        );
+        let origin = ExternalOrigin::from_request_headers(&headers, 3009);
+        assert_eq!(origin.scheme, "http");
+        assert_eq!(origin.host_suffix, "localhost:3009");
+    }
+
+    #[test]
     fn rewrite_refresh_header_value_rewrites_embedded_url() {
         let rewritten = rewrite_refresh_header_value(
             "0; URL='http://localhost:4000/generate?from=auth'",
             4000,
-            3009,
+            &ExternalOrigin::local(3009),
             None,
         );
 
@@ -1007,7 +1157,7 @@ mod tests {
         let rewritten = rewrite_refresh_header_value(
             "0; URL=\"http://localhost:4000/?_refresh=7\",",
             4000,
-            3009,
+            &ExternalOrigin::local(3009),
             None,
         );
 
@@ -1019,7 +1169,12 @@ mod tests {
 
     #[test]
     fn rewrite_redirect_like_header_value_cleans_quoted_relative_url() {
-        let rewritten = rewrite_redirect_like_header_value("\"/generate\",", 4000, 3009, None);
+        let rewritten = rewrite_redirect_like_header_value(
+            "\"/generate\",",
+            4000,
+            &ExternalOrigin::local(3009),
+            None,
+        );
 
         assert_eq!(rewritten.as_deref(), Some("/generate"));
     }
@@ -1029,7 +1184,7 @@ mod tests {
         let rewritten = rewrite_redirect_like_header_value(
             "\"http://localhost:4000/generate\",",
             4000,
-            3009,
+            &ExternalOrigin::local(3009),
             None,
         );
 
@@ -1044,7 +1199,7 @@ mod tests {
         let rewritten = rewrite_redirect_like_header_value(
             "url=\"http://localhost:4000/generate\", mode=replace",
             4000,
-            3009,
+            &ExternalOrigin::local(3009),
             None,
         );
 
@@ -1072,7 +1227,7 @@ mod tests {
             ),
         ];
 
-        rewrite_redirect_like_headers(&mut headers, 4000, Some(3009), None);
+        rewrite_redirect_like_headers(&mut headers, 4000, Some(&ExternalOrigin::local(3009)), None);
 
         assert_eq!(
             headers[0].1,
@@ -1105,7 +1260,7 @@ mod tests {
             ),
         ];
 
-        rewrite_redirect_like_headers(&mut headers, 4000, Some(3009), None);
+        rewrite_redirect_like_headers(&mut headers, 4000, Some(&ExternalOrigin::local(3009)), None);
 
         assert_eq!(
             headers[0].1,
@@ -1138,7 +1293,7 @@ mod tests {
             HeaderValue::from_static("http://localhost:4000/generate"),
         )];
 
-        rewrite_redirect_like_headers(&mut headers, 4000, Some(3009), None);
+        rewrite_redirect_like_headers(&mut headers, 4000, Some(&ExternalOrigin::local(3009)), None);
 
         assert_eq!(
             headers[0].1,
@@ -1167,7 +1322,7 @@ mod tests {
             HeaderValue::from_static("/generate"),
         )];
 
-        rewrite_redirect_like_headers(&mut headers, 4000, Some(3009), None);
+        rewrite_redirect_like_headers(&mut headers, 4000, Some(&ExternalOrigin::local(3009)), None);
 
         // Relative URLs are NOT rewritten — only absolute loopback URLs are
         assert_eq!(headers[0].1, HeaderValue::from_static("/generate"));
