@@ -149,6 +149,7 @@ describe('displayKeyParts', () => {
   it('maps a modifier combo to platform glyphs (mac)', () => {
     expect(displayKeyParts('mod+a')).toEqual(['⌘', 'A']);
     expect(displayKeyParts('mod+shift+k')).toEqual(['⌘', '⇧', 'K']);
+    expect(displayKeyParts('mod+escape')).toEqual(['⌘', 'Esc']);
     expect(displayKeyParts('alt+x')).toEqual(['⌥', 'X']);
   });
 });
@@ -215,6 +216,7 @@ describe('buildCombo', () => {
     expect(buildCombo(evt({ metaKey: true, shiftKey: true }), 'k')).toBe(
       'mod+shift+k'
     );
+    expect(buildCombo(evt({ metaKey: true }), 'escape')).toBe('mod+escape');
     // on mac, ctrlKey is a distinct 'ctrl' modifier (not 'mod')
     expect(buildCombo(evt({ ctrlKey: true }), 'a')).toBe('ctrl+a');
   });

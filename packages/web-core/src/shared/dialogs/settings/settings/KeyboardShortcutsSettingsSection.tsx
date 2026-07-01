@@ -127,10 +127,6 @@ function ShortcutRecorder({
       e.preventDefault();
       e.stopImmediatePropagation();
 
-      if (e.key === 'Escape') {
-        onCancelRef.current();
-        return;
-      }
       // Ignore lone modifier keypresses
       if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
 
@@ -141,6 +137,10 @@ function ShortcutRecorder({
       const combo = buildCombo(e, key);
       if (combo) {
         onCaptureRef.current(combo);
+        return;
+      }
+      if (e.key === 'Escape') {
+        onCancelRef.current();
         return;
       }
       // No modifier: only sequence bindings accept a plain two-key sequence.

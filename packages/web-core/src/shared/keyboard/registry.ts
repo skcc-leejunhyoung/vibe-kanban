@@ -629,9 +629,18 @@ export function mapCodeToLogicalKey(code: string, key: string): string {
  * rely on the binding's declared type.
  */
 export function displayKeyParts(keys: string): string[] {
+  const displayKey = (key: string) => {
+    switch (key) {
+      case 'escape':
+      case 'esc':
+        return 'Esc';
+      default:
+        return key.toUpperCase();
+    }
+  };
   if (!keys) return [];
   if (keys.includes('>')) {
-    return keys.split('>').map((k) => k.toUpperCase());
+    return keys.split('>').map(displayKey);
   }
   return keys.split('+').map((part) => {
     switch (part) {
@@ -646,7 +655,7 @@ export function displayKeyParts(keys: string): string[] {
       case 'alt':
         return isMac() ? '⌥' : 'Alt';
       default:
-        return part.toUpperCase();
+        return displayKey(part);
     }
   });
 }
