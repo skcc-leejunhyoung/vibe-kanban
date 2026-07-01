@@ -390,8 +390,13 @@ export function CreateChatBoxContainer({
 
   return (
     <div className="relative flex flex-1 flex-col bg-primary h-full">
-      <div className="flex flex-1 items-center justify-center px-base">
-        <div className="flex w-chat max-w-full flex-col gap-base">
+      {/* Scrollable + `my-auto` centers the box when it fits but degrades to
+          top-anchored scrolling when the content is taller than the viewport
+          (short mobile heights / on-screen keyboard). Plain `items-center`
+          would clip the header and footer — including the create button —
+          with no way to scroll to them. */}
+      <div className="flex flex-1 flex-col items-center overflow-y-auto px-base py-base">
+        <div className="flex w-chat max-w-full flex-col gap-base my-auto">
           {showRepoPickerStep && (
             <>
               <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
