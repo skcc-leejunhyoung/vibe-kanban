@@ -198,6 +198,17 @@ async function findMergedFeatureBranch(
   }
 }
 
+function isOpenPrFromWorkspaceBranch(
+  merge: Merge,
+  workspaceBranch: string
+): boolean {
+  return (
+    merge.type === 'pr' &&
+    merge.pr_info.status === 'open' &&
+    (merge.head_branch_name ?? workspaceBranch) === workspaceBranch
+  );
+}
+
 // All application actions
 export const Actions = {
   // === Workspace Actions ===
@@ -1029,12 +1040,16 @@ export const Actions = {
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
       // Check for existing conflicts first
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const [workspace, branchStatus] = await Promise.all([
+        getWorkspace(ctx.queryClient, workspaceId),
+        workspacesApi.getBranchStatus(workspaceId),
+      ]);
       const repoStatus = branchStatus?.find((s) => s.repo_id === repoId);
 
-      // Check if repo has an open PR - cannot merge directly
-      const hasOpenPR = repoStatus?.merges?.some(
-        (m: Merge) => m.type === 'pr' && m.pr_info.status === 'open'
+      // Only block direct merge when the open PR is from this workspace branch.
+      // Feature-branch PRs must not block continued work -> feature merges.
+      const hasOpenPR = repoStatus?.merges?.some((m: Merge) =>
+        isOpenPrFromWorkspaceBranch(m, workspace.branch)
       );
       if (hasOpenPR) {
         await ConfirmDialog.show({
@@ -1060,7 +1075,6 @@ export const Actions = {
         if (isRunning) return;
 
         // Show resolve conflicts dialog
-        const workspace = await getWorkspace(ctx.queryClient, workspaceId);
         const result = await ResolveConflictsDialog.show({
           workspaceId,
           conflictOp: repoStatus.conflict_op ?? 'merge',

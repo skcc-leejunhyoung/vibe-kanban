@@ -12,6 +12,8 @@ vi.mock('@/shared/lib/api', () => ({
   workspacesApi: {
     update: vi.fn(),
     get: vi.fn(),
+    getBranchStatus: vi.fn(),
+    merge: vi.fn(),
   },
   relayApi: {},
   repoApi: {},
@@ -19,11 +21,20 @@ vi.mock('@/shared/lib/api', () => ({
 vi.mock('@/shared/lib/remoteApi', () => ({
   bulkUpdateIssues: vi.fn(),
 }));
+vi.mock('@vibe/ui/components/ConfirmDialog', () => ({
+  ConfirmDialog: {
+    show: vi.fn(),
+  },
+}));
 
 import { Actions } from './index';
 import { workspacesApi } from '@/shared/lib/api';
+import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 
 const update = vi.mocked(workspacesApi.update);
+const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
+const merge = vi.mocked(workspacesApi.merge);
+const showConfirm = vi.mocked(ConfirmDialog.show);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -95,5 +106,84 @@ describe('Actions.ArchiveWorkspace', () => {
 
     expect(update).toHaveBeenCalledWith('ws1', { archived: false });
     expect(selectWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe('Actions.GitMerge', () => {
+  const openPr = (headBranchName: string | null) => ({
+    type: 'pr' as const,
+    id: 'pr-1',
+    workspace_id: 'ws1',
+    repo_id: 'repo1',
+    created_at: '2026-01-01T00:00:00Z',
+    target_branch_name: 'main',
+    head_branch_name: headBranchName,
+    pr_info: {
+      number: 1n,
+      url: 'https://example.com/pull/1',
+      status: 'open' as const,
+      merged_at: null,
+      merge_commit_sha: null,
+    },
+  });
+
+  const branchStatusWithMerge = (mergeRecord: ReturnType<typeof openPr>) => [
+    {
+      repo_id: 'repo1',
+      repo_name: 'repo',
+      repo_missing: false,
+      commits_behind: 0,
+      commits_ahead: 1,
+      has_uncommitted_changes: false,
+      head_oid: 'abc',
+      uncommitted_count: 0,
+      untracked_count: 0,
+      target_branch_name: 'feature',
+      remote_commits_behind: null,
+      remote_commits_ahead: null,
+      merges: [mergeRecord],
+      is_rebase_in_progress: false,
+      conflict_op: null,
+      conflicted_files: [],
+      is_target_remote: false,
+    },
+  ];
+
+  it('blocks direct merge for legacy open PRs whose null head means the workspace branch', async () => {
+    const { ctx } = makeCtx({ id: 'ws1', branch: 'work' });
+    getBranchStatus.mockResolvedValue(branchStatusWithMerge(openPr(null)));
+
+    await Actions.GitMerge.execute(ctx, 'ws1', 'repo1');
+
+    expect(showConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Cannot Merge' })
+    );
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it('blocks direct merge when the open PR head is the workspace branch', async () => {
+    const { ctx } = makeCtx({ id: 'ws1', branch: 'work' });
+    getBranchStatus.mockResolvedValue(branchStatusWithMerge(openPr('work')));
+
+    await Actions.GitMerge.execute(ctx, 'ws1', 'repo1');
+
+    expect(showConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Cannot Merge' })
+    );
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it('allows direct merge when the open PR is from an intermediate feature branch', async () => {
+    const { ctx, invalidateQueries } = makeCtx({ id: 'ws1', branch: 'work' });
+    getBranchStatus.mockResolvedValue(branchStatusWithMerge(openPr('feature')));
+    showConfirm.mockResolvedValue('confirmed');
+
+    await Actions.GitMerge.execute(ctx, 'ws1', 'repo1');
+
+    expect(showConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Merge Branch' })
+    );
+    expect(merge).toHaveBeenCalledWith('ws1', { repo_id: 'repo1' });
+    expect(invalidateQueries).toHaveBeenCalled();
   });
 });
