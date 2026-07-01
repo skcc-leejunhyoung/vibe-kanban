@@ -4,7 +4,6 @@ use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
-    execution_process_logs::ExecutionProcessLogs,
     merge::MergeStatus,
     pending_execution_start::PendingExecutionStart,
     pull_request::PullRequest,
@@ -13,6 +12,7 @@ use db::models::{
 use deployment::Deployment;
 use executors::logs::{TodoProgress, todo_progress_from_logs};
 use serde::{Deserialize, Serialize};
+use services::services::container::ContainerService;
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -133,21 +133,21 @@ pub async fn get_workspace_summaries(
         .approvals()
         .get_pending_execution_process_ids(&running_ep_ids);
 
-    // 4b. Compute TODO progress for *running* workspaces only. Parsing logs is
-    //     comparatively expensive, and the indicator is only shown while a
-    //     workspace is running, so idle/finished ones are skipped entirely.
+    // 4b. Compute TODO progress for *running* workspaces only. While a process
+    //     runs its logs live in the in-memory MsgStore, not the DB
+    //     (execution_process_logs stays empty for live runs), so we read the
+    //     latest normalized entries from there. The indicator only shows while
+    //     running, so idle/finished workspaces are skipped entirely.
     let todo_futures: Vec<_> = latest_processes
         .iter()
         .filter(|(_, info)| info.status == ExecutionProcessStatus::Running)
         .map(|(ws_id, info)| {
-            let pool = pool.clone();
+            let deployment = deployment.clone();
             let ws_id = *ws_id;
             let ep_id = info.execution_process_id;
             async move {
-                let records = ExecutionProcessLogs::find_by_execution_id(&pool, ep_id)
-                    .await
-                    .ok()?;
-                let messages = ExecutionProcessLogs::parse_logs(&records).ok()?;
+                let msg_store = deployment.container().get_msg_store_by_id(&ep_id).await?;
+                let messages = msg_store.get_history();
                 todo_progress_from_logs(&messages).map(|progress| (ws_id, progress))
             }
         })
