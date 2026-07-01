@@ -89,6 +89,12 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   /** Override the primary button label (defaults to "Create"/"Creating"). */
   sendLabel?: string;
   sendingLabel?: string;
+  /**
+   * Fill the available height and let the editor shrink (with internal scroll)
+   * so the footer/action buttons stay visible on short viewports instead of
+   * being pushed off-screen. Requires a height-bounded parent.
+   */
+  fillHeight?: boolean;
 }
 
 /**
@@ -128,6 +134,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   showAttachments = true,
   sendLabel,
   sendingLabel,
+  fillHeight = false,
 }: CreateChatBoxProps<TExecutor>) {
   const { t } = useTranslation(['common', 'tasks']);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -159,6 +166,7 @@ export function CreateChatBox<TExecutor extends string = string>({
 
   return (
     <ChatBoxBase
+      fillHeight={fillHeight}
       editor={renderEditor({
         value: editor.value,
         onChange: editor.onChange,

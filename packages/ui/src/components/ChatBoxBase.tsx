@@ -50,6 +50,12 @@ interface ChatBoxBaseProps {
 
   // Dropzone props for drag-and-drop image uploads
   dropzone?: DropzoneProps;
+
+  // Fill the parent's height and let the editor area shrink (with internal
+  // scroll) so the footer stays visible on short viewports. The editor node
+  // must be `flex-1 min-h-0` for this to take effect. Requires a
+  // height-bounded parent.
+  fillHeight?: boolean;
 }
 
 /**
@@ -68,6 +74,7 @@ export function ChatBoxBase({
   visualVariant,
   isRunning,
   dropzone,
+  fillHeight = false,
 }: ChatBoxBaseProps) {
   const { t } = useTranslation(['common', 'tasks']);
 
@@ -82,7 +89,8 @@ export function ChatBoxBase({
           visualVariant === VisualVariant.EDIT ||
           visualVariant === VisualVariant.PLAN) &&
           'border-brand bg-brand/10',
-        isRunning && 'chat-box-running'
+        isRunning && 'chat-box-running',
+        fillHeight && 'min-h-0 self-stretch'
       )}
     >
       {dropzone && <input {...dropzone.getInputProps()} />}
@@ -123,11 +131,16 @@ export function ChatBoxBase({
       )}
 
       {/* Editor area */}
-      <div className="flex flex-col gap-plusfifty px-base py-base rounded-md">
+      <div
+        className={cn(
+          'flex flex-col gap-plusfifty px-base py-base rounded-md',
+          fillHeight && 'min-h-0 flex-1'
+        )}
+      >
         {editor}
 
         {/* Footer - Controls */}
-        <div className="flex flex-col gap-base">
+        <div className={cn('flex flex-col gap-base', fillHeight && 'shrink-0')}>
           {/* Model selectors get their own row so the action buttons can't
               squeeze them into multiple stacked lines on narrow widths */}
           {modelSelector && (

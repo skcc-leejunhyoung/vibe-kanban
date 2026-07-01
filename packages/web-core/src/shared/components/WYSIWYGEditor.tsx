@@ -140,6 +140,12 @@ type WysiwygProps = {
   staticToolbarActions?: ReactNode;
   /** Called when a toolbar button is clicked in preview mode to request edit */
   onRequestEdit?: () => void;
+  /**
+   * Make the editor fill its (height-bounded) parent so the content area
+   * shrinks with internal scroll instead of pushing surrounding UI off-screen.
+   * The `className` passed for the content area should include `flex-1 min-h-0`.
+   */
+  fillHeight?: boolean;
 };
 
 /** Ref interface for WYSIWYGEditor, exposing imperative methods */
@@ -278,6 +284,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       saveStatus,
       staticToolbarActions,
       onRequestEdit,
+      fillHeight = false,
     }: WysiwygProps,
     ref: React.ForwardedRef<WYSIWYGEditorRef>
   ) {
@@ -521,7 +528,12 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     );
 
     const editorContent = (
-      <div className="wysiwyg text-base relative">
+      <div
+        className={cn(
+          'wysiwyg text-base relative',
+          fillHeight && 'flex min-h-0 flex-1 flex-col'
+        )}
+      >
         <EditorWorkspaceContext.Provider value={workspaceId}>
           <SessionContext.Provider value={sessionId}>
             <LocalAttachmentsContext.Provider value={localAttachments ?? []}>
@@ -536,7 +548,12 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 />
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
-                <div className="relative">
+                <div
+                  className={cn(
+                    'relative',
+                    fillHeight && 'flex min-h-0 flex-1 flex-col'
+                  )}
+                >
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable

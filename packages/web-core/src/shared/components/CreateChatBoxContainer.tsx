@@ -390,13 +390,14 @@ export function CreateChatBoxContainer({
 
   return (
     <div className="relative flex flex-1 flex-col bg-primary h-full">
-      {/* Scrollable + `my-auto` centers the box when it fits but degrades to
-          top-anchored scrolling when the content is taller than the viewport
-          (short mobile heights / on-screen keyboard). Plain `items-center`
-          would clip the header and footer — including the create button —
-          with no way to scroll to them. */}
+      {/* `max-h-full` caps the box to the viewport; the chat box then flexes
+          (see `fillHeight`) so the prompt editor shrinks to fit instead of
+          pushing the create button off-screen on short mobile heights / when
+          the on-screen keyboard is open. `my-auto` keeps it centered when it
+          fits; `overflow-y-auto` is a last-resort fallback for viewports too
+          short even for the shrunk editor. */}
       <div className="flex flex-1 flex-col items-center overflow-y-auto px-base py-base">
-        <div className="flex w-chat max-w-full flex-col gap-base my-auto">
+        <div className="flex w-chat max-w-full min-h-0 max-h-full flex-col gap-base my-auto">
           {showRepoPickerStep && (
             <>
               <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
@@ -410,7 +411,7 @@ export function CreateChatBoxContainer({
 
           {showChatStep && (
             <>
-              <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
+              <h2 className="mb-double shrink-0 text-center text-4xl font-medium tracking-tight text-high">
                 {t('createMode.headings.chatStep')}
               </h2>
 
@@ -425,8 +426,9 @@ export function CreateChatBoxContainer({
                 />
               )}
 
-              <div className="flex justify-center @container">
+              <div className="flex min-h-0 flex-1 justify-center @container">
                 <CreateChatBox
+                  fillHeight
                   editor={{
                     value: message,
                     onChange: setMessage,
@@ -448,7 +450,8 @@ export function CreateChatBoxContainer({
                       onChange={onChange}
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
-                      className="min-h-double max-h-[50vh] overflow-y-auto"
+                      fillHeight
+                      className="min-h-0 flex-1 max-h-[50vh] overflow-y-auto"
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}
