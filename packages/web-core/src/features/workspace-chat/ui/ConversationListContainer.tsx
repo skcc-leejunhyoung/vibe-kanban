@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,6 +20,10 @@ import { deriveConversationEntries } from '../model/deriveConversationEntries';
 import { deriveConversationTimeline } from '../model/deriveConversationTimeline';
 import { useConversationVirtualizer } from '../model/useConversationVirtualizer';
 import { useScrollCommandExecutor } from '../model/useScrollCommandExecutor';
+import {
+  isTopGrowthUpdate,
+  topGrowthScrollDelta,
+} from '../model/conversation-scroll-anchor';
 
 import DisplayConversationEntry from './DisplayConversationEntry';
 import { ApprovalFormProvider } from '@/shared/hooks/ApprovalForm';
@@ -191,6 +196,11 @@ export const ConversationList = forwardRef<
   } | null>(null);
   const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
   const pendingInteractionAnchorDeadlineRef = useRef(0);
+  // Scroll-anchor compensation for background history loading. Older turns
+  // stream in AFTER the initial view and prepend above whatever is on screen;
+  // we capture the pre-commit scroll height so the layout effect below can add
+  // the top-growth back onto scrollTop and keep the viewport visually frozen.
+  const topGrowthCaptureRef = useRef<{ prevScrollHeight: number } | null>(null);
 
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
@@ -234,6 +244,7 @@ export const ConversationList = forwardRef<
       rafIdRef.current = null;
     }
     pendingUpdateRef.current = null;
+    topGrowthCaptureRef.current = null;
     scriptOutputCacheRef.current.clear();
     if (planRevealSpacerRef.current) {
       planRevealSpacerRef.current.style.height = '0px';
@@ -336,6 +347,17 @@ export const ConversationList = forwardRef<
     rafIdRef.current = null;
     const pending = pendingUpdateRef.current;
     if (!pending) return;
+
+    // Capture the pre-commit scroll height for top-growth (historic) batches.
+    // This runs in a rAF callback, so the DOM still reflects the previous
+    // content; the layout effect below reads the post-commit height and adds
+    // the difference back onto scrollTop to freeze the viewport.
+    if (isTopGrowthUpdate(pending.addType)) {
+      const scrollEl = tanstackScrollRef.current;
+      topGrowthCaptureRef.current = scrollEl
+        ? { prevScrollHeight: scrollEl.scrollHeight }
+        : null;
+    }
 
     const derivedEntries = deriveConversationEntries({
       source: pending.source,
@@ -550,6 +572,30 @@ export const ConversationList = forwardRef<
     scrollToAbsoluteIndex,
   });
   scrollOnEntriesChangedRef.current = scrollExecutor.onEntriesChanged;
+
+  // Freeze the viewport while older history streams in from the top.
+  //
+  // Historic batches prepend above whatever the user is looking at, growing the
+  // scroll container upward. Runs synchronously before paint and after the
+  // virtualizer's own layout effects, so the reader never sees the jump. When
+  // pinned to the bottom the added delta overshoots and the browser clamps back
+  // to the bottom, so this single rule covers both reading and following.
+  useLayoutEffect(() => {
+    const capture = topGrowthCaptureRef.current;
+    topGrowthCaptureRef.current = null;
+    if (!capture) return;
+
+    const scrollEl = tanstackScrollRef.current;
+    if (!scrollEl) return;
+
+    const delta = topGrowthScrollDelta(
+      capture.prevScrollHeight,
+      scrollEl.scrollHeight
+    );
+    if (delta > 0) {
+      scrollEl.scrollTop += delta;
+    }
+  }, [dataVersion]);
 
   // Determine if there are entries to show placeholders
   const hasEntries = conversationRows.length > 0;
