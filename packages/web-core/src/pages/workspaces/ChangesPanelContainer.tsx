@@ -47,7 +47,8 @@ import { ReviewCommentRenderer } from './ReviewCommentRenderer';
 import { GitHubCommentRenderer } from './GitHubCommentRenderer';
 import { CommentWidgetLine } from './CommentWidgetLine';
 import { CommitSelector } from './CommitSelector';
-import type { Diff, DiffChangeKind } from 'shared/types';
+import type { Diff } from 'shared/types';
+import { shouldAutoCollapse } from './diffCollapse';
 
 function workerFactory() {
   return new Worker(WorkerUrl, { type: 'module' });
@@ -58,27 +59,6 @@ const HIGHLIGHTER_OPTIONS = {
   theme: { dark: 'github-dark', light: 'github-light' } as const,
   langs: [] as string[],
 };
-
-const COLLAPSE_BY_CHANGE_TYPE: Record<DiffChangeKind, boolean> = {
-  added: false,
-  deleted: true,
-  modified: false,
-  renamed: true,
-  copied: true,
-  permissionChange: true,
-};
-
-const COLLAPSE_MAX_LINES = 800;
-
-function shouldAutoCollapse(diff: Diff): boolean {
-  const totalLines = (diff.additions ?? 0) + (diff.deletions ?? 0);
-  if (diff.change === 'renamed') {
-    return totalLines === 0 || totalLines > COLLAPSE_MAX_LINES;
-  }
-  if (COLLAPSE_BY_CHANGE_TYPE[diff.change]) return true;
-  if (totalLines > COLLAPSE_MAX_LINES) return true;
-  return false;
-}
 
 const IS_MOBILE = isRealMobileDevice();
 const NOOP = () => {};
