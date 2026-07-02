@@ -24,6 +24,7 @@ import {
   isTopGrowthUpdate,
   topGrowthScrollDelta,
 } from '../model/conversation-scroll-anchor';
+import { isNearBottom } from '../model/conversation-scroll-commands';
 
 import DisplayConversationEntry from './DisplayConversationEntry';
 import { ApprovalFormProvider } from '@/shared/hooks/ApprovalForm';
@@ -197,10 +198,15 @@ export const ConversationList = forwardRef<
   const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
   const pendingInteractionAnchorDeadlineRef = useRef(0);
   // Scroll-anchor compensation for background history loading. Older turns
-  // stream in AFTER the initial view and prepend above whatever is on screen;
-  // we capture the pre-commit scroll height so the layout effect below can add
-  // the top-growth back onto scrollTop and keep the viewport visually frozen.
-  const topGrowthCaptureRef = useRef<{ prevScrollHeight: number } | null>(null);
+  // stream in AFTER the initial view and prepend above whatever is on screen.
+  // While the reader is scrolled up, each prepend grows the content above the
+  // viewport and would push their position down. We hold the viewport by adding
+  // the height growth back onto scrollTop. Driven by a ResizeObserver on the
+  // content (not just the data commit) because TanStack Virtual's total size
+  // can settle a frame AFTER the React commit, so a commit-only correction
+  // reads a zero delta and never fires — exactly the drift users still saw.
+  const topGrowthHoldDeadlineRef = useRef(0);
+  const lastScrollHeightRef = useRef(0);
 
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
@@ -244,7 +250,8 @@ export const ConversationList = forwardRef<
       rafIdRef.current = null;
     }
     pendingUpdateRef.current = null;
-    topGrowthCaptureRef.current = null;
+    topGrowthHoldDeadlineRef.current = 0;
+    lastScrollHeightRef.current = 0;
     scriptOutputCacheRef.current.clear();
     if (planRevealSpacerRef.current) {
       planRevealSpacerRef.current.style.height = '0px';
@@ -348,15 +355,24 @@ export const ConversationList = forwardRef<
     const pending = pendingUpdateRef.current;
     if (!pending) return;
 
-    // Capture the pre-commit scroll height for top-growth (historic) batches.
-    // This runs in a rAF callback, so the DOM still reflects the previous
-    // content; the layout effect below reads the post-commit height and adds
-    // the difference back onto scrollTop to freeze the viewport.
+    // Arm the top-growth hold while older turns (historic batches) stream in
+    // and the reader is scrolled up. Reads the pre-commit DOM (this is a rAF
+    // callback, before the setState below), so scroll position reflects where
+    // the reader actually is. The compensation itself runs off the content
+    // ResizeObserver / layout effect below. Refreshed on every batch so the
+    // hold lasts as long as history keeps arriving.
     if (isTopGrowthUpdate(pending.addType)) {
       const scrollEl = tanstackScrollRef.current;
-      topGrowthCaptureRef.current = scrollEl
-        ? { prevScrollHeight: scrollEl.scrollHeight }
-        : null;
+      if (
+        scrollEl &&
+        !isNearBottom(
+          scrollEl.scrollTop,
+          scrollEl.clientHeight,
+          scrollEl.scrollHeight
+        )
+      ) {
+        topGrowthHoldDeadlineRef.current = performance.now() + 600;
+      }
     }
 
     const derivedEntries = deriveConversationEntries({
@@ -575,27 +591,63 @@ export const ConversationList = forwardRef<
 
   // Freeze the viewport while older history streams in from the top.
   //
-  // Historic batches prepend above whatever the user is looking at, growing the
-  // scroll container upward. Runs synchronously before paint and after the
-  // virtualizer's own layout effects, so the reader never sees the jump. When
-  // pinned to the bottom the added delta overshoots and the browser clamps back
-  // to the bottom, so this single rule covers both reading and following.
-  useLayoutEffect(() => {
-    const capture = topGrowthCaptureRef.current;
-    topGrowthCaptureRef.current = null;
-    if (!capture) return;
-
+  // Historic batches prepend above whatever the reader is looking at, growing
+  // the content upward. We add that growth back onto scrollTop so the messages
+  // under the viewport stay put. A single delta rule (measure how much the
+  // scrollable content grew since we last looked, add it to scrollTop) covers
+  // it without needing an anchor element that virtualization might unmount.
+  //
+  // Only compensates while the hold is armed (historic batch arrived and the
+  // reader is scrolled up). At the bottom the bottom-lock owns the position, so
+  // we skip. Tracking scrollHeight in a ref shared by both callers means
+  // whichever fires first for a given growth consumes the delta and the other
+  // sees zero — no double compensation.
+  const compensateTopGrowth = useCallback(() => {
     const scrollEl = tanstackScrollRef.current;
     if (!scrollEl) return;
 
     const delta = topGrowthScrollDelta(
-      capture.prevScrollHeight,
+      lastScrollHeightRef.current,
       scrollEl.scrollHeight
     );
-    if (delta > 0) {
-      scrollEl.scrollTop += delta;
+    lastScrollHeightRef.current = scrollEl.scrollHeight;
+    if (delta === 0) return;
+    if (performance.now() > topGrowthHoldDeadlineRef.current) return;
+    if (
+      isNearBottom(
+        scrollEl.scrollTop,
+        scrollEl.clientHeight,
+        scrollEl.scrollHeight
+      )
+    ) {
+      return;
     }
-  }, [dataVersion]);
+
+    scrollEl.scrollTop += delta;
+  }, []);
+
+  // Pre-paint pass for growth that lands synchronously with the data commit.
+  useLayoutEffect(() => {
+    compensateTopGrowth();
+  }, [dataVersion, compensateTopGrowth]);
+
+  // Safety net for growth that settles a frame later (TanStack Virtual total
+  // size, async markdown/code/diff measurement). The ResizeObserver fires
+  // whenever the content height actually changes, so no growth slips through.
+  useEffect(() => {
+    const content = conversationContentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+
+    const scrollEl = tanstackScrollRef.current;
+    lastScrollHeightRef.current = scrollEl ? scrollEl.scrollHeight : 0;
+
+    const observer = new ResizeObserver(() => {
+      compensateTopGrowth();
+    });
+    observer.observe(content);
+
+    return () => observer.disconnect();
+  }, [compensateTopGrowth]);
 
   // Determine if there are entries to show placeholders
   const hasEntries = conversationRows.length > 0;
