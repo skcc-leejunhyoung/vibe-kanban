@@ -151,6 +151,7 @@ async fn create_pull_request_issue(
                 payload.target_branch_name,
                 project_id,
                 payload.issue_id,
+                None,
             )
             .await
             .map_err(|error| {

@@ -17,7 +17,10 @@ use crate::{
     AppState,
     auth::RequestContext,
     db::{
+        begin_tx,
         issues::IssueRepository,
+        pull_request_issues::PullRequestIssueRepository,
+        pull_requests::PullRequestRepository,
         workspaces::{CreateWorkspaceParams, WorkspaceRepository},
     },
 };
@@ -309,6 +312,8 @@ async fn delete_workspace(
 
     ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
 
+    unlink_pull_request_issue_links(state.pool(), &workspace).await?;
+
     WorkspaceRepository::delete_by_local_id(state.pool(), payload.local_workspace_id)
         .await
         .map_err(|error| {
@@ -345,6 +350,8 @@ async fn unlink_workspace(
 
     ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
 
+    unlink_pull_request_issue_links(state.pool(), &workspace).await?;
+
     WorkspaceRepository::delete(state.pool(), workspace_id)
         .await
         .map_err(|error| {
@@ -356,6 +363,54 @@ async fn unlink_workspace(
         })?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes the PR ↔ issue links a workspace established (and any PR left with no
+/// remaining issue links) before the workspace is deleted. Deleting the
+/// workspace only nulls the PR's `workspace_id` (ON DELETE SET NULL), so without
+/// this the PR would stay attached to the issue after the workspace is unlinked.
+async fn unlink_pull_request_issue_links(
+    pool: &sqlx::PgPool,
+    workspace: &Workspace,
+) -> Result<(), ErrorResponse> {
+    let Some(issue_id) = workspace.issue_id else {
+        return Ok(());
+    };
+
+    let pull_requests = PullRequestRepository::list_by_workspace(pool, workspace.id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, "failed to list workspace pull requests");
+            ErrorResponse::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to list workspace pull requests",
+            )
+        })?;
+
+    if pull_requests.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = begin_tx(pool).await.map_err(|error| {
+        tracing::error!(?error, "failed to begin transaction");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    for pr in pull_requests {
+        PullRequestIssueRepository::delete_and_cleanup_orphan(&mut tx, pr.id, issue_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to unlink pull request from issue");
+                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            })?;
+    }
+
+    tx.commit().await.map_err(|error| {
+        tracing::error!(?error, "failed to commit transaction");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    Ok(())
 }
 
 #[instrument(

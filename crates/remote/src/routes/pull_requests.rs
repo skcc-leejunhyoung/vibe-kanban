@@ -134,6 +134,7 @@ async fn create_pull_request(
                 payload.target_branch_name,
                 project_id,
                 issue_id,
+                None,
             )
             .await
             .map_err(|error| {
@@ -310,7 +311,7 @@ async fn upsert_pull_request(
             })?;
 
     let pr = if let Some(existing) = existing_pr {
-        PullRequestRepository::update(
+        let updated = PullRequestRepository::update(
             &mut *tx,
             existing.id,
             Some(payload.status),
@@ -321,7 +322,18 @@ async fn upsert_pull_request(
         .map_err(|error| {
             tracing::error!(?error, "failed to update pull request");
             ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-        })?
+        })?;
+
+        // Remember which workspace this PR was synced from so the link can be
+        // cleaned up when that workspace is unlinked from the issue.
+        PullRequestRepository::set_workspace_id(&mut *tx, updated.id, workspace.id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to associate pull request with workspace");
+                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            })?;
+
+        updated
     } else {
         PullRequestRepository::create(
             &mut *tx,
@@ -333,6 +345,7 @@ async fn upsert_pull_request(
             payload.target_branch_name,
             project_id,
             issue_id,
+            Some(workspace.id),
         )
         .await
         .map_err(|error| {

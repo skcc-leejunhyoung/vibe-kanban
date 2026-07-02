@@ -49,6 +49,39 @@ impl PullRequestRepository {
         Ok(records)
     }
 
+    pub async fn list_by_workspace<'e, E>(
+        executor: E,
+        workspace_id: Uuid,
+    ) -> Result<Vec<PullRequest>, PullRequestError>
+    where
+        E: Executor<'e, Database = Postgres>,
+    {
+        let records = sqlx::query_as!(
+            PullRequest,
+            r#"
+            SELECT
+                id                  AS "id!: Uuid",
+                url                 AS "url!: String",
+                number              AS "number!: i32",
+                status              AS "status!: PullRequestStatus",
+                merged_at           AS "merged_at: DateTime<Utc>",
+                merge_commit_sha    AS "merge_commit_sha: String",
+                target_branch_name  AS "target_branch_name!: String",
+                project_id          AS "project_id!: Uuid",
+                issue_id            AS "issue_id!: Uuid",
+                workspace_id        AS "workspace_id: Uuid",
+                created_at          AS "created_at!: DateTime<Utc>",
+                updated_at          AS "updated_at!: DateTime<Utc>"
+            FROM pull_requests
+            WHERE workspace_id = $1
+            "#,
+            workspace_id
+        )
+        .fetch_all(executor)
+        .await?;
+        Ok(records)
+    }
+
     pub async fn list_by_project<'e, E>(
         executor: E,
         project_id: Uuid,
@@ -170,6 +203,7 @@ impl PullRequestRepository {
         target_branch_name: String,
         project_id: Uuid,
         issue_id: Uuid,
+        workspace_id: Option<Uuid>,
     ) -> Result<PullRequest, PullRequestError>
     where
         E: Executor<'e, Database = Postgres>,
@@ -180,9 +214,9 @@ impl PullRequestRepository {
             r#"
             INSERT INTO pull_requests (
                 id, url, number, status, merged_at, merge_commit_sha,
-                target_branch_name, project_id, issue_id
+                target_branch_name, project_id, issue_id, workspace_id
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING
                 id                  AS "id!: Uuid",
                 url                 AS "url!: String",
@@ -205,12 +239,34 @@ impl PullRequestRepository {
             merge_commit_sha,
             target_branch_name,
             project_id,
-            issue_id
+            issue_id,
+            workspace_id
         )
         .fetch_one(executor)
         .await?;
 
         Ok(record)
+    }
+
+    /// Associates an existing PR with the workspace it was synced from, so the
+    /// workspace ↔ PR ↔ issue links can be cleaned up when the workspace is
+    /// unlinked. Only overwrites when a workspace id is provided.
+    pub async fn set_workspace_id<'e, E>(
+        executor: E,
+        id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<(), PullRequestError>
+    where
+        E: Executor<'e, Database = Postgres>,
+    {
+        sqlx::query!(
+            "UPDATE pull_requests SET workspace_id = $1, updated_at = NOW() WHERE id = $2",
+            workspace_id,
+            id
+        )
+        .execute(executor)
+        .await?;
+        Ok(())
     }
 
     pub async fn update<'e, E>(

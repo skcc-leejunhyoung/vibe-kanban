@@ -11,6 +11,7 @@ use axum::{
 };
 use db::models::{
     merge::{Merge, MergeStatus, PrMerge, PullRequestInfo},
+    pull_request::PullRequest,
     repo::{Repo, RepoError},
     workspace::Workspace,
     workspace_repo::WorkspaceRepo,
@@ -1039,6 +1040,37 @@ pub async fn change_target_branch(
     };
 
     WorkspaceRepo::update_target_branch(pool, workspace.id, repo_id, &new_target_branch).await?;
+
+    // A PR opened against the previous base branch no longer matches this
+    // workspace's target, so unlink it. Leaving it attached would keep showing a
+    // stale PR that targets a branch the workspace no longer merges into.
+    match PullRequest::delete_stale_for_target_change(
+        pool,
+        workspace.id,
+        repo_id,
+        &new_target_branch,
+    )
+    .await
+    {
+        Ok(removed) if removed > 0 => {
+            tracing::info!(
+                "Unlinked {} stale PR(s) from workspace {} repo {} after target branch change to {}",
+                removed,
+                workspace.id,
+                repo_id,
+                new_target_branch
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                "Failed to unlink stale PRs for workspace {} repo {} after target branch change: {}",
+                workspace.id,
+                repo_id,
+                e
+            );
+        }
+    }
 
     let status =
         deployment
