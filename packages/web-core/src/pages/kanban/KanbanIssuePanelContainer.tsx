@@ -8,10 +8,7 @@ import {
 } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
-import type {
-  JsonValue,
-  OrganizationMemberWithProfile,
-} from 'shared/types';
+import type { JsonValue, OrganizationMemberWithProfile } from 'shared/types';
 import type { IssuePriority } from 'shared/remote-types';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
@@ -116,6 +113,8 @@ export function KanbanIssuePanelContainer({
     insertTag,
     getTagsForIssue,
     getPullRequestsForIssue,
+    pullRequestIssues,
+    removePullRequestIssue,
     isLoading: projectLoading,
   } = useProjectContext();
   const selectedKanbanIssueId = routeState.issueId;
@@ -1050,6 +1049,33 @@ export function KanbanIssuePanelContainer({
     });
   }, [selectedKanbanIssueId, projectId]);
 
+  const handleRemovePr = useCallback(
+    (prId: string) => {
+      if (!selectedKanbanIssueId) return;
+      // The badge is keyed by PR id, but the link row (pull_request_issues) is
+      // what actually attaches the PR to this issue — resolve it before deleting.
+      const link = pullRequestIssues.find(
+        (l) =>
+          l.issue_id === selectedKanbanIssueId && l.pull_request_id === prId
+      );
+      if (!link) return;
+      void (async () => {
+        const result = await ConfirmDialog.show({
+          title: t('kanban.unlinkPrTitle', 'Unlink pull request?'),
+          message: t(
+            'kanban.unlinkPrMessage',
+            'This removes the link between the pull request and this issue. The pull request itself is not affected.'
+          ),
+          confirmText: t('kanban.unlinkPrConfirm', 'Unlink'),
+          variant: 'destructive',
+        });
+        if (result !== 'confirmed') return;
+        removePullRequestIssue(link.id);
+      })();
+    },
+    [selectedKanbanIssueId, pullRequestIssues, removePullRequestIssue, t]
+  );
+
   // Loading state
   const isLoading = projectLoading || orgLoading;
   const isResolvingExpectedIssue =
@@ -1083,6 +1109,7 @@ export function KanbanIssuePanelContainer({
       onRemoveParentIssue={handleRemoveParentIssue}
       linkedPrs={linkedPrs}
       onLinkPr={mode === 'edit' ? handleLinkPr : undefined}
+      onRemovePr={mode === 'edit' ? handleRemovePr : undefined}
       onClose={closeKanbanIssuePanel}
       onSubmit={handleSubmit}
       onCmdEnterSubmit={handleCmdEnterSubmit}

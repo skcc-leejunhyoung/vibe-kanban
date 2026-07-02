@@ -105,6 +105,7 @@ export interface KanbanIssuePanelProps {
   onRemoveParentIssue?: () => void;
   linkedPrs?: LinkedPullRequest[];
   onLinkPr?: () => void;
+  onRemovePr?: (prId: string) => void;
 
   // Actions
   onClose: () => void;
@@ -176,6 +177,7 @@ export function KanbanIssuePanel({
   onRemoveParentIssue,
   linkedPrs = [],
   onLinkPr,
+  onRemovePr,
   onClose,
   onSubmit,
   onCmdEnterSubmit,
@@ -349,6 +351,7 @@ export function KanbanIssuePanel({
             onCreateTag={onCreateTag}
             renderAddTagControl={renderAddTagControl}
             onLinkPr={!isCreateMode ? onLinkPr : undefined}
+            onRemovePr={!isCreateMode ? onRemovePr : undefined}
             disabled={isSubmitting}
           />
         </div>

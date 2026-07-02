@@ -38,6 +38,7 @@ export interface IssueTagsRowProps<TTag extends IssueTagBase = IssueTagBase> {
     props: IssueTagsRowAddTagControlProps<TTag>
   ) => ReactNode;
   onLinkPr?: () => void;
+  onRemovePr?: (prId: string) => void;
   disabled?: boolean;
   className?: string;
 }
@@ -62,6 +63,7 @@ export function IssueTagsRow<TTag extends IssueTagBase>({
   onCreateTag,
   renderAddTagControl,
   onLinkPr,
+  onRemovePr,
   disabled,
   className,
 }: IssueTagsRowProps<TTag>) {
@@ -128,6 +130,8 @@ export function IssueTagsRow<TTag extends IssueTagBase>({
           number={pr.number}
           url={pr.url}
           status={pr.status}
+          onRemove={onRemovePr ? () => onRemovePr(pr.id) : undefined}
+          disabled={disabled}
         />
       ))}
 
