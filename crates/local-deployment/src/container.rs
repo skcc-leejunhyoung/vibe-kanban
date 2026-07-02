@@ -2021,12 +2021,56 @@ impl LocalContainerService {
             }
 
             let worktree_path = workspace_path.join(&repo.name);
-            match self.git.merge_changes(
+            let mut merge_result = self.git.merge_changes(
                 &repo.path,
                 &worktree_path,
                 &workspace.branch,
                 &workspace_repo.target_branch,
-            ) {
+            );
+
+            // The base moved forward since the workspace branched, so a
+            // fast-forward merge is impossible. Rather than immediately handing
+            // this to the agent as a "conflict", try an automatic rebase onto
+            // the latest target first — most diverged bases rebase cleanly.
+            // Only a rebase that itself reports conflicts is a real conflict the
+            // agent must resolve; the error type (MergeConflicts) routes it to
+            // the conflict-resolution turn via the classifier below.
+            if matches!(merge_result, Err(GitServiceError::BranchesDiverged(_))) {
+                tracing::info!(
+                    "vibe merge: base diverged for {}, attempting auto-rebase",
+                    repo.name
+                );
+                match self.git.rebase_branch(
+                    &repo.path,
+                    &worktree_path,
+                    &workspace_repo.target_branch,
+                    &workspace_repo.target_branch,
+                    &workspace.branch,
+                ) {
+                    Ok(_) => {
+                        // Rebase landed cleanly — the workspace branch is now
+                        // strictly ahead of target, so re-attempt the merge.
+                        tracing::info!(
+                            "vibe merge: auto-rebase succeeded for {}, retrying merge",
+                            repo.name
+                        );
+                        merge_result = self.git.merge_changes(
+                            &repo.path,
+                            &worktree_path,
+                            &workspace.branch,
+                            &workspace_repo.target_branch,
+                        );
+                    }
+                    // Rebase failed. A conflict becomes the agent's job; any
+                    // other error is an other-failure. Both are classified by
+                    // matching on the error type in the block below.
+                    Err(e) => {
+                        merge_result = Err(e);
+                    }
+                }
+            }
+
+            match merge_result {
                 Ok(merge_commit_id) => {
                     if let Err(e) = Merge::create_direct(
                         &self.db.pool,
