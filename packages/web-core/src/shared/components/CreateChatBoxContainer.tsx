@@ -280,9 +280,17 @@ export function CreateChatBoxContainer({
   // Workspace creation must not mutate the project's saved repo defaults.
   // The picked repos/branches are a per-workspace override; project defaults
   // only change via the project settings dialog.
+  //
+  // `shouldNavigate` gates the jump into the new workspace: creation runs
+  // async, so if the user has navigated away from the create screen while it
+  // was in flight, we must NOT yank them into the workspace when it resolves —
+  // they asked for it to be created in the background. The draft/attachment
+  // cleanup still runs either way so the next create screen starts fresh.
   const finishWorkspaceCreated = useCallback(
-    async (workspaceId: string) => {
-      onWorkspaceCreated(workspaceId);
+    async (workspaceId: string, shouldNavigate: boolean) => {
+      if (shouldNavigate) {
+        onWorkspaceCreated(workspaceId);
+      }
 
       clearAttachments();
       await clearDraft();
@@ -314,13 +322,19 @@ export function CreateChatBoxContainer({
       working_branch: workingBranch,
     };
 
+    // Snapshot the route before the async create; if the user leaves the
+    // create screen while it runs, we skip the post-create navigation.
+    const startPathname = window.location.pathname;
     const result = await createWorkspace.mutateAsync({
       data,
       linkToIssue: getLinkToIssue(),
     });
 
     if (result.workspace) {
-      await finishWorkspaceCreated(result.workspace.id);
+      await finishWorkspaceCreated(
+        result.workspace.id,
+        window.location.pathname === startPathname
+      );
     }
   }, [
     canSubmit,
@@ -349,13 +363,19 @@ export function CreateChatBoxContainer({
       working_branch: workingBranch,
     };
 
+    // Snapshot the route before the async create; if the user leaves the
+    // create screen while it runs, we skip the post-create navigation.
+    const startPathname = window.location.pathname;
     const result = await createWorkspaceOnly.mutateAsync({
       data,
       linkToIssue: getLinkToIssue(),
     });
 
     if (result.workspace) {
-      await finishWorkspaceCreated(result.workspace.id);
+      await finishWorkspaceCreated(
+        result.workspace.id,
+        window.location.pathname === startPathname
+      );
     }
   }, [
     canCreateOnly,
