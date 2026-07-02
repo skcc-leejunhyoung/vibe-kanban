@@ -6,11 +6,7 @@ import {
   GithubLogoIcon,
   PlusIcon,
 } from '@phosphor-icons/react';
-import {
-  FileDiff,
-  Virtualizer,
-  WorkerPoolContextProvider,
-} from '@pierre/diffs/react';
+import { FileDiff, WorkerPoolContextProvider } from '@pierre/diffs/react';
 import type { DiffLineAnnotation, AnnotationSide } from '@pierre/diffs';
 const WorkerUrl = new URL(
   '@pierre/diffs/worker/worker-portable.js',
@@ -661,9 +657,6 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     };
   }, [diffItems]);
 
-  const virtualizerRef = useRef<{
-    scrollFileToTop: (el: HTMLElement) => Promise<void>;
-  } | null>(null);
   const topBandCandidatesRef = useRef<Set<HTMLElement>>(new Set());
   const latestScrollRequestRef = useRef<number | null>(null);
 
@@ -819,28 +812,13 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
           return;
         }
 
-        const fileContainer = wrapper.querySelector('diffs-container');
-        if (!(fileContainer instanceof HTMLElement)) {
-          onScrollComplete(requestId);
-          return;
+        // Non-virtualized: files render in full, so a plain scrollIntoView on
+        // the file wrapper is enough. No @pierre scroll manipulation.
+        wrapper.scrollIntoView({ block: 'start', behavior: 'instant' });
+        if (lineNumber && latestScrollRequestRef.current === requestId) {
+          scrollToLineInDiff(wrapper, lineNumber);
         }
-
-        const virtualizer = virtualizerRef.current;
-        if (!virtualizer) {
-          onScrollComplete(requestId);
-          return;
-        }
-
-        void virtualizer
-          .scrollFileToTop(fileContainer)
-          .then(() => {
-            if (lineNumber && latestScrollRequestRef.current === requestId) {
-              scrollToLineInDiff(wrapper, lineNumber);
-            }
-          })
-          .finally(() => {
-            requestAnimationFrame(() => onScrollComplete(requestId));
-          });
+        requestAnimationFrame(() => onScrollComplete(requestId));
       });
     },
     [diffItems.length, beginProgrammaticScroll, onScrollComplete]
@@ -860,24 +838,28 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     >
       <div className={`flex flex-col h-full min-h-0 bg-secondary ${className}`}>
         <CommitSelector workspaceId={workspaceId} />
-        <Virtualizer
-          {...({ ref: virtualizerRef } as Record<string, unknown>)}
+        {/* Non-virtualized render: no <Virtualizer> context, so each FileDiff
+            renders in full (no line windowing → no scrollHeight churn). Native
+            browser scroll anchoring keeps the viewport stable while async
+            syntax highlighting settles — no manual scroll correction. */}
+        <div
           className="w-full flex-1 min-h-0 overflow-auto px-base pt-1"
-          contentClassName="flex flex-col gap-1"
-          style={{ contain: 'layout style paint' }}
+          style={{ overflowAnchor: 'auto' }}
         >
-          {itemsToRender.map(({ diff, initialExpanded }) => {
-            const path = diff.newPath || diff.oldPath || '';
-            return (
-              <DiffFileItem
-                key={path}
-                diff={diff}
-                initialExpanded={initialExpanded}
-                workspaceId={workspaceId}
-              />
-            );
-          })}
-        </Virtualizer>
+          <div className="flex flex-col gap-1">
+            {itemsToRender.map(({ diff, initialExpanded }) => {
+              const path = diff.newPath || diff.oldPath || '';
+              return (
+                <DiffFileItem
+                  key={path}
+                  diff={diff}
+                  initialExpanded={initialExpanded}
+                  workspaceId={workspaceId}
+                />
+              );
+            })}
+          </div>
+        </div>
       </div>
     </WorkerPoolContextProvider>
   );
