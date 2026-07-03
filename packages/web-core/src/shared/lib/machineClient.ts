@@ -2,8 +2,10 @@ import type {
   Config,
   GetMcpServerResponse,
   GitBranch,
+  GitRemote,
   McpServerQuery,
   Repo,
+  RepoRemoteStatus,
   UpdateMcpServersBody,
   UpdateRepo,
   UserSystemInfo,
@@ -49,6 +51,13 @@ export interface MachineClient {
     display_name?: string;
   }) => Promise<Repo>;
   getRepoBranches: (repoId: string) => Promise<GitBranch[]>;
+  listRepoRemotes: (repoId: string) => Promise<GitRemote[]>;
+  getRepoRemoteStatus: (repoId: string) => Promise<RepoRemoteStatus>;
+  fetchRepoRemote: (repoId: string) => Promise<RepoRemoteStatus>;
+  pushRepoBranch: (
+    repoId: string,
+    force?: boolean
+  ) => Promise<RepoRemoteStatus>;
   loadProfiles: () => Promise<{ content: string; path: string }>;
   saveProfiles: (content: string) => Promise<string>;
   loadMcpServers: (query: McpServerQuery) => Promise<GetMcpServerResponse>;
@@ -178,6 +187,41 @@ export function createMachineClient(
           target,
           `/api/repos/${repoId}/branches`
         )
+      ),
+    listRepoRemotes: async (repoId) =>
+      handleApiResponse<GitRemote[]>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/repos/${repoId}/remotes`
+        )
+      ),
+    getRepoRemoteStatus: async (repoId) =>
+      handleApiResponse<RepoRemoteStatus>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/repos/${repoId}/remote-status`,
+          { cache: 'no-store' }
+        )
+      ),
+    fetchRepoRemote: async (repoId) =>
+      handleApiResponse<RepoRemoteStatus>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/repos/${repoId}/fetch`,
+          {
+            method: 'POST',
+          }
+        )
+      ),
+    pushRepoBranch: async (repoId, force = false) =>
+      handleApiResponse<RepoRemoteStatus>(
+        await makeMachineRequest(runtime, target, `/api/repos/${repoId}/push`, {
+          method: 'POST',
+          body: JSON.stringify({ force }),
+        })
       ),
     loadProfiles: async () =>
       handleApiResponse<{ content: string; path: string }>(

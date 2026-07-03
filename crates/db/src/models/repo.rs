@@ -47,6 +47,9 @@ pub struct Repo {
     pub dev_server_script: Option<String>,
     pub default_target_branch: Option<String>,
     pub default_working_dir: Option<String>,
+    /// User-selected primary remote (e.g. "origin"). NULL falls back to the git
+    /// default remote. Drives the repo settings push/fetch buttons.
+    pub primary_remote: Option<String>,
     #[ts(type = "Date")]
     pub created_at: DateTime<Utc>,
     #[ts(type = "Date")]
@@ -126,6 +129,14 @@ pub struct UpdateRepo {
     )]
     #[ts(optional, type = "string | null")]
     pub default_working_dir: Option<Option<String>>,
+
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "double_option"
+    )]
+    #[ts(optional, type = "string | null")]
+    pub primary_remote: Option<Option<String>>,
 }
 
 impl Repo {
@@ -146,6 +157,7 @@ impl Repo {
                       dev_server_script,
                       default_target_branch,
                       default_working_dir,
+                      primary_remote,
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>"
                FROM repos
@@ -187,6 +199,7 @@ impl Repo {
                       dev_server_script,
                       default_target_branch,
                       default_working_dir,
+                      primary_remote,
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>"
                FROM repos
@@ -245,6 +258,7 @@ impl Repo {
                          dev_server_script,
                          default_target_branch,
                          default_working_dir,
+                         primary_remote,
                          created_at as "created_at!: DateTime<Utc>",
                          updated_at as "updated_at!: DateTime<Utc>""#,
             id,
@@ -271,6 +285,7 @@ impl Repo {
                       dev_server_script,
                       default_target_branch,
                       default_working_dir,
+                      primary_remote,
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>"
                FROM repos
@@ -297,6 +312,7 @@ impl Repo {
                       r.dev_server_script,
                       r.default_target_branch,
                       r.default_working_dir,
+                      r.primary_remote,
                       r.created_at as "created_at!: DateTime<Utc>",
                       r.updated_at as "updated_at!: DateTime<Utc>"
                FROM repos r
@@ -389,6 +405,10 @@ impl Repo {
             None => existing.default_working_dir,
             Some(v) => v.clone(),
         };
+        let primary_remote = match &payload.primary_remote {
+            None => existing.primary_remote,
+            Some(v) => v.clone(),
+        };
 
         sqlx::query_as!(
             Repo,
@@ -402,8 +422,9 @@ impl Repo {
                    dev_server_script = $7,
                    default_target_branch = $8,
                    default_working_dir = $9,
+                   primary_remote = $10,
                    updated_at = datetime('now', 'subsec')
-               WHERE id = $10
+               WHERE id = $11
                RETURNING id as "id!: Uuid",
                          path,
                          name,
@@ -416,6 +437,7 @@ impl Repo {
                          dev_server_script,
                          default_target_branch,
                          default_working_dir,
+                         primary_remote,
                          created_at as "created_at!: DateTime<Utc>",
                          updated_at as "updated_at!: DateTime<Utc>""#,
             display_name,
@@ -427,6 +449,7 @@ impl Repo {
             dev_server_script,
             default_target_branch,
             default_working_dir,
+            primary_remote,
             id
         )
         .fetch_one(pool)

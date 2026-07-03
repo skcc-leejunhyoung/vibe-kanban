@@ -45,6 +45,7 @@ interface RepoScriptsFormState {
   display_name: string;
   default_working_dir: string;
   default_target_branch: string;
+  primary_remote: string;
   setup_script: string;
   parallel_setup_script: boolean;
   cleanup_script: string;
@@ -58,6 +59,7 @@ function repoToFormState(repo: Repo): RepoScriptsFormState {
     display_name: repo.display_name,
     default_working_dir: repo.default_working_dir ?? '',
     default_target_branch: repo.default_target_branch ?? '',
+    primary_remote: repo.primary_remote ?? '',
     setup_script: repo.setup_script ?? '',
     parallel_setup_script: repo.parallel_setup_script,
     cleanup_script: repo.cleanup_script ?? '',
@@ -184,6 +186,88 @@ export function ReposSettingsSection({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  // ── Remote (primary remote + push/fetch) ────────────────────────────
+  const { data: repoRemotes = [] } = useQuery({
+    queryKey: ['repoRemotes', selectedRepoId] as const,
+    queryFn: () => {
+      if (!machineClient) throw new Error('Machine client is required');
+      return machineClient.listRepoRemotes(selectedRepoId);
+    },
+    enabled: machineClient != null && !!selectedRepoId,
+  });
+
+  const { data: remoteStatus, isLoading: remoteStatusLoading } = useQuery({
+    queryKey: ['repoRemoteStatus', selectedRepoId] as const,
+    queryFn: () => {
+      if (!machineClient) throw new Error('Machine client is required');
+      return machineClient.getRepoRemoteStatus(selectedRepoId);
+    },
+    enabled: machineClient != null && !!selectedRepoId,
+  });
+
+  const [remoteBusy, setRemoteBusy] = useState<'fetch' | 'push' | null>(null);
+  const [remoteMessage, setRemoteMessage] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  // Reset the transient remote action message when switching repositories.
+  useEffect(() => {
+    setRemoteMessage(null);
+  }, [selectedRepoId]);
+
+  const handleFetchRemote = useCallback(async () => {
+    if (!machineClient || !selectedRepoId) return;
+    setRemoteBusy('fetch');
+    setRemoteMessage(null);
+    try {
+      const status = await machineClient.fetchRepoRemote(selectedRepoId);
+      queryClient.setQueryData(['repoRemoteStatus', selectedRepoId], status);
+      // Newly fetched remote branches should show up in branch pickers too.
+      queryClient.invalidateQueries({
+        queryKey: ['repoBranches', selectedRepoId],
+      });
+      setRemoteMessage({
+        type: 'success',
+        text: t('settings.repos.remote.fetchSuccess'),
+      });
+    } catch (err) {
+      setRemoteMessage({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : t('settings.repos.remote.fetchError'),
+      });
+    } finally {
+      setRemoteBusy(null);
+    }
+  }, [machineClient, selectedRepoId, queryClient, t]);
+
+  const handlePushRemote = useCallback(async () => {
+    if (!machineClient || !selectedRepoId) return;
+    setRemoteBusy('push');
+    setRemoteMessage(null);
+    try {
+      const status = await machineClient.pushRepoBranch(selectedRepoId);
+      queryClient.setQueryData(['repoRemoteStatus', selectedRepoId], status);
+      setRemoteMessage({
+        type: 'success',
+        text: t('settings.repos.remote.pushSuccess'),
+      });
+    } catch (err) {
+      setRemoteMessage({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : t('settings.repos.remote.pushError'),
+      });
+    } finally {
+      setRemoteBusy(null);
+    }
+  }, [machineClient, selectedRepoId, queryClient, t]);
 
   // Get OS-appropriate script placeholders
   const placeholders = useScriptPlaceholders();
@@ -343,6 +427,7 @@ export function ReposSettingsSection({
         display_name: draft.display_name.trim() || null,
         default_working_dir: draft.default_working_dir.trim() || null,
         default_target_branch: draft.default_target_branch.trim() || null,
+        primary_remote: draft.primary_remote.trim() || null,
         setup_script: draft.setup_script.trim() || null,
         cleanup_script: draft.cleanup_script.trim() || null,
         archive_script: draft.archive_script.trim() || null,
@@ -364,6 +449,10 @@ export function ReposSettingsSection({
       queryClient.setQueryData(reposQueryKey, (old: Repo[] | undefined) =>
         old?.map((r) => (r.id === updatedRepo.id ? updatedRepo : r))
       );
+      // The primary remote may have changed, so recompute ahead/behind status.
+      queryClient.invalidateQueries({
+        queryKey: ['repoRemoteStatus', updatedRepo.id],
+      });
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err) {
@@ -588,6 +677,163 @@ export function ReposSettingsSection({
                 </Button>
               </div>
             </div>
+          </SettingsCard>
+
+          {/* Remote (primary remote + push/fetch) */}
+          <SettingsCard
+            title={t('settings.repos.remote.title')}
+            description={t('settings.repos.remote.description')}
+          >
+            <SettingsField
+              label={t('settings.repos.remote.primary.label')}
+              description={t('settings.repos.remote.primary.helper')}
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <DropdownMenuTriggerButton
+                    label={
+                      draft.primary_remote ||
+                      t('settings.repos.remote.primary.default', {
+                        remote: remoteStatus?.remote ?? '—',
+                      })
+                    }
+                    className="w-full justify-between"
+                  />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)]">
+                  <DropdownMenuItem
+                    onClick={() => updateDraft({ primary_remote: '' })}
+                  >
+                    {t('settings.repos.remote.primary.default', {
+                      remote: remoteStatus?.remote ?? '—',
+                    })}
+                  </DropdownMenuItem>
+                  {repoRemotes.map((remote) => (
+                    <DropdownMenuItem
+                      key={remote.name}
+                      onClick={() =>
+                        updateDraft({ primary_remote: remote.name })
+                      }
+                    >
+                      {remote.name}
+                      <span className="ml-2 text-low font-mono text-xs truncate">
+                        {remote.url}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                  {repoRemotes.length === 0 && (
+                    <DropdownMenuItem disabled>
+                      {t('settings.repos.remote.primary.noRemotes')}
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </SettingsField>
+
+            {/* Branch / ahead-behind status + actions */}
+            <SettingsField
+              label={t('settings.repos.remote.status.label')}
+              description={t('settings.repos.remote.status.helper')}
+            >
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <GitBranchIcon
+                    className="size-icon-sm text-low"
+                    weight="bold"
+                  />
+                  {remoteStatusLoading ? (
+                    <span className="text-low">
+                      {t('settings.repos.remote.status.loading')}
+                    </span>
+                  ) : remoteStatus ? (
+                    <>
+                      <span className="font-mono text-normal">
+                        {remoteStatus.current_branch}
+                      </span>
+                      {remoteStatus.remote_configured ? (
+                        <span className="text-low">
+                          {remoteStatus.remote_branch_exists
+                            ? t('settings.repos.remote.status.aheadBehind', {
+                                ahead: remoteStatus.ahead,
+                                behind: remoteStatus.behind,
+                                remote: remoteStatus.remote,
+                              })
+                            : t('settings.repos.remote.status.notPushed', {
+                                remote: remoteStatus.remote,
+                              })}
+                        </span>
+                      ) : (
+                        <span className="text-low">
+                          {t('settings.repos.remote.status.noRemote')}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-low">
+                      {t('settings.repos.remote.status.unavailable')}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleFetchRemote}
+                    disabled={
+                      remoteBusy !== null ||
+                      !remoteStatus?.remote_configured ||
+                      hasUnsavedChanges
+                    }
+                  >
+                    {remoteBusy === 'fetch' && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                    {t('settings.repos.remote.fetchButton')}
+                  </Button>
+                  <PrimaryButton
+                    variant="default"
+                    onClick={handlePushRemote}
+                    disabled={
+                      remoteBusy !== null ||
+                      !remoteStatus?.remote_configured ||
+                      hasUnsavedChanges ||
+                      !(
+                        (remoteStatus?.ahead ?? 0) > 0 ||
+                        remoteStatus?.remote_branch_exists === false
+                      )
+                    }
+                  >
+                    {remoteBusy === 'push' && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                    {(remoteStatus?.ahead ?? 0) > 0
+                      ? t('settings.repos.remote.pushButtonCount', {
+                          count: remoteStatus?.ahead ?? 0,
+                        })
+                      : t('settings.repos.remote.pushButton')}
+                  </PrimaryButton>
+                </div>
+
+                {hasUnsavedChanges && (
+                  <p className="text-sm text-low">
+                    {t('settings.repos.remote.saveFirst')}
+                  </p>
+                )}
+
+                {remoteMessage && (
+                  <p
+                    className={
+                      remoteMessage.type === 'success'
+                        ? 'text-sm text-success'
+                        : 'text-sm text-error'
+                    }
+                  >
+                    {remoteMessage.text}
+                  </p>
+                )}
+              </div>
+            </SettingsField>
           </SettingsCard>
 
           {/* Linked projects (read-only) */}

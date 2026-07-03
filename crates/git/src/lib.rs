@@ -1826,6 +1826,92 @@ impl GitService {
         Ok(())
     }
 
+    /// Push a local branch to a specific named remote (e.g. the repo's primary
+    /// remote). Unlike [`push_to_remote`], this does not require a clean
+    /// worktree: it pushes the committed branch tip regardless of uncommitted
+    /// changes in the checkout, matching plain `git push` semantics.
+    pub fn push_branch_to_named_remote(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+        remote_name: &str,
+        force: bool,
+    ) -> Result<(), GitServiceError> {
+        let repo = Repository::open(repo_path)?;
+        let remote_url = {
+            let remote = repo.find_remote(remote_name)?;
+            remote.url().map(|url| url.to_string()).ok_or_else(|| {
+                GitServiceError::InvalidRepository(format!("Remote '{remote_name}' has no URL"))
+            })?
+        };
+
+        let git_cli = GitCli::new();
+        if let Err(e) = git_cli.push(repo_path, &remote_url, branch_name, force) {
+            tracing::error!("Push to remote '{remote_name}' failed: {}", e);
+            return Err(e.into());
+        }
+
+        // Update the local remote-tracking ref + upstream so subsequent
+        // ahead/behind calculations reflect the push.
+        let mut branch = Self::find_branch(&repo, branch_name)?;
+        if !branch.get().is_remote()
+            && let Some(branch_target) = branch.get().target()
+        {
+            let remote_ref = format!("refs/remotes/{remote_name}/{branch_name}");
+            repo.reference(
+                &remote_ref,
+                branch_target,
+                true,
+                "update remote tracking branch",
+            )?;
+            branch.set_upstream(Some(&format!("{remote_name}/{branch_name}")))?;
+        }
+
+        Ok(())
+    }
+
+    /// Fetch all branches from a specific named remote, refreshing the local
+    /// remote-tracking refs.
+    pub fn fetch_remote(&self, repo_path: &Path, remote_name: &str) -> Result<(), GitServiceError> {
+        let repo = Repository::open(repo_path)?;
+        let remote = repo.find_remote(remote_name)?;
+        self.fetch_all_from_remote(&repo, &remote)
+    }
+
+    /// Ahead/behind of `branch_name` relative to its counterpart on
+    /// `remote_name`, computed from the local remote-tracking ref
+    /// (`refs/remotes/<remote>/<branch>`). Returns
+    /// `(remote_branch_exists, ahead, behind)`. Callers should
+    /// [`fetch_remote`] first for an up-to-date comparison.
+    pub fn get_remote_tracking_status(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+        remote_name: &str,
+    ) -> Result<(bool, usize, usize), GitServiceError> {
+        let repo = Repository::open(repo_path)?;
+        let local = Self::find_branch(&repo, branch_name)?;
+        let local_oid = local.get().target().ok_or_else(|| {
+            GitServiceError::BranchNotFound(format!("Branch '{branch_name}' has no commit"))
+        })?;
+
+        let remote_ref = format!("refs/remotes/{remote_name}/{branch_name}");
+        match repo.find_reference(&remote_ref) {
+            Ok(reference) => {
+                let remote_oid = reference.target().ok_or_else(|| {
+                    GitServiceError::BranchNotFound(format!(
+                        "Remote branch '{remote_name}/{branch_name}' has no commit"
+                    ))
+                })?;
+                let (ahead, behind) = repo.graph_ahead_behind(local_oid, remote_oid)?;
+                Ok((true, ahead, behind))
+            }
+            // No remote-tracking ref yet: the branch has never been pushed to
+            // this remote, so it's entirely "ahead".
+            Err(_) => Ok((false, 0, 0)),
+        }
+    }
+
     /// Fetch from remote repository using native git authentication
     fn fetch_from_remote(
         &self,

@@ -581,6 +581,33 @@
           "useCurrent": "현재 브랜치 사용"
         }
       },
+      "remote": {
+        "title": "리모트",
+        "description": "기본 리모트를 설정하고 체크아웃된 브랜치를 푸시하거나 페치합니다.",
+        "primary": {
+          "label": "기본 리모트",
+          "helper": "아래 푸시·페치 버튼이 사용하는 리모트입니다. 기본값으로 두면 git 기본 리모트를 사용합니다.",
+          "default": "기본값 ({{remote}})",
+          "noRemotes": "설정된 리모트가 없습니다"
+        },
+        "status": {
+          "label": "브랜치 상태",
+          "helper": "현재 브랜치가 기본 리모트보다 앞서 있으면 푸시하거나, 최신 커밋을 페치합니다.",
+          "loading": "상태 불러오는 중…",
+          "aheadBehind": "{{remote}} 기준 {{ahead}} 앞섬, {{behind}} 뒤처짐",
+          "notPushed": "{{remote}}에 아직 푸시되지 않음",
+          "noRemote": "설정된 리모트가 없습니다",
+          "unavailable": "상태를 확인할 수 없습니다"
+        },
+        "fetchButton": "페치",
+        "fetchSuccess": "리모트에서 최신 내용을 가져왔습니다.",
+        "fetchError": "리모트에서 페치하지 못했습니다.",
+        "pushButton": "푸시",
+        "pushButtonCount": "푸시 ({{count}})",
+        "pushSuccess": "리모트에 푸시했습니다.",
+        "pushError": "리모트에 푸시하지 못했습니다.",
+        "saveFirst": "푸시·페치 전에 변경 사항을 저장하세요."
+      },
       "scripts": {
         "title": "스크립트 및 구성",
         "description": "이 저장소의 설정, 정리 스크립트 및 복사할 파일을 구성합니다. 이러한 스크립트는 저장소가 모든 워크스페이스에서 사용될 때마다 실행됩니다.",

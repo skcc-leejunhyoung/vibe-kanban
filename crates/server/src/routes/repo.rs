@@ -128,6 +128,143 @@ pub async fn get_repo_remotes(
     Ok(ResponseJson(ApiResponse::success(remotes)))
 }
 
+/// Status of the repo's checked-out branch relative to its primary remote.
+/// Drives the push/fetch buttons in repo settings.
+#[derive(Debug, Serialize, TS)]
+pub struct RepoRemoteStatus {
+    /// Branch currently checked out at the repo path.
+    pub current_branch: String,
+    /// Resolved remote name (the repo's primary remote, or the git default
+    /// remote when none is set). `None` when the repo has no remotes.
+    pub remote: Option<String>,
+    /// Whether the repo has any remote configured at all.
+    pub remote_configured: bool,
+    /// Whether `<remote>/<current_branch>` exists locally as a tracking ref.
+    pub remote_branch_exists: bool,
+    /// Commits the local branch is ahead of the remote (can be pushed).
+    pub ahead: u32,
+    /// Commits the local branch is behind the remote.
+    pub behind: u32,
+}
+
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct PushRepoBranchRequest {
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Resolve the remote to use for push/fetch: the repo's saved primary remote,
+/// falling back to the git default remote. Returns `None` when the repo has no
+/// remotes configured.
+fn resolve_primary_remote(deployment: &DeploymentImpl, repo: &Repo) -> Option<String> {
+    if let Some(name) = repo.primary_remote.as_ref().filter(|n| !n.is_empty()) {
+        return Some(name.clone());
+    }
+    deployment
+        .git()
+        .get_default_remote(&repo.path)
+        .ok()
+        .map(|remote| remote.name)
+}
+
+fn compute_repo_remote_status(
+    deployment: &DeploymentImpl,
+    repo: &Repo,
+) -> Result<RepoRemoteStatus, ApiError> {
+    let git = deployment.git();
+    let current_branch = git.get_current_branch(&repo.path)?;
+
+    match resolve_primary_remote(deployment, repo) {
+        Some(remote) => {
+            let (remote_branch_exists, ahead, behind) =
+                git.get_remote_tracking_status(&repo.path, &current_branch, &remote)?;
+            Ok(RepoRemoteStatus {
+                current_branch,
+                remote: Some(remote),
+                remote_configured: true,
+                remote_branch_exists,
+                ahead: ahead as u32,
+                behind: behind as u32,
+            })
+        }
+        None => Ok(RepoRemoteStatus {
+            current_branch,
+            remote: None,
+            remote_configured: false,
+            remote_branch_exists: false,
+            ahead: 0,
+            behind: 0,
+        }),
+    }
+}
+
+pub async fn get_repo_remote_status(
+    State(deployment): State<DeploymentImpl>,
+    Path(repo_id): Path<Uuid>,
+) -> Result<ResponseJson<ApiResponse<RepoRemoteStatus>>, ApiError> {
+    let repo = deployment
+        .repo()
+        .get_by_id(&deployment.db().pool, repo_id)
+        .await?;
+    let status = compute_repo_remote_status(&deployment, &repo)?;
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
+pub async fn fetch_repo_remote(
+    State(deployment): State<DeploymentImpl>,
+    Path(repo_id): Path<Uuid>,
+) -> Result<ResponseJson<ApiResponse<RepoRemoteStatus>>, ApiError> {
+    let repo = deployment
+        .repo()
+        .get_by_id(&deployment.db().pool, repo_id)
+        .await?;
+
+    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+        return Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+    };
+
+    if let Err(e) = deployment.git().fetch_remote(&repo.path, &remote) {
+        tracing::error!("Fetch from remote '{remote}' for repo {repo_id} failed: {e}");
+        return Ok(ResponseJson(ApiResponse::error(&e.to_string())));
+    }
+
+    let status = compute_repo_remote_status(&deployment, &repo)?;
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
+pub async fn push_repo_branch(
+    State(deployment): State<DeploymentImpl>,
+    Path(repo_id): Path<Uuid>,
+    ResponseJson(payload): ResponseJson<Option<PushRepoBranchRequest>>,
+) -> Result<ResponseJson<ApiResponse<RepoRemoteStatus>>, ApiError> {
+    let repo = deployment
+        .repo()
+        .get_by_id(&deployment.db().pool, repo_id)
+        .await?;
+
+    let force = payload.unwrap_or_default().force;
+    let git = deployment.git();
+    let current_branch = git.get_current_branch(&repo.path)?;
+
+    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+        return Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+    };
+
+    if let Err(e) = git.push_branch_to_named_remote(&repo.path, &current_branch, &remote, force) {
+        tracing::error!(
+            "Push of branch '{current_branch}' to '{remote}' for repo {repo_id} failed: {e}"
+        );
+        return Ok(ResponseJson(ApiResponse::error(&e.to_string())));
+    }
+
+    let status = compute_repo_remote_status(&deployment, &repo)?;
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
 pub async fn get_repos_batch(
     State(deployment): State<DeploymentImpl>,
     ResponseJson(payload): ResponseJson<BatchRepoRequest>,
@@ -403,6 +540,12 @@ pub fn router() -> Router<DeploymentImpl> {
         )
         .route("/repos/{repo_id}/branches", get(get_repo_branches))
         .route("/repos/{repo_id}/remotes", get(get_repo_remotes))
+        .route(
+            "/repos/{repo_id}/remote-status",
+            get(get_repo_remote_status),
+        )
+        .route("/repos/{repo_id}/fetch", post(fetch_repo_remote))
+        .route("/repos/{repo_id}/push", post(push_repo_branch))
         .route("/repos/{repo_id}/prs", get(list_open_prs))
         .route("/repos/pr-info", get(get_pr_info))
         .route("/repos/{repo_id}/search", get(search_repo))

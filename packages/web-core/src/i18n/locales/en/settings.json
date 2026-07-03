@@ -589,6 +589,33 @@
           "useCurrent": "Use current branch"
         }
       },
+      "remote": {
+        "title": "Remote",
+        "description": "Configure the primary remote and push or fetch the checked-out branch.",
+        "primary": {
+          "label": "Primary Remote",
+          "helper": "The remote used by the push and fetch buttons below. Leave on default to use the git default remote.",
+          "default": "Default ({{remote}})",
+          "noRemotes": "No remotes configured"
+        },
+        "status": {
+          "label": "Branch Status",
+          "helper": "Push the current branch when it is ahead of the primary remote, or fetch the latest commits.",
+          "loading": "Loading status…",
+          "aheadBehind": "{{ahead}} ahead, {{behind}} behind {{remote}}",
+          "notPushed": "Not yet pushed to {{remote}}",
+          "noRemote": "No remote configured",
+          "unavailable": "Status unavailable"
+        },
+        "fetchButton": "Fetch",
+        "fetchSuccess": "Fetched latest from remote.",
+        "fetchError": "Failed to fetch from remote.",
+        "pushButton": "Push",
+        "pushButtonCount": "Push ({{count}})",
+        "pushSuccess": "Pushed to remote.",
+        "pushError": "Failed to push to remote.",
+        "saveFirst": "Save your changes before pushing or fetching."
+      },
       "scripts": {
         "title": "Scripts & Configuration",
         "description": "Configure dev server, setup, cleanup, and copy files for this repository. These scripts run whenever the repository is used in any workspace.",
