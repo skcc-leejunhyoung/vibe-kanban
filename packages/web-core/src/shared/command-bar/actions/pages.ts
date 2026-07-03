@@ -145,6 +145,8 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.GitPull },
           { type: 'action', action: Actions.GitUpdateFromBase },
           { type: 'action', action: Actions.GitPush },
+          { type: 'action', action: Actions.GitFetchTarget },
+          { type: 'action', action: Actions.GitPushTarget },
           { type: 'action', action: Actions.GitRebase },
           { type: 'action', action: Actions.GitChangeTarget },
         ],

@@ -516,6 +516,43 @@ export type GitOperationError = { "type": "merge_conflicts", message: string, op
 
 export type PushError = { "type": "force_push_required" };
 
+export type FetchTargetBranchRequest = { repo_id: string, };
+
+export type PushTargetBranchRequest = { repo_id: string, force: boolean, };
+
+export type TargetBranchRemoteStatus = {
+/**
+ * The workspace repo's target (base) branch.
+ */
+target_branch: string,
+/**
+ * Resolved remote name (the repo's primary remote, or the git default
+ * remote when none is set). `None` when the repo has no remotes.
+ */
+remote: string | null,
+/**
+ * Whether the repo has any remote configured at all.
+ */
+remote_configured: boolean,
+/**
+ * True when the target branch is itself a remote-only branch (e.g.
+ * `origin/main` with no local branch). Fetch/push to the remote don't
+ * apply in that case.
+ */
+is_target_remote: boolean,
+/**
+ * Whether `<remote>/<target_branch>` exists locally as a tracking ref.
+ */
+remote_branch_exists: boolean,
+/**
+ * Commits the local target branch is ahead of the remote (can be pushed).
+ */
+ahead: number,
+/**
+ * Commits the local target branch is behind the remote (can be fetched).
+ */
+behind: number, };
+
 export type PrError = { "type": "cli_not_installed", provider: ProviderKind, } | { "type": "cli_not_logged_in", provider: ProviderKind, } | { "type": "git_cli_not_logged_in" } | { "type": "git_cli_not_installed" } | { "type": "target_branch_not_found", branch: string, } | { "type": "unsupported_provider" };
 
 export type RunScriptError = { "type": "no_script_configured" } | { "type": "process_already_running" };

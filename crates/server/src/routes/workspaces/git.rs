@@ -25,7 +25,10 @@ use utils::{diff::Diff, response::ApiResponse};
 use uuid::Uuid;
 
 use super::streams::{DiffStreamQuery, stream_workspace_diff_sse, stream_workspace_diff_ws};
-use crate::{DeploymentImpl, error::ApiError, middleware::signed_ws::SignedWsUpgrade};
+use crate::{
+    DeploymentImpl, error::ApiError, middleware::signed_ws::SignedWsUpgrade,
+    routes::repo::resolve_primary_remote,
+};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct RebaseWorkspaceRequest {
@@ -120,6 +123,47 @@ pub struct UpdateFromBaseRequest {
 #[ts(tag = "type", rename_all = "snake_case")]
 pub enum PushError {
     ForcePushRequired,
+}
+
+/// Which repo of the workspace a target-branch remote operation applies to.
+#[derive(Debug, Deserialize, TS)]
+pub struct TargetBranchRepoQuery {
+    pub repo_id: Uuid,
+}
+
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct FetchTargetBranchRequest {
+    pub repo_id: Uuid,
+}
+
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct PushTargetBranchRequest {
+    pub repo_id: Uuid,
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Status of a workspace repo's target (base) branch relative to the repo's
+/// primary remote (origin). Drives the target-branch fetch/push buttons.
+#[derive(Debug, Serialize, TS)]
+pub struct TargetBranchRemoteStatus {
+    /// The workspace repo's target (base) branch.
+    pub target_branch: String,
+    /// Resolved remote name (the repo's primary remote, or the git default
+    /// remote when none is set). `None` when the repo has no remotes.
+    pub remote: Option<String>,
+    /// Whether the repo has any remote configured at all.
+    pub remote_configured: bool,
+    /// True when the target branch is itself a remote-only branch (e.g.
+    /// `origin/main` with no local branch). Fetch/push to the remote don't
+    /// apply in that case.
+    pub is_target_remote: bool,
+    /// Whether `<remote>/<target_branch>` exists locally as a tracking ref.
+    pub remote_branch_exists: bool,
+    /// Commits the local target branch is ahead of the remote (can be pushed).
+    pub ahead: u32,
+    /// Commits the local target branch is behind the remote (can be fetched).
+    pub behind: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -223,6 +267,12 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/rebase/continue", post(continue_workspace_rebase))
         .route("/conflicts/abort", post(abort_workspace_conflicts))
         .route("/target-branch", axum::routing::put(change_target_branch))
+        .route(
+            "/target-branch/remote-status",
+            get(get_target_branch_remote_status),
+        )
+        .route("/target-branch/fetch", post(fetch_target_branch))
+        .route("/target-branch/push", post(push_target_branch))
         .route("/branch", axum::routing::put(rename_branch))
 }
 
@@ -1010,6 +1060,160 @@ pub async fn get_workspace_branch_status(
     }
 
     Ok(ResponseJson(ApiResponse::success(results)))
+}
+
+/// Compute the target (base) branch's status relative to the repo's primary
+/// remote. When the target is a remote-only branch or the repo has no remote,
+/// the ahead/behind fields are left zeroed and the corresponding flags tell the
+/// UI to disable the fetch/push buttons.
+fn compute_target_branch_remote_status(
+    deployment: &DeploymentImpl,
+    repo: &Repo,
+    target_branch: &str,
+) -> Result<TargetBranchRemoteStatus, ApiError> {
+    let git = deployment.git();
+    let is_target_remote = git.is_remote_branch(&repo.path, target_branch)?;
+    let remote = resolve_primary_remote(deployment, repo);
+
+    if let (Some(remote_name), false) = (&remote, is_target_remote) {
+        let (remote_branch_exists, ahead, behind) =
+            git.get_remote_tracking_status(&repo.path, target_branch, remote_name)?;
+        Ok(TargetBranchRemoteStatus {
+            target_branch: target_branch.to_string(),
+            remote: Some(remote_name.clone()),
+            remote_configured: true,
+            is_target_remote: false,
+            remote_branch_exists,
+            ahead: ahead as u32,
+            behind: behind as u32,
+        })
+    } else {
+        Ok(TargetBranchRemoteStatus {
+            target_branch: target_branch.to_string(),
+            remote_configured: remote.is_some(),
+            remote,
+            is_target_remote,
+            remote_branch_exists: false,
+            ahead: 0,
+            behind: 0,
+        })
+    }
+}
+
+/// Resolve the workspace repo + its underlying repo for a target-branch remote
+/// operation, erroring if the repo isn't part of the workspace.
+async fn load_workspace_repo(
+    deployment: &DeploymentImpl,
+    workspace_id: Uuid,
+    repo_id: Uuid,
+) -> Result<(Repo, WorkspaceRepo), ApiError> {
+    let pool = &deployment.db().pool;
+    let workspace_repo = WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace_id, repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+    Ok((repo, workspace_repo))
+}
+
+/// Ahead/behind of the workspace's target branch relative to its counterpart on
+/// the repo's primary remote. Drives the target-branch fetch/push buttons.
+#[axum::debug_handler]
+pub async fn get_target_branch_remote_status(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<TargetBranchRepoQuery>,
+) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus>>, ApiError> {
+    let (repo, workspace_repo) =
+        load_workspace_repo(&deployment, workspace.id, query.repo_id).await?;
+    let status =
+        compute_target_branch_remote_status(&deployment, &repo, &workspace_repo.target_branch)?;
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
+/// Fetch from the repo's primary remote, refreshing the target branch's
+/// remote-tracking ref, then return the updated ahead/behind status.
+#[axum::debug_handler]
+pub async fn fetch_target_branch(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<FetchTargetBranchRequest>,
+) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus>>, ApiError> {
+    let (repo, workspace_repo) =
+        load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
+
+    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+        return Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+    };
+
+    if let Err(e) = deployment.git().fetch_remote(&repo.path, &remote) {
+        tracing::error!(
+            "Fetch of target branch '{}' from remote '{remote}' for repo {} failed: {e}",
+            workspace_repo.target_branch,
+            repo.id
+        );
+        return Ok(ResponseJson(ApiResponse::error(&e.to_string())));
+    }
+
+    let status =
+        compute_target_branch_remote_status(&deployment, &repo, &workspace_repo.target_branch)?;
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
+/// Push the workspace's target (base) branch to the repo's primary remote. This
+/// pushes the committed branch tip in the source repo (not the workspace
+/// worktree), matching plain `git push` semantics.
+#[axum::debug_handler]
+pub async fn push_target_branch(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<PushTargetBranchRequest>,
+) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus, PushError>>, ApiError> {
+    let (repo, workspace_repo) =
+        load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
+    let git = deployment.git();
+
+    if git.is_remote_branch(&repo.path, &workspace_repo.target_branch)? {
+        return Err(ApiError::BadRequest(
+            "The target branch is a remote branch; there is nothing to push.".to_string(),
+        ));
+    }
+
+    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+        return Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+    };
+
+    match git.push_branch_to_named_remote(
+        &repo.path,
+        &workspace_repo.target_branch,
+        &remote,
+        request.force,
+    ) {
+        Ok(()) => {
+            let status = compute_target_branch_remote_status(
+                &deployment,
+                &repo,
+                &workspace_repo.target_branch,
+            )?;
+            Ok(ResponseJson(ApiResponse::success(status)))
+        }
+        Err(GitServiceError::GitCLI(GitCliError::PushRejected(_))) => Ok(ResponseJson(
+            ApiResponse::error_with_data(PushError::ForcePushRequired),
+        )),
+        Err(e) => {
+            tracing::error!(
+                "Push of target branch '{}' to '{remote}' for repo {} failed: {e}",
+                workspace_repo.target_branch,
+                repo.id
+            );
+            Err(ApiError::GitService(e))
+        }
+    }
 }
 
 #[axum::debug_handler]

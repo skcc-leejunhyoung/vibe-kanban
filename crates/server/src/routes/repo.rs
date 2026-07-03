@@ -156,7 +156,7 @@ pub struct PushRepoBranchRequest {
 /// Resolve the remote to use for push/fetch: the repo's saved primary remote,
 /// falling back to the git default remote. Returns `None` when the repo has no
 /// remotes configured.
-fn resolve_primary_remote(deployment: &DeploymentImpl, repo: &Repo) -> Option<String> {
+pub(crate) fn resolve_primary_remote(deployment: &DeploymentImpl, repo: &Repo) -> Option<String> {
     if let Some(name) = repo.primary_remote.as_ref().filter(|n| !n.is_empty()) {
         return Some(name.clone());
     }

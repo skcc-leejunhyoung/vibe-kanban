@@ -40,6 +40,8 @@ import {
   PencilSimpleIcon,
   ArrowUpIcon,
   ArrowDownIcon,
+  ArrowLineUpIcon,
+  ArrowLineDownIcon,
   HighlighterIcon,
   ListIcon,
   MegaphoneIcon,
@@ -1339,6 +1341,124 @@ export const Actions = {
         throw new Error('Failed to push changes');
       }
       invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+    },
+  },
+
+  // Fetch the repo's origin so the target (base) branch's remote-tracking ref
+  // is refreshed, then report how it compares to the remote. Mirrors the
+  // repo-settings fetch: it never moves a local branch.
+  GitFetchTarget: {
+    id: 'git-fetch-target',
+    label: 'Fetch target branch',
+    icon: ArrowLineDownIcon,
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
+    execute: async (ctx, workspaceId, repoId) => {
+      const status = await workspacesApi.fetchTargetBranch(workspaceId, repoId);
+      ctx.queryClient.invalidateQueries({
+        queryKey: ['branchStatus', workspaceId],
+      });
+      ctx.queryClient.invalidateQueries({
+        queryKey: ['targetBranchRemoteStatus', workspaceId, repoId],
+      });
+
+      if (!status.remote_configured) {
+        await ConfirmDialog.show({
+          title: 'No remote configured',
+          message: 'This repository has no remote to fetch from.',
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'info',
+        });
+        return;
+      }
+
+      const summary = status.remote_branch_exists
+        ? `"${status.target_branch}" is ${status.ahead} ahead / ${status.behind} behind ${status.remote}.`
+        : `"${status.target_branch}" has not been pushed to ${status.remote} yet.`;
+      await ConfirmDialog.show({
+        title: 'Fetch complete',
+        message: `Fetched from ${status.remote}. ${summary}`,
+        confirmText: 'OK',
+        showCancelButton: false,
+        variant: 'success',
+      });
+    },
+  },
+
+  // Push the workspace's target (base) branch to the repo's origin. Useful after
+  // merging the work branch into the local target branch, to publish it.
+  GitPushTarget: {
+    id: 'git-push-target',
+    label: 'Push target branch',
+    icon: ArrowLineUpIcon,
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
+    execute: async (ctx, workspaceId, repoId) => {
+      const invalidate = () => {
+        ctx.queryClient.invalidateQueries({
+          queryKey: ['branchStatus', workspaceId],
+        });
+        ctx.queryClient.invalidateQueries({
+          queryKey: ['targetBranchRemoteStatus', workspaceId, repoId],
+        });
+      };
+
+      const result = await workspacesApi.pushTargetBranch(
+        workspaceId,
+        repoId,
+        false
+      );
+      invalidate();
+
+      if (result.success) {
+        await ConfirmDialog.show({
+          title: 'Push complete',
+          message: `Pushed "${result.data.target_branch}" to ${
+            result.data.remote ?? 'the remote'
+          }.`,
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'success',
+        });
+        return;
+      }
+
+      if (result.error?.type === 'force_push_required') {
+        const confirm = await ConfirmDialog.show({
+          title: 'Force push required',
+          message:
+            'The remote target branch has diverged from your local one. Force push to overwrite it? This can discard commits that only exist on the remote.',
+          confirmText: 'Force push',
+          cancelText: 'Cancel',
+          variant: 'destructive',
+        });
+        if (confirm !== 'confirmed') return;
+
+        const forced = await workspacesApi.pushTargetBranch(
+          workspaceId,
+          repoId,
+          true
+        );
+        invalidate();
+        if (!forced.success) {
+          throw new Error(
+            forced.message || 'Failed to force-push the target branch'
+          );
+        }
+        await ConfirmDialog.show({
+          title: 'Push complete',
+          message: `Force-pushed "${forced.data.target_branch}" to ${
+            forced.data.remote ?? 'the remote'
+          }.`,
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'success',
+        });
+        return;
+      }
+
+      throw new Error(result.message || 'Failed to push the target branch');
     },
   },
 

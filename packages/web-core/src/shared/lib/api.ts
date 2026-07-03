@@ -75,6 +75,9 @@ import {
   CommitWorkspaceRequest,
   CommitWorkspaceResponse,
   PushWorkspaceRequest,
+  FetchTargetBranchRequest,
+  PushTargetBranchRequest,
+  TargetBranchRemoteStatus,
   PullWorkspaceRequest,
   PullWorkspaceResponse,
   UpdateFromBaseRequest,
@@ -814,6 +817,54 @@ export const workspacesApi = {
       }
     );
     return handleApiResponse<ChangeTargetBranchResponse>(response);
+  },
+
+  /** Ahead/behind of the workspace's target branch vs the repo's origin. */
+  getTargetBranchRemoteStatus: async (
+    workspaceId: string,
+    repoId: string
+  ): Promise<TargetBranchRemoteStatus> => {
+    const params = new URLSearchParams({ repo_id: repoId });
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/remote-status?${params.toString()}`,
+      { cache: 'no-store' }
+    );
+    return handleApiResponse<TargetBranchRemoteStatus>(response);
+  },
+
+  /** Fetch the repo's origin, refreshing the target branch's tracking ref. */
+  fetchTargetBranch: async (
+    workspaceId: string,
+    repoId: string
+  ): Promise<TargetBranchRemoteStatus> => {
+    const payload: FetchTargetBranchRequest = { repo_id: repoId };
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/fetch`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+    return handleApiResponse<TargetBranchRemoteStatus>(response);
+  },
+
+  /** Push the workspace's target (base) branch to the repo's origin. */
+  pushTargetBranch: async (
+    workspaceId: string,
+    repoId: string,
+    force = false
+  ): Promise<Result<TargetBranchRemoteStatus, PushError>> => {
+    const payload: PushTargetBranchRequest = { repo_id: repoId, force };
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/push`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+    return handleApiResponseAsResult<TargetBranchRemoteStatus, PushError>(
+      response
+    );
   },
 
   renameBranch: async (
