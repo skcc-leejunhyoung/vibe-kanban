@@ -1730,6 +1730,7 @@ impl LocalContainerService {
                         let _ =
                             VibeRun::set_phase(pool, workspace_id, VibePhase::Done.as_str()).await;
                         tracing::info!("vibe: workspace {} merged → In review", workspace_id);
+                        self.vibe_notify_ready_for_review(ctx).await;
                     }
                     PostMergeAction::ResolveConflict { retry } => {
                         let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
@@ -1750,11 +1751,33 @@ impl LocalContainerService {
                             .await;
                         self.vibe_tag(client, task_id, vibe_orchestrator::TAG_BLOCK)
                             .await;
+                        self.vibe_notify_ready_for_review(ctx).await;
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    /// Notify this host's LOCAL push subscriptions that the workspace's issue
+    /// moved to "In review". The remote already pushes an
+    /// `issue_review_requested` notification to the user's remote subscriptions
+    /// (phone), so this covers only the disjoint local subscriptions (e.g. a
+    /// desktop browser paired via the local server) the remote push never
+    /// reaches. Best-effort, local delivery only to avoid double-notifying.
+    async fn vibe_notify_ready_for_review(&self, ctx: &ExecutionContext) {
+        let name = ctx
+            .workspace
+            .name
+            .as_deref()
+            .unwrap_or(&ctx.workspace.branch);
+        self.notification_service
+            .notify_local_only(
+                "Ready for review",
+                &format!("'{name}' is ready for review"),
+                Some(ctx.workspace.id),
+            )
+            .await;
     }
 
     /// Best-effort attach of a `vibe-*` tag (for human visibility only).

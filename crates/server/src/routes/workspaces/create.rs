@@ -559,13 +559,33 @@ pub async fn create_and_start_workspace(
     if pr_review.is_some()
         && let Some(linked) = &linked_issue
         && let Ok(client) = deployment.remote_client()
-        && let Err(e) = client.mark_issue_for_review(linked.issue_id).await
     {
-        tracing::warn!(
-            "Failed to mark issue {} In review after review-mode workspace creation: {}",
-            linked.issue_id,
-            e
-        );
+        match client.mark_issue_for_review(linked.issue_id).await {
+            Ok(()) => {
+                // The remote pushes an `issue_review_requested` notification to
+                // the user's remote subscriptions (phone). Mirror that to this
+                // host's LOCAL subscriptions (e.g. a desktop browser paired via
+                // the local server), which the remote push never reaches. Local
+                // only, to avoid double-notifying remote devices.
+                let name = workspace.name.as_deref().unwrap_or(&workspace.branch);
+                deployment
+                    .container()
+                    .notification_service()
+                    .notify_local_only(
+                        "Ready for review",
+                        &format!("'{name}' is ready for review"),
+                        Some(workspace.id),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to mark issue {} In review after review-mode workspace creation: {}",
+                    linked.issue_id,
+                    e
+                );
+            }
+        }
     }
 
     // If the linked issue carries the `vibe` tag, opt this run into the

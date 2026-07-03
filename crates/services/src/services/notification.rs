@@ -128,6 +128,37 @@ impl NotificationService {
         }
     }
 
+    /// Deliver a push to this host's LOCAL subscriptions only (and the OS
+    /// notifier fallback), without forwarding to the user's remote web push
+    /// subscriptions.
+    ///
+    /// Used for events the remote already pushes to remote subscriptions on its
+    /// own (e.g. an issue becoming "ready for review", which the remote delivers
+    /// as an `issue_review_requested` notification). Forwarding those again would
+    /// double-notify remote devices (phone), so we only cover the disjoint local
+    /// subscriptions (e.g. a desktop browser paired via the local server) that
+    /// the remote notification never reaches.
+    pub async fn notify_local_only(&self, title: &str, message: &str, workspace_id: Option<Uuid>) {
+        let config = self.config.read().await.notifications.clone();
+
+        if !config.push_enabled {
+            return;
+        }
+
+        let web_push_active = self
+            .send_web_push(title, message, workspace_id)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(?error, "failed to send local web push notifications");
+                false
+            });
+        if web_push_active {
+            return;
+        }
+
+        self.push_notifier.send(title, message, workspace_id).await;
+    }
+
     /// Fire-and-forget forward of a notification to the authenticated user's
     /// remote web push subscriptions via the paired remote server.
     fn forward_to_remote_web_push(&self, title: &str, message: &str, workspace_id: Option<Uuid>) {
