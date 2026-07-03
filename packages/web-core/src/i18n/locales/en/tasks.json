@@ -352,14 +352,17 @@
     "loadingBranches": "Loading branches...",
     "selectBaseBranch": "Select base branch",
     "draftLabel": "Create as draft",
-    "autoGenerateLabel": "Auto-generate PR description with AI",
+    "generateButton": "Generate with AI",
+    "generating": "Generating...",
+    "generateUnavailableRemote": "AI generation is only available in the local app.",
     "creating": "Creating...",
     "createButton": "Create PR",
     "errors": {
       "failedToCreate": "Failed to create PR",
       "gitCliNotLoggedIn": "Git is not authenticated. Run \"gh auth login\" (or configure Git credentials) and try again.",
       "gitCliNotInstalled": "Git CLI is not installed. Install Git to create a PR.",
-      "targetBranchNotFound": "Target branch '{{branch}}' does not exist on remote. Please ensure the branch exists before creating a pull request."
+      "targetBranchNotFound": "Target branch '{{branch}}' does not exist on remote. Please ensure the branch exists before creating a pull request.",
+      "generateFailed": "Failed to generate PR title and description."
     }
   },
   "prComments": {

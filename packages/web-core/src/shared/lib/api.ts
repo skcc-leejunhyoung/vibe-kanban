@@ -8,6 +8,8 @@ import {
   ResetProcessRequest,
   EditorType,
   CreatePrApiRequest,
+  GeneratePrDescriptionRequest,
+  GeneratePrDescriptionResponse,
   CreateTag,
   DirectoryListResponse,
   DirectoryEntry,
@@ -871,6 +873,40 @@ export const workspacesApi = {
       }
     );
     return handleApiResponseAsResult<string, PrError>(response);
+  },
+
+  /**
+   * Generate a PR title + description by running a coding agent once, read-only,
+   * in the workspace worktree that holds the branch's changes. Long-running
+   * (~20-60s); the client timeout (180s) strictly exceeds the 120s server
+   * timeout so the server's own timeout error surfaces rather than a client
+   * abort. Local-app only (the backend rejects relayed calls).
+   */
+  generatePrDescription: async (
+    workspaceId: string,
+    data: GeneratePrDescriptionRequest,
+    signal?: AbortSignal
+  ): Promise<GeneratePrDescriptionResponse> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 180_000);
+    if (signal) {
+      signal.addEventListener('abort', () => controller.abort(), {
+        once: true,
+      });
+    }
+    try {
+      const response = await makeRequest(
+        `/api/workspaces/${workspaceId}/pull-requests/generate`,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+          signal: controller.signal,
+        }
+      );
+      return handleApiResponse<GeneratePrDescriptionResponse>(response);
+    } finally {
+      clearTimeout(timeout);
+    }
   },
 
   /** Try to auto-attach a PR by matching the workspace branch */

@@ -144,6 +144,8 @@ fn generate_types_content() -> String {
         db::models::requests::CreateWorkspaceApiRequest::decl(),
         db::models::requests::LinkedIssueInfo::decl(),
         server::routes::workspaces::pr::CreatePrApiRequest::decl(),
+        server::routes::workspaces::pr::GeneratePrDescriptionRequest::decl(),
+        server::routes::workspaces::pr::GeneratePrDescriptionResponse::decl(),
         server::routes::attachments::AttachmentResponse::decl(),
         server::routes::attachments::AttachmentMetadata::decl(),
         db::models::requests::WorkspaceRepoInput::decl(),

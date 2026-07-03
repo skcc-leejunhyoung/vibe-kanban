@@ -268,12 +268,12 @@
         "title": "Pull Requests",
         "description": "Configure PR creation behavior",
         "autoDescription": {
-          "label": "Auto-generate PR description by default",
-          "helper": "When enabled, the AI agent will automatically update the PR title and description after creation."
+          "label": "Enable AI PR description generation",
+          "helper": "When enabled, a \"Generate with AI\" button appears in the Create PR dialog to draft the title and description from the branch's changes for your review before creating the PR."
         },
         "customPrompt": {
           "useCustom": "Use custom prompt",
-          "helper": "Custom prompt for the AI agent when generating PR descriptions. Use {pr_number} and {pr_url} as placeholders."
+          "helper": "Custom prompt for the AI agent when generating the PR title and description. Use {base_branch} and {head_branch} as placeholders."
         }
       },
       "commits": {

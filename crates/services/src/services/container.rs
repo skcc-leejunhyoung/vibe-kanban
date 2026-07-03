@@ -1118,7 +1118,38 @@ pub trait ContainerService {
     ) -> Result<ExecutionProcess, ContainerError> {
         // Create container (worktrees).
         self.create(workspace).await?;
+        self.spawn_oneshot_coding_agent(workspace, executor_config, prompt)
+            .await
+    }
 
+    /// Like [`Self::start_oneshot_coding_agent`], but for a workspace whose
+    /// container/worktree already exists (e.g. the PR title/description flow,
+    /// which runs against the real workspace holding the branch's changes).
+    /// Uses the idempotent `ensure_container_exists` instead of `create`, so it
+    /// reuses the materialized worktree rather than trying to recreate the
+    /// branch.
+    async fn start_oneshot_coding_agent_reusing_container(
+        &self,
+        workspace: &Workspace,
+        executor_config: ExecutorConfig,
+        prompt: String,
+    ) -> Result<ExecutionProcess, ContainerError> {
+        self.ensure_container_exists(workspace).await?;
+        self.spawn_oneshot_coding_agent(workspace, executor_config, prompt)
+            .await
+    }
+
+    /// Shared tail for one-shot agent runs: assumes the container/worktree
+    /// already exists. Creates a fresh session and starts a single headless
+    /// coding-agent run with no setup/cleanup scripts, so the returned
+    /// `ExecutionProcess` is always the coding agent itself and nothing
+    /// side-effecting runs around it.
+    async fn spawn_oneshot_coding_agent(
+        &self,
+        workspace: &Workspace,
+        executor_config: ExecutorConfig,
+        prompt: String,
+    ) -> Result<ExecutionProcess, ContainerError> {
         let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
             .await?
             .ok_or(SqlxError::RowNotFound)?;
@@ -1140,8 +1171,8 @@ pub trait ContainerService {
             .filter(|dir| !dir.is_empty())
             .cloned();
 
-        // Always headless: the spec-intake caller normalizes interactive
-        // executors to headless before reaching this point.
+        // Always headless: callers normalize interactive executors to headless
+        // before reaching this point.
         let coding_action = ExecutorAction::new(
             ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
                 prompt,

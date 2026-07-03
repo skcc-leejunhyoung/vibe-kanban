@@ -7,18 +7,35 @@ mod versions;
 
 pub use editor::EditorOpenError;
 
-pub const DEFAULT_PR_DESCRIPTION_PROMPT: &str = r#"Update the PR that was just created with a better title and description.
-The PR number is #{pr_number} and the URL is {pr_url}.
+/// Prompt for the "Generate PR title & description" flow. A coding agent runs
+/// once, non-interactively and read-only, in the workspace worktree that holds
+/// the branch's changes, and returns a `title` + `description` for the pull
+/// request. The `{base_branch}` and `{head_branch}` placeholders are
+/// substituted with the PR's base and source branches.
+///
+/// Hard requirements baked in: the agent must NOT ask questions (it is
+/// single-shot), must stay read-only (no edits/commits/PR mutations), and must
+/// end with a single fenced ```json block carrying `title` + `description` so
+/// the backend can parse it deterministically.
+pub const DEFAULT_PR_DESCRIPTION_PROMPT: &str = r#"You are writing the title and description for a pull request that merges branch `{head_branch}` into `{base_branch}`.
 
-Analyze the changes in this branch and write:
-1. A concise, descriptive title that summarizes the changes, postfixed with "(Vibe Kanban)"
-2. A detailed description that explains:
-   - What changes were made
-   - Why they were made (based on the task context)
-   - Any important implementation details
-   - At the end, include a note: "This PR was written using [Vibe Kanban](https://vibekanban.com)"
+Analyze the ACTUAL changes on this branch using read-only git commands in your working directory, e.g.:
+- `git log --oneline {base_branch}..HEAD` for the commits
+- `git diff {base_branch}...HEAD` for the full diff (use `--stat` first if it is large)
 
-Use the appropriate CLI tool to update the PR (gh pr edit for GitHub, az repos pr update for Azure DevOps)."#;
+You are running NON-INTERACTIVELY and READ-ONLY:
+- Do NOT edit files, create files, run git commit/push, or modify any pull request. Only read.
+- Do NOT ask the user questions.
+
+Write:
+1. A concise, descriptive title (aim for <= 72 characters) that summarizes the change. No trailing period.
+2. A clear markdown description that explains what changed, why (based on the diff and commit messages), and any important implementation details. Keep it focused — no filler, no invented context.
+
+Output your answer as EXACTLY ONE fenced ```json block, and put NOTHING after it:
+```json
+{"title": "<the title>", "description": "<the markdown description>"}
+```
+Both fields must be JSON strings. In `description`, encode newlines as \n."#;
 
 pub const DEFAULT_COMMIT_REMINDER_PROMPT: &str = "There are uncommitted changes. Please stage and commit them now with a descriptive commit message.";
 

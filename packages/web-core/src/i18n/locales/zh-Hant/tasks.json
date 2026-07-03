@@ -241,7 +241,6 @@
     "loadingBranches": "載入分支中...",
     "selectBaseBranch": "選擇基底分支",
     "draftLabel": "建立為草稿",
-    "autoGenerateLabel": "請求 AI 代理產生更好的 PR 描述",
     "creating": "建立中...",
     "createButton": "建立 PR",
     "errors": {

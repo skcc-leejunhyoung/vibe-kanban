@@ -332,7 +332,6 @@
     "loadingBranches": "Chargement des branches...",
     "selectBaseBranch": "Sélectionner la branche de base",
     "draftLabel": "Créer comme brouillon",
-    "autoGenerateLabel": "Générer automatiquement la description de la PR avec l'IA",
     "creating": "Création en cours...",
     "createButton": "Créer la PR",
     "errors": {

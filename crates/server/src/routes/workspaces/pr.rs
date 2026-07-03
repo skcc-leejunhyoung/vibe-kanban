@@ -1,15 +1,15 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use api_types::{PullRequestStatus, UpsertPullRequestRequest};
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
+    http::HeaderMap,
     response::Json as ResponseJson,
     routing::{get, post},
 };
 use db::models::{
-    coding_agent_turn::CodingAgentTurn,
-    execution_process::{ExecutionProcess, ExecutionProcessRunReason},
+    execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     merge::{Merge, MergeStatus},
     pull_request::PullRequest,
     repo::{Repo, RepoError},
@@ -19,10 +19,7 @@ use db::models::{
     workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
 };
 use deployment::Deployment;
-use executors::actions::{
-    ExecutorAction, ExecutorActionType, coding_agent_follow_up::CodingAgentFollowUpRequest,
-    coding_agent_initial::CodingAgentInitialRequest,
-};
+use executors::profile::ExecutorConfig;
 use git::{GitCliError, GitRemote, GitServiceError};
 use git_host::{
     CreatePrRequest, GitHostError, GitHostProvider, GitHostService, ProviderKind, UnifiedPrComment,
@@ -30,7 +27,9 @@ use git_host::{
 };
 use serde::{Deserialize, Serialize};
 use services::services::{
-    config::DEFAULT_PR_DESCRIPTION_PROMPT, container::ContainerService, remote_sync,
+    config::DEFAULT_PR_DESCRIPTION_PROMPT,
+    container::{ContainerService, assistant_message_in_store},
+    remote_sync,
 };
 use ts_rs::TS;
 use utils::response::ApiResponse;
@@ -53,8 +52,25 @@ pub struct CreatePrApiRequest {
     pub head_branch: Option<String>,
     pub draft: Option<bool>,
     pub repo_id: Uuid,
-    #[serde(default)]
-    pub auto_generate_description: bool,
+}
+
+/// Request to generate a PR title + description by running a coding agent once,
+/// read-only, in the workspace worktree that holds the branch's changes.
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct GeneratePrDescriptionRequest {
+    pub repo_id: Uuid,
+    /// The PR's base (target) branch. Falls back to the repo's configured target
+    /// branch when omitted. Used to compute the diff the agent summarizes.
+    pub target_branch: Option<String>,
+    /// The PR's head (source) branch. Defaults to the workspace's work branch.
+    pub head_branch: Option<String>,
+}
+
+/// Generated PR title + description to pre-fill the Create PR dialog for review.
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct GeneratePrDescriptionResponse {
+    pub title: String,
+    pub description: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -105,99 +121,192 @@ pub struct GetPrCommentsQuery {
     pub repo_id: Uuid,
 }
 
-async fn trigger_pr_description_follow_up(
+/// Whole-request budget for PR title/description generation: container reuse +
+/// agent run + capture. The client timeout must strictly exceed this.
+const PR_GENERATE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How often to poll the execution-process status while waiting for the agent.
+const PR_GENERATE_POLL_INTERVAL: Duration = Duration::from_millis(750);
+
+/// Run a coding agent ONCE, read-only, in the workspace worktree that holds the
+/// branch's changes, and return a generated PR title + description for the user
+/// to review in the Create PR dialog. Uses the settings prompt (or the built-in
+/// default) and the workspace's own executor profile, mirroring the spec-intake
+/// "Generate spec" flow.
+pub async fn generate_pr_description(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
+    Json(request): Json<GeneratePrDescriptionRequest>,
+) -> Result<ResponseJson<ApiResponse<GeneratePrDescriptionResponse>>, ApiError> {
+    // Reject relayed calls: generation runs a coding agent (can take 20-60s),
+    // well past the relay's ~30s HTTP timeout. Both relay transports inject a
+    // trusted `x-vk-relayed` marker, so its presence reliably means "relayed".
+    // The remote web app proxies workspace calls through the host relay, so this
+    // keeps generation local-app-only, matching the spec-intake flow.
+    if headers.contains_key("x-vk-relayed") {
+        return Err(ApiError::Forbidden(
+            "PR description generation isn't available over a remote relay connection (it can exceed the relay timeout). Run it from the local app.".to_string(),
+        ));
+    }
+
+    let pool = &deployment.db().pool;
+
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+
+    let base_branch = request
+        .target_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace_repo.target_branch.clone());
+
+    let head_branch = request
+        .head_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace.branch.clone());
+
+    // Resolve the prompt (custom from settings, or the built-in default) and
+    // substitute the branch placeholders so the agent knows which diff to
+    // summarize.
+    let prompt = {
+        let config = deployment.config().read().await;
+        config
+            .pr_auto_description_prompt
+            .as_deref()
+            .unwrap_or(DEFAULT_PR_DESCRIPTION_PROMPT)
+            .replace("{base_branch}", &base_branch)
+            .replace("{head_branch}", &head_branch)
+    };
+
+    let executor_config = resolve_generation_executor_config(&deployment, &workspace).await?;
+
+    let (title, description) = tokio::time::timeout(
+        PR_GENERATE_TIMEOUT,
+        run_pr_generation(&deployment, &workspace, executor_config, prompt),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::BadGateway(
+            "PR description generation timed out. Try again or write it manually.".to_string(),
+        )
+    })??;
+
+    Ok(ResponseJson(ApiResponse::success(
+        GeneratePrDescriptionResponse { title, description },
+    )))
+}
+
+/// Prefer the workspace session's executor config (model / reasoning / agent
+/// overrides) so generation matches the agent the user is already using. Fall
+/// back to the global default profile so it still runs for a workspace with no
+/// prior coding-agent process (e.g. an imported PR review workspace).
+async fn resolve_generation_executor_config(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
-    pr_number: i64,
-    pr_url: &str,
-) -> Result<(), ApiError> {
-    // Get the custom prompt from config, or use default
-    let config = deployment.config().read().await;
-    let prompt_template = config
-        .pr_auto_description_prompt
-        .as_deref()
-        .unwrap_or(DEFAULT_PR_DESCRIPTION_PROMPT);
+) -> Result<ExecutorConfig, ApiError> {
+    let pool = &deployment.db().pool;
+    if let Some(session) = Session::find_latest_by_workspace_id(pool, workspace.id).await?
+        && let Some(config) =
+            ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?
+    {
+        return Ok(config);
+    }
+    let default_profile = deployment.config().read().await.executor_profile.clone();
+    Ok(default_profile.into())
+}
 
-    // Replace placeholders in prompt
-    let prompt = prompt_template
-        .replace("{pr_number}", &pr_number.to_string())
-        .replace("{pr_url}", pr_url);
-
-    drop(config); // Release the lock before async operations
-
-    // Get or create a session for this follow-up
-    let session =
-        match Session::find_latest_by_workspace_id(&deployment.db().pool, workspace.id).await? {
-            Some(s) => s,
-            None => {
-                Session::create(
-                    &deployment.db().pool,
-                    &CreateSession {
-                        executor: None,
-                        name: None,
-                    },
-                    Uuid::new_v4(),
-                    workspace.id,
-                )
-                .await?
-            }
-        };
-
-    // Carry the full executor config (model / reasoning / agent overrides) from
-    // the session's latest coding agent process, not just the profile identity —
-    // otherwise this backend-driven follow-up silently downgrades to the default
-    // model.
-    let Some(executor_config) =
-        ExecutionProcess::latest_executor_config_for_session(&deployment.db().pool, session.id)
-            .await?
-    else {
-        tracing::warn!(
-            "No executor profile found for session {}, skipping PR description follow-up",
-            session.id
-        );
-        return Ok(());
-    };
-
-    // Get latest agent turn if one exists (for coding agent continuity)
-    let latest_session_info =
-        CodingAgentTurn::find_latest_session_info(&deployment.db().pool, session.id).await?;
-
-    let working_dir = session
-        .agent_working_dir
-        .as_ref()
-        .filter(|dir| !dir.is_empty())
-        .cloned();
-
-    // Build the action type (follow-up if session exists, otherwise initial)
-    let action_type = if let Some(info) = latest_session_info {
-        ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-            prompt,
-            session_id: info.session_id,
-            reset_to_message_id: None,
-            executor_config: executor_config.clone(),
-            working_dir: working_dir.clone(),
-        })
-    } else {
-        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-            prompt,
-            executor_config: executor_config.clone(),
-            working_dir,
-        })
-    };
-
-    let action = ExecutorAction::new(action_type, None);
-
-    deployment
+/// Start the agent, wait for it to finish, and parse its final message into a
+/// (title, description). Hard-errors on agent failure / no output. Mirrors the
+/// spec-intake capture loop (see `spec_intake::run_intake`).
+async fn run_pr_generation(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+    executor_config: ExecutorConfig,
+    prompt: String,
+) -> Result<(String, String), ApiError> {
+    let ep = deployment
         .container()
-        .start_execution(
-            workspace,
-            &session,
-            &action,
-            &ExecutionProcessRunReason::CodingAgent,
-        )
+        .start_oneshot_coding_agent_reusing_container(workspace, executor_config, prompt)
         .await?;
 
-    Ok(())
+    let pool = &deployment.db().pool;
+    // Hold our own Arc to the agent's MsgStore so the exit-monitor teardown
+    // (which drops the store shortly after marking the process Completed) can't
+    // race our post-completion read and yield "no output".
+    let mut msg_store = deployment.container().get_msg_store_by_id(&ep.id).await;
+    loop {
+        if msg_store.is_none() {
+            msg_store = deployment.container().get_msg_store_by_id(&ep.id).await;
+        }
+        let current = ExecutionProcess::find_by_id(pool, ep.id)
+            .await?
+            .ok_or_else(|| {
+                ApiError::BadGateway("PR generation process disappeared.".to_string())
+            })?;
+        match current.status {
+            ExecutionProcessStatus::Running => tokio::time::sleep(PR_GENERATE_POLL_INTERVAL).await,
+            ExecutionProcessStatus::Completed => break,
+            ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed => {
+                return Err(ApiError::BadGateway(
+                    "The agent failed while generating the PR description.".to_string(),
+                ));
+            }
+        }
+    }
+
+    let message = msg_store
+        .as_deref()
+        .and_then(assistant_message_in_store)
+        .filter(|m| !m.trim().is_empty())
+        .ok_or_else(|| {
+            ApiError::BadGateway("The agent produced no PR description output.".to_string())
+        })?;
+
+    Ok(parse_pr_description(&message))
+}
+
+#[derive(Deserialize)]
+struct PrDescriptionJson {
+    title: String,
+    description: String,
+}
+
+/// Parse the agent's final message into (title, description).
+///
+/// Primary contract: a single fenced ```json block. Fallbacks (only for
+/// malformed-but-non-empty output): the whole message as JSON, then the first
+/// heading/line as the title with the whole message as the description.
+fn parse_pr_description(message: &str) -> (String, String) {
+    if let Some(pr) = parse_pr_json_fence(message) {
+        return (pr.title, pr.description);
+    }
+    if let Ok(pr) = serde_json::from_str::<PrDescriptionJson>(message.trim()) {
+        return (pr.title, pr.description);
+    }
+    let title = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.trim_start_matches('#').trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "Update".to_string());
+    (title, message.trim().to_string())
+}
+
+/// Extract and parse the last ```json fenced block in `message`.
+fn parse_pr_json_fence(message: &str) -> Option<PrDescriptionJson> {
+    let open = message.rfind("```json")?;
+    let after = &message[open + "```json".len()..];
+    let end = after.find("```")?;
+    let body = after[..end].trim();
+    serde_json::from_str::<PrDescriptionJson>(body).ok()
 }
 
 pub async fn create_pr(
@@ -372,23 +481,6 @@ pub async fn create_pr(
                     }),
                 )
                 .await;
-
-            // Trigger auto-description follow-up if enabled
-            if request.auto_generate_description
-                && let Err(e) = trigger_pr_description_follow_up(
-                    &deployment,
-                    &workspace,
-                    pr_info.number,
-                    &pr_info.url,
-                )
-                .await
-            {
-                tracing::warn!(
-                    "Failed to trigger PR description follow-up for attempt {}: {}",
-                    workspace.id,
-                    e
-                );
-            }
 
             Ok(ResponseJson(ApiResponse::success(pr_info.url)))
         }
@@ -930,6 +1022,43 @@ pub async fn create_workspace_from_pr(
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/", post(create_pr))
+        .route("/generate", post(generate_pr_description))
         .route("/attach", post(attach_existing_pr))
         .route("/comments", get(get_pr_comments))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_pr_description;
+
+    #[test]
+    fn parses_json_fence() {
+        let msg = "Here you go:\n```json\n{\"title\": \"Add retry to sender\", \"description\": \"## Changes\\nRetries added.\"}\n```\n";
+        let (title, desc) = parse_pr_description(msg);
+        assert_eq!(title, "Add retry to sender");
+        assert_eq!(desc, "## Changes\nRetries added.");
+    }
+
+    #[test]
+    fn parses_last_json_fence_when_multiple() {
+        let msg = "```json\n{\"title\": \"first\", \"description\": \"a\"}\n```\nreconsidering...\n```json\n{\"title\": \"final\", \"description\": \"b\"}\n```";
+        let (title, _) = parse_pr_description(msg);
+        assert_eq!(title, "final");
+    }
+
+    #[test]
+    fn falls_back_to_whole_json() {
+        let msg = "{\"title\": \"Bare\", \"description\": \"desc\"}";
+        let (title, desc) = parse_pr_description(msg);
+        assert_eq!(title, "Bare");
+        assert_eq!(desc, "desc");
+    }
+
+    #[test]
+    fn falls_back_to_first_heading_for_unfenced_markdown() {
+        let msg = "# Fix the webhook retry\n\nSome body text.";
+        let (title, desc) = parse_pr_description(msg);
+        assert_eq!(title, "Fix the webhook retry");
+        assert!(desc.contains("Some body text."));
+    }
 }

@@ -69,14 +69,17 @@
     "loadingBranches": "브랜치 로딩 중...",
     "selectBaseBranch": "기본 브랜치 선택",
     "draftLabel": "초안으로 만들기",
-    "autoGenerateLabel": "AI 에이전트에게 더 나은 PR 설명 생성 요청",
+    "generateButton": "AI로 생성",
+    "generating": "생성 중...",
+    "generateUnavailableRemote": "AI 생성은 로컬 앱에서만 사용할 수 있습니다.",
     "creating": "생성 중...",
     "createButton": "PR 생성",
     "errors": {
       "failedToCreate": "PR 생성에 실패했습니다",
       "gitCliNotLoggedIn": "Git이 인증되지 않았습니다. \"gh auth login\"을 실행하거나 Git 자격 증명을 설정한 후 다시 시도하세요.",
       "gitCliNotInstalled": "Git CLI가 설치되어 있지 않습니다. PR을 생성하려면 Git을 설치하세요.",
-      "targetBranchNotFound": "대상 브랜치 '{{branch}}'이(가) 원격에 존재하지 않습니다. 풀 리퀘스트를 생성하기 전에 브랜치가 존재하는지 확인하세요."
+      "targetBranchNotFound": "대상 브랜치 '{{branch}}'이(가) 원격에 존재하지 않습니다. 풀 리퀘스트를 생성하기 전에 브랜치가 존재하는지 확인하세요.",
+      "generateFailed": "PR 제목과 설명 생성에 실패했습니다."
     }
   },
   "branches": {
