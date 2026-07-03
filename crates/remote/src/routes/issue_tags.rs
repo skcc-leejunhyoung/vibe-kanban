@@ -19,13 +19,19 @@ use crate::{
     auth::RequestContext,
     db::{
         issue_tags::IssueTagRepository, issues::IssueRepository, organization_members,
-        tags::TagRepository, user_notification_preferences::UserNotificationPreferenceRepository,
+        project_statuses::ProjectStatusRepository, tags::TagRepository,
+        user_notification_preferences::UserNotificationPreferenceRepository,
     },
     mutation_definition::{MutationBuilder, NoUpdate},
     notifications::send_issue_notifications,
 };
 
 const REVIEW_TAG_NAME: &str = "review";
+
+/// Issue status a review PR must be in for a "ready for review" notification.
+/// A review-tagged PR issue sits in "To do" until a review-mode workspace is
+/// created for it (which moves it to "In review").
+const TODO_STATUS_NAME: &str = "To do";
 
 /// Mutation definition for IssueTag - provides both router and TypeScript metadata.
 pub fn mutation() -> MutationBuilder<IssueTag, CreateIssueTagRequest, NoUpdate> {
@@ -151,6 +157,24 @@ async fn notify_review_tag_added(
             return;
         }
     };
+
+    // Only notify while the review-tagged issue is still in "To do" (a review PR
+    // waiting to be picked up). A PR-link check can't be used here: the PR link
+    // is only created once a review-mode workspace exists, so it isn't present
+    // yet when the `review` tag is added. Once a review-mode workspace is created
+    // the issue moves to "In review", which this guard excludes.
+    match ProjectStatusRepository::find_by_id(state.pool(), issue.status_id).await {
+        Ok(Some(status)) if status.name.trim().eq_ignore_ascii_case(TODO_STATUS_NAME) => {}
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                issue_id = %issue.id,
+                "failed to load issue status for review notification"
+            );
+            return;
+        }
+    }
 
     let members =
         match organization_members::list_by_organization(state.pool(), organization_id).await {
