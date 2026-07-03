@@ -25,6 +25,7 @@ Analyze the ACTUAL changes on this branch using read-only git commands in your w
 
 You are running NON-INTERACTIVELY and READ-ONLY:
 - Do NOT edit files, create files, run git commit/push, or modify any pull request. Only read.
+- The pull request does NOT exist yet. Do NOT look for, open, or reference an existing PR (no `gh pr` / `az repos pr` lookups) — you are only drafting its title and body.
 - Do NOT ask the user questions.
 
 Write:

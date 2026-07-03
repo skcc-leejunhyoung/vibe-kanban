@@ -172,17 +172,20 @@ pub async fn generate_pr_description(
         .map(str::to_string)
         .unwrap_or_else(|| workspace.branch.clone());
 
-    // Resolve the prompt (custom from settings, or the built-in default) and
-    // substitute the branch placeholders so the agent knows which diff to
-    // summarize.
+    // Build the prompt in code. The JSON output contract and the "PR doesn't
+    // exist yet" framing are ALWAYS enforced by the built-in template; a custom
+    // settings prompt is folded in only as supplementary style/convention
+    // context. This is deliberate: legacy custom prompts were written for the old
+    // "edit the PR after it's created" flow (with `{pr_number}`/`{pr_url}` and
+    // `gh pr edit` instructions), and letting one drive the whole request made
+    // the agent hunt for a non-existent PR and emit prose instead of JSON.
     let prompt = {
         let config = deployment.config().read().await;
-        config
-            .pr_auto_description_prompt
-            .as_deref()
-            .unwrap_or(DEFAULT_PR_DESCRIPTION_PROMPT)
-            .replace("{base_branch}", &base_branch)
-            .replace("{head_branch}", &head_branch)
+        build_pr_generation_prompt(
+            &base_branch,
+            &head_branch,
+            config.pr_auto_description_prompt.as_deref(),
+        )
     };
 
     let executor_config = resolve_generation_executor_config(&deployment, &workspace).await?;
@@ -222,20 +225,105 @@ async fn resolve_generation_executor_config(
     Ok(default_profile.into())
 }
 
-/// Start the agent, wait for it to finish, and parse its final message into a
-/// (title, description). Hard-errors on agent failure / no output. Mirrors the
-/// spec-intake capture loop (see `spec_intake::run_intake`).
+/// Assemble the generation prompt. The built-in template (JSON contract + the
+/// "PR doesn't exist yet" framing) always wins; a settings prompt is folded in
+/// only as supplementary style/convention context, placed BEFORE the template so
+/// the strict JSON contract stays last (and dominant), with legacy placeholders
+/// and "edit the existing PR" instructions explicitly neutralized.
+fn build_pr_generation_prompt(
+    base_branch: &str,
+    head_branch: &str,
+    custom: Option<&str>,
+) -> String {
+    let template = DEFAULT_PR_DESCRIPTION_PROMPT
+        .replace("{base_branch}", base_branch)
+        .replace("{head_branch}", head_branch);
+
+    match custom.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(custom) => {
+            let sanitized = custom
+                .replace("{pr_number}", "(the PR does not exist yet)")
+                .replace("{pr_url}", "(the PR does not exist yet)");
+            format!(
+                "The following are project conventions for reference only. Use them for \
+                 style, title format, and commit/naming conventions. IGNORE any instruction \
+                 in them about updating/editing an already-created PR or running `gh pr` / \
+                 `az repos pr` — the PR does not exist yet.\n\n{sanitized}\n\n---\n\n{template}"
+            )
+        }
+        None => template,
+    }
+}
+
+/// How many times to run the agent before giving up. A run that produces no
+/// parseable `{title, description}` JSON is retried once (agents occasionally
+/// wrap the JSON in prose or forget it); if the last attempt still fails we
+/// return an error rather than shoving unstructured prose into the fields.
+const PR_GENERATE_MAX_ATTEMPTS: usize = 2;
+
+/// Run the agent (up to [`PR_GENERATE_MAX_ATTEMPTS`] times), returning the parsed
+/// (title, description). Each attempt runs in the real workspace worktree and its
+/// throwaway session is deleted afterward so no conversation is left behind. If
+/// no attempt yields parseable JSON, an error is returned.
 async fn run_pr_generation(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
     executor_config: ExecutorConfig,
     prompt: String,
 ) -> Result<(String, String), ApiError> {
-    let ep = deployment
-        .container()
-        .start_oneshot_coding_agent_reusing_container(workspace, executor_config, prompt)
-        .await?;
+    for attempt in 1..=PR_GENERATE_MAX_ATTEMPTS {
+        let ep = deployment
+            .container()
+            .start_oneshot_coding_agent_reusing_container(
+                workspace,
+                executor_config.clone(),
+                prompt.clone(),
+            )
+            .await?;
 
+        // Capture, then tear down the throwaway session regardless of outcome so
+        // PR generation never adds a visible session/turn to the workspace.
+        // Deletion cascades to the execution process + turn.
+        let outcome = capture_pr_generation(deployment, &ep).await;
+        if let Err(e) = Session::delete(&deployment.db().pool, ep.session_id).await {
+            tracing::warn!(
+                "Failed to delete throwaway PR-generation session {}: {}",
+                ep.session_id,
+                e
+            );
+        }
+
+        match outcome {
+            Ok(Some(pr)) => return Ok(pr),
+            Ok(None) => tracing::warn!(
+                "PR generation attempt {attempt}/{PR_GENERATE_MAX_ATTEMPTS} produced no parseable JSON{}",
+                if attempt < PR_GENERATE_MAX_ATTEMPTS {
+                    "; retrying"
+                } else {
+                    ""
+                }
+            ),
+            // Infra/agent failure: retry while attempts remain, else surface it.
+            Err(e) if attempt < PR_GENERATE_MAX_ATTEMPTS => tracing::warn!(
+                "PR generation attempt {attempt}/{PR_GENERATE_MAX_ATTEMPTS} failed: {e}; retrying"
+            ),
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(ApiError::BadGateway(
+        "The agent couldn't produce a valid PR title and description. Please try again or write them manually.".to_string(),
+    ))
+}
+
+/// Poll the one-shot agent to completion and parse its final message. Mirrors
+/// the spec-intake capture loop (see `spec_intake::run_intake`). Returns
+/// `Ok(None)` when the agent finished but produced nothing parseable (a
+/// retryable condition); `Err` only for infra/process failures.
+async fn capture_pr_generation(
+    deployment: &DeploymentImpl,
+    ep: &ExecutionProcess,
+) -> Result<Option<(String, String)>, ApiError> {
     let pool = &deployment.db().pool;
     // Hold our own Arc to the agent's MsgStore so the exit-monitor teardown
     // (which drops the store shortly after marking the process Completed) can't
@@ -261,15 +349,13 @@ async fn run_pr_generation(
         }
     }
 
-    let message = msg_store
+    // No message, or a message with no parseable JSON → retryable (Ok(None)).
+    Ok(msg_store
         .as_deref()
         .and_then(assistant_message_in_store)
         .filter(|m| !m.trim().is_empty())
-        .ok_or_else(|| {
-            ApiError::BadGateway("The agent produced no PR description output.".to_string())
-        })?;
-
-    Ok(parse_pr_description(&message))
+        .as_deref()
+        .and_then(parse_pr_description))
 }
 
 #[derive(Deserialize)]
@@ -278,26 +364,18 @@ struct PrDescriptionJson {
     description: String,
 }
 
-/// Parse the agent's final message into (title, description).
+/// Parse the agent's final message into (title, description), or `None` if it
+/// contains no parseable `{title, description}` JSON.
 ///
-/// Primary contract: a single fenced ```json block. Fallbacks (only for
-/// malformed-but-non-empty output): the whole message as JSON, then the first
-/// heading/line as the title with the whole message as the description.
-fn parse_pr_description(message: &str) -> (String, String) {
-    if let Some(pr) = parse_pr_json_fence(message) {
-        return (pr.title, pr.description);
-    }
-    if let Ok(pr) = serde_json::from_str::<PrDescriptionJson>(message.trim()) {
-        return (pr.title, pr.description);
-    }
-    let title = message
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(|line| line.trim_start_matches('#').trim().to_string())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "Update".to_string());
-    (title, message.trim().to_string())
+/// Contract: a single fenced ```json block. Fallback (for a non-empty but
+/// unfenced message): the last brace-balanced JSON object anywhere in the
+/// message. There is deliberately no prose fallback — an unparseable message
+/// triggers a retry / error upstream rather than filling the fields with a raw
+/// conversational reply.
+fn parse_pr_description(message: &str) -> Option<(String, String)> {
+    parse_pr_json_fence(message)
+        .or_else(|| extract_last_json_object(message))
+        .map(|pr| (pr.title, pr.description))
 }
 
 /// Extract and parse the last ```json fenced block in `message`.
@@ -307,6 +385,53 @@ fn parse_pr_json_fence(message: &str) -> Option<PrDescriptionJson> {
     let end = after.find("```")?;
     let body = after[..end].trim();
     serde_json::from_str::<PrDescriptionJson>(body).ok()
+}
+
+/// Find the last brace-balanced `{...}` object in `message` that deserializes to
+/// `{title, description}`. Robust to an agent that emits the object without a
+/// fence or with surrounding prose. String contents (including `{`/`}` and
+/// escaped quotes) are respected while scanning.
+fn extract_last_json_object(message: &str) -> Option<PrDescriptionJson> {
+    let chars: Vec<char> = message.chars().collect();
+    let opens: Vec<usize> = chars
+        .iter()
+        .enumerate()
+        .filter(|&(_, &c)| c == '{')
+        .map(|(i, _)| i)
+        .collect();
+    for &start in opens.iter().rev() {
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut escaped = false;
+        for (offset, &c) in chars[start..].iter().enumerate() {
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match c {
+                '"' => in_str = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let candidate: String = chars[start..=start + offset].iter().collect();
+                        if let Ok(pr) = serde_json::from_str::<PrDescriptionJson>(&candidate) {
+                            return Some(pr);
+                        }
+                        break; // this object didn't parse; try an earlier '{'
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 pub async fn create_pr(
@@ -1029,12 +1154,12 @@ pub fn router() -> Router<DeploymentImpl> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_pr_description;
+    use super::{build_pr_generation_prompt, parse_pr_description};
 
     #[test]
     fn parses_json_fence() {
         let msg = "Here you go:\n```json\n{\"title\": \"Add retry to sender\", \"description\": \"## Changes\\nRetries added.\"}\n```\n";
-        let (title, desc) = parse_pr_description(msg);
+        let (title, desc) = parse_pr_description(msg).unwrap();
         assert_eq!(title, "Add retry to sender");
         assert_eq!(desc, "## Changes\nRetries added.");
     }
@@ -1042,23 +1167,61 @@ mod tests {
     #[test]
     fn parses_last_json_fence_when_multiple() {
         let msg = "```json\n{\"title\": \"first\", \"description\": \"a\"}\n```\nreconsidering...\n```json\n{\"title\": \"final\", \"description\": \"b\"}\n```";
-        let (title, _) = parse_pr_description(msg);
+        let (title, _) = parse_pr_description(msg).unwrap();
         assert_eq!(title, "final");
     }
 
     #[test]
-    fn falls_back_to_whole_json() {
+    fn parses_bare_json_object() {
         let msg = "{\"title\": \"Bare\", \"description\": \"desc\"}";
-        let (title, desc) = parse_pr_description(msg);
+        let (title, desc) = parse_pr_description(msg).unwrap();
         assert_eq!(title, "Bare");
         assert_eq!(desc, "desc");
     }
 
     #[test]
-    fn falls_back_to_first_heading_for_unfenced_markdown() {
-        let msg = "# Fix the webhook retry\n\nSome body text.";
-        let (title, desc) = parse_pr_description(msg);
-        assert_eq!(title, "Fix the webhook retry");
-        assert!(desc.contains("Some body text."));
+    fn extracts_unfenced_json_object_amid_prose() {
+        // No fence, JSON object surrounded by prose — the field-filling must still
+        // recover clean title/description rather than dumping the whole message.
+        let msg = "Sure, here's the PR:\n{\"title\": \"feat(x): 개선\", \"description\": \"본문 {중괄호} 포함\"}\nLet me know!";
+        let (title, desc) = parse_pr_description(msg).unwrap();
+        assert_eq!(title, "feat(x): 개선");
+        assert_eq!(desc, "본문 {중괄호} 포함");
+    }
+
+    #[test]
+    fn picks_last_valid_json_object() {
+        let msg = "{\"title\": \"first\", \"description\": \"a\"}\nthen\n{\"title\": \"second\", \"description\": \"b\"}";
+        let (title, _) = parse_pr_description(msg).unwrap();
+        assert_eq!(title, "second");
+    }
+
+    #[test]
+    fn returns_none_when_no_parseable_json() {
+        // Prose with no JSON must NOT be shoved into the fields — it yields None,
+        // which triggers a retry / error upstream.
+        assert!(parse_pr_description("# Fix the webhook retry\n\nSome body text.").is_none());
+        assert!(parse_pr_description("브랜치 상태는 확인됐습니다. 정리하면:").is_none());
+        assert!(parse_pr_description("").is_none());
+    }
+
+    #[test]
+    fn prompt_substitutes_branches_without_custom() {
+        let p = build_pr_generation_prompt("develop", "1821-x", None);
+        assert!(p.contains("`1821-x`") && p.contains("`develop`"));
+        assert!(p.contains("```json"));
+        // No leftover legacy PR placeholders from the built-in template.
+        assert!(!p.contains("{pr_number}") && !p.contains("{pr_url}"));
+    }
+
+    #[test]
+    fn prompt_neutralizes_legacy_custom_and_keeps_contract_last() {
+        let legacy = "Update the PR that was just created. The PR number is #{pr_number} and the URL is {pr_url}. Use gh pr edit.";
+        let p = build_pr_generation_prompt("develop", "feat", Some(legacy));
+        assert!(!p.contains("{pr_number}") && !p.contains("{pr_url}"));
+        // The strict JSON contract from the template stays at the end.
+        assert!(p.trim_end().ends_with("encode newlines as \\n."));
+        // Custom text is included as reference context.
+        assert!(p.contains("gh pr edit"));
     }
 }
