@@ -109,6 +109,34 @@ impl PullRequest {
         .await
     }
 
+    /// PRs whose status is not yet terminal. `merged` is the only terminal
+    /// state — a `closed` PR can still be reopened and merged on GitHub, so the
+    /// monitor must keep polling it (otherwise a merge after close leaves the
+    /// status stuck at `closed`).
+    pub async fn get_unresolved(pool: &SqlitePool) -> Result<Vec<PullRequest>, sqlx::Error> {
+        sqlx::query_as!(
+            PullRequest,
+            r#"SELECT
+                id,
+                workspace_id AS "workspace_id: Uuid",
+                repo_id AS "repo_id: Uuid",
+                pr_url,
+                pr_number,
+                pr_status AS "pr_status: MergeStatus",
+                target_branch_name,
+                head_branch_name,
+                merged_at AS "merged_at: DateTime<Utc>",
+                merge_commit_sha,
+                created_at AS "created_at!: DateTime<Utc>",
+                updated_at AS "updated_at!: DateTime<Utc>",
+                synced_at AS "synced_at: DateTime<Utc>"
+            FROM pull_requests
+            WHERE pr_status != 'merged'"#,
+        )
+        .fetch_all(pool)
+        .await
+    }
+
     pub async fn update_status(
         pool: &SqlitePool,
         pr_url: &str,

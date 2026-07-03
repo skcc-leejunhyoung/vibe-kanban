@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::pull_request::PullRequest;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, Type)]
 #[sqlx(type_name = "merge_status", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum MergeStatus {

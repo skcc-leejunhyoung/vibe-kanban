@@ -99,17 +99,17 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
         }
     }
 
-    /// Check all open PRs for updates
+    /// Check all unresolved (non-merged) PRs for updates
     async fn check_all_open_prs(&self) -> Result<(), PrMonitorError> {
-        let open_prs = PullRequest::get_open(&self.db.pool).await?;
+        let prs = PullRequest::get_unresolved(&self.db.pool).await?;
 
-        if open_prs.is_empty() {
-            debug!("No open PRs to check");
+        if prs.is_empty() {
+            debug!("No unresolved PRs to check");
             return Ok(());
         }
 
-        info!("Checking {} open PRs", open_prs.len());
-        for pr in &open_prs {
+        info!("Checking {} unresolved PRs", prs.len());
+        for pr in &prs {
             if let Err(e) = self.check_open_pr(pr).await {
                 if e.is_environmental() {
                     warn!(
@@ -125,17 +125,24 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
         Ok(())
     }
 
-    /// Check the status of a single open PR and handle state changes.
+    /// Check the status of a single unresolved PR and handle state changes.
     async fn check_open_pr(&self, pr: &PullRequest) -> Result<(), PrMonitorError> {
         let git_host = GitHostService::from_url(&pr.pr_url)?;
         let status = git_host.get_pr_status(&pr.pr_url).await?;
 
         debug!(
-            "PR #{} status: {:?} (was open)",
-            pr.pr_number, status.status
+            "PR #{} status: {:?} (was {:?})",
+            pr.pr_number, status.status, pr.pr_status
         );
 
-        if matches!(&status.status, MergeStatus::Open) {
+        // Ignore Unknown responses so a transient parse/API hiccup doesn't
+        // clobber a known status.
+        if matches!(&status.status, MergeStatus::Unknown) {
+            return Ok(());
+        }
+
+        // No change since last poll: nothing to persist or re-sync.
+        if status.status == pr.pr_status {
             return Ok(());
         }
 
