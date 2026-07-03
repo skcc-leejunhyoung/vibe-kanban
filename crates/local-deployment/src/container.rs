@@ -458,7 +458,22 @@ impl LocalContainerService {
                 )
                 .await
                 {
-                    Ok(Some(turn)) if turn.summary.is_some() => turn.summary.unwrap(),
+                    Ok(Some(turn)) if turn.summary.is_some() => {
+                        // The summary is the agent's final message verbatim, which
+                        // in a vibe run ends with the `VIBE_RESULT:` sentinel. Strip
+                        // it so orchestration noise never lands in the commit; fall
+                        // back to the default if nothing meaningful remains.
+                        let cleaned =
+                            vibe_orchestrator::strip_result_sentinel(&turn.summary.unwrap());
+                        if cleaned.is_empty() {
+                            format!(
+                                "Commit changes from coding agent for workspace {}",
+                                ctx.workspace.id
+                            )
+                        } else {
+                            cleaned
+                        }
+                    }
                     Ok(_) => {
                         tracing::debug!(
                             "No summary found for execution process {}, using default message",

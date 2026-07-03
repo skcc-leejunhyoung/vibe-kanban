@@ -40,7 +40,8 @@ pub const SENTINEL: &str = "VIBE_RESULT:";
 /// fix). Tells the agent to self-drive and emit the `VIBE_RESULT:` sentinel.
 pub const PREAMBLE_CODING: &str = "\n\n---\n[자동 워크플로우 지침]\n\
 - 진행 중 사용자에게 선택지를 묻지 말고, 항상 가장 합리적인 추천 방향으로 스스로 결정해 진행해라.\n\
-- 이 턴을 마칠 때 반드시 메시지의 마지막 줄에 다음 중 하나만 정확히 출력해라:\n\
+- 이 턴의 마지막 메시지는 그대로 git 커밋 메시지로 사용된다. 그러니 마지막 메시지는 `type(scope): 요약` 한 줄 제목 + (필요하면) 빈 줄 뒤 짧은 본문 형태의 커밋 메시지로 작성해라. 마크다운 헤더(##)·체크리스트·이모지·파일 나열·장문 보고는 넣지 마라. 사용자에게 길게 설명할 내용이 있으면 이 마지막 턴이 아니라 그 전 턴에 남겨라.\n\
+- 이 턴을 마칠 때 반드시 위 커밋 메시지 다음, 메시지의 마지막 줄에 다음 중 하나만 정확히 출력해라:\n\
   - 이 이슈의 모든 작업을 완결적으로 끝냈으면: `VIBE_RESULT: done`\n\
   - 추천대로 모두 진행해도 더 이상 불가능하면: `VIBE_RESULT: blocked`\n\
   - 아직 끝나지 않은 작업이 남았으면: `VIBE_RESULT: continue`";
@@ -335,6 +336,22 @@ pub fn parse_vibe_result(text: &str) -> VibeResult {
     VibeResult::None
 }
 
+/// Strip any `VIBE_RESULT:` sentinel line(s) from an agent message so the
+/// orchestration marker never leaks into user-facing text — most importantly the
+/// auto-commit message, which is built verbatim from the turn summary (the
+/// agent's final message). Mirrors the tolerant matching in [`parse_vibe_result`]:
+/// any line mentioning the marker (case-insensitive, markdown-wrapped) is
+/// dropped, and trailing blank lines left behind are trimmed.
+pub fn strip_result_sentinel(text: &str) -> String {
+    let needle = "vibe_result";
+    text.lines()
+        .filter(|line| !line.to_ascii_lowercase().contains(needle))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
+}
+
 /// The functional core: given a finalized turn, decide the single next action.
 pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
     use ExecutionProcessRunReason as RR;
@@ -542,6 +559,30 @@ mod tests {
             VibeResult::None
         );
         assert_eq!(parse_vibe_result(""), VibeResult::None);
+    }
+
+    #[test]
+    fn strip_removes_trailing_sentinel_and_blank_lines() {
+        let msg = "feat(x): 요약\n\n본문 설명.\n\nVIBE_RESULT: done";
+        assert_eq!(strip_result_sentinel(msg), "feat(x): 요약\n\n본문 설명.");
+    }
+
+    #[test]
+    fn strip_handles_markdown_wrapped_sentinel() {
+        let msg = "fix(y): 정리\n\n`VIBE_RESULT: continue`";
+        assert_eq!(strip_result_sentinel(msg), "fix(y): 정리");
+    }
+
+    #[test]
+    fn strip_drops_every_sentinel_mention() {
+        let msg = "chore: z\nVIBE_RESULT: done\nNote: emitted VIBE_RESULT above.";
+        assert_eq!(strip_result_sentinel(msg), "chore: z");
+    }
+
+    #[test]
+    fn strip_leaves_ordinary_message_untouched() {
+        let msg = "feat(a): b\n\nbody line";
+        assert_eq!(strip_result_sentinel(msg), msg);
     }
 
     #[test]
