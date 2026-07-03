@@ -177,6 +177,12 @@ pub struct BranchStatus {
     pub target_branch_name: String,
     pub remote_commits_behind: Option<usize>,
     pub remote_commits_ahead: Option<usize>,
+    /// Commits the local target (base) branch is ahead of its counterpart on the
+    /// repo's primary remote — i.e. commits that can be pushed to origin. `None`
+    /// when the target is a remote-only branch or the repo has no remote.
+    pub target_remote_commits_ahead: Option<usize>,
+    /// Commits the local target (base) branch is behind the remote.
+    pub target_remote_commits_behind: Option<usize>,
     pub merges: Vec<Merge>,
     pub is_rebase_in_progress: bool,
     pub conflict_op: Option<ConflictOp>,
@@ -940,6 +946,8 @@ pub async fn get_workspace_branch_status(
                     target_branch_name: target_branch,
                     remote_commits_behind: None,
                     remote_commits_ahead: None,
+                    target_remote_commits_ahead: None,
+                    target_remote_commits_behind: None,
                     merges: repo_merges,
                     is_rebase_in_progress: false,
                     conflict_op: None,
@@ -1036,6 +1044,33 @@ pub async fn get_workspace_branch_status(
             (None, None)
         };
 
+        // How far the local target (base) branch is ahead/behind its counterpart
+        // on the repo's primary remote. Read from local tracking refs only (no
+        // network), so it's cheap to include in this poll. Only meaningful for a
+        // real local branch with a remote configured.
+        let (target_remote_ahead, target_remote_behind) = if is_target_remote {
+            (None, None)
+        } else if let Some(remote) = crate::routes::repo::resolve_primary_remote(&deployment, &repo)
+        {
+            match deployment
+                .git()
+                .get_remote_tracking_status(&repo.path, &target_branch, &remote)
+            {
+                Ok((true, ahead, behind)) => (Some(ahead), Some(behind)),
+                // Target branch has never been pushed to this remote yet.
+                Ok((false, _, _)) => (None, None),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to compute target-branch remote status for repo {}: {e}",
+                        repo.id
+                    );
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         results.push(RepoBranchStatus {
             repo_id: repo.id,
             repo_name: repo.name,
@@ -1049,6 +1084,8 @@ pub async fn get_workspace_branch_status(
                 untracked_count,
                 remote_commits_ahead: remote_ahead,
                 remote_commits_behind: remote_behind,
+                target_remote_commits_ahead: target_remote_ahead,
+                target_remote_commits_behind: target_remote_behind,
                 merges: repo_merges,
                 target_branch_name: target_branch,
                 is_rebase_in_progress,
@@ -1070,7 +1107,7 @@ fn compute_target_branch_remote_status(
     deployment: &DeploymentImpl,
     repo: &Repo,
     target_branch: &str,
-) -> Result<TargetBranchRemoteStatus, ApiError> {
+) -> Result<TargetBranchRemoteStatus, GitServiceError> {
     let git = deployment.git();
     let is_target_remote = git.is_remote_branch(&repo.path, target_branch)?;
     let remote = resolve_primary_remote(deployment, repo);

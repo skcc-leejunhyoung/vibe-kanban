@@ -224,7 +224,8 @@
       "forcePush": "Push forcé",
       "forcePushing": "Push forcé en cours...",
       "creating": "Création en cours...",
-      "createPr": "Créer une PR"
+      "createPr": "Créer une PR",
+      "pushTarget": "Pousser la cible ↑{{ahead}}"
     },
     "errors": {
       "changeTargetBranch": "Échec du changement de branche cible",
@@ -246,7 +247,8 @@
         "title": "Connectez-vous pour gérer les actions git",
         "description": "Connectez-vous à Vibe Kanban pour pouvoir pousser des branches, fusionner des modifications ou ouvrir des pull requests pour cette tâche.",
         "action": "Se connecter"
-      }
+      },
+      "pushTargetToOrigin": "Pousser « {{branch}} » vers origin"
     },
     "mergeDialog": {
       "title": "Fusionner les modifications",
@@ -277,6 +279,9 @@
       "states": {
         "creating": "Création en cours..."
       }
+    },
+    "targetPush": {
+      "forceConfirm": "La branche cible distante a divergé de votre branche locale. Forcer la poussée pour l’écraser ? Cela peut supprimer des commits présents uniquement sur le distant."
     }
   },
   "startReviewDialog": {

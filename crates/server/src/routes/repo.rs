@@ -170,7 +170,7 @@ pub(crate) fn resolve_primary_remote(deployment: &DeploymentImpl, repo: &Repo) -
 fn compute_repo_remote_status(
     deployment: &DeploymentImpl,
     repo: &Repo,
-) -> Result<RepoRemoteStatus, ApiError> {
+) -> Result<RepoRemoteStatus, git::GitServiceError> {
     let git = deployment.git();
     let current_branch = git.get_current_branch(&repo.path)?;
 

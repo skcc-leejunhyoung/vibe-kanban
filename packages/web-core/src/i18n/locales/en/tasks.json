@@ -243,7 +243,8 @@
       "forcePush": "Force Push",
       "forcePushing": "Force Pushing...",
       "creating": "Creating...",
-      "createPr": "Create PR"
+      "createPr": "Create PR",
+      "pushTarget": "Push target ↑{{ahead}}"
     },
     "errors": {
       "changeTargetBranch": "Failed to change target branch",
@@ -266,7 +267,8 @@
         "title": "Sign in to manage git actions",
         "description": "Sign in to Vibe Kanban so you can push branches, merge changes, or open pull requests for this task.",
         "action": "Sign in"
-      }
+      },
+      "pushTargetToOrigin": "Push \"{{branch}}\" to origin"
     },
     "mergeDialog": {
       "title": "Merge Changes",
@@ -297,6 +299,9 @@
       "states": {
         "creating": "Creating..."
       }
+    },
+    "targetPush": {
+      "forceConfirm": "The remote target branch has diverged from your local one. Force push to overwrite it? This can discard commits that only exist on the remote."
     }
   },
   "startReviewDialog": {

@@ -1,4 +1,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
+import { workspacesApi } from '@/shared/lib/api';
 import { useActions } from '@/shared/hooks/useActions';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { usePush } from '@/shared/hooks/usePush';
@@ -25,6 +28,8 @@ export function GitPanelContainer({
   repos,
 }: GitPanelContainerProps) {
   const { executeAction } = useActions();
+  const queryClient = useQueryClient();
+  const { t } = useTranslation('tasks');
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
   const repoActions = useUiPreferencesStore((s) => s.repoActions);
   const setRepoAction = useUiPreferencesStore((s) => s.setRepoAction);
@@ -94,6 +99,7 @@ export function GitPanelContainer({
           commitsAhead: repoStatus?.commits_ahead ?? 0,
           commitsBehind: repoStatus?.commits_behind ?? 0,
           remoteCommitsAhead: repoStatus?.remote_commits_ahead ?? 0,
+          targetRemoteAhead: repoStatus?.target_remote_commits_ahead ?? 0,
           prNumber,
           prUrl,
           prStatus,
@@ -111,16 +117,29 @@ export function GitPanelContainer({
   const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentPushRepoRef = useRef<string | null>(null);
 
+  // Track target-branch push state per repo (push the base branch to origin).
+  const [targetPushStates, setTargetPushStates] = useState<
+    Record<string, PushState>
+  >({});
+  const targetPushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+
   // Reset push-related state when the selected workspace changes to avoid
   // leaking push state across workspaces with repos that share the same ID.
   useEffect(() => {
     setPushStates({});
     pushStatesRef.current = {};
     currentPushRepoRef.current = null;
+    setTargetPushStates({});
 
     if (successTimeoutRef.current) {
       clearTimeout(successTimeoutRef.current);
       successTimeoutRef.current = null;
+    }
+    if (targetPushTimeoutRef.current) {
+      clearTimeout(targetPushTimeoutRef.current);
+      targetPushTimeoutRef.current = null;
     }
   }, [selectedWorkspace?.id]);
   // Use push hook for direct API access with proper error handling
@@ -175,8 +194,81 @@ export function GitPanelContainer({
       if (successTimeoutRef.current) {
         clearTimeout(successTimeoutRef.current);
       }
+      if (targetPushTimeoutRef.current) {
+        clearTimeout(targetPushTimeoutRef.current);
+      }
     };
   }, []);
+
+  // Push the workspace's target (base) branch to origin. Handles the
+  // force-push-required case by confirming, then retrying with force. Inline
+  // state feedback mirrors the work-branch push button.
+  const handleTargetPushClick = useCallback(
+    async (repoId: string) => {
+      const workspaceId = selectedWorkspace?.id;
+      if (!workspaceId) return;
+      if (targetPushStates[repoId] === 'pending') return;
+
+      if (targetPushTimeoutRef.current) {
+        clearTimeout(targetPushTimeoutRef.current);
+        targetPushTimeoutRef.current = null;
+      }
+      setTargetPushStates((prev) => ({ ...prev, [repoId]: 'pending' }));
+
+      try {
+        let result = await workspacesApi.pushTargetBranch(
+          workspaceId,
+          repoId,
+          false
+        );
+
+        if (!result.success && result.error?.type === 'force_push_required') {
+          const confirm = await ConfirmDialog.show({
+            title: t('git.states.forcePush'),
+            message: t('git.targetPush.forceConfirm'),
+            confirmText: t('git.states.forcePush'),
+            variant: 'destructive',
+          });
+          if (confirm !== 'confirmed') {
+            setTargetPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
+            return;
+          }
+          result = await workspacesApi.pushTargetBranch(
+            workspaceId,
+            repoId,
+            true
+          );
+        }
+
+        if (!result.success) {
+          throw new Error(result.message || 'Failed to push target branch');
+        }
+
+        setTargetPushStates((prev) => ({ ...prev, [repoId]: 'success' }));
+        queryClient.invalidateQueries({
+          queryKey: ['branchStatus', workspaceId],
+        });
+        targetPushTimeoutRef.current = setTimeout(() => {
+          setTargetPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
+        }, 2000);
+      } catch (err) {
+        setTargetPushStates((prev) => ({ ...prev, [repoId]: 'error' }));
+        const message =
+          err instanceof Error ? err.message : 'Failed to push target branch';
+        ConfirmDialog.show({
+          title: 'Error',
+          message,
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'destructive',
+        });
+        targetPushTimeoutRef.current = setTimeout(() => {
+          setTargetPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
+        }, 3000);
+      }
+    },
+    [selectedWorkspace?.id, targetPushStates, queryClient, t]
+  );
 
   // Compute repoInfos with push button state
   const repoInfosWithPushButton = useMemo(
@@ -188,15 +280,26 @@ export function GitPanelContainer({
         // Show push button if there are unpushed commits OR if we're in a push flow
         // (pending/success/error states keep the button visible for feedback)
         const isInPushFlow = state !== 'idle';
+
+        // Target-branch push: show when the local target branch is ahead of
+        // origin, or while a target push is in flight (for state feedback).
+        const targetState = targetPushStates[repo.id] ?? 'idle';
+        const targetAhead = repo.targetRemoteAhead ?? 0;
+        const isInTargetPushFlow = targetState !== 'idle';
         return {
           ...repo,
           showPushButton: hasUnpushedCommits && !isInPushFlow,
           isPushPending: state === 'pending',
           isPushSuccess: state === 'success',
           isPushError: state === 'error',
+          showTargetPushButton: targetAhead > 0 && !isInTargetPushFlow,
+          targetPushAhead: targetAhead,
+          isTargetPushPending: targetState === 'pending',
+          isTargetPushSuccess: targetState === 'success',
+          isTargetPushError: targetState === 'error',
         };
       }),
-    [repoInfos, pushStates]
+    [repoInfos, pushStates, targetPushStates]
   );
 
   // Handle opening command bar for repo actions
@@ -267,6 +370,7 @@ export function GitPanelContainer({
       onActionsClick={handleActionsClick}
       onRepoActionChange={setRepoAction}
       onPushClick={handlePushClick}
+      onTargetPushClick={handleTargetPushClick}
       onMoreClick={handleMoreClick}
       onAddRepo={() => console.log('Add repo clicked')}
     />

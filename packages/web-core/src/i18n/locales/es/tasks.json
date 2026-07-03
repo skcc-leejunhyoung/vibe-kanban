@@ -157,7 +157,8 @@
         "title": "Inicia sesión para gestionar acciones de Git",
         "description": "Inicia sesión en Vibe Kanban para enviar ramas, fusionar cambios o abrir pull requests para esta tarea.",
         "action": "Iniciar sesión"
-      }
+      },
+      "pushTargetToOrigin": "Enviar «{{branch}}» a origin"
     },
     "mergeDialog": {
       "title": "Fusionar cambios",
@@ -179,7 +180,8 @@
       "pushing": "Enviando...",
       "pushFailed": "Falló",
       "rebase": "Rebase",
-      "rebasing": "Rebaseando..."
+      "rebasing": "Rebaseando...",
+      "pushTarget": "Enviar destino ↑{{ahead}}"
     },
     "status": {
       "ahead": "adelante",
@@ -188,6 +190,9 @@
       "commits_other": "commits",
       "conflicts": "Conflictos",
       "upToDate": "Al día"
+    },
+    "targetPush": {
+      "forceConfirm": "La rama de destino remota ha divergido de la local. ¿Forzar el envío para sobrescribirla? Esto puede descartar commits que solo existen en el remoto."
     }
   },
   "loading": "Cargando tareas...",

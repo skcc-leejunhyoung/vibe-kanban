@@ -692,7 +692,17 @@ export type RepoBranchStatus = { repo_id: string, repo_name: string,
  * True when the source repository no longer exists on disk (e.g. the project
  * folder was moved or deleted). Git-derived fields are left empty in this case.
  */
-repo_missing: boolean, commits_behind: number | null, commits_ahead: number | null, has_uncommitted_changes: boolean | null, head_oid: string | null, uncommitted_count: number | null, untracked_count: number | null, target_branch_name: string, remote_commits_behind: number | null, remote_commits_ahead: number | null, merges: Array<Merge>, is_rebase_in_progress: boolean, conflict_op: ConflictOp | null, conflicted_files: Array<string>, is_target_remote: boolean, };
+repo_missing: boolean, commits_behind: number | null, commits_ahead: number | null, has_uncommitted_changes: boolean | null, head_oid: string | null, uncommitted_count: number | null, untracked_count: number | null, target_branch_name: string, remote_commits_behind: number | null, remote_commits_ahead: number | null,
+/**
+ * Commits the local target (base) branch is ahead of its counterpart on the
+ * repo's primary remote — i.e. commits that can be pushed to origin. `None`
+ * when the target is a remote-only branch or the repo has no remote.
+ */
+target_remote_commits_ahead: number | null,
+/**
+ * Commits the local target (base) branch is behind the remote.
+ */
+target_remote_commits_behind: number | null, merges: Array<Merge>, is_rebase_in_progress: boolean, conflict_op: ConflictOp | null, conflicted_files: Array<string>, is_target_remote: boolean, };
 
 export type WorkspaceCommit = { repo_id: string, repo_name: string, sha: string, short_sha: string, subject: string, author: string,
 /**

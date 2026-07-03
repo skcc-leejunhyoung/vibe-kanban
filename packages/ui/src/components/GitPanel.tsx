@@ -12,6 +12,7 @@ export interface RepoInfo {
   commitsAhead: number;
   commitsBehind: number;
   remoteCommitsAhead?: number;
+  targetRemoteAhead?: number;
   prNumber?: number;
   prUrl?: string;
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
@@ -19,6 +20,11 @@ export interface RepoInfo {
   isPushPending?: boolean;
   isPushSuccess?: boolean;
   isPushError?: boolean;
+  showTargetPushButton?: boolean;
+  targetPushAhead?: number;
+  isTargetPushPending?: boolean;
+  isTargetPushSuccess?: boolean;
+  isTargetPushError?: boolean;
   isTargetRemote?: boolean;
   hasUncommittedChanges?: boolean;
 }
@@ -31,6 +37,7 @@ interface GitPanelProps {
   onActionsClick?: (repoId: string, action: RepoAction) => void;
   onRepoActionChange?: (repoId: string, action: RepoAction) => void;
   onPushClick?: (repoId: string) => void;
+  onTargetPushClick?: (repoId: string) => void;
   onMoreClick?: (repoId: string) => void;
   onAddRepo?: () => void;
   className?: string;
@@ -45,6 +52,7 @@ export function GitPanel({
   onActionsClick,
   onRepoActionChange,
   onPushClick,
+  onTargetPushClick,
   onMoreClick,
   className,
   error,
@@ -75,6 +83,12 @@ export function GitPanel({
             isPushPending={repo.isPushPending}
             isPushSuccess={repo.isPushSuccess}
             isPushError={repo.isPushError}
+            showTargetPushButton={repo.showTargetPushButton}
+            targetPushAhead={repo.targetPushAhead}
+            isTargetPushPending={repo.isTargetPushPending}
+            isTargetPushSuccess={repo.isTargetPushSuccess}
+            isTargetPushError={repo.isTargetPushError}
+            onTargetPushClick={() => onTargetPushClick?.(repo.id)}
             isTargetRemote={repo.isTargetRemote}
             hasUncommittedChanges={repo.hasUncommittedChanges}
             selectedAction={repoSelectedActions?.[repo.id] ?? 'pull-request'}

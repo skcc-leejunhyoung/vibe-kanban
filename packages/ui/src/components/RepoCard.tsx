@@ -60,6 +60,14 @@ interface RepoCardProps {
   isPushPending?: boolean;
   isPushSuccess?: boolean;
   isPushError?: boolean;
+  /** Show a "push target branch to origin" button on the branch row. */
+  showTargetPushButton?: boolean;
+  /** Commits the local target branch is ahead of origin (button label count). */
+  targetPushAhead?: number;
+  isTargetPushPending?: boolean;
+  isTargetPushSuccess?: boolean;
+  isTargetPushError?: boolean;
+  onTargetPushClick?: () => void;
   isTargetRemote?: boolean;
   hasUncommittedChanges?: boolean;
   branchDropdownContent?: ReactNode;
@@ -85,6 +93,12 @@ export function RepoCard({
   isPushPending = false,
   isPushSuccess = false,
   isPushError = false,
+  showTargetPushButton = false,
+  targetPushAhead = 0,
+  isTargetPushPending = false,
+  isTargetPushSuccess = false,
+  isTargetPushError = false,
+  onTargetPushClick,
   isTargetRemote = false,
   hasUncommittedChanges = false,
   branchDropdownContent,
@@ -182,6 +196,48 @@ export function RepoCard({
             <ArrowDownIcon className="size-icon-xs" weight="bold" />
             <span className="font-medium">{commitsBehind}</span>
           </span>
+        )}
+
+        {/* Push target branch to origin - shown when the local target branch is
+            ahead of its remote counterpart. Mirrors the work-branch push button
+            state feedback. */}
+        {(showTargetPushButton ||
+          isTargetPushPending ||
+          isTargetPushSuccess ||
+          isTargetPushError) && (
+          <button
+            onClick={onTargetPushClick}
+            disabled={
+              isTargetPushPending || isTargetPushSuccess || isTargetPushError
+            }
+            title={t('git.actions.pushTargetToOrigin', {
+              branch: targetBranch,
+            })}
+            className={`inline-flex items-center gap-half px-base py-half rounded-sm text-sm font-medium transition-colors shrink-0 disabled:cursor-not-allowed ${
+              isTargetPushSuccess
+                ? 'bg-success/20 text-success'
+                : isTargetPushError
+                  ? 'bg-error/20 text-error'
+                  : 'bg-panel text-normal hover:bg-tertiary disabled:opacity-50'
+            }`}
+          >
+            {isTargetPushPending ? (
+              <SpinnerGapIcon className="size-icon-xs animate-spin" />
+            ) : isTargetPushSuccess ? (
+              <CheckCircleIcon className="size-icon-xs" weight="fill" />
+            ) : isTargetPushError ? (
+              <WarningCircleIcon className="size-icon-xs" weight="fill" />
+            ) : (
+              <ArrowUpIcon className="size-icon-xs" weight="bold" />
+            )}
+            {isTargetPushPending
+              ? t('git.states.pushing')
+              : isTargetPushSuccess
+                ? t('git.states.pushed')
+                : isTargetPushError
+                  ? t('git.states.pushFailed')
+                  : t('git.states.pushTarget', { ahead: targetPushAhead })}
+          </button>
         )}
 
         <button

@@ -130,7 +130,8 @@
         "title": "Git アクションを管理するにはサインインしてください",
         "description": "このタスクでブランチのプッシュ、変更のマージ、プルリクエストの作成を行うには Vibe Kanban にサインインしてください。",
         "action": "サインイン"
-      }
+      },
+      "pushTargetToOrigin": "\"{{branch}}\" を origin にプッシュ"
     },
     "mergeDialog": {
       "title": "変更をマージ",
@@ -178,7 +179,8 @@
       "forcePush": "強制プッシュ",
       "forcePushing": "強制プッシュ中...",
       "rebase": "リベース",
-      "rebasing": "リベース中..."
+      "rebasing": "リベース中...",
+      "pushTarget": "ターゲットをプッシュ ↑{{ahead}}"
     },
     "status": {
       "ahead": "先行",
@@ -187,6 +189,9 @@
       "commits_other": "コミット",
       "conflicts": "競合",
       "upToDate": "最新"
+    },
+    "targetPush": {
+      "forceConfirm": "リモートのターゲットブランチがローカルと分岐しています。強制プッシュで上書きしますか？リモートにのみ存在するコミットが失われる可能性があります。"
     }
   },
   "loading": "タスクを読み込み中...",

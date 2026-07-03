@@ -133,7 +133,8 @@
       "forcePush": "强制推送",
       "forcePushing": "强制推送中...",
       "creating": "创建中...",
-      "createPr": "创建 PR"
+      "createPr": "创建 PR",
+      "pushTarget": "推送目标 ↑{{ahead}}"
     },
     "errors": {
       "changeTargetBranch": "更改目标分支失败",
@@ -155,7 +156,8 @@
         "title": "登录以管理 git 操作",
         "description": "登录 Vibe Kanban，以便您可以推送分支、合并更改或为此任务打开拉取请求。",
         "action": "登录"
-      }
+      },
+      "pushTargetToOrigin": "将 “{{branch}}” 推送到 origin"
     },
     "mergeDialog": {
       "title": "合并更改",
@@ -186,6 +188,9 @@
       "states": {
         "creating": "创建中..."
       }
+    },
+    "targetPush": {
+      "forceConfirm": "远程目标分支已与本地分支产生分叉。要强制推送以覆盖它吗？这可能会丢弃仅存在于远程的提交。"
     }
   },
   "startReviewDialog": {
