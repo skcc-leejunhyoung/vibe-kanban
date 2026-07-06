@@ -2,16 +2,24 @@ import type { WorkingBranchInput } from 'shared/types';
 import type { LinkedIssue } from '@/shared/types/createMode';
 
 /**
+ * Max length (in chars) of the slug derived from a title. Mirrors the backend
+ * `MAX_BRANCH_SLUG_CHARS` (crates/utils/src/text.rs) so previews match the
+ * generated name. Not a git limit — git only bounds branch names by the
+ * filesystem's ~255-byte filename limit.
+ */
+export const MAX_BRANCH_SLUG_CHARS = 40;
+
+/**
  * Port of the backend `git_branch_id` (crates/utils/src/text.rs): lowercase,
  * collapse runs of characters git can't use in a ref into hyphens, trim
- * hyphens, cap at 16 chars. `\p{L}`/`\p{N}` keep Unicode letters and digits
- * (e.g. Hangul) so non-ASCII titles survive. Keeps the issue-template preview
- * identical to the auto-generated backend name.
+ * hyphens, cap at {@link MAX_BRANCH_SLUG_CHARS} chars. `\p{L}`/`\p{N}` keep
+ * Unicode letters and digits (e.g. Hangul) so non-ASCII titles survive. Keeps
+ * the issue-template preview identical to the auto-generated backend name.
  */
 export function gitBranchId(input: string): string {
   const slug = input.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-');
   const trimmed = slug.replace(/^-+|-+$/g, '');
-  const cut = Array.from(trimmed).slice(0, 16).join('');
+  const cut = Array.from(trimmed).slice(0, MAX_BRANCH_SLUG_CHARS).join('');
   return cut.replace(/-+$/g, '');
 }
 

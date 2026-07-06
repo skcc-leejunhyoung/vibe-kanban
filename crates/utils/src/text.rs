@@ -1,6 +1,12 @@
 use regex::Regex;
 use uuid::Uuid;
 
+/// Max length (in chars) of the slug derived from a title for a branch name.
+/// Not a git limit (git only bounds branch names by the filesystem's ~255-byte
+/// filename limit) — just a cap to keep generated names readable. The frontend
+/// `gitBranchId` mirrors this so previews match the backend name exactly.
+pub const MAX_BRANCH_SLUG_CHARS: usize = 40;
+
 pub fn git_branch_id(input: &str) -> String {
     // 1. lowercase
     let lower = input.to_lowercase();
@@ -17,8 +23,8 @@ pub fn git_branch_id(input: &str) -> String {
     // 3. trim extra hyphens
     let trimmed = slug.trim_matches('-');
 
-    // 4. take up to 16 chars, then trim trailing hyphens again
-    let cut: String = trimmed.chars().take(16).collect();
+    // 4. take up to MAX_BRANCH_SLUG_CHARS chars, then trim trailing hyphens again
+    let cut: String = trimmed.chars().take(MAX_BRANCH_SLUG_CHARS).collect();
     cut.trim_end_matches('-').to_string()
 }
 
@@ -52,8 +58,15 @@ mod tests {
     fn test_git_branch_id() {
         use super::git_branch_id;
 
-        // ASCII titles behave as before (lowercase, hyphenated, capped at 16).
-        assert_eq!(git_branch_id("Fix the login bug"), "fix-the-login-bu");
+        // ASCII titles behave as before (lowercase, hyphenated), now capped at
+        // MAX_BRANCH_SLUG_CHARS so typical titles survive in full.
+        assert_eq!(git_branch_id("Fix the login bug"), "fix-the-login-bug");
+
+        // Titles longer than the cap are truncated at the char boundary.
+        assert_eq!(
+            git_branch_id("Fix the intermittent login bug on the settings page"),
+            "fix-the-intermittent-login-bug-on-the-se"
+        );
 
         // Hangul titles are preserved instead of collapsing to an empty slug.
         assert_eq!(git_branch_id("로그인 버그 수정"), "로그인-버그-수정");

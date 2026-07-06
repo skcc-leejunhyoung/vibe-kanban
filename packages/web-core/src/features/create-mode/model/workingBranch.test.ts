@@ -7,8 +7,14 @@ import {
 } from './workingBranch';
 
 describe('gitBranchId', () => {
-  it('keeps ASCII behaviour (lowercase, hyphenated, capped at 16 chars)', () => {
-    expect(gitBranchId('Fix the login bug')).toBe('fix-the-login-bu');
+  it('keeps ASCII behaviour (lowercase, hyphenated)', () => {
+    expect(gitBranchId('Fix the login bug')).toBe('fix-the-login-bug');
+  });
+
+  it('caps the slug at 40 chars on a char boundary', () => {
+    expect(
+      gitBranchId('Fix the intermittent login bug on the settings page')
+    ).toBe('fix-the-intermittent-login-bug-on-the-se');
   });
 
   it('preserves Hangul titles instead of wiping the slug', () => {
