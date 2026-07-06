@@ -1,7 +1,11 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { Diff, PatchType } from 'shared/types';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import {
+  initialDiffHoldState,
+  selectHeldDiffs,
+} from '@/shared/hooks/diffStreamHold';
 
 interface RepoDiffEntries {
   [filePath: string]: PatchType;
@@ -58,7 +62,7 @@ export const useDiffStream = (
     // No need for injectInitialEntry or deduplicatePatches for diffs
   );
 
-  const diffs = useMemo(() => {
+  const derivedDiffs = useMemo(() => {
     return Object.values(data?.entries ?? {})
       .flatMap((repoEntries) => Object.values(repoEntries ?? {}))
       .filter(
@@ -67,6 +71,17 @@ export const useDiffStream = (
       )
       .map((entry) => entry.content);
   }, [data?.entries]);
+
+  // Hold the last snapshot by stable reference across reconnect gaps so the
+  // Changes view doesn't collapse+refill when the socket drops. State lives in
+  // a ref; the pure selector decides what to serve and what to carry forward.
+  const holdRef = useRef(initialDiffHoldState(workspaceId));
+  const { diffs, state } = selectHeldDiffs(holdRef.current, {
+    workspaceId,
+    isInitialized,
+    derived: derivedDiffs,
+  });
+  holdRef.current = state;
 
   return { diffs, error, isInitialized };
 };
