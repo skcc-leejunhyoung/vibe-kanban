@@ -1,4 +1,5 @@
 import { cn } from '../lib/cn';
+import { openExternalUrl } from '../lib/open-url';
 import { GitPullRequestIcon, XIcon } from '@phosphor-icons/react';
 
 export type PrBadgeStatus = 'open' | 'merged' | 'closed';
@@ -38,9 +39,11 @@ export function PrBadge({
     >
       <a
         href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          openExternalUrl(url);
+        }}
         className={cn(
           'flex items-center gap-half pl-1.5 py-0.5 transition-colors hover:underline',
           onRemove ? 'pr-1' : 'pr-1.5'

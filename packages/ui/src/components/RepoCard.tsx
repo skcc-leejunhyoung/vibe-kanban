@@ -23,6 +23,7 @@ import {
   DropdownMenuItem,
 } from './Dropdown';
 import { SplitButton, type SplitButtonOption } from './SplitButton';
+import { openExternalUrl } from '../lib/open-url';
 
 export type RepoAction =
   | 'commit'
@@ -255,7 +256,7 @@ export function RepoCard({
           {prStatus === 'merged' ? (
             prUrl ? (
               <button
-                onClick={() => window.open(prUrl, '_blank')}
+                onClick={() => openExternalUrl(prUrl)}
                 className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-success hover:bg-tertiary text-sm font-medium transition-colors"
               >
                 <CheckCircleIcon className="size-icon-xs" weight="fill" />
@@ -270,7 +271,7 @@ export function RepoCard({
             )
           ) : prUrl ? (
             <button
-              onClick={() => window.open(prUrl, '_blank')}
+              onClick={() => openExternalUrl(prUrl)}
               className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-normal hover:bg-tertiary text-sm font-medium transition-colors"
             >
               <GitPullRequestIcon className="size-icon-xs" weight="fill" />
