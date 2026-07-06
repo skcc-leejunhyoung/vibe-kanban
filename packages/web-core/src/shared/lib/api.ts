@@ -914,13 +914,15 @@ export const workspacesApi = {
 
   createPR: async (
     workspaceId: string,
-    data: CreatePrApiRequest
+    data: CreatePrApiRequest,
+    signal?: AbortSignal
   ): Promise<Result<string, PrError>> => {
     const response = await makeRequest(
       `/api/workspaces/${workspaceId}/pull-requests`,
       {
         method: 'POST',
         body: JSON.stringify(data),
+        signal,
       }
     );
     return handleApiResponseAsResult<string, PrError>(response);

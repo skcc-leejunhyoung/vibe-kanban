@@ -13,8 +13,14 @@ import { Input } from '@vibe/ui/components/Input';
 import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { Alert, AlertDescription, AlertTitle } from '@vibe/ui/components/Alert';
 import BranchSelector from '@/shared/components/tasks/BranchSelector';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { workspacesApi } from '@/shared/lib/api';
+import type { Err } from '@/shared/lib/api';
+import type { PrError } from 'shared/types';
+import {
+  usePrBackground,
+  usePrBackgroundStore,
+} from '@/shared/stores/usePrBackgroundStore';
 import { useTranslation } from 'react-i18next';
 
 import { Workspace } from 'shared/types';
@@ -106,53 +112,65 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     const [prBody, setPrBody] = useState('');
     const [prHeadBranch, setPrHeadBranch] = useState('');
     const [prBaseBranch, setPrBaseBranch] = useState('');
-    const [creatingPR, setCreatingPR] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [ghCliHelp, setGhCliHelp] = useState<GhCliSupportContent | null>(
       null
     );
     const [isDraft, setIsDraft] = useState(false);
-    const [generating, setGenerating] = useState(false);
     const isRemote = useAppRuntime() === 'remote';
     // The settings toggle acts as a master switch for the AI generate button;
     // treat an unloaded config as enabled (backend default) so the button shows.
     const aiEnabled = config?.pr_auto_description_enabled !== false;
-    const resetFormState = useCallback(() => {
-      setPrTitle('');
-      setPrBody('');
-      setPrHeadBranch('');
-      setPrBaseBranch('');
-      setCreatingPR(false);
-      setError(null);
-      setGhCliHelp(null);
-      setIsDraft(false);
-      setGenerating(false);
-    }, []);
+
+    // The two slow operations (AI generate + PR creation) live in a per-workspace
+    // background store so they keep running when the dialog is dismissed with
+    // X / ESC, and reattach when it is reopened. Only Cancel aborts them.
+    const bg = usePrBackground(attempt.id);
+    const { startGenerate, startCreate, cancelGenerate, cancelCreate } =
+      usePrBackgroundStore();
+    const generating = bg?.generate?.status === 'running';
+    const creatingPR = bg?.create?.status === 'running';
 
     const { data: branches = [], isLoading: branchesLoading } = useRepoBranches(
       repoId,
       { enabled: modal.visible && !!repoId }
     );
 
-    useEffect(() => {
-      if (!modal.visible) {
-        resetFormState();
-      }
-    }, [modal.visible, resetFormState]);
-
     const getGhCliHelpTitle = (variant: GhCliSupportVariant) =>
       variant === 'homebrew'
         ? 'Homebrew is required for automatic setup'
         : 'GitHub CLI needs manual setup';
 
-    // Initialize form when dialog opens
+    // Initialize form once per workspace. Deliberately NOT keyed on
+    // `modal.visible`: reopening the same workspace must preserve edits and any
+    // in-progress / completed background result instead of re-running the
+    // first-message prefill. A different workspace (attempt.id change) resets.
+    const initializedFor = useRef<string | null>(null);
     useEffect(() => {
-      if (!modal.visible || !isLoaded) {
+      if (!isLoaded || initializedFor.current === attempt.id) {
+        return;
+      }
+      initializedFor.current = attempt.id;
+
+      // Fresh form for this workspace.
+      setPrHeadBranch('');
+      setPrBaseBranch('');
+      setIsDraft(false);
+      setError(null);
+      setGhCliHelp(null);
+      setPrTitle('');
+      setPrBody('');
+
+      // If a generated result is already waiting for this workspace, leave the
+      // title/body to the generate-apply effect below.
+      if (
+        usePrBackgroundStore.getState().byWorkspace[attempt.id]?.generate
+          ?.status === 'success'
+      ) {
         return;
       }
 
       let isCancelled = false;
-
       const initializePRFields = async () => {
         try {
           const firstUserMessage = await workspacesApi.getFirstUserMessage(
@@ -166,25 +184,34 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
               splitMessageToTitleDescription(firstUserMessage);
             setPrTitle(appendPrTitleSuffix(title));
             setPrBody(description ?? '');
-            return;
           }
         } catch {
           // Fall back to empty fields if prompt loading fails.
         }
-
-        if (isCancelled) return;
-        setPrTitle('');
-        setPrBody('');
       };
 
       initializePRFields();
-      setError(null);
-      setGhCliHelp(null);
 
       return () => {
         isCancelled = true;
       };
-    }, [attempt.id, modal.visible, isLoaded, issueIdentifier]);
+    }, [attempt.id, isLoaded, issueIdentifier]);
+
+    // Apply a completed AI generation into the form (works whether it finished
+    // while open or in the background), then consume it. Surface generate errors
+    // when the dialog is visible; otherwise keep them for the next open.
+    useEffect(() => {
+      const gen = bg?.generate;
+      if (!gen) return;
+      if (gen.status === 'success') {
+        if (gen.title !== undefined) setPrTitle(gen.title);
+        if (gen.description !== undefined) setPrBody(gen.description);
+        usePrBackgroundStore.getState().clearGenerate(attempt.id);
+      } else if (gen.status === 'error' && modal.visible) {
+        setError(gen.error ?? t('createPrDialog.errors.generateFailed'));
+        usePrBackgroundStore.getState().clearGenerate(attempt.id);
+      }
+    }, [bg?.generate, modal.visible, attempt.id, t]);
 
     // Set default head (source) branch when branches load. Prefer the feature
     // branch the work branch was merged into; fall back to the work branch.
@@ -246,183 +273,206 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       [environment?.os_type]
     );
 
-    const handleConfirmCreatePR = useCallback(async () => {
-      if (!repoId || !attempt.id) return;
-
+    // Kick off PR creation in the background store so it survives the dialog
+    // being dismissed with X / ESC. The outcome is handled by the effect below.
+    const handleConfirmCreatePR = useCallback(() => {
+      if (!repoId || !attempt.id || creatingPR) return;
       setError(null);
       setGhCliHelp(null);
-      setCreatingPR(true);
-
-      const handleGhCliSetupOutcome = (
-        setupResult: GhCliSetupError | null,
-        fallbackMessage: string
-      ) => {
-        if (setupResult === null) {
-          setError(null);
-          setGhCliHelp(null);
-          setCreatingPR(false);
-          modal.hide();
-          return;
-        }
-
-        const ui = mapGhCliErrorToUi(setupResult, fallbackMessage, t);
-
-        if (ui.variant) {
-          setGhCliHelp(ui);
-          setError(null);
-          return;
-        }
-
-        setGhCliHelp(null);
-        setError(ui.message);
-      };
-
-      let result: Awaited<ReturnType<typeof workspacesApi.createPR>>;
-      try {
-        result = await workspacesApi.createPR(attempt.id, {
-          title: prTitle,
-          body: prBody || null,
-          target_branch: prBaseBranch || null,
-          head_branch: prHeadBranch || null,
-          draft: isDraft,
-          repo_id: repoId,
-        });
-      } catch (err) {
-        // Without this guard a rejected createPR (network/unexpected error)
-        // would skip the setCreatingPR(false) calls below, leaving the dialog
-        // stuck with its submit button disabled, plus an unhandled rejection.
-        setCreatingPR(false);
-        setGhCliHelp(null);
-        setError(
-          err instanceof Error
-            ? err.message
-            : t('createPrDialog.errors.failedToCreate')
-        );
-        return;
-      }
-
-      if (result.success) {
-        // Remember the base for next time (per repo) now that it succeeded.
-        if (prBaseBranch) rememberBase(repoId, prBaseBranch);
-        setCreatingPR(false);
-        modal.resolve({ success: true } as CreatePRDialogResult);
-        modal.hide();
-        return;
-      }
-
-      setCreatingPR(false);
-
-      const defaultGhCliErrorMessage =
-        result.message || 'Failed to run GitHub CLI setup.';
-
-      const showGhCliSetupDialog = async () => {
-        const setupResult = await GhCliSetupDialog.show({
-          workspaceId: attempt.id,
-        });
-
-        handleGhCliSetupOutcome(setupResult, defaultGhCliErrorMessage);
-      };
-
-      if (result.error) {
-        if (
-          result.error.type === 'cli_not_installed' ||
-          result.error.type === 'cli_not_logged_in'
-        ) {
-          // Only show setup dialog for GitHub CLI on Mac
-          if (result.error.provider === 'git_hub' && isMacEnvironment) {
-            await showGhCliSetupDialog();
-          } else {
-            const providerName =
-              result.error.provider === 'git_hub'
-                ? 'GitHub'
-                : result.error.provider === 'azure_dev_ops'
-                  ? 'Azure DevOps'
-                  : 'Git host';
-            const action =
-              result.error.type === 'cli_not_installed'
-                ? 'not installed'
-                : 'not logged in';
-            setError(`${providerName} CLI is ${action}`);
-            setGhCliHelp(null);
-          }
-          return;
-        } else if (
-          result.error.type === 'git_cli_not_installed' ||
-          result.error.type === 'git_cli_not_logged_in'
-        ) {
-          const gitCliErrorKey =
-            result.error.type === 'git_cli_not_logged_in'
-              ? 'createPrDialog.errors.gitCliNotLoggedIn'
-              : 'createPrDialog.errors.gitCliNotInstalled';
-
-          setError(result.message || t(gitCliErrorKey));
-          setGhCliHelp(null);
-          return;
-        } else if (result.error.type === 'target_branch_not_found') {
-          setError(
-            t('createPrDialog.errors.targetBranchNotFound', {
-              branch: result.error.branch,
-            })
-          );
-          setGhCliHelp(null);
-          return;
-        }
-      }
-
-      if (result.message) {
-        setError(result.message);
-        setGhCliHelp(null);
-      } else {
-        setError(t('createPrDialog.errors.failedToCreate'));
-        setGhCliHelp(null);
-      }
+      startCreate(attempt.id, {
+        title: prTitle,
+        body: prBody || null,
+        target_branch: prBaseBranch || null,
+        head_branch: prHeadBranch || null,
+        draft: isDraft,
+        repo_id: repoId,
+      });
     }, [
-      attempt,
+      attempt.id,
       repoId,
       prHeadBranch,
       prBaseBranch,
       prBody,
       prTitle,
       isDraft,
+      creatingPR,
+      startCreate,
+    ]);
+
+    // Map a business failure from createPR onto the dialog (error text or the
+    // GitHub CLI setup flow). Mirrors the pre-background behaviour.
+    const processCreateFailure = useCallback(
+      async (result: Err<PrError>) => {
+        const handleGhCliSetupOutcome = (
+          setupResult: GhCliSetupError | null,
+          fallbackMessage: string
+        ) => {
+          if (setupResult === null) {
+            setError(null);
+            setGhCliHelp(null);
+            modal.hide();
+            return;
+          }
+
+          const ui = mapGhCliErrorToUi(setupResult, fallbackMessage, t);
+
+          if (ui.variant) {
+            setGhCliHelp(ui);
+            setError(null);
+            return;
+          }
+
+          setGhCliHelp(null);
+          setError(ui.message);
+        };
+
+        const defaultGhCliErrorMessage =
+          result.message || 'Failed to run GitHub CLI setup.';
+
+        const showGhCliSetupDialog = async () => {
+          const setupResult = await GhCliSetupDialog.show({
+            workspaceId: attempt.id,
+          });
+
+          handleGhCliSetupOutcome(setupResult, defaultGhCliErrorMessage);
+        };
+
+        if (result.error) {
+          if (
+            result.error.type === 'cli_not_installed' ||
+            result.error.type === 'cli_not_logged_in'
+          ) {
+            // Only show setup dialog for GitHub CLI on Mac
+            if (result.error.provider === 'git_hub' && isMacEnvironment) {
+              await showGhCliSetupDialog();
+            } else {
+              const providerName =
+                result.error.provider === 'git_hub'
+                  ? 'GitHub'
+                  : result.error.provider === 'azure_dev_ops'
+                    ? 'Azure DevOps'
+                    : 'Git host';
+              const action =
+                result.error.type === 'cli_not_installed'
+                  ? 'not installed'
+                  : 'not logged in';
+              setError(`${providerName} CLI is ${action}`);
+              setGhCliHelp(null);
+            }
+            return;
+          } else if (
+            result.error.type === 'git_cli_not_installed' ||
+            result.error.type === 'git_cli_not_logged_in'
+          ) {
+            const gitCliErrorKey =
+              result.error.type === 'git_cli_not_logged_in'
+                ? 'createPrDialog.errors.gitCliNotLoggedIn'
+                : 'createPrDialog.errors.gitCliNotInstalled';
+
+            setError(result.message || t(gitCliErrorKey));
+            setGhCliHelp(null);
+            return;
+          } else if (result.error.type === 'target_branch_not_found') {
+            setError(
+              t('createPrDialog.errors.targetBranchNotFound', {
+                branch: result.error.branch,
+              })
+            );
+            setGhCliHelp(null);
+            return;
+          }
+        }
+
+        if (result.message) {
+          setError(result.message);
+          setGhCliHelp(null);
+        } else {
+          setError(t('createPrDialog.errors.failedToCreate'));
+          setGhCliHelp(null);
+        }
+      },
+      [attempt.id, isMacEnvironment, modal, t]
+    );
+
+    // React to a finished background PR creation. Success is finalized even when
+    // the dialog is hidden; errors are surfaced only while visible and otherwise
+    // kept in the store for the next open.
+    useEffect(() => {
+      const cr = bg?.create;
+      if (!cr || cr.status === 'running') return;
+      const { clearCreate } = usePrBackgroundStore.getState();
+
+      if (cr.status === 'error') {
+        if (!modal.visible) return;
+        clearCreate(attempt.id);
+        setGhCliHelp(null);
+        setError(cr.error ?? t('createPrDialog.errors.failedToCreate'));
+        return;
+      }
+
+      // status === 'done'
+      const result = cr.result;
+      if (!result) return;
+
+      if (result.success) {
+        if (cr.baseBranch) rememberBase(repoId, cr.baseBranch);
+        clearCreate(attempt.id);
+        modal.resolve({ success: true } as CreatePRDialogResult);
+        modal.hide();
+        return;
+      }
+
+      if (!modal.visible) return;
+      clearCreate(attempt.id);
+      void processCreateFailure(result);
+    }, [
+      bg?.create,
       modal,
-      isMacEnvironment,
+      modal.visible,
+      attempt.id,
+      repoId,
+      processCreateFailure,
       t,
     ]);
 
     // Generate a PR title + description by running the configured agent, once,
-    // read-only, over the branch diff. Fills the fields for the user to review
-    // before creating the PR. Local-app only (backend rejects relayed calls).
-    const handleGenerate = useCallback(async () => {
+    // read-only, over the branch diff. Runs in the background store so it keeps
+    // going if the dialog is dismissed; the result is applied by the effect
+    // above. Local-app only (backend rejects relayed calls).
+    const handleGenerate = useCallback(() => {
       if (!repoId || !attempt.id || generating) return;
       setError(null);
-      setGenerating(true);
-      try {
-        const result = await workspacesApi.generatePrDescription(attempt.id, {
-          repo_id: repoId,
-          target_branch: prBaseBranch || null,
-          head_branch: prHeadBranch || null,
-        });
-        setPrTitle(result.title);
-        setPrBody(result.description);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : t('createPrDialog.errors.generateFailed')
-        );
-      } finally {
-        setGenerating(false);
-      }
-    }, [attempt.id, repoId, prBaseBranch, prHeadBranch, generating, t]);
+      startGenerate(attempt.id, {
+        repo_id: repoId,
+        target_branch: prBaseBranch || null,
+        head_branch: prHeadBranch || null,
+      });
+    }, [
+      attempt.id,
+      repoId,
+      prBaseBranch,
+      prHeadBranch,
+      generating,
+      startGenerate,
+    ]);
 
+    // X button / ESC: keep any running background operation alive and just hide.
+    // Resolve without error so the invoking action completes cleanly.
+    const handleDismiss = useCallback(() => {
+      modal.resolve({ success: false } as CreatePRDialogResult);
+      modal.hide();
+    }, [modal]);
+
+    // Cancel button: abort any in-flight generation / creation, then close.
     const handleCancelCreatePR = useCallback(() => {
-      // Return error if one was set, otherwise just canceled
+      cancelGenerate(attempt.id);
+      cancelCreate(attempt.id);
       const result: CreatePRDialogResult = error
         ? { success: false, error }
         : { success: false };
       modal.resolve(result);
       modal.hide();
-    }, [modal, error]);
+    }, [modal, error, attempt.id, cancelGenerate, cancelCreate]);
 
     return (
       <>
@@ -430,7 +480,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
           open={modal.visible}
           onOpenChange={(open) => {
             if (!open) {
-              handleCancelCreatePR();
+              handleDismiss();
             }
           }}
         >
