@@ -422,11 +422,12 @@ export const ConversationList = forwardRef<
     }
   };
 
-  const { isFirstTurn, isLoadingHistory } = useConversationHistory({
-    attempt,
-    onTimelineUpdated,
-    scopeKey: conversationScopeKey,
-  });
+  const { isFirstTurn, isLoadingHistory, hasMoreHistory, loadOlderHistory } =
+    useConversationHistory({
+      attempt,
+      onTimelineUpdated,
+      scopeKey: conversationScopeKey,
+    });
 
   const prevEntriesRef = useRef<DisplayEntry[]>([]);
   const prevRowsRef = useRef<ConversationRow[]>([]);
@@ -648,6 +649,31 @@ export const ConversationList = forwardRef<
 
     return () => observer.disconnect();
   }, [compensateTopGrowth]);
+
+  // Scroll-up pagination: fetch the next older batch when the reader nears the
+  // top, instead of eagerly streaming all history in the background. The fetch
+  // is a single controlled prepend that compensateTopGrowth holds in place, so
+  // the reader keeps their position and the content below never shifts on its
+  // own. loadOlderHistory guards against re-entrancy, so firing on every scroll
+  // event is fine; it self-throttles to one in-flight fetch.
+  const NEAR_TOP_PAGINATION_PX = 600;
+  useEffect(() => {
+    const el = tanstackScrollRef.current;
+    if (!el || !hasMoreHistory) return;
+
+    const maybeLoadOlder = () => {
+      if (el.scrollTop <= NEAR_TOP_PAGINATION_PX) {
+        loadOlderHistory();
+      }
+    };
+
+    el.addEventListener('scroll', maybeLoadOlder, { passive: true });
+    // Fire once in case the initial view already sits near the top (short
+    // conversations, or a viewport taller than the first batch).
+    maybeLoadOlder();
+
+    return () => el.removeEventListener('scroll', maybeLoadOlder);
+  }, [hasMoreHistory, loadOlderHistory]);
 
   // Determine if there are entries to show placeholders
   const hasEntries = conversationRows.length > 0;

@@ -18,8 +18,15 @@ import type {
 export interface UseConversationHistoryResult {
   /** Whether the conversation only has a single coding agent turn (no follow-ups) */
   isFirstTurn: boolean;
-  /** Whether background batches are still loading older history entries */
+  /** Whether an older-history batch is currently being fetched */
   isLoadingHistory: boolean;
+  /** Whether there are older turns not yet loaded (drives scroll-up paging). */
+  hasMoreHistory: boolean;
+  /**
+   * Fetch the next older batch of history. Call when the reader scrolls near
+   * the top. No-ops while a fetch is in flight or when nothing remains.
+   */
+  loadOlderHistory: () => void;
 }
 import {
   MIN_INITIAL_ENTRIES,
@@ -47,6 +54,8 @@ export const useConversationHistory = ({
     new Map()
   );
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const loadingOlderRef = useRef(false);
 
   // Derive whether this is the first turn (no follow-up processes exist)
   const isFirstTurn = useMemo(() => {
@@ -334,6 +343,39 @@ export const useConversationHistory = ({
     [executionProcesses]
   );
 
+  // Whether any non-running process still has unloaded (older) entries.
+  const computeHasMoreHistory = useCallback((): boolean => {
+    const displayed = displayedExecutionProcesses.current;
+    return (executionProcesses.current ?? []).some(
+      (p) => !displayed[p.id] && p.status !== ExecutionProcessStatus.running
+    );
+  }, []);
+
+  // Scroll-up pagination: fetch the next older batch on demand instead of
+  // eagerly streaming all history in the background (which prepended above the
+  // reader and made the content shift while they were scrolled up reading).
+  const loadOlderHistory = useCallback(() => {
+    if (loadingOlderRef.current) return;
+    if (!loadedInitialEntries.current) return;
+    if (!computeHasMoreHistory()) return;
+
+    loadingOlderRef.current = true;
+    setIsLoadingHistory(true);
+    (async () => {
+      try {
+        const updated =
+          await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE);
+        if (updated) {
+          emitEntries(displayedExecutionProcesses.current, 'historic', false);
+        }
+        setHasMoreHistory(computeHasMoreHistory());
+      } finally {
+        loadingOlderRef.current = false;
+        setIsLoadingHistory(false);
+      }
+    })();
+  }, [computeHasMoreHistory, loadRemainingEntriesInBatches, emitEntries]);
+
   const ensureProcessVisible = useCallback((p: ExecutionProcess) => {
     mergeIntoDisplayed((state) => {
       if (!state[p.id]) {
@@ -385,6 +427,8 @@ export const useConversationHistory = ({
     emittedEmptyInitialRef.current = false;
     streamingProcessIdsRef.current.clear();
     previousStatusMapRef.current.clear();
+    loadingOlderRef.current = false;
+    setHasMoreHistory(false);
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
   }, [scopeKey, emitEntries]);
 
@@ -412,15 +456,10 @@ export const useConversationHistory = ({
       });
       emitEntries(displayedExecutionProcesses.current, 'initial', false);
 
-      setIsLoadingHistory(true);
-      while (
-        !cancelled &&
-        (await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE))
-      ) {
-        if (cancelled) return;
-        emitEntries(displayedExecutionProcesses.current, 'historic', false);
-      }
-      if (!cancelled) setIsLoadingHistory(false);
+      // Older turns are now loaded on demand (scroll-up pagination) rather than
+      // eagerly in the background, so the reader's view never shifts unless
+      // they scroll toward the top to ask for more.
+      if (!cancelled) setHasMoreHistory(computeHasMoreHistory());
     })();
     return () => {
       cancelled = true;
@@ -430,7 +469,7 @@ export const useConversationHistory = ({
     idListKey,
     isLoading,
     loadHistoricEntries,
-    loadRemainingEntriesInBatches,
+    computeHasMoreHistory,
     emitEntries,
   ]); // include idListKey so new processes trigger reload
 
@@ -535,5 +574,10 @@ export const useConversationHistory = ({
     }
   }, [scopeKey, idListKey, executionProcessesRaw]);
 
-  return { isFirstTurn, isLoadingHistory: isLoadingHistoryState };
+  return {
+    isFirstTurn,
+    isLoadingHistory: isLoadingHistoryState,
+    hasMoreHistory,
+    loadOlderHistory,
+  };
 };
