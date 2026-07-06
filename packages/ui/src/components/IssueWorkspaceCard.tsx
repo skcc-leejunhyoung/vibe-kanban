@@ -1,4 +1,5 @@
 import { cn } from '../lib/cn';
+import { openExternalUrl } from '../lib/open-url';
 import { useTranslation } from 'react-i18next';
 import {
   GitPullRequestIcon,
@@ -330,9 +331,11 @@ export function IssueWorkspaceCard({
               <a
                 key={pr.number}
                 href={pr.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  openExternalUrl(pr.url);
+                }}
                 className={cn(
                   'flex items-center gap-half px-1.5 py-0.5 rounded text-xs font-medium transition-colors',
                   pr.status === 'merged'
