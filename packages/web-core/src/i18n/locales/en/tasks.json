@@ -344,6 +344,17 @@
       "abortError": "Failed to abort rebase. Please try again."
     }
   },
+  "prPanel": {
+    "empty": "No open pull requests.",
+    "headLabel": "head",
+    "baseLabel": "base",
+    "originSync": "origin",
+    "originSyncTooltip": "How far the head branch is ahead/behind on origin",
+    "prSync": "PR",
+    "prSyncTooltip": "How far the head branch is ahead/behind the base branch",
+    "fetch": "Fetch",
+    "push": "Push"
+  },
   "createPrDialog": {
     "title": "Create Pull Request",
     "description": "Create a pull request for this workspace.",

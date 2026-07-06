@@ -233,6 +233,17 @@
       "abortError": "中止变基失败。请重试。"
     }
   },
+  "prPanel": {
+    "empty": "没有打开的拉取请求。",
+    "headLabel": "head",
+    "baseLabel": "base",
+    "originSync": "origin",
+    "originSyncTooltip": "head 分支相对 origin 的领先/落后程度",
+    "prSync": "PR",
+    "prSyncTooltip": "head 分支相对 base 分支的领先/落后程度",
+    "fetch": "拉取",
+    "push": "推送"
+  },
   "createPrDialog": {
     "title": "创建拉取请求",
     "description": "为此任务尝试创建拉取请求。",

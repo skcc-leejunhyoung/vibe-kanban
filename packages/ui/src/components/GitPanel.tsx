@@ -51,7 +51,6 @@ export function GitPanel({
   onWorkingBranchNameChange,
   onActionsClick,
   onRepoActionChange,
-  onPushClick,
   onTargetPushClick,
   onMoreClick,
   className,
@@ -77,12 +76,7 @@ export function GitPanel({
             commitsAhead={repo.commitsAhead}
             commitsBehind={repo.commitsBehind}
             prNumber={repo.prNumber}
-            prUrl={repo.prUrl}
             prStatus={repo.prStatus}
-            showPushButton={repo.showPushButton}
-            isPushPending={repo.isPushPending}
-            isPushSuccess={repo.isPushSuccess}
-            isPushError={repo.isPushError}
             showTargetPushButton={repo.showTargetPushButton}
             targetPushAhead={repo.targetPushAhead}
             isTargetPushPending={repo.isTargetPushPending}
@@ -101,7 +95,6 @@ export function GitPanel({
               onActionsClick?.(repo.id, 'update-from-base')
             }
             onActionsClick={(action) => onActionsClick?.(repo.id, action)}
-            onPushClick={() => onPushClick?.(repo.id)}
             onMoreClick={() => onMoreClick?.(repo.id)}
           />
         ))}

@@ -4,6 +4,8 @@ import { FileTreeContainer } from './FileTreeContainer';
 import { ProcessListContainer } from './ProcessListContainer';
 import { PreviewControlsContainer } from './PreviewControlsContainer';
 import { GitPanelContainer } from './GitPanelContainer';
+import { PrPanelContainer, hasOpenPr } from './PrPanelContainer';
+import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { TerminalPanelContainer } from '@/shared/components/TerminalPanelContainer';
 import { WorkspaceNotesContainer } from './WorkspaceNotesContainer';
 import { useDiffs } from '@/shared/stores/useWorkspaceDiffStore';
@@ -45,6 +47,8 @@ export const RightSidebar = memo(function RightSidebar({
 }: RightSidebarProps) {
   const { t } = useTranslation(['tasks', 'common']);
   const diffs = useDiffs();
+  const { data: branchStatus } = useBranchStatus(selectedWorkspace?.id);
+  const hasPrs = hasOpenPr(branchStatus);
   const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
   const { expandTerminal, isTerminalExpanded } = useLogsPanel();
 
@@ -62,6 +66,10 @@ export const RightSidebar = memo(function RightSidebar({
   );
   const [gitExpanded] = usePersistedExpanded(
     PERSIST_KEYS.gitPanelRepositories,
+    true
+  );
+  const [prExpanded] = usePersistedExpanded(
+    PERSIST_KEYS.pullRequestsSection,
     true
   );
   const [terminalExpanded] = usePersistedExpanded(
@@ -97,6 +105,19 @@ export const RightSidebar = memo(function RightSidebar({
         expanded: gitExpanded,
         content: (
           <GitPanelContainer
+            selectedWorkspace={selectedWorkspace}
+            repos={repos}
+          />
+        ),
+        actions: [],
+      },
+      {
+        title: 'Pull Requests',
+        persistKey: PERSIST_KEYS.pullRequestsSection,
+        visible: hasPrs,
+        expanded: prExpanded,
+        content: (
+          <PrPanelContainer
             selectedWorkspace={selectedWorkspace}
             repos={repos}
           />
@@ -179,6 +200,8 @@ export const RightSidebar = memo(function RightSidebar({
     repos,
     diffs,
     gitExpanded,
+    prExpanded,
+    hasPrs,
     terminalExpanded,
     notesExpanded,
     changesExpanded,

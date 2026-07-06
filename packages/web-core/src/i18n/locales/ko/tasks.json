@@ -56,6 +56,17 @@
       "abortError": "리베이스 중단에 실패했습니다. 다시 시도해 주세요."
     }
   },
+  "prPanel": {
+    "empty": "열린 풀 리퀘스트가 없습니다.",
+    "headLabel": "head",
+    "baseLabel": "base",
+    "originSync": "origin",
+    "originSyncTooltip": "head 브랜치가 origin 대비 얼마나 앞서거나 뒤처졌는지",
+    "prSync": "PR",
+    "prSyncTooltip": "head 브랜치가 base 브랜치 대비 얼마나 앞서거나 뒤처졌는지",
+    "fetch": "가져오기",
+    "push": "푸시"
+  },
   "createPrDialog": {
     "title": "Pull Request 생성",
     "description": "이 작업 시도에 대한 Pull Request를 생성합니다.",

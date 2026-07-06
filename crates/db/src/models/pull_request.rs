@@ -376,6 +376,8 @@ impl PullRequest {
             created_at: self.created_at,
             target_branch_name: self.target_branch_name.clone(),
             head_branch_name: self.head_branch_name.clone(),
+            head_commits_ahead: None,
+            head_commits_behind: None,
             pr_info: PullRequestInfo {
                 number: self.pr_number,
                 url: self.pr_url.clone(),

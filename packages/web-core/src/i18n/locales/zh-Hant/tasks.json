@@ -233,6 +233,17 @@
       "abortError": "中止變基失敗。請重試。"
     }
   },
+  "prPanel": {
+    "empty": "沒有開啟的拉取請求。",
+    "headLabel": "head",
+    "baseLabel": "base",
+    "originSync": "origin",
+    "originSyncTooltip": "head 分支相對 origin 的領先/落後程度",
+    "prSync": "PR",
+    "prSyncTooltip": "head 分支相對 base 分支的領先/落後程度",
+    "fetch": "拉取",
+    "push": "推送"
+  },
   "createPrDialog": {
     "title": "建立 PR",
     "description": "為此任務嘗試建立 PR。",

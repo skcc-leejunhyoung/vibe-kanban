@@ -256,7 +256,18 @@ export type PrMerge = { id: string, workspace_id: string, repo_id: string, creat
  * (legacy PRs created before head tracking, where head was always
  * `workspace.branch`).
  */
-head_branch_name: string | null, pr_info: PullRequestInfo, };
+head_branch_name: string | null,
+/**
+ * How far the PR's head branch is ahead of its base branch — the PR's own
+ * commit count. Populated by the branch-status endpoint for open PRs;
+ * `None` on plain DB reads (`to_pr_merge`).
+ */
+head_commits_ahead: number | null,
+/**
+ * How far the PR's head branch is behind its base branch (base has commits
+ * the head lacks). Populated alongside `head_commits_ahead`.
+ */
+head_commits_behind: number | null, pr_info: PullRequestInfo, };
 
 export type MergeStatus = "open" | "merged" | "closed" | "unknown";
 

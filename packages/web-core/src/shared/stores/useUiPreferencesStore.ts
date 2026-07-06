@@ -335,6 +335,8 @@ export const PERSIST_KEYS = {
   gitPanelRepositories: 'git-panel-repositories',
   gitPanelProject: 'git-panel-project',
   gitPanelAddRepositories: 'git-panel-add-repositories',
+  // Pull requests panel section
+  pullRequestsSection: 'pull-requests-section',
   rightPanelprocesses: 'right-panel-processes',
   rightPanelPreview: 'right-panel-preview',
   // Process panel sections
@@ -373,6 +375,7 @@ export type PersistKey =
   | typeof PERSIST_KEYS.gitPanelRepositories
   | typeof PERSIST_KEYS.gitPanelProject
   | typeof PERSIST_KEYS.gitPanelAddRepositories
+  | typeof PERSIST_KEYS.pullRequestsSection
   | typeof PERSIST_KEYS.processesSection
   | typeof PERSIST_KEYS.changesSection
   | typeof PERSIST_KEYS.devServerSection

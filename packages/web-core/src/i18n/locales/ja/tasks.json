@@ -56,6 +56,17 @@
       "abortError": "リベースの中止に失敗しました。もう一度お試しください。"
     }
   },
+  "prPanel": {
+    "empty": "オープンなプルリクエストはありません。",
+    "headLabel": "head",
+    "baseLabel": "base",
+    "originSync": "origin",
+    "originSyncTooltip": "headブランチがoriginに対してどれだけ先行/遅延しているか",
+    "prSync": "PR",
+    "prSyncTooltip": "headブランチがbaseブランチに対してどれだけ先行/遅延しているか",
+    "fetch": "取得",
+    "push": "プッシュ"
+  },
   "createPrDialog": {
     "title": "プルリクエストを作成",
     "description": "このタスク試行のプルリクエストを作成します。",

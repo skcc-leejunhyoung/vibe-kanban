@@ -324,6 +324,17 @@
       "abortError": "Échec de l'abandon du rebase. Veuillez réessayer."
     }
   },
+  "prPanel": {
+    "empty": "Aucune pull request ouverte.",
+    "headLabel": "head",
+    "baseLabel": "base",
+    "originSync": "origin",
+    "originSyncTooltip": "De combien la branche head est en avance/retard sur origin",
+    "prSync": "PR",
+    "prSyncTooltip": "De combien la branche head est en avance/retard sur la branche base",
+    "fetch": "Récupérer",
+    "push": "Pousser"
+  },
   "createPrDialog": {
     "title": "Créer une Pull Request",
     "description": "Créer une pull request pour cette tentative de tâche.",

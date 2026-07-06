@@ -927,7 +927,7 @@ pub async fn get_workspace_branch_status(
             continue;
         };
 
-        let repo_merges = merges_by_repo.get(&repo.id).cloned().unwrap_or_default();
+        let mut repo_merges = merges_by_repo.get(&repo.id).cloned().unwrap_or_default();
 
         // Missing source repo: report it without touching git, so the caller can warn
         // the user while still allowing cleanup/deletion to proceed.
@@ -1071,6 +1071,28 @@ pub async fn get_workspace_branch_status(
             (None, None)
         };
 
+        // For each open PR, compute how far its head branch is ahead/behind its
+        // base branch — the PR's own diff size — so the PR panel can show it
+        // independently of the work-branch -> target status above. In a
+        // three-branch flow the head is the feature branch (not workspace.branch)
+        // and the base is the PR's own base (e.g. develop).
+        for merge in repo_merges.iter_mut() {
+            if let Merge::Pr(pr) = merge
+                && matches!(pr.pr_info.status, MergeStatus::Open)
+            {
+                let head = pr
+                    .head_branch_name
+                    .clone()
+                    .unwrap_or_else(|| workspace.branch.clone());
+                if let Some((ahead, behind)) =
+                    compute_pr_head_ahead_behind(&deployment, &repo, &head, &pr.target_branch_name)
+                {
+                    pr.head_commits_ahead = Some(ahead);
+                    pr.head_commits_behind = Some(behind);
+                }
+            }
+        }
+
         results.push(RepoBranchStatus {
             repo_id: repo.id,
             repo_name: repo.name,
@@ -1097,6 +1119,30 @@ pub async fn get_workspace_branch_status(
     }
 
     Ok(ResponseJson(ApiResponse::success(results)))
+}
+
+/// How far a PR's head branch is ahead/behind its base branch — the PR's own
+/// commit count, independent of the workspace's work-branch -> target status.
+/// Tries the base as given (a local branch or a remote-tracking ref), then falls
+/// back to the primary remote's tracking ref (e.g. `origin/develop`). Returns
+/// `None` when neither resolves.
+fn compute_pr_head_ahead_behind(
+    deployment: &DeploymentImpl,
+    repo: &Repo,
+    head: &str,
+    base: &str,
+) -> Option<(usize, usize)> {
+    let git = deployment.git();
+    if let Ok((ahead, behind)) = git.get_branch_status(&repo.path, head, base) {
+        return Some((ahead, behind));
+    }
+    if let Some(remote) = resolve_primary_remote(deployment, repo) {
+        let remote_base = format!("{remote}/{base}");
+        if let Ok((ahead, behind)) = git.get_branch_status(&repo.path, head, &remote_base) {
+            return Some((ahead, behind));
+        }
+    }
+    None
 }
 
 /// Compute the target (base) branch's status relative to the repo's primary

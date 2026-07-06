@@ -45,6 +45,13 @@ pub struct PrMerge {
     /// (legacy PRs created before head tracking, where head was always
     /// `workspace.branch`).
     pub head_branch_name: Option<String>,
+    /// How far the PR's head branch is ahead of its base branch — the PR's own
+    /// commit count. Populated by the branch-status endpoint for open PRs;
+    /// `None` on plain DB reads (`to_pr_merge`).
+    pub head_commits_ahead: Option<usize>,
+    /// How far the PR's head branch is behind its base branch (base has commits
+    /// the head lacks). Populated alongside `head_commits_ahead`.
+    pub head_commits_behind: Option<usize>,
     pub pr_info: PullRequestInfo,
 }
 

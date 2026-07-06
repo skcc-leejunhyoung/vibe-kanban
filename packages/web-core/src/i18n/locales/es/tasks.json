@@ -56,6 +56,17 @@
       "abortError": "Error al cancelar el rebase. Por favor, inténtalo de nuevo."
     }
   },
+  "prPanel": {
+    "empty": "No hay pull requests abiertas.",
+    "headLabel": "head",
+    "baseLabel": "base",
+    "originSync": "origin",
+    "originSyncTooltip": "Cuánto está la rama head adelante/atrás en origin",
+    "prSync": "PR",
+    "prSyncTooltip": "Cuánto está la rama head adelante/atrás respecto a la rama base",
+    "fetch": "Obtener",
+    "push": "Enviar"
+  },
   "createPrDialog": {
     "title": "Crear Pull Request",
     "description": "Crea un pull request para este intento de tarea.",

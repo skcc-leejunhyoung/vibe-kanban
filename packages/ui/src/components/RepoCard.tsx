@@ -6,7 +6,6 @@ import {
   ArrowUpIcon,
   ArrowDownIcon,
   CrosshairIcon,
-  ArrowSquareOutIcon,
   GitMergeIcon,
   GitCommitIcon,
   CheckCircleIcon,
@@ -23,7 +22,6 @@ import {
   DropdownMenuItem,
 } from './Dropdown';
 import { SplitButton, type SplitButtonOption } from './SplitButton';
-import { openExternalUrl } from '../lib/open-url';
 
 export type RepoAction =
   | 'commit'
@@ -55,12 +53,7 @@ interface RepoCardProps {
   commitsAhead?: number;
   commitsBehind?: number;
   prNumber?: number;
-  prUrl?: string;
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
-  showPushButton?: boolean;
-  isPushPending?: boolean;
-  isPushSuccess?: boolean;
-  isPushError?: boolean;
   /** Show a "push target branch to origin" button on the branch row. */
   showTargetPushButton?: boolean;
   /** Commits the local target branch is ahead of origin (button label count). */
@@ -78,7 +71,6 @@ interface RepoCardProps {
   onRebase?: () => void;
   onUpdateFromBase?: () => void;
   onActionsClick?: (action: RepoAction) => void;
-  onPushClick?: () => void;
   onMoreClick?: () => void;
 }
 
@@ -88,12 +80,7 @@ export function RepoCard({
   commitsAhead = 0,
   commitsBehind = 0,
   prNumber,
-  prUrl,
   prStatus,
-  showPushButton = false,
-  isPushPending = false,
-  isPushSuccess = false,
-  isPushError = false,
   showTargetPushButton = false,
   targetPushAhead = 0,
   isTargetPushPending = false,
@@ -109,7 +96,6 @@ export function RepoCard({
   onRebase,
   onUpdateFromBase,
   onActionsClick,
-  onPushClick,
   onMoreClick,
 }: RepoCardProps) {
   const { t } = useTranslation('tasks');
@@ -249,77 +235,6 @@ export function RepoCard({
           <DotsThreeIcon className="size-icon-base" weight="bold" />
         </button>
       </div>
-
-      {/* PR status row */}
-      {prNumber && (
-        <div className="flex items-center gap-half my-base">
-          {prStatus === 'merged' ? (
-            prUrl ? (
-              <button
-                onClick={() => openExternalUrl(prUrl)}
-                className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-success hover:bg-tertiary text-sm font-medium transition-colors"
-              >
-                <CheckCircleIcon className="size-icon-xs" weight="fill" />
-                {t('git.pr.merged', { prNumber })}
-                <ArrowSquareOutIcon className="size-icon-xs" weight="bold" />
-              </button>
-            ) : (
-              <span className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-success text-sm font-medium">
-                <CheckCircleIcon className="size-icon-xs" weight="fill" />
-                {t('git.pr.merged', { prNumber })}
-              </span>
-            )
-          ) : prUrl ? (
-            <button
-              onClick={() => openExternalUrl(prUrl)}
-              className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-normal hover:bg-tertiary text-sm font-medium transition-colors"
-            >
-              <GitPullRequestIcon className="size-icon-xs" weight="fill" />
-              {t('git.pr.open', { number: prNumber })}
-              <ArrowSquareOutIcon className="size-icon-xs" weight="bold" />
-            </button>
-          ) : (
-            <span className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-normal text-sm font-medium">
-              <GitPullRequestIcon className="size-icon-xs" weight="fill" />
-              {t('git.pr.open', { number: prNumber })}
-            </span>
-          )}
-          {/* Push button - shows loading/success/error state */}
-          {(showPushButton ||
-            isPushPending ||
-            isPushSuccess ||
-            isPushError) && (
-            <button
-              onClick={onPushClick}
-              disabled={isPushPending || isPushSuccess || isPushError}
-              className={`inline-flex items-center gap-half px-base py-half rounded-sm text-sm font-medium transition-colors disabled:cursor-not-allowed ${
-                isPushSuccess
-                  ? 'bg-success/20 text-success'
-                  : isPushError
-                    ? 'bg-error/20 text-error'
-                    : 'bg-panel text-normal hover:bg-tertiary disabled:opacity-50'
-              }`}
-            >
-              {isPushPending ? (
-                <SpinnerGapIcon className="size-icon-xs animate-spin" />
-              ) : isPushSuccess ? (
-                <CheckCircleIcon className="size-icon-xs" weight="fill" />
-              ) : isPushError ? (
-                <WarningCircleIcon className="size-icon-xs" weight="fill" />
-              ) : (
-                <ArrowUpIcon className="size-icon-xs" weight="bold" />
-              )}
-              {isPushPending
-                ? t('git.states.pushing')
-                : isPushSuccess
-                  ? t('git.states.pushed')
-                  : isPushError
-                    ? t('git.states.pushFailed')
-                    : t('git.states.push')}
-            </button>
-          )}
-        </div>
-      )}
 
       {/* Actions row - only show when there are available actions */}
       {availableActionOptions.length > 0 && (
