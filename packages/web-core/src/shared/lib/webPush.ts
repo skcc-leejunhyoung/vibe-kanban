@@ -1,6 +1,9 @@
 import type { AppRuntime } from '@/shared/hooks/useAppRuntime';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
-import { makeRequest as makeRemoteRequest } from '@/shared/lib/remoteApi';
+import {
+  getRemoteApiUrl,
+  makeRequest as makeRemoteRequest,
+} from '@/shared/lib/remoteApi';
 
 type PublicKeyResponse = {
   enabled: boolean;
@@ -203,12 +206,23 @@ async function deleteSubscription(
   });
 }
 
+/** True when this host is paired to a remote (a shared remote API base is set). */
+function isRemotePaired(): boolean {
+  return !!getRemoteApiUrl();
+}
+
 async function request(
   runtime: AppRuntime,
   path: string,
   options: RequestInit
 ): Promise<Response> {
-  if (runtime === 'remote') {
+  // A local host paired to a remote must register web push with the REMOTE:
+  // remote-originated notifications (e.g. an issue becoming "ready for review")
+  // are pushed only to the remote's own subscriptions, so a subscription kept
+  // solely on the local server never receives them. VAPID keys are shared
+  // between the local and remote servers, so a subscription created here is
+  // pushable by the remote. Unpaired local hosts keep registering locally.
+  if (runtime === 'remote' || isRemotePaired()) {
     return makeRemoteRequest(`/v1${path}`, options);
   }
 
@@ -222,6 +236,52 @@ async function request(
     headers,
     hostScope: 'none',
   });
+}
+
+/** Delete a subscription from the LOCAL server specifically (bypasses the
+ * paired-remote routing in `request`). Best-effort. */
+async function deleteLocalSubscription(endpoint: string): Promise<void> {
+  try {
+    await makeLocalApiRequest('/api/web-push/subscriptions', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
+      hostScope: 'none',
+    });
+  } catch {
+    // Best-effort cleanup — a lingering local subscription only risks a
+    // duplicate push, not a missing one.
+  }
+}
+
+/**
+ * Migrate a paired local host's push subscription from the local server to the
+ * remote. Older builds registered the subscription with the local server, so
+ * remote-originated notifications ("ready for review") never reached this
+ * device. Re-register it with the remote (which pushes every notification type)
+ * and drop the stale local copy so workspace-completion pushes aren't
+ * duplicated. Idempotent and safe to call on every load.
+ */
+export async function reconcileWebPushRegistration(
+  runtime: AppRuntime
+): Promise<void> {
+  if (!isWebPushSupported()) return;
+  // remote-web already registers with the remote; unpaired local hosts are
+  // correctly served by the local server.
+  if (runtime === 'remote' || !isRemotePaired()) return;
+  if (Notification.permission !== 'granted') return;
+
+  const registration = await navigator.serviceWorker.getRegistration('/sw.js');
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return;
+
+  const json = subscription.toJSON();
+  if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
+
+  // Register with the remote first; only drop the local copy once the remote
+  // copy is in place, so the device is never left without a push route.
+  await saveSubscription(runtime, subscription);
+  await deleteLocalSubscription(json.endpoint);
 }
 
 function unwrapResponse<T>(payload: T | ApiResponse<T>): T {

@@ -24,6 +24,7 @@ import {
   disableWebPush,
   enableWebPush,
   getWebPushStatus,
+  reconcileWebPushRegistration,
   type WebPushStatus,
 } from '@/shared/lib/webPush';
 
@@ -85,8 +86,12 @@ function WebPushToggle() {
   }, [runtime]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    // Migrate a paired local host's subscription to the remote (no-op elsewhere)
+    // before reporting status, so remote-originated pushes reach this device.
+    void reconcileWebPushRegistration(runtime)
+      .catch(() => {})
+      .finally(refresh);
+  }, [runtime, refresh]);
 
   const handleClick = useCallback(async () => {
     if (pending || status === 'unsupported' || status === 'disabled') return;
