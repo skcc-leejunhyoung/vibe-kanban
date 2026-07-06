@@ -569,8 +569,6 @@ interface ChangesPanelContainerProps {
   workspaceId: string;
 }
 
-const MOUNT_BATCH_SIZE = 8;
-
 export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   className,
   workspaceId,
@@ -578,8 +576,6 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   const diffs = useDiffs();
   const { registerScrollToFile } = useChangesView();
   const [processedPaths] = useState(() => new Set<string>());
-  const [mountedCount, setMountedCount] = useState(0);
-  const rafRef = useRef<number | null>(null);
 
   const diffItems = useMemo(() => {
     const sorted = sortDiffs(diffs);
@@ -596,54 +592,8 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     });
   }, [diffs, processedPaths]);
 
-  useEffect(() => {
-    if (diffItems.length === 0) {
-      setMountedCount(0);
-      return;
-    }
-
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-
-    setMountedCount((prev) => {
-      if (prev >= diffItems.length) return diffItems.length;
-      return prev;
-    });
-
-    let cancelled = false;
-    function mountNextBatch() {
-      if (cancelled) return;
-      setMountedCount((prev) => {
-        const next = Math.min(prev + MOUNT_BATCH_SIZE, diffItems.length);
-        if (next < diffItems.length) {
-          rafRef.current = requestAnimationFrame(mountNextBatch);
-        } else {
-          rafRef.current = null;
-        }
-        return next;
-      });
-    }
-
-    rafRef.current = requestAnimationFrame(mountNextBatch);
-
-    return () => {
-      cancelled = true;
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    };
-  }, [diffItems]);
-
   const topBandCandidatesRef = useRef<Set<HTMLElement>>(new Set());
   const latestScrollRequestRef = useRef<number | null>(null);
-
-  const itemsToRender =
-    mountedCount >= diffItems.length
-      ? diffItems
-      : diffItems.slice(0, mountedCount);
 
   const orderedPaths = useMemo(
     () => diffItems.map(({ diff }) => diff.newPath || diff.oldPath || ''),
@@ -679,7 +629,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   const updateFIVRef = useRef(updateFileInViewFromRange);
   updateFIVRef.current = updateFileInViewFromRange;
 
-  const hasItems = itemsToRender.length > 0;
+  const hasItems = diffItems.length > 0;
 
   useEffect(() => {
     if (!hasItems) return;
@@ -773,12 +723,6 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
         useUiPreferencesStore.getState().setExpanded(expandKey, true);
       }
 
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-        setMountedCount(diffItems.length);
-      }
-
       const requestId = beginProgrammaticScroll(path, lineNumber);
       if (requestId === null) return;
       latestScrollRequestRef.current = requestId;
@@ -801,7 +745,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
         requestAnimationFrame(() => onScrollComplete(requestId));
       });
     },
-    [diffItems.length, beginProgrammaticScroll, onScrollComplete]
+    [beginProgrammaticScroll, onScrollComplete]
   );
 
   useEffect(() => {
@@ -827,7 +771,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
           style={{ overflowAnchor: 'auto' }}
         >
           <div className="flex flex-col gap-1">
-            {itemsToRender.map(({ diff, initialExpanded }) => {
+            {diffItems.map(({ diff, initialExpanded }) => {
               const path = diff.newPath || diff.oldPath || '';
               return (
                 <DiffFileItem
