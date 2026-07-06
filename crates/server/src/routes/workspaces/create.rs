@@ -340,6 +340,64 @@ async fn resolve_working_branch(
     Ok(Some(working))
 }
 
+/// For "feature branch" target modes (`create_target_branch`), make sure the
+/// requested `target_branch` exists as a local branch before the workspace's
+/// working branch forks from it. When missing, it's created off the repo's
+/// configured default branch (`Repo::default_target_branch`, falling back to the
+/// repo's current branch). An already-existing branch is reused as-is, so
+/// multiple workspaces can share one feature branch.
+async fn ensure_feature_target_branch(
+    deployment: &DeploymentImpl,
+    repo_input: &WorkspaceRepoInput,
+) -> Result<(), ApiError> {
+    if !repo_input.create_target_branch {
+        return Ok(());
+    }
+
+    let target = repo_input.target_branch.trim();
+    if target.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Target branch name must not be empty".to_string(),
+        ));
+    }
+
+    let git = deployment.git();
+    if !git.is_branch_name_valid(target) {
+        return Err(ApiError::BadRequest(format!(
+            "'{target}' is not a valid git branch name"
+        )));
+    }
+
+    let repo = Repo::find_by_id(&deployment.db().pool, repo_input.repo_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
+
+    // Reuse an existing local branch (shared feature branch across workspaces).
+    if git
+        .check_local_branch_exists(&repo.path, target)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?
+    {
+        return Ok(());
+    }
+
+    // Fork a fresh feature branch from the repo's default branch.
+    let base = match repo.default_target_branch.as_deref() {
+        Some(base) if !base.trim().is_empty() => base.trim().to_string(),
+        _ => git
+            .get_current_branch(&repo.path)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+    };
+
+    git.create_branch(&repo.path, target, &base).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "Failed to create feature branch '{target}' from '{base}' in repository '{}': {e}",
+            repo.name
+        ))
+    })?;
+
+    Ok(())
+}
+
 /// Strip a leading `<remote>/` from a remote-tracking branch name (e.g.
 /// `origin/feature` -> `feature`) so a local tracking branch can be forked from
 /// it. Returns the name unchanged when it matches no configured remote.
@@ -387,6 +445,9 @@ async fn create_workspace_with_repos(
                 .await?;
 
             for repo in &repos {
+                // Materialize a "new"/"auto" feature target branch (off the
+                // repo's default branch) before the working branch forks from it.
+                ensure_feature_target_branch(deployment, repo).await?;
                 managed_workspace
                     .add_repository(repo, deployment.git())
                     .await
@@ -766,6 +827,7 @@ pub async fn create_and_start_quick_chat(
             &WorkspaceRepoInput {
                 repo_id,
                 target_branch: current_branch,
+                create_target_branch: false,
             },
             deployment.git(),
         )

@@ -247,6 +247,19 @@
           "helper": "연결된 이슈에서 작업 브랜치 이름을 만들 때 쓰는 템플릿입니다. 변수: {issueNumber}, {issueTitle}. 비워두면 이슈 기반 이름 생성을 끕니다.",
           "placeholder": "{issueNumber}-{issueTitle}"
         },
+        "targetBranchPrefix": {
+          "label": "피처 브랜치 접두사",
+          "placeholder": "feature",
+          "helper": "자동 생성되는 피처(타겟) 브랜치 이름의 접두사입니다. 저장소의 타겟 브랜치 모드가 '자동 생성'일 때 사용됩니다. 비워두면 접두사를 붙이지 않습니다.",
+          "preview": "미리보기:",
+          "previewWithPrefix": "{{prefix}}/1a2b-task-name",
+          "previewNoPrefix": "1a2b-task-name"
+        },
+        "targetBranchTemplate": {
+          "label": "피처 브랜치 템플릿",
+          "helper": "연결된 이슈에서 자동 생성 피처(타겟) 브랜치 이름을 만들 때 쓰는 템플릿입니다. 변수: {issueNumber}, {issueTitle}. 비워두면 이슈 기반 이름 생성을 끕니다.",
+          "placeholder": "{issueNumber}-{issueTitle}"
+        },
         "workspaceDir": {
           "label": "워크스페이스 디렉토리",
           "placeholder": "~/",

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { validateBranchName } from '@/features/create-mode/model/workingBranch';
+import { targetBranchModeCreates } from '@/features/create-mode/model/targetBranch';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
@@ -47,6 +48,7 @@ export function CreateChatBoxContainer({
   const {
     repos,
     targetBranches,
+    targetBranchModes,
     message,
     setMessage,
     clearDraft,
@@ -170,9 +172,14 @@ export function CreateChatBoxContainer({
     [repos, targetBranches]
   );
 
-  const hasSelectedBranchesForAllRepos = repos.every(
-    (repo) => !!targetBranches[repo.id]
-  );
+  // Each repo needs a non-empty target branch; for the create modes
+  // ("new"/"auto") the name must also pass branch-name validation.
+  const hasSelectedBranchesForAllRepos = repos.every((repo) => {
+    const branch = targetBranches[repo.id];
+    if (!branch) return false;
+    const mode = targetBranchModes[repo.id] ?? 'existing';
+    return mode === 'existing' ? true : validateBranchName(branch) === null;
+  });
 
   // `auto` is always fine; `existing` just needs a picked (non-empty) branch;
   // `new` needs a name that passes validation (which also rejects empty).
@@ -251,8 +258,11 @@ export function CreateChatBoxContainer({
       repos.map((r) => ({
         repo_id: r.id,
         target_branch: targetBranches[r.id]!,
+        create_target_branch: targetBranchModeCreates(
+          targetBranchModes[r.id] ?? 'existing'
+        ),
       })),
-    [repos, targetBranches]
+    [repos, targetBranches, targetBranchModes]
   );
 
   const getLinkedIssuePayload = useCallback(

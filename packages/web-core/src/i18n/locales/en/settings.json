@@ -255,6 +255,19 @@
           "helper": "Template for the working branch name derived from a linked issue. Variables: {issueNumber}, {issueTitle}. Leave empty to disable issue-based naming.",
           "placeholder": "{issueNumber}-{issueTitle}"
         },
+        "targetBranchPrefix": {
+          "label": "Feature Branch Prefix",
+          "placeholder": "feature",
+          "helper": "Prefix for auto-generated feature (target) branch names. Used when a repo's target branch mode is Auto. Leave empty for no prefix.",
+          "preview": "Preview:",
+          "previewWithPrefix": "{{prefix}}/1a2b-task-name",
+          "previewNoPrefix": "1a2b-task-name"
+        },
+        "targetBranchTemplate": {
+          "label": "Feature Branch Template",
+          "helper": "Template for the auto-generated feature (target) branch name derived from a linked issue. Variables: {issueNumber}, {issueTitle}. Leave empty to disable issue-based naming.",
+          "placeholder": "{issueNumber}-{issueTitle}"
+        },
         "workspaceDir": {
           "label": "Workspace Directory",
           "placeholder": "~/",

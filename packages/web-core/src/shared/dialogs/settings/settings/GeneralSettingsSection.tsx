@@ -98,6 +98,9 @@ export function GeneralSettingsSection() {
   const [branchPrefixError, setBranchPrefixError] = useState<string | null>(
     null
   );
+  const [targetBranchPrefixError, setTargetBranchPrefixError] = useState<
+    string | null
+  >(null);
   const [primaryColorError, setPrimaryColorError] = useState<string | null>(
     null
   );
@@ -760,6 +763,64 @@ export function GeneralSettingsSection() {
         </SettingsField>
 
         <SettingsField
+          label={t('settings.general.git.targetBranchPrefix.label')}
+          error={targetBranchPrefixError}
+          description={
+            <>
+              {t('settings.general.git.targetBranchPrefix.helper')}{' '}
+              {draft?.git_target_branch_prefix ? (
+                <>
+                  {t('settings.general.git.targetBranchPrefix.preview')}{' '}
+                  <code className="text-xs bg-secondary px-1 py-0.5 rounded">
+                    {t(
+                      'settings.general.git.targetBranchPrefix.previewWithPrefix',
+                      { prefix: draft.git_target_branch_prefix }
+                    )}
+                  </code>
+                </>
+              ) : (
+                <>
+                  {t('settings.general.git.targetBranchPrefix.preview')}{' '}
+                  <code className="text-xs bg-secondary px-1 py-0.5 rounded">
+                    {t(
+                      'settings.general.git.targetBranchPrefix.previewNoPrefix'
+                    )}
+                  </code>
+                </>
+              )}
+            </>
+          }
+        >
+          <SettingsInput
+            value={draft?.git_target_branch_prefix ?? ''}
+            onChange={(value) => {
+              const trimmed = value.trim();
+              updateDraft({ git_target_branch_prefix: trimmed });
+              setTargetBranchPrefixError(validateBranchPrefix(trimmed));
+            }}
+            placeholder={t(
+              'settings.general.git.targetBranchPrefix.placeholder'
+            )}
+            error={!!targetBranchPrefixError}
+          />
+        </SettingsField>
+
+        <SettingsField
+          label={t('settings.general.git.targetBranchTemplate.label')}
+          description={t('settings.general.git.targetBranchTemplate.helper')}
+        >
+          <SettingsInput
+            value={draft?.git_target_branch_name_template ?? ''}
+            onChange={(value) =>
+              updateDraft({ git_target_branch_name_template: value })
+            }
+            placeholder={t(
+              'settings.general.git.targetBranchTemplate.placeholder'
+            )}
+          />
+        </SettingsField>
+
+        <SettingsField
           label={t('settings.general.git.workspaceDir.label')}
           description={t('settings.general.git.workspaceDir.helper')}
         >
@@ -1047,7 +1108,11 @@ export function GeneralSettingsSection() {
       <SettingsSaveBar
         show={hasUnsavedChanges}
         saving={saving}
-        saveDisabled={!!branchPrefixError || !!primaryColorError}
+        saveDisabled={
+          !!branchPrefixError ||
+          !!targetBranchPrefixError ||
+          !!primaryColorError
+        }
         onSave={handleSave}
         onDiscard={handleDiscard}
       />

@@ -6,6 +6,7 @@ import type {
   ExecutorConfig,
 } from 'shared/types';
 import type { WorkingBranchSelection } from '@/features/create-mode/model/workingBranch';
+import type { TargetBranchMode } from '@/features/create-mode/model/targetBranch';
 
 interface LinkedIssue {
   issueId: string;
@@ -20,7 +21,12 @@ export interface CreateModeContextValue {
   removeRepo: (repoId: string) => void;
   clearRepos: () => void;
   targetBranches: Record<string, string | null>;
-  setTargetBranch: (repoId: string, branch: string) => void;
+  targetBranchModes: Record<string, TargetBranchMode>;
+  setTargetBranch: (
+    repoId: string,
+    branch: string,
+    mode?: TargetBranchMode
+  ) => void;
   hasResolvedInitialRepoDefaults: boolean;
   preferredExecutorConfig: ExecutorConfig | null;
   message: string;

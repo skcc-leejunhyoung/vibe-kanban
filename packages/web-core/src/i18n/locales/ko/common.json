@@ -529,6 +529,23 @@
         "loadFailed": "브랜치를 불러오지 못했습니다"
       }
     },
+    "targetBranch": {
+      "modes": {
+        "auto": "자동 생성",
+        "new": "직접 입력",
+        "existing": "기존 브랜치"
+      },
+      "autoPreview": "자동 생성",
+      "newPlaceholder": "예: feature/login",
+      "selectBranch": "브랜치 선택",
+      "changeBranch": "브랜치 변경",
+      "errors": {
+        "empty": "브랜치 이름을 입력하세요",
+        "invalidChars": "사용할 수 없는 문자가 있습니다",
+        "invalidSequence": "올바르지 않은 브랜치 이름입니다",
+        "loadFailed": "브랜치를 불러오지 못했습니다"
+      }
+    },
     "workspaceOnly": {
       "create": "워크스페이스만 만들기",
       "creating": "워크스페이스 만드는 중..."

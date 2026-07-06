@@ -53,7 +53,12 @@ export type DraftWorkspaceAttachment = { id: string, file_path: string, original
 
 export type DraftWorkspaceLinkedIssue = { issue_id: string, simple_id: string, title: string, remote_project_id: string, };
 
-export type DraftWorkspaceRepo = { repo_id: string, target_branch: string, };
+export type DraftWorkspaceRepo = { repo_id: string, target_branch: string,
+/**
+ * Whether `target_branch` is a feature branch to create off the repo's
+ * default branch ("new"/"auto" modes). Absent for older drafts.
+ */
+create_target_branch: boolean, };
 
 export type DraftIssueData = { title: string, description: string | null, status_id: string,
 /**
@@ -477,7 +482,20 @@ export type AttachmentResponse = { id: string, file_path: string, original_name:
 
 export type AttachmentMetadata = { exists: boolean, file_name: string | null, path: string | null, size_bytes: bigint | null, format: string | null, proxy_url: string | null, };
 
-export type WorkspaceRepoInput = { repo_id: string, target_branch: string, };
+export type WorkspaceRepoInput = { repo_id: string,
+/**
+ * Base branch the working branch forks from (and the PR merge target).
+ * When `create_target_branch` is false this must already exist. When true,
+ * it's a feature branch name that is created off the repo's default branch
+ * if missing (reused if it already exists).
+ */
+target_branch: string,
+/**
+ * "Feature branch" modes (`new`/`auto`): create `target_branch` off the
+ * repo's `default_target_branch` when it doesn't exist yet. Defaults to
+ * false (the legacy "existing branch" behavior) for older clients.
+ */
+create_target_branch: boolean, };
 
 export type WorkingBranchInput = { "mode": "auto" } | { "mode": "new", name: string, } | { "mode": "existing", name: string, };
 
@@ -802,7 +820,17 @@ export type Config = { config_version: string, theme: ThemeMode, executor_profil
  * Template for deriving a working branch name from a linked issue
  * (rendered client-side). Empty string disables issue-based naming.
  */
-git_branch_name_template: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, primary_color: string,
+git_branch_name_template: string,
+/**
+ * Prefix for auto-generated feature (target) branch names. Used only when
+ * the create-workspace flow's target-branch mode is "auto".
+ */
+git_target_branch_prefix: string,
+/**
+ * Template for deriving a feature (target) branch name from a linked issue
+ * (rendered client-side). Empty string disables issue-based naming.
+ */
+git_target_branch_name_template: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, primary_color: string,
 /**
  * Coding agents the user has hidden from agent selection.
  */
@@ -1277,6 +1305,6 @@ sdp: string,
  */
 session_id: string, };
 
-export const DEFAULT_PR_DESCRIPTION_PROMPT = "You are writing the title and description for a pull request that merges branch `{head_branch}` into `{base_branch}`.\n\nAnalyze the ACTUAL changes on this branch using read-only git commands in your working directory, e.g.:\n- `git log --oneline {base_branch}..HEAD` for the commits\n- `git diff {base_branch}...HEAD` for the full diff (use `--stat` first if it is large)\n\nYou are running NON-INTERACTIVELY and READ-ONLY:\n- Do NOT edit files, create files, run git commit/push, or modify any pull request. Only read.\n- Do NOT ask the user questions.\n\nWrite:\n1. A concise, descriptive title (aim for <= 72 characters) that summarizes the change. No trailing period.\n2. A clear markdown description that explains what changed, why (based on the diff and commit messages), and any important implementation details. Keep it focused — no filler, no invented context.\n\nOutput your answer as EXACTLY ONE fenced ```json block, and put NOTHING after it:\n```json\n{\"title\": \"<the title>\", \"description\": \"<the markdown description>\"}\n```\nBoth fields must be JSON strings. In `description`, encode newlines as \\n.";
+export const DEFAULT_PR_DESCRIPTION_PROMPT = "You are writing the title and description for a pull request that merges branch `{head_branch}` into `{base_branch}`.\n\nAnalyze the ACTUAL changes on this branch using read-only git commands in your working directory, e.g.:\n- `git log --oneline {base_branch}..HEAD` for the commits\n- `git diff {base_branch}...HEAD` for the full diff (use `--stat` first if it is large)\n\nYou are running NON-INTERACTIVELY and READ-ONLY:\n- Do NOT edit files, create files, run git commit/push, or modify any pull request. Only read.\n- The pull request does NOT exist yet. Do NOT look for, open, or reference an existing PR (no `gh pr` / `az repos pr` lookups) — you are only drafting its title and body.\n- Do NOT ask the user questions.\n\nWrite:\n1. A concise, descriptive title (aim for <= 72 characters) that summarizes the change. No trailing period.\n2. A clear markdown description that explains what changed, why (based on the diff and commit messages), and any important implementation details. Keep it focused — no filler, no invented context.\n\nOutput your answer as EXACTLY ONE fenced ```json block, and put NOTHING after it:\n```json\n{\"title\": \"<the title>\", \"description\": \"<the markdown description>\"}\n```\nBoth fields must be JSON strings. In `description`, encode newlines as \\n.";
 
 export const DEFAULT_COMMIT_REMINDER_PROMPT = "There are uncommitted changes. Please stage and commit them now with a descriptive commit message.";

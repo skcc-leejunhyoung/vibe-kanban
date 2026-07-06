@@ -543,6 +543,23 @@
         "loadFailed": "Failed to load branches"
       }
     },
+    "targetBranch": {
+      "modes": {
+        "auto": "Auto",
+        "new": "Custom name",
+        "existing": "Existing branch"
+      },
+      "autoPreview": "Auto-generated",
+      "newPlaceholder": "e.g. feature/login",
+      "selectBranch": "Select branch",
+      "changeBranch": "Change branch",
+      "errors": {
+        "empty": "Branch name is required",
+        "invalidChars": "Contains invalid characters",
+        "invalidSequence": "Invalid branch name",
+        "loadFailed": "Failed to load branches"
+      }
+    },
     "workspaceOnly": {
       "create": "Workspace only",
       "creating": "Creating workspace..."

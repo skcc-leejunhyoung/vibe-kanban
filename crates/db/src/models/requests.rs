@@ -14,7 +14,16 @@ pub struct ContainerQuery {
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct WorkspaceRepoInput {
     pub repo_id: Uuid,
+    /// Base branch the working branch forks from (and the PR merge target).
+    /// When `create_target_branch` is false this must already exist. When true,
+    /// it's a feature branch name that is created off the repo's default branch
+    /// if missing (reused if it already exists).
     pub target_branch: String,
+    /// "Feature branch" modes (`new`/`auto`): create `target_branch` off the
+    /// repo's `default_target_branch` when it doesn't exist yet. Defaults to
+    /// false (the legacy "existing branch" behavior) for older clients.
+    #[serde(default)]
+    pub create_target_branch: bool,
 }
 
 /// Review-mode payload: when present on a create request, the workspace works

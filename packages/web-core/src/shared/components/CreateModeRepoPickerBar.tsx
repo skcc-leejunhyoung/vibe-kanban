@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
+  CaretDownIcon,
   ClockCounterClockwiseIcon,
   GitBranchIcon,
   MagnifyingGlassIcon,
@@ -13,11 +14,26 @@ import type { Repo } from 'shared/types';
 import type { RepoItem } from '@/shared/types/selectionItems';
 import { repoApi } from '@/shared/lib/api';
 import { cn } from '@/shared/lib/utils';
+import { splitMessageToTitleDescription } from '@/shared/lib/string';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import {
+  resolveAutoTargetBranchName,
+  validateBranchName,
+  type BranchNameError,
+  type TargetBranchMode,
+} from '@/features/create-mode/model/targetBranch';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { CreateRepoDialog } from '@vibe/ui/components/CreateRepoDialog';
+import { Input } from '@vibe/ui/components/Input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@vibe/ui/components/DropdownMenu';
 import {
   SelectionDialog,
   type SelectionPage,
@@ -40,7 +56,7 @@ function getRepoDisplayName(repo: Repo): string {
   return repo.display_name || repo.name;
 }
 
-type PendingAction = 'choose' | 'browse' | 'create' | 'branch' | null;
+type PendingAction = 'choose' | 'browse' | 'create' | null;
 
 const inlineControlButtonClassName =
   'inline-flex items-center gap-half rounded-sm px-half py-half text-sm text-normal ' +
@@ -54,6 +70,157 @@ const repoRowButtonClassName =
   'inline-flex items-center gap-half text-sm text-low hover:text-high ' +
   'disabled:cursor-not-allowed disabled:opacity-50';
 
+/**
+ * Per-repo target ("feature") branch selector. Mirrors the workspace-wide
+ * working branch row, but scoped to a single repo: pick an existing branch to
+ * fork from (default), type a new feature branch, or auto-generate one from the
+ * configured target-branch prefix + template. The "new"/"auto" modes create a
+ * fresh branch off the repo's default branch on the backend.
+ */
+function RepoTargetBranchControl({ repo }: { repo: Repo }) {
+  const { t } = useTranslation('common');
+  const { config } = useUserSystem();
+  const {
+    targetBranches,
+    targetBranchModes,
+    setTargetBranch,
+    linkedIssue,
+    message,
+  } = useCreateMode();
+
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
+
+  const mode: TargetBranchMode = targetBranchModes[repo.id] ?? 'existing';
+  const branch = targetBranches[repo.id];
+  const prefix = config?.git_target_branch_prefix ?? '';
+  const template = config?.git_target_branch_name_template ?? '';
+
+  const nameError: BranchNameError | null =
+    mode === 'new' && branch ? validateBranchName(branch) : null;
+
+  const buildAutoName = useCallback(() => {
+    const workspaceTitle = splitMessageToTitleDescription(message).title.trim();
+    const fallback = workspaceTitle || repo.display_name || repo.name;
+    return (
+      resolveAutoTargetBranchName(prefix, template, linkedIssue, fallback) ?? ''
+    );
+  }, [message, prefix, template, linkedIssue, repo]);
+
+  const selectExisting = useCallback(async () => {
+    setPickError(null);
+    setPicking(true);
+    try {
+      const picked = await pickBranchForRepo(repo);
+      if (picked) setTargetBranch(repo.id, picked, 'existing');
+    } catch (error) {
+      setPickError(
+        error instanceof Error
+          ? error.message
+          : t('createMode.targetBranch.errors.loadFailed')
+      );
+    } finally {
+      setPicking(false);
+    }
+  }, [repo, setTargetBranch, t]);
+
+  const selectNew = useCallback(() => {
+    setPickError(null);
+    // Pre-fill the auto suggestion so an issue-based name is one edit away.
+    setTargetBranch(
+      repo.id,
+      branch && mode === 'new' ? branch : buildAutoName(),
+      'new'
+    );
+  }, [repo.id, branch, mode, buildAutoName, setTargetBranch]);
+
+  const selectAuto = useCallback(() => {
+    setPickError(null);
+    setTargetBranch(repo.id, buildAutoName(), 'auto');
+  }, [repo.id, buildAutoName, setTargetBranch]);
+
+  const handleNameChange = useCallback(
+    (value: string) => {
+      setTargetBranch(repo.id, value, 'new');
+    },
+    [repo.id, setTargetBranch]
+  );
+
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 items-center gap-half">
+        <div className="min-w-0 flex-1">
+          {mode === 'existing' && (
+            <button
+              type="button"
+              onClick={selectExisting}
+              disabled={picking}
+              className={repoRowButtonClassName}
+              title={t('createMode.targetBranch.changeBranch')}
+            >
+              {picking ? (
+                <SpinnerIcon className="size-icon-xs animate-spin" />
+              ) : (
+                <GitBranchIcon className="size-icon-xs" weight="bold" />
+              )}
+              <span className="max-w-[200px] truncate">
+                {branch ?? t('createMode.targetBranch.selectBranch')}
+              </span>
+            </button>
+          )}
+          {mode === 'new' && (
+            <Input
+              value={branch ?? ''}
+              onChange={(e) => handleNameChange(e.target.value)}
+              placeholder={t('createMode.targetBranch.newPlaceholder')}
+              className="h-7 text-sm"
+              autoFocus
+            />
+          )}
+          {mode === 'auto' && (
+            <span className="flex min-w-0 items-center gap-half text-sm text-low">
+              <GitBranchIcon className="size-icon-xs shrink-0" weight="bold" />
+              <span className="truncate">
+                {branch || t('createMode.targetBranch.autoPreview')}
+              </span>
+            </span>
+          )}
+        </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center gap-half rounded-sm px-half py-half text-sm text-low hover:text-high"
+            >
+              <span>{t(`createMode.targetBranch.modes.${mode}`)}</span>
+              <CaretDownIcon className="size-icon-2xs" weight="bold" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={selectAuto}>
+              {t('createMode.targetBranch.modes.auto')}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={selectNew}>
+              {t('createMode.targetBranch.modes.new')}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={selectExisting}>
+              {t('createMode.targetBranch.modes.existing')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      {nameError && (
+        <p className="mt-half text-xs text-error">
+          {t(`createMode.targetBranch.errors.${nameError}`)}
+        </p>
+      )}
+      {pickError && <p className="mt-half text-xs text-error">{pickError}</p>}
+    </div>
+  );
+}
+
 interface CreateModeRepoPickerBarProps {
   onContinueToPrompt: () => void;
 }
@@ -63,10 +230,8 @@ export function CreateModeRepoPickerBar({
 }: CreateModeRepoPickerBarProps) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
-  const { repos, targetBranches, addRepo, removeRepo, setTargetBranch } =
-    useCreateMode();
+  const { repos, addRepo, removeRepo, setTargetBranch } = useCreateMode();
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
-  const [branchRepoId, setBranchRepoId] = useState<string | null>(null);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const [setupHintDismissed, setSetupHintDismissed] = useState(false);
   const isBusy = pendingAction !== null;
@@ -97,9 +262,6 @@ export function CreateModeRepoPickerBar({
         setPickerError(error instanceof Error ? error.message : fallbackError);
       } finally {
         setPendingAction(null);
-        if (action === 'branch') {
-          setBranchRepoId(null);
-        }
       }
     },
     []
@@ -116,7 +278,7 @@ export function CreateModeRepoPickerBar({
       if (!selectedBranch) return false;
 
       addRepo(repo);
-      setTargetBranch(repo.id, selectedBranch);
+      setTargetBranch(repo.id, selectedBranch, 'existing');
       return true;
     },
     [addRepo, selectedRepoIds, setTargetBranch]
@@ -201,22 +363,6 @@ export function CreateModeRepoPickerBar({
     );
   }, [addRepoWithBranchSelection, runPickerAction, t]);
 
-  const handleChangeBranch = useCallback(
-    async (repo: Repo) => {
-      setBranchRepoId(repo.id);
-      await runPickerAction(
-        'branch',
-        async () => {
-          const selectedBranch = await pickBranchForRepo(repo);
-          if (!selectedBranch) return;
-          setTargetBranch(repo.id, selectedBranch);
-        },
-        'Failed to load branches'
-      );
-    },
-    [runPickerAction, setTargetBranch]
-  );
-
   return (
     <div className="w-chat max-w-full">
       <div className="px-plusfifty py-base">
@@ -224,10 +370,7 @@ export function CreateModeRepoPickerBar({
           <div>
             <div className="rounded-sm border border-border/60">
               {repos.map((repo, index) => {
-                const branch = targetBranches[repo.id] ?? 'Select branch';
                 const repoDisplayName = getRepoDisplayName(repo);
-                const isChangingBranch =
-                  pendingAction === 'branch' && branchRepoId === repo.id;
 
                 return (
                   <div
@@ -237,24 +380,11 @@ export function CreateModeRepoPickerBar({
                       index > 0 && 'border-t border-border/60'
                     )}
                   >
-                    <span className="min-w-0 flex-1 truncate text-sm text-normal">
+                    <span className="min-w-0 max-w-[40%] shrink-0 truncate text-sm text-normal">
                       {repoDisplayName}
                     </span>
                     <span className="h-3 w-px shrink-0 bg-border/70" />
-                    <button
-                      type="button"
-                      onClick={() => handleChangeBranch(repo)}
-                      disabled={isBusy}
-                      className={repoRowButtonClassName}
-                      title="Change branch"
-                    >
-                      {isChangingBranch ? (
-                        <SpinnerIcon className="size-icon-xs animate-spin" />
-                      ) : (
-                        <GitBranchIcon className="size-icon-xs" weight="bold" />
-                      )}
-                      <span className="max-w-[200px] truncate">{branch}</span>
-                    </button>
+                    <RepoTargetBranchControl repo={repo} />
                     <span className="h-3 w-px shrink-0 bg-border/70" />
                     <button
                       type="button"

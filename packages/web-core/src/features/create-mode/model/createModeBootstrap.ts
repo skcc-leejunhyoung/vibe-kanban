@@ -10,10 +10,15 @@ import type {
   LinkedIssue,
 } from '@/shared/types/createMode';
 import type { WorkingBranchSelection } from '@/features/create-mode/model/workingBranch';
+import {
+  DEFAULT_TARGET_BRANCH_MODE,
+  type TargetBranchMode,
+} from '@/features/create-mode/model/targetBranch';
 
 export interface BootstrapSelectedRepo {
   repo: Repo;
   targetBranch: string | null;
+  targetBranchMode: TargetBranchMode;
 }
 
 export interface CreateModeBootstrapData {
@@ -40,6 +45,7 @@ export interface ResolveCreateModeBootstrapResult {
 interface PreferredRepoInput {
   repo_id: string;
   target_branch: string | null;
+  create_target_branch?: boolean;
 }
 
 export async function resolveBootstrapRepos(
@@ -77,6 +83,11 @@ export async function resolveBootstrapRepos(
       {
         repo,
         targetBranch: preferredRepo.target_branch ?? null,
+        // A restored create flag means a "new"/"auto" feature branch; we can't
+        // distinguish the two after the fact, so surface it as editable "new".
+        targetBranchMode: preferredRepo.create_target_branch
+          ? ('new' as TargetBranchMode)
+          : DEFAULT_TARGET_BRANCH_MODE,
       },
     ];
   });
@@ -171,6 +182,7 @@ export async function resolveCreateModeBootstrap({
         scratchData.repos.map((repo) => ({
           repo_id: repo.repo_id,
           target_branch: repo.target_branch ?? null,
+          create_target_branch: repo.create_target_branch ?? false,
         }))
       );
 

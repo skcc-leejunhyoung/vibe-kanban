@@ -83,6 +83,8 @@ export function toDraftWorkspaceData(
       initialState.preferredRepos?.map((repo) => ({
         repo_id: repo.repo_id,
         target_branch: repo.target_branch ?? '',
+        // Seeded drafts always start on an existing target branch.
+        create_target_branch: false,
       })) ?? [],
     executor_config: initialState.executorConfig ?? null,
     linked_issue: initialState.linkedIssue

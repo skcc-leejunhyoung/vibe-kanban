@@ -83,6 +83,7 @@ mod tests {
         WorkspaceRepoInput {
             repo_id,
             target_branch: "main".to_string(),
+            create_target_branch: false,
         }
     }
 

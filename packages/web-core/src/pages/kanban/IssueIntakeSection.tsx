@@ -153,7 +153,11 @@ export function IssueIntakeSection({
     () =>
       candidates
         .filter((c) => selectedRepoIds.has(c.repoId))
-        .map((c) => ({ repo_id: c.repoId, target_branch: c.targetBranch })),
+        .map((c) => ({
+          repo_id: c.repoId,
+          target_branch: c.targetBranch,
+          create_target_branch: false,
+        })),
     [candidates, selectedRepoIds]
   );
 

@@ -53,6 +53,8 @@ pub async fn add_workspace_repo(
     let repo_input = WorkspaceRepoInput {
         repo_id: payload.repo_id,
         target_branch: payload.target_branch,
+        // Adding a repo to an existing workspace always uses an existing branch.
+        create_target_branch: false,
     };
 
     managed_workspace

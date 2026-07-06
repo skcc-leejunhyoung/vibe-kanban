@@ -22,6 +22,18 @@ fn default_git_branch_name_template() -> String {
     "{issueNumber}-{issueTitle}".to_string()
 }
 
+/// Default prefix for auto-generated feature (target) branch names.
+fn default_git_target_branch_prefix() -> String {
+    "feature".to_string()
+}
+
+/// Default template used to derive a feature (target) branch name from a linked
+/// issue. Rendered client-side; supports the same `{issueNumber}`/`{issueTitle}`
+/// placeholders as the working branch template.
+fn default_git_target_branch_name_template() -> String {
+    "{issueNumber}-{issueTitle}".to_string()
+}
+
 fn default_pr_auto_description_enabled() -> bool {
     true
 }
@@ -85,6 +97,14 @@ pub struct Config {
     /// (rendered client-side). Empty string disables issue-based naming.
     #[serde(default = "default_git_branch_name_template")]
     pub git_branch_name_template: String,
+    /// Prefix for auto-generated feature (target) branch names. Used only when
+    /// the create-workspace flow's target-branch mode is "auto".
+    #[serde(default = "default_git_target_branch_prefix")]
+    pub git_target_branch_prefix: String,
+    /// Template for deriving a feature (target) branch name from a linked issue
+    /// (rendered client-side). Empty string disables issue-based naming.
+    #[serde(default = "default_git_target_branch_name_template")]
+    pub git_target_branch_name_template: String,
     #[serde(default)]
     pub showcases: ShowcaseState,
     #[serde(default = "default_pr_auto_description_enabled")]
@@ -140,6 +160,8 @@ impl Config {
             language: old_config.language,
             git_branch_prefix: old_config.git_branch_prefix,
             git_branch_name_template: default_git_branch_name_template(),
+            git_target_branch_prefix: default_git_target_branch_prefix(),
+            git_target_branch_name_template: default_git_target_branch_name_template(),
             showcases: old_config.showcases,
             pr_auto_description_enabled: old_config.pr_auto_description_enabled,
             pr_auto_description_prompt: old_config.pr_auto_description_prompt,
@@ -204,6 +226,8 @@ impl Default for Config {
             language: UiLanguage::default(),
             git_branch_prefix: default_git_branch_prefix(),
             git_branch_name_template: default_git_branch_name_template(),
+            git_target_branch_prefix: default_git_target_branch_prefix(),
+            git_target_branch_name_template: default_git_target_branch_name_template(),
             showcases: ShowcaseState::default(),
             pr_auto_description_enabled: true,
             pr_auto_description_prompt: None,

@@ -235,6 +235,10 @@ pub struct DraftWorkspaceData {
 pub struct DraftWorkspaceRepo {
     pub repo_id: Uuid,
     pub target_branch: String,
+    /// Whether `target_branch` is a feature branch to create off the repo's
+    /// default branch ("new"/"auto" modes). Absent for older drafts.
+    #[serde(default)]
+    pub create_target_branch: bool,
 }
 
 /// Data for project repo defaults scratch (default repos/branches per project)
