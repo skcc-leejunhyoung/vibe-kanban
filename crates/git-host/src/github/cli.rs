@@ -252,6 +252,10 @@ impl GhCli {
         args.push(OsString::from("--body-file"));
         args.push(body_file.path().as_os_str().to_os_string());
 
+        // Auto-assign the PR to the authenticated gh user (the creator).
+        args.push(OsString::from("--assignee"));
+        args.push(OsString::from("@me"));
+
         if request.draft.unwrap_or(false) {
             args.push(OsString::from("--draft"));
         }
