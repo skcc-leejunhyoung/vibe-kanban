@@ -131,4 +131,62 @@ describe('usePrBackgroundStore', () => {
       usePrBackgroundStore.getState().byWorkspace['ws-create-cancel']?.create
     ).toBeUndefined();
   });
+
+  it('does not start a second PR creation while one is running', () => {
+    createPR.mockReturnValue(new Promise(() => {}));
+
+    const store = usePrBackgroundStore.getState();
+    store.startCreate('ws-create-dup', createReq);
+    store.startCreate('ws-create-dup', createReq);
+
+    expect(createPR).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a network throw as an error state', async () => {
+    createPR.mockRejectedValue(new Error('boom'));
+
+    usePrBackgroundStore.getState().startCreate('ws-create-err', createReq);
+    await flush();
+
+    const create =
+      usePrBackgroundStore.getState().byWorkspace['ws-create-err']?.create;
+    expect(create?.status).toBe('error');
+    expect(create?.error).toBe('boom');
+  });
+
+  it('ignores the late resolution of a canceled-and-superseded creation', async () => {
+    const resolvers: Array<(v: { success: true; data: string }) => void> = [];
+    createPR.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+
+    const store = usePrBackgroundStore.getState();
+    store.startCreate('ws-stale', createReq); // controller #1
+    store.cancelCreate('ws-stale'); // aborts #1, clears state
+    store.startCreate('ws-stale', createReq); // controller #2, now running
+
+    // The stale (first) request resolves late — it must not overwrite #2.
+    resolvers[0]?.({ success: true, data: 'https://stale' });
+    await flush();
+
+    const create =
+      usePrBackgroundStore.getState().byWorkspace['ws-stale']?.create;
+    expect(create?.status).toBe('running');
+    expect(createPR).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops the workspace entry once both operations are cleared', async () => {
+    generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
+
+    const store = usePrBackgroundStore.getState();
+    store.startGenerate('ws-gc', genReq);
+    await flush();
+    expect(usePrBackgroundStore.getState().byWorkspace['ws-gc']).toBeDefined();
+
+    store.clearGenerate('ws-gc');
+    expect('ws-gc' in usePrBackgroundStore.getState().byWorkspace).toBe(false);
+  });
 });

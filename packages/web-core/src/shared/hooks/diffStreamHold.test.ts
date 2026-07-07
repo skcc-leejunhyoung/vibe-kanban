@@ -99,6 +99,25 @@ describe('selectHeldDiffs', () => {
     expect(switched.diffs).not.toBe(derived);
   });
 
+  it('ignores stale non-empty derived from the previous workspace on switch', () => {
+    const oldDiffs = [makeDiff('old')];
+    const init = selectHeldDiffs(initialDiffHoldState(WS), {
+      workspaceId: WS,
+      isInitialized: true,
+      derived: oldDiffs,
+    });
+    // First render after switching: the WS hook's `data` reset is deferred, so
+    // `derived` still carries the OLD workspace's diffs while isInitialized is
+    // false. These must NOT leak into the new workspace's view.
+    const switched = selectHeldDiffs(init.state, {
+      workspaceId: 'ws-2',
+      isInitialized: false,
+      derived: oldDiffs,
+    });
+    expect(switched.diffs).toEqual([]);
+    expect(switched.state.lastKnown).toEqual([]);
+  });
+
   it('carries workspaceId forward in state', () => {
     const state: DiffHoldState = initialDiffHoldState(WS);
     const { state: next } = selectHeldDiffs(state, {
