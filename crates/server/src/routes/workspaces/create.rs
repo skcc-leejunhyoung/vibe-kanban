@@ -388,12 +388,22 @@ async fn ensure_feature_target_branch(
             .map_err(|e| ApiError::BadRequest(e.to_string()))?,
     };
 
-    git.create_branch(&repo.path, target, &base).map_err(|e| {
-        ApiError::BadRequest(format!(
+    if let Err(e) = git.create_branch(&repo.path, target, &base) {
+        // A concurrent workspace-create targeting the same shared feature branch
+        // can win the race between the existence check above and this create.
+        // If the branch now exists, treat it as success (shared feature branch);
+        // otherwise surface the real failure.
+        if git
+            .check_local_branch_exists(&repo.path, target)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        return Err(ApiError::BadRequest(format!(
             "Failed to create feature branch '{target}' from '{base}' in repository '{}': {e}",
             repo.name
-        ))
-    })?;
+        )));
+    }
 
     Ok(())
 }
