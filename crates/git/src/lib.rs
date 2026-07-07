@@ -1878,6 +1878,66 @@ impl GitService {
         self.fetch_all_from_remote(&repo, &remote)
     }
 
+    /// Fast-forward a local branch to its counterpart on `remote`
+    /// (`git pull --ff-only` semantics), without requiring the branch to be
+    /// checked out in a worktree. Callers should [`fetch_remote`] first so the
+    /// remote-tracking ref is current. Returns [`PullOutcome::Diverged`] when the
+    /// local branch has commits the remote lacks (no fast-forward possible), and
+    /// [`PullOutcome::UpToDate`] when there is nothing to pull.
+    pub fn fast_forward_local_branch_to_remote(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        remote: &str,
+    ) -> Result<PullOutcome, GitServiceError> {
+        let (exists, ahead, behind) = self.get_remote_tracking_status(repo_path, branch, remote)?;
+        if !exists || behind == 0 {
+            return Ok(PullOutcome::UpToDate);
+        }
+        if ahead > 0 {
+            return Ok(PullOutcome::Diverged { ahead, behind });
+        }
+
+        let new_head = match self.find_checkout_path_for_branch(repo_path, branch)? {
+            // Branch is checked out somewhere: advance it via git so the index and
+            // working tree of that checkout stay consistent.
+            Some(path) => {
+                self.ensure_cli_commit_identity(&path)?;
+                GitCli::new()
+                    .merge_ff_only(&path, branch, &format!("{remote}/{branch}"))
+                    .map_err(|e| {
+                        GitServiceError::InvalidRepository(format!(
+                            "fast-forward of '{branch}' failed: {e}"
+                        ))
+                    })?
+            }
+            // Not checked out anywhere: just move the branch ref to the remote tip.
+            None => {
+                let repo = self.open_repo(repo_path)?;
+                let remote_oid = repo
+                    .find_reference(&format!("refs/remotes/{remote}/{branch}"))?
+                    .target()
+                    .ok_or_else(|| {
+                        GitServiceError::BranchNotFound(format!(
+                            "Remote branch '{remote}/{branch}' has no commit"
+                        ))
+                    })?;
+                repo.reference(
+                    &format!("refs/heads/{branch}"),
+                    remote_oid,
+                    true,
+                    "pull --ff-only",
+                )?;
+                remote_oid.to_string()
+            }
+        };
+
+        Ok(PullOutcome::FastForwarded {
+            commits: behind,
+            new_head,
+        })
+    }
+
     /// Ahead/behind of `branch_name` relative to its counterpart on
     /// `remote_name`, computed from the local remote-tracking ref
     /// (`refs/remotes/<remote>/<branch>`). Returns

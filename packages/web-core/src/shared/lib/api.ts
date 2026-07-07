@@ -77,6 +77,7 @@ import {
   PushWorkspaceRequest,
   FetchTargetBranchRequest,
   PushTargetBranchRequest,
+  PullTargetBranchRequest,
   TargetBranchRemoteStatus,
   PullWorkspaceRequest,
   PullWorkspaceResponse,
@@ -865,6 +866,22 @@ export const workspacesApi = {
     return handleApiResponseAsResult<TargetBranchRemoteStatus, PushError>(
       response
     );
+  },
+
+  /** Fetch, then fast-forward the target (base) branch from origin (ff-only). */
+  pullTargetBranch: async (
+    workspaceId: string,
+    repoId: string
+  ): Promise<TargetBranchRemoteStatus> => {
+    const payload: PullTargetBranchRequest = { repo_id: repoId };
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/pull`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+    return handleApiResponse<TargetBranchRemoteStatus>(response);
   },
 
   renameBranch: async (

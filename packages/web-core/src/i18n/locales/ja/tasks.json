@@ -67,6 +67,7 @@
     "prSyncTooltip": "headブランチがbaseブランチに対してどれだけ先行/遅延しているか",
     "fetch": "取得",
     "push": "プッシュ",
+    "pull": "プル",
     "openInBrowser": "ブラウザで開く",
     "copyUrl": "PR URLをコピー"
   },

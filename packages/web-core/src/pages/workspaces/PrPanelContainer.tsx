@@ -37,12 +37,14 @@ export function PrPanelContainer({
 
   const [fetchStates, setFetchStates] = useState<Record<string, OpState>>({});
   const [pushStates, setPushStates] = useState<Record<string, OpState>>({});
+  const [pullStates, setPullStates] = useState<Record<string, OpState>>({});
 
   // Reset transient op state when switching workspaces so a spinner doesn't leak
   // across repos that share the same id.
   useEffect(() => {
     setFetchStates({});
     setPushStates({});
+    setPullStates({});
   }, [workspaceId]);
 
   const prs: PrInfo[] = useMemo(() => {
@@ -67,6 +69,9 @@ export function PrPanelContainer({
       // head directly. When the head is the work branch (two-branch flow) we
       // read the work branch's own remote status and leave push to the ⋮ menu.
       const headIsTarget = headBranch === repo.target_branch;
+      const headRemoteBehind = headIsTarget
+        ? (status.target_remote_commits_behind ?? 0)
+        : (status.remote_commits_behind ?? 0);
 
       list.push({
         repoId: repo.id,
@@ -79,20 +84,27 @@ export function PrPanelContainer({
         headRemoteAhead: headIsTarget
           ? (status.target_remote_commits_ahead ?? 0)
           : (status.remote_commits_ahead ?? 0),
-        headRemoteBehind: headIsTarget
-          ? (status.target_remote_commits_behind ?? 0)
-          : (status.remote_commits_behind ?? 0),
+        headRemoteBehind,
         prAhead: pr.head_commits_ahead ?? undefined,
         prBehind: pr.head_commits_behind ?? undefined,
-        // Push only applies to an open PR whose head is the workspace target
+        // Push/pull only apply to an open PR whose head is the workspace target
         // branch (three-branch case); merged/closed PRs are read-only.
         canPush: isOpen && headIsTarget && !status.is_target_remote,
+        canPull: isOpen && headIsTarget && headRemoteBehind > 0,
         isFetching: fetchStates[repo.id] === 'pending',
         isPushing: pushStates[repo.id] === 'pending',
+        isPulling: pullStates[repo.id] === 'pending',
       });
     }
     return list;
-  }, [branchStatus, repos, selectedWorkspace, fetchStates, pushStates]);
+  }, [
+    branchStatus,
+    repos,
+    selectedWorkspace,
+    fetchStates,
+    pushStates,
+    pullStates,
+  ]);
 
   const showError = useCallback((message: string) => {
     ConfirmDialog.show({
@@ -168,5 +180,31 @@ export function PrPanelContainer({
     [workspaceId, pushStates, queryClient, showError, t]
   );
 
-  return <PrPanel prs={prs} onFetch={handleFetch} onPush={handlePush} />;
+  // Fetch, then fast-forward the head (target) branch from origin (ff-only).
+  const handlePull = useCallback(
+    async (repoId: string) => {
+      if (!workspaceId || pullStates[repoId] === 'pending') return;
+      setPullStates((prev) => ({ ...prev, [repoId]: 'pending' }));
+      try {
+        await workspacesApi.pullTargetBranch(workspaceId, repoId);
+        queryClient.invalidateQueries({
+          queryKey: ['branchStatus', workspaceId],
+        });
+      } catch (err) {
+        showError(err instanceof Error ? err.message : 'Failed to pull');
+      } finally {
+        setPullStates((prev) => ({ ...prev, [repoId]: 'idle' }));
+      }
+    },
+    [workspaceId, pullStates, queryClient, showError]
+  );
+
+  return (
+    <PrPanel
+      prs={prs}
+      onFetch={handleFetch}
+      onPush={handlePush}
+      onPull={handlePull}
+    />
+  );
 }

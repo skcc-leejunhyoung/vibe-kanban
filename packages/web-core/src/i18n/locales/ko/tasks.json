@@ -67,6 +67,7 @@
     "prSyncTooltip": "head 브랜치가 base 브랜치 대비 얼마나 앞서거나 뒤처졌는지",
     "fetch": "가져오기",
     "push": "푸시",
+    "pull": "풀",
     "openInBrowser": "브라우저에서 열기",
     "copyUrl": "PR URL 복사"
   },

@@ -39,10 +39,14 @@ export interface PrCardProps {
   prBehind?: number;
   /** Whether the head branch can be pushed (a local branch, not remote-only). */
   canPush?: boolean;
+  /** Whether the head branch is behind origin and can be fast-forward pulled. */
+  canPull?: boolean;
   isFetching?: boolean;
   isPushing?: boolean;
+  isPulling?: boolean;
   onFetch?: () => void;
   onPush?: () => void;
+  onPull?: () => void;
 }
 
 const iconButtonClass =
@@ -105,10 +109,13 @@ export function PrCard({
   prAhead,
   prBehind,
   canPush = false,
+  canPull = false,
   isFetching = false,
   isPushing = false,
+  isPulling = false,
   onFetch,
   onPush,
+  onPull,
 }: PrCardProps) {
   const { t } = useTranslation('tasks');
   // Fetch/push only make sense for an open PR; merged/closed cards are read-only.
@@ -211,6 +218,22 @@ export function PrCard({
           </span>
         </div>
         <AheadBehind ahead={headRemoteAhead} behind={headRemoteBehind} />
+        {canPull && (
+          <Tooltip content={t('prPanel.pull')} side="top">
+            <button
+              type="button"
+              onClick={onPull}
+              disabled={isPulling}
+              className={iconButtonClass}
+            >
+              {isPulling ? (
+                <SpinnerGapIcon className="size-icon-base animate-spin" />
+              ) : (
+                <ArrowDownIcon className="size-icon-base" weight="bold" />
+              )}
+            </button>
+          </Tooltip>
+        )}
         {canPush && (
           <Tooltip content={t('prPanel.push')} side="top">
             <button

@@ -356,6 +356,7 @@
     "prSyncTooltip": "How far the head branch is ahead/behind the base branch",
     "fetch": "Fetch",
     "push": "Push",
+    "pull": "Pull",
     "openInBrowser": "Open in browser",
     "copyUrl": "Copy PR URL"
   },

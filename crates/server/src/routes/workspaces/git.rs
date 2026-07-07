@@ -143,6 +143,11 @@ pub struct PushTargetBranchRequest {
     pub force: bool,
 }
 
+#[derive(Debug, Default, Deserialize, TS)]
+pub struct PullTargetBranchRequest {
+    pub repo_id: Uuid,
+}
+
 /// Status of a workspace repo's target (base) branch relative to the repo's
 /// primary remote (origin). Drives the target-branch fetch/push buttons.
 #[derive(Debug, Serialize, TS)]
@@ -279,6 +284,7 @@ pub fn router() -> Router<DeploymentImpl> {
         )
         .route("/target-branch/fetch", post(fetch_target_branch))
         .route("/target-branch/push", post(push_target_branch))
+        .route("/target-branch/pull", post(pull_target_branch))
         .route("/branch", axum::routing::put(rename_branch))
 }
 
@@ -1297,6 +1303,67 @@ pub async fn push_target_branch(
             Err(ApiError::GitService(e))
         }
     }
+}
+
+/// Fetch, then fast-forward the workspace's target (base) branch to its
+/// counterpart on the repo's primary remote (`git pull --ff-only`), returning
+/// the updated ahead/behind status. Errors (as data) when the branch has
+/// diverged from origin so the UI can surface it without a 500.
+#[axum::debug_handler]
+pub async fn pull_target_branch(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<PullTargetBranchRequest>,
+) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus>>, ApiError> {
+    let (repo, workspace_repo) =
+        load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
+    let git = deployment.git();
+
+    if git.is_remote_branch(&repo.path, &workspace_repo.target_branch)? {
+        return Ok(ResponseJson(ApiResponse::error(
+            "The target branch is a remote branch; there is nothing to pull.",
+        )));
+    }
+
+    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+        return Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+    };
+
+    if let Err(e) = git.fetch_remote(&repo.path, &remote) {
+        tracing::error!(
+            "Fetch before pull of target branch '{}' from '{remote}' for repo {} failed: {e}",
+            workspace_repo.target_branch,
+            repo.id
+        );
+        return Ok(ResponseJson(ApiResponse::error(&e.to_string())));
+    }
+
+    match git.fast_forward_local_branch_to_remote(
+        &repo.path,
+        &workspace_repo.target_branch,
+        &remote,
+    ) {
+        Ok(PullOutcome::Diverged { .. }) => {
+            return Ok(ResponseJson(ApiResponse::error(
+                "The target branch has diverged from origin; a fast-forward pull isn't possible.",
+            )));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(
+                "Pull of target branch '{}' from '{remote}' for repo {} failed: {e}",
+                workspace_repo.target_branch,
+                repo.id
+            );
+            return Err(ApiError::GitService(e));
+        }
+    }
+
+    let status =
+        compute_target_branch_remote_status(&deployment, &repo, &workspace_repo.target_branch)?;
+    Ok(ResponseJson(ApiResponse::success(status)))
 }
 
 #[axum::debug_handler]

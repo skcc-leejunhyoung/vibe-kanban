@@ -161,6 +161,7 @@ fn generate_types_content() -> String {
         server::routes::workspaces::git::PushError::decl(),
         server::routes::workspaces::git::FetchTargetBranchRequest::decl(),
         server::routes::workspaces::git::PushTargetBranchRequest::decl(),
+        server::routes::workspaces::git::PullTargetBranchRequest::decl(),
         server::routes::workspaces::git::TargetBranchRemoteStatus::decl(),
         server::routes::workspaces::pr::PrError::decl(),
         server::routes::workspaces::execution::RunScriptError::decl(),

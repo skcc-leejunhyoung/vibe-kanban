@@ -245,6 +245,7 @@
     "prSyncTooltip": "head 分支相對 base 分支的領先/落後程度",
     "fetch": "拉取",
     "push": "推送",
+    "pull": "拉取合併",
     "openInBrowser": "在瀏覽器中開啟",
     "copyUrl": "複製 PR URL"
   },

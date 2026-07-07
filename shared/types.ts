@@ -549,6 +549,8 @@ export type FetchTargetBranchRequest = { repo_id: string, };
 
 export type PushTargetBranchRequest = { repo_id: string, force: boolean, };
 
+export type PullTargetBranchRequest = { repo_id: string, };
+
 export type TargetBranchRemoteStatus = {
 /**
  * The workspace repo's target (base) branch.
