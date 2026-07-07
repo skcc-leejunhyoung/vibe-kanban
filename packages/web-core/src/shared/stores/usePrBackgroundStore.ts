@@ -68,6 +68,32 @@ function slot(workspaceId: string) {
   return entry;
 }
 
+// Drop the controllers map entry once neither operation is in flight, so a long
+// session touching many workspaces doesn't accumulate empty entries.
+function pruneControllers(workspaceId: string) {
+  const entry = controllers.get(workspaceId);
+  if (entry && !entry.generate && !entry.create) {
+    controllers.delete(workspaceId);
+  }
+}
+
+// Write a workspace entry, or remove the key entirely when both slots are empty,
+// keeping `byWorkspace` from growing unbounded across workspaces.
+function writeWorkspace(
+  byWorkspace: Record<string, PrBackgroundEntry | undefined>,
+  workspaceId: string,
+  entry: PrBackgroundEntry
+): Record<string, PrBackgroundEntry | undefined> {
+  const next = { ...byWorkspace };
+  if (!entry.generate && !entry.create) {
+    delete next[workspaceId];
+    pruneControllers(workspaceId);
+  } else {
+    next[workspaceId] = entry;
+  }
+  return next;
+}
+
 function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
 }
@@ -117,6 +143,7 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         .finally(() => {
           if (slot(workspaceId).generate === controller) {
             slot(workspaceId).generate = undefined;
+            pruneControllers(workspaceId);
           }
         });
     },
@@ -157,6 +184,7 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         .finally(() => {
           if (slot(workspaceId).create === controller) {
             slot(workspaceId).create = undefined;
+            pruneControllers(workspaceId);
           }
         });
     },
@@ -178,10 +206,10 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         const entry = state.byWorkspace[workspaceId];
         if (!entry?.generate) return state;
         return {
-          byWorkspace: {
-            ...state.byWorkspace,
-            [workspaceId]: { ...entry, generate: undefined },
-          },
+          byWorkspace: writeWorkspace(state.byWorkspace, workspaceId, {
+            ...entry,
+            generate: undefined,
+          }),
         };
       }),
 
@@ -190,10 +218,10 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         const entry = state.byWorkspace[workspaceId];
         if (!entry?.create) return state;
         return {
-          byWorkspace: {
-            ...state.byWorkspace,
-            [workspaceId]: { ...entry, create: undefined },
-          },
+          byWorkspace: writeWorkspace(state.byWorkspace, workspaceId, {
+            ...entry,
+            create: undefined,
+          }),
         };
       }),
   };

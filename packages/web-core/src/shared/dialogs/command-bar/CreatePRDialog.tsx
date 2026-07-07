@@ -126,8 +126,13 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // background store so they keep running when the dialog is dismissed with
     // X / ESC, and reattach when it is reopened. Only Cancel aborts them.
     const bg = usePrBackground(attempt.id);
-    const { startGenerate, startCreate, cancelGenerate, cancelCreate } =
-      usePrBackgroundStore();
+    // Select each action individually. The action identities are stable, so this
+    // avoids re-rendering the dialog whenever *any* workspace's PR state changes
+    // (which a whole-store subscription would trigger).
+    const startGenerate = usePrBackgroundStore((s) => s.startGenerate);
+    const startCreate = usePrBackgroundStore((s) => s.startCreate);
+    const cancelGenerate = usePrBackgroundStore((s) => s.cancelGenerate);
+    const cancelCreate = usePrBackgroundStore((s) => s.cancelCreate);
     const generating = bg?.generate?.status === 'running';
     const creatingPR = bg?.create?.status === 'running';
 
