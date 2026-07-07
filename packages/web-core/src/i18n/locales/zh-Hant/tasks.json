@@ -133,8 +133,7 @@
       "forcePush": "強制推送",
       "forcePushing": "強制推送中...",
       "creating": "建立中...",
-      "createPr": "建立 PR",
-      "pushTarget": "推送目標 ↑{{ahead}}"
+      "createPr": "建立 PR"
     },
     "errors": {
       "changeTargetBranch": "變更目標分支失敗",
@@ -190,6 +189,8 @@
       }
     },
     "targetPush": {
+      "title": "推送目標分支",
+      "confirm": "將「{{branch}}」推送到 origin？（領先 {{ahead}} 個提交）",
       "forceConfirm": "遠端目標分支已與本地分支產生分叉。要強制推送以覆蓋它嗎？這可能會捨棄僅存在於遠端的提交。"
     }
   },

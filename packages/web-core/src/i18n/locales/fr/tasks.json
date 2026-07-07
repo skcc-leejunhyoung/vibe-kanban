@@ -224,8 +224,7 @@
       "forcePush": "Push forcé",
       "forcePushing": "Push forcé en cours...",
       "creating": "Création en cours...",
-      "createPr": "Créer une PR",
-      "pushTarget": "Pousser la cible ↑{{ahead}}"
+      "createPr": "Créer une PR"
     },
     "errors": {
       "changeTargetBranch": "Échec du changement de branche cible",
@@ -281,6 +280,8 @@
       }
     },
     "targetPush": {
+      "title": "Pousser la branche cible",
+      "confirm": "Pousser « {{branch}} » vers origin ? ({{ahead}} commit(s) d’avance)",
       "forceConfirm": "La branche cible distante a divergé de votre branche locale. Forcer la poussée pour l’écraser ? Cela peut supprimer des commits présents uniquement sur le distant."
     }
   },

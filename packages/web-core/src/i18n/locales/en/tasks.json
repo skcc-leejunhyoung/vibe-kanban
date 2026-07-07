@@ -243,8 +243,7 @@
       "forcePush": "Force Push",
       "forcePushing": "Force Pushing...",
       "creating": "Creating...",
-      "createPr": "Create PR",
-      "pushTarget": "Push target ↑{{ahead}}"
+      "createPr": "Create PR"
     },
     "errors": {
       "changeTargetBranch": "Failed to change target branch",
@@ -301,6 +300,8 @@
       }
     },
     "targetPush": {
+      "title": "Push target branch",
+      "confirm": "Push \"{{branch}}\" to origin? ({{ahead}} commit(s) ahead)",
       "forceConfirm": "The remote target branch has diverged from your local one. Force push to overwrite it? This can discard commits that only exist on the remote."
     }
   },

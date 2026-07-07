@@ -192,8 +192,7 @@
       "forcePush": "強制プッシュ",
       "forcePushing": "強制プッシュ中...",
       "rebase": "リベース",
-      "rebasing": "リベース中...",
-      "pushTarget": "ターゲットをプッシュ ↑{{ahead}}"
+      "rebasing": "リベース中..."
     },
     "status": {
       "ahead": "先行",
@@ -204,6 +203,8 @@
       "upToDate": "最新"
     },
     "targetPush": {
+      "title": "ターゲットブランチをプッシュ",
+      "confirm": "\"{{branch}}\" を origin にプッシュしますか？（origin より {{ahead}} コミット先行）",
       "forceConfirm": "リモートのターゲットブランチがローカルと分岐しています。強制プッシュで上書きしますか？リモートにのみ存在するコミットが失われる可能性があります。"
     }
   },

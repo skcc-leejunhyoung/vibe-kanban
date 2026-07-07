@@ -193,8 +193,7 @@
       "pushing": "Enviando...",
       "pushFailed": "Falló",
       "rebase": "Rebase",
-      "rebasing": "Rebaseando...",
-      "pushTarget": "Enviar destino ↑{{ahead}}"
+      "rebasing": "Rebaseando..."
     },
     "status": {
       "ahead": "adelante",
@@ -205,6 +204,8 @@
       "upToDate": "Al día"
     },
     "targetPush": {
+      "title": "Enviar rama de destino",
+      "confirm": "¿Enviar «{{branch}}» a origin? ({{ahead}} commit(s) por delante)",
       "forceConfirm": "La rama de destino remota ha divergido de la local. ¿Forzar el envío para sobrescribirla? Esto puede descartar commits que solo existen en el remoto."
     }
   },

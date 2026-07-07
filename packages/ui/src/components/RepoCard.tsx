@@ -223,7 +223,7 @@ export function RepoCard({
                 ? t('git.states.pushed')
                 : isTargetPushError
                   ? t('git.states.pushFailed')
-                  : t('git.states.pushTarget', { ahead: targetPushAhead })}
+                  : targetPushAhead}
           </button>
         )}
 

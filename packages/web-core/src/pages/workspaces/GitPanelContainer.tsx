@@ -209,6 +209,17 @@ export function GitPanelContainer({
       if (!workspaceId) return;
       if (targetPushStates[repoId] === 'pending') return;
 
+      // Confirm before pushing the base branch to origin.
+      const repoStatus = branchStatus?.find((s) => s.repo_id === repoId);
+      const branch = repoStatus?.target_branch_name ?? '';
+      const ahead = repoStatus?.target_remote_commits_ahead ?? 0;
+      const confirmed = await ConfirmDialog.show({
+        title: t('git.targetPush.title'),
+        message: t('git.targetPush.confirm', { branch, ahead }),
+        confirmText: t('git.states.push'),
+      });
+      if (confirmed !== 'confirmed') return;
+
       if (targetPushTimeoutRef.current) {
         clearTimeout(targetPushTimeoutRef.current);
         targetPushTimeoutRef.current = null;
@@ -267,7 +278,7 @@ export function GitPanelContainer({
         }, 3000);
       }
     },
-    [selectedWorkspace?.id, targetPushStates, queryClient, t]
+    [selectedWorkspace?.id, targetPushStates, branchStatus, queryClient, t]
   );
 
   // Compute repoInfos with push button state

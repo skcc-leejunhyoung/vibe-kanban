@@ -151,8 +151,7 @@
       "forcePush": "강제 푸시",
       "forcePushing": "강제 푸시 중...",
       "creating": "생성 중...",
-      "createPr": "PR 생성",
-      "pushTarget": "타겟 푸시 ↑{{ahead}}"
+      "createPr": "PR 생성"
     },
     "errors": {
       "changeTargetBranch": "대상 브랜치를 변경하지 못했습니다",
@@ -209,6 +208,8 @@
       }
     },
     "targetPush": {
+      "title": "타겟 브랜치 푸시",
+      "confirm": "\"{{branch}}\" 브랜치를 origin으로 푸시할까요? (origin보다 {{ahead}}개 앞섬)",
       "forceConfirm": "원격 타겟 브랜치가 로컬과 갈라졌습니다. 강제 푸시로 덮어쓸까요? 원격에만 있는 커밋이 사라질 수 있습니다."
     }
   },
