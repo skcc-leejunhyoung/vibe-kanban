@@ -4,7 +4,7 @@ import { FileTreeContainer } from './FileTreeContainer';
 import { ProcessListContainer } from './ProcessListContainer';
 import { PreviewControlsContainer } from './PreviewControlsContainer';
 import { GitPanelContainer } from './GitPanelContainer';
-import { PrPanelContainer, hasOpenPr } from './PrPanelContainer';
+import { PrPanelContainer, hasLinkedPr } from './PrPanelContainer';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { TerminalPanelContainer } from '@/shared/components/TerminalPanelContainer';
 import { WorkspaceNotesContainer } from './WorkspaceNotesContainer';
@@ -48,7 +48,7 @@ export const RightSidebar = memo(function RightSidebar({
   const { t } = useTranslation(['tasks', 'common']);
   const diffs = useDiffs();
   const { data: branchStatus } = useBranchStatus(selectedWorkspace?.id);
-  const hasPrs = hasOpenPr(branchStatus);
+  const hasPrs = hasLinkedPr(branchStatus);
   const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
   const { expandTerminal, isTerminalExpanded } = useLogsPanel();
 

@@ -15,16 +15,14 @@ export interface PrPanelContainerProps {
 type OpState = 'idle' | 'pending';
 
 /**
- * Whether a workspace has at least one open PR across its repos — used by the
- * sidebar to show the "Pull Requests" section only when relevant.
+ * Whether a workspace has at least one linked PR (open, merged, or closed)
+ * across its repos — used by the sidebar to show the "Pull Requests" section.
  */
-export function hasOpenPr(
+export function hasLinkedPr(
   branchStatus: { merges?: Merge[] | null }[] | undefined
 ): boolean {
   return (
-    branchStatus?.some((s) =>
-      s.merges?.some((m) => m.type === 'pr' && m.pr_info.status === 'open')
-    ) ?? false
+    branchStatus?.some((s) => s.merges?.some((m) => m.type === 'pr')) ?? false
   );
 }
 
@@ -53,13 +51,17 @@ export function PrPanelContainer({
     for (const repo of repos) {
       const status = branchStatus.find((s) => s.repo_id === repo.id);
       if (!status?.merges) continue;
-      const openPr = status.merges.find(
-        (m: Merge) => m.type === 'pr' && m.pr_info.status === 'open'
-      );
-      if (!openPr || openPr.type !== 'pr') continue;
+      // Prefer an open PR; otherwise fall back to the most recent linked PR
+      // (merged/closed) so the panel keeps showing the PR after it's merged.
+      const pr =
+        status.merges.find(
+          (m: Merge) => m.type === 'pr' && m.pr_info.status === 'open'
+        ) ?? status.merges.find((m: Merge) => m.type === 'pr');
+      if (!pr || pr.type !== 'pr') continue;
 
+      const isOpen = pr.pr_info.status === 'open';
       const headBranch =
-        openPr.head_branch_name ?? selectedWorkspace?.branch ?? '(work)';
+        pr.head_branch_name ?? selectedWorkspace?.branch ?? '(work)';
       // In the three-branch flow the head IS the workspace's target branch, so
       // the existing target-branch push/fetch and its origin status apply to the
       // head directly. When the head is the work branch (two-branch flow) we
@@ -69,22 +71,22 @@ export function PrPanelContainer({
       list.push({
         repoId: repo.id,
         repoName: repo.display_name || repo.name,
-        prNumber: Number(openPr.pr_info.number),
-        prUrl: openPr.pr_info.url ?? undefined,
+        prNumber: Number(pr.pr_info.number),
+        prUrl: pr.pr_info.url ?? undefined,
+        prStatus: pr.pr_info.status,
         headBranch,
-        baseBranch: openPr.target_branch_name,
+        baseBranch: pr.target_branch_name,
         headRemoteAhead: headIsTarget
           ? (status.target_remote_commits_ahead ?? 0)
           : (status.remote_commits_ahead ?? 0),
         headRemoteBehind: headIsTarget
           ? (status.target_remote_commits_behind ?? 0)
           : (status.remote_commits_behind ?? 0),
-        prAhead: openPr.head_commits_ahead ?? undefined,
-        prBehind: openPr.head_commits_behind ?? undefined,
-        // Surface push only when the head is the workspace target branch (the
-        // three-branch case); then target-branch push == head push. Otherwise
-        // push stays reachable via the ⋮ menu.
-        canPush: headIsTarget && !status.is_target_remote,
+        prAhead: pr.head_commits_ahead ?? undefined,
+        prBehind: pr.head_commits_behind ?? undefined,
+        // Push only applies to an open PR whose head is the workspace target
+        // branch (three-branch case); merged/closed PRs are read-only.
+        canPush: isOpen && headIsTarget && !status.is_target_remote,
         isFetching: fetchStates[repo.id] === 'pending',
         isPushing: pushStates[repo.id] === 'pending',
       });

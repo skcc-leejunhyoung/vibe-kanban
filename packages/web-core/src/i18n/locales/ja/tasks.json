@@ -58,6 +58,7 @@
   },
   "prPanel": {
     "empty": "オープンなプルリクエストはありません。",
+    "prLabel": "PR #{{number}}",
     "headLabel": "head",
     "baseLabel": "base",
     "originSync": "origin",

@@ -236,6 +236,7 @@
   },
   "prPanel": {
     "empty": "沒有開啟的拉取請求。",
+    "prLabel": "PR #{{number}}",
     "headLabel": "head",
     "baseLabel": "base",
     "originSync": "origin",

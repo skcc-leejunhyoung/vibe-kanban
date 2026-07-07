@@ -24,6 +24,7 @@ export interface PrCardProps {
   repoName: string;
   prNumber: number;
   prUrl?: string;
+  prStatus: 'open' | 'merged' | 'closed' | 'unknown';
   /** PR head (source) branch, e.g. the feature branch. */
   headBranch: string;
   /** PR base (target) branch, e.g. develop. */
@@ -96,6 +97,7 @@ export function PrCard({
   repoName,
   prNumber,
   prUrl,
+  prStatus,
   headBranch,
   baseBranch,
   headRemoteAhead,
@@ -109,26 +111,30 @@ export function PrCard({
   onPush,
 }: PrCardProps) {
   const { t } = useTranslation('tasks');
+  // Fetch/push only make sense for an open PR; merged/closed cards are read-only.
+  const isOpen = prStatus === 'open';
 
   return (
     <div className="bg-primary rounded-sm my-base p-base space-y-base">
       {/* Header: repo name + fetch (once, refreshes head & base) + PR menu */}
       <div className="flex items-center gap-half">
         <div className="min-w-0 flex-1 font-medium truncate">{repoName}</div>
-        <Tooltip content={t('prPanel.fetch')} side="top">
-          <button
-            type="button"
-            onClick={onFetch}
-            disabled={isFetching}
-            className={iconButtonClass}
-          >
-            {isFetching ? (
-              <SpinnerGapIcon className="size-icon-base animate-spin" />
-            ) : (
-              <ArrowsClockwiseIcon className="size-icon-base" weight="bold" />
-            )}
-          </button>
-        </Tooltip>
+        {isOpen && (
+          <Tooltip content={t('prPanel.fetch')} side="top">
+            <button
+              type="button"
+              onClick={onFetch}
+              disabled={isFetching}
+              className={iconButtonClass}
+            >
+              {isFetching ? (
+                <SpinnerGapIcon className="size-icon-base animate-spin" />
+              ) : (
+                <ArrowsClockwiseIcon className="size-icon-base" weight="bold" />
+              )}
+            </button>
+          </Tooltip>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button type="button" className={iconButtonClass}>
@@ -154,7 +160,7 @@ export function PrCard({
         </DropdownMenu>
       </div>
 
-      {/* PR identity + open link */}
+      {/* PR identity + open link + status badge */}
       <div className="flex items-center gap-half">
         {prUrl ? (
           <button
@@ -163,13 +169,23 @@ export function PrCard({
             className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-normal hover:bg-tertiary text-sm font-medium transition-colors"
           >
             <GitPullRequestIcon className="size-icon-xs" weight="fill" />
-            {t('git.pr.open', { number: prNumber })}
+            {t('prPanel.prLabel', { number: prNumber })}
             <ArrowSquareOutIcon className="size-icon-xs" weight="bold" />
           </button>
         ) : (
           <span className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-normal text-sm font-medium">
             <GitPullRequestIcon className="size-icon-xs" weight="fill" />
-            {t('git.pr.open', { number: prNumber })}
+            {t('prPanel.prLabel', { number: prNumber })}
+          </span>
+        )}
+        {prStatus === 'merged' && (
+          <span className="text-xs font-medium text-success">
+            {t('git.states.merged')}
+          </span>
+        )}
+        {prStatus === 'closed' && (
+          <span className="text-xs font-medium text-low">
+            {t('git.states.closed')}
           </span>
         )}
       </div>
