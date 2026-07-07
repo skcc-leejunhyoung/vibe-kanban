@@ -11,9 +11,24 @@
  * as `rel="noopener"` — note this is done on the returned handle rather than
  * via the feature string, since passing `noopener` there re-triggers the
  * default-browser hand-off in some PWA builds.
+ *
+ * Only http(s) URLs are opened. Unlike a plain `<a href>` (which the browser
+ * renders inertly for unusual schemes), `window.open('javascript:…')` executes
+ * in this origin and `data:`/`blob:` open attacker-controlled content in the
+ * PWA context, so the scheme is validated first.
  */
 export function openExternalUrl(url: string): void {
-  const opened = window.open(url, '_blank');
+  let parsed: URL;
+  try {
+    parsed = new URL(url, window.location.href);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return;
+  }
+
+  const opened = window.open(parsed.href, '_blank');
   if (opened) {
     opened.opener = null;
   }
