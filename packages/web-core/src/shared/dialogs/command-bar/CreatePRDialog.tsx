@@ -14,6 +14,7 @@ import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { Alert, AlertDescription, AlertTitle } from '@vibe/ui/components/Alert';
 import BranchSelector from '@/shared/components/tasks/BranchSelector';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import type { Err } from '@/shared/lib/api';
 import type { PrError } from 'shared/types';
@@ -105,6 +106,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     issueIdentifier,
   }) => {
     const modal = useModal();
+    const queryClient = useQueryClient();
     const { t } = useTranslation('tasks');
     const { isLoaded } = useAuth();
     const { environment, config } = useUserSystem();
@@ -421,6 +423,12 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
 
       if (result.success) {
         if (cr.baseBranch) rememberBase(repoId, cr.baseBranch);
+        // The PR button / link is driven by the branch-status query. Refresh it
+        // now so a PR created in the background is reflected immediately instead
+        // of after the next 5s poll.
+        queryClient.invalidateQueries({
+          queryKey: ['branchStatus', attempt.id],
+        });
         clearCreate(attempt.id);
         modal.resolve({ success: true } as CreatePRDialogResult);
         modal.hide();
@@ -437,6 +445,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       attempt.id,
       repoId,
       processCreateFailure,
+      queryClient,
       t,
     ]);
 
