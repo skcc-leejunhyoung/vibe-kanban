@@ -99,12 +99,12 @@ export const RightSidebar = memo(function RightSidebar({
   const sections: SectionDef[] = useMemo(() => {
     const result: SectionDef[] = [
       {
-        title: 'Git',
-        persistKey: PERSIST_KEYS.gitPanelRepositories,
-        visible: true,
-        expanded: gitExpanded,
+        title: 'Pull Requests',
+        persistKey: PERSIST_KEYS.pullRequestsSection,
+        visible: hasPrs,
+        expanded: prExpanded,
         content: (
-          <GitPanelContainer
+          <PrPanelContainer
             selectedWorkspace={selectedWorkspace}
             repos={repos}
           />
@@ -112,12 +112,12 @@ export const RightSidebar = memo(function RightSidebar({
         actions: [],
       },
       {
-        title: 'Pull Requests',
-        persistKey: PERSIST_KEYS.pullRequestsSection,
-        visible: hasPrs,
-        expanded: prExpanded,
+        title: 'Git',
+        persistKey: PERSIST_KEYS.gitPanelRepositories,
+        visible: true,
+        expanded: gitExpanded,
         content: (
-          <PrPanelContainer
+          <GitPanelContainer
             selectedWorkspace={selectedWorkspace}
             repos={repos}
           />
