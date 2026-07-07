@@ -333,7 +333,9 @@
     "prSync": "PR",
     "prSyncTooltip": "De combien la branche head est en avance/retard sur la branche base",
     "fetch": "Récupérer",
-    "push": "Pousser"
+    "push": "Pousser",
+    "openInBrowser": "Ouvrir dans le navigateur",
+    "copyUrl": "Copier l'URL de la PR"
   },
   "createPrDialog": {
     "title": "Créer une Pull Request",

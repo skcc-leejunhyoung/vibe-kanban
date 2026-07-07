@@ -353,7 +353,9 @@
     "prSync": "PR",
     "prSyncTooltip": "How far the head branch is ahead/behind the base branch",
     "fetch": "Fetch",
-    "push": "Push"
+    "push": "Push",
+    "openInBrowser": "Open in browser",
+    "copyUrl": "Copy PR URL"
   },
   "createPrDialog": {
     "title": "Create Pull Request",

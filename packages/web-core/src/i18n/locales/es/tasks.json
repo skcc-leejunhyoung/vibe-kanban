@@ -65,7 +65,9 @@
     "prSync": "PR",
     "prSyncTooltip": "Cuánto está la rama head adelante/atrás respecto a la rama base",
     "fetch": "Obtener",
-    "push": "Enviar"
+    "push": "Enviar",
+    "openInBrowser": "Abrir en el navegador",
+    "copyUrl": "Copiar URL de PR"
   },
   "createPrDialog": {
     "title": "Crear Pull Request",

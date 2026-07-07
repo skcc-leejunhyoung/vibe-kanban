@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import { workspacesApi } from '@/shared/lib/api';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
-import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { PrPanel, type PrInfo } from '@vibe/ui/components/PrPanel';
 import type { Workspace, RepoWithTargetBranch, Merge } from 'shared/types';
 
@@ -72,7 +71,6 @@ export function PrPanelContainer({
         repoName: repo.display_name || repo.name,
         prNumber: Number(openPr.pr_info.number),
         prUrl: openPr.pr_info.url ?? undefined,
-        prStatus: openPr.pr_info.status,
         headBranch,
         baseBranch: openPr.target_branch_name,
         headRemoteAhead: headIsTarget
@@ -168,21 +166,5 @@ export function PrPanelContainer({
     [workspaceId, pushStates, queryClient, showError, t]
   );
 
-  // The kebab (⋮) opens the same repo-actions command bar as the git panel, so
-  // shared actions (merge, change target, pull, etc.) stay reachable from here.
-  const handleMore = useCallback(
-    (repoId: string) => {
-      CommandBarDialog.show({ page: 'repoActions', workspaceId, repoId });
-    },
-    [workspaceId]
-  );
-
-  return (
-    <PrPanel
-      prs={prs}
-      onFetch={handleFetch}
-      onPush={handlePush}
-      onMore={handleMore}
-    />
-  );
+  return <PrPanel prs={prs} onFetch={handleFetch} onPush={handlePush} />;
 }

@@ -242,7 +242,9 @@
     "prSync": "PR",
     "prSyncTooltip": "head 分支相對 base 分支的領先/落後程度",
     "fetch": "拉取",
-    "push": "推送"
+    "push": "推送",
+    "openInBrowser": "在瀏覽器中開啟",
+    "copyUrl": "複製 PR URL"
   },
   "createPrDialog": {
     "title": "建立 PR",
