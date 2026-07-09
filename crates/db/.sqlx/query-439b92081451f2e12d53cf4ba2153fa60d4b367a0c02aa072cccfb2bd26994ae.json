@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM pull_requests\n             WHERE workspace_id = ? AND repo_id = ? AND target_branch_name != ?\n               AND (head_branch_name IS NULL OR head_branch_name = ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "439b92081451f2e12d53cf4ba2153fa60d4b367a0c02aa072cccfb2bd26994ae"
+}

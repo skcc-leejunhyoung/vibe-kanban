@@ -1395,14 +1395,15 @@ pub async fn change_target_branch(
 
     WorkspaceRepo::update_target_branch(pool, workspace.id, repo_id, &new_target_branch).await?;
 
-    // A PR opened against the previous base branch no longer matches this
-    // workspace's target, so unlink it. Leaving it attached would keep showing a
-    // stale PR that targets a branch the workspace no longer merges into.
+    // A work-branch PR opened against the previous base branch no longer matches
+    // this workspace's target, so unlink it. Feature-branch-head PRs (three-branch
+    // flow) are preserved — their base is independent of the workspace target.
     match PullRequest::delete_stale_for_target_change(
         pool,
         workspace.id,
         repo_id,
         &new_target_branch,
+        &workspace.branch,
     )
     .await
     {

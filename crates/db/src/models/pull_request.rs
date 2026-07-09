@@ -395,22 +395,33 @@ impl PullRequest {
         Ok(())
     }
 
-    /// Unlinks PRs from a workspace/repo whose target branch no longer matches
-    /// the workspace's target branch. Called when the target branch changes, so
-    /// a PR opened against the old base is no longer surfaced on the workspace.
+    /// Unlinks stale PRs from a workspace/repo when its target branch changes.
+    ///
+    /// Only removes PRs whose head is the workspace's own work branch — a NULL
+    /// `head_branch_name` (legacy rows, where head was always the work branch)
+    /// or one equal to `workspace_branch`. Those track the work -> target merge
+    /// and go stale once the target moves.
+    ///
+    /// Feature-branch-head PRs (three-branch flow, e.g. `feature -> develop`)
+    /// are kept: their base is independent of the workspace's target branch, so
+    /// changing the target does not invalidate them.
+    ///
     /// Returns the number of PR links removed.
     pub async fn delete_stale_for_target_change(
         pool: &SqlitePool,
         workspace_id: Uuid,
         repo_id: Uuid,
         new_target_branch: &str,
+        workspace_branch: &str,
     ) -> Result<u64, sqlx::Error> {
         let result = sqlx::query!(
             "DELETE FROM pull_requests
-             WHERE workspace_id = ? AND repo_id = ? AND target_branch_name != ?",
+             WHERE workspace_id = ? AND repo_id = ? AND target_branch_name != ?
+               AND (head_branch_name IS NULL OR head_branch_name = ?)",
             workspace_id,
             repo_id,
             new_target_branch,
+            workspace_branch,
         )
         .execute(pool)
         .await?;
