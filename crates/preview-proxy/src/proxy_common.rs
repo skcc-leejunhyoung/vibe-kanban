@@ -1,5 +1,36 @@
 use axum::http::HeaderMap;
 
+/// Scheme used to reach a preview dev server. Dev servers usually speak plain
+/// HTTP, but some sit behind nginx/Caddy terminating TLS on the same port; the
+/// proxy auto-detects and caches the scheme per port so those still work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UpstreamScheme {
+    Http,
+    Https,
+}
+
+impl UpstreamScheme {
+    /// URL scheme for HTTP requests (`http` / `https`).
+    pub(crate) fn as_http(self) -> &'static str {
+        match self {
+            UpstreamScheme::Http => "http",
+            UpstreamScheme::Https => "https",
+        }
+    }
+}
+
+/// nginx (and Caddy) reply with `400 Bad Request` containing this phrase when a
+/// plaintext HTTP request reaches a TLS listener. We use it to detect an HTTPS
+/// dev server and transparently retry the request over TLS.
+const PLAIN_HTTP_TO_HTTPS_MARKER: &str = "The plain HTTP request was sent to HTTPS port";
+
+/// Whether a proxied `400` response is the "plaintext sent to a TLS port"
+/// signal. The marker lives in a tiny error page, so the scan is bounded.
+pub(crate) fn is_plain_http_to_https_response(body: &[u8]) -> bool {
+    let scan_len = body.len().min(4096);
+    String::from_utf8_lossy(&body[..scan_len]).contains(PLAIN_HTTP_TO_HTTPS_MARKER)
+}
+
 pub(crate) const SKIP_REQUEST_HEADERS: &[&str] = &[
     "host",
     "connection",

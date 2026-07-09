@@ -40,23 +40,6 @@ async fn forward_http(
     let method = parts.method;
     let headers = parts.headers;
     let query = parts.uri.query().unwrap_or_default();
-    let target_url = build_local_upstream_url("http", target_port, &tail, query);
-
-    let client = service.http_client();
-    let mut req_builder = client.request(
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
-        &target_url,
-    );
-
-    for (name, value) in &headers {
-        if should_forward_request_header(name.as_str())
-            && let Ok(v) = value.to_str()
-        {
-            req_builder = req_builder.header(name.as_str(), v);
-        }
-    }
-
-    req_builder = req_builder.header("Accept-Encoding", "identity");
 
     let body_bytes = match to_bytes(body, 50 * 1024 * 1024).await {
         Ok(bytes) => bytes,
@@ -66,14 +49,42 @@ async fn forward_http(
         }
     };
 
-    if !body_bytes.is_empty() {
-        req_builder = req_builder.body(body_bytes.to_vec());
-    }
+    // Auto-detect whether the dev server on `target_port` speaks HTTP or HTTPS.
+    let response = service
+        .send_local_upstream(target_port, |client, scheme| {
+            let target_url = build_local_upstream_url(scheme.as_http(), target_port, &tail, query);
+            let mut req_builder = client.request(
+                reqwest::Method::from_bytes(method.as_str().as_bytes())
+                    .unwrap_or(reqwest::Method::GET),
+                &target_url,
+            );
 
-    let response = match req_builder.send().await {
+            for (name, value) in &headers {
+                if should_forward_request_header(name.as_str())
+                    && let Ok(v) = value.to_str()
+                {
+                    req_builder = req_builder.header(name.as_str(), v);
+                }
+            }
+
+            req_builder = req_builder.header("Accept-Encoding", "identity");
+
+            if !body_bytes.is_empty() {
+                req_builder = req_builder.body(body_bytes.to_vec());
+            }
+
+            req_builder
+        })
+        .await;
+
+    let response = match response {
         Ok(response) => response,
         Err(error) => {
-            tracing::debug!(?error, %target_url, "Failed to call preview upstream");
+            tracing::debug!(
+                ?error,
+                port = target_port,
+                "Failed to call preview upstream"
+            );
             return (StatusCode::BAD_GATEWAY, "Preview upstream unavailable").into_response();
         }
     };

@@ -7,7 +7,11 @@
 //! Host header subdomain. A request to `{port}.localhost:{proxy_port}/path`
 //! is forwarded to `localhost:{port}/path`.
 
-use std::net::SocketAddr;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+};
 
 use axum::{
     body::Body,
@@ -20,8 +24,8 @@ use uuid::Uuid;
 use ws_bridge::{UpstreamWsConnectError, WsBridgeError, bridge_axum_ws, connect_upstream_ws};
 
 use crate::proxy_common::{
-    build_local_upstream_url, extract_ws_protocols, normalized_proxy_path,
-    should_forward_request_header,
+    UpstreamScheme, build_local_upstream_url, extract_ws_protocols,
+    is_plain_http_to_https_response, normalized_proxy_path, should_forward_request_header,
 };
 
 pub mod api;
@@ -30,6 +34,11 @@ mod proxy_common;
 #[derive(Clone)]
 pub struct PreviewProxyService {
     http_client: Client,
+    https_client: Client,
+    /// Auto-detected upstream scheme per dev-server port. Only meaningful for
+    /// direct (non-relay) local upstreams, where a port uniquely identifies a
+    /// dev server on this machine.
+    scheme_cache: Arc<RwLock<HashMap<u16, UpstreamScheme>>>,
 }
 
 impl Default for PreviewProxyService {
@@ -44,11 +53,122 @@ impl PreviewProxyService {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build preview proxy HTTP client");
-        Self { http_client }
+        // Dev servers behind TLS typically use self-signed or local-CA certs,
+        // so the HTTPS upstream client must not verify certificates.
+        let https_client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("failed to build preview proxy HTTPS client");
+        Self {
+            http_client,
+            https_client,
+            scheme_cache: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub(crate) fn http_client(&self) -> &Client {
         &self.http_client
+    }
+
+    fn client_for(&self, scheme: UpstreamScheme) -> &Client {
+        match scheme {
+            UpstreamScheme::Http => &self.http_client,
+            UpstreamScheme::Https => &self.https_client,
+        }
+    }
+
+    /// Scheme last seen for `port`; defaults to HTTP until detected otherwise.
+    pub(crate) fn cached_upstream_scheme(&self, port: u16) -> UpstreamScheme {
+        self.scheme_cache
+            .read()
+            .expect("preview scheme cache poisoned")
+            .get(&port)
+            .copied()
+            .unwrap_or(UpstreamScheme::Http)
+    }
+
+    fn remember_upstream_scheme(&self, port: u16, scheme: UpstreamScheme) {
+        self.scheme_cache
+            .write()
+            .expect("preview scheme cache poisoned")
+            .insert(port, scheme);
+    }
+
+    /// Send an HTTP request to a local dev server on `port`, transparently
+    /// picking HTTP or HTTPS.
+    ///
+    /// `build` receives the client and the scheme to use and must construct the
+    /// full request. It may be invoked twice (once per scheme) when a retry is
+    /// needed, so it must be idempotent and clone any body it consumes.
+    ///
+    /// Detection: an HTTP attempt that returns nginx's "plaintext sent to a TLS
+    /// port" `400`, or that fails to connect, is retried over HTTPS and the
+    /// result cached. A cached-HTTPS port that stops connecting falls back to
+    /// HTTP (e.g. the dev server restarted as plain HTTP on the same port).
+    pub(crate) async fn send_local_upstream(
+        &self,
+        port: u16,
+        build: impl Fn(&Client, UpstreamScheme) -> reqwest::RequestBuilder,
+    ) -> reqwest::Result<reqwest::Response> {
+        let scheme = self.cached_upstream_scheme(port);
+        let result = build(self.client_for(scheme), scheme).send().await;
+
+        match (scheme, result) {
+            (UpstreamScheme::Http, Ok(response))
+                if response.status() == StatusCode::BAD_REQUEST =>
+            {
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body = response.bytes().await?;
+                if is_plain_http_to_https_response(&body) {
+                    self.remember_upstream_scheme(port, UpstreamScheme::Https);
+                    build(
+                        self.client_for(UpstreamScheme::Https),
+                        UpstreamScheme::Https,
+                    )
+                    .send()
+                    .await
+                } else {
+                    // Genuine 400 from the dev server: pass it through unchanged.
+                    let mut rebuilt = http::Response::builder().status(status);
+                    if let Some(dst) = rebuilt.headers_mut() {
+                        *dst = headers;
+                    }
+                    Ok(reqwest::Response::from(
+                        rebuilt.body(body).expect("valid buffered response"),
+                    ))
+                }
+            }
+            (UpstreamScheme::Http, Err(error)) if error.is_connect() => {
+                match build(
+                    self.client_for(UpstreamScheme::Https),
+                    UpstreamScheme::Https,
+                )
+                .send()
+                .await
+                {
+                    Ok(response) => {
+                        self.remember_upstream_scheme(port, UpstreamScheme::Https);
+                        Ok(response)
+                    }
+                    Err(_) => Err(error),
+                }
+            }
+            (UpstreamScheme::Https, Err(error)) if error.is_connect() => {
+                match build(self.client_for(UpstreamScheme::Http), UpstreamScheme::Http)
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        self.remember_upstream_scheme(port, UpstreamScheme::Http);
+                        Ok(response)
+                    }
+                    Err(_) => Err(error),
+                }
+            }
+            (_, result) => result,
+        }
     }
 }
 
@@ -521,6 +641,51 @@ async fn proxy_impl(
     http_proxy_handler(service, backend_addr, proxy_port, target, path_str, request).await
 }
 
+/// Build the upstream request for a proxied preview, forwarding the client's
+/// headers plus the `X-Forwarded-*` set. Pure (no I/O) so it can be replayed
+/// per scheme when the upstream scheme is auto-detected.
+fn build_forward_request(
+    client: &Client,
+    method: &axum::http::Method,
+    target_url: &str,
+    headers: &HeaderMap,
+    body_bytes: &[u8],
+    forwarded_proto: &str,
+) -> reqwest::RequestBuilder {
+    let mut req_builder = client.request(
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
+        target_url,
+    );
+
+    for (name, value) in headers {
+        if should_forward_request_header(name.as_str())
+            && let Ok(v) = value.to_str()
+        {
+            req_builder = req_builder.header(name.as_str(), v);
+        }
+    }
+
+    if let Some(host) = headers.get(header::HOST)
+        && let Ok(host_str) = host.to_str()
+    {
+        req_builder = req_builder.header("X-Forwarded-Host", host_str);
+    }
+    req_builder = req_builder.header("X-Forwarded-Proto", forwarded_proto);
+    req_builder = req_builder.header("Accept-Encoding", "identity");
+
+    let forwarded_for = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("127.0.0.1");
+    req_builder = req_builder.header("X-Forwarded-For", forwarded_for);
+
+    if !body_bytes.is_empty() {
+        req_builder = req_builder.body(body_bytes.to_vec());
+    }
+
+    req_builder
+}
+
 async fn http_proxy_handler(
     service: &PreviewProxyService,
     backend_addr: SocketAddr,
@@ -547,56 +712,57 @@ async fn http_proxy_handler(
             return (StatusCode::BAD_REQUEST, "Failed to read request body").into_response();
         }
     };
-    let target_url = if let Some(host_id) = target.relay_host_id {
-        relay_preview_target_url(
+    let send_result = if let Some(host_id) = target.relay_host_id {
+        // Relay: forward to this machine's host-relay endpoint over plain HTTP.
+        // The dev server's real scheme is resolved by the *remote* host's proxy.
+        let target_url = relay_preview_target_url(
             backend_addr,
             host_id,
             target.port,
             normalized_path,
             query_string,
             "http",
+        );
+        build_forward_request(
+            service.http_client(),
+            &method,
+            &target_url,
+            &headers,
+            &body_bytes,
+            "http",
         )
+        .send()
+        .await
     } else {
-        build_local_upstream_url("http", target.port, normalized_path, query_string)
+        // Direct local dev server: auto-detect HTTP vs HTTPS.
+        service
+            .send_local_upstream(target.port, |client, scheme| {
+                let target_url = build_local_upstream_url(
+                    scheme.as_http(),
+                    target.port,
+                    normalized_path,
+                    query_string,
+                );
+                build_forward_request(
+                    client,
+                    &method,
+                    &target_url,
+                    &headers,
+                    &body_bytes,
+                    scheme.as_http(),
+                )
+            })
+            .await
     };
 
-    let client = service.http_client();
-
-    let mut req_builder = client.request(
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
-        &target_url,
-    );
-
-    for (name, value) in &headers {
-        if should_forward_request_header(name.as_str())
-            && let Ok(v) = value.to_str()
-        {
-            req_builder = req_builder.header(name.as_str(), v);
-        }
-    }
-
-    if let Some(host) = headers.get(header::HOST)
-        && let Ok(host_str) = host.to_str()
-    {
-        req_builder = req_builder.header("X-Forwarded-Host", host_str);
-    }
-    req_builder = req_builder.header("X-Forwarded-Proto", "http");
-    req_builder = req_builder.header("Accept-Encoding", "identity");
-
-    let forwarded_for = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("127.0.0.1");
-    req_builder = req_builder.header("X-Forwarded-For", forwarded_for);
-
-    if !body_bytes.is_empty() {
-        req_builder = req_builder.body(body_bytes.to_vec());
-    }
-
-    let response = match req_builder.send().await {
+    let response = match send_result {
         Ok(response) => response,
         Err(error) => {
-            tracing::debug!("Failed to proxy request to {}: {}", target_url, error);
+            tracing::debug!(
+                "Failed to proxy request to dev server on port {}: {}",
+                target.port,
+                error
+            );
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("Dev server unreachable: {}", error),
@@ -1425,5 +1591,41 @@ mod tests {
         let body = b"0:\"$Sreact.suspense\"\n1:I[\"456\",[]]\"]\n2:{\"name\":\"MyComponent\"}";
         let result = detect_rsc_redirect_in_body(body);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn upstream_scheme_url_prefixes() {
+        assert_eq!(UpstreamScheme::Http.as_http(), "http");
+        assert_eq!(UpstreamScheme::Https.as_http(), "https");
+    }
+
+    #[test]
+    fn detects_nginx_plaintext_on_tls_port_page() {
+        let nginx_body = b"<html>\r\n<head><title>400 The plain HTTP request was sent to HTTPS port</title></head>\r\n<body>\r\n<center><h1>400 Bad Request</h1></center>\r\n<center>The plain HTTP request was sent to HTTPS port</center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>";
+        assert!(is_plain_http_to_https_response(nginx_body));
+    }
+
+    #[test]
+    fn does_not_flag_ordinary_bad_request_body() {
+        assert!(!is_plain_http_to_https_response(
+            b"{\"error\":\"invalid query parameter\"}"
+        ));
+        assert!(!is_plain_http_to_https_response(b""));
+    }
+
+    #[test]
+    fn scheme_cache_defaults_to_http_and_remembers_updates() {
+        let service = PreviewProxyService::new();
+        // Unknown ports default to HTTP.
+        assert_eq!(service.cached_upstream_scheme(3000), UpstreamScheme::Http);
+
+        service.remember_upstream_scheme(3000, UpstreamScheme::Https);
+        assert_eq!(service.cached_upstream_scheme(3000), UpstreamScheme::Https);
+        // Other ports are unaffected.
+        assert_eq!(service.cached_upstream_scheme(3001), UpstreamScheme::Http);
+
+        // Ports can revert (e.g. dev server restarts as plain HTTP).
+        service.remember_upstream_scheme(3000, UpstreamScheme::Http);
+        assert_eq!(service.cached_upstream_scheme(3000), UpstreamScheme::Http);
     }
 }
