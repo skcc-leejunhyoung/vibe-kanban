@@ -347,7 +347,7 @@
   },
   "prPanel": {
     "empty": "No open pull requests.",
-    "prLabel": "PR #{{number}}",
+    "closedPr": "Closed PR #{{number}}",
     "headLabel": "head",
     "baseLabel": "base",
     "originSync": "origin",

@@ -58,7 +58,7 @@
   },
   "prPanel": {
     "empty": "열린 풀 리퀘스트가 없습니다.",
-    "prLabel": "PR #{{number}}",
+    "closedPr": "닫힌 PR #{{number}}",
     "headLabel": "head",
     "baseLabel": "base",
     "originSync": "origin",

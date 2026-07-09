@@ -58,7 +58,7 @@
   },
   "prPanel": {
     "empty": "オープンなプルリクエストはありません。",
-    "prLabel": "PR #{{number}}",
+    "closedPr": "クローズ済みPR #{{number}}",
     "headLabel": "head",
     "baseLabel": "base",
     "originSync": "origin",

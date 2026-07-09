@@ -1,5 +1,7 @@
 import {
   GitPullRequestIcon,
+  CheckCircleIcon,
+  XCircleIcon,
   ArrowUpIcon,
   ArrowDownIcon,
   ArrowRightIcon,
@@ -120,6 +122,28 @@ export function PrCard({
   const { t } = useTranslation('tasks');
   // Fetch/push only make sense for an open PR; merged/closed cards are read-only.
   const isOpen = prStatus === 'open';
+  // Status-colored PR link button, matching the original git-panel PR design.
+  const {
+    Icon: StatusIcon,
+    color: statusColor,
+    label: statusLabel,
+  } = prStatus === 'merged'
+    ? {
+        Icon: CheckCircleIcon,
+        color: 'text-success',
+        label: t('git.pr.merged', { prNumber }),
+      }
+    : prStatus === 'closed'
+      ? {
+          Icon: XCircleIcon,
+          color: 'text-error',
+          label: t('prPanel.closedPr', { number: prNumber }),
+        }
+      : {
+          Icon: GitPullRequestIcon,
+          color: 'text-normal',
+          label: t('git.pr.open', { number: prNumber }),
+        };
 
   return (
     <div className="bg-primary rounded-sm my-base p-base space-y-base">
@@ -167,32 +191,24 @@ export function PrCard({
         </DropdownMenu>
       </div>
 
-      {/* PR identity + open link + status badge */}
+      {/* PR identity: a status-colored link to the PR (open / merged / closed) */}
       <div className="flex items-center gap-half">
         {prUrl ? (
           <button
             type="button"
             onClick={() => openExternalUrl(prUrl)}
-            className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-normal hover:bg-tertiary text-sm font-medium transition-colors"
+            className={`inline-flex items-center gap-half px-base py-half rounded-sm bg-panel ${statusColor} hover:bg-tertiary text-sm font-medium transition-colors`}
           >
-            <GitPullRequestIcon className="size-icon-xs" weight="fill" />
-            {t('prPanel.prLabel', { number: prNumber })}
+            <StatusIcon className="size-icon-xs" weight="fill" />
+            {statusLabel}
             <ArrowSquareOutIcon className="size-icon-xs" weight="bold" />
           </button>
         ) : (
-          <span className="inline-flex items-center gap-half px-base py-half rounded-sm bg-panel text-normal text-sm font-medium">
-            <GitPullRequestIcon className="size-icon-xs" weight="fill" />
-            {t('prPanel.prLabel', { number: prNumber })}
-          </span>
-        )}
-        {prStatus === 'merged' && (
-          <span className="text-xs font-medium text-success">
-            {t('git.states.merged')}
-          </span>
-        )}
-        {prStatus === 'closed' && (
-          <span className="text-xs font-medium text-low">
-            {t('git.states.closed')}
+          <span
+            className={`inline-flex items-center gap-half px-base py-half rounded-sm bg-panel ${statusColor} text-sm font-medium`}
+          >
+            <StatusIcon className="size-icon-xs" weight="fill" />
+            {statusLabel}
           </span>
         )}
       </div>

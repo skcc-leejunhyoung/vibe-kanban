@@ -236,7 +236,7 @@
   },
   "prPanel": {
     "empty": "没有打开的拉取请求。",
-    "prLabel": "PR #{{number}}",
+    "closedPr": "已关闭PR #{{number}}",
     "headLabel": "head",
     "baseLabel": "base",
     "originSync": "origin",
