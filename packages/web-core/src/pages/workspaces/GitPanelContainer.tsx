@@ -103,7 +103,6 @@ export function GitPanelContainer({
           prNumber,
           prUrl,
           prStatus,
-          isTargetRemote: repoStatus?.is_target_remote ?? false,
           hasUncommittedChanges: repoStatus?.has_uncommitted_changes ?? false,
         };
       }),

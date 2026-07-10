@@ -62,7 +62,6 @@ interface RepoCardProps {
   isTargetPushSuccess?: boolean;
   isTargetPushError?: boolean;
   onTargetPushClick?: () => void;
-  isTargetRemote?: boolean;
   hasUncommittedChanges?: boolean;
   branchDropdownContent?: ReactNode;
   selectedAction?: RepoAction;
@@ -87,7 +86,6 @@ export function RepoCard({
   isTargetPushSuccess = false,
   isTargetPushError = false,
   onTargetPushClick,
-  isTargetRemote = false,
   hasUncommittedChanges = false,
   branchDropdownContent,
   selectedAction = 'pull-request',
@@ -104,7 +102,8 @@ export function RepoCard({
   // Hide "Commit" when the worktree has no uncommitted changes
   // Hide "Open pull request" and "Link pull request" when PR is already open
   // Hide "Link pull request" when any PR is already linked (open or merged)
-  // Hide "merge" option when PR is already open or target branch is remote
+  // Hide "merge" option when a PR is already open. A remote target is allowed:
+  // the backend materializes a local branch from it and merges into that.
   const hasPrOpen = prStatus === 'open';
   const hasPrLinked = !!prNumber;
   const availableActionOptions = useMemo(
@@ -113,11 +112,10 @@ export function RepoCard({
         if (opt.value === 'commit' && !hasUncommittedChanges) return false;
         if (opt.value === 'pull-request' && hasPrOpen) return false;
         if (opt.value === 'link-pr' && hasPrLinked) return false;
-        if (opt.value === 'merge' && (hasPrOpen || isTargetRemote))
-          return false;
+        if (opt.value === 'merge' && hasPrOpen) return false;
         return true;
       }),
-    [hasUncommittedChanges, hasPrOpen, hasPrLinked, isTargetRemote]
+    [hasUncommittedChanges, hasPrOpen, hasPrLinked]
   );
 
   // If current selection is unavailable, fall back to the first available option.
