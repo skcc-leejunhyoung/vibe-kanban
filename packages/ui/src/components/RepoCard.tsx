@@ -62,6 +62,12 @@ interface RepoCardProps {
   isTargetPushSuccess?: boolean;
   isTargetPushError?: boolean;
   onTargetPushClick?: () => void;
+  /**
+   * Whether the work branch has a counterpart on origin (i.e. it has been
+   * pushed). Local-only work branches (e.g. vk/* worktrees) have no remote, so
+   * "Pull" is a no-op and is hidden from the actions menu.
+   */
+  hasRemoteBranch?: boolean;
   hasUncommittedChanges?: boolean;
   branchDropdownContent?: ReactNode;
   selectedAction?: RepoAction;
@@ -86,6 +92,7 @@ export function RepoCard({
   isTargetPushSuccess = false,
   isTargetPushError = false,
   onTargetPushClick,
+  hasRemoteBranch = false,
   hasUncommittedChanges = false,
   branchDropdownContent,
   selectedAction = 'pull-request',
@@ -104,6 +111,7 @@ export function RepoCard({
   // Hide "Link pull request" when any PR is already linked (open or merged)
   // Hide "merge" option when a PR is already open. A remote target is allowed:
   // the backend materializes a local branch from it and merges into that.
+  // Hide "Pull" when the work branch has no remote counterpart (nothing to pull)
   const hasPrOpen = prStatus === 'open';
   const hasPrLinked = !!prNumber;
   const availableActionOptions = useMemo(
@@ -113,9 +121,10 @@ export function RepoCard({
         if (opt.value === 'pull-request' && hasPrOpen) return false;
         if (opt.value === 'link-pr' && hasPrLinked) return false;
         if (opt.value === 'merge' && hasPrOpen) return false;
+        if (opt.value === 'pull' && !hasRemoteBranch) return false;
         return true;
       }),
-    [hasUncommittedChanges, hasPrOpen, hasPrLinked]
+    [hasUncommittedChanges, hasPrOpen, hasPrLinked, hasRemoteBranch]
   );
 
   // If current selection is unavailable, fall back to the first available option.

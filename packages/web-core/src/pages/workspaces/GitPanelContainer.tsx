@@ -103,6 +103,10 @@ export function GitPanelContainer({
           prNumber,
           prUrl,
           prStatus,
+          // The work branch only has a remote counterpart once it has been
+          // pushed, which in this workflow happens when a PR is opened. Local-only
+          // branches (e.g. vk/* worktrees) have no origin, so "Pull" is hidden.
+          hasRemoteBranch: prStatus === 'open',
           hasUncommittedChanges: repoStatus?.has_uncommitted_changes ?? false,
         };
       }),
