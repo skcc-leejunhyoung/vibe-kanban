@@ -32,9 +32,7 @@
       "dialog": {
         "title": "Change target branch",
         "description": "Choose a new target branch for the workspace.",
-        "placeholder": "Select a target branch",
-        "action": "Change Branch",
-        "inProgress": "Changing..."
+        "action": "Change Branch"
       }
     }
   },

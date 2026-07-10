@@ -32,9 +32,7 @@
       "dialog": {
         "title": "更改目标分支",
         "description": "为任务尝试选择新的目标分支。",
-        "placeholder": "选择目标分支",
-        "action": "更改分支",
-        "inProgress": "更改中..."
+        "action": "更改分支"
       }
     }
   },

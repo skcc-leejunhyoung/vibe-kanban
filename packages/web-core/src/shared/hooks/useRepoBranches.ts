@@ -13,20 +13,33 @@ export const repoBranchKeys = {
 type Options = {
   enabled?: boolean;
   hostId?: string | null;
+  /**
+   * When true, ask the backend to `git fetch` from origin before listing, and
+   * always refetch on mount so the branch list reflects the very latest state
+   * just before the user picks. Used by the branch-selection dialogs (create /
+   * change-target / rebase) so every picker sees fresh branches.
+   */
+  fetch?: boolean;
 };
 
 export function useRepoBranches(repoId?: string | null, opts?: Options) {
   const enabled = (opts?.enabled ?? true) && !!repoId;
   const hostId = opts?.hostId;
+  const fetch = opts?.fetch ?? false;
 
   return useQuery<GitBranch[]>({
     queryKey: [
       ...repoBranchKeys.byRepo(repoId ?? undefined),
       getHostRequestScopeQueryKey(hostId),
+      fetch ? 'fetch' : 'local',
     ],
-    queryFn: () => repoApi.getBranches(repoId!, hostId),
+    queryFn: () =>
+      repoApi.getBranches(repoId!, hostId, fetch ? { fetch: true } : undefined),
     enabled,
-    staleTime: 60_000,
+    // A fresh-fetch consumer always wants the newest branches on open, so treat
+    // the data as immediately stale and refetch every mount.
+    staleTime: fetch ? 0 : 60_000,
+    refetchOnMount: fetch ? 'always' : undefined,
     refetchOnWindowFocus: true,
   });
 }

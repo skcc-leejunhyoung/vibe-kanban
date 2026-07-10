@@ -60,9 +60,20 @@ function RebaseDialogContent({
   const isWorkspaceRunning =
     workspaces.find((w) => w.id === workspaceId)?.isRunning ?? false;
 
-  // Load branches and repo data internally
-  const { data: branches = [], isLoading: branchesLoading } =
-    useRepoBranches(repoId);
+  // Load branches and repo data internally. Fetch from origin on open so the
+  // target list is current at the moment of picking, matching the other
+  // branch-selection flows.
+  const {
+    data: branches = [],
+    isLoading: branchesLoading,
+    refetch: refetchBranches,
+  } = useRepoBranches(repoId, { fetch: true });
+
+  // nice-modal keeps this mounted between opens, so refetch from origin each
+  // time the dialog becomes visible to keep the branch list current on open.
+  useEffect(() => {
+    if (modal.visible) void refetchBranches();
+  }, [modal.visible, refetchBranches]);
   const { repos, isLoading: reposLoading } = useWorkspaceRepo(workspaceId);
   const { data: branchStatus, isLoading: branchStatusLoading } =
     useBranchStatus(workspaceId);

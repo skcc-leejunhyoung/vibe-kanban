@@ -102,8 +102,6 @@
       "dialog": {
         "action": "브랜치 변경",
         "description": "작업 시도의 새 대상 브랜치를 선택하세요.",
-        "inProgress": "변경 중...",
-        "placeholder": "대상 브랜치 선택",
         "title": "대상 브랜치 변경"
       }
     }

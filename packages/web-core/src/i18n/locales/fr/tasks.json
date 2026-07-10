@@ -32,9 +32,7 @@
       "dialog": {
         "title": "Changer la branche cible",
         "description": "Choisissez une nouvelle branche cible pour la tentative de tâche.",
-        "placeholder": "Sélectionner une branche cible",
-        "action": "Changer de branche",
-        "inProgress": "Changement en cours..."
+        "action": "Changer de branche"
       }
     }
   },

@@ -69,7 +69,7 @@ import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
-import { ChangeTargetDialog } from '@vibe/ui/components/ChangeTargetDialog';
+import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
 import { DeleteWorkspaceDialog } from '@vibe/ui/components/DeleteWorkspaceDialog';
 import { RebaseDialog } from '@/shared/dialogs/command-bar/RebaseDialog';
 import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsDialog';
@@ -1322,31 +1322,28 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const branches = await repoApi.getBranches(repoId);
-      await ChangeTargetDialog.show({
-        branches: branches.map((branch) => ({
-          name: branch.name,
-          isCurrent: branch.is_current,
-        })),
-        onChangeTargetBranch: async (newTargetBranch) => {
-          await workspacesApi.change_target_branch(workspaceId, {
-            new_target_branch: newTargetBranch,
-            repo_id: repoId,
-          });
+      const newTargetBranch = await BranchPickerDialog.show({
+        repoId,
+        mode: 'changeTarget',
+      });
+      if (!newTargetBranch) return;
 
-          ctx.queryClient.invalidateQueries({
-            queryKey: ['branchStatus', workspaceId],
-          });
-          ctx.queryClient.invalidateQueries({
-            queryKey: workspaceRecordKeys.byId(workspaceId),
-          });
-          ctx.queryClient.invalidateQueries({
-            queryKey: workspaceRepoKeys.byWorkspace(workspaceId),
-          });
-          ctx.queryClient.invalidateQueries({
-            queryKey: repoBranchKeys.byRepo(repoId),
-          });
-        },
+      await workspacesApi.change_target_branch(workspaceId, {
+        new_target_branch: newTargetBranch,
+        repo_id: repoId,
+      });
+
+      ctx.queryClient.invalidateQueries({
+        queryKey: ['branchStatus', workspaceId],
+      });
+      ctx.queryClient.invalidateQueries({
+        queryKey: workspaceRecordKeys.byId(workspaceId),
+      });
+      ctx.queryClient.invalidateQueries({
+        queryKey: workspaceRepoKeys.byWorkspace(workspaceId),
+      });
+      ctx.queryClient.invalidateQueries({
+        queryKey: repoBranchKeys.byRepo(repoId),
       });
     },
   },

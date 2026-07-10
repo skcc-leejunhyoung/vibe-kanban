@@ -98,8 +98,6 @@
       "dialog": {
         "action": "Cambiar rama",
         "description": "Elige una nueva rama de destino para el intento de tarea.",
-        "inProgress": "Cambiando...",
-        "placeholder": "Selecciona una rama de destino",
         "title": "Cambiar rama de destino"
       }
     }
