@@ -9,6 +9,8 @@ import {
   type BaseCodingAgent,
   ExecutionProcessStatus,
   type ReviewError,
+  type ExecutionProcess,
+  type ExecutorAction,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -162,6 +164,25 @@ function reviewErrorKey(error: unknown): string {
   }
 }
 
+// The user's prompt for a coding-agent turn lives in the execution-process
+// metadata (executor_action), so the turn navigator can list every turn — even
+// ones whose entries haven't been paged in yet — without loading their logs.
+// Returns null for non-user processes (setup/cleanup/review scripts).
+function getUserPromptFromProcess(process: ExecutionProcess): string | null {
+  let current: ExecutorAction | null = process.executor_action;
+  while (current) {
+    const typ = current.typ;
+    if (
+      typ.type === 'CodingAgentInitialRequest' ||
+      typ.type === 'CodingAgentFollowUpRequest'
+    ) {
+      return typ.prompt;
+    }
+    current = current.next_action;
+  }
+  return null;
+}
+
 export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const {
     mode,
@@ -310,29 +331,53 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const { entries } = useEntries();
   const tokenUsageInfo = useTokenUsage();
 
-  // Extract user messages for turn navigation
-  const userMessageTurns: TurnNavigationItem[] = useMemo(() => {
-    let turnNumber = 0;
-    return entries
-      .filter(
-        (entry) =>
-          entry.type === 'NORMALIZED_ENTRY' &&
-          entry.content.entry_type.type === 'user_message'
-      )
-      .map((entry) => {
-        turnNumber++;
-        return {
-          patchKey: entry.patchKey,
-          content:
-            entry.type === 'NORMALIZED_ENTRY' ? entry.content.content : '',
-          turnNumber,
-        };
-      });
-  }, [entries]);
-
   // Execution state
   const { isAttemptRunning, stopExecution, isStopping, processes } =
     useWorkspaceExecution(workspaceId);
+
+  // Extract user messages for turn navigation
+  const userMessageTurns: TurnNavigationItem[] = useMemo(() => {
+    // Every turn is derived from process metadata so the navigator lists the
+    // whole conversation, not just what's been paged in. For turns already
+    // loaded we reuse the real entry patchKey (instant scroll); for the rest we
+    // carry a `proc:<id>` key that the handler resolves by paging history in.
+    const loadedByProcess = new Map<
+      string,
+      { patchKey: string; content: string }
+    >();
+    for (const entry of entries) {
+      if (
+        entry.type === 'NORMALIZED_ENTRY' &&
+        entry.content.entry_type.type === 'user_message' &&
+        !loadedByProcess.has(entry.executionProcessId)
+      ) {
+        loadedByProcess.set(entry.executionProcessId, {
+          patchKey: entry.patchKey,
+          content: entry.content.content,
+        });
+      }
+    }
+
+    const turns: TurnNavigationItem[] = [];
+    let turnNumber = 0;
+    const ordered = [...processes].sort(
+      (a, b) =>
+        new Date(a.created_at as unknown as string).getTime() -
+        new Date(b.created_at as unknown as string).getTime()
+    );
+    for (const process of ordered) {
+      const prompt = getUserPromptFromProcess(process);
+      if (prompt == null) continue;
+      turnNumber++;
+      const loaded = loadedByProcess.get(process.id);
+      turns.push({
+        patchKey: loaded ? loaded.patchKey : `proc:${process.id}`,
+        content: loaded ? loaded.content : prompt,
+        turnNumber,
+      });
+    }
+    return turns;
+  }, [entries, processes]);
 
   // Approvals state
   const { getPendingForProcess } = useApprovals();

@@ -110,8 +110,15 @@ export function VSCodeWorkspacePage() {
     conversationListRef.current?.scrollToPreviousUserMessage();
   };
 
-  const handleScrollToUserMessage = useCallback((patchKey: string) => {
-    conversationListRef.current?.scrollToEntryByPatchKey(patchKey);
+  const handleScrollToUserMessage = useCallback((key: string) => {
+    // Turns not yet paged in carry a `proc:<id>` key; resolve those by loading
+    // history up to that process, then scrolling. Loaded turns keep their real
+    // entry patchKey for an instant jump.
+    if (key.startsWith('proc:')) {
+      conversationListRef.current?.scrollToProcess(key.slice('proc:'.length));
+    } else {
+      conversationListRef.current?.scrollToEntryByPatchKey(key);
+    }
   }, []);
 
   const handleGetActiveTurnPatchKey = useCallback(() => {

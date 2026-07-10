@@ -64,6 +64,12 @@ export interface ConversationListHandle {
   adjustScrollBy: (delta: number) => void;
   getScrollElement: () => HTMLDivElement | null;
   scrollToEntryByPatchKey: (patchKey: string) => void;
+  /**
+   * Jump to a turn by its execution-process id, paging in older history first
+   * if that turn hasn't been loaded yet. Used by the turn navigator so it can
+   * list every turn, not only the ones already fetched.
+   */
+  scrollToProcess: (processId: string) => void;
   getVisibleUserMessagePatchKey: () => string | null;
 }
 
@@ -422,12 +428,17 @@ export const ConversationList = forwardRef<
     }
   };
 
-  const { isFirstTurn, isLoadingHistory, hasMoreHistory, loadOlderHistory } =
-    useConversationHistory({
-      attempt,
-      onTimelineUpdated,
-      scopeKey: conversationScopeKey,
-    });
+  const {
+    isFirstTurn,
+    isLoadingHistory,
+    hasMoreHistory,
+    loadOlderHistory,
+    loadUntilProcess,
+  } = useConversationHistory({
+    attempt,
+    onTimelineUpdated,
+    scopeKey: conversationScopeKey,
+  });
 
   const prevEntriesRef = useRef<DisplayEntry[]>([]);
   const prevRowsRef = useRef<ConversationRow[]>([]);
@@ -589,6 +600,72 @@ export const ConversationList = forwardRef<
     scrollToAbsoluteIndex,
   });
   scrollOnEntriesChangedRef.current = scrollExecutor.onEntriesChanged;
+
+  // Live ref so the async turn-jump (which spans several renders while older
+  // history pages in) always calls the latest scroll helper, not a stale one.
+  const scrollToAbsoluteIndexRef = useRef(scrollToAbsoluteIndex);
+  scrollToAbsoluteIndexRef.current = scrollToAbsoluteIndex;
+
+  // Jump to a turn by execution-process id: page in older history until the
+  // process is loaded, then scroll its user message to the top. Reads the
+  // latest rows from prevRowsRef (not the render-scoped copy) so it stays
+  // correct as batches arrive, and polls briefly for the row to be rendered.
+  const scrollToProcess = useCallback(
+    (processId: string) => {
+      const scrollEl = tanstackScrollRef.current;
+      if (!scrollEl) return;
+
+      conversationVirtualizer.releaseBottomLock();
+
+      void loadUntilProcess(processId).then(() => {
+        const deadline = performance.now() + 6000;
+
+        const findTargetIndex = () =>
+          prevRowsRef.current.findIndex(
+            (row) =>
+              row.isUserMessage && row.entry.executionProcessId === processId
+          );
+
+        const run = () => {
+          const targetIndex = findTargetIndex();
+          if (targetIndex < 0) {
+            if (performance.now() < deadline) requestAnimationFrame(run);
+            return;
+          }
+
+          programmaticScrollDeadlineRef.current = performance.now() + 1000;
+          scrollToAbsoluteIndexRef.current(targetIndex, 'start', 'auto');
+
+          let attempts = 0;
+          const correctScroll = () => {
+            if (attempts >= 8) return;
+            attempts += 1;
+            programmaticScrollDeadlineRef.current = performance.now() + 500;
+
+            const node = scrollEl.querySelector<HTMLElement>(
+              `[data-row-index="${targetIndex}"]`
+            );
+            if (!node) {
+              requestAnimationFrame(correctScroll);
+              return;
+            }
+
+            const delta =
+              node.getBoundingClientRect().top -
+              scrollEl.getBoundingClientRect().top;
+            if (Math.abs(delta) < 2) return;
+
+            scrollEl.scrollTop += delta;
+            requestAnimationFrame(correctScroll);
+          };
+          requestAnimationFrame(correctScroll);
+        };
+
+        run();
+      });
+    },
+    [conversationVirtualizer, loadUntilProcess]
+  );
 
   // Freeze the viewport while older history streams in from the top.
   //
@@ -827,6 +904,9 @@ export const ConversationList = forwardRef<
 
         requestAnimationFrame(correctScroll);
       },
+      scrollToProcess: (processId: string) => {
+        scrollToProcess(processId);
+      },
       getVisibleUserMessagePatchKey: () => {
         const scrollEl = tanstackScrollRef.current;
         if (!scrollEl || conversationRows.length === 0) return null;
@@ -864,6 +944,7 @@ export const ConversationList = forwardRef<
       scrollToAbsoluteIndex,
       scrollToBottomAndClearSpacer,
       scrollToPreviousUserMessage,
+      scrollToProcess,
     ]
   );
 

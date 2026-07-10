@@ -27,6 +27,11 @@ export interface UseConversationHistoryResult {
    * the top. No-ops while a fetch is in flight or when nothing remains.
    */
   loadOlderHistory: () => void;
+  /**
+   * Fetch older batches until the given execution process is loaded. Used by
+   * turn navigation to jump to an old turn that hasn't been paged in yet.
+   */
+  loadUntilProcess: (processId: string) => Promise<void>;
 }
 import {
   MIN_INITIAL_ENTRIES,
@@ -376,6 +381,46 @@ export const useConversationHistory = ({
     })();
   }, [computeHasMoreHistory, loadRemainingEntriesInBatches, emitEntries]);
 
+  // Turn navigation: keep fetching older batches until `processId` is loaded,
+  // so a click on an old turn in the navigator lands on real content. Resolves
+  // once the process is present (or nothing older remains). Serializes with the
+  // scroll-up loader via loadingOlderRef so they don't double-fetch.
+  const loadUntilProcess = useCallback(
+    async (processId: string): Promise<void> => {
+      if (!loadedInitialEntries.current) return;
+      if (displayedExecutionProcesses.current[processId]) return;
+
+      while (loadingOlderRef.current) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        if (displayedExecutionProcesses.current[processId]) return;
+      }
+
+      loadingOlderRef.current = true;
+      setIsLoadingHistory(true);
+      try {
+        let guard = 0;
+        while (
+          !displayedExecutionProcesses.current[processId] &&
+          computeHasMoreHistory() &&
+          guard < 200
+        ) {
+          guard += 1;
+          const updated =
+            await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE);
+          if (updated) {
+            emitEntries(displayedExecutionProcesses.current, 'historic', false);
+          }
+          if (!updated) break;
+        }
+        setHasMoreHistory(computeHasMoreHistory());
+      } finally {
+        loadingOlderRef.current = false;
+        setIsLoadingHistory(false);
+      }
+    },
+    [computeHasMoreHistory, loadRemainingEntriesInBatches, emitEntries]
+  );
+
   const ensureProcessVisible = useCallback((p: ExecutionProcess) => {
     mergeIntoDisplayed((state) => {
       if (!state[p.id]) {
@@ -579,5 +624,6 @@ export const useConversationHistory = ({
     isLoadingHistory: isLoadingHistoryState,
     hasMoreHistory,
     loadOlderHistory,
+    loadUntilProcess,
   };
 };
