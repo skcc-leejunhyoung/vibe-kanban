@@ -436,15 +436,21 @@ pub async fn merge_workspace(
         ));
     }
 
+    // If the target is a remote-only branch, materialize a local branch from it
+    // (tracking the remote) and merge into that instead of blocking the merge.
     let is_target_remote = deployment
         .git()
         .is_remote_branch(&repo.path, &workspace_repo.target_branch)?;
-    if is_target_remote {
-        return Err(ApiError::BadRequest(
-            "Cannot merge directly into a remote branch. Please create a pull request instead."
-                .to_string(),
-        ));
-    }
+    let target_branch = if is_target_remote {
+        let local_branch = deployment
+            .git()
+            .ensure_local_branch_for_remote(&repo.path, &workspace_repo.target_branch)?;
+        WorkspaceRepo::update_target_branch(pool, workspace.id, request.repo_id, &local_branch)
+            .await?;
+        local_branch
+    } else {
+        workspace_repo.target_branch.clone()
+    };
 
     let container_ref = deployment
         .container()
@@ -457,14 +463,14 @@ pub async fn merge_workspace(
         &repo.path,
         &worktree_path,
         &workspace.branch,
-        &workspace_repo.target_branch,
+        &target_branch,
     )?;
 
     Merge::create_direct(
         pool,
         workspace.id,
         workspace_repo.repo_id,
-        &workspace_repo.target_branch,
+        &target_branch,
         &merge_commit_id,
     )
     .await?;

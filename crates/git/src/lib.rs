@@ -1506,6 +1506,50 @@ impl GitService {
         }
     }
 
+    /// Ensure a local branch exists for a remote-tracking branch, so callers can
+    /// operate on it locally (e.g. a direct merge).
+    ///
+    /// Given a remote-tracking branch name (e.g. `origin/feature/x`), derive the
+    /// local short name by stripping the `<remote>/` prefix (e.g. `feature/x`).
+    /// If a local branch of that name already exists it is returned as-is;
+    /// otherwise it is created from the remote tip and set to track the remote.
+    /// Returns the resulting local branch name.
+    pub fn ensure_local_branch_for_remote(
+        &self,
+        repo_path: &Path,
+        remote_branch_name: &str,
+    ) -> Result<String, GitServiceError> {
+        let repo = self.open_repo(repo_path)?;
+
+        let remote_branch = repo
+            .find_branch(remote_branch_name, BranchType::Remote)
+            .map_err(|_| GitServiceError::BranchNotFound(remote_branch_name.to_string()))?;
+
+        // Strip the actual remote's `<remote>/` prefix (remote names and branch
+        // names can both contain slashes, so don't just split on the first `/`).
+        let remote = self.get_remote_from_branch_ref(&repo, remote_branch.get())?;
+        let default_remote = self.default_remote(&repo, repo_path)?;
+        let remote_name = remote.name().unwrap_or(&default_remote.name);
+        let prefix = format!("{remote_name}/");
+        let local_name = remote_branch_name
+            .strip_prefix(&prefix)
+            .unwrap_or(remote_branch_name)
+            .to_string();
+
+        // Reuse an existing local branch of the same name if present.
+        if repo.find_branch(&local_name, BranchType::Local).is_ok() {
+            return Ok(local_name);
+        }
+
+        let commit = remote_branch.get().peel_to_commit()?;
+        let mut branch = repo.branch(&local_name, &commit, false)?;
+        // Track the remote so pushes/status comparisons resolve naturally. Best
+        // effort: a missing upstream must not fail the branch creation.
+        let _ = branch.set_upstream(Some(remote_branch_name));
+
+        Ok(local_name)
+    }
+
     pub fn check_branch_exists(
         &self,
         repo_path: &Path,
