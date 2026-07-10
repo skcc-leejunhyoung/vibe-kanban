@@ -355,25 +355,27 @@ export function Navbar({
                     }
                   />
                 ))}
-            {/* Workspace pages: surface left actions (Archive/Unarchive) as
-                tap targets so they don't require the command bar on mobile. */}
-            {!isOnProjectPage &&
-              leftItems
-                .filter((item): item is NavbarActionItem => !isDivider(item))
-                .map((item) => (
-                  <NavbarIconButton
-                    key={item.id}
-                    icon={item.icon}
-                    isActive={item.isActive}
-                    onClick={item.onClick}
-                    aria-label={item.tooltip}
-                    tooltip={item.tooltip}
-                    disabled={!!item.disabled}
-                    className={
-                      item.disabled ? 'opacity-40 cursor-not-allowed' : ''
-                    }
-                  />
-                ))}
+            {/* Surface left actions (Archive/Unarchive) as tap targets so they
+                don't require the command bar on mobile. Rendered regardless of
+                isOnProjectPage: a workspace opened inside a project/issue
+                (project-issue-workspace destination) still sets isOnProjectPage,
+                and leftItems is already empty when no workspace is in context. */}
+            {leftItems
+              .filter((item): item is NavbarActionItem => !isDivider(item))
+              .map((item) => (
+                <NavbarIconButton
+                  key={item.id}
+                  icon={item.icon}
+                  isActive={item.isActive}
+                  onClick={item.onClick}
+                  aria-label={item.tooltip}
+                  tooltip={item.tooltip}
+                  disabled={!!item.disabled}
+                  className={
+                    item.disabled ? 'opacity-40 cursor-not-allowed' : ''
+                  }
+                />
+              ))}
             {onReload && (
               <button
                 type="button"
