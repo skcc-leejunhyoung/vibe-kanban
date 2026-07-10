@@ -170,6 +170,19 @@ export function RemoteNavbarContainer({
     [actionCtx, handleExecuteAction],
   );
 
+  // Left actions (Archive/Unarchive) — surfaced on mobile so remote workspaces
+  // can be archived without the command bar. Empty when no workspace is in
+  // context, so it renders nothing on the workspace list / project pages.
+  const leftItems = useMemo(
+    () =>
+      toNavbarSectionItems(
+        filterNavbarItems(NavbarActionGroups.left, actionCtx),
+        actionCtx,
+        handleExecuteAction,
+      ),
+    [actionCtx, handleExecuteAction],
+  );
+
   const workspaceTitle = useMemo(() => {
     if (isOnProjectPage) {
       return organizationName ?? "Project";
@@ -219,6 +232,7 @@ export function RemoteNavbarContainer({
   return (
     <Navbar
       workspaceTitle={workspaceTitle}
+      leftItems={leftItems}
       rightItems={isOnProjectPage ? rightItems : undefined}
       mobileMode={mobileMode}
       mobileUserSlot={mobileUserSlot}
