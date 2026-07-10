@@ -103,10 +103,14 @@ export function GitPanelContainer({
           prNumber,
           prUrl,
           prStatus,
-          // The work branch only has a remote counterpart once it has been
-          // pushed, which in this workflow happens when a PR is opened. Local-only
-          // branches (e.g. vk/* worktrees) have no origin, so "Pull" is hidden.
-          hasRemoteBranch: prStatus === 'open',
+          // "Pull" only works when the work branch has an origin counterpart to
+          // fast-forward from. The backend computes remote_commits_ahead only when
+          // the work branch actually tracks a remote (its upstream resolves), so a
+          // non-null value is the precise signal. Note prStatus === 'open' is NOT
+          // sufficient: in the three-branch flow a PR's head can be the target/
+          // feature branch while the vk/* work branch was never pushed, leaving it
+          // origin-less despite an open PR.
+          hasRemoteBranch: repoStatus?.remote_commits_ahead != null,
           hasUncommittedChanges: repoStatus?.has_uncommitted_changes ?? false,
         };
       }),
