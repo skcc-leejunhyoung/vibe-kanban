@@ -669,6 +669,19 @@ pub async fn attach_existing_pr(
         .unwrap_or_else(|| workspace.branch.clone());
 
     let git = deployment.git();
+
+    // A remote-tracking head branch (e.g. "origin/feature" — used when the link
+    // candidate is the repo's remote target branch) must be reduced to its bare
+    // branch name. `gh pr list --head` matches GitHub's headRefName, which
+    // carries no remote prefix, so "origin/feature" would never match a PR.
+    let head_branch = match git.get_remote_from_branch_name(&repo.path, &head_branch) {
+        Ok(remote) => head_branch
+            .strip_prefix(&format!("{}/", remote.name))
+            .unwrap_or(&head_branch)
+            .to_string(),
+        Err(_) => head_branch,
+    };
+
     let remote = git.resolve_remote_for_branch(&repo.path, &workspace_repo.target_branch)?;
 
     let git_host = match GitHostService::from_url(&remote.url) {
