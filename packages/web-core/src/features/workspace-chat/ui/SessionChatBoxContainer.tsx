@@ -10,7 +10,7 @@ import {
   ExecutionProcessStatus,
   type ReviewError,
   type ExecutionProcess,
-  type ExecutorAction,
+  type ExecutorActionType,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -168,17 +168,20 @@ function reviewErrorKey(error: unknown): string {
 // metadata (executor_action), so the turn navigator can list every turn — even
 // ones whose entries haven't been paged in yet — without loading their logs.
 // Returns null for non-user processes (setup/cleanup/review scripts).
+//
+// Only the top-level action is inspected, never the `next_action` chain: a
+// sequential setup-script process chains its `next_action` to the coding agent
+// (setup → … → CodingAgentInitialRequest), so walking the chain would surface
+// that prompt on the setup process too and produce a phantom duplicate turn.
+// A genuine coding-agent process always carries the request at the top level
+// (matches the `isFirstTurn` derivation in useConversationHistory).
 function getUserPromptFromProcess(process: ExecutionProcess): string | null {
-  let current: ExecutorAction | null = process.executor_action;
-  while (current) {
-    const typ = current.typ;
-    if (
-      typ.type === 'CodingAgentInitialRequest' ||
-      typ.type === 'CodingAgentFollowUpRequest'
-    ) {
-      return typ.prompt;
-    }
-    current = current.next_action;
+  const typ: ExecutorActionType = process.executor_action.typ;
+  if (
+    typ.type === 'CodingAgentInitialRequest' ||
+    typ.type === 'CodingAgentFollowUpRequest'
+  ) {
+    return typ.prompt;
   }
   return null;
 }
