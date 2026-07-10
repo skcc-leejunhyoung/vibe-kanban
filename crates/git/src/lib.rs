@@ -1528,15 +1528,22 @@ impl GitService {
         // Strip the actual remote's `<remote>/` prefix (remote names and branch
         // names can both contain slashes, so don't just split on the first `/`).
         let remote = self.get_remote_from_branch_ref(&repo, remote_branch.get())?;
-        let default_remote = self.default_remote(&repo, repo_path)?;
-        let remote_name = remote.name().unwrap_or(&default_remote.name);
+        let remote_name = match remote.name() {
+            Some(name) => name.to_string(),
+            // Only resolve the default remote when the branch's remote is unnamed
+            // (rare) — avoids an eager `git remote` lookup on the common path.
+            None => self.default_remote(&repo, repo_path)?.name,
+        };
         let prefix = format!("{remote_name}/");
         let local_name = remote_branch_name
             .strip_prefix(&prefix)
             .unwrap_or(remote_branch_name)
             .to_string();
 
-        // Reuse an existing local branch of the same name if present.
+        // Reuse an existing local branch of the same name if present. This assumes
+        // a same-named local branch is the intended merge target; if an unrelated
+        // local `<local_name>` exists, the merge runs against it and the divergence
+        // guards in `merge_changes` reject a mismatched history.
         if repo.find_branch(&local_name, BranchType::Local).is_ok() {
             return Ok(local_name);
         }
