@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { create, useModal } from '@ebay/nice-modal-react';
-import { LightningIcon } from '@phosphor-icons/react';
+import { LightningIcon, StarIcon, XIcon } from '@phosphor-icons/react';
 import {
   Dialog,
   DialogDescription,
@@ -24,6 +24,7 @@ import { AgentIcon } from '@/shared/components/AgentIcon';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
+import { useFolderFavoritesStore } from '@/shared/stores/useFolderFavoritesStore';
 
 /**
  * "Quick chat": a low-ceremony launcher to run an agent directly in an existing
@@ -48,6 +49,13 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const favorites = useFolderFavoritesStore((s) => s.favorites);
+  const addFavorite = useFolderFavoritesStore((s) => s.addFavorite);
+  const removeFavorite = useFolderFavoritesStore((s) => s.removeFavorite);
+  const isRepoFavorite = repo
+    ? favorites.some((f) => f.path === repo.path)
+    : false;
 
   const {
     executorConfig,
@@ -102,6 +110,23 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     modal.hide();
   };
 
+  // Register a path as a repo and select it. Returns the repo on success so
+  // callers (folder picker, favorite chips) can react; sets `error` and returns
+  // null when the path isn't a git repository.
+  const registerAndSelect = useCallback(async (path: string) => {
+    try {
+      const registered = await repoApi.register({ path });
+      setRepo(registered);
+      return registered;
+    } catch (e) {
+      setError(
+        getErrorMessage(e) ||
+          'That folder could not be opened. It must be a git repository.'
+      );
+      return null;
+    }
+  }, []);
+
   const pickFolder = useCallback(async () => {
     setError(null);
     const path = await FolderPickerDialog.show({
@@ -110,16 +135,30 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       description: 'The agent runs directly in this folder.',
     });
     if (!path) return;
-    try {
-      const registered = await repoApi.register({ path });
-      setRepo(registered);
-    } catch (e) {
-      setError(
-        getErrorMessage(e) ||
-          'That folder could not be opened. It must be a git repository.'
-      );
+    await registerAndSelect(path);
+  }, [repo?.path, registerAndSelect]);
+
+  const selectFavorite = useCallback(
+    async (path: string) => {
+      setError(null);
+      await registerAndSelect(path);
+    },
+    [registerAndSelect]
+  );
+
+  // Star toggle for the currently selected folder: pin it for one-click reuse,
+  // or unpin if already a favorite.
+  const toggleFavorite = useCallback(() => {
+    if (!repo) return;
+    if (isRepoFavorite) {
+      removeFavorite(repo.path);
+    } else {
+      addFavorite({
+        path: repo.path,
+        name: repo.display_name || repo.name,
+      });
     }
-  }, [repo?.path]);
+  }, [repo, isRepoFavorite, addFavorite, removeFavorite]);
 
   const handleExecutorChange = useCallback((executor: BaseCodingAgent) => {
     setScratchConfig(
@@ -188,6 +227,62 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           Edits land directly in your working tree.
         </DialogDescription>
       </DialogHeader>
+
+      <div className="flex flex-wrap items-center gap-base">
+        <button
+          type="button"
+          onClick={toggleFavorite}
+          disabled={!repo}
+          title={
+            isRepoFavorite
+              ? 'Remove this folder from favorites'
+              : 'Add this folder to favorites'
+          }
+          aria-label={
+            isRepoFavorite
+              ? 'Remove this folder from favorites'
+              : 'Add this folder to favorites'
+          }
+          className="inline-flex items-center gap-half rounded-md border border-border px-base py-half text-sm text-normal hover:text-high disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <StarIcon
+            weight={isRepoFavorite ? 'fill' : 'regular'}
+            className={`size-icon-sm ${isRepoFavorite ? 'text-brand' : ''}`}
+          />
+          {isRepoFavorite ? 'Favorited' : 'Favorite'}
+        </button>
+        {favorites.map((fav) => {
+          const isActive = repo?.path === fav.path;
+          return (
+            <span
+              key={fav.path}
+              className={`inline-flex items-center gap-half rounded-full border px-base py-half text-sm ${
+                isActive
+                  ? 'border-brand text-high'
+                  : 'border-border text-normal'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => selectFavorite(fav.path)}
+                title={fav.path}
+                className="max-w-[200px] truncate hover:text-high"
+              >
+                {fav.name}
+              </button>
+              <button
+                type="button"
+                onClick={() => removeFavorite(fav.path)}
+                aria-label={`Remove ${fav.name} from favorites`}
+                title="Remove from favorites"
+                className="inline-flex items-center text-low hover:text-error transition-colors"
+              >
+                <XIcon className="size-icon-xs" weight="bold" />
+              </button>
+            </span>
+          );
+        })}
+      </div>
 
       <div className="@container">
         <CreateChatBox
