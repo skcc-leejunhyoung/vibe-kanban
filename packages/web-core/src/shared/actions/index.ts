@@ -200,6 +200,22 @@ async function findMergedFeatureBranch(
   }
 }
 
+// The branch a workspace's work branch merges into for the given repo. A PR may
+// originate from this target branch itself (e.g. an upstream `target -> base`
+// PR), so it's a valid candidate when searching for a linkable PR.
+async function findRepoTargetBranch(
+  workspaceId: string,
+  repoId: string
+): Promise<string | undefined> {
+  try {
+    const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+    const repoStatus = branchStatus.find((s) => s.repo_id === repoId);
+    return repoStatus?.target_branch_name || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isOpenPrFromWorkspaceBranch(
   merge: Merge,
   workspaceBranch: string
@@ -988,22 +1004,38 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && !ctx.hasOpenPR,
     execute: async (ctx, workspaceId, repoId) => {
-      // In a three-branch flow the linkable PR's head is the feature branch the
-      // work branch was merged into. Try that first, then fall back to the work
-      // branch (backend default when head_branch is null).
-      const featureBranch = await findMergedFeatureBranch(workspaceId, repoId);
+      // Search candidate head (source) branches for a linkable PR, in priority
+      // order:
+      //   1. the feature branch the work branch was merged into (three-branch
+      //      flow — the PR's head is the intermediate feature branch)
+      //   2. the work branch itself
+      //   3. the repo's target branch — a PR may originate from the target
+      //      branch itself (e.g. an upstream `target -> base` PR)
+      const [featureBranch, targetBranch, workspace] = await Promise.all([
+        findMergedFeatureBranch(workspaceId, repoId),
+        findRepoTargetBranch(workspaceId, repoId),
+        getWorkspace(ctx.queryClient, workspaceId),
+      ]);
 
-      let result = await workspacesApi.attachPr(workspaceId, {
-        repo_id: repoId,
-        head_branch: featureBranch ?? null,
-      });
+      // Sending the work branch explicitly is equivalent to null (the backend
+      // default), which lets us dedupe candidates by branch name.
+      const candidates = [featureBranch, workspace.branch, targetBranch].filter(
+        (branch, i, arr): branch is string =>
+          !!branch && arr.indexOf(branch) === i
+      );
 
-      if (featureBranch && result.success && !result.data.pr_attached) {
+      let result:
+        | Awaited<ReturnType<typeof workspacesApi.attachPr>>
+        | undefined;
+      for (const head_branch of candidates) {
         result = await workspacesApi.attachPr(workspaceId, {
           repo_id: repoId,
-          head_branch: null,
+          head_branch,
         });
+        if (!result.success || result.data.pr_attached) break;
       }
+
+      if (!result) return;
 
       if (result.success && result.data.pr_attached && result.data.pr_number) {
         invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
