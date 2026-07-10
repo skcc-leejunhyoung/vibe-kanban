@@ -442,12 +442,9 @@ pub async fn merge_workspace(
         .git()
         .is_remote_branch(&repo.path, &workspace_repo.target_branch)?;
     let target_branch = if is_target_remote {
-        let local_branch = deployment
+        deployment
             .git()
-            .ensure_local_branch_for_remote(&repo.path, &workspace_repo.target_branch)?;
-        WorkspaceRepo::update_target_branch(pool, workspace.id, request.repo_id, &local_branch)
-            .await?;
-        local_branch
+            .ensure_local_branch_for_remote(&repo.path, &workspace_repo.target_branch)?
     } else {
         workspace_repo.target_branch.clone()
     };
@@ -465,6 +462,14 @@ pub async fn merge_workspace(
         &workspace.branch,
         &target_branch,
     )?;
+
+    // Persist the materialized local target only after the merge succeeds, so a
+    // failed merge (diverged base, dirty worktree, ff-only rejection) doesn't
+    // silently rewrite the recorded target branch.
+    if is_target_remote {
+        WorkspaceRepo::update_target_branch(pool, workspace.id, request.repo_id, &target_branch)
+            .await?;
+    }
 
     Merge::create_direct(
         pool,
