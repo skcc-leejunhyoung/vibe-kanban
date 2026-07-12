@@ -733,7 +733,15 @@ target_remote_commits_ahead: number | null,
 /**
  * Commits the local target (base) branch is behind the remote.
  */
-target_remote_commits_behind: number | null, merges: Array<Merge>, is_rebase_in_progress: boolean, conflict_op: ConflictOp | null, conflicted_files: Array<string>, is_target_remote: boolean, };
+target_remote_commits_behind: number | null,
+/**
+ * Whether the work branch has a counterpart on the repo's primary remote
+ * (a local `refs/remotes/<remote>/<branch>` ref exists). Independent of any
+ * open PR. Drives the "Pull" button: pull fast-forwards the work branch from
+ * origin, so it is only meaningful when this is true. Local-only work
+ * branches (e.g. vk/* worktrees never pushed) are false.
+ */
+work_branch_has_remote: boolean, merges: Array<Merge>, is_rebase_in_progress: boolean, conflict_op: ConflictOp | null, conflicted_files: Array<string>, is_target_remote: boolean, };
 
 export type WorkspaceCommit = { repo_id: string, repo_name: string, sha: string, short_sha: string, subject: string, author: string,
 /**

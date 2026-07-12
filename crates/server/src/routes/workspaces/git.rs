@@ -188,6 +188,12 @@ pub struct BranchStatus {
     pub target_remote_commits_ahead: Option<usize>,
     /// Commits the local target (base) branch is behind the remote.
     pub target_remote_commits_behind: Option<usize>,
+    /// Whether the work branch has a counterpart on the repo's primary remote
+    /// (a local `refs/remotes/<remote>/<branch>` ref exists). Independent of any
+    /// open PR. Drives the "Pull" button: pull fast-forwards the work branch from
+    /// origin, so it is only meaningful when this is true. Local-only work
+    /// branches (e.g. vk/* worktrees never pushed) are false.
+    pub work_branch_has_remote: bool,
     pub merges: Vec<Merge>,
     pub is_rebase_in_progress: bool,
     pub conflict_op: Option<ConflictOp>,
@@ -965,6 +971,7 @@ pub async fn get_workspace_branch_status(
                     remote_commits_ahead: None,
                     target_remote_commits_ahead: None,
                     target_remote_commits_behind: None,
+                    work_branch_has_remote: false,
                     merges: repo_merges,
                     is_rebase_in_progress: false,
                     conflict_op: None,
@@ -1061,6 +1068,24 @@ pub async fn get_workspace_branch_status(
             (None, None)
         };
 
+        // Whether the work branch has a counterpart on the repo's primary remote.
+        // Checked via the local remote-tracking ref (`origin/<work_branch>`), so
+        // it's network-free and — unlike `remote_commits_ahead` above — does NOT
+        // depend on an open PR. This mirrors what the pull operation actually does
+        // (resolve origin for the branch), so the "Pull" button matches whether a
+        // pull would do anything: a pushed vk branch with no PR still shows it, a
+        // local-only branch never does.
+        let work_branch_has_remote =
+            if let Some(remote) = crate::routes::repo::resolve_primary_remote(&deployment, &repo) {
+                deployment
+                    .git()
+                    .get_remote_tracking_status(&repo.path, &workspace.branch, &remote)
+                    .map(|(exists, _, _)| exists)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
         // How far the local target (base) branch is ahead/behind its counterpart
         // on the repo's primary remote. Read from local tracking refs only (no
         // network), so it's cheap to include in this poll. Only meaningful for a
@@ -1125,6 +1150,7 @@ pub async fn get_workspace_branch_status(
                 remote_commits_behind: remote_behind,
                 target_remote_commits_ahead: target_remote_ahead,
                 target_remote_commits_behind: target_remote_behind,
+                work_branch_has_remote,
                 merges: repo_merges,
                 target_branch_name: target_branch,
                 is_rebase_in_progress,
