@@ -1542,7 +1542,19 @@ pub fn normalize_logs(
         let mut state = LogState::new(entry_index.clone());
         let mut stdout_lines = msg_store.stdout_lines_stream();
 
+        // When replaying a completed process, the store hands back buffered
+        // lines that are immediately `Ready`, so this loop never awaits and
+        // never yields to the tokio scheduler. Parsing each line is CPU-bound
+        // (serde_json), so a large log (tens of thousands of lines) monopolizes
+        // its worker thread and, with a few streams in flight, starves the
+        // whole pool — stalling `/api/health` until the supervisor kills us.
+        // Cooperatively yield every so often to keep the workers responsive.
+        let mut processed_lines: usize = 0;
         while let Some(Ok(line)) = stdout_lines.next().await {
+            processed_lines += 1;
+            if processed_lines % 256 == 0 {
+                tokio::task::yield_now().await;
+            }
             if let Ok(rate_limit) = serde_json::from_str::<RateLimit>(&line) {
                 add_normalized_entry(&msg_store, &entry_index, rate_limit.to_normalized_entry());
                 continue;

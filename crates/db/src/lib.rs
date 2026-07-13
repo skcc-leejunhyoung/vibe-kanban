@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use sqlx::{
     ConnectOptions, Error, Pool, Sqlite, SqlitePool,
@@ -80,7 +80,13 @@ impl DBService {
         );
         let options = SqliteConnectOptions::from_str(&database_url)?
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Delete);
+            // WAL lets readers and the single writer proceed concurrently, so a
+            // slow write no longer blocks the whole file (the old `Delete`
+            // journal serialized everything and turned lock contention into
+            // multi-second stalls). `busy_timeout` waits on a held lock instead
+            // of failing immediately.
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(10));
         let pool = SqlitePool::connect_with(options).await?;
         run_migrations(&pool).await?;
         Ok(DBService { pool })
@@ -93,7 +99,8 @@ impl DBService {
         );
         let options = SqliteConnectOptions::from_str(&database_url)?
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Delete)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(10))
             .disable_statement_logging();
         SqlitePoolOptions::new()
             .max_connections(64)
@@ -131,7 +138,8 @@ impl DBService {
         );
         let options = SqliteConnectOptions::from_str(&database_url)?
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Delete);
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(10));
 
         let pool = if let Some(hook) = after_connect {
             SqlitePoolOptions::new()

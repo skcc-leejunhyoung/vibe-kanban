@@ -206,7 +206,23 @@ pub async fn load_raw_log_messages(pool: &SqlitePool, execution_id: Uuid) -> Opt
         .ok()
         .flatten()
     {
-        let messages = utils::execution_logs::parse_log_jsonl_lossy(execution_id, &jsonl);
+        // Parsing a large JSONL log (tens of MB, tens of thousands of lines)
+        // is CPU-bound and yields nothing to the async scheduler. Running it
+        // inline on a tokio worker starves other tasks — including the
+        // supervisor's `/api/health` probe, which then trips a restart. Offload
+        // to the blocking pool so the async workers stay responsive.
+        let messages = tokio::task::spawn_blocking(move || {
+            utils::execution_logs::parse_log_jsonl_lossy(execution_id, &jsonl)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(
+                "Log-parse task panicked/cancelled for execution {}: {}",
+                execution_id,
+                e
+            );
+            Vec::new()
+        });
         if !messages.is_empty() {
             return Some(messages);
         }

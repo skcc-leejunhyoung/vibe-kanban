@@ -107,7 +107,25 @@ impl MsgStore {
     ) -> futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>> {
         let (history, rx) = (self.get_history(), self.get_receiver());
 
-        let hist = futures::stream::iter(history.into_iter().map(Ok::<_, std::io::Error>));
+        // Replaying buffered history is `Ready`-immediate: a plain
+        // `stream::iter` never returns `Pending`, so a consumer that does
+        // CPU-bound work per item (e.g. log normalization parsing tens of
+        // thousands of lines) runs the whole replay without ever yielding to
+        // the tokio scheduler, monopolizing its worker. With several replays in
+        // flight the pool starves and the supervisor's `/api/health` probe
+        // times out, tripping a restart loop. Cooperatively yield every so
+        // often so co-located tasks stay schedulable. This covers every
+        // downstream stream (stdout/stderr/lines) and executor uniformly.
+        let hist = futures::stream::unfold(
+            (history.into_iter(), 0usize),
+            |(mut iter, count)| async move {
+                let msg = iter.next()?;
+                if count % 256 == 255 {
+                    tokio::task::yield_now().await;
+                }
+                Some((Ok::<_, std::io::Error>(msg), (iter, count + 1)))
+            },
+        );
         let live = BroadcastStream::new(rx).filter_map(|res| async move {
             match res {
                 Ok(msg) => Some(Ok(msg)),
