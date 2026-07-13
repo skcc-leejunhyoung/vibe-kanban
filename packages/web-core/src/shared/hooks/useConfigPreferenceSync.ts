@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { Config } from 'shared/types';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
+import {
+  useFolderFavoritesStore,
+  type FolderFavorite,
+} from '@/shared/stores/useFolderFavoritesStore';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import {
@@ -72,6 +76,30 @@ function diffEqual(a: DiffViewPrefs, b: DiffViewPrefs): boolean {
     a.ignoreWhitespace === b.ignoreWhitespace &&
     a.wrapText === b.wrapText
   );
+}
+
+function favoritesEqual(a: FolderFavorite[], b: FolderFavorite[]): boolean {
+  // Favorites are a small ordered list of plain {path, name} pairs, so a stable
+  // JSON compare is sufficient for echo detection.
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Coerce opaque config JSON into a clean, well-formed favorites list. */
+function readFolderFavorites(raw: unknown): FolderFavorite[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FolderFavorite[] = [];
+  for (const item of raw) {
+    if (
+      item &&
+      typeof item === 'object' &&
+      typeof (item as { path?: unknown }).path === 'string' &&
+      typeof (item as { name?: unknown }).name === 'string'
+    ) {
+      const fav = item as FolderFavorite;
+      out.push({ path: fav.path, name: fav.name });
+    }
+  }
+  return out;
 }
 
 function readDiffView(raw: unknown): DiffViewPrefs {
@@ -178,6 +206,18 @@ const PREF_SPECS: PrefSpec[] = [
     subscribe: (cb) => useDiffViewStore.subscribe(cb),
     equal: diffEqual,
     toConfig: (v) => ({ diff_view: v as unknown as Config['diff_view'] }),
+  }),
+  // 5. Quick-chat folder favorites
+  pref<FolderFavorite[]>({
+    getConfigValue: (c) => readFolderFavorites(c.quick_chat_favorites),
+    isDefault: (v) => v.length === 0,
+    readStore: () => useFolderFavoritesStore.getState().favorites,
+    applyToStore: (v) => useFolderFavoritesStore.setState({ favorites: v }),
+    subscribe: (cb) => useFolderFavoritesStore.subscribe(cb),
+    equal: favoritesEqual,
+    toConfig: (v) => ({
+      quick_chat_favorites: v as unknown as Config['quick_chat_favorites'],
+    }),
   }),
 ];
 

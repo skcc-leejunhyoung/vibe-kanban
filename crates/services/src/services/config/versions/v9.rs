@@ -73,6 +73,14 @@ fn default_diff_view() -> serde_json::Value {
     })
 }
 
+/// Quick-chat folder favorites. Opaque `FolderFavorite[]` (`{ path, name }`),
+/// validated client-side by the web `useFolderFavoritesStore`; the backend only
+/// round-trips it. Lives in config so favorites persist per host computer
+/// instead of per-origin localStorage (shared across the local + remote web).
+fn default_quick_chat_favorites() -> serde_json::Value {
+    serde_json::Value::Array(Vec::new())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct Config {
     pub config_version: String,
@@ -139,6 +147,9 @@ pub struct Config {
     /// Opaque diff viewer preferences ({ mode, ignoreWhitespace, wrapText }).
     #[serde(default = "default_diff_view")]
     pub diff_view: serde_json::Value,
+    /// Opaque quick-chat folder favorites (`FolderFavorite[]`).
+    #[serde(default = "default_quick_chat_favorites")]
+    pub quick_chat_favorites: serde_json::Value,
 }
 
 impl Config {
@@ -177,6 +188,7 @@ impl Config {
             theme_variant: default_theme_variant(),
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
+            quick_chat_favorites: default_quick_chat_favorites(),
         }
     }
 
@@ -242,6 +254,7 @@ impl Default for Config {
             theme_variant: default_theme_variant(),
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
+            quick_chat_favorites: default_quick_chat_favorites(),
         }
     }
 }
@@ -272,6 +285,10 @@ mod tests {
         assert_eq!(migrated.theme_presets, serde_json::Value::Array(vec![]));
         assert_eq!(migrated.diff_view["mode"], "unified");
         assert_eq!(migrated.diff_view["ignoreWhitespace"], true);
+        assert_eq!(
+            migrated.quick_chat_favorites,
+            serde_json::Value::Array(vec![])
+        );
     }
 
     #[test]
@@ -305,5 +322,9 @@ mod tests {
         assert!(config.keyboard_shortcuts.is_empty());
         assert_eq!(config.theme_variant, "default");
         assert_eq!(config.diff_view["mode"], "unified");
+        assert_eq!(
+            config.quick_chat_favorites,
+            serde_json::Value::Array(vec![])
+        );
     }
 }

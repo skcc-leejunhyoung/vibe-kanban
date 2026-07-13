@@ -872,7 +872,11 @@ theme_presets: JsonValue,
 /**
  * Opaque diff viewer preferences ({ mode, ignoreWhitespace, wrapText }).
  */
-diff_view: JsonValue, };
+diff_view: JsonValue,
+/**
+ * Opaque quick-chat folder favorites (`FolderFavorite[]`).
+ */
+quick_chat_favorites: JsonValue, };
 
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 
