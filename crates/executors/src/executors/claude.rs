@@ -738,6 +738,26 @@ pub enum HistoryStrategy {
 /// Default context window for models (used until we get actual value from result)
 const DEFAULT_CLAUDE_CONTEXT_WINDOW: u32 = 200_000;
 
+/// Best-effort initial context window for a model, derived from its name.
+///
+/// This is only the placeholder shown until the CLI reports the real value in
+/// the result message's `modelUsage` (see the `Result` handler), which always
+/// wins. The heuristic just makes the pre-result display correct for models
+/// whose window differs from the 200K default:
+/// - Fable / Mythos ship a 1M context window *by default* (no opt-in variant).
+/// - Opus exposes 1M only through the explicit `[1m]` beta variant.
+///
+/// Anything else falls back to the 200K default and self-corrects once the
+/// first result arrives, so new 1M models need no code change here.
+fn initial_context_window_for_model(model: &str) -> u32 {
+    let model = model.to_ascii_lowercase();
+    if model.contains("fable") || model.contains("mythos") || model.contains("[1m]") {
+        1_000_000
+    } else {
+        DEFAULT_CLAUDE_CONTEXT_WINDOW
+    }
+}
+
 /// Internal stdout marker the Stop hook callback uses to forward agent-scheduled
 /// wakeups (session_crons) to the log storage consumer. The JSON array of crons
 /// follows the prefix on the same line. Not part of the Claude CLI protocol.
@@ -1322,9 +1342,8 @@ impl ClaudeLogProcessor {
                             // this name matches the model names in the usage report in the result message
                             if let Some(model) = model {
                                 self.main_model_name = Some(model.clone());
-                                if model.contains("[1m]") {
-                                    self.main_model_context_window = 1_000_000;
-                                }
+                                self.main_model_context_window =
+                                    initial_context_window_for_model(model);
                             }
                         }
                         // Skip system init messages because it doesn't contain the actual model that will be used in assistant messages in case of claude-code-router.
@@ -2992,6 +3011,31 @@ mod tests {
         assert_eq!(
             entries[0].content,
             "System initialized with model: claude-sonnet-4-20250514"
+        );
+    }
+
+    #[test]
+    fn test_initial_context_window_for_model() {
+        // Fable / Mythos default to a 1M context window (no opt-in variant).
+        assert_eq!(
+            initial_context_window_for_model("claude-fable-5"),
+            1_000_000
+        );
+        assert_eq!(initial_context_window_for_model("fable"), 1_000_000);
+        assert_eq!(
+            initial_context_window_for_model("claude-mythos-5"),
+            1_000_000
+        );
+        // Opus only reaches 1M via the explicit [1m] beta variant.
+        assert_eq!(initial_context_window_for_model("opus[1m]"), 1_000_000);
+        // Everything else falls back to the 200K default (result message corrects it).
+        assert_eq!(
+            initial_context_window_for_model("opus"),
+            DEFAULT_CLAUDE_CONTEXT_WINDOW
+        );
+        assert_eq!(
+            initial_context_window_for_model("claude-haiku-4-5"),
+            DEFAULT_CLAUDE_CONTEXT_WINDOW
         );
     }
 
