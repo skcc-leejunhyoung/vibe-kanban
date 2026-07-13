@@ -338,6 +338,12 @@ impl StandardCodingAgentExecutor for Codex {
             model_selector: ModelSelectorConfig {
                 models: vec![
                     ModelInfo {
+                        id: "gpt-5.5-pro".to_string(),
+                        name: "GPT-5.5 Pro".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
                         id: "gpt-5.5".to_string(),
                         name: "GPT-5.5".to_string(),
                         provider_id: None,
@@ -368,6 +374,12 @@ impl StandardCodingAgentExecutor for Codex {
                         reasoning_options: xhigh_reasoning_options.clone(),
                     },
                     ModelInfo {
+                        id: "gpt-5.4-nano".to_string(),
+                        name: "GPT-5.4 Nano".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
                         id: "gpt-5.3-codex".to_string(),
                         name: "GPT-5.3 Codex".to_string(),
                         provider_id: None,
@@ -382,6 +394,12 @@ impl StandardCodingAgentExecutor for Codex {
                     ModelInfo {
                         id: "gpt-5.2".to_string(),
                         name: "GPT-5.2".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.2-codex".to_string(),
+                        name: "GPT-5.2 Codex".to_string(),
                         provider_id: None,
                         reasoning_options: xhigh_reasoning_options,
                     },
