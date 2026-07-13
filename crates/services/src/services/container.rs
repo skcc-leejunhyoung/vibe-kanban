@@ -1115,10 +1115,11 @@ pub trait ContainerService {
         workspace: &Workspace,
         executor_config: ExecutorConfig,
         prompt: String,
+        session_name: Option<String>,
     ) -> Result<ExecutionProcess, ContainerError> {
         // Create container (worktrees).
         self.create(workspace).await?;
-        self.spawn_oneshot_coding_agent(workspace, executor_config, prompt)
+        self.spawn_oneshot_coding_agent(workspace, executor_config, prompt, session_name)
             .await
     }
 
@@ -1133,9 +1134,10 @@ pub trait ContainerService {
         workspace: &Workspace,
         executor_config: ExecutorConfig,
         prompt: String,
+        session_name: Option<String>,
     ) -> Result<ExecutionProcess, ContainerError> {
         self.ensure_container_exists(workspace).await?;
-        self.spawn_oneshot_coding_agent(workspace, executor_config, prompt)
+        self.spawn_oneshot_coding_agent(workspace, executor_config, prompt, session_name)
             .await
     }
 
@@ -1149,6 +1151,7 @@ pub trait ContainerService {
         workspace: &Workspace,
         executor_config: ExecutorConfig,
         prompt: String,
+        session_name: Option<String>,
     ) -> Result<ExecutionProcess, ContainerError> {
         let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
             .await?
@@ -1158,7 +1161,7 @@ pub trait ContainerService {
             &self.db().pool,
             &CreateSession {
                 executor: Some(executor_config.executor.to_string()),
-                name: None,
+                name: session_name,
             },
             Uuid::new_v4(),
             workspace.id,

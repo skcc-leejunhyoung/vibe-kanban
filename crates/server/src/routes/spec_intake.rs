@@ -154,7 +154,7 @@ async fn run_intake(
 ) -> Result<(String, String), ApiError> {
     let ep = deployment
         .container()
-        .start_oneshot_coding_agent(workspace, executor_config, prompt)
+        .start_oneshot_coding_agent(workspace, executor_config, prompt, None)
         .await?;
 
     let pool = &deployment.db().pool;

@@ -278,6 +278,7 @@ async fn run_pr_generation(
                 workspace,
                 executor_config.clone(),
                 prompt.clone(),
+                Some("create-pr".to_string()),
             )
             .await?;
 
