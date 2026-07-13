@@ -338,6 +338,24 @@ impl StandardCodingAgentExecutor for Codex {
             model_selector: ModelSelectorConfig {
                 models: vec![
                     ModelInfo {
+                        id: "gpt-5.6-luna".to_string(),
+                        name: "GPT-5.6 Luna".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.6-sol".to_string(),
+                        name: "GPT-5.6 Sol".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.6-terra".to_string(),
+                        name: "GPT-5.6 Terra".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
                         id: "gpt-5.5-pro".to_string(),
                         name: "GPT-5.5 Pro".to_string(),
                         provider_id: None,
