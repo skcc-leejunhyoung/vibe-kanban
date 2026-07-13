@@ -4,12 +4,14 @@ import { useTranslation } from 'react-i18next';
 import { workspacesApi } from '@/shared/lib/api';
 import { useActions } from '@/shared/hooks/useActions';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
-import { usePush } from '@/shared/hooks/usePush';
+import {
+  usePushBackground,
+  usePushBackgroundStore,
+} from '@/shared/stores/usePushBackgroundStore';
 import { useRenameBranch } from '@/shared/hooks/useRenameBranch';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
-import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { GitPanel, type RepoInfo } from '@vibe/ui/components/GitPanel';
 import { Actions } from '@/shared/actions';
@@ -22,6 +24,10 @@ export interface GitPanelContainerProps {
 }
 
 type PushState = 'idle' | 'pending' | 'success' | 'error';
+
+// Stable empty map so reading push state for a workspace with no in-flight push
+// doesn't create a new object each render.
+const EMPTY_PUSH_STATES: Record<string, PushState> = {};
 
 export function GitPanelContainer({
   selectedWorkspace,
@@ -115,12 +121,12 @@ export function GitPanelContainer({
     [repos, branchStatus, summaryPr]
   );
 
-  // Track push state per repo: idle, pending, success, or error
-  const [pushStates, setPushStates] = useState<Record<string, PushState>>({});
-  const pushStatesRef = useRef<Record<string, PushState>>({});
-  pushStatesRef.current = pushStates;
-  const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentPushRepoRef = useRef<string | null>(null);
+  // Push state per repo lives in a background store keyed by workspace + repo,
+  // so an in-flight push and its result feedback survive navigating away from
+  // the git panel (component unmount) and keep running in the background.
+  const pushStates =
+    usePushBackground(selectedWorkspace?.id) ?? EMPTY_PUSH_STATES;
+  const startPush = usePushBackgroundStore((s) => s.startPush);
 
   // Track target-branch push state per repo (push the base branch to origin).
   const [targetPushStates, setTargetPushStates] = useState<
@@ -130,75 +136,22 @@ export function GitPanelContainer({
     null
   );
 
-  // Reset push-related state when the selected workspace changes to avoid
-  // leaking push state across workspaces with repos that share the same ID.
+  // Reset target-push state when the selected workspace changes to avoid
+  // leaking state across workspaces with repos that share the same ID. (Work-
+  // branch push state lives in the workspace-keyed background store, so it needs
+  // no reset here.)
   useEffect(() => {
-    setPushStates({});
-    pushStatesRef.current = {};
-    currentPushRepoRef.current = null;
     setTargetPushStates({});
 
-    if (successTimeoutRef.current) {
-      clearTimeout(successTimeoutRef.current);
-      successTimeoutRef.current = null;
-    }
     if (targetPushTimeoutRef.current) {
       clearTimeout(targetPushTimeoutRef.current);
       targetPushTimeoutRef.current = null;
     }
   }, [selectedWorkspace?.id]);
-  // Use push hook for direct API access with proper error handling
-  const pushMutation = usePush(
-    selectedWorkspace?.id,
-    // onSuccess
-    () => {
-      const repoId = currentPushRepoRef.current;
-      if (!repoId) return;
-      setPushStates((prev) => ({ ...prev, [repoId]: 'success' }));
-      // Clear success state after 2 seconds
-      successTimeoutRef.current = setTimeout(() => {
-        setPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
-      }, 2000);
-    },
-    // onError
-    async (err, errorData) => {
-      const repoId = currentPushRepoRef.current;
-      if (!repoId) return;
 
-      // Handle force push required - show confirmation dialog
-      if (errorData?.type === 'force_push_required' && selectedWorkspace?.id) {
-        setPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
-        await ForcePushDialog.show({
-          workspaceId: selectedWorkspace.id,
-          repoId,
-        });
-        return;
-      }
-
-      // Show error state and dialog for other errors
-      setPushStates((prev) => ({ ...prev, [repoId]: 'error' }));
-      const message =
-        err instanceof Error ? err.message : 'Failed to push changes';
-      ConfirmDialog.show({
-        title: 'Error',
-        message,
-        confirmText: 'OK',
-        showCancelButton: false,
-        variant: 'destructive',
-      });
-      // Clear error state after 3 seconds
-      successTimeoutRef.current = setTimeout(() => {
-        setPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
-      }, 3000);
-    }
-  );
-
-  // Clean up timeout on unmount
+  // Clean up the target-push timeout on unmount.
   useEffect(() => {
     return () => {
-      if (successTimeoutRef.current) {
-        clearTimeout(successTimeoutRef.current);
-      }
       if (targetPushTimeoutRef.current) {
         clearTimeout(targetPushTimeoutRef.current);
       }
@@ -357,24 +310,15 @@ export function GitPanelContainer({
     [selectedWorkspace, executeAction]
   );
 
-  // Handle push button click - use mutation for proper state tracking
+  // Handle push button click - delegate to the background store so the push and
+  // its result feedback keep running even if this panel unmounts.
   const handlePushClick = useCallback(
     (repoId: string) => {
-      // Use ref to check current state to avoid stale closure
-      if (pushStatesRef.current[repoId] === 'pending') return;
-
-      // Clear any existing timeout
-      if (successTimeoutRef.current) {
-        clearTimeout(successTimeoutRef.current);
-        successTimeoutRef.current = null;
-      }
-
-      // Track which repo we're pushing
-      currentPushRepoRef.current = repoId;
-      setPushStates((prev) => ({ ...prev, [repoId]: 'pending' }));
-      pushMutation.mutate({ repo_id: repoId });
+      const workspaceId = selectedWorkspace?.id;
+      if (!workspaceId) return;
+      startPush(workspaceId, repoId);
     },
-    [pushMutation]
+    [selectedWorkspace?.id, startPush]
   );
 
   return (
