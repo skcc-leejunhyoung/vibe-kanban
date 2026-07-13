@@ -153,11 +153,16 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // in-progress / completed background result instead of re-running the
     // first-message prefill. A different workspace (attempt.id change) resets.
     const initializedFor = useRef<string | null>(null);
+    // Set to attempt.id once the title/body have their real initial value, so
+    // the persist effect below never writes the transient empty reset (or an
+    // in-flight default fetch) over a saved draft.
+    const hydratedFor = useRef<string | null>(null);
     useEffect(() => {
       if (!isLoaded || initializedFor.current === attempt.id) {
         return;
       }
       initializedFor.current = attempt.id;
+      hydratedFor.current = null;
 
       // Fresh form for this workspace.
       setPrHeadBranch('');
@@ -168,12 +173,20 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       setPrTitle('');
       setPrBody('');
 
+      const entry = usePrBackgroundStore.getState().byWorkspace[attempt.id];
+
       // If a generated result is already waiting for this workspace, leave the
-      // title/body to the generate-apply effect below.
-      if (
-        usePrBackgroundStore.getState().byWorkspace[attempt.id]?.generate
-          ?.status === 'success'
-      ) {
+      // title/body to the generate-apply effect below (it also marks hydrated).
+      if (entry?.generate?.status === 'success') {
+        return;
+      }
+
+      // Restore a previously generated / hand-edited draft so navigating away
+      // and back does not lose it to the default first-message prefill.
+      if (entry?.draft) {
+        setPrTitle(entry.draft.title);
+        setPrBody(entry.draft.body);
+        hydratedFor.current = attempt.id;
         return;
       }
 
@@ -194,6 +207,8 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
           }
         } catch {
           // Fall back to empty fields if prompt loading fails.
+        } finally {
+          if (!isCancelled) hydratedFor.current = attempt.id;
         }
       };
 
@@ -213,12 +228,28 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       if (gen.status === 'success') {
         if (gen.title !== undefined) setPrTitle(gen.title);
         if (gen.description !== undefined) setPrBody(gen.description);
+        // The generated content now lives in the form; the persist effect below
+        // captures it into the durable draft, so consuming the task is safe.
+        hydratedFor.current = attempt.id;
         usePrBackgroundStore.getState().clearGenerate(attempt.id);
       } else if (gen.status === 'error' && modal.visible) {
         setError(gen.error ?? t('createPrDialog.errors.generateFailed'));
         usePrBackgroundStore.getState().clearGenerate(attempt.id);
       }
     }, [bg?.generate, modal.visible, attempt.id, t]);
+
+    // Persist the current form (AI-generated or hand-edited) into the durable
+    // per-workspace draft so it survives the dialog unmounting when the user
+    // navigates away, instead of the default first-message prefill overwriting
+    // it on the next open. Gated on hydration so the reset/default-fetch window
+    // never clobbers an existing draft with an empty form.
+    useEffect(() => {
+      if (hydratedFor.current !== attempt.id) return;
+      if (!prTitle && !prBody) return;
+      usePrBackgroundStore
+        .getState()
+        .setDraft(attempt.id, { title: prTitle, body: prBody });
+    }, [prTitle, prBody, attempt.id]);
 
     // Set default head (source) branch when branches load. Prefer the feature
     // branch the work branch was merged into; fall back to the work branch.
@@ -407,7 +438,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     useEffect(() => {
       const cr = bg?.create;
       if (!cr || cr.status === 'running') return;
-      const { clearCreate } = usePrBackgroundStore.getState();
+      const { clearCreate, clearDraft } = usePrBackgroundStore.getState();
 
       if (cr.status === 'error') {
         if (!modal.visible) return;
@@ -430,6 +461,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
           queryKey: ['branchStatus', attempt.id],
         });
         clearCreate(attempt.id);
+        // The PR is created; discard the saved draft so a later PR for this
+        // workspace starts from the default prefill again.
+        clearDraft(attempt.id);
         modal.resolve({ success: true } as CreatePRDialogResult);
         modal.hide();
         return;
@@ -477,10 +511,14 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       modal.hide();
     }, [modal]);
 
-    // Cancel button: abort any in-flight generation / creation, then close.
+    // Cancel button: abort any in-flight generation / creation and discard the
+    // saved draft, then close. Reopening re-initializes from the default prefill.
     const handleCancelCreatePR = useCallback(() => {
       cancelGenerate(attempt.id);
       cancelCreate(attempt.id);
+      usePrBackgroundStore.getState().clearDraft(attempt.id);
+      initializedFor.current = null;
+      hydratedFor.current = null;
       const result: CreatePRDialogResult = error
         ? { success: false, error }
         : { success: false };

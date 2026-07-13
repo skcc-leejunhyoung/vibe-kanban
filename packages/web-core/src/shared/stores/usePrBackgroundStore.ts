@@ -34,9 +34,19 @@ export interface PrCreateTask {
   error?: string;
 }
 
+// The current PR form (AI-generated and/or hand-edited) for a workspace. Held
+// here rather than only in the dialog's local state so it survives the dialog
+// unmounting when the user navigates away, instead of the default first-message
+// prefill overwriting a generated/edited draft on the next open.
+export interface PrDraft {
+  title: string;
+  body: string;
+}
+
 interface PrBackgroundEntry {
   generate?: PrGenerateTask;
   create?: PrCreateTask;
+  draft?: PrDraft;
 }
 
 interface PrBackgroundState {
@@ -50,6 +60,8 @@ interface PrBackgroundState {
   cancelCreate: (workspaceId: string) => void;
   clearGenerate: (workspaceId: string) => void;
   clearCreate: (workspaceId: string) => void;
+  setDraft: (workspaceId: string, draft: PrDraft) => void;
+  clearDraft: (workspaceId: string) => void;
 }
 
 // AbortControllers are non-serializable and must not trigger re-renders, so
@@ -85,7 +97,7 @@ function writeWorkspace(
   entry: PrBackgroundEntry
 ): Record<string, PrBackgroundEntry | undefined> {
   const next = { ...byWorkspace };
-  if (!entry.generate && !entry.create) {
+  if (!entry.generate && !entry.create && !entry.draft) {
     delete next[workspaceId];
     pruneControllers(workspaceId);
   } else {
@@ -221,6 +233,20 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
           byWorkspace: writeWorkspace(state.byWorkspace, workspaceId, {
             ...entry,
             create: undefined,
+          }),
+        };
+      }),
+
+    setDraft: (workspaceId, draft) => patch(workspaceId, { draft }),
+
+    clearDraft: (workspaceId) =>
+      set((state) => {
+        const entry = state.byWorkspace[workspaceId];
+        if (!entry?.draft) return state;
+        return {
+          byWorkspace: writeWorkspace(state.byWorkspace, workspaceId, {
+            ...entry,
+            draft: undefined,
           }),
         };
       }),

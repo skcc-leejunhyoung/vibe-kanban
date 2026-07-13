@@ -189,4 +189,34 @@ describe('usePrBackgroundStore', () => {
     store.clearGenerate('ws-gc');
     expect('ws-gc' in usePrBackgroundStore.getState().byWorkspace).toBe(false);
   });
+
+  it('stores and clears a form draft independently of the operations', () => {
+    const store = usePrBackgroundStore.getState();
+
+    store.setDraft('ws-draft', { title: 'My PR', body: 'Body text' });
+    expect(
+      usePrBackgroundStore.getState().byWorkspace['ws-draft']?.draft
+    ).toEqual({ title: 'My PR', body: 'Body text' });
+
+    store.clearDraft('ws-draft');
+    expect('ws-draft' in usePrBackgroundStore.getState().byWorkspace).toBe(
+      false
+    );
+  });
+
+  it('keeps the draft when a completed generation is cleared', async () => {
+    generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
+
+    const store = usePrBackgroundStore.getState();
+    store.startGenerate('ws-keep', genReq);
+    await flush();
+    // Simulate the dialog applying the generation into the durable draft, then
+    // consuming the generate task.
+    store.setDraft('ws-keep', { title: 'T', body: 'D' });
+    store.clearGenerate('ws-keep');
+
+    const entry = usePrBackgroundStore.getState().byWorkspace['ws-keep'];
+    expect(entry?.generate).toBeUndefined();
+    expect(entry?.draft).toEqual({ title: 'T', body: 'D' });
+  });
 });
