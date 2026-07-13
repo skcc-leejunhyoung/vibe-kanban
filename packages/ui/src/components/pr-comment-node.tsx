@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { NodeKey, SerializedLexicalNode, Spread } from 'lexical';
 import { PrCommentCard } from './pr-comment-card';
+import { openExternalUrl } from '../lib/open-url';
 import {
   createDecoratorNode,
   type DecoratorNodeConfig,
@@ -43,7 +44,7 @@ function PrCommentComponent({
       event.stopPropagation();
       // Open URL in new tab if available
       if (data.url) {
-        window.open(data.url, '_blank', 'noopener,noreferrer');
+        openExternalUrl(data.url);
       }
     },
     [data.url]

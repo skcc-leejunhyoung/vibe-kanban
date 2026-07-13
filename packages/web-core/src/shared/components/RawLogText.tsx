@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { AnsiHtml } from 'fancy-ansi/react';
 import { hasAnsi } from 'fancy-ansi';
 import { clsx } from 'clsx';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 interface RawLogTextProps {
   content: string;
@@ -68,10 +69,12 @@ const RawLogText = memo(
             <a
               key={index}
               href={part}
-              target="_blank"
-              rel="noopener noreferrer"
               className="underline text-info hover:text-info/80 cursor-pointer"
-              onClick={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openExternalUrl(part);
+              }}
             >
               {part}
             </a>

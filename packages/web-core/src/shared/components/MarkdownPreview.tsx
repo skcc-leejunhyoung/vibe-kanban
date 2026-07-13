@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { cn } from '@/shared/lib/utils';
 import { MermaidDiagram } from './MermaidDiagram';
 
@@ -69,12 +70,19 @@ export function MarkdownPreview({
           {children}
         </p>
       ),
-      a: ({ children, ...props }: ComponentPropsWithoutRef<'a'>) => (
+      a: ({ children, href, ...props }: ComponentPropsWithoutRef<'a'>) => (
         <a
           {...props}
+          href={href}
           className="text-brand hover:text-brand-hover hover:underline"
-          target="_blank"
-          rel="noopener noreferrer"
+          onClick={(e) => {
+            // Open in the web-app (PWA) window instead of the system default
+            // browser, matching the rest of the app's external-link behavior.
+            if (href) {
+              e.preventDefault();
+              openExternalUrl(href);
+            }
+          }}
         >
           {children}
         </a>

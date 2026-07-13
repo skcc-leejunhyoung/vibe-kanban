@@ -2,6 +2,7 @@ import { MessageSquare, Code, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { withDisplayTimeZone } from '../lib/datetime';
+import { openExternalUrl } from '../lib/open-url';
 
 export interface PrCommentCardProps {
   author: string;
@@ -148,7 +149,7 @@ function FullCard({
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                window.open(url, '_blank', 'noopener,noreferrer');
+                openExternalUrl(url);
               }}
               className="hover:text-foreground transition-colors"
               aria-label="Open in browser"

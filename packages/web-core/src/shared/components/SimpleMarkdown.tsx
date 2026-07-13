@@ -1,4 +1,5 @@
 import React from 'react';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 interface SimpleMarkdownProps {
   content: string;
@@ -90,15 +91,19 @@ function renderInline(text: string): React.ReactNode {
       );
     } else if (match[3]) {
       // [text](url)
+      const linkUrl = match[5];
+      const linkText = match[4];
       parts.push(
         <a
           key={i++}
-          href={match[5]}
-          target="_blank"
-          rel="noopener noreferrer"
+          href={linkUrl}
+          onClick={(e) => {
+            e.preventDefault();
+            openExternalUrl(linkUrl);
+          }}
           className="text-brand hover:underline"
         >
-          {match[4]}
+          {linkText}
         </a>
       );
     } else if (match[6]) {
@@ -110,8 +115,10 @@ function renderInline(text: string): React.ReactNode {
         <a
           key={i++}
           href={url}
-          target="_blank"
-          rel="noopener noreferrer"
+          onClick={(e) => {
+            e.preventDefault();
+            openExternalUrl(url);
+          }}
           className="text-brand hover:underline"
         >
           {label}

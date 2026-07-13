@@ -6,6 +6,7 @@ import {
   ChatsCircleIcon,
 } from '@phosphor-icons/react';
 import { CommentCard } from '@vibe/ui/components/CommentCard';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { formatRelativeTime } from '@/shared/lib/date';
 import type { NormalizedGitHubComment } from '@/shared/hooks/useWorkspaceContext';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
@@ -42,10 +43,12 @@ export const GitHubCommentRenderer = memo(function GitHubCommentRenderer({
         {comment.url && (
           <a
             href={comment.url}
-            target="_blank"
-            rel="noopener noreferrer"
             className="text-low hover:text-normal"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (comment.url) openExternalUrl(comment.url);
+            }}
           >
             <ArrowSquareOutIcon className="size-icon-xs" />
           </a>

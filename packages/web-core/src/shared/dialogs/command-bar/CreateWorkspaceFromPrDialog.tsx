@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { Button } from '@vibe/ui/components/Button';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { Label } from '@vibe/ui/components/Label';
 import {
@@ -343,8 +344,10 @@ const CreateWorkspaceFromPrDialogImpl =
                   {selectedPr && (
                     <a
                       href={selectedPr.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        openExternalUrl(selectedPr.url);
+                      }}
                       className="flex-shrink-0 p-2 text-muted-foreground hover:text-foreground transition-colors"
                       title={t('createWorkspaceFromPr.openPrInBrowser')}
                     >

@@ -7,6 +7,7 @@ import {
 } from '@vibe/ui/components/KeyboardDialog';
 import { Button } from '@vibe/ui/components/Button';
 import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { AlertCircle, ExternalLink, Loader2 } from 'lucide-react';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal, type NoProps } from '@/shared/lib/modals';
@@ -39,7 +40,7 @@ const ReleaseNotesDialogImpl = create<NoProps>(() => {
   const { data: releases, isLoading, isError } = useReleases();
 
   const handleOpenInBrowser = () => {
-    window.open(GITHUB_RELEASES_URL, '_blank');
+    openExternalUrl(GITHUB_RELEASES_URL);
   };
 
   return (

@@ -40,6 +40,7 @@ import { cn, playSound } from '@/shared/lib/utils';
 import { isTauriApp } from '@/shared/lib/platform';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 type SoundOption = {
   value: SoundFile;
@@ -243,7 +244,7 @@ export function LandingPage() {
   };
 
   const openExternalLink = (url: string) => {
-    window.open(url, '_blank', 'noopener,noreferrer');
+    openExternalUrl(url);
   };
 
   const handleSoundSelect = (value: SoundFile) => {
@@ -366,8 +367,12 @@ export function LandingPage() {
                 doing.{' '}
                 <a
                   href="https://www.vibekanban.com/docs/getting-started#safety-notice"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    openExternalLink(
+                      'https://www.vibekanban.com/docs/getting-started#safety-notice'
+                    );
+                  }}
                   className="text-brand hover:underline"
                 >
                   Learn more
@@ -556,8 +561,10 @@ export function LandingPage() {
             By continuing you agree to the{' '}
             <a
               href="https://www.vibekanban.com/terms"
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={(e) => {
+                e.preventDefault();
+                openExternalLink('https://www.vibekanban.com/terms');
+              }}
               className="text-brand hover:underline"
             >
               terms and conditions
@@ -565,8 +572,10 @@ export function LandingPage() {
             and{' '}
             <a
               href="https://www.vibekanban.com/privacy"
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={(e) => {
+                e.preventDefault();
+                openExternalLink('https://www.vibekanban.com/privacy');
+              }}
               className="text-brand hover:underline"
             >
               privacy policy
