@@ -15,14 +15,15 @@ export function useProjectWorkspaceCreateDraft() {
   const openWorkspaceCreateFromState = useCallback(
     async (
       initialState: CreateModeInitialState,
-      options?: { issueId?: string | null }
+      options?: { issueId?: string | null; hostId?: string | null }
     ): Promise<string | null> => {
       if (!projectId) return null;
 
       const draftId = await persistWorkspaceCreateDraft(
         initialState,
         crypto.randomUUID(),
-        runtime
+        runtime,
+        options?.hostId
       );
       if (!draftId) {
         return null;
@@ -37,10 +38,13 @@ export function useProjectWorkspaceCreateDraft() {
         appNavigation.goToProjectIssueWorkspaceCreate(
           projectId,
           issueId,
-          draftId
+          draftId,
+          { hostId: options?.hostId }
         );
       } else {
-        appNavigation.goToProjectWorkspaceCreate(projectId, draftId);
+        appNavigation.goToProjectWorkspaceCreate(projectId, draftId, {
+          hostId: options?.hostId,
+        });
       }
 
       return draftId;

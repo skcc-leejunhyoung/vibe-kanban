@@ -347,7 +347,13 @@ export function createLocalAppNavigation(): AppNavigation {
       navigateTo({ kind: 'project-issue', projectId, issueId }, transition),
     goToProjectIssueWorkspace: (projectId, issueId, workspaceId, transition) =>
       navigateTo(
-        { kind: 'project-issue-workspace', projectId, issueId, workspaceId },
+        {
+          kind: 'project-issue-workspace',
+          projectId,
+          issueId,
+          workspaceId,
+          hostId: transition?.hostId ?? undefined,
+        },
         transition
       ),
     goToProjectIssueWorkspaceCreate: (
@@ -357,12 +363,23 @@ export function createLocalAppNavigation(): AppNavigation {
       transition
     ) =>
       navigateTo(
-        { kind: 'project-issue-workspace-create', projectId, issueId, draftId },
+        {
+          kind: 'project-issue-workspace-create',
+          projectId,
+          issueId,
+          draftId,
+          hostId: transition?.hostId ?? undefined,
+        },
         transition
       ),
     goToProjectWorkspaceCreate: (projectId, draftId, transition) =>
       navigateTo(
-        { kind: 'project-workspace-create', projectId, draftId },
+        {
+          kind: 'project-workspace-create',
+          projectId,
+          draftId,
+          hostId: transition?.hostId ?? undefined,
+        },
         transition
       ),
   };

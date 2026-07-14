@@ -10,6 +10,8 @@ use super::McpServer;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct McpListWorkspacesRequest {
+    #[schemars(description = "Optional paired host ID. Omit to list this machine.")]
+    host_id: Option<Uuid>,
     #[schemars(description = "Filter by archived state")]
     archived: Option<bool>,
     #[schemars(description = "Filter by pinned state")]
@@ -28,6 +30,8 @@ struct McpListWorkspacesRequest {
 struct WorkspaceSummary {
     #[schemars(description = "Workspace ID")]
     id: String,
+    #[schemars(description = "Paired host ID, or null for this machine")]
+    host_id: Option<String>,
     #[schemars(description = "Workspace branch")]
     branch: String,
     #[schemars(description = "Whether the workspace is archived")]
@@ -49,6 +53,29 @@ struct McpListWorkspacesResponse {
     returned_count: usize,
     limit: usize,
     offset: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct PairedHost {
+    host_id: Uuid,
+    host_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PairedHostsResponse {
+    hosts: Vec<PairedHost>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct WorkspaceHostSummary {
+    host_id: String,
+    name: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct McpListWorkspaceHostsResponse {
+    hosts: Vec<WorkspaceHostSummary>,
+    count: usize,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -159,10 +186,34 @@ struct McpUpdateFromBaseEnvelope {
 
 #[tool_router(router = workspaces_tools_router, vis = "pub")]
 impl McpServer {
-    #[tool(description = "List local workspaces with optional filters and pagination.")]
+    #[tool(description = "List paired hosts that can run remote workspace operations.")]
+    async fn list_workspace_hosts(&self) -> Result<CallToolResult, ErrorData> {
+        let url = self.url("/api/relay-auth/client/hosts");
+        let response: PairedHostsResponse = match self.send_json(self.client.get(&url)).await {
+            Ok(response) => response,
+            Err(error) => return Ok(Self::tool_error(error)),
+        };
+        let hosts = response
+            .hosts
+            .into_iter()
+            .map(|host| WorkspaceHostSummary {
+                host_id: host.host_id.to_string(),
+                name: host.host_name,
+            })
+            .collect::<Vec<_>>();
+        McpServer::success(&McpListWorkspaceHostsResponse {
+            count: hosts.len(),
+            hosts,
+        })
+    }
+
+    #[tool(
+        description = "List workspaces on this machine or a paired host, with optional filters and pagination."
+    )]
     async fn list_workspaces(
         &self,
         Parameters(McpListWorkspacesRequest {
+            host_id,
             archived,
             pinned,
             branch,
@@ -171,7 +222,10 @@ impl McpServer {
             offset,
         }): Parameters<McpListWorkspacesRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url("/api/workspaces");
+        let url = match host_id {
+            Some(host_id) => self.url(&format!("/api/host/{host_id}/workspaces")),
+            None => self.url("/api/workspaces"),
+        };
         let mut workspaces: Vec<Workspace> = match self.send_json(self.client.get(&url)).await {
             Ok(ws) => ws,
             Err(e) => return Ok(Self::tool_error(e)),
@@ -209,6 +263,7 @@ impl McpServer {
             .take(limit)
             .map(|workspace| WorkspaceSummary {
                 id: workspace.id.to_string(),
+                host_id: host_id.map(|id| id.to_string()),
                 branch: workspace.branch,
                 archived: workspace.archived,
                 pinned: workspace.pinned,

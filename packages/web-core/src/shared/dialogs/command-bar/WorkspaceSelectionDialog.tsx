@@ -27,6 +27,7 @@ import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { UserProvider } from '@/shared/providers/remote/UserProvider';
 import { useUserContext } from '@/shared/hooks/useUserContext';
+import { selectWorkspaceHost } from './WorkspaceHostSelectionDialog';
 
 export interface WorkspaceSelectionDialogProps {
   projectId: string;
@@ -165,6 +166,9 @@ function WorkspaceSelectionContent({
     setIsLinking(true);
 
     try {
+      const hostId = await selectWorkspaceHost();
+      if (hostId === undefined) return;
+
       // Get issue details for initial prompt
       const issue = getIssue(issueId);
       const initialPrompt = buildWorkspaceCreatePrompt(
@@ -179,11 +183,9 @@ function WorkspaceSelectionContent({
       );
 
       // Get defaults from most recent workspace
-      const defaults = await getWorkspaceDefaults(
-        workspaces,
-        localWorkspaceIds,
-        projectId
-      );
+      const defaults = hostId
+        ? null
+        : await getWorkspaceDefaults(workspaces, localWorkspaceIds, projectId);
 
       const createState = buildWorkspaceCreateInitialState({
         prompt: initialPrompt,
@@ -194,6 +196,7 @@ function WorkspaceSelectionContent({
       modal.hide();
       const draftId = await openWorkspaceCreateFromState(createState, {
         issueId,
+        hostId,
       });
       if (!draftId) {
         await ErrorDialog.show({

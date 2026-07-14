@@ -104,7 +104,8 @@ export function toDraftWorkspaceData(
 export async function persistWorkspaceCreateDraft(
   initialState: CreateModeInitialState,
   draftId = DEFAULT_WORKSPACE_CREATE_DRAFT_ID,
-  runtime: AppRuntime = 'local'
+  runtime: AppRuntime = 'local',
+  hostId?: string | null
 ): Promise<string | null> {
   const draftData = toDraftWorkspaceData(initialState);
   const payload = {
@@ -125,9 +126,14 @@ export async function persistWorkspaceCreateDraft(
         throw new Error('Failed to persist create-workspace draft in storage');
       }
     } else {
-      await scratchApi.update(ScratchType.DRAFT_WORKSPACE, draftId, {
-        payload,
-      });
+      await scratchApi.update(
+        ScratchType.DRAFT_WORKSPACE,
+        draftId,
+        {
+          payload,
+        },
+        hostId
+      );
     }
     return draftId;
   } catch (error) {

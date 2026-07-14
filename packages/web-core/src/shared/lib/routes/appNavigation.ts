@@ -36,6 +36,8 @@ export type AppDestination =
 
 export type NavigationTransition = {
   replace?: boolean;
+  /** Route workspace operations through a specific paired host. */
+  hostId?: string | null;
 };
 
 export interface AppNavigation {

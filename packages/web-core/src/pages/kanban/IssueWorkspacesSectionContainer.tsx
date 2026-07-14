@@ -22,6 +22,8 @@ import { DeleteWorkspaceDialog } from '@vibe/ui/components/DeleteWorkspaceDialog
 import type { WorkspaceWithStats } from '@vibe/ui/components/IssueWorkspaceCard';
 import { IssueWorkspacesSection } from '@vibe/ui/components/IssueWorkspacesSection';
 import type { SectionAction } from '@vibe/ui/components/CollapsibleSectionHeader';
+import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
+import { useWorkspaceHostMap } from '@/shared/hooks/useWorkspaceHostMap';
 
 interface IssueWorkspacesSectionContainerProps {
   issueId: string;
@@ -49,6 +51,7 @@ export function IssueWorkspacesSectionContainer({
     isLoading: projectLoading,
   } = useProjectContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
+  const workspaceHostMap = useWorkspaceHostMap();
   const { membersWithProfilesById, isLoading: orgLoading } = useOrgContext();
 
   const localWorkspacesById = useMemo(() => {
@@ -136,6 +139,9 @@ export function IssueWorkspacesSectionContainer({
       return;
     }
 
+    const hostId = await selectWorkspaceHost();
+    if (hostId === undefined) return;
+
     const issue = getIssue(issueId);
     const initialPrompt = buildWorkspaceCreatePrompt(
       issue?.title ?? null,
@@ -146,11 +152,9 @@ export function IssueWorkspacesSectionContainer({
       archivedWorkspaces
     );
 
-    const defaults = await getWorkspaceDefaults(
-      workspaces,
-      localWorkspaceIds,
-      projectId
-    );
+    const defaults = hostId
+      ? null
+      : await getWorkspaceDefaults(workspaces, localWorkspaceIds, projectId);
     const createState = buildWorkspaceCreateInitialState({
       prompt: initialPrompt,
       defaults,
@@ -159,6 +163,7 @@ export function IssueWorkspacesSectionContainer({
 
     const draftId = await openWorkspaceCreateFromState(createState, {
       issueId,
+      hostId,
     });
     if (!draftId) {
       await ConfirmDialog.show({
@@ -198,14 +203,19 @@ export function IssueWorkspacesSectionContainer({
   const handleWorkspaceClick = useCallback(
     (localWorkspaceId: string | null) => {
       if (projectId && localWorkspaceId) {
+        const hostId = workspaceHostMap.get(localWorkspaceId);
+        if (!localWorkspacesById.has(localWorkspaceId) && !hostId) {
+          return;
+        }
         appNavigation.goToProjectIssueWorkspace(
           projectId,
           issueId,
-          localWorkspaceId
+          localWorkspaceId,
+          { hostId }
         );
       }
     },
-    [projectId, issueId, appNavigation]
+    [projectId, issueId, appNavigation, localWorkspacesById, workspaceHostMap]
   );
 
   // Handle unlinking a workspace from the issue

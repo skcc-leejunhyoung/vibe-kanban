@@ -1,0 +1,72 @@
+import { create, useModal } from '@ebay/nice-modal-react';
+import { ComputerTowerIcon, DesktopIcon } from '@phosphor-icons/react';
+import { useTranslation } from 'react-i18next';
+import {
+  Command,
+  CommandDialog,
+  CommandGroup,
+  CommandItem,
+  CommandList,
+} from '@vibe/ui/components/Command';
+import { defineModal, type NoProps } from '@/shared/lib/modals';
+import { useRemoteCloudHostsState } from '@/shared/hooks/useRemoteCloudHosts';
+
+export type WorkspaceHostSelection = string | null;
+
+const WorkspaceHostSelectionDialogImpl = create<NoProps>(() => {
+  const modal = useModal();
+  const { t } = useTranslation('common');
+  const { data } = useRemoteCloudHostsState();
+  const remoteHosts = (data?.hosts ?? []).filter(
+    (host) => host.status === 'online'
+  );
+
+  const select = (hostId: WorkspaceHostSelection) => {
+    modal.resolve(hostId);
+    modal.hide();
+  };
+
+  return (
+    <CommandDialog
+      open={modal.visible}
+      onOpenChange={(open) => {
+        if (!open) {
+          modal.resolve(undefined);
+          modal.hide();
+        }
+      }}
+    >
+      <Command>
+        <CommandList>
+          <CommandGroup
+            heading={t('workspaces.selectHost', 'Create workspace on')}
+          >
+            <CommandItem onSelect={() => select(null)}>
+              <DesktopIcon className="h-4 w-4" />
+              <span>
+                {t('settings.hostPicker.thisMachine', 'This machine')}
+              </span>
+            </CommandItem>
+            {remoteHosts.map((host) => (
+              <CommandItem key={host.id} onSelect={() => select(host.id)}>
+                <ComputerTowerIcon className="h-4 w-4" />
+                <span>{host.name}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        </CommandList>
+      </Command>
+    </CommandDialog>
+  );
+});
+
+export const WorkspaceHostSelectionDialog = defineModal<
+  void,
+  WorkspaceHostSelection | undefined
+>(WorkspaceHostSelectionDialogImpl);
+
+export async function selectWorkspaceHost(): Promise<
+  WorkspaceHostSelection | undefined
+> {
+  return WorkspaceHostSelectionDialog.show();
+}

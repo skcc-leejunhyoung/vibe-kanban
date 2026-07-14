@@ -547,8 +547,8 @@ export const workspacesApi = {
   },
 
   /** Get all workspaces across all tasks (newest first) */
-  getAllWorkspaces: async (): Promise<Workspace[]> => {
-    const response = await makeRequest('/api/workspaces');
+  getAllWorkspaces: async (hostId?: string | null): Promise<Workspace[]> => {
+    const response = await makeHostAwareRequest('/api/workspaces', hostId);
     return handleApiResponse<Workspace[]>(response);
   },
 
@@ -1885,12 +1885,17 @@ export const scratchApi = {
   update: async (
     scratchType: ScratchType,
     id: string,
-    data: UpdateScratch
+    data: UpdateScratch,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(`/api/scratch/${scratchType}/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/scratch/${scratchType}/${id}`,
+      hostId,
+      {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<void>(response);
   },
 

@@ -68,6 +68,7 @@ impl McpServer {
             + Self::workspaces_tools_router()
             + Self::session_tools_router();
         router.remove_route("list_workspaces");
+        router.remove_route("list_workspace_hosts");
         router.remove_route("delete_workspace");
         router
     }
@@ -339,11 +340,16 @@ impl McpServer {
         &self,
         workspace_id: Uuid,
         issue_id: Uuid,
+        host_id: Option<Uuid>,
     ) -> Result<(), ToolError> {
         let issue_url = self.url(&format!("/api/remote/issues/{}", issue_id));
         let issue: Issue = self.send_json(self.client.get(&issue_url)).await?;
 
-        let link_url = self.url(&format!("/api/workspaces/{}/links", workspace_id));
+        let link_path = format!("/workspaces/{}/links", workspace_id);
+        let link_url = match host_id {
+            Some(host_id) => self.url(&format!("/api/host/{host_id}{link_path}")),
+            None => self.url(&format!("/api{link_path}")),
+        };
         let link_payload = serde_json::json!({
             "project_id": issue.project_id,
             "issue_id": issue_id,

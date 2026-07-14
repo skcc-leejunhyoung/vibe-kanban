@@ -17,6 +17,12 @@ struct McpRepoSummary {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ListReposRequest {
+    #[schemars(description = "Optional paired host ID. Omit to list this machine.")]
+    host_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GetRepoRequest {
     #[schemars(description = "The ID of the repository to retrieve")]
     repo_id: Uuid,
@@ -81,8 +87,14 @@ struct ListReposResponse {
 #[tool_router(router = repos_tools_router, vis = "pub")]
 impl McpServer {
     #[tool(description = "List all repositories.")]
-    async fn list_repos(&self) -> Result<CallToolResult, ErrorData> {
-        let url = self.url("/api/repos");
+    async fn list_repos(
+        &self,
+        Parameters(ListReposRequest { host_id }): Parameters<ListReposRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let url = match host_id {
+            Some(host_id) => self.url(&format!("/api/host/{host_id}/repos")),
+            None => self.url("/api/repos"),
+        };
         let repos: Vec<Repo> = match self.send_json(self.client.get(&url)).await {
             Ok(rs) => rs,
             Err(e) => return Ok(Self::tool_error(e)),

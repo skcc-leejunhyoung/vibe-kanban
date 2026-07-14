@@ -22,6 +22,8 @@ struct McpWorkspaceRepoInput {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct StartWorkspaceRequest {
+    #[schemars(description = "Optional paired host ID. Omit to create on this machine.")]
+    host_id: Option<Uuid>,
     #[schemars(description = "Name for the workspace")]
     name: String,
     #[schemars(
@@ -49,6 +51,8 @@ struct StartWorkspaceResponse {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LinkWorkspaceIssueRequest {
+    #[schemars(description = "Optional paired host ID. Omit for this machine.")]
+    host_id: Option<Uuid>,
     #[schemars(description = "The workspace ID to link")]
     workspace_id: Uuid,
     #[schemars(description = "The issue ID to link the workspace to")]
@@ -101,6 +105,7 @@ impl McpServer {
             variant,
             repositories,
             issue_id,
+            host_id,
         }): Parameters<StartWorkspaceRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         if repositories.is_empty() {
@@ -197,7 +202,10 @@ impl McpServer {
             working_branch: WorkingBranchInput::Auto,
         };
 
-        let create_and_start_url = self.url("/api/workspaces/start");
+        let create_and_start_url = match host_id {
+            Some(host_id) => self.url(&format!("/api/host/{host_id}/workspaces/start")),
+            None => self.url("/api/workspaces/start"),
+        };
         let create_and_start_response: CreateAndStartWorkspaceResponse = match self
             .send_json(
                 self.client
@@ -213,7 +221,7 @@ impl McpServer {
         // Link workspace to remote issue if issue_id is provided
         if let Some(issue_id) = issue_id
             && let Err(e) = self
-                .link_workspace_to_issue(create_and_start_response.workspace.id, issue_id)
+                .link_workspace_to_issue(create_and_start_response.workspace.id, issue_id, host_id)
                 .await
         {
             return Ok(Self::tool_error(e));
@@ -232,11 +240,15 @@ impl McpServer {
     async fn link_workspace_issue(
         &self,
         Parameters(LinkWorkspaceIssueRequest {
+            host_id,
             workspace_id,
             issue_id,
         }): Parameters<LinkWorkspaceIssueRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        if let Err(e) = self.link_workspace_to_issue(workspace_id, issue_id).await {
+        if let Err(e) = self
+            .link_workspace_to_issue(workspace_id, issue_id, host_id)
+            .await
+        {
             return Ok(Self::tool_error(e));
         }
 
