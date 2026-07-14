@@ -157,6 +157,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // the persist effect below never writes the transient empty reset (or an
     // in-flight default fetch) over a saved draft.
     const hydratedFor = useRef<string | null>(null);
+    const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     useEffect(() => {
       if (!isLoaded || initializedFor.current === attempt.id) {
         return;
@@ -181,18 +182,31 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         return;
       }
 
-      // Restore a previously generated / hand-edited draft so navigating away
-      // and back does not lose it to the default first-message prefill.
-      if (entry?.draft) {
-        setPrTitle(entry.draft.title);
-        setPrBody(entry.draft.body);
-        hydratedFor.current = attempt.id;
-        return;
-      }
-
       let isCancelled = false;
       const initializePRFields = async () => {
         try {
+          // The backend draft is authoritative: unlike the background store it
+          // survives reloads, app restarts, and opening this workspace elsewhere.
+          const savedDraft = await workspacesApi.getPrDraft(attempt.id, repoId);
+          if (isCancelled) return;
+          if (savedDraft) {
+            setPrTitle(savedDraft.title);
+            setPrBody(savedDraft.body);
+            usePrBackgroundStore.getState().setDraft(attempt.id, {
+              title: savedDraft.title,
+              body: savedDraft.body,
+            });
+            return;
+          }
+
+          // A local draft covers the short window before its debounced backend
+          // write completes.
+          if (entry?.draft) {
+            setPrTitle(entry.draft.title);
+            setPrBody(entry.draft.body);
+            return;
+          }
+
           const firstUserMessage = await workspacesApi.getFirstUserMessage(
             attempt.id
           );
@@ -217,7 +231,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       return () => {
         isCancelled = true;
       };
-    }, [attempt.id, isLoaded, issueIdentifier]);
+    }, [attempt.id, isLoaded, issueIdentifier, repoId]);
 
     // Apply a completed AI generation into the form (works whether it finished
     // while open or in the background), then consume it. Surface generate errors
@@ -249,7 +263,18 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       usePrBackgroundStore
         .getState()
         .setDraft(attempt.id, { title: prTitle, body: prBody });
-    }, [prTitle, prBody, attempt.id]);
+      draftSaveTimer.current = setTimeout(() => {
+        void workspacesApi.savePrDraft(attempt.id, {
+          repo_id: repoId,
+          title: prTitle,
+          body: prBody,
+        });
+      }, 400);
+      return () => {
+        if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+      };
+    }, [prTitle, prBody, attempt.id, repoId]);
 
     // Set default head (source) branch when branches load. Prefer the feature
     // branch the work branch was merged into; fall back to the work branch.
@@ -464,6 +489,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         // The PR is created; discard the saved draft so a later PR for this
         // workspace starts from the default prefill again.
         clearDraft(attempt.id);
+        if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+        draftSaveTimer.current = null;
+        void workspacesApi.deletePrDraft(attempt.id, repoId);
         modal.resolve({ success: true } as CreatePRDialogResult);
         modal.hide();
         return;
@@ -517,6 +545,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       cancelGenerate(attempt.id);
       cancelCreate(attempt.id);
       usePrBackgroundStore.getState().clearDraft(attempt.id);
+      if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+      draftSaveTimer.current = null;
+      void workspacesApi.deletePrDraft(attempt.id, repoId);
       initializedFor.current = null;
       hydratedFor.current = null;
       const result: CreatePRDialogResult = error
@@ -524,7 +555,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         : { success: false };
       modal.resolve(result);
       modal.hide();
-    }, [modal, error, attempt.id, cancelGenerate, cancelCreate]);
+    }, [modal, error, attempt.id, repoId, cancelGenerate, cancelCreate]);
 
     return (
       <>

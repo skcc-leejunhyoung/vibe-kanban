@@ -476,6 +476,8 @@ export type CreatePrApiRequest = { title: string, body: string | null, target_br
  */
 head_branch: string | null, draft: boolean | null, repo_id: string, };
 
+export type PrDraft = { repo_id: string, title: string, body: string, };
+
 export type GeneratePrDescriptionRequest = { repo_id: string,
 /**
  * The PR's base (target) branch. Falls back to the repo's configured target

@@ -74,6 +74,82 @@ pub struct GeneratePrDescriptionResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
+pub struct PrDraft {
+    pub repo_id: Uuid,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct PrDraftQuery {
+    pub repo_id: Uuid,
+}
+
+async fn save_pr_draft(
+    pool: &sqlx::SqlitePool,
+    workspace_id: Uuid,
+    draft: &PrDraft,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO workspace_pr_drafts (workspace_id, repo_id, title, body) VALUES (?, ?, ?, ?) \
+         ON CONFLICT(workspace_id, repo_id) DO UPDATE SET title = excluded.title, \
+         body = excluded.body, updated_at = datetime('now', 'subsec')",
+    )
+    .bind(workspace_id)
+    .bind(draft.repo_id)
+    .bind(&draft.title)
+    .bind(&draft.body)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_pr_draft(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<PrDraftQuery>,
+) -> Result<ResponseJson<ApiResponse<Option<PrDraft>>>, ApiError> {
+    let draft = sqlx::query_as::<_, (Uuid, String, String)>(
+        "SELECT repo_id, title, body FROM workspace_pr_drafts WHERE workspace_id = ? AND repo_id = ?",
+    )
+    .bind(workspace.id)
+    .bind(query.repo_id)
+    .fetch_optional(&deployment.db().pool)
+    .await?
+    .map(|(repo_id, title, body)| PrDraft { repo_id, title, body });
+    Ok(ResponseJson(ApiResponse::success(draft)))
+}
+
+pub async fn put_pr_draft(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(draft): Json<PrDraft>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    WorkspaceRepo::find_by_workspace_and_repo_id(
+        &deployment.db().pool,
+        workspace.id,
+        draft.repo_id,
+    )
+    .await?
+    .ok_or(RepoError::NotFound)?;
+    save_pr_draft(&deployment.db().pool, workspace.id, &draft).await?;
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+pub async fn delete_pr_draft(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<PrDraftQuery>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    sqlx::query("DELETE FROM workspace_pr_drafts WHERE workspace_id = ? AND repo_id = ?")
+        .bind(workspace.id)
+        .bind(query.repo_id)
+        .execute(&deployment.db().pool)
+        .await?;
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(tag = "type", rename_all = "snake_case")]
 pub enum PrError {
@@ -200,6 +276,17 @@ pub async fn generate_pr_description(
             "PR description generation timed out. Try again or write it manually.".to_string(),
         )
     })??;
+
+    save_pr_draft(
+        pool,
+        workspace.id,
+        &PrDraft {
+            repo_id: request.repo_id,
+            title: title.clone(),
+            body: description.clone(),
+        },
+    )
+    .await?;
 
     Ok(ResponseJson(ApiResponse::success(
         GeneratePrDescriptionResponse { title, description },
@@ -607,6 +694,15 @@ pub async fn create_pr(
                     }),
                 )
                 .await;
+
+            // A successfully opened PR consumes this dialog draft. Do this on
+            // the server so cleanup is reliable even if the client navigated
+            // away before receiving the create response.
+            sqlx::query("DELETE FROM workspace_pr_drafts WHERE workspace_id = ? AND repo_id = ?")
+                .bind(workspace.id)
+                .bind(request.repo_id)
+                .execute(pool)
+                .await?;
 
             Ok(ResponseJson(ApiResponse::success(pr_info.url)))
         }
@@ -1162,13 +1258,68 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/", post(create_pr))
         .route("/generate", post(generate_pr_description))
+        .route(
+            "/draft",
+            get(get_pr_draft).put(put_pr_draft).delete(delete_pr_draft),
+        )
         .route("/attach", post(attach_existing_pr))
         .route("/comments", get(get_pr_comments))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pr_generation_prompt, parse_pr_description};
+    use sqlx::SqlitePool;
+    use uuid::Uuid;
+
+    use super::{PrDraft, build_pr_generation_prompt, parse_pr_description, save_pr_draft};
+
+    #[tokio::test]
+    async fn generated_pr_draft_is_upserted_by_workspace_and_repo() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE workspace_pr_drafts (workspace_id BLOB NOT NULL, repo_id BLOB NOT NULL, \
+             title TEXT NOT NULL, body TEXT NOT NULL, updated_at DATETIME, \
+             PRIMARY KEY (workspace_id, repo_id))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let workspace_id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+
+        save_pr_draft(
+            &pool,
+            workspace_id,
+            &PrDraft {
+                repo_id,
+                title: "First".into(),
+                body: "Old body".into(),
+            },
+        )
+        .await
+        .unwrap();
+        save_pr_draft(
+            &pool,
+            workspace_id,
+            &PrDraft {
+                repo_id,
+                title: "Final".into(),
+                body: "Generated body".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let stored = sqlx::query_as::<_, (String, String)>(
+            "SELECT title, body FROM workspace_pr_drafts WHERE workspace_id = ? AND repo_id = ?",
+        )
+        .bind(workspace_id)
+        .bind(repo_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, ("Final".into(), "Generated body".into()));
+    }
 
     #[test]
     fn parses_json_fence() {

@@ -10,6 +10,7 @@ import {
   CreatePrApiRequest,
   GeneratePrDescriptionRequest,
   GeneratePrDescriptionResponse,
+  PrDraft,
   CreateTag,
   DirectoryListResponse,
   DirectoryEntry,
@@ -977,6 +978,32 @@ export const workspacesApi = {
     } finally {
       clearTimeout(timeout);
     }
+  },
+
+  getPrDraft: async (
+    workspaceId: string,
+    repoId: string
+  ): Promise<PrDraft | null> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/draft?repo_id=${encodeURIComponent(repoId)}`
+    );
+    return handleApiResponse<PrDraft | null>(response);
+  },
+
+  savePrDraft: async (workspaceId: string, draft: PrDraft): Promise<void> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/draft`,
+      { method: 'PUT', body: JSON.stringify(draft) }
+    );
+    await handleApiResponse<void>(response);
+  },
+
+  deletePrDraft: async (workspaceId: string, repoId: string): Promise<void> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/draft?repo_id=${encodeURIComponent(repoId)}`,
+      { method: 'DELETE' }
+    );
+    await handleApiResponse<void>(response);
   },
 
   /** Try to auto-attach a PR by matching the workspace branch */
