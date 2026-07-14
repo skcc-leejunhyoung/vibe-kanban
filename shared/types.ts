@@ -894,6 +894,8 @@ export type AgentMemoryKind = "claude_code" | "codex";
 
 export type AgentMemorySyncStatus = { running: boolean, last_started_at: string | null, last_finished_at: string | null, last_status: string | null, last_error: string | null, };
 
+export type AgentMemorySyncLogEntry = { id: string, run_id: string, created_at: string, level: string, phase: string, trigger_kind: string, repo_name: string | null, repo_path: string | null, agent_kind: string | null, message: string, };
+
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 
 export enum ThemeMode { LIGHT = "LIGHT", DARK = "DARK", SYSTEM = "SYSTEM" }

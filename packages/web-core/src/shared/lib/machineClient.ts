@@ -9,6 +9,8 @@ import type {
   UpdateMcpServersBody,
   UpdateRepo,
   UserSystemInfo,
+  AgentMemorySyncLogEntry,
+  AgentMemorySyncStatus,
 } from 'shared/types';
 import type { AppRuntime } from '@/shared/hooks/useAppRuntime';
 import { handleApiResponse } from './api';
@@ -80,6 +82,11 @@ export interface MachineClient {
   getAutomationLogs: () => Promise<AutomationLogEntry[]>;
   getAutomationRetryQueue: () => Promise<AutomationRetryItem[]>;
   processAutomationRetries: (includeExhausted: boolean) => Promise<unknown>;
+  getAgentMemorySyncStatus: () => Promise<AgentMemorySyncStatus>;
+  getAgentMemorySyncLogs: (
+    limit?: number
+  ) => Promise<AgentMemorySyncLogEntry[]>;
+  runAgentMemorySync: () => Promise<{ started: boolean }>;
 }
 
 function getMachineRequestOptions(
@@ -261,6 +268,37 @@ export function createMachineClient(
         )
       );
     },
+    getAgentMemorySyncStatus: async () =>
+      readAutomationJson<AgentMemorySyncStatus>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/agent-memory-sync/status',
+          {
+            cache: 'no-store',
+          }
+        )
+      ),
+    getAgentMemorySyncLogs: async (limit = 200) =>
+      readAutomationJson<AgentMemorySyncLogEntry[]>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/agent-memory-sync/logs?limit=${limit}`,
+          { cache: 'no-store' }
+        )
+      ),
+    runAgentMemorySync: async () =>
+      readAutomationJson<{ started: boolean }>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/agent-memory-sync/run',
+          {
+            method: 'POST',
+          }
+        )
+      ),
     getAutomationState: async () =>
       readAutomationJson<AutomationState>(
         await makeMachineRequest(runtime, target, '/api/automation/state', {

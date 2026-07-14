@@ -207,6 +207,7 @@ fn generate_types_content() -> String {
         services::services::config::AgentMemorySyncConfig::decl(),
         api_types::AgentMemoryKind::decl(),
         server::agent_memory_sync::AgentMemorySyncStatus::decl(),
+        server::agent_memory_sync::AgentMemorySyncLogEntry::decl(),
         services::services::config::NotificationConfig::decl(),
         services::services::config::ThemeMode::decl(),
         services::services::config::EditorConfig::decl(),

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type {
+  AgentMemoryKind,
+  AgentMemorySyncConfig,
+  AgentMemorySyncLogEntry,
+  AgentMemorySyncStatus,
+} from 'shared/types';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import { cn } from '@/shared/lib/utils';
@@ -12,6 +18,7 @@ import {
   SettingsTextarea,
 } from './SettingsComponents';
 import { useSettingsMachineClient } from './SettingsHostContext';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import {
   AUTOMATION_CONNECTOR_DEFAULTS,
   type AutomationConnector,
@@ -64,6 +71,7 @@ function defaultConnectorName(type: string) {
 export function AutomationSettingsSection() {
   const { t } = useTranslation('settings');
   const machineClient = useSettingsMachineClient();
+  const { config, updateAndSaveConfig } = useUserSystem();
 
   const [state, setState] = useState<AutomationState | null>(null);
   const [logs, setLogs] = useState<AutomationLogEntry[]>([]);
@@ -71,6 +79,12 @@ export function AutomationSettingsSection() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [memoryConfig, setMemoryConfig] =
+    useState<AgentMemorySyncConfig | null>(null);
+  const [memoryStatus, setMemoryStatus] =
+    useState<AgentMemorySyncStatus | null>(null);
+  const [memoryLogs, setMemoryLogs] = useState<AgentMemorySyncLogEntry[]>([]);
+  const [memoryBusy, setMemoryBusy] = useState(false);
 
   const [connector, setConnector] = useState<ConnectorDraft | null>(null);
   const [rule, setRule] = useState<RuleDraft | null>(null);
@@ -101,6 +115,64 @@ export function AutomationSettingsSection() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (config?.agent_memory_sync) {
+      setMemoryConfig(config.agent_memory_sync);
+    }
+  }, [config?.agent_memory_sync]);
+
+  const refreshMemory = useCallback(async () => {
+    if (!machineClient) return;
+    const [nextStatus, nextLogs] = await Promise.all([
+      machineClient.getAgentMemorySyncStatus(),
+      machineClient.getAgentMemorySyncLogs(),
+    ]);
+    setMemoryStatus(nextStatus);
+    setMemoryLogs(nextLogs);
+  }, [machineClient]);
+
+  useEffect(() => {
+    refreshMemory().catch((err) =>
+      setError(err instanceof Error ? err.message : String(err))
+    );
+  }, [refreshMemory]);
+
+  const saveMemoryConfig = async () => {
+    if (!memoryConfig) return;
+    setMemoryBusy(true);
+    setError(null);
+    try {
+      const saved = await updateAndSaveConfig({
+        agent_memory_sync: memoryConfig,
+      });
+      if (!saved) throw new Error('Failed to save memory sync settings');
+      setNotice(
+        t('settings.automation.memory.saved', 'Memory sync settings saved.')
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const runMemoryNow = async () => {
+    if (!machineClient) return;
+    setMemoryBusy(true);
+    setError(null);
+    try {
+      await machineClient.runAgentMemorySync();
+      setNotice(
+        t('settings.automation.memory.started', 'Memory sync started.')
+      );
+      window.setTimeout(() => refreshMemory().catch(() => undefined), 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
 
   // Run a mutating worker call: clear banners, apply returned state, show a notice.
   const run = useCallback(
@@ -287,6 +359,165 @@ export function AutomationSettingsSection() {
           <p className="text-sm text-low">
             {t('settings.automation.loading', 'Loading worker state…')}
           </p>
+        )}
+      </SettingsCard>
+
+      <SettingsCard
+        title={t('settings.automation.memory.title', 'Agent Memory Sync')}
+        description={t(
+          'settings.automation.memory.description',
+          'Let installed agents reconcile repository memories across your computers once a day.'
+        )}
+        headerAction={
+          <PrimaryButton
+            variant="secondary"
+            value={t('settings.automation.memory.runNow', 'Run now')}
+            onClick={runMemoryNow}
+            disabled={memoryBusy || memoryStatus?.running}
+            actionIcon={memoryStatus?.running ? 'spinner' : undefined}
+          />
+        }
+      >
+        <SettingsCheckbox
+          id="agent-memory-sync-enabled"
+          label={t(
+            'settings.automation.memory.enabled',
+            'Enable daily memory reconciliation'
+          )}
+          description={t(
+            'settings.automation.memory.enabledHelper',
+            'Agents update their own native memory; Vibe Kanban stores only shareable snapshots and operational logs.'
+          )}
+          checked={memoryConfig?.enabled ?? false}
+          onChange={(enabled) =>
+            setMemoryConfig((current) => ({
+              enabled,
+              daily_local_time: current?.daily_local_time ?? '03:00',
+              agents: current?.agents ?? ['claude_code', 'codex'],
+            }))
+          }
+        />
+        <SettingsField
+          label={t('settings.automation.memory.time', 'Daily local time')}
+          description={t(
+            'settings.automation.memory.timeHelper',
+            'A missed run starts after this computer comes back online.'
+          )}
+        >
+          <input
+            type="time"
+            value={memoryConfig?.daily_local_time ?? '03:00'}
+            disabled={!memoryConfig?.enabled}
+            onChange={(event) =>
+              setMemoryConfig((current) => ({
+                enabled: current?.enabled ?? false,
+                daily_local_time: event.target.value,
+                agents: current?.agents ?? ['claude_code', 'codex'],
+              }))
+            }
+            className="w-full bg-secondary border border-border rounded-sm px-base py-half text-sm text-high disabled:opacity-50"
+          />
+        </SettingsField>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            ['claude_code', 'Claude Code'],
+            ['codex', 'Codex'],
+          ].map(([agent, label]) => {
+            const selected = memoryConfig?.agents ?? [];
+            return (
+              <SettingsCheckbox
+                key={agent}
+                id={`agent-memory-sync-${agent}`}
+                label={label}
+                checked={selected.includes(agent as AgentMemoryKind)}
+                disabled={!memoryConfig?.enabled}
+                onChange={(checked) =>
+                  setMemoryConfig((current) => ({
+                    enabled: current?.enabled ?? false,
+                    daily_local_time: current?.daily_local_time ?? '03:00',
+                    agents: checked
+                      ? [...selected, agent as AgentMemoryKind]
+                      : selected.filter((item) => item !== agent),
+                  }))
+                }
+              />
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-low">
+            {memoryStatus?.last_status
+              ? `${memoryStatus.last_status} · ${memoryStatus.last_finished_at ?? memoryStatus.last_started_at ?? ''}`
+              : t('settings.automation.memory.neverRun', 'Not run yet')}
+          </p>
+          <PrimaryButton
+            value={t('settings.automation.memory.save', 'Save schedule')}
+            onClick={saveMemoryConfig}
+            disabled={!memoryConfig || memoryBusy}
+            actionIcon={memoryBusy ? 'spinner' : undefined}
+          />
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        title={t(
+          'settings.automation.memory.logsTitle',
+          'Memory sync activity'
+        )}
+        description={t(
+          'settings.automation.memory.logsDescription',
+          'Operational events by run, repository, and agent. Memory contents are never included.'
+        )}
+        headerAction={
+          <PrimaryButton
+            variant="secondary"
+            value={t('settings.automation.logs.refresh', 'Refresh')}
+            onClick={() => refreshMemory()}
+            disabled={memoryBusy}
+          />
+        }
+      >
+        {memoryLogs.length === 0 ? (
+          <p className="text-sm text-low">
+            {t('settings.automation.memory.noLogs', 'No memory sync logs yet.')}
+          </p>
+        ) : (
+          <div className="max-h-96 space-y-2 overflow-y-auto">
+            {memoryLogs.map((log) => (
+              <div
+                key={log.id}
+                className="rounded-sm border border-border/60 bg-secondary/30 p-2 text-xs"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={cn(
+                      'font-semibold uppercase',
+                      log.level === 'error' && 'text-error',
+                      log.level === 'warn' && 'text-warning',
+                      log.level === 'info' && 'text-low'
+                    )}
+                  >
+                    {log.level}
+                  </span>
+                  <span className="text-low">
+                    {new Date(log.created_at).toLocaleString(
+                      undefined,
+                      withDisplayTimeZone()
+                    )}
+                  </span>
+                  <span className="rounded bg-secondary px-half text-low">
+                    {log.trigger_kind}
+                  </span>
+                  {log.agent_kind && <span>{log.agent_kind}</span>}
+                  {log.repo_name && <span>{log.repo_name}</span>}
+                </div>
+                <div className="text-normal">{log.message}</div>
+                <div className="text-low">
+                  {log.phase} · {log.run_id}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </SettingsCard>
 

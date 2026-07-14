@@ -9,7 +9,6 @@ import {
 } from '@phosphor-icons/react';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 import {
-  type AgentMemoryKind,
   type BaseCodingAgent,
   DEFAULT_COMMIT_REMINDER_PROMPT,
   DEFAULT_PR_DESCRIPTION_PROMPT,
@@ -705,98 +704,6 @@ export function GeneralSettingsSection() {
             ) : null}
           </div>
         </SettingsField>
-      </SettingsCard>
-
-      <SettingsCard
-        title={t('settings.general.agentMemorySync.title', {
-          defaultValue: 'Agent Memory Sync',
-        })}
-        description={t('settings.general.agentMemorySync.description', {
-          defaultValue:
-            'Let installed agents reconcile repository memories across your computers once a day.',
-        })}
-      >
-        <SettingsCheckbox
-          id="agent-memory-sync-enabled"
-          label={t('settings.general.agentMemorySync.enabled', {
-            defaultValue: 'Enable daily memory reconciliation',
-          })}
-          description={t('settings.general.agentMemorySync.enabledHelper', {
-            defaultValue:
-              'Agents read and update their own native memory. Vibe Kanban never writes those memory files directly.',
-          })}
-          checked={draft?.agent_memory_sync?.enabled ?? false}
-          onChange={(enabled) =>
-            updateDraft({
-              agent_memory_sync: {
-                enabled,
-                daily_local_time:
-                  draft?.agent_memory_sync?.daily_local_time ?? '03:00',
-                agents: draft?.agent_memory_sync?.agents ?? [
-                  'claude_code',
-                  'codex',
-                ],
-              },
-            })
-          }
-        />
-        <SettingsField
-          label={t('settings.general.agentMemorySync.time', {
-            defaultValue: 'Daily local time',
-          })}
-          description={t('settings.general.agentMemorySync.timeHelper', {
-            defaultValue:
-              'A missed run starts after this computer comes back online.',
-          })}
-        >
-          <input
-            type="time"
-            value={draft?.agent_memory_sync?.daily_local_time ?? '03:00'}
-            disabled={!draft?.agent_memory_sync?.enabled}
-            onChange={(event) =>
-              updateDraft({
-                agent_memory_sync: {
-                  enabled: draft?.agent_memory_sync?.enabled ?? false,
-                  daily_local_time: event.target.value,
-                  agents: draft?.agent_memory_sync?.agents ?? [
-                    'claude_code',
-                    'codex',
-                  ],
-                },
-              })
-            }
-            className="w-full bg-secondary border border-border rounded-sm px-base py-half text-sm text-high disabled:opacity-50"
-          />
-        </SettingsField>
-        <div className="grid grid-cols-2 gap-2">
-          {[
-            ['claude_code', 'Claude Code'],
-            ['codex', 'Codex'],
-          ].map(([agent, label]) => {
-            const selected = draft?.agent_memory_sync?.agents ?? [];
-            return (
-              <SettingsCheckbox
-                key={agent}
-                id={`agent-memory-sync-${agent}`}
-                label={label}
-                checked={selected.includes(agent as AgentMemoryKind)}
-                disabled={!draft?.agent_memory_sync?.enabled}
-                onChange={(checked) =>
-                  updateDraft({
-                    agent_memory_sync: {
-                      enabled: draft?.agent_memory_sync?.enabled ?? false,
-                      daily_local_time:
-                        draft?.agent_memory_sync?.daily_local_time ?? '03:00',
-                      agents: checked
-                        ? [...selected, agent as AgentMemoryKind]
-                        : selected.filter((item) => item !== agent),
-                    },
-                  })
-                }
-              />
-            );
-          })}
-        </div>
       </SettingsCard>
 
       {/* Git */}

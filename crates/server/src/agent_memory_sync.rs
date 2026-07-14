@@ -33,6 +33,20 @@ pub struct AgentMemorySyncStatus {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, TS)]
+pub struct AgentMemorySyncLogEntry {
+    pub id: String,
+    pub run_id: String,
+    pub created_at: String,
+    pub level: String,
+    pub phase: String,
+    pub trigger_kind: String,
+    pub repo_name: Option<String>,
+    pub repo_path: Option<String>,
+    pub agent_kind: Option<String>,
+    pub message: String,
+}
+
 use ts_rs::TS;
 
 #[derive(Debug, Deserialize)]
@@ -61,14 +75,64 @@ pub fn spawn(deployment: DeploymentImpl) {
     });
 }
 
-pub async fn run_now(deployment: DeploymentImpl) -> anyhow::Result<()> {
+pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::Result<()> {
     let _guard = RUN_LOCK
         .try_lock()
         .map_err(|_| anyhow::anyhow!("agent memory sync is already running"))?;
+    let run_id = Uuid::new_v4().to_string();
     set_started(&deployment).await?;
-    let result = run_all(&deployment).await;
+    prune_logs(&deployment).await?;
+    log_event(
+        &deployment,
+        &run_id,
+        trigger_kind,
+        "info",
+        "run_started",
+        None,
+        None,
+        "Memory synchronization started",
+    )
+    .await?;
+    let result = run_all(&deployment, &run_id, trigger_kind).await;
+    let (level, message) = match &result {
+        Ok(()) => ("info", "Memory synchronization completed".to_string()),
+        Err(error) => ("error", format!("Memory synchronization failed: {error}")),
+    };
+    let _ = log_event(
+        &deployment,
+        &run_id,
+        trigger_kind,
+        level,
+        "run_finished",
+        None,
+        None,
+        &message,
+    )
+    .await;
     set_finished(&deployment, result.as_ref().err()).await?;
     result
+}
+
+async fn prune_logs(deployment: &DeploymentImpl) -> anyhow::Result<()> {
+    sqlx::query(
+        "DELETE FROM agent_memory_sync_logs WHERE id IN (SELECT id FROM agent_memory_sync_logs ORDER BY created_at DESC LIMIT -1 OFFSET 5000)",
+    )
+    .execute(&deployment.db().pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn logs(
+    deployment: &DeploymentImpl,
+    limit: i64,
+) -> anyhow::Result<Vec<AgentMemorySyncLogEntry>> {
+    sqlx::query_as::<_, AgentMemorySyncLogEntry>(
+        "SELECT id, run_id, created_at, level, phase, trigger_kind, repo_name, repo_path, agent_kind, message FROM agent_memory_sync_logs ORDER BY created_at DESC LIMIT ?",
+    )
+    .bind(limit.clamp(1, 500))
+    .fetch_all(&deployment.db().pool)
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn status(deployment: &DeploymentImpl) -> anyhow::Result<AgentMemorySyncStatus> {
@@ -140,7 +204,7 @@ fn scheduled_run_is_due(
 }
 
 async fn run_scheduled(deployment: DeploymentImpl, date: NaiveDate) -> anyhow::Result<()> {
-    let result = run_now(deployment.clone()).await;
+    let result = run_now(deployment.clone(), "scheduled").await;
     // Mark the day done once the run has executed to completion, even if some
     // repos/agents failed. Otherwise a single repo that reliably fails keeps
     // `last_scheduled_local_date` unadvanced, so run_if_due (every 60s) relaunches
@@ -155,7 +219,11 @@ async fn run_scheduled(deployment: DeploymentImpl, date: NaiveDate) -> anyhow::R
     result
 }
 
-async fn run_all(deployment: &DeploymentImpl) -> anyhow::Result<()> {
+async fn run_all(
+    deployment: &DeploymentImpl,
+    run_id: &str,
+    trigger_kind: &str,
+) -> anyhow::Result<()> {
     let client = deployment.remote_client()?;
     let machine_id = deployment.user_id().to_string();
     let host = client
@@ -173,12 +241,55 @@ async fn run_all(deployment: &DeploymentImpl) -> anyhow::Result<()> {
             Ok(key) => key,
             Err(error) => {
                 tracing::debug!(repo = %repo.path.display(), ?error, "skipping memory sync repo");
+                let _ = log_event(
+                    deployment,
+                    run_id,
+                    trigger_kind,
+                    "warn",
+                    "repo_skipped",
+                    Some(&repo),
+                    None,
+                    &format!("Repository skipped: {error}"),
+                )
+                .await;
                 continue;
             }
         };
         for agent in &config.agents {
-            if let Err(error) = sync_one(deployment, host.id, &repo, &scope_key, *agent).await {
+            let _ = log_event(
+                deployment,
+                run_id,
+                trigger_kind,
+                "info",
+                "agent_started",
+                Some(&repo),
+                Some(*agent),
+                "Agent memory reconciliation started",
+            )
+            .await;
+            if let Err(error) = sync_one(
+                deployment,
+                host.id,
+                &repo,
+                &scope_key,
+                *agent,
+                run_id,
+                trigger_kind,
+            )
+            .await
+            {
                 tracing::warn!(repo = %repo.path.display(), ?agent, ?error, "agent memory sync failed");
+                let _ = log_event(
+                    deployment,
+                    run_id,
+                    trigger_kind,
+                    "error",
+                    "agent_failed",
+                    Some(&repo),
+                    Some(*agent),
+                    &error.to_string(),
+                )
+                .await;
                 failures.push(format!("{} / {:?}: {error}", repo.display_name, agent));
             }
         }
@@ -197,6 +308,8 @@ async fn sync_one(
     repo: &Repo,
     scope_key: &str,
     agent_kind: AgentMemoryKind,
+    run_id: &str,
+    trigger_kind: &str,
 ) -> anyhow::Result<()> {
     let client = deployment.remote_client()?;
     let previous = client
@@ -215,6 +328,21 @@ async fn sync_one(
             Some(scope_key),
         )
         .await?;
+    log_event(
+        deployment,
+        run_id,
+        trigger_kind,
+        "info",
+        "agent_context_loaded",
+        Some(repo),
+        Some(agent_kind),
+        &format!(
+            "Loaded previous snapshot={} and {} incoming snapshot(s)",
+            previous.is_some(),
+            inbox.snapshots.len()
+        ),
+    )
+    .await?;
     let result_path = repo
         .path
         .join(format!(".vibe-memory-sync-{}.json", Uuid::new_v4()));
@@ -228,7 +356,7 @@ async fn sync_one(
     let result = result?;
 
     let content_hash = hex::encode(Sha256::digest(result.snapshot.as_bytes()));
-    client
+    let snapshot = client
         .upsert_agent_memory_snapshot(&UpsertAgentMemorySnapshotRequest {
             source_host_id: host_id,
             source_agent: agent_kind,
@@ -239,6 +367,7 @@ async fn sync_one(
         })
         .await?;
 
+    let mut recorded_receipts = 0;
     for receipt in result.receipts {
         if !inbox.snapshots.iter().any(|snapshot| {
             snapshot.id == receipt.snapshot_id && snapshot.revision == receipt.processed_revision
@@ -256,7 +385,54 @@ async fn sync_one(
                 reason: receipt.reason,
             })
             .await?;
+        recorded_receipts += 1;
     }
+    log_event(
+        deployment,
+        run_id,
+        trigger_kind,
+        "info",
+        "agent_completed",
+        Some(repo),
+        Some(agent_kind),
+        &format!(
+            "Published snapshot revision {} and recorded {} receipt(s)",
+            snapshot.snapshot.revision, recorded_receipts
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn log_event(
+    deployment: &DeploymentImpl,
+    run_id: &str,
+    trigger_kind: &str,
+    level: &str,
+    phase: &str,
+    repo: Option<&Repo>,
+    agent: Option<AgentMemoryKind>,
+    message: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO agent_memory_sync_logs (id, run_id, created_at, level, phase, trigger_kind, repo_name, repo_path, agent_kind, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(run_id)
+    .bind(Utc::now().to_rfc3339())
+    .bind(level)
+    .bind(phase)
+    .bind(trigger_kind)
+    .bind(repo.map(|value| value.display_name.as_str()))
+    .bind(repo.map(|value| value.path.to_string_lossy().into_owned()))
+    .bind(agent.map(|value| match value {
+        AgentMemoryKind::ClaudeCode => "claude_code",
+        AgentMemoryKind::Codex => "codex",
+    }))
+    .bind(message)
+    .execute(&deployment.db().pool)
+    .await?;
     Ok(())
 }
 
