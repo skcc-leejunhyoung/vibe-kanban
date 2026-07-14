@@ -4,6 +4,7 @@ import {
   type AppDestination,
   type AppNavigation,
   type NavigationTransition,
+  resolveDestinationHostId,
 } from "@/shared/lib/routes/appNavigation";
 
 type RemoteRouteId = FileRouteTypes["id"];
@@ -116,9 +117,10 @@ function destinationToRemoteTarget(
   destination: AppDestination,
   options: { currentHostId: string | null },
 ) {
-  const destinationHostId =
-    "hostId" in destination ? (destination.hostId ?? null) : null;
-  const effectiveHostId = destinationHostId ?? options.currentHostId;
+  const effectiveHostId = resolveDestinationHostId(
+    destination,
+    options.currentHostId,
+  );
 
   switch (destination.kind) {
     case "root":
@@ -186,7 +188,7 @@ function destinationToRemoteTarget(
         params: {
           projectId: destination.projectId,
           issueId: destination.issueId,
-          hostId: destination.hostId,
+          hostId: effectiveHostId,
           workspaceId: destination.workspaceId,
         },
       } as const;
@@ -196,7 +198,7 @@ function destinationToRemoteTarget(
         params: {
           projectId: destination.projectId,
           issueId: destination.issueId,
-          hostId: destination.hostId,
+          hostId: effectiveHostId,
           draftId: destination.draftId,
         },
       } as const;
@@ -205,7 +207,7 @@ function destinationToRemoteTarget(
         to: "/projects/$projectId/hosts/$hostId/workspaces/create/$draftId",
         params: {
           projectId: destination.projectId,
-          hostId: destination.hostId,
+          hostId: effectiveHostId,
           draftId: destination.draftId,
         },
       } as const;
@@ -251,7 +253,7 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
       navigateTo(
         {
           kind: "project-issue-workspace",
-          hostId,
+          hostId: transition?.hostId === undefined ? hostId : transition.hostId,
           projectId,
           issueId,
           workspaceId,
@@ -267,7 +269,7 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
       navigateTo(
         {
           kind: "project-issue-workspace-create",
-          hostId,
+          hostId: transition?.hostId === undefined ? hostId : transition.hostId,
           projectId,
           issueId,
           draftId,
@@ -276,7 +278,12 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
       ),
     goToProjectWorkspaceCreate: (projectId, draftId, transition) =>
       navigateTo(
-        { kind: "project-workspace-create", hostId, projectId, draftId },
+        {
+          kind: "project-workspace-create",
+          hostId: transition?.hostId === undefined ? hostId : transition.hostId,
+          projectId,
+          draftId,
+        },
         transition,
       ),
   };
@@ -321,7 +328,13 @@ function createRemoteFallbackAppNavigation(): AppNavigation {
       navigateTo({ kind: "project-issue", projectId, issueId }, transition),
     goToProjectIssueWorkspace: (projectId, issueId, workspaceId, transition) =>
       navigateTo(
-        { kind: "project-issue-workspace", projectId, issueId, workspaceId },
+        {
+          kind: "project-issue-workspace",
+          projectId,
+          issueId,
+          workspaceId,
+          hostId: transition?.hostId,
+        },
         transition,
       ),
     goToProjectIssueWorkspaceCreate: (
@@ -331,12 +344,23 @@ function createRemoteFallbackAppNavigation(): AppNavigation {
       transition,
     ) =>
       navigateTo(
-        { kind: "project-issue-workspace-create", projectId, issueId, draftId },
+        {
+          kind: "project-issue-workspace-create",
+          projectId,
+          issueId,
+          draftId,
+          hostId: transition?.hostId,
+        },
         transition,
       ),
     goToProjectWorkspaceCreate: (projectId, draftId, transition) =>
       navigateTo(
-        { kind: "project-workspace-create", projectId, draftId },
+        {
+          kind: "project-workspace-create",
+          projectId,
+          draftId,
+          hostId: transition?.hostId,
+        },
         transition,
       ),
   };

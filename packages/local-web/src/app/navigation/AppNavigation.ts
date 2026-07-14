@@ -4,6 +4,7 @@ import {
   type AppDestination,
   type AppNavigation,
   type NavigationTransition,
+  resolveDestinationHostId,
 } from '@/shared/lib/routes/appNavigation';
 
 type LocalRouteId = FileRouteTypes['id'];
@@ -176,9 +177,10 @@ function destinationToLocalTarget(
   destination: AppDestination,
   options: { currentHostId: string | null }
 ) {
-  const destinationHostId =
-    'hostId' in destination ? (destination.hostId ?? null) : null;
-  const effectiveHostId = destinationHostId ?? options.currentHostId;
+  const effectiveHostId = resolveDestinationHostId(
+    destination,
+    options.currentHostId
+  );
 
   switch (destination.kind) {
     case 'root':
@@ -352,7 +354,7 @@ export function createLocalAppNavigation(): AppNavigation {
           projectId,
           issueId,
           workspaceId,
-          hostId: transition?.hostId ?? undefined,
+          hostId: transition?.hostId,
         },
         transition
       ),
@@ -368,7 +370,7 @@ export function createLocalAppNavigation(): AppNavigation {
           projectId,
           issueId,
           draftId,
-          hostId: transition?.hostId ?? undefined,
+          hostId: transition?.hostId,
         },
         transition
       ),
@@ -378,7 +380,7 @@ export function createLocalAppNavigation(): AppNavigation {
           kind: 'project-workspace-create',
           projectId,
           draftId,
-          hostId: transition?.hostId ?? undefined,
+          hostId: transition?.hostId,
         },
         transition
       ),

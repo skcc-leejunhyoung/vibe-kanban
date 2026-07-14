@@ -10,12 +10,14 @@ import {
 } from '@vibe/ui/components/Command';
 import { defineModal, type NoProps } from '@/shared/lib/modals';
 import { useRemoteCloudHostsState } from '@/shared/hooks/useRemoteCloudHosts';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 
 export type WorkspaceHostSelection = string | null;
 
 const WorkspaceHostSelectionDialogImpl = create<NoProps>(() => {
   const modal = useModal();
   const { t } = useTranslation('common');
+  const runtime = useAppRuntime();
   const { data } = useRemoteCloudHostsState();
   const remoteHosts = (data?.hosts ?? []).filter(
     (host) => host.status === 'online'
@@ -41,12 +43,14 @@ const WorkspaceHostSelectionDialogImpl = create<NoProps>(() => {
           <CommandGroup
             heading={t('workspaces.selectHost', 'Create workspace on')}
           >
-            <CommandItem onSelect={() => select(null)}>
-              <DesktopIcon className="h-4 w-4" />
-              <span>
-                {t('settings.hostPicker.thisMachine', 'This machine')}
-              </span>
-            </CommandItem>
+            {runtime === 'local' && (
+              <CommandItem onSelect={() => select(null)}>
+                <DesktopIcon className="h-4 w-4" />
+                <span>
+                  {t('settings.hostPicker.thisMachine', 'This machine')}
+                </span>
+              </CommandItem>
+            )}
             {remoteHosts.map((host) => (
               <CommandItem key={host.id} onSelect={() => select(host.id)}>
                 <ComputerTowerIcon className="h-4 w-4" />

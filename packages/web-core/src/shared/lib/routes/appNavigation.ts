@@ -2,10 +2,10 @@ export type AppDestination =
   | { kind: 'root' }
   | { kind: 'onboarding' }
   | { kind: 'onboarding-sign-in' }
-  | { kind: 'workspaces'; hostId?: string }
-  | { kind: 'workspaces-create'; hostId?: string }
-  | { kind: 'workspace'; workspaceId: string; hostId?: string }
-  | { kind: 'workspace-vscode'; workspaceId: string; hostId?: string }
+  | { kind: 'workspaces'; hostId?: string | null }
+  | { kind: 'workspaces-create'; hostId?: string | null }
+  | { kind: 'workspace'; workspaceId: string; hostId?: string | null }
+  | { kind: 'workspace-vscode'; workspaceId: string; hostId?: string | null }
   | { kind: 'export' }
   | { kind: 'project'; projectId: string }
   | {
@@ -18,20 +18,20 @@ export type AppDestination =
       projectId: string;
       issueId: string;
       workspaceId: string;
-      hostId?: string;
+      hostId?: string | null;
     }
   | {
       kind: 'project-issue-workspace-create';
       projectId: string;
       issueId: string;
       draftId: string;
-      hostId?: string;
+      hostId?: string | null;
     }
   | {
       kind: 'project-workspace-create';
       projectId: string;
       draftId: string;
-      hostId?: string;
+      hostId?: string | null;
     };
 
 export type NavigationTransition = {
@@ -128,6 +128,17 @@ export function getDestinationHostId(
   }
 
   return destination.hostId ?? null;
+}
+
+export function resolveDestinationHostId(
+  destination: AppDestination,
+  currentHostId: string | null
+): string | null {
+  if (!('hostId' in destination) || destination.hostId === undefined) {
+    return currentHostId;
+  }
+
+  return destination.hostId;
 }
 
 export function isProjectDestination(
