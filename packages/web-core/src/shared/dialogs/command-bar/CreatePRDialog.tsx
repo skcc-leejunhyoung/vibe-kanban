@@ -198,6 +198,8 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
 
       let isCancelled = false;
       const initializePRFields = async () => {
+        // Draft persistence is additive. A migration/version mismatch must not
+        // prevent the established first-message prefill from running.
         try {
           // The backend draft is authoritative: unlike the background store it
           // survives reloads, app restarts, and opening this workspace elsewhere.
@@ -212,15 +214,21 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
             });
             return;
           }
+        } catch {
+          // Continue with the local/default fallback below. The save path will
+          // retry after hydration instead of leaving the dialog blank.
+        }
 
-          // A local draft covers the short window before its debounced backend
-          // write completes.
-          if (entry?.draft) {
-            setPrTitle(entry.draft.title);
-            setPrBody(entry.draft.body);
-            return;
-          }
+        // A local draft covers the short window before its debounced backend
+        // write completes.
+        if (entry?.draft) {
+          setPrTitle(entry.draft.title);
+          setPrBody(entry.draft.body);
+          hydratedFor.current = `${attempt.id}:${repoId}`;
+          return;
+        }
 
+        try {
           const firstUserMessage = await workspacesApi.getFirstUserMessage(
             attempt.id
           );
