@@ -5,6 +5,7 @@ import {
   ExecutionProcessesContext,
   type ExecutionProcessesContextType,
 } from '@/shared/hooks/useExecutionProcessesContext';
+import { belongsToSession } from './executionProcessScope';
 
 // Optimistic overlay on the streamed process list, so chat interactions
 // (send / stop / reset) reflect immediately instead of waiting for the WS
@@ -32,20 +33,28 @@ export const ExecutionProcessesProvider: React.FC<{
     {}
   );
 
-  const addOptimisticProcess = useCallback((process: ExecutionProcess) => {
-    setOptimistic((current) => {
-      if (current[process.id]?.kind === 'add') return current;
-      // Force `running` so the new turn (and the running indicator) show right
-      // away; the authoritative status arrives on the stream moments later.
-      return {
-        ...current,
-        [process.id]: {
-          kind: 'add',
-          process: { ...process, status: ExecutionProcessStatus.running },
-        },
-      };
-    });
-  }, []);
+  const addOptimisticProcess = useCallback(
+    (process: ExecutionProcess) => {
+      // A follow-up request may resolve after the user has navigated away.
+      // Its callback still targets this long-lived provider, so never attach
+      // the old session's process to the newly selected conversation.
+      if (!belongsToSession(process, sessionId)) return;
+
+      setOptimistic((current) => {
+        if (current[process.id]?.kind === 'add') return current;
+        // Force `running` so the new turn (and the running indicator) show right
+        // away; the authoritative status arrives on the stream moments later.
+        return {
+          ...current,
+          [process.id]: {
+            kind: 'add',
+            process: { ...process, status: ExecutionProcessStatus.running },
+          },
+        };
+      });
+    },
+    [sessionId]
+  );
 
   const patchOptimisticProcess = useCallback(
     (id: string, changes: Partial<ExecutionProcess>) => {
@@ -127,14 +136,20 @@ export const ExecutionProcessesProvider: React.FC<{
       result.push(op?.kind === 'patch' ? { ...p, ...op.changes } : p);
     }
     for (const [id, op] of Object.entries(optimistic)) {
-      if (op.kind === 'add' && !streamedIds.has(id)) result.push(op.process);
+      if (
+        op.kind === 'add' &&
+        !streamedIds.has(id) &&
+        belongsToSession(op.process, sessionId)
+      ) {
+        result.push(op.process);
+      }
     }
     return result.sort(
       (a, b) =>
         new Date(a.created_at as unknown as string).getTime() -
         new Date(b.created_at as unknown as string).getTime()
     );
-  }, [executionProcesses, optimistic, hasOptimistic]);
+  }, [executionProcesses, optimistic, hasOptimistic, sessionId]);
 
   const mergedById = useMemo(() => {
     if (mergedAll === executionProcesses) return executionProcessesById;
