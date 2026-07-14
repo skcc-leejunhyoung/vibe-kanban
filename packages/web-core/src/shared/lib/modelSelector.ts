@@ -170,3 +170,23 @@ export function splitFastSuffix(
   }
   return { baseId: modelId, fast: false };
 }
+
+/**
+ * Normalize a stored `provider/model` (or bare model) id by stripping the
+ * `-fast` toggle suffix from the model part when the base model advertises fast
+ * support, keeping any provider prefix. Returns the normalized id and whether
+ * fast was on. Lets a preset/default model saved as `…-fast` resolve to the
+ * real base model in the picker instead of a phantom `…-fast` entry.
+ */
+export function normalizeFastModelId(
+  value: string | null | undefined,
+  hasProviders: boolean,
+  supportsFast: (baseId: string) => boolean
+): { modelId: string | null; fast: boolean } {
+  if (!value) return { modelId: value ?? null, fast: false };
+  const { providerId, modelId } = parseModelId(value, hasProviders);
+  if (!modelId) return { modelId: value, fast: false };
+  const { baseId, fast } = splitFastSuffix(modelId, supportsFast);
+  const base = baseId ?? modelId;
+  return { modelId: providerId ? `${providerId}/${base}` : base, fast };
+}

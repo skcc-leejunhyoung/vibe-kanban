@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { splitFastSuffix, FAST_SUFFIX } from './modelSelector';
+import {
+  splitFastSuffix,
+  normalizeFastModelId,
+  FAST_SUFFIX,
+} from './modelSelector';
 
 const FAST_CAPABLE = new Set(['gpt-5.5', 'gpt-5.4', 'gpt-5.6-luna']);
 const supportsFast = (baseId: string) => FAST_CAPABLE.has(baseId.toLowerCase());
@@ -44,5 +48,50 @@ describe('splitFastSuffix', () => {
 
   it('exposes the suffix constant', () => {
     expect(FAST_SUFFIX).toBe('-fast');
+  });
+});
+
+describe('normalizeFastModelId', () => {
+  it('strips a fast suffix from a bare preset/default model id', () => {
+    // Regression: a preset stored as `gpt-5.5-fast` must resolve to the real
+    // base model, not a phantom `gpt-5.5-fast` entry with no reasoning options.
+    expect(normalizeFastModelId('gpt-5.5-fast', false, supportsFast)).toEqual({
+      modelId: 'gpt-5.5',
+      fast: true,
+    });
+  });
+
+  it('strips the suffix while preserving the provider prefix', () => {
+    expect(
+      normalizeFastModelId('openai/gpt-5.5-fast', true, supportsFast)
+    ).toEqual({ modelId: 'openai/gpt-5.5', fast: true });
+  });
+
+  it('leaves a non-fast model id untouched', () => {
+    expect(normalizeFastModelId('gpt-5.5', false, supportsFast)).toEqual({
+      modelId: 'gpt-5.5',
+      fast: false,
+    });
+    expect(normalizeFastModelId('openai/gpt-5.5', true, supportsFast)).toEqual({
+      modelId: 'openai/gpt-5.5',
+      fast: false,
+    });
+  });
+
+  it('does not strip when the base is not fast-capable', () => {
+    expect(
+      normalizeFastModelId('gpt-5.2-codex-fast', false, supportsFast)
+    ).toEqual({ modelId: 'gpt-5.2-codex-fast', fast: false });
+  });
+
+  it('passes null / undefined through', () => {
+    expect(normalizeFastModelId(null, false, supportsFast)).toEqual({
+      modelId: null,
+      fast: false,
+    });
+    expect(normalizeFastModelId(undefined, true, supportsFast)).toEqual({
+      modelId: null,
+      fast: false,
+    });
   });
 });

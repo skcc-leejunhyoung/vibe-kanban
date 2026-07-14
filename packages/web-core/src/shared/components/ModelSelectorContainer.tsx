@@ -31,6 +31,7 @@ import {
   isModelAvailable,
   resolveDefaultReasoningId,
   splitFastSuffix,
+  normalizeFastModelId,
   FAST_SUFFIX,
 } from '@/shared/lib/modelSelector';
 import { useHiddenModels } from '@/shared/stores/useUiPreferencesStore';
@@ -133,27 +134,40 @@ export function ModelSelectorContainer({
   }, [streamError]);
 
   const baseConfig = streamConfig;
-  const config = appendPresetModel(baseConfig, presetOptions?.model_id);
 
   const { hiddenKeys, isHidden } = useHiddenModels(agent);
 
+  // Fast support is a property of the real (streamed) models; build the lookup
+  // from baseConfig so it's available before we fold the preset model in below.
   const supportsFastById = useMemo(() => {
     const map = new Map<string, boolean>();
-    for (const model of config?.models ?? []) {
+    for (const model of baseConfig?.models ?? []) {
       map.set(model.id.toLowerCase(), model.supports_fast);
     }
     return map;
-  }, [config?.models]);
+  }, [baseConfig?.models]);
   const supportsFast = useCallback(
     (baseId: string) => supportsFastById.get(baseId.toLowerCase()) ?? false,
     [supportsFastById]
   );
 
+  const hasProviders = (baseConfig?.providers.length ?? 0) > 0;
+
+  // A `-fast` suffix is a fast-tier toggle, not a distinct model. Normalize the
+  // preset model to its base id so the picker shows the real model (with its
+  // reasoning options + fast toggle) rather than a phantom `…-fast` entry.
+  const { modelId: presetModelNormalized, fast: presetFast } = useMemo(
+    () =>
+      normalizeFastModelId(presetOptions?.model_id, hasProviders, supportsFast),
+    [presetOptions?.model_id, hasProviders, supportsFast]
+  );
+
+  const config = appendPresetModel(baseConfig, presetModelNormalized);
+
   const availableProviderIds = useMemo(
     () => config?.providers.map((item) => item.id) ?? [],
     [config?.providers]
   );
-  const hasProviders = availableProviderIds.length > 0;
   const providerIdMap = useMemo(
     () => new Map(availableProviderIds.map((id) => [id.toLowerCase(), id])),
     [availableProviderIds]
@@ -168,7 +182,7 @@ export function ModelSelectorContainer({
 
   // A `-fast` suffix on the stored model id is a fast-tier toggle, not a
   // distinct model — strip it for selection/matching and track it separately.
-  const { baseId: configModelId, fast: fastEnabled } = useMemo(
+  const { baseId: configModelId, fast: configFast } = useMemo(
     () => splitFastSuffix(configModelIdRaw, supportsFast),
     [configModelIdRaw, supportsFast]
   );
@@ -176,9 +190,9 @@ export function ModelSelectorContainer({
   const fallbackProviderId = availableProviderIds[0] ?? null;
   const resolvedConfigProviderId = resolveProviderId(configProviderId);
 
-  const { providerId: presetProviderId } = useMemo(
-    () => parseModelId(presetOptions?.model_id, hasProviders),
-    [presetOptions?.model_id, hasProviders]
+  const { providerId: presetProviderId, modelId: presetModelId } = useMemo(
+    () => parseModelId(presetModelNormalized, hasProviders),
+    [presetModelNormalized, hasProviders]
   );
   const resolvedPresetProviderId = resolveProviderId(presetProviderId);
 
@@ -196,11 +210,6 @@ export function ModelSelectorContainer({
         hasProviders
       )
     : null;
-
-  const { modelId: presetModelId } = useMemo(
-    () => parseModelId(presetOptions?.model_id, hasProviders),
-    [presetOptions?.model_id, hasProviders]
-  );
 
   const presetModelMatchesProvider =
     !selectedProviderId ||
@@ -223,6 +232,15 @@ export function ModelSelectorContainer({
           hasProviders
         );
   })();
+
+  // Fast is on when the winning selected-model source (session override, then
+  // preset) carried the `-fast` toggle; the default model never does.
+  const fastEnabled =
+    configModelId != null
+      ? configFast
+      : resolvedPresetModelId != null
+        ? presetFast
+        : false;
 
   const selectedModel = config
     ? getSelectedModel(config.models, selectedProviderId, selectedModelId)
