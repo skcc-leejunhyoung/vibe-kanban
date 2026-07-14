@@ -17,6 +17,7 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { isCodingAgent } from '@/shared/constants/processes';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
@@ -341,7 +342,37 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Inject the follow-up process (returned by the send POST) so its turn shows
   // immediately, without waiting for the WS stream to deliver it.
-  const { addOptimisticProcess } = useExecutionProcessesContext();
+  const {
+    addOptimisticProcess,
+    patchOptimisticProcess,
+    clearOptimisticProcess,
+  } = useExecutionProcessesContext();
+
+  // Stop, reflected immediately: mark the running coding-agent turn(s) killed so
+  // the loading indicator clears and the box flips to idle before the WS stream
+  // delivers the terminal status. Superseded by the stream; reverted if the stop
+  // request fails.
+  const handleStop = useCallback(async () => {
+    const patchedIds: string[] = [];
+    for (const p of processes) {
+      if (isCodingAgent(p.run_reason) && p.status === 'running') {
+        patchOptimisticProcess(p.id, {
+          status: ExecutionProcessStatus.killed,
+        });
+        patchedIds.push(p.id);
+      }
+    }
+    try {
+      await stopExecution();
+    } catch {
+      patchedIds.forEach((id) => clearOptimisticProcess(id));
+    }
+  }, [
+    processes,
+    patchOptimisticProcess,
+    clearOptimisticProcess,
+    stopExecution,
+  ]);
 
   // Extract user messages for turn navigation
   const userMessageTurns: TurnNavigationItem[] = useMemo(() => {
@@ -1268,7 +1299,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onQueue: handleQueueMessage,
         onSteer: handleSteer,
         onCancelQueue: handleCancelQueue,
-        onStop: stopExecution,
+        onStop: handleStop,
         onPasteFiles: uploadFiles,
         onVibeReview:
           sessionId && hasLinkedIssue ? handleVibeReview : undefined,

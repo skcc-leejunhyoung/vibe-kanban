@@ -22,6 +22,21 @@ export type ExecutionProcessesContextType = {
    * supersedes it by id as soon as it arrives.
    */
   addOptimisticProcess: (process: ExecutionProcess) => void;
+  /**
+   * Optimistically patch a process (e.g. mark a running turn killed on stop) so
+   * the change shows immediately. Dropped once the stream reflects it.
+   */
+  patchOptimisticProcess: (
+    id: string,
+    changes: Partial<ExecutionProcess>
+  ) => void;
+  /**
+   * Optimistically hide a process (e.g. on reset) so it disappears immediately.
+   * Dropped once the stream drops/removes it.
+   */
+  removeOptimisticProcess: (id: string) => void;
+  /** Drop any optimistic op for a process (e.g. to revert a failed action). */
+  clearOptimisticProcess: (id: string) => void;
 };
 
 export const ExecutionProcessesContext =

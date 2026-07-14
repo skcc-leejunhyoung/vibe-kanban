@@ -19,7 +19,8 @@ export function useResetProcess(
   selectedSessionId: string | undefined
 ): UseResetProcessResult {
   const { data: branchStatus } = useBranchStatus(workspaceId);
-  const { executionProcessesAll: processes } = useExecutionProcessesContext();
+  const { executionProcessesAll: processes, removeOptimisticProcess } =
+    useExecutionProcessesContext();
 
   const resetMutation = useResetProcessMutation(selectedSessionId ?? '');
   const isResetPending = resetMutation.isPending;
@@ -40,13 +41,41 @@ export function useResetProcess(
   const resetProcess = useCallback(
     (executionProcessId: string) => {
       if (!selectedSessionId) return;
-      resetMutation.mutate({
-        executionProcessId,
-        branchStatus,
-        processes,
-      });
+      // Reset drops the target process and everything created at/after it
+      // (backend: `created_at >= target`). Hide that exact set optimistically so
+      // the turns disappear immediately; the stream confirms the drop and clears
+      // the overlay.
+      const target = processes.find((p) => p.id === executionProcessId);
+      const idsToRemove =
+        target != null
+          ? processes
+              .filter(
+                (p) =>
+                  !p.dropped &&
+                  new Date(p.created_at as unknown as string).getTime() >=
+                    new Date(target.created_at as unknown as string).getTime()
+              )
+              .map((p) => p.id)
+          : [executionProcessId];
+      resetMutation.mutate(
+        {
+          executionProcessId,
+          branchStatus,
+          processes,
+        },
+        {
+          onSuccess: () =>
+            idsToRemove.forEach((id) => removeOptimisticProcess(id)),
+        }
+      );
     },
-    [branchStatus, processes, resetMutation, selectedSessionId]
+    [
+      branchStatus,
+      processes,
+      resetMutation,
+      selectedSessionId,
+      removeOptimisticProcess,
+    ]
   );
 
   return useMemo(

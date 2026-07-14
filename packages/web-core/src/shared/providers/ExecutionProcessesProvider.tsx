@@ -6,6 +6,15 @@ import {
   type ExecutionProcessesContextType,
 } from '@/shared/hooks/useExecutionProcessesContext';
 
+// Optimistic overlay on the streamed process list, so chat interactions
+// (send / stop / reset) reflect immediately instead of waiting for the WS
+// stream round-trip. Each op is keyed by process id and superseded once the
+// stream confirms it.
+type OptimisticOp =
+  | { kind: 'add'; process: ExecutionProcess }
+  | { kind: 'patch'; changes: Partial<ExecutionProcess> }
+  | { kind: 'remove' };
+
 export const ExecutionProcessesProvider: React.FC<{
   sessionId?: string | undefined;
   children: React.ReactNode;
@@ -19,54 +28,100 @@ export const ExecutionProcessesProvider: React.FC<{
     error,
   } = useExecutionProcesses(sessionId, { showSoftDeleted: true });
 
-  // Optimistic processes: rows injected by the sender (from the follow-up POST
-  // response) so the just-sent turn renders immediately, before the WS stream
-  // delivers the same process. Superseded by the streamed row (same id).
-  const [optimisticProcesses, setOptimisticProcesses] = useState<
-    ExecutionProcess[]
-  >([]);
+  const [optimistic, setOptimistic] = useState<Record<string, OptimisticOp>>(
+    {}
+  );
 
   const addOptimisticProcess = useCallback((process: ExecutionProcess) => {
-    setOptimisticProcesses((current) => {
-      if (current.some((p) => p.id === process.id)) return current;
+    setOptimistic((current) => {
+      if (current[process.id]?.kind === 'add') return current;
       // Force `running` so the new turn (and the running indicator) show right
       // away; the authoritative status arrives on the stream moments later.
-      return [
+      return {
         ...current,
-        { ...process, status: ExecutionProcessStatus.running },
-      ];
+        [process.id]: {
+          kind: 'add',
+          process: { ...process, status: ExecutionProcessStatus.running },
+        },
+      };
     });
   }, []);
 
-  const streamedIds = useMemo(
-    () => new Set(executionProcesses.map((p) => p.id)),
-    [executionProcesses]
+  const patchOptimisticProcess = useCallback(
+    (id: string, changes: Partial<ExecutionProcess>) => {
+      setOptimistic((current) => ({
+        ...current,
+        [id]: { kind: 'patch', changes },
+      }));
+    },
+    []
   );
 
-  // Clear optimistic rows when the session changes (the provider isn't
-  // remounted per session — only its sessionId prop changes).
+  const removeOptimisticProcess = useCallback((id: string) => {
+    setOptimistic((current) => ({ ...current, [id]: { kind: 'remove' } }));
+  }, []);
+
+  const clearOptimisticProcess = useCallback((id: string) => {
+    setOptimistic((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  // Clear the overlay when the session changes (the provider isn't remounted
+  // per session — only its sessionId prop changes).
   useEffect(() => {
-    setOptimisticProcesses([]);
+    setOptimistic({});
   }, [sessionId]);
 
-  // Drop an optimistic row once the real one arrives on the stream.
+  // Drop each op once the stream confirms it.
   useEffect(() => {
-    setOptimisticProcesses((current) => {
-      const next = current.filter((p) => !streamedIds.has(p.id));
-      return next.length === current.length ? current : next;
+    setOptimistic((current) => {
+      const ids = Object.keys(current);
+      if (ids.length === 0) return current;
+      let changed = false;
+      const next = { ...current };
+      for (const id of ids) {
+        const op = current[id];
+        const streamed = executionProcessesById[id];
+        let drop = false;
+        if (op.kind === 'add') drop = !!streamed;
+        else if (op.kind === 'remove') drop = !streamed || !!streamed.dropped;
+        else if (op.kind === 'patch')
+          drop =
+            !!streamed && streamed.status !== ExecutionProcessStatus.running;
+        if (drop) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
     });
-  }, [streamedIds]);
+  }, [executionProcessesById]);
 
-  // Streamed rows win; optimistic rows only fill in ids not yet streamed.
+  const hasOptimistic = Object.keys(optimistic).length > 0;
+
+  // Apply removes/patches to streamed rows, then append adds not yet streamed.
   const mergedAll = useMemo(() => {
-    const extras = optimisticProcesses.filter((p) => !streamedIds.has(p.id));
-    if (extras.length === 0) return executionProcesses;
-    return [...executionProcesses, ...extras].sort(
+    if (!hasOptimistic) return executionProcesses;
+    const streamedIds = new Set(executionProcesses.map((p) => p.id));
+    const result: ExecutionProcess[] = [];
+    for (const p of executionProcesses) {
+      const op = optimistic[p.id];
+      if (op?.kind === 'remove') continue;
+      result.push(op?.kind === 'patch' ? { ...p, ...op.changes } : p);
+    }
+    for (const [id, op] of Object.entries(optimistic)) {
+      if (op.kind === 'add' && !streamedIds.has(id)) result.push(op.process);
+    }
+    return result.sort(
       (a, b) =>
         new Date(a.created_at as unknown as string).getTime() -
         new Date(b.created_at as unknown as string).getTime()
     );
-  }, [executionProcesses, optimisticProcesses, streamedIds]);
+  }, [executionProcesses, optimistic, hasOptimistic]);
 
   const mergedById = useMemo(() => {
     if (mergedAll === executionProcesses) return executionProcessesById;
@@ -124,6 +179,9 @@ export const ExecutionProcessesProvider: React.FC<{
       isConnected,
       error,
       addOptimisticProcess,
+      patchOptimisticProcess,
+      removeOptimisticProcess,
+      clearOptimisticProcess,
     }),
     [
       mergedAll,
@@ -136,6 +194,9 @@ export const ExecutionProcessesProvider: React.FC<{
       isConnected,
       error,
       addOptimisticProcess,
+      patchOptimisticProcess,
+      removeOptimisticProcess,
+      clearOptimisticProcess,
     ]
   );
 
