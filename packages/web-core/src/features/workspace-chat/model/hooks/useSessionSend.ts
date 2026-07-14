@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import type { ExecutorConfig } from 'shared/types';
+import type { ExecutionProcess, ExecutorConfig } from 'shared/types';
 import { sessionsApi } from '@/shared/lib/api';
 import { useCreateSession } from './useCreateSession';
 
@@ -14,6 +14,11 @@ interface UseSessionSendOptions {
   onSelectSession?: (sessionId: string) => void;
   /** Unified executor config (executor + variant + overrides) */
   executorConfig?: ExecutorConfig | null;
+  /**
+   * Called with the process the follow-up POST created, so the caller can
+   * render its turn optimistically instead of waiting for the WS stream.
+   */
+  onOptimisticProcess?: (process: ExecutionProcess) => void;
 }
 
 interface UseSessionSendResult {
@@ -42,6 +47,7 @@ export function useSessionSend({
   isNewSessionMode,
   onSelectSession,
   executorConfig,
+  onOptimisticProcess,
 }: UseSessionSendOptions): UseSessionSendResult {
   const { mutateAsync: createSession, isPending: isCreatingSession } =
     useCreateSession();
@@ -85,13 +91,16 @@ export function useSessionSend({
         if (!sessionId) return false;
         setIsSendingFollowUp(true);
         try {
-          await sessionsApi.followUp(sessionId, {
+          // The POST returns the created process; hand it to the caller so the
+          // turn renders immediately instead of waiting for the WS stream.
+          const process = await sessionsApi.followUp(sessionId, {
             prompt: trimmed,
             executor_config: executorConfig,
             retry_process_id: null,
             force_when_dirty: null,
             perform_git_reset: null,
           });
+          onOptimisticProcess?.(process);
           return true;
         } catch (e: unknown) {
           const err = e as { message?: string };
@@ -109,6 +118,7 @@ export function useSessionSend({
       createSession,
       onSelectSession,
       executorConfig,
+      onOptimisticProcess,
     ]
   );
 

@@ -16,6 +16,7 @@ import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
+import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
@@ -338,6 +339,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const { isAttemptRunning, stopExecution, isStopping, processes } =
     useWorkspaceExecution(workspaceId);
 
+  // Inject the follow-up process (returned by the send POST) so its turn shows
+  // immediately, without waiting for the WS stream to deliver it.
+  const { addOptimisticProcess } = useExecutionProcessesContext();
+
   // Extract user messages for turn navigation
   const userMessageTurns: TurnNavigationItem[] = useMemo(() => {
     // Every turn is derived from process metadata so the navigator lists the
@@ -646,6 +651,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isNewSessionMode,
     onSelectSession,
     executorConfig,
+    onOptimisticProcess: addOptimisticProcess,
   });
 
   const handleSend = useCallback(async () => {

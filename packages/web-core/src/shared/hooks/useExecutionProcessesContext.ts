@@ -14,6 +14,14 @@ export type ExecutionProcessesContextType = {
   isLoading: boolean;
   isConnected: boolean;
   error: string | null;
+
+  /**
+   * Optimistically add a just-created process (e.g. the one returned by a
+   * follow-up POST) so the conversation renders its turn immediately instead of
+   * waiting for the same process to arrive over the WS stream. The streamed row
+   * supersedes it by id as soon as it arrives.
+   */
+  addOptimisticProcess: (process: ExecutionProcess) => void;
 };
 
 export const ExecutionProcessesContext =
