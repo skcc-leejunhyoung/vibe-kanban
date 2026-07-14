@@ -1,3 +1,4 @@
+pub mod agent_memory_sync;
 pub mod blocker_watcher;
 pub mod error;
 pub mod middleware;

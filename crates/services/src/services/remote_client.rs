@@ -3,21 +3,23 @@
 use std::time::Duration;
 
 use api_types::{
-    AcceptInvitationResponse, AuthMethodsResponse, CreateInvitationRequest,
-    CreateInvitationResponse, CreateIssueAssigneeRequest, CreateIssueRelationshipRequest,
-    CreateIssueRequest, CreateIssueTagRequest, CreateOrganizationRequest,
-    CreateOrganizationResponse, CreateTagRequest, CreateWorkspaceRequest, DeleteResponse,
-    DeleteWorkspaceRequest, GetInvitationResponse, GetOrganizationResponse, HandoffInitRequest,
-    HandoffInitResponse, HandoffRedeemRequest, HandoffRedeemResponse, Issue, IssueAssignee,
-    IssueRelationship, IssueTag, ListAttachmentsResponse, ListInvitationsResponse,
-    ListIssueAssigneesResponse, ListIssueRelationshipsResponse, ListIssueTagsResponse,
-    ListIssuesResponse, ListMembersResponse, ListOrganizationsResponse,
-    ListProjectStatusesResponse, ListProjectsResponse, ListPullRequestsResponse, ListTagsResponse,
-    LocalLoginRequest, LocalLoginResponse, MutationResponse, Organization, ProfileResponse,
-    PullRequest, RevokeInvitationRequest, SearchIssuesRequest, Tag, TokenRefreshRequest,
-    TokenRefreshResponse, UpdateIssueRequest, UpdateMemberRoleRequest, UpdateMemberRoleResponse,
+    AcceptInvitationResponse, AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryReceipt,
+    AgentMemoryScope, AuthMethodsResponse, CreateInvitationRequest, CreateInvitationResponse,
+    CreateIssueAssigneeRequest, CreateIssueRelationshipRequest, CreateIssueRequest,
+    CreateIssueTagRequest, CreateOrganizationRequest, CreateOrganizationResponse, CreateTagRequest,
+    CreateWorkspaceRequest, DeleteResponse, DeleteWorkspaceRequest, GetInvitationResponse,
+    GetOrganizationResponse, HandoffInitRequest, HandoffInitResponse, HandoffRedeemRequest,
+    HandoffRedeemResponse, Issue, IssueAssignee, IssueRelationship, IssueTag,
+    ListAttachmentsResponse, ListInvitationsResponse, ListIssueAssigneesResponse,
+    ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse, ListMembersResponse,
+    ListOrganizationsResponse, ListProjectStatusesResponse, ListProjectsResponse,
+    ListPullRequestsResponse, ListTagsResponse, LocalLoginRequest, LocalLoginResponse,
+    MutationResponse, Organization, ProfileResponse, PullRequest, RecordAgentMemoryReceiptRequest,
+    RevokeInvitationRequest, SearchIssuesRequest, Tag, TokenRefreshRequest, TokenRefreshResponse,
+    UpdateIssueRequest, UpdateMemberRoleRequest, UpdateMemberRoleResponse,
     UpdateOrganizationRequest, UpdatePullRequestApiRequest, UpdateWorkspaceRequest,
-    UpsertPullRequestRequest, Workspace,
+    UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse, UpsertPullRequestRequest,
+    Workspace,
 };
 use backon::{ExponentialBuilder, Retryable};
 use chrono::Duration as ChronoDuration;
@@ -684,6 +686,80 @@ impl RemoteClient {
         Ok(response.hosts)
     }
 
+    pub async fn upsert_agent_memory_snapshot(
+        &self,
+        request: &UpsertAgentMemorySnapshotRequest,
+    ) -> Result<UpsertAgentMemorySnapshotResponse, RemoteClientError> {
+        let response = self
+            .send(
+                reqwest::Method::PUT,
+                "/v1/agent-memory/snapshots",
+                true,
+                Some(request),
+            )
+            .await?;
+        response
+            .json()
+            .await
+            .map_err(|error| RemoteClientError::Serde(error.to_string()))
+    }
+
+    pub async fn agent_memory_inbox(
+        &self,
+        target_host_id: Uuid,
+        target_agent: AgentMemoryKind,
+        scope: AgentMemoryScope,
+        scope_key: Option<&str>,
+    ) -> Result<AgentMemoryInboxResponse, RemoteClientError> {
+        let target_agent = enum_query_value(target_agent)?;
+        let scope = enum_query_value(scope)?;
+        let path = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("target_host_id", &target_host_id.to_string());
+            query.append_pair("target_agent", &target_agent);
+            query.append_pair("scope", &scope);
+            if let Some(scope_key) = scope_key {
+                query.append_pair("scope_key", scope_key);
+            }
+            format!("/v1/agent-memory/inbox?{}", query.finish())
+        };
+        self.get_authed(&path).await
+    }
+
+    pub async fn agent_memory_snapshot(
+        &self,
+        source_host_id: Uuid,
+        source_agent: AgentMemoryKind,
+        scope: AgentMemoryScope,
+        scope_key: Option<&str>,
+    ) -> Result<Option<api_types::AgentMemorySnapshot>, RemoteClientError> {
+        let source_agent = enum_query_value(source_agent)?;
+        let scope = enum_query_value(scope)?;
+        let path = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("source_host_id", &source_host_id.to_string());
+            query.append_pair("source_agent", &source_agent);
+            query.append_pair("scope", &scope);
+            if let Some(scope_key) = scope_key {
+                query.append_pair("scope_key", scope_key);
+            }
+            format!("/v1/agent-memory/snapshots?{}", query.finish())
+        };
+        match self.get_authed(&path).await {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(RemoteClientError::Http { status: 404, .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn record_agent_memory_receipt(
+        &self,
+        request: &RecordAgentMemoryReceiptRequest,
+    ) -> Result<AgentMemoryReceipt, RemoteClientError> {
+        self.post_authed("/v1/agent-memory/receipts", Some(request))
+            .await
+    }
+
     /// Deletes a workspace on the remote server by its local workspace ID.
     pub async fn delete_workspace(
         &self,
@@ -1135,4 +1211,11 @@ fn map_reqwest_error(e: reqwest::Error) -> RemoteClientError {
     } else {
         RemoteClientError::Transport(e.to_string())
     }
+}
+
+fn enum_query_value(value: impl Serialize) -> Result<String, RemoteClientError> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| RemoteClientError::Serde("invalid enum query value".to_string()))
 }

@@ -882,7 +882,17 @@ diff_view: JsonValue,
 /**
  * Opaque quick-chat folder favorites (`FolderFavorite[]`).
  */
-quick_chat_favorites: JsonValue, };
+quick_chat_favorites: JsonValue,
+/**
+ * Daily agent-owned reconciliation of memory snapshots across this user's hosts.
+ */
+agent_memory_sync: AgentMemorySyncConfig, };
+
+export type AgentMemorySyncConfig = { enabled: boolean, daily_local_time: string, agents: Array<AgentMemoryKind>, };
+
+export type AgentMemoryKind = "claude_code" | "codex";
+
+export type AgentMemorySyncStatus = { running: boolean, last_started_at: string | null, last_finished_at: string | null, last_status: string | null, last_error: string | null, };
 
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 

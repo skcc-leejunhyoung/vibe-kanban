@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Deserializer};
 
+pub mod agent_memory;
 pub mod attachment;
 pub mod auth;
 pub mod blob;
@@ -33,6 +34,7 @@ pub mod user_notification_preference;
 pub mod workspace;
 pub mod workspaces;
 
+pub use agent_memory::*;
 pub use attachment::*;
 pub use auth::*;
 pub use blob::*;

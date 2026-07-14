@@ -25,6 +25,7 @@ mod billing {
         Router::new()
     }
 }
+mod agent_memory;
 pub mod attachments;
 pub(crate) mod electric_proxy;
 pub(crate) mod error;
@@ -112,6 +113,7 @@ pub fn router(state: AppState) -> Router {
         .merge(billing::public_router());
 
     let v1_protected = Router::<AppState>::new()
+        .merge(agent_memory::router())
         .merge(identity::router())
         .merge(hosts::router())
         .merge(projects::router())

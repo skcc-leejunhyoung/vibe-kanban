@@ -108,6 +108,7 @@ pub type GitHubConfig = versions::v9::GitHubConfig;
 pub type UiLanguage = versions::v9::UiLanguage;
 pub type ShowcaseState = versions::v9::ShowcaseState;
 pub type SendMessageShortcut = versions::v9::SendMessageShortcut;
+pub type AgentMemorySyncConfig = versions::v9::AgentMemorySyncConfig;
 
 /// Will always return config, trying old schemas or eventually returning default
 pub async fn load_config_from_file(config_path: &PathBuf) -> Config {

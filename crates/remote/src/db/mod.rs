@@ -115,3 +115,4 @@ pub(crate) async fn ensure_electric_role_password(
 
     Ok(())
 }
+pub mod agent_memory;

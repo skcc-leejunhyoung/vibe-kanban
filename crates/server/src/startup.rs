@@ -188,6 +188,7 @@ pub async fn initialize_deployment(
     // Background poller that resumes sessions at agent-scheduled wakeup times
     // (claude ScheduleWakeup / session_crons).
     crate::scheduled_resume_watcher::spawn(deployment.clone());
+    crate::agent_memory_sync::spawn(deployment.clone());
 
     Ok(deployment)
 }

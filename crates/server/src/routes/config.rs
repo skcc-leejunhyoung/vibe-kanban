@@ -12,6 +12,7 @@ use axum::{
     },
     routing::{get, put},
 };
+use chrono::NaiveTime;
 use deployment::{Deployment, DeploymentError};
 use executors::{
     executors::{
@@ -194,6 +195,11 @@ async fn update_config(
     if !git::is_valid_branch_prefix(&new_config.git_branch_prefix) {
         return ResponseJson(ApiResponse::error(
             "Invalid git branch prefix. Must be a valid git branch name component without slashes.",
+        ));
+    }
+    if NaiveTime::parse_from_str(&new_config.agent_memory_sync.daily_local_time, "%H:%M").is_err() {
+        return ResponseJson(ApiResponse::error(
+            "Invalid agent memory sync time. Expected HH:MM in local time.",
         ));
     }
 

@@ -9446,6 +9446,7 @@ dependencies = [
  "futures-util",
  "git",
  "git-host",
+ "hex",
  "http 1.4.0",
  "local-deployment",
  "mime_guess",

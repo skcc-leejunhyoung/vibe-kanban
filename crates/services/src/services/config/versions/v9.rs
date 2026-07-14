@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Error;
+use api_types::AgentMemoryKind;
 use executors::{executors::BaseCodingAgent, profile::ExecutorProfileId};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -81,6 +82,34 @@ fn default_quick_chat_favorites() -> serde_json::Value {
     serde_json::Value::Array(Vec::new())
 }
 
+fn default_agent_memory_sync_time() -> String {
+    "03:00".to_string()
+}
+
+fn default_agent_memory_sync_agents() -> Vec<AgentMemoryKind> {
+    vec![AgentMemoryKind::ClaudeCode, AgentMemoryKind::Codex]
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct AgentMemorySyncConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_agent_memory_sync_time")]
+    pub daily_local_time: String,
+    #[serde(default = "default_agent_memory_sync_agents")]
+    pub agents: Vec<AgentMemoryKind>,
+}
+
+impl Default for AgentMemorySyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            daily_local_time: default_agent_memory_sync_time(),
+            agents: default_agent_memory_sync_agents(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct Config {
     pub config_version: String,
@@ -153,6 +182,9 @@ pub struct Config {
     /// Opaque quick-chat folder favorites (`FolderFavorite[]`).
     #[serde(default = "default_quick_chat_favorites")]
     pub quick_chat_favorites: serde_json::Value,
+    /// Daily agent-owned reconciliation of memory snapshots across this user's hosts.
+    #[serde(default)]
+    pub agent_memory_sync: AgentMemorySyncConfig,
 }
 
 impl Config {
@@ -193,6 +225,7 @@ impl Config {
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
             quick_chat_favorites: default_quick_chat_favorites(),
+            agent_memory_sync: AgentMemorySyncConfig::default(),
         }
     }
 
@@ -260,6 +293,7 @@ impl Default for Config {
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
             quick_chat_favorites: default_quick_chat_favorites(),
+            agent_memory_sync: AgentMemorySyncConfig::default(),
         }
     }
 }
