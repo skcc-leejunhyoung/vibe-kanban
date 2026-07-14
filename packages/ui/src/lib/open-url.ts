@@ -17,19 +17,34 @@
  * in this origin and `data:`/`blob:` open attacker-controlled content in the
  * PWA context, so the scheme is validated first.
  */
-export function openExternalUrl(url: string): void {
+/** Reserve a popup during a user gesture for navigation after async work. */
+export function reserveExternalWindow(): Window | null {
+  const opened = window.open('', '_blank');
+  if (opened) {
+    opened.opener = null;
+  }
+  return opened;
+}
+
+export function openExternalUrl(url: string, opened?: Window | null): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url, window.location.href);
   } catch {
-    return;
+    return false;
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    return;
+    return false;
   }
 
-  const opened = window.open(parsed.href, '_blank');
   if (opened) {
-    opened.opener = null;
+    opened.location.href = parsed.href;
+    return true;
   }
+
+  const newWindow = window.open(parsed.href, '_blank');
+  if (newWindow) {
+    newWindow.opener = null;
+  }
+  return newWindow !== null;
 }

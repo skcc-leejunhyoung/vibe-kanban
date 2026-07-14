@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { create } from 'zustand';
-import { openExternalUrl } from '@vibe/ui/lib/open-url';
+import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { workspacesApi } from '@/shared/lib/api';
 import type { Result } from '@/shared/lib/api';
 import type {
@@ -69,7 +69,11 @@ interface PrBackgroundState {
 // they live outside the reactive store, keyed by workspace id.
 const controllers = new Map<
   string,
-  { generate?: AbortController; create?: AbortController }
+  {
+    generate?: AbortController;
+    create?: AbortController;
+    createWindow?: Window | null;
+  }
 >();
 
 function slot(workspaceId: string) {
@@ -85,7 +89,7 @@ function slot(workspaceId: string) {
 // session touching many workspaces doesn't accumulate empty entries.
 function pruneControllers(workspaceId: string) {
   const entry = controllers.get(workspaceId);
-  if (entry && !entry.generate && !entry.create) {
+  if (entry && !entry.generate && !entry.create && !entry.createWindow) {
     controllers.delete(workspaceId);
   }
 }
@@ -166,7 +170,11 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         return;
       }
       const controller = new AbortController();
-      slot(workspaceId).create = controller;
+      const controllerSlot = slot(workspaceId);
+      controllerSlot.create = controller;
+      // Reserve the window synchronously while the create-button click still
+      // has user activation. Opening it after the API response is popup-blocked.
+      controllerSlot.createWindow = reserveExternalWindow();
       patch(workspaceId, {
         create: { status: 'running', baseBranch: req.target_branch },
       });
@@ -176,8 +184,14 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         .then((result) => {
           if (slot(workspaceId).create !== controller) return;
           if (result.success) {
-            openExternalUrl(result.data);
+            const createWindow = slot(workspaceId).createWindow;
+            if (!openExternalUrl(result.data, createWindow)) {
+              createWindow?.close();
+            }
+          } else {
+            slot(workspaceId).createWindow?.close();
           }
+          slot(workspaceId).createWindow = undefined;
           patch(workspaceId, {
             create: {
               status: 'done',
@@ -189,6 +203,8 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         .catch((err) => {
           if (slot(workspaceId).create !== controller) return;
           if (isAbortError(err)) return; // canceled → already cleared
+          slot(workspaceId).createWindow?.close();
+          slot(workspaceId).createWindow = undefined;
           patch(workspaceId, {
             create: {
               status: 'error',
@@ -214,6 +230,8 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
     cancelCreate: (workspaceId) => {
       slot(workspaceId).create?.abort();
       slot(workspaceId).create = undefined;
+      slot(workspaceId).createWindow?.close();
+      slot(workspaceId).createWindow = undefined;
       get().clearCreate(workspaceId);
     },
 

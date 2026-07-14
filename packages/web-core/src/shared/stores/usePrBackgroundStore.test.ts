@@ -10,15 +10,19 @@ vi.mock('@/shared/lib/api', () => ({
 
 vi.mock('@vibe/ui/lib/open-url', () => ({
   openExternalUrl: vi.fn(),
+  reserveExternalWindow: vi.fn(),
 }));
 
 import { usePrBackgroundStore } from './usePrBackgroundStore';
 import { workspacesApi } from '@/shared/lib/api';
-import { openExternalUrl } from '@vibe/ui/lib/open-url';
+import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 
 const generatePrDescription = vi.mocked(workspacesApi.generatePrDescription);
 const createPR = vi.mocked(workspacesApi.createPR);
 const openPrUrl = vi.mocked(openExternalUrl);
+const reservePrWindow = vi.mocked(reserveExternalWindow);
+const closePrWindow = vi.fn();
+const prWindow = { close: closePrWindow } as unknown as Window;
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -39,6 +43,8 @@ const createReq = {
 describe('usePrBackgroundStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    reservePrWindow.mockReturnValue(prWindow);
+    openPrUrl.mockReturnValue(true);
     usePrBackgroundStore.setState({ byWorkspace: {} });
   });
 
@@ -110,7 +116,8 @@ describe('usePrBackgroundStore', () => {
     expect(create?.status).toBe('done');
     expect(create?.result).toEqual({ success: true, data: 'https://pr' });
     expect(create?.baseBranch).toBe('main');
-    expect(openPrUrl).toHaveBeenCalledWith('https://pr');
+    expect(reservePrWindow).toHaveBeenCalledOnce();
+    expect(openPrUrl).toHaveBeenCalledWith('https://pr', prWindow);
   });
 
   it('aborts and clears a running PR creation on cancel', async () => {
@@ -129,6 +136,7 @@ describe('usePrBackgroundStore', () => {
     store.cancelCreate('ws-create-cancel');
 
     expect(captured?.aborted).toBe(true);
+    expect(closePrWindow).toHaveBeenCalledOnce();
     expect(
       usePrBackgroundStore.getState().byWorkspace['ws-create-cancel']?.create
     ).toBeUndefined();
@@ -159,6 +167,21 @@ describe('usePrBackgroundStore', () => {
       usePrBackgroundStore.getState().byWorkspace['ws-create-err']?.create;
     expect(create?.status).toBe('error');
     expect(create?.error).toBe('boom');
+    expect(closePrWindow).toHaveBeenCalledOnce();
+  });
+
+  it('closes the reserved window when PR creation is rejected', async () => {
+    createPR.mockResolvedValue({
+      success: false,
+      error: undefined,
+      message: 'rejected',
+    });
+
+    usePrBackgroundStore.getState().startCreate('ws-create-fail', createReq);
+    await flush();
+
+    expect(closePrWindow).toHaveBeenCalledOnce();
+    expect(openPrUrl).not.toHaveBeenCalled();
   });
 
   it('ignores the late resolution of a canceled-and-superseded creation', async () => {
