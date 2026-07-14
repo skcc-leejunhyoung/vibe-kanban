@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { create } from 'zustand';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { workspacesApi } from '@/shared/lib/api';
 import type { Result } from '@/shared/lib/api';
 import type {
@@ -174,6 +175,9 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         .createPR(workspaceId, req, controller.signal)
         .then((result) => {
           if (slot(workspaceId).create !== controller) return;
+          if (result.success) {
+            openExternalUrl(result.data);
+          }
           patch(workspaceId, {
             create: {
               status: 'done',

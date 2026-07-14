@@ -8,11 +8,17 @@ vi.mock('@/shared/lib/api', () => ({
   },
 }));
 
+vi.mock('@vibe/ui/lib/open-url', () => ({
+  openExternalUrl: vi.fn(),
+}));
+
 import { usePrBackgroundStore } from './usePrBackgroundStore';
 import { workspacesApi } from '@/shared/lib/api';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 const generatePrDescription = vi.mocked(workspacesApi.generatePrDescription);
 const createPR = vi.mocked(workspacesApi.createPR);
+const openPrUrl = vi.mocked(openExternalUrl);
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -104,6 +110,7 @@ describe('usePrBackgroundStore', () => {
     expect(create?.status).toBe('done');
     expect(create?.result).toEqual({ success: true, data: 'https://pr' });
     expect(create?.baseBranch).toBe('main');
+    expect(openPrUrl).toHaveBeenCalledWith('https://pr');
   });
 
   it('aborts and clears a running PR creation on cancel', async () => {
