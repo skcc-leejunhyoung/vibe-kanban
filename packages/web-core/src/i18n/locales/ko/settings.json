@@ -456,7 +456,11 @@
         "toggleEnabled": "{{name}} 토글",
         "enabledTooltip": "에이전트 선택 목록에 표시됨",
         "disabledTooltip": "에이전트 선택 목록에서 숨겨짐",
-        "defaultCannotDisable": "기본 에이전트는 숨길 수 없습니다"
+        "defaultCannotDisable": "기본 에이전트는 숨길 수 없습니다",
+        "visibleModelsLabel": "표시할 모델",
+        "visibleModelsHint": "이 에이전트의 모델 선택기에 표시할 모델을 고르세요.",
+        "visibleModelsEmpty": "이 에이전트에 사용할 수 있는 모델이 없습니다.",
+        "toggleModelVisible": "{{name}} 표시 전환"
       },
       "errors": {
         "deleteFailed": "구성을 삭제하지 못했습니다. 다시 시도해 주세요.",

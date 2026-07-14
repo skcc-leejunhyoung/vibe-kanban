@@ -278,6 +278,7 @@ impl Opencode {
                     name: m.name.clone(),
                     provider_id: Some(provider_id.to_string()),
                     reasoning_options,
+                    supports_fast: false,
                 }
             })
             .collect()

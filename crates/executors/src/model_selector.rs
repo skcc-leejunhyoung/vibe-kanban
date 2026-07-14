@@ -24,6 +24,11 @@ pub struct ModelInfo {
     /// Configurable reasoning options if supported
     #[serde(default)]
     pub reasoning_options: Vec<ReasoningOption>,
+    /// Whether this model supports a "fast" (high-throughput) service tier.
+    /// When true the frontend renders a Fast toggle that appends a `-fast`
+    /// suffix to the selected model id.
+    #[serde(default)]
+    pub supports_fast: bool,
 }
 
 /// Reasoning option (simple selectable choice).

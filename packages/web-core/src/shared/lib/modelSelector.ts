@@ -90,6 +90,7 @@ export function appendPresetModel(
         name: modelId,
         provider_id: providerId,
         reasoning_options: [],
+        supports_fast: false,
       },
       ...config.models,
     ],
@@ -145,4 +146,27 @@ export function resolveDefaultReasoningId(
   return (
     options.find((option) => option.is_default)?.id ?? options[0]?.id ?? null
   );
+}
+
+/**
+ * Suffix appended to a model id when the "fast" service tier is enabled. The
+ * backend strips it and turns on the fast tier (see codex resolve_model).
+ */
+export const FAST_SUFFIX = '-fast';
+
+/**
+ * Split a stored model id into its base id and whether the fast tier is on.
+ * Only treats a `-fast` suffix as a fast toggle when the base model actually
+ * advertises fast support, so unrelated ids ending in "-fast" pass through.
+ */
+export function splitFastSuffix(
+  modelId: string | null | undefined,
+  supportsFast: (baseId: string) => boolean
+): { baseId: string | null; fast: boolean } {
+  if (!modelId) return { baseId: modelId ?? null, fast: false };
+  if (modelId.toLowerCase().endsWith(FAST_SUFFIX)) {
+    const baseId = modelId.slice(0, -FAST_SUFFIX.length);
+    if (supportsFast(baseId)) return { baseId, fast: true };
+  }
+  return { baseId: modelId, fast: false };
 }

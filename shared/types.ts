@@ -1218,7 +1218,13 @@ provider_id?: string | null,
 /**
  * Configurable reasoning options if supported
  */
-reasoning_options: Array<ReasoningOption>, };
+reasoning_options: Array<ReasoningOption>,
+/**
+ * Whether this model supports a "fast" (high-throughput) service tier.
+ * When true the frontend renders a Fast toggle that appends a `-fast`
+ * suffix to the selected model id.
+ */
+supports_fast: boolean, };
 
 export type ReasoningOption = { id: string, label: string, is_default: boolean, };
 

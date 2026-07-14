@@ -23,6 +23,9 @@ import {
 } from '@/shared/lib/profileModelConfig';
 import { useMachineProfiles } from '@/shared/hooks/useProfiles';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useModelSelectorConfig } from '@/shared/hooks/useExecutorDiscovery';
+import { useHiddenModels } from '@/shared/stores/useUiPreferencesStore';
+import { getModelKey } from '@/shared/lib/recentModels';
 import { CreateConfigurationDialog } from '../CreateConfigurationDialog';
 import { DeleteConfigurationDialog } from '../DeleteConfigurationDialog';
 import type { BaseCodingAgent, ExecutorConfigs } from 'shared/types';
@@ -602,6 +605,13 @@ export function AgentsSettingsSection() {
                     }
                     disabled={profilesSaving}
                   />
+
+                  <div className="border-t border-border pt-4">
+                    <ModelVisibilitySettings
+                      key={executorType}
+                      agent={executorType}
+                    />
+                  </div>
                 </div>
               );
             })()}
@@ -617,6 +627,56 @@ export function AgentsSettingsSection() {
         onDiscard={handleDiscard}
       />
     </>
+  );
+}
+
+// Per-agent model visibility toggles. Reads the agent's discovered models and
+// lets the user hide any of them from the model picker (stored client-side).
+function ModelVisibilitySettings({ agent }: { agent: BaseCodingAgent }) {
+  const { t } = useTranslation(['settings']);
+  const { config, loadingModels } = useModelSelectorConfig(agent);
+  const { isHidden, setHidden } = useHiddenModels(agent);
+  const models = config?.models ?? [];
+
+  if (models.length === 0) {
+    if (loadingModels) return null;
+    return (
+      <p className="text-sm text-low">
+        {t('settings.agents.editor.visibleModelsEmpty')}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-base">
+      <label className="block text-sm font-medium text-normal">
+        {t('settings.agents.editor.visibleModelsLabel')}
+      </label>
+      <p className="text-xs text-low">
+        {t('settings.agents.editor.visibleModelsHint')}
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
+        {models.map((model) => {
+          const key = getModelKey(model);
+          const visible = !isHidden(key);
+          return (
+            <div
+              key={key}
+              className="flex items-center justify-between gap-base py-half"
+            >
+              <span className="text-sm text-normal truncate">{model.name}</span>
+              <Switch
+                checked={visible}
+                onCheckedChange={(checked) => setHidden(key, !checked)}
+                aria-label={t('settings.agents.editor.toggleModelVisible', {
+                  name: model.name,
+                })}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

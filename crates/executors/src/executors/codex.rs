@@ -31,6 +31,35 @@ pub(crate) fn resolve_model(model: Option<&str>) -> (Option<&str>, bool) {
     }
 }
 
+/// Reasoning-effort choices a given Codex model exposes. Kept per-model so the
+/// dropdown reflects what each tier actually supports rather than one blanket
+/// list. Adjust the groupings here when a model's supported efforts change.
+fn codex_reasoning_options(model_id: &str) -> Vec<ReasoningOption> {
+    use ReasoningEffort::*;
+    let efforts: &[ReasoningEffort] = if model_id.ends_with("-pro") {
+        // Deep-reasoning "pro" tier: reasoning is always on (no none/minimal).
+        &[Low, Medium, High, Xhigh]
+    } else if model_id.contains("-nano") || model_id.contains("-mini") {
+        // Lightweight tiers don't offer the extra-high budget.
+        &[None, Minimal, Low, Medium, High]
+    } else if model_id.contains("codex") {
+        &[Minimal, Low, Medium, High, Xhigh]
+    } else {
+        // Flagship general models expose the full range.
+        &[None, Minimal, Low, Medium, High, Xhigh]
+    };
+    ReasoningOption::from_names(efforts.iter().map(|e| e.as_ref().to_string()))
+}
+
+/// Whether a Codex model exposes the "fast" (high-throughput) service tier as a
+/// toggle. Only the flagship general models support it today.
+fn codex_supports_fast(model_id: &str) -> bool {
+    matches!(
+        model_id,
+        "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.5" | "gpt-5.4"
+    )
+}
+
 pub(crate) fn fork_params_from(thread_id: String, params: ThreadStartParams) -> ThreadForkParams {
     ThreadForkParams {
         thread_id,
@@ -322,105 +351,29 @@ impl StandardCodingAgentExecutor for Codex {
         _workdir: Option<&std::path::Path>,
         _repo_path: Option<&std::path::Path>,
     ) -> Result<futures::stream::BoxStream<'static, json_patch::Patch>, ExecutorError> {
-        let xhigh_reasoning_options = ReasoningOption::from_names(
-            [
-                ReasoningEffort::None,
-                ReasoningEffort::Minimal,
-                ReasoningEffort::Low,
-                ReasoningEffort::Medium,
-                ReasoningEffort::High,
-                ReasoningEffort::Xhigh,
-            ]
-            .map(|e| e.as_ref().to_string()),
-        );
+        let model = |id: &str, name: &str| ModelInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            provider_id: None,
+            reasoning_options: codex_reasoning_options(id),
+            supports_fast: codex_supports_fast(id),
+        };
 
         let options = ExecutorDiscoveredOptions {
             model_selector: ModelSelectorConfig {
                 models: vec![
-                    ModelInfo {
-                        id: "gpt-5.6-luna".to_string(),
-                        name: "GPT-5.6 Luna".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.6-sol".to_string(),
-                        name: "GPT-5.6 Sol".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.6-terra".to_string(),
-                        name: "GPT-5.6 Terra".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.5-pro".to_string(),
-                        name: "GPT-5.5 Pro".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.5".to_string(),
-                        name: "GPT-5.5".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.5-fast".to_string(),
-                        name: "GPT-5.5 Fast".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.4".to_string(),
-                        name: "GPT-5.4".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.4-fast".to_string(),
-                        name: "GPT-5.4 Fast".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.4-mini".to_string(),
-                        name: "GPT-5.4 Mini".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.4-nano".to_string(),
-                        name: "GPT-5.4 Nano".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.3-codex".to_string(),
-                        name: "GPT-5.3 Codex".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.3-codex-spark".to_string(),
-                        name: "GPT-5.3 Codex Spark".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.2".to_string(),
-                        name: "GPT-5.2".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.2-codex".to_string(),
-                        name: "GPT-5.2 Codex".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options,
-                    },
+                    model("gpt-5.6-luna", "GPT-5.6 Luna"),
+                    model("gpt-5.6-sol", "GPT-5.6 Sol"),
+                    model("gpt-5.6-terra", "GPT-5.6 Terra"),
+                    model("gpt-5.5-pro", "GPT-5.5 Pro"),
+                    model("gpt-5.5", "GPT-5.5"),
+                    model("gpt-5.4", "GPT-5.4"),
+                    model("gpt-5.4-mini", "GPT-5.4 Mini"),
+                    model("gpt-5.4-nano", "GPT-5.4 Nano"),
+                    model("gpt-5.3-codex", "GPT-5.3 Codex"),
+                    model("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"),
+                    model("gpt-5.2", "GPT-5.2"),
+                    model("gpt-5.2-codex", "GPT-5.2 Codex"),
                 ],
                 permissions: vec![
                     PermissionPolicy::Auto,
@@ -815,6 +768,10 @@ mod tests {
     fn resolve_model_detects_fast_suffix() {
         assert_eq!(resolve_model(Some("gpt-5.5-fast")), (Some("gpt-5.5"), true));
         assert_eq!(resolve_model(Some("gpt-5.4-fast")), (Some("gpt-5.4"), true));
+        assert_eq!(
+            resolve_model(Some("gpt-5.6-luna-fast")),
+            (Some("gpt-5.6-luna"), true)
+        );
     }
 
     #[test]

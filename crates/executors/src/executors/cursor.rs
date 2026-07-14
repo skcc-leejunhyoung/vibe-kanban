@@ -679,6 +679,7 @@ impl StandardCodingAgentExecutor for CursorAgent {
             name: name.to_string(),
             provider_id: None,
             reasoning_options: cursor_reasoning_options(id),
+            supports_fast: false,
         })
         .collect();
 

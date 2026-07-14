@@ -299,6 +299,52 @@ const loadWorkspaceIssueStatuses = (): string[] => {
   return [...DEFAULT_WORKSPACE_ISSUE_STATUSES];
 };
 
+// Per-agent set of model keys hidden from the model selector. A model key is
+// `provider_id/id` (or just `id` when there's no provider), matching
+// getModelKey(). Purely a client-side display preference — the backend still
+// offers every model; the picker just filters what it renders.
+const HIDDEN_MODELS_KEY = 'vk-hidden-models';
+const EMPTY_MODEL_KEYS: string[] = [];
+
+const loadHiddenModels = (): Record<string, string[]> => {
+  try {
+    const stored = localStorage.getItem(HIDDEN_MODELS_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const out: Record<string, string[]> = {};
+        for (const [agent, keys] of Object.entries(parsed)) {
+          if (Array.isArray(keys)) {
+            const valid = keys.filter(
+              (k): k is string => typeof k === 'string'
+            );
+            if (valid.length > 0) out[agent] = valid;
+          }
+        }
+        return out;
+      }
+    }
+  } catch {
+    // localStorage unavailable or malformed JSON
+  }
+  return {};
+};
+
+const persistHiddenModels = (value: Record<string, string[]>) => {
+  try {
+    const pruned = Object.fromEntries(
+      Object.entries(value).filter(([, keys]) => keys.length > 0)
+    );
+    if (Object.keys(pruned).length === 0) {
+      localStorage.removeItem(HIDDEN_MODELS_KEY);
+    } else {
+      localStorage.setItem(HIDDEN_MODELS_KEY, JSON.stringify(pruned));
+    }
+  } catch {
+    // localStorage unavailable
+  }
+};
+
 export type WorkspaceFilterState = {
   projectIds: string[]; // remote project IDs
   prFilter: WorkspacePrFilter;
@@ -445,6 +491,9 @@ type State = {
   // Status names (ordered) used when grouping the issue view by status
   workspaceIssueStatuses: string[];
 
+  // Per-agent hidden model keys (model selector visibility preference)
+  hiddenModelsByAgent: Record<string, string[]>;
+
   // Kanban view mode state
   kanbanViewMode: KanbanViewMode;
   listViewStatusFilter: string | null;
@@ -551,6 +600,9 @@ type State = {
   toggleWorkspaceGroupMode: () => void;
   setWorkspaceIssueStatuses: (statuses: string[]) => void;
 
+  // Model visibility actions
+  setModelHidden: (agent: string, modelKey: string, hidden: boolean) => void;
+
   // Kanban view mode actions
   setKanbanViewMode: (mode: KanbanViewMode) => void;
   setListViewStatusFilter: (statusId: string | null) => void;
@@ -606,6 +658,9 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Workspace sidebar grouping
   workspaceGroupMode: loadWorkspaceGroupMode(),
   workspaceIssueStatuses: loadWorkspaceIssueStatuses(),
+
+  // Model visibility
+  hiddenModelsByAgent: loadHiddenModels(),
 
   // Kanban view mode state
   kanbanViewMode: 'kanban' as KanbanViewMode,
@@ -1007,6 +1062,23 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     set({ workspaceIssueStatuses: statuses });
   },
 
+  // Model visibility actions
+  setModelHidden: (agent, modelKey, hidden) =>
+    set((s) => {
+      const current = s.hiddenModelsByAgent[agent] ?? EMPTY_MODEL_KEYS;
+      const keyLower = modelKey.toLowerCase();
+      const filtered = current.filter((k) => k.toLowerCase() !== keyLower);
+      const nextList = hidden ? [...filtered, modelKey] : filtered;
+      const next = { ...s.hiddenModelsByAgent };
+      if (nextList.length > 0) {
+        next[agent] = nextList;
+      } else {
+        delete next[agent];
+      }
+      persistHiddenModels(next);
+      return { hiddenModelsByAgent: next };
+    }),
+
   // Kanban view mode actions
   setKanbanViewMode: (mode) => set({ kanbanViewMode: mode }),
 
@@ -1209,6 +1281,29 @@ export function useWorkspaceIssueStatuses() {
   const statuses = useUiPreferencesStore((s) => s.workspaceIssueStatuses);
   const set = useUiPreferencesStore((s) => s.setWorkspaceIssueStatuses);
   return [statuses, set] as const;
+}
+
+// Hook for per-agent model visibility. `hiddenKeys` holds lowercased model
+// keys; `setHidden(key, hidden)` and `isHidden(key)` operate on the raw key.
+export function useHiddenModels(agent: string | null) {
+  const map = useUiPreferencesStore((s) => s.hiddenModelsByAgent);
+  const setModelHidden = useUiPreferencesStore((s) => s.setModelHidden);
+  const list = agent ? (map[agent] ?? EMPTY_MODEL_KEYS) : EMPTY_MODEL_KEYS;
+  const hiddenKeys = useMemo(
+    () => new Set(list.map((k) => k.toLowerCase())),
+    [list]
+  );
+  const isHidden = useCallback(
+    (key: string) => hiddenKeys.has(key.toLowerCase()),
+    [hiddenKeys]
+  );
+  const setHidden = useCallback(
+    (key: string, hidden: boolean) => {
+      if (agent) setModelHidden(agent, key, hidden);
+    },
+    [agent, setModelHidden]
+  );
+  return { hiddenKeys, isHidden, setHidden };
 }
 
 // Hook returning the effective theme preset list (built-ins merged with the

@@ -307,6 +307,7 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
                 } else {
                     vec![]
                 },
+                supports_fast: false,
             })
             .collect(),
             default_model: Some("opus".to_string()),

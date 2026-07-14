@@ -5,6 +5,7 @@ import {
   FastForwardIcon,
   GearIcon,
   HandIcon,
+  LightningIcon,
   ListBulletsIcon,
   SlidersHorizontalIcon,
   type Icon,
@@ -29,7 +30,10 @@ import {
   resolveDefaultModelId,
   isModelAvailable,
   resolveDefaultReasoningId,
+  splitFastSuffix,
+  FAST_SUFFIX,
 } from '@/shared/lib/modelSelector';
+import { useHiddenModels } from '@/shared/stores/useUiPreferencesStore';
 import { profilesApi } from '@/shared/lib/api';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
@@ -131,6 +135,20 @@ export function ModelSelectorContainer({
   const baseConfig = streamConfig;
   const config = appendPresetModel(baseConfig, presetOptions?.model_id);
 
+  const { hiddenKeys, isHidden } = useHiddenModels(agent);
+
+  const supportsFastById = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const model of config?.models ?? []) {
+      map.set(model.id.toLowerCase(), model.supports_fast);
+    }
+    return map;
+  }, [config?.models]);
+  const supportsFast = useCallback(
+    (baseId: string) => supportsFastById.get(baseId.toLowerCase()) ?? false,
+    [supportsFastById]
+  );
+
   const availableProviderIds = useMemo(
     () => config?.providers.map((item) => item.id) ?? [],
     [config?.providers]
@@ -143,9 +161,16 @@ export function ModelSelectorContainer({
   const resolveProviderId = (value?: string | null) =>
     value ? (providerIdMap.get(value.toLowerCase()) ?? null) : null;
 
-  const { providerId: configProviderId, modelId: configModelId } = useMemo(
+  const { providerId: configProviderId, modelId: configModelIdRaw } = useMemo(
     () => parseModelId(executorConfig?.model_id, hasProviders),
     [executorConfig?.model_id, hasProviders]
+  );
+
+  // A `-fast` suffix on the stored model id is a fast-tier toggle, not a
+  // distinct model — strip it for selection/matching and track it separately.
+  const { baseId: configModelId, fast: fastEnabled } = useMemo(
+    () => splitFastSuffix(configModelIdRaw, supportsFast),
+    [configModelIdRaw, supportsFast]
   );
 
   const fallbackProviderId = availableProviderIds[0] ?? null;
@@ -202,6 +227,18 @@ export function ModelSelectorContainer({
   const selectedModel = config
     ? getSelectedModel(config.models, selectedProviderId, selectedModelId)
     : null;
+
+  // Config passed to the popover with user-hidden models filtered out. The
+  // currently-selected model is always kept so the picker can show it.
+  const displayConfig = useMemo(() => {
+    if (!config || hiddenKeys.size === 0) return config;
+    const selLower = selectedModelId?.toLowerCase() ?? null;
+    const models = config.models.filter((model) => {
+      if (selLower && model.id.toLowerCase() === selLower) return true;
+      return !isHidden(getModelKey(model));
+    });
+    return { ...config, models };
+  }, [config, hiddenKeys, isHidden, selectedModelId]);
 
   const recentReasoningByModel = getRecentReasoningByModel(profiles, agent);
 
@@ -346,6 +383,15 @@ export function ModelSelectorContainer({
   const handlePermissionPolicyChange = (policy: PermissionPolicy) => {
     if (!supportsPermissions) return;
     onOverrideChange({ permission_policy: policy });
+  };
+
+  const handleFastToggle = (next: boolean) => {
+    if (!selectedModelId) return;
+    const id = next ? `${selectedModelId}${FAST_SUFFIX}` : selectedModelId;
+    const modelOverride = selectedProviderId
+      ? `${selectedProviderId}/${id}`
+      : id;
+    onOverrideChange({ model_id: modelOverride });
   };
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -496,7 +542,7 @@ export function ModelSelectorContainer({
               disabled={loadingModels}
             />
           }
-          config={config}
+          config={displayConfig ?? config}
           error={streamError}
           selectedProviderId={selectedProviderId}
           selectedModelId={selectedModelId}
@@ -513,6 +559,32 @@ export function ModelSelectorContainer({
           onExpandedProviderIdChange={setExpandedProviderId}
           resolvedTheme={resolvedTheme}
         />
+      )}
+
+      {showModelSelector && displaySelectedModel?.supports_fast && (
+        <DropdownMenu>
+          <DropdownMenuTriggerButton
+            size="sm"
+            icon={LightningIcon}
+            label={fastEnabled ? t('modelSelector.fast') : undefined}
+            showCaret={false}
+          />
+          <DropdownMenuContent align="start">
+            <DropdownMenuLabel>{t('modelSelector.fast')}</DropdownMenuLabel>
+            <DropdownMenuItem
+              icon={fastEnabled ? CheckIcon : undefined}
+              onClick={() => handleFastToggle(true)}
+            >
+              {t('modelSelector.fastOn')}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              icon={!fastEnabled ? CheckIcon : undefined}
+              onClick={() => handleFastToggle(false)}
+            >
+              {t('modelSelector.fastOff')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
 
       {showPermissions && permissionPolicy && config.permissions.length > 0 && (
