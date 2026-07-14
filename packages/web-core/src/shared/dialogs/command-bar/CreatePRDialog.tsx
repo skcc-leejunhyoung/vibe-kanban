@@ -173,10 +173,10 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       []
     );
     useEffect(() => {
-      if (!isLoaded || initializedFor.current === attempt.id) {
+      if (!isLoaded || initializedFor.current === `${attempt.id}:${repoId}`) {
         return;
       }
-      initializedFor.current = attempt.id;
+      initializedFor.current = `${attempt.id}:${repoId}`;
       hydratedFor.current = null;
 
       // Fresh form for this workspace.
@@ -236,7 +236,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         } catch {
           // Fall back to empty fields if prompt loading fails.
         } finally {
-          if (!isCancelled) hydratedFor.current = attempt.id;
+          if (!isCancelled) hydratedFor.current = `${attempt.id}:${repoId}`;
         }
       };
 
@@ -258,13 +258,13 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         if (gen.description !== undefined) setPrBody(gen.description);
         // The generated content now lives in the form; the persist effect below
         // captures it into the durable draft, so consuming the task is safe.
-        hydratedFor.current = attempt.id;
+        hydratedFor.current = `${attempt.id}:${repoId}`;
         usePrBackgroundStore.getState().clearGenerate(attempt.id);
       } else if (gen.status === 'error' && modal.visible) {
         setError(gen.error ?? t('createPrDialog.errors.generateFailed'));
         usePrBackgroundStore.getState().clearGenerate(attempt.id);
       }
-    }, [bg?.generate, modal.visible, attempt.id, t]);
+    }, [bg?.generate, modal.visible, attempt.id, repoId, t]);
 
     // Persist the current form (AI-generated or hand-edited) into the durable
     // per-workspace draft so it survives the dialog unmounting when the user
@@ -272,18 +272,27 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // it on the next open. Gated on hydration so the reset/default-fetch window
     // never clobbers an existing draft with an empty form.
     useEffect(() => {
-      if (hydratedFor.current !== attempt.id) return;
-      if (!prTitle && !prBody) return;
-      usePrBackgroundStore
-        .getState()
-        .setDraft(attempt.id, { title: prTitle, body: prBody });
+      if (hydratedFor.current !== `${attempt.id}:${repoId}`) return;
+      // Clearing both fields is an intentional edit, not the transient reset
+      // window (that is already gated out above): persist the empty state by
+      // deleting the draft so it does not resurface on the next open.
+      const isEmpty = !prTitle && !prBody;
+      if (isEmpty) {
+        usePrBackgroundStore.getState().clearDraft(attempt.id);
+      } else {
+        usePrBackgroundStore
+          .getState()
+          .setDraft(attempt.id, { title: prTitle, body: prBody });
+      }
       draftSaveTimer.current = setTimeout(() => {
         enqueueDraftMutation(() =>
-          workspacesApi.savePrDraft(attempt.id, {
-            repo_id: repoId,
-            title: prTitle,
-            body: prBody,
-          })
+          isEmpty
+            ? workspacesApi.deletePrDraft(attempt.id, repoId)
+            : workspacesApi.savePrDraft(attempt.id, {
+                repo_id: repoId,
+                title: prTitle,
+                body: prBody,
+              })
         );
       }, 400);
       return () => {

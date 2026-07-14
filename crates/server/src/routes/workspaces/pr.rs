@@ -1289,9 +1289,14 @@ mod tests {
     #[tokio::test]
     async fn generated_pr_draft_is_upserted_by_workspace_and_repo() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        // Mirror the migration schema (NOT NULL + defaults) so the upsert's
+        // `updated_at = datetime('now', 'subsec')` path is exercised against the
+        // real NOT NULL constraint rather than a permissive test-only table.
         sqlx::query(
             "CREATE TABLE workspace_pr_drafts (workspace_id BLOB NOT NULL, repo_id BLOB NOT NULL, \
-             title TEXT NOT NULL, body TEXT NOT NULL, updated_at DATETIME, \
+             title TEXT NOT NULL, body TEXT NOT NULL, \
+             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, \
              PRIMARY KEY (workspace_id, repo_id))",
         )
         .execute(&pool)

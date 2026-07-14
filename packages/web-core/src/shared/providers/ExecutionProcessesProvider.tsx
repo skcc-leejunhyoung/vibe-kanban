@@ -49,10 +49,23 @@ export const ExecutionProcessesProvider: React.FC<{
 
   const patchOptimisticProcess = useCallback(
     (id: string, changes: Partial<ExecutionProcess>) => {
-      setOptimistic((current) => ({
-        ...current,
-        [id]: { kind: 'patch', changes },
-      }));
+      setOptimistic((current) => {
+        // A process still only in an optimistic `add` (its streamed row hasn't
+        // arrived yet) has no streamed row for a bare `patch` to apply to, so
+        // replacing the `add` would make the just-added turn vanish until the
+        // stream catches up. Fold the change into the add instead.
+        const existing = current[id];
+        if (existing?.kind === 'add') {
+          return {
+            ...current,
+            [id]: {
+              kind: 'add',
+              process: { ...existing.process, ...changes },
+            },
+          };
+        }
+        return { ...current, [id]: { kind: 'patch', changes } };
+      });
     },
     []
   );
