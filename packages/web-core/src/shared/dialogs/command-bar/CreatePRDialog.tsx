@@ -212,6 +212,10 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
               title: savedDraft.title,
               body: savedDraft.body,
             });
+            // Mark hydrated so edits to the restored draft persist. This branch
+            // returns before the firstUserMessage try/finally that otherwise
+            // sets it, so without this a loaded draft's edits are never saved.
+            hydratedFor.current = `${attempt.id}:${repoId}`;
             return;
           }
         } catch {
