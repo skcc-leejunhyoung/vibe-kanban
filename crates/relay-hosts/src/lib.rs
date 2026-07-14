@@ -7,7 +7,10 @@ use futures_util::{Stream, StreamExt, stream};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 pub use relay_client::RelayApiError;
 use relay_client::{RelayApiClient, RelayHostIdentity, RelayHostTransport};
-use relay_control::signing::RelaySigningService;
+use relay_control::signing::{
+    NONCE_HEADER, REQUEST_SIGNATURE_HEADER, RelaySigningService, SIGNING_SESSION_HEADER,
+    TIMESTAMP_HEADER,
+};
 use relay_types::{PairRelayHostRequest, RelayAuthState, RelayPairedHost, RemoteSession};
 use relay_webrtc::{DataChannelResponse, DataChannelWsStream, WebRtcClient};
 use relay_ws::SignedTungsteniteSocket;
@@ -502,6 +505,24 @@ impl RelayHost {
     ) -> Option<ProxiedResponse> {
         let client = self.webrtc.get(self.identity.host_id).await?;
 
+        // The host re-adds the `x-vk-relayed` marker to WebRTC-forwarded
+        // requests (see relay-webrtc peer proxy), so its backend enforces
+        // `require_relay_request_signature` on them exactly like relay-tunnel
+        // requests. Sign here with the same scheme as `send_http_once`;
+        // without a cached signing session we can't sign, so skip WebRTC and
+        // let the relay-tunnel fallback establish one.
+        let signing_session_id = self
+            .sessions
+            .load_auth_state(self.identity.host_id)
+            .await?
+            .signing_session_id;
+        let signature = self.runtime.relay_signing.sign_request(
+            signing_session_id,
+            method.as_str(),
+            target_path,
+            body,
+        );
+
         let mut header_map: HashMap<String, Vec<String>> = HashMap::new();
         for (key, value) in headers {
             if let Ok(v) = value.to_str() {
@@ -511,6 +532,19 @@ impl RelayHost {
                     .push(v.to_string());
             }
         }
+        header_map.insert(
+            SIGNING_SESSION_HEADER.to_string(),
+            vec![signature.signing_session_id.to_string()],
+        );
+        header_map.insert(
+            TIMESTAMP_HEADER.to_string(),
+            vec![signature.timestamp.to_string()],
+        );
+        header_map.insert(NONCE_HEADER.to_string(), vec![signature.nonce.to_string()]);
+        header_map.insert(
+            REQUEST_SIGNATURE_HEADER.to_string(),
+            vec![signature.signature_b64.clone()],
+        );
 
         let body_vec = if body.is_empty() {
             None
