@@ -208,7 +208,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
           if (savedDraft) {
             setPrTitle(savedDraft.title);
             setPrBody(savedDraft.body);
-            usePrBackgroundStore.getState().setDraft(attempt.id, {
+            usePrBackgroundStore.getState().setDraft(attempt.id, repoId, {
               title: savedDraft.title,
               body: savedDraft.body,
             });
@@ -225,9 +225,10 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
 
         // A local draft covers the short window before its debounced backend
         // write completes.
-        if (entry?.draft) {
-          setPrTitle(entry.draft.title);
-          setPrBody(entry.draft.body);
+        const localDraft = entry?.draftsByRepo?.[repoId];
+        if (localDraft) {
+          setPrTitle(localDraft.title);
+          setPrBody(localDraft.body);
           hydratedFor.current = `${attempt.id}:${repoId}`;
           return;
         }
@@ -290,11 +291,11 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       // deleting the draft so it does not resurface on the next open.
       const isEmpty = !prTitle && !prBody;
       if (isEmpty) {
-        usePrBackgroundStore.getState().clearDraft(attempt.id);
+        usePrBackgroundStore.getState().clearDraft(attempt.id, repoId);
       } else {
         usePrBackgroundStore
           .getState()
-          .setDraft(attempt.id, { title: prTitle, body: prBody });
+          .setDraft(attempt.id, repoId, { title: prTitle, body: prBody });
       }
       draftSaveTimer.current = setTimeout(() => {
         enqueueDraftMutation(() =>
@@ -525,7 +526,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         clearCreate(attempt.id);
         // The PR is created; discard the saved draft so a later PR for this
         // workspace starts from the default prefill again.
-        clearDraft(attempt.id);
+        clearDraft(attempt.id, repoId);
         if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
         draftSaveTimer.current = null;
         enqueueDraftMutation(() =>
@@ -584,7 +585,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     const handleCancelCreatePR = useCallback(() => {
       cancelGenerate(attempt.id);
       cancelCreate(attempt.id);
-      usePrBackgroundStore.getState().clearDraft(attempt.id);
+      usePrBackgroundStore.getState().clearDraft(attempt.id, repoId);
       if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
       draftSaveTimer.current = null;
       enqueueDraftMutation(() =>

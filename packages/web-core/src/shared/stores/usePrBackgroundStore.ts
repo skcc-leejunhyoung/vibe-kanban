@@ -47,7 +47,7 @@ export interface PrDraft {
 interface PrBackgroundEntry {
   generate?: PrGenerateTask;
   create?: PrCreateTask;
-  draft?: PrDraft;
+  draftsByRepo?: Record<string, PrDraft>;
 }
 
 interface PrBackgroundState {
@@ -61,8 +61,8 @@ interface PrBackgroundState {
   cancelCreate: (workspaceId: string) => void;
   clearGenerate: (workspaceId: string) => void;
   clearCreate: (workspaceId: string) => void;
-  setDraft: (workspaceId: string, draft: PrDraft) => void;
-  clearDraft: (workspaceId: string) => void;
+  setDraft: (workspaceId: string, repoId: string, draft: PrDraft) => void;
+  clearDraft: (workspaceId: string, repoId: string) => void;
 }
 
 // AbortControllers are non-serializable and must not trigger re-renders, so
@@ -102,7 +102,11 @@ function writeWorkspace(
   entry: PrBackgroundEntry
 ): Record<string, PrBackgroundEntry | undefined> {
   const next = { ...byWorkspace };
-  if (!entry.generate && !entry.create && !entry.draft) {
+  if (
+    !entry.generate &&
+    !entry.create &&
+    (!entry.draftsByRepo || Object.keys(entry.draftsByRepo).length === 0)
+  ) {
     delete next[workspaceId];
     pruneControllers(workspaceId);
   } else {
@@ -259,16 +263,23 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         };
       }),
 
-    setDraft: (workspaceId, draft) => patch(workspaceId, { draft }),
+    setDraft: (workspaceId, repoId, draft) => {
+      const entry = get().byWorkspace[workspaceId];
+      patch(workspaceId, {
+        draftsByRepo: { ...entry?.draftsByRepo, [repoId]: draft },
+      });
+    },
 
-    clearDraft: (workspaceId) =>
+    clearDraft: (workspaceId, repoId) =>
       set((state) => {
         const entry = state.byWorkspace[workspaceId];
-        if (!entry?.draft) return state;
+        if (!entry?.draftsByRepo?.[repoId]) return state;
+        const draftsByRepo = { ...entry.draftsByRepo };
+        delete draftsByRepo[repoId];
         return {
           byWorkspace: writeWorkspace(state.byWorkspace, workspaceId, {
             ...entry,
-            draft: undefined,
+            draftsByRepo,
           }),
         };
       }),

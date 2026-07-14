@@ -223,15 +223,35 @@ describe('usePrBackgroundStore', () => {
   it('stores and clears a form draft independently of the operations', () => {
     const store = usePrBackgroundStore.getState();
 
-    store.setDraft('ws-draft', { title: 'My PR', body: 'Body text' });
+    store.setDraft('ws-draft', 'repo-a', {
+      title: 'My PR',
+      body: 'Body text',
+    });
     expect(
-      usePrBackgroundStore.getState().byWorkspace['ws-draft']?.draft
+      usePrBackgroundStore.getState().byWorkspace['ws-draft']?.draftsByRepo?.[
+        'repo-a'
+      ]
     ).toEqual({ title: 'My PR', body: 'Body text' });
 
-    store.clearDraft('ws-draft');
+    store.clearDraft('ws-draft', 'repo-a');
     expect('ws-draft' in usePrBackgroundStore.getState().byWorkspace).toBe(
       false
     );
+  });
+
+  it('keeps drafts isolated by repo within the same workspace', () => {
+    const store = usePrBackgroundStore.getState();
+
+    store.setDraft('ws-multi-repo', 'repo-a', { title: 'A', body: 'Body A' });
+    store.setDraft('ws-multi-repo', 'repo-b', { title: 'B', body: 'Body B' });
+    store.clearDraft('ws-multi-repo', 'repo-a');
+
+    const entry = usePrBackgroundStore.getState().byWorkspace['ws-multi-repo'];
+    expect(entry?.draftsByRepo?.['repo-a']).toBeUndefined();
+    expect(entry?.draftsByRepo?.['repo-b']).toEqual({
+      title: 'B',
+      body: 'Body B',
+    });
   });
 
   it('keeps the draft when a completed generation is cleared', async () => {
@@ -242,11 +262,14 @@ describe('usePrBackgroundStore', () => {
     await flush();
     // Simulate the dialog applying the generation into the durable draft, then
     // consuming the generate task.
-    store.setDraft('ws-keep', { title: 'T', body: 'D' });
+    store.setDraft('ws-keep', 'repo1', { title: 'T', body: 'D' });
     store.clearGenerate('ws-keep');
 
     const entry = usePrBackgroundStore.getState().byWorkspace['ws-keep'];
     expect(entry?.generate).toBeUndefined();
-    expect(entry?.draft).toEqual({ title: 'T', body: 'D' });
+    expect(entry?.draftsByRepo?.['repo1']).toEqual({
+      title: 'T',
+      body: 'D',
+    });
   });
 });
