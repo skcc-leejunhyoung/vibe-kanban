@@ -4,93 +4,132 @@ import { workspacesApi } from '@/shared/lib/api';
 import { queryClient } from '@/shared/lib/queryClient';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
+import i18n from '@/i18n/config';
 
 /**
- * Background tracking for the work-branch git push so it survives the user
- * navigating away from the git panel. The push HTTP request is already fired
- * independently of any component, but its state feedback and post-processing
- * (branch-status refresh, force-push dialog, error dialog) used to live inside
- * GitPanelContainer and were lost when it unmounted — making a push look
- * "cancelled". Holding the state here, keyed by workspace + repo, keeps it
- * running in the background: come back to the panel and the pending/success/
- * error feedback is still there, and force-push/error dialogs surface even from
- * another screen.
+ * Background tracking for git pushes so their in-progress / result feedback
+ * survives the user navigating away from the git panel. The push HTTP request
+ * is fired independently of any component, but its state feedback and
+ * post-processing (branch-status refresh, force-push dialog, error dialog) used
+ * to live inside GitPanelContainer and were lost when it unmounted — making a
+ * push look "cancelled". Holding the state here, keyed by workspace + repo,
+ * keeps the pending/success/error indicator alive across navigation: come back
+ * to the panel and it's still there, and dialogs surface even from another
+ * screen.
+ *
+ * Two independent push flows are tracked:
+ *  - work-branch push (`byWorkspace` / `startPush`)
+ *  - target (base) branch push to origin (`targetByWorkspace` / `startTargetPush`)
  */
 
 export type PushStatus = 'pending' | 'success' | 'error';
 
+type PushField = 'byWorkspace' | 'targetByWorkspace';
+
 interface PushBackgroundState {
-  // byWorkspace[workspaceId][repoId] -> current push status. Absence == idle.
+  // byWorkspace[workspaceId][repoId] -> current status. Absence == idle.
   byWorkspace: Record<string, Record<string, PushStatus> | undefined>;
+  targetByWorkspace: Record<string, Record<string, PushStatus> | undefined>;
   startPush: (workspaceId: string, repoId: string) => void;
+  startTargetPush: (workspaceId: string, repoId: string) => void;
 }
 
 // Auto-clear timers (success/error → idle) live outside the reactive store,
-// keyed by workspace+repo, so they survive the panel unmounting.
+// keyed by flow + workspace + repo, so they survive the panel unmounting.
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-function timerKey(workspaceId: string, repoId: string): string {
-  return `${workspaceId}::${repoId}`;
+function timerKey(
+  field: PushField,
+  workspaceId: string,
+  repoId: string
+): string {
+  return `${field}::${workspaceId}::${repoId}`;
 }
 
 export const usePushBackgroundStore = create<PushBackgroundState>()((
   set,
   get
 ) => {
-  const setStatus = (workspaceId: string, repoId: string, status: PushStatus) =>
+  const setStatus = (
+    field: PushField,
+    workspaceId: string,
+    repoId: string,
+    status: PushStatus
+  ) =>
     set((state) => ({
-      byWorkspace: {
-        ...state.byWorkspace,
+      [field]: {
+        ...state[field],
         [workspaceId]: {
-          ...state.byWorkspace[workspaceId],
+          ...state[field][workspaceId],
           [repoId]: status,
         },
       },
     }));
 
-  const clearStatus = (workspaceId: string, repoId: string) =>
+  const clearStatus = (field: PushField, workspaceId: string, repoId: string) =>
     set((state) => {
-      const repos = state.byWorkspace[workspaceId];
-      if (!repos || !(repoId in repos)) return state;
+      const repos = state[field][workspaceId];
+      if (!repos || !(repoId in repos)) return {};
       const nextRepos = { ...repos };
       delete nextRepos[repoId];
-      const next = { ...state.byWorkspace };
+      const next = { ...state[field] };
       if (Object.keys(nextRepos).length === 0) {
         delete next[workspaceId];
       } else {
         next[workspaceId] = nextRepos;
       }
-      return { byWorkspace: next };
+      return { [field]: next };
     });
 
-  const scheduleClear = (workspaceId: string, repoId: string, ms: number) => {
-    const key = timerKey(workspaceId, repoId);
+  const scheduleClear = (
+    field: PushField,
+    workspaceId: string,
+    repoId: string,
+    ms: number
+  ) => {
+    const key = timerKey(field, workspaceId, repoId);
     const existing = timers.get(key);
     if (existing) clearTimeout(existing);
     timers.set(
       key,
       setTimeout(() => {
         timers.delete(key);
-        clearStatus(workspaceId, repoId);
+        clearStatus(field, workspaceId, repoId);
       }, ms)
     );
   };
 
+  // Cancel any pending success/error auto-clear before (re)starting a flow.
+  const cancelTimer = (
+    field: PushField,
+    workspaceId: string,
+    repoId: string
+  ) => {
+    const key = timerKey(field, workspaceId, repoId);
+    const existing = timers.get(key);
+    if (existing) {
+      clearTimeout(existing);
+      timers.delete(key);
+    }
+  };
+
+  const showErrorDialog = (message: string) =>
+    ConfirmDialog.show({
+      title: 'Error',
+      message,
+      confirmText: 'OK',
+      showCancelButton: false,
+      variant: 'destructive',
+    });
+
   return {
     byWorkspace: {},
+    targetByWorkspace: {},
 
     startPush: (workspaceId, repoId) => {
       if (get().byWorkspace[workspaceId]?.[repoId] === 'pending') return;
-
-      // Cancel any pending success/error auto-clear before starting.
-      const key = timerKey(workspaceId, repoId);
-      const existing = timers.get(key);
-      if (existing) {
-        clearTimeout(existing);
-        timers.delete(key);
-      }
-
-      setStatus(workspaceId, repoId, 'pending');
+      cancelTimer('byWorkspace', workspaceId, repoId);
+      setStatus('byWorkspace', workspaceId, repoId, 'pending');
 
       workspacesApi
         .push(workspaceId, { repo_id: repoId })
@@ -100,53 +139,107 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
             queryClient.invalidateQueries({
               queryKey: ['branchStatus', workspaceId],
             });
-            setStatus(workspaceId, repoId, 'success');
-            scheduleClear(workspaceId, repoId, 2000);
+            setStatus('byWorkspace', workspaceId, repoId, 'success');
+            scheduleClear('byWorkspace', workspaceId, repoId, 2000);
             return;
           }
 
           // Force push required → drop back to idle and prompt to confirm.
           if (result.error?.type === 'force_push_required') {
-            clearStatus(workspaceId, repoId);
+            clearStatus('byWorkspace', workspaceId, repoId);
             await ForcePushDialog.show({ workspaceId, repoId });
             return;
           }
 
-          setStatus(workspaceId, repoId, 'error');
-          ConfirmDialog.show({
-            title: 'Error',
-            message: result.message || 'Failed to push changes',
-            confirmText: 'OK',
-            showCancelButton: false,
-            variant: 'destructive',
-          });
-          scheduleClear(workspaceId, repoId, 3000);
+          setStatus('byWorkspace', workspaceId, repoId, 'error');
+          showErrorDialog(result.message || 'Failed to push changes');
+          scheduleClear('byWorkspace', workspaceId, repoId, 3000);
         })
         .catch((err) => {
           console.error('Failed to push:', err);
-          setStatus(workspaceId, repoId, 'error');
-          const message =
-            err instanceof Error ? err.message : 'Failed to push changes';
-          ConfirmDialog.show({
-            title: 'Error',
-            message,
-            confirmText: 'OK',
-            showCancelButton: false,
-            variant: 'destructive',
-          });
-          scheduleClear(workspaceId, repoId, 3000);
+          setStatus('byWorkspace', workspaceId, repoId, 'error');
+          showErrorDialog(
+            err instanceof Error ? err.message : 'Failed to push changes'
+          );
+          scheduleClear('byWorkspace', workspaceId, repoId, 3000);
         });
+    },
+
+    // Push the workspace's target (base) branch to origin. The caller is
+    // expected to have already confirmed the intent; this handles the
+    // force-push-required retry and all result feedback in the background.
+    startTargetPush: (workspaceId, repoId) => {
+      if (get().targetByWorkspace[workspaceId]?.[repoId] === 'pending') return;
+      cancelTimer('targetByWorkspace', workspaceId, repoId);
+      setStatus('targetByWorkspace', workspaceId, repoId, 'pending');
+
+      (async () => {
+        try {
+          let result = await workspacesApi.pushTargetBranch(
+            workspaceId,
+            repoId,
+            false
+          );
+
+          if (!result.success && result.error?.type === 'force_push_required') {
+            const confirm = await ConfirmDialog.show({
+              title: i18n.t('tasks:git.states.forcePush'),
+              message: i18n.t('tasks:git.targetPush.forceConfirm'),
+              confirmText: i18n.t('tasks:git.states.forcePush'),
+              variant: 'destructive',
+            });
+            if (confirm !== 'confirmed') {
+              clearStatus('targetByWorkspace', workspaceId, repoId);
+              return;
+            }
+            result = await workspacesApi.pushTargetBranch(
+              workspaceId,
+              repoId,
+              true
+            );
+          }
+
+          if (!result.success) {
+            throw new Error(result.message || 'Failed to push target branch');
+          }
+
+          setStatus('targetByWorkspace', workspaceId, repoId, 'success');
+          queryClient.invalidateQueries({
+            queryKey: ['branchStatus', workspaceId],
+          });
+          scheduleClear('targetByWorkspace', workspaceId, repoId, 2000);
+        } catch (err) {
+          setStatus('targetByWorkspace', workspaceId, repoId, 'error');
+          showErrorDialog(
+            err instanceof Error ? err.message : 'Failed to push target branch'
+          );
+          scheduleClear('targetByWorkspace', workspaceId, repoId, 3000);
+        }
+      })();
     },
   };
 });
 
-// Subscribe to the push status map for a single workspace.
+// Subscribe to the work-branch push status map for a single workspace.
 export function usePushBackground(
   workspaceId: string | null | undefined
 ): Record<string, PushStatus> | undefined {
   return usePushBackgroundStore(
     useCallback(
       (state) => (workspaceId ? state.byWorkspace[workspaceId] : undefined),
+      [workspaceId]
+    )
+  );
+}
+
+// Subscribe to the target (base) branch push status map for a single workspace.
+export function useTargetPushBackground(
+  workspaceId: string | null | undefined
+): Record<string, PushStatus> | undefined {
+  return usePushBackgroundStore(
+    useCallback(
+      (state) =>
+        workspaceId ? state.targetByWorkspace[workspaceId] : undefined,
       [workspaceId]
     )
   );

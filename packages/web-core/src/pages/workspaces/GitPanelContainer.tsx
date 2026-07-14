@@ -1,11 +1,10 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { workspacesApi } from '@/shared/lib/api';
 import { useActions } from '@/shared/hooks/useActions';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import {
   usePushBackground,
+  useTargetPushBackground,
   usePushBackgroundStore,
 } from '@/shared/stores/usePushBackgroundStore';
 import { useRenameBranch } from '@/shared/hooks/useRenameBranch';
@@ -34,7 +33,6 @@ export function GitPanelContainer({
   repos,
 }: GitPanelContainerProps) {
   const { executeAction } = useActions();
-  const queryClient = useQueryClient();
   const { t } = useTranslation('tasks');
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
   const repoActions = useUiPreferencesStore((s) => s.repoActions);
@@ -128,39 +126,17 @@ export function GitPanelContainer({
     usePushBackground(selectedWorkspace?.id) ?? EMPTY_PUSH_STATES;
   const startPush = usePushBackgroundStore((s) => s.startPush);
 
-  // Track target-branch push state per repo (push the base branch to origin).
-  const [targetPushStates, setTargetPushStates] = useState<
-    Record<string, PushState>
-  >({});
-  const targetPushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
+  // Target-branch push state also lives in the background store (keyed by
+  // workspace + repo), so the pending/success/error indicator survives
+  // navigating away from the panel just like the work-branch push.
+  const targetPushStates =
+    useTargetPushBackground(selectedWorkspace?.id) ?? EMPTY_PUSH_STATES;
+  const startTargetPush = usePushBackgroundStore((s) => s.startTargetPush);
 
-  // Reset target-push state when the selected workspace changes to avoid
-  // leaking state across workspaces with repos that share the same ID. (Work-
-  // branch push state lives in the workspace-keyed background store, so it needs
-  // no reset here.)
-  useEffect(() => {
-    setTargetPushStates({});
-
-    if (targetPushTimeoutRef.current) {
-      clearTimeout(targetPushTimeoutRef.current);
-      targetPushTimeoutRef.current = null;
-    }
-  }, [selectedWorkspace?.id]);
-
-  // Clean up the target-push timeout on unmount.
-  useEffect(() => {
-    return () => {
-      if (targetPushTimeoutRef.current) {
-        clearTimeout(targetPushTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  // Push the workspace's target (base) branch to origin. Handles the
-  // force-push-required case by confirming, then retrying with force. Inline
-  // state feedback mirrors the work-branch push button.
+  // Push the workspace's target (base) branch to origin. The initial "push the
+  // base branch to origin?" confirm is a user gate kept here; once confirmed,
+  // the store runs the push (including the force-push retry) and owns all state
+  // feedback in the background.
   const handleTargetPushClick = useCallback(
     async (repoId: string) => {
       const workspaceId = selectedWorkspace?.id;
@@ -178,65 +154,9 @@ export function GitPanelContainer({
       });
       if (confirmed !== 'confirmed') return;
 
-      if (targetPushTimeoutRef.current) {
-        clearTimeout(targetPushTimeoutRef.current);
-        targetPushTimeoutRef.current = null;
-      }
-      setTargetPushStates((prev) => ({ ...prev, [repoId]: 'pending' }));
-
-      try {
-        let result = await workspacesApi.pushTargetBranch(
-          workspaceId,
-          repoId,
-          false
-        );
-
-        if (!result.success && result.error?.type === 'force_push_required') {
-          const confirm = await ConfirmDialog.show({
-            title: t('git.states.forcePush'),
-            message: t('git.targetPush.forceConfirm'),
-            confirmText: t('git.states.forcePush'),
-            variant: 'destructive',
-          });
-          if (confirm !== 'confirmed') {
-            setTargetPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
-            return;
-          }
-          result = await workspacesApi.pushTargetBranch(
-            workspaceId,
-            repoId,
-            true
-          );
-        }
-
-        if (!result.success) {
-          throw new Error(result.message || 'Failed to push target branch');
-        }
-
-        setTargetPushStates((prev) => ({ ...prev, [repoId]: 'success' }));
-        queryClient.invalidateQueries({
-          queryKey: ['branchStatus', workspaceId],
-        });
-        targetPushTimeoutRef.current = setTimeout(() => {
-          setTargetPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
-        }, 2000);
-      } catch (err) {
-        setTargetPushStates((prev) => ({ ...prev, [repoId]: 'error' }));
-        const message =
-          err instanceof Error ? err.message : 'Failed to push target branch';
-        ConfirmDialog.show({
-          title: 'Error',
-          message,
-          confirmText: 'OK',
-          showCancelButton: false,
-          variant: 'destructive',
-        });
-        targetPushTimeoutRef.current = setTimeout(() => {
-          setTargetPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
-        }, 3000);
-      }
+      startTargetPush(workspaceId, repoId);
     },
-    [selectedWorkspace?.id, targetPushStates, branchStatus, queryClient, t]
+    [selectedWorkspace?.id, targetPushStates, branchStatus, startTargetPush, t]
   );
 
   // Compute repoInfos with push button state
