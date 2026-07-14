@@ -5,16 +5,16 @@ import {
   ExecutionProcessesContext,
   type ExecutionProcessesContextType,
 } from '@/shared/hooks/useExecutionProcessesContext';
-import { belongsToSession } from './executionProcessScope';
+import {
+  belongsToSession,
+  mergeOptimisticProcesses,
+  type OptimisticOp,
+} from './executionProcessScope';
 
 // Optimistic overlay on the streamed process list, so chat interactions
 // (send / stop / reset) reflect immediately instead of waiting for the WS
 // stream round-trip. Each op is keyed by process id and superseded once the
-// stream confirms it.
-type OptimisticOp =
-  | { kind: 'add'; process: ExecutionProcess }
-  | { kind: 'patch'; changes: Partial<ExecutionProcess> }
-  | { kind: 'remove' };
+// stream confirms it. `OptimisticOp` + the merge are in executionProcessScope.
 
 export const ExecutionProcessesProvider: React.FC<{
   sessionId?: string | undefined;
@@ -123,33 +123,13 @@ export const ExecutionProcessesProvider: React.FC<{
     });
   }, [executionProcessesById]);
 
-  const hasOptimistic = Object.keys(optimistic).length > 0;
-
-  // Apply removes/patches to streamed rows, then append adds not yet streamed.
-  const mergedAll = useMemo(() => {
-    if (!hasOptimistic) return executionProcesses;
-    const streamedIds = new Set(executionProcesses.map((p) => p.id));
-    const result: ExecutionProcess[] = [];
-    for (const p of executionProcesses) {
-      const op = optimistic[p.id];
-      if (op?.kind === 'remove') continue;
-      result.push(op?.kind === 'patch' ? { ...p, ...op.changes } : p);
-    }
-    for (const [id, op] of Object.entries(optimistic)) {
-      if (
-        op.kind === 'add' &&
-        !streamedIds.has(id) &&
-        belongsToSession(op.process, sessionId)
-      ) {
-        result.push(op.process);
-      }
-    }
-    return result.sort(
-      (a, b) =>
-        new Date(a.created_at as unknown as string).getTime() -
-        new Date(b.created_at as unknown as string).getTime()
-    );
-  }, [executionProcesses, optimistic, hasOptimistic, sessionId]);
+  // Apply removes/patches to streamed rows, then append adds not yet streamed
+  // (session-scoped so a stale follow-up can't leak across a conversation
+  // switch). See mergeOptimisticProcesses for the guard and its tests.
+  const mergedAll = useMemo(
+    () => mergeOptimisticProcesses(executionProcesses, optimistic, sessionId),
+    [executionProcesses, optimistic, sessionId]
+  );
 
   const mergedById = useMemo(() => {
     if (mergedAll === executionProcesses) return executionProcessesById;
