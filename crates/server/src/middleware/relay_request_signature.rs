@@ -80,6 +80,15 @@ pub async fn sign_relay_response(
     let (request_signature, path_and_query) = extract_request_signature(&request)?;
 
     let response = next.run(request).await;
+
+    // Streaming responses (e.g. Server-Sent Events) have an unbounded body.
+    // Buffering the whole body to compute a response signature would hang
+    // forever, so relayed SSE never returns. No client verifies response
+    // signatures, so pass streaming responses through unbuffered and unsigned.
+    if is_streaming_response(&response) {
+        return Ok(response);
+    }
+
     let (mut parts, body) = response.into_parts();
     let body_bytes = to_bytes(body, RELAY_SIGNED_BODY_MAX_BYTES)
         .await
@@ -289,6 +298,14 @@ fn unix_timestamp_now() -> Result<i64, ()> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ())?;
     i64::try_from(duration.as_secs()).map_err(|_| ())
+}
+
+fn is_streaming_response(response: &Response) -> bool {
+    response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"))
 }
 
 fn is_relay_request(request: &Request) -> bool {
