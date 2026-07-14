@@ -201,21 +201,38 @@ export function IssueWorkspacesSectionContainer({
 
   // Handle clicking a workspace card to open it
   const handleWorkspaceClick = useCallback(
-    (localWorkspaceId: string | null) => {
-      if (projectId && localWorkspaceId) {
-        const hostId = workspaceHostMap.get(localWorkspaceId);
-        if (!localWorkspacesById.has(localWorkspaceId) && !hostId) {
-          return;
-        }
-        appNavigation.goToProjectIssueWorkspace(
-          projectId,
-          issueId,
-          localWorkspaceId,
-          { hostId }
-        );
+    async (localWorkspaceId: string | null) => {
+      if (!projectId || !localWorkspaceId) {
+        return;
       }
+      const hostId = workspaceHostMap.get(localWorkspaceId);
+      if (!localWorkspacesById.has(localWorkspaceId) && !hostId) {
+        // The workspace lives on a paired host that is offline, or whose host
+        // map hasn't finished its first poll — tell the user instead of the
+        // click silently doing nothing.
+        await ConfirmDialog.show({
+          title: t('workspaces.hostUnavailableTitle'),
+          message: t('workspaces.hostUnavailableMessage'),
+          confirmText: t('common:ok'),
+          showCancelButton: false,
+        });
+        return;
+      }
+      appNavigation.goToProjectIssueWorkspace(
+        projectId,
+        issueId,
+        localWorkspaceId,
+        { hostId }
+      );
     },
-    [projectId, issueId, appNavigation, localWorkspacesById, workspaceHostMap]
+    [
+      projectId,
+      issueId,
+      appNavigation,
+      localWorkspacesById,
+      workspaceHostMap,
+      t,
+    ]
   );
 
   // Handle unlinking a workspace from the issue
