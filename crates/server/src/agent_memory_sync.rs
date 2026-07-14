@@ -140,12 +140,19 @@ fn scheduled_run_is_due(
 }
 
 async fn run_scheduled(deployment: DeploymentImpl, date: NaiveDate) -> anyhow::Result<()> {
-    run_now(deployment.clone()).await?;
+    let result = run_now(deployment.clone()).await;
+    // Mark the day done once the run has executed to completion, even if some
+    // repos/agents failed. Otherwise a single repo that reliably fails keeps
+    // `last_scheduled_local_date` unadvanced, so run_if_due (every 60s) relaunches
+    // a full run — re-spawning coding agents across every repo — back-to-back all
+    // day. A run that never completes (process crash / machine off) doesn't reach
+    // here, so genuinely missed runs still retry; per-repo failures surface via
+    // the sync status (`last_error`) instead.
     sqlx::query("UPDATE agent_memory_sync_state SET last_scheduled_local_date = ? WHERE id = 1")
         .bind(date.to_string())
         .execute(&deployment.db().pool)
         .await?;
-    Ok(())
+    result
 }
 
 async fn run_all(deployment: &DeploymentImpl) -> anyhow::Result<()> {
