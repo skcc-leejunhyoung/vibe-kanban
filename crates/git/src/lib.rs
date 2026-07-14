@@ -1847,6 +1847,7 @@ impl GitService {
         worktree_path: &Path,
         branch_name: &str,
         force: bool,
+        no_verify: bool,
     ) -> Result<(), GitServiceError> {
         let repo = Repository::open(worktree_path)?;
         self.check_worktree_clean(&repo)?;
@@ -1855,7 +1856,7 @@ impl GitService {
         let remote = self.default_remote(&repo, worktree_path)?;
 
         let git_cli = GitCli::new();
-        if let Err(e) = git_cli.push(worktree_path, &remote.url, branch_name, force) {
+        if let Err(e) = git_cli.push(worktree_path, &remote.url, branch_name, force, no_verify) {
             tracing::error!("Push to remote failed: {}", e);
             return Err(e.into());
         }
@@ -1887,6 +1888,7 @@ impl GitService {
         branch_name: &str,
         remote_name: &str,
         force: bool,
+        no_verify: bool,
     ) -> Result<(), GitServiceError> {
         let repo = Repository::open(repo_path)?;
         let remote_url = {
@@ -1897,7 +1899,7 @@ impl GitService {
         };
 
         let git_cli = GitCli::new();
-        if let Err(e) = git_cli.push(repo_path, &remote_url, branch_name, force) {
+        if let Err(e) = git_cli.push(repo_path, &remote_url, branch_name, force, no_verify) {
             tracing::error!("Push to remote '{remote_name}' failed: {}", e);
             return Err(e.into());
         }

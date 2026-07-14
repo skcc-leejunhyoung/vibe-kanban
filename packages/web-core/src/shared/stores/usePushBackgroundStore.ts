@@ -4,6 +4,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { queryClient } from '@/shared/lib/queryClient';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
+import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
 import i18n from '@/i18n/config';
 
 /**
@@ -113,14 +114,10 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
     }
   };
 
+  // Push errors carry the full git stderr/stdout; show it in a dedicated
+  // dialog that renders the whole message with a copy button.
   const showErrorDialog = (message: string) =>
-    ConfirmDialog.show({
-      title: 'Error',
-      message,
-      confirmText: 'OK',
-      showCancelButton: false,
-      variant: 'destructive',
-    });
+    PushErrorDialog.show({ message });
 
   return {
     byWorkspace: {},

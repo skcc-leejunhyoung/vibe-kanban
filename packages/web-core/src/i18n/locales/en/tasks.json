@@ -301,6 +301,10 @@
       "title": "Push target branch",
       "confirm": "Push \"{{branch}}\" to origin? ({{ahead}} commit(s) ahead)",
       "forceConfirm": "The remote target branch has diverged from your local one. Force push to overwrite it? This can discard commits that only exist on the remote."
+    },
+    "pushError": {
+      "title": "Push failed",
+      "copy": "Copy"
     }
   },
   "startReviewDialog": {

@@ -365,12 +365,16 @@ impl GitCli {
     }
 
     /// Push a branch to the given remote using native git authentication.
+    ///
+    /// When `no_verify` is set, `--no-verify` is passed so the local pre-push
+    /// hook is skipped (mirrors `git push --no-verify`).
     pub fn push(
         &self,
         repo_path: &Path,
         remote_url: &str,
         branch: &str,
         force: bool,
+        no_verify: bool,
     ) -> Result<(), GitCliError> {
         let refspec = if force {
             format!("+refs/heads/{branch}:refs/heads/{branch}")
@@ -379,11 +383,12 @@ impl GitCli {
         };
         let envs = vec![(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"))];
 
-        let args = [
-            OsString::from("push"),
-            OsString::from(remote_url),
-            OsString::from(refspec),
-        ];
+        let mut args = vec![OsString::from("push")];
+        if no_verify {
+            args.push(OsString::from("--no-verify"));
+        }
+        args.push(OsString::from(remote_url));
+        args.push(OsString::from(refspec));
 
         match self.git_with_env(repo_path, args, &envs) {
             Ok(_) => Ok(()),

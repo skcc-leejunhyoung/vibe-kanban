@@ -601,7 +601,8 @@ pub async fn create_pr(
         Ok(true) => {}
     }
 
-    if let Err(e) = git.push_to_remote(&worktree_path, &head_branch, false) {
+    let no_verify = deployment.config().read().await.git_push_no_verify;
+    if let Err(e) = git.push_to_remote(&worktree_path, &head_branch, false, no_verify) {
         tracing::error!("Failed to push branch to remote: {}", e);
         match e {
             GitServiceError::GitCLI(GitCliError::AuthFailed(_)) => {

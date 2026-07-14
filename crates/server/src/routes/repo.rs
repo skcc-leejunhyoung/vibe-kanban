@@ -254,7 +254,10 @@ pub async fn push_repo_branch(
         )));
     };
 
-    if let Err(e) = git.push_branch_to_named_remote(&repo.path, &current_branch, &remote, force) {
+    let no_verify = deployment.config().read().await.git_push_no_verify;
+    if let Err(e) =
+        git.push_branch_to_named_remote(&repo.path, &current_branch, &remote, force, no_verify)
+    {
         tracing::error!(
             "Push of branch '{current_branch}' to '{remote}' for repo {repo_id} failed: {e}"
         );

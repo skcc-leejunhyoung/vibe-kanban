@@ -275,6 +275,10 @@
           "browse": "Browse",
           "dialogTitle": "Select Workspace Directory",
           "dialogDescription": "Choose a directory. Workspaces will be created in a .vibe-kanban-workspaces subdirectory within it."
+        },
+        "pushNoVerify": {
+          "label": "Skip pre-push hooks (--no-verify)",
+          "helper": "Pass --no-verify to git push so the local pre-push hook does not run. Applies to all pushes triggered from Vibe Kanban."
         }
       },
       "pullRequests": {

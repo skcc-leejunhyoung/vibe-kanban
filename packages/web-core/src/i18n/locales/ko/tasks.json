@@ -211,6 +211,10 @@
       "title": "타겟 브랜치 푸시",
       "confirm": "\"{{branch}}\" 브랜치를 origin으로 푸시할까요? (origin보다 {{ahead}}개 앞섬)",
       "forceConfirm": "원격 타겟 브랜치가 로컬과 갈라졌습니다. 강제 푸시로 덮어쓸까요? 원격에만 있는 커밋이 사라질 수 있습니다."
+    },
+    "pushError": {
+      "title": "푸시 실패",
+      "copy": "복사"
     }
   },
   "loading": "작업 로딩 중...",

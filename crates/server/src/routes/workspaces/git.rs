@@ -625,9 +625,10 @@ pub async fn push_workspace_branch(
         workspace_path.join(&repo.name)
     };
 
+    let no_verify = deployment.config().read().await.git_push_no_verify;
     match deployment
         .git()
-        .push_to_remote(&worktree_path, &workspace.branch, false)
+        .push_to_remote(&worktree_path, &workspace.branch, false, no_verify)
     {
         Ok(_) => {
             if let Ok(client) = deployment.remote_client() {
@@ -688,9 +689,10 @@ pub async fn force_push_workspace_branch(
     let workspace_path = Path::new(&container_ref);
     let worktree_path = workspace_path.join(&repo.name);
 
+    let no_verify = deployment.config().read().await.git_push_no_verify;
     deployment
         .git()
-        .push_to_remote(&worktree_path, &workspace.branch, true)?;
+        .push_to_remote(&worktree_path, &workspace.branch, true, no_verify)?;
 
     if let Ok(client) = deployment.remote_client() {
         let pool = deployment.db().pool.clone();
@@ -1314,11 +1316,13 @@ pub async fn push_target_branch(
         )));
     };
 
+    let no_verify = deployment.config().read().await.git_push_no_verify;
     match git.push_branch_to_named_remote(
         &repo.path,
         &workspace_repo.target_branch,
         &remote,
         request.force,
+        no_verify,
     ) {
         Ok(()) => {
             let status = compute_target_branch_remote_status(

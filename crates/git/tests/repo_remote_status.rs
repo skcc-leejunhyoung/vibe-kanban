@@ -157,7 +157,7 @@ fn push_to_named_remote_clears_ahead() {
     assert_eq!(ahead, 1);
 
     service
-        .push_branch_to_named_remote(&local_path, "main", "origin", false)
+        .push_branch_to_named_remote(&local_path, "main", "origin", false, false)
         .unwrap();
 
     // After pushing, the local remote-tracking ref advances and the branch is

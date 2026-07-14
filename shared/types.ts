@@ -853,7 +853,11 @@ git_target_branch_prefix: string,
  * Template for deriving a feature (target) branch name from a linked issue
  * (rendered client-side). Empty string disables issue-based naming.
  */
-git_target_branch_name_template: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, primary_color: string,
+git_target_branch_name_template: string,
+/**
+ * Pass `--no-verify` to `git push`, skipping the local pre-push hook.
+ */
+git_push_no_verify: boolean, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, primary_color: string,
 /**
  * Coding agents the user has hidden from agent selection.
  */

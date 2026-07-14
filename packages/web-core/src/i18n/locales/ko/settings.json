@@ -267,6 +267,10 @@
           "browse": "찾아보기",
           "dialogTitle": "워크스페이스 디렉토리 선택",
           "dialogDescription": "디렉토리를 선택하세요. 워크스페이스는 해당 디렉토리 내의 .vibe-kanban-workspaces 하위 디렉토리에 생성됩니다."
+        },
+        "pushNoVerify": {
+          "label": "pre-push 훅 건너뛰기 (--no-verify)",
+          "helper": "git push에 --no-verify를 붙여 로컬 pre-push 훅을 실행하지 않습니다. Vibe Kanban에서 실행하는 모든 push에 적용됩니다."
         }
       },
       "pullRequests": {

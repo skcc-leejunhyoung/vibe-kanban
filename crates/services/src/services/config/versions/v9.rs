@@ -113,6 +113,9 @@ pub struct Config {
     /// (rendered client-side). Empty string disables issue-based naming.
     #[serde(default = "default_git_target_branch_name_template")]
     pub git_target_branch_name_template: String,
+    /// Pass `--no-verify` to `git push`, skipping the local pre-push hook.
+    #[serde(default)]
+    pub git_push_no_verify: bool,
     #[serde(default)]
     pub showcases: ShowcaseState,
     #[serde(default = "default_pr_auto_description_enabled")]
@@ -173,6 +176,7 @@ impl Config {
             git_branch_name_template: default_git_branch_name_template(),
             git_target_branch_prefix: default_git_target_branch_prefix(),
             git_target_branch_name_template: default_git_target_branch_name_template(),
+            git_push_no_verify: false,
             showcases: old_config.showcases,
             pr_auto_description_enabled: old_config.pr_auto_description_enabled,
             pr_auto_description_prompt: old_config.pr_auto_description_prompt,
@@ -240,6 +244,7 @@ impl Default for Config {
             git_branch_name_template: default_git_branch_name_template(),
             git_target_branch_prefix: default_git_target_branch_prefix(),
             git_target_branch_name_template: default_git_target_branch_name_template(),
+            git_push_no_verify: false,
             showcases: ShowcaseState::default(),
             pr_auto_description_enabled: true,
             pr_auto_description_prompt: None,

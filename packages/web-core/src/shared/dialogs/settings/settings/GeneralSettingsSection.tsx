@@ -843,6 +843,14 @@ export function GeneralSettingsSection() {
             </PrimaryButton>
           </div>
         </SettingsField>
+
+        <SettingsCheckbox
+          id="git-push-no-verify"
+          label={t('settings.general.git.pushNoVerify.label')}
+          description={t('settings.general.git.pushNoVerify.helper')}
+          checked={draft?.git_push_no_verify ?? false}
+          onChange={(checked) => updateDraft({ git_push_no_verify: checked })}
+        />
       </SettingsCard>
 
       {/* Pull Requests */}
