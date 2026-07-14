@@ -103,6 +103,7 @@ scripts/com.vibe-kanban.caddy.plist
 # Local-only menubar launcher scripts (contain personal paths/domain)
 scripts/*.applescript
 scripts/vibe-kanban-menubar-runner.sh
+scripts/vibe-kanban-host-runner.sh
 
 # Playwright MCP scratch output (browser snapshots/console logs)
 .playwright-mcp/
