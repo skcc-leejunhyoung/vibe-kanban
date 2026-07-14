@@ -698,11 +698,24 @@ pub async fn create_pr(
             // A successfully opened PR consumes this dialog draft. Do this on
             // the server so cleanup is reliable even if the client navigated
             // away before receiving the create response.
-            sqlx::query("DELETE FROM workspace_pr_drafts WHERE workspace_id = ? AND repo_id = ?")
-                .bind(workspace.id)
-                .bind(request.repo_id)
-                .execute(pool)
-                .await?;
+            if let Err(e) = sqlx::query(
+                "DELETE FROM workspace_pr_drafts WHERE workspace_id = ? AND repo_id = ?",
+            )
+            .bind(workspace.id)
+            .bind(request.repo_id)
+            .execute(pool)
+            .await
+            {
+                // The external PR already exists, so a cleanup failure must not
+                // turn this successful, non-idempotent operation into an error
+                // that invites the client to retry and create a duplicate PR.
+                tracing::warn!(
+                    workspace_id = %workspace.id,
+                    repo_id = %request.repo_id,
+                    error = %e,
+                    "Failed to delete consumed PR draft"
+                );
+            }
 
             Ok(ResponseJson(ApiResponse::success(pr_info.url)))
         }

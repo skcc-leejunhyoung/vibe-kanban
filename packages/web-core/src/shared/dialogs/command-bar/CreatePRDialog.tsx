@@ -158,6 +158,20 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // in-flight default fetch) over a saved draft.
     const hydratedFor = useRef<string | null>(null);
     const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Serialize draft mutations so a slow save cannot finish after a later
+    // delete and resurrect a draft that was consumed or explicitly canceled.
+    const draftMutationQueue = useRef<Promise<void>>(Promise.resolve());
+    const enqueueDraftMutation = useCallback(
+      (mutation: () => Promise<void>) => {
+        draftMutationQueue.current = draftMutationQueue.current
+          .catch(() => undefined)
+          .then(mutation)
+          // Draft persistence is best-effort and must not create unhandled
+          // rejections or prevent later cleanup from entering the queue.
+          .catch(() => undefined);
+      },
+      []
+    );
     useEffect(() => {
       if (!isLoaded || initializedFor.current === attempt.id) {
         return;
@@ -264,17 +278,19 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         .getState()
         .setDraft(attempt.id, { title: prTitle, body: prBody });
       draftSaveTimer.current = setTimeout(() => {
-        void workspacesApi.savePrDraft(attempt.id, {
-          repo_id: repoId,
-          title: prTitle,
-          body: prBody,
-        });
+        enqueueDraftMutation(() =>
+          workspacesApi.savePrDraft(attempt.id, {
+            repo_id: repoId,
+            title: prTitle,
+            body: prBody,
+          })
+        );
       }, 400);
       return () => {
         if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
         draftSaveTimer.current = null;
       };
-    }, [prTitle, prBody, attempt.id, repoId]);
+    }, [prTitle, prBody, attempt.id, repoId, enqueueDraftMutation]);
 
     // Set default head (source) branch when branches load. Prefer the feature
     // branch the work branch was merged into; fall back to the work branch.
@@ -491,7 +507,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         clearDraft(attempt.id);
         if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
         draftSaveTimer.current = null;
-        void workspacesApi.deletePrDraft(attempt.id, repoId);
+        enqueueDraftMutation(() =>
+          workspacesApi.deletePrDraft(attempt.id, repoId)
+        );
         modal.resolve({ success: true } as CreatePRDialogResult);
         modal.hide();
         return;
@@ -509,6 +527,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       processCreateFailure,
       queryClient,
       t,
+      enqueueDraftMutation,
     ]);
 
     // Generate a PR title + description by running the configured agent, once,
@@ -547,7 +566,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       usePrBackgroundStore.getState().clearDraft(attempt.id);
       if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
       draftSaveTimer.current = null;
-      void workspacesApi.deletePrDraft(attempt.id, repoId);
+      enqueueDraftMutation(() =>
+        workspacesApi.deletePrDraft(attempt.id, repoId)
+      );
       initializedFor.current = null;
       hydratedFor.current = null;
       const result: CreatePRDialogResult = error
@@ -555,7 +576,15 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         : { success: false };
       modal.resolve(result);
       modal.hide();
-    }, [modal, error, attempt.id, repoId, cancelGenerate, cancelCreate]);
+    }, [
+      modal,
+      error,
+      attempt.id,
+      repoId,
+      cancelGenerate,
+      cancelCreate,
+      enqueueDraftMutation,
+    ]);
 
     return (
       <>
