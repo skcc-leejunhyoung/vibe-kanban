@@ -26,6 +26,10 @@ struct ListReposRequest {
 struct GetRepoRequest {
     #[schemars(description = "The ID of the repository to retrieve")]
     repo_id: Uuid,
+    #[schemars(
+        description = "Paired host ID the repo lives on (from list_repos). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -48,6 +52,10 @@ struct RepoDetails {
 struct UpdateSetupScriptRequest {
     #[schemars(description = "The ID of the repository to update")]
     repo_id: Uuid,
+    #[schemars(
+        description = "Paired host ID the repo lives on (from list_repos). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
     #[schemars(description = "The new setup script content (use empty string to clear)")]
     script: String,
 }
@@ -56,6 +64,10 @@ struct UpdateSetupScriptRequest {
 struct UpdateCleanupScriptRequest {
     #[schemars(description = "The ID of the repository to update")]
     repo_id: Uuid,
+    #[schemars(
+        description = "Paired host ID the repo lives on (from list_repos). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
     #[schemars(description = "The new cleanup script content (use empty string to clear)")]
     script: String,
 }
@@ -64,6 +76,10 @@ struct UpdateCleanupScriptRequest {
 struct UpdateDevServerScriptRequest {
     #[schemars(description = "The ID of the repository to update")]
     repo_id: Uuid,
+    #[schemars(
+        description = "Paired host ID the repo lives on (from list_repos). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
     #[schemars(description = "The new dev server script content (use empty string to clear)")]
     script: String,
 }
@@ -121,9 +137,9 @@ impl McpServer {
     )]
     async fn get_repo(
         &self,
-        Parameters(GetRepoRequest { repo_id }): Parameters<GetRepoRequest>,
+        Parameters(GetRepoRequest { repo_id, host_id }): Parameters<GetRepoRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url(&format!("/api/repos/{}", repo_id));
+        let url = self.host_url(host_id, &format!("/repos/{repo_id}"));
         let repo: Repo = match self.send_json(self.client.get(&url)).await {
             Ok(r) => r,
             Err(e) => return Ok(Self::tool_error(e)),
@@ -143,11 +159,13 @@ impl McpServer {
     )]
     async fn update_setup_script(
         &self,
-        Parameters(UpdateSetupScriptRequest { repo_id, script }): Parameters<
-            UpdateSetupScriptRequest,
-        >,
+        Parameters(UpdateSetupScriptRequest {
+            repo_id,
+            host_id,
+            script,
+        }): Parameters<UpdateSetupScriptRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url(&format!("/api/repos/{}", repo_id));
+        let url = self.host_url(host_id, &format!("/repos/{repo_id}"));
         let script_value = if script.is_empty() {
             None
         } else {
@@ -172,11 +190,13 @@ impl McpServer {
     )]
     async fn update_cleanup_script(
         &self,
-        Parameters(UpdateCleanupScriptRequest { repo_id, script }): Parameters<
-            UpdateCleanupScriptRequest,
-        >,
+        Parameters(UpdateCleanupScriptRequest {
+            repo_id,
+            host_id,
+            script,
+        }): Parameters<UpdateCleanupScriptRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url(&format!("/api/repos/{}", repo_id));
+        let url = self.host_url(host_id, &format!("/repos/{repo_id}"));
         let script_value = if script.is_empty() {
             None
         } else {
@@ -201,11 +221,13 @@ impl McpServer {
     )]
     async fn update_dev_server_script(
         &self,
-        Parameters(UpdateDevServerScriptRequest { repo_id, script }): Parameters<
-            UpdateDevServerScriptRequest,
-        >,
+        Parameters(UpdateDevServerScriptRequest {
+            repo_id,
+            host_id,
+            script,
+        }): Parameters<UpdateDevServerScriptRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url(&format!("/api/repos/{}", repo_id));
+        let url = self.host_url(host_id, &format!("/repos/{repo_id}"));
         let script_value = if script.is_empty() {
             None
         } else {

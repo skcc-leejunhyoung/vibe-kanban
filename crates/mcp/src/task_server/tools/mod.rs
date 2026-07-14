@@ -204,6 +204,16 @@ impl McpServer {
         Ok(())
     }
 
+    /// Build an API URL, routing through the paired-host proxy when `host_id` is
+    /// set (mirrors `list_workspaces` / `link_workspace_to_issue`). `path` starts
+    /// after the `/api` prefix, e.g. "/workspaces/{id}".
+    fn host_url(&self, host_id: Option<Uuid>, path: &str) -> String {
+        match host_id {
+            Some(host_id) => self.url(&format!("/api/host/{host_id}{path}")),
+            None => self.url(&format!("/api{path}")),
+        }
+    }
+
     // Expands @tagname references in text by replacing them with tag content.
     async fn expand_tags(&self, text: &str) -> String {
         let tag_pattern = match Regex::new(r"@([^\s@]+)") {

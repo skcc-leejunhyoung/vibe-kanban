@@ -84,6 +84,10 @@ struct McpUpdateWorkspaceRequest {
         description = "Workspace ID to update. Optional if running inside that workspace context."
     )]
     workspace_id: Option<Uuid>,
+    #[schemars(
+        description = "Paired host ID the workspace lives on (from list_workspaces). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
     #[schemars(description = "Set archived state")]
     archived: Option<bool>,
     #[schemars(description = "Set pinned state")]
@@ -108,6 +112,10 @@ struct McpDeleteWorkspaceRequest {
     )]
     workspace_id: Option<Uuid>,
     #[schemars(
+        description = "Paired host ID the workspace lives on (from list_workspaces). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
+    #[schemars(
         description = "Also delete linked remote workspace when available (default: false)"
     )]
     delete_remote: Option<bool>,
@@ -129,6 +137,10 @@ struct McpSyncWorkspaceBranchRequest {
         description = "Workspace ID to sync. Optional if running inside that workspace context."
     )]
     workspace_id: Option<Uuid>,
+    #[schemars(
+        description = "Paired host ID the workspace lives on (from list_workspaces). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
     #[schemars(
         description = "Repository ID to sync. Optional when the workspace has exactly one repo."
     )]
@@ -289,6 +301,7 @@ impl McpServer {
         &self,
         Parameters(McpUpdateWorkspaceRequest {
             workspace_id,
+            host_id,
             archived,
             pinned,
             name,
@@ -302,7 +315,7 @@ impl McpServer {
             return Ok(Self::tool_error(error_result));
         }
 
-        let url = self.url(&format!("/api/workspaces/{}", workspace_id));
+        let url = self.host_url(host_id, &format!("/workspaces/{workspace_id}"));
         let payload = UpdateWorkspace {
             archived,
             pinned,
@@ -330,6 +343,7 @@ impl McpServer {
         &self,
         Parameters(McpDeleteWorkspaceRequest {
             workspace_id,
+            host_id,
             delete_remote,
             delete_branches,
         }): Parameters<McpDeleteWorkspaceRequest>,
@@ -345,7 +359,7 @@ impl McpServer {
         let delete_remote = delete_remote.unwrap_or(false);
         let delete_branches = delete_branches.unwrap_or(false);
 
-        let url = self.url(&format!("/api/workspaces/{}", workspace_id));
+        let url = self.host_url(host_id, &format!("/workspaces/{workspace_id}"));
         if let Err(e) = self
             .send_empty_json(self.client.delete(&url).query(&[
                 ("delete_remote", delete_remote),
@@ -371,6 +385,7 @@ impl McpServer {
         &self,
         Parameters(McpSyncWorkspaceBranchRequest {
             workspace_id,
+            host_id,
             repo_id,
             mode,
         }): Parameters<McpSyncWorkspaceBranchRequest>,
@@ -400,7 +415,7 @@ impl McpServer {
         let repo_id = match repo_id {
             Some(id) => id,
             None => {
-                let url = self.url(&format!("/api/workspaces/{workspace_id}/repos"));
+                let url = self.host_url(host_id, &format!("/workspaces/{workspace_id}/repos"));
                 let repos: Vec<McpRepoRef> = match self.send_json(self.client.get(&url)).await {
                     Ok(repos) => repos,
                     Err(e) => return Ok(Self::tool_error(e)),
@@ -423,9 +438,10 @@ impl McpServer {
         let outcome = if let Some(strategy) = strategy {
             // Update from base (merge / rebase). Conflicts come back as typed
             // error_data, which we translate into an actionable message.
-            let url = self.url(&format!(
-                "/api/workspaces/{workspace_id}/git/update-from-base"
-            ));
+            let url = self.host_url(
+                host_id,
+                &format!("/workspaces/{workspace_id}/git/update-from-base"),
+            );
             let resp = match self
                 .client
                 .post(&url)
@@ -486,7 +502,7 @@ impl McpServer {
             }
         } else {
             // Fast-forward pull.
-            let url = self.url(&format!("/api/workspaces/{workspace_id}/git/pull"));
+            let url = self.host_url(host_id, &format!("/workspaces/{workspace_id}/git/pull"));
             let pull: McpPullOutcome = match self
                 .send_json(
                     self.client
