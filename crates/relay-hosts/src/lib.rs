@@ -481,12 +481,19 @@ impl RelayHost {
         headers: &HeaderMap,
         body: &[u8],
     ) -> Result<ProxiedResponse, RelayConnectionError> {
-        // Try direct WebRTC data channel first.
-        if let Some(response) = self
-            .try_webrtc_proxy(method, target_path, headers, body)
-            .await
-        {
-            return Ok(response);
+        // Server-Sent Events are an unbounded streaming response, but the WebRTC
+        // data channel proxies HTTP as a single buffered request/response
+        // (`send_request` waits for the full body). A stream never completes, so
+        // the request would hang forever. Force the relay tunnel, which streams
+        // the response body incrementally.
+        if !is_event_stream_request(headers) {
+            // Try direct WebRTC data channel first.
+            if let Some(response) = self
+                .try_webrtc_proxy(method, target_path, headers, body)
+                .await
+            {
+                return Ok(response);
+            }
         }
 
         self.send_http_via_relay(method, target_path, headers, body)
@@ -664,6 +671,15 @@ impl RelayHost {
 }
 
 /// Decode a WebRTC data channel HTTP response into a `ProxiedResponse`.
+/// Whether the request asks for a Server-Sent Events stream. Such responses are
+/// unbounded and must not go over the buffered WebRTC data-channel path.
+fn is_event_stream_request(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"))
+}
+
 fn decode_webrtc_http_response(response: DataChannelResponse) -> Option<ProxiedResponse> {
     let body = if let Some(body_b64) = &response.body_b64 {
         use base64::Engine as _;
