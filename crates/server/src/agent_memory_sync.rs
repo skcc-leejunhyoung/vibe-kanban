@@ -4,7 +4,7 @@ use api_types::{
     AgentMemoryKind, AgentMemoryReceiptStatus, AgentMemoryScope, RecordAgentMemoryReceiptRequest,
     UpsertAgentMemorySnapshotRequest,
 };
-use chrono::{Local, NaiveTime, Utc};
+use chrono::{Local, NaiveDate, NaiveTime, Utc};
 use db::models::repo::Repo;
 use deployment::Deployment;
 use executors::{
@@ -102,29 +102,49 @@ async fn run_if_due(deployment: &DeploymentImpl) -> anyhow::Result<()> {
     let scheduled = NaiveTime::parse_from_str(&config.daily_local_time, "%H:%M")
         .map_err(|_| anyhow::anyhow!("invalid agent memory sync time"))?;
     let now = Local::now();
-    if now.time() < scheduled {
-        return Ok(());
-    }
-    let today = now.date_naive().to_string();
+    let today = now.date_naive();
     let last: Option<String> = sqlx::query_scalar(
         "SELECT last_scheduled_local_date FROM agent_memory_sync_state WHERE id = 1",
     )
     .fetch_one(&deployment.db().pool)
     .await?;
-    if last.as_deref() == Some(today.as_str()) {
+    let last = last
+        .as_deref()
+        .map(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d"))
+        .transpose()
+        .map_err(|_| anyhow::anyhow!("invalid last agent memory sync date"))?;
+    if !scheduled_run_is_due(now.time(), scheduled, today, last) {
         return Ok(());
     }
 
-    sqlx::query("UPDATE agent_memory_sync_state SET last_scheduled_local_date = ? WHERE id = 1")
-        .bind(today)
-        .execute(&deployment.db().pool)
-        .await?;
     let deployment = deployment.clone();
     tokio::spawn(async move {
-        if let Err(error) = run_now(deployment).await {
+        if let Err(error) = run_scheduled(deployment, today).await {
             tracing::warn!(?error, "scheduled agent memory sync failed");
         }
     });
+    Ok(())
+}
+
+fn scheduled_run_is_due(
+    now: NaiveTime,
+    scheduled: NaiveTime,
+    today: NaiveDate,
+    last_scheduled_date: Option<NaiveDate>,
+) -> bool {
+    match last_scheduled_date {
+        Some(last) if last >= today => false,
+        Some(_) => true,
+        None => now >= scheduled,
+    }
+}
+
+async fn run_scheduled(deployment: DeploymentImpl, date: NaiveDate) -> anyhow::Result<()> {
+    run_now(deployment.clone()).await?;
+    sqlx::query("UPDATE agent_memory_sync_state SET last_scheduled_local_date = ? WHERE id = 1")
+        .bind(date.to_string())
+        .execute(&deployment.db().pool)
+        .await?;
     Ok(())
 }
 
@@ -434,5 +454,25 @@ mod tests {
             normalize_repo_url("https://github.com/Acme/Project.git"),
             "github.com/Acme/Project"
         );
+    }
+
+    #[test]
+    fn failed_run_remains_due_on_the_same_day() {
+        let today = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+        let scheduled = NaiveTime::from_hms_opt(3, 0, 0).unwrap();
+        let now = NaiveTime::from_hms_opt(3, 1, 0).unwrap();
+
+        assert!(scheduled_run_is_due(now, scheduled, today, None));
+    }
+
+    #[test]
+    fn missed_run_is_due_before_todays_scheduled_time() {
+        let yesterday = NaiveDate::from_ymd_opt(2026, 7, 13).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 14).unwrap();
+        let scheduled = NaiveTime::from_hms_opt(3, 0, 0).unwrap();
+        let now = NaiveTime::from_hms_opt(1, 0, 0).unwrap();
+
+        assert!(scheduled_run_is_due(now, scheduled, today, Some(yesterday)));
+        assert!(!scheduled_run_is_due(now, scheduled, today, Some(today)));
     }
 }
