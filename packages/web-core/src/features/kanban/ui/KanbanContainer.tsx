@@ -13,6 +13,7 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useActions } from '@/shared/hooks/useActions';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useWorkspaceHostMap } from '@/shared/hooks/useWorkspaceHostMap';
 import { useIsMobile, useIsTouchDevice } from '@/shared/hooks/useIsMobile';
 import { cn } from '@/shared/lib/utils';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
@@ -50,6 +51,7 @@ import {
   KanbanHeader,
   type DropResult,
 } from '@vibe/ui/components/KanbanBoard';
+import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { KanbanCardContent } from '@vibe/ui/components/KanbanCardContent';
 import {
   IssueWorkspaceCard,
@@ -168,6 +170,7 @@ export function KanbanContainer() {
   } = useOrgContext();
   const { activeWorkspaces } = useWorkspaceContext();
   const { userId } = useAuth();
+  const workspaceHostMap = useWorkspaceHostMap();
 
   // Get project name by finding the project matching current projectId
   const projectName = projects.find((p) => p.id === projectId)?.name ?? '';
@@ -188,16 +191,6 @@ export function KanbanContainer() {
       appNavigation.goToProjectIssue(projectId, issueId);
     },
     [isIssueComposerOpen, issueComposerKey, appNavigation, projectId]
-  );
-  const openIssueWorkspace = useCallback(
-    (issueId: string, workspaceAttemptId: string) => {
-      appNavigation.goToProjectIssueWorkspace(
-        projectId,
-        issueId,
-        workspaceAttemptId
-      );
-    },
-    [appNavigation, projectId]
   );
   const startCreate = useCallback(
     (options?: ProjectIssueCreateOptions) => {
@@ -580,6 +573,31 @@ export function KanbanContainer() {
     return map;
   }, [activeWorkspaces]);
 
+  const openIssueWorkspace = useCallback(
+    async (issueId: string, workspaceAttemptId: string) => {
+      const hostId = workspaceHostMap.get(workspaceAttemptId);
+      if (!localWorkspacesById.has(workspaceAttemptId) && !hostId) {
+        // The workspace lives on a paired host that is offline, or whose host
+        // map hasn't finished its first poll — tell the user instead of the
+        // click silently doing nothing.
+        await ConfirmDialog.show({
+          title: t('workspaces.hostUnavailableTitle'),
+          message: t('workspaces.hostUnavailableMessage'),
+          confirmText: t('common:ok'),
+          showCancelButton: false,
+        });
+        return;
+      }
+      appNavigation.goToProjectIssueWorkspace(
+        projectId,
+        issueId,
+        workspaceAttemptId,
+        { hostId }
+      );
+    },
+    [appNavigation, projectId, workspaceHostMap, localWorkspacesById, t]
+  );
+
   const prsByWorkspaceId = useMemo(() => {
     const map = new Map<string, WorkspacePr[]>();
 
@@ -607,16 +625,18 @@ export function KanbanContainer() {
 
     for (const issue of issues) {
       const nonArchivedWorkspaces = getWorkspacesForIssue(issue.id)
+        // Show every linked, non-archived workspace — including ones that live
+        // on a paired host and therefore have no local counterpart on this
+        // machine. This mirrors the issue detail view; previously the board
+        // additionally required `localWorkspacesById.has(...)`, which silently
+        // hid remote-host workspaces from the cards.
         .filter(
-          (workspace) =>
-            !workspace.archived &&
-            !!workspace.local_workspace_id &&
-            localWorkspacesById.has(workspace.local_workspace_id)
+          (workspace) => !workspace.archived && !!workspace.local_workspace_id
         )
         .map((workspace) => {
-          const localWorkspace = localWorkspacesById.get(
-            workspace.local_workspace_id!
-          );
+          const localWorkspace = workspace.local_workspace_id
+            ? localWorkspacesById.get(workspace.local_workspace_id)
+            : undefined;
 
           return {
             id: workspace.id,

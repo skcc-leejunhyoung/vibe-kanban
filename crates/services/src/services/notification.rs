@@ -172,7 +172,11 @@ impl NotificationService {
                 .send_self_web_push(&title, &message, workspace_id)
                 .await
             {
-                tracing::debug!(?error, "failed to forward notification to remote web push");
+                // This is the only route by which a notification for a workspace
+                // running on THIS host reaches the user's other devices (phone,
+                // another PC) via the cloud. A failure here means those devices
+                // get nothing, so surface it at warn rather than swallowing it.
+                tracing::warn!(?error, "failed to forward notification to remote web push");
             }
         });
     }
