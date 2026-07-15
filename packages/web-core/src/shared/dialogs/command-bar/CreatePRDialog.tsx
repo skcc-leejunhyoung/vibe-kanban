@@ -28,7 +28,6 @@ import { Workspace } from 'shared/types';
 import { Loader2, Sparkles } from 'lucide-react';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useRepoBranches } from '@/shared/hooks/useRepoBranches';
 import {
   GhCliHelpInstructions,
@@ -119,7 +118,6 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       null
     );
     const [isDraft, setIsDraft] = useState(false);
-    const isRemote = useAppRuntime() === 'remote';
     // The settings toggle acts as a master switch for the AI generate button;
     // treat an unloaded config as enabled (backend default) so the button shows.
     const aiEnabled = config?.pr_auto_description_enabled !== false;
@@ -636,13 +634,8 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                     type="button"
                     variant="outline"
                     onClick={handleGenerate}
-                    disabled={generating || creatingPR || isRemote}
+                    disabled={generating || creatingPR}
                     className="w-full"
-                    title={
-                      isRemote
-                        ? t('createPrDialog.generateUnavailableRemote')
-                        : undefined
-                    }
                   >
                     {generating ? (
                       <>

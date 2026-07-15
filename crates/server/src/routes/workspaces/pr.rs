@@ -1,4 +1,9 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use api_types::{PullRequestStatus, UpsertPullRequestRequest};
 use axum::{
@@ -72,6 +77,35 @@ pub struct GeneratePrDescriptionResponse {
     pub title: String,
     pub description: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct StartPrDescriptionGenerationResponse {
+    pub job_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct PrDescriptionGenerationQuery {
+    pub job_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PrDescriptionGenerationStatus {
+    Running,
+    Completed { title: String, description: String },
+    Failed { error: String },
+}
+
+struct PrDescriptionGenerationJob {
+    workspace_id: Uuid,
+    status: PrDescriptionGenerationStatus,
+    abort_handle: Option<tokio::task::AbortHandle>,
+    created_at: Instant,
+}
+
+static PR_DESCRIPTION_GENERATION_JOBS: LazyLock<
+    tokio::sync::RwLock<HashMap<Uuid, PrDescriptionGenerationJob>>,
+> = LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
 
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct PrDraft {
@@ -214,17 +248,128 @@ pub async fn generate_pr_description(
     headers: HeaderMap,
     Json(request): Json<GeneratePrDescriptionRequest>,
 ) -> Result<ResponseJson<ApiResponse<GeneratePrDescriptionResponse>>, ApiError> {
-    // Reject relayed calls: generation runs a coding agent (can take 20-60s),
-    // well past the relay's ~30s HTTP timeout. Both relay transports inject a
-    // trusted `x-vk-relayed` marker, so its presence reliably means "relayed".
-    // The remote web app proxies workspace calls through the host relay, so this
-    // keeps generation local-app-only, matching the spec-intake flow.
     if headers.contains_key("x-vk-relayed") {
         return Err(ApiError::Forbidden(
-            "PR description generation isn't available over a remote relay connection (it can exceed the relay timeout). Run it from the local app.".to_string(),
+            "Use the asynchronous PR generation endpoint over a remote relay connection."
+                .to_string(),
         ));
     }
+    let response = generate_pr_description_inner(&deployment, &workspace, request).await?;
+    Ok(ResponseJson(ApiResponse::success(response)))
+}
 
+/// Start generation without keeping a relay request open for the full agent run.
+pub async fn start_pr_description_generation(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<GeneratePrDescriptionRequest>,
+) -> Result<ResponseJson<ApiResponse<StartPrDescriptionGenerationResponse>>, ApiError> {
+    WorkspaceRepo::find_by_workspace_and_repo_id(
+        &deployment.db().pool,
+        workspace.id,
+        request.repo_id,
+    )
+    .await?
+    .ok_or(RepoError::NotFound)?;
+
+    let job_id = Uuid::new_v4();
+    let mut jobs = PR_DESCRIPTION_GENERATION_JOBS.write().await;
+    jobs.retain(|_, job| {
+        matches!(job.status, PrDescriptionGenerationStatus::Running)
+            || job.created_at.elapsed() < Duration::from_secs(10 * 60)
+    });
+    jobs.insert(
+        job_id,
+        PrDescriptionGenerationJob {
+            workspace_id: workspace.id,
+            status: PrDescriptionGenerationStatus::Running,
+            abort_handle: None,
+            created_at: Instant::now(),
+        },
+    );
+    drop(jobs);
+
+    let task = tokio::spawn(async move {
+        let status = match generate_pr_description_inner(&deployment, &workspace, request).await {
+            Ok(result) => PrDescriptionGenerationStatus::Completed {
+                title: result.title,
+                description: result.description,
+            },
+            Err(error) => PrDescriptionGenerationStatus::Failed {
+                error: error.to_string(),
+            },
+        };
+        if let Some(job) = PR_DESCRIPTION_GENERATION_JOBS
+            .write()
+            .await
+            .get_mut(&job_id)
+        {
+            job.status = status;
+        }
+    });
+    let abort_handle = task.abort_handle();
+    if let Some(job) = PR_DESCRIPTION_GENERATION_JOBS
+        .write()
+        .await
+        .get_mut(&job_id)
+    {
+        job.abort_handle = Some(abort_handle);
+    } else {
+        abort_handle.abort();
+    }
+
+    Ok(ResponseJson(ApiResponse::success(
+        StartPrDescriptionGenerationResponse { job_id },
+    )))
+}
+
+pub async fn cancel_pr_description_generation(
+    Extension(workspace): Extension<Workspace>,
+    Query(query): Query<PrDescriptionGenerationQuery>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    let mut jobs = PR_DESCRIPTION_GENERATION_JOBS.write().await;
+    if let Some(job) = jobs
+        .get(&query.job_id)
+        .filter(|job| job.workspace_id == workspace.id)
+    {
+        if let Some(abort_handle) = &job.abort_handle {
+            abort_handle.abort();
+        }
+        jobs.remove(&query.job_id);
+    }
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+pub async fn get_pr_description_generation(
+    Extension(workspace): Extension<Workspace>,
+    Query(query): Query<PrDescriptionGenerationQuery>,
+) -> Result<ResponseJson<ApiResponse<PrDescriptionGenerationStatus>>, ApiError> {
+    let jobs = PR_DESCRIPTION_GENERATION_JOBS.read().await;
+    let job = jobs
+        .get(&query.job_id)
+        .filter(|job| job.workspace_id == workspace.id)
+        .ok_or_else(|| ApiError::BadRequest("PR generation job not found.".to_string()))?;
+
+    let status = match &job.status {
+        PrDescriptionGenerationStatus::Running => PrDescriptionGenerationStatus::Running,
+        PrDescriptionGenerationStatus::Completed { title, description } => {
+            PrDescriptionGenerationStatus::Completed {
+                title: title.clone(),
+                description: description.clone(),
+            }
+        }
+        PrDescriptionGenerationStatus::Failed { error } => PrDescriptionGenerationStatus::Failed {
+            error: error.clone(),
+        },
+    };
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
+async fn generate_pr_description_inner(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+    request: GeneratePrDescriptionRequest,
+) -> Result<GeneratePrDescriptionResponse, ApiError> {
     let pool = &deployment.db().pool;
 
     let workspace_repo =
@@ -288,9 +433,7 @@ pub async fn generate_pr_description(
     )
     .await?;
 
-    Ok(ResponseJson(ApiResponse::success(
-        GeneratePrDescriptionResponse { title, description },
-    )))
+    Ok(GeneratePrDescriptionResponse { title, description })
 }
 
 /// Prefer the workspace session's executor config (model / reasoning / agent
@@ -1267,6 +1410,11 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/", post(create_pr))
         .route("/generate", post(generate_pr_description))
+        .route("/generate/start", post(start_pr_description_generation))
+        .route(
+            "/generate/status",
+            get(get_pr_description_generation).delete(cancel_pr_description_generation),
+        )
         .route(
             "/draft",
             get(get_pr_draft).put(put_pr_draft).delete(delete_pr_draft),

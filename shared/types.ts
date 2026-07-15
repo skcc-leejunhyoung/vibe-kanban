@@ -491,6 +491,10 @@ head_branch: string | null, };
 
 export type GeneratePrDescriptionResponse = { title: string, description: string, };
 
+export type StartPrDescriptionGenerationResponse = { job_id: string, };
+
+export type PrDescriptionGenerationStatus = { "status": "running" } | { "status": "completed", title: string, description: string, } | { "status": "failed", error: string, };
+
 export type AttachmentResponse = { id: string, file_path: string, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, created_at: string, updated_at: string, };
 
 export type AttachmentMetadata = { exists: boolean, file_name: string | null, path: string | null, size_bytes: bigint | null, format: string | null, proxy_url: string | null, };

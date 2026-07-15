@@ -10,6 +10,8 @@ import {
   CreatePrApiRequest,
   GeneratePrDescriptionRequest,
   GeneratePrDescriptionResponse,
+  PrDescriptionGenerationStatus,
+  StartPrDescriptionGenerationResponse,
   PrDraft,
   CreateTag,
   DirectoryListResponse,
@@ -947,36 +949,62 @@ export const workspacesApi = {
   },
 
   /**
-   * Generate a PR title + description by running a coding agent once, read-only,
-   * in the workspace worktree that holds the branch's changes. Long-running
-   * (~20-60s); the client timeout (180s) strictly exceeds the 120s server
-   * timeout so the server's own timeout error surfaces rather than a client
-   * abort. Local-app only (the backend rejects relayed calls).
+   * Generate a PR title + description through a short start request followed by
+   * polling. Each request stays below the remote relay timeout while the coding
+   * agent continues in the local server background.
    */
   generatePrDescription: async (
     workspaceId: string,
     data: GeneratePrDescriptionRequest,
     signal?: AbortSignal
   ): Promise<GeneratePrDescriptionResponse> => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 180_000);
-    if (signal) {
-      signal.addEventListener('abort', () => controller.abort(), {
-        once: true,
-      });
-    }
-    try {
-      const response = await makeRequest(
-        `/api/workspaces/${workspaceId}/pull-requests/generate`,
-        {
-          method: 'POST',
-          body: JSON.stringify(data),
-          signal: controller.signal,
-        }
+    const startResponse = await makeRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/generate/start`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+        signal,
+      }
+    );
+    const { job_id } =
+      await handleApiResponse<StartPrDescriptionGenerationResponse>(
+        startResponse
       );
-      return handleApiResponse<GeneratePrDescriptionResponse>(response);
-    } finally {
-      clearTimeout(timeout);
+
+    const statusUrl = `/api/workspaces/${workspaceId}/pull-requests/generate/status?job_id=${encodeURIComponent(job_id)}`;
+    try {
+      while (true) {
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            window.clearTimeout(timeout);
+            reject(new DOMException('aborted', 'AbortError'));
+          };
+          const timeout = window.setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+          }, 1_000);
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+
+        const statusResponse = await makeRequest(statusUrl, { signal });
+        const status =
+          await handleApiResponse<PrDescriptionGenerationStatus>(
+            statusResponse
+          );
+        if (status.status === 'completed') {
+          return { title: status.title, description: status.description };
+        }
+        if (status.status === 'failed') {
+          throw new Error(status.error);
+        }
+      }
+    } catch (error) {
+      if (signal?.aborted) {
+        // The polling request is canceled locally; explicitly stop the detached
+        // server job as a separate short relay request.
+        void makeRequest(statusUrl, { method: 'DELETE' });
+      }
+      throw error;
     }
   },
 

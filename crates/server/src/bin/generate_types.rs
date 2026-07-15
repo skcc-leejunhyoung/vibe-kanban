@@ -147,6 +147,8 @@ fn generate_types_content() -> String {
         server::routes::workspaces::pr::PrDraft::decl(),
         server::routes::workspaces::pr::GeneratePrDescriptionRequest::decl(),
         server::routes::workspaces::pr::GeneratePrDescriptionResponse::decl(),
+        server::routes::workspaces::pr::StartPrDescriptionGenerationResponse::decl(),
+        server::routes::workspaces::pr::PrDescriptionGenerationStatus::decl(),
         server::routes::attachments::AttachmentResponse::decl(),
         server::routes::attachments::AttachmentMetadata::decl(),
         db::models::requests::WorkspaceRepoInput::decl(),
