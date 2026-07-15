@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isEqual } from 'lodash';
@@ -161,6 +161,8 @@ export function ReposSettingsSection({
   const [selectedRepoId, setSelectedRepoId] = useState<string>(
     initialState?.repoId ?? ''
   );
+  const selectedRepoIdRef = useRef(selectedRepoId);
+  selectedRepoIdRef.current = selectedRepoId;
 
   // Fetch branches for the selected repo
   const { data: branches = [], isLoading: branchesLoading } =
@@ -184,8 +186,16 @@ export function ReposSettingsSection({
   // Form state
   const [draft, setDraft] = useState<RepoScriptsFormState | null>(null);
   const [saving, setSaving] = useState(false);
+  const [creatingLocalBranch, setCreatingLocalBranch] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  const updateDraft = useCallback((updates: Partial<RepoScriptsFormState>) => {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      return { ...prev, ...updates };
+    });
+  }, []);
 
   // ── Remote (primary remote + push/fetch) ────────────────────────────
   const { data: repoRemotes = [] } = useQuery({
@@ -216,6 +226,41 @@ export function ReposSettingsSection({
   useEffect(() => {
     setRemoteMessage(null);
   }, [selectedRepoId]);
+
+  const handleTargetBranchSelect = useCallback(
+    async (branch: (typeof branchItems)[number]) => {
+      if (!branch.is_remote) {
+        updateDraft({ default_target_branch: branch.name });
+        return;
+      }
+      if (!machineClient || !selectedRepoId) return;
+
+      const requestRepoId = selectedRepoId;
+      setCreatingLocalBranch(true);
+      setError(null);
+      try {
+        const localBranch = await machineClient.createLocalBranch(
+          requestRepoId,
+          branch.name
+        );
+        await queryClient.invalidateQueries({
+          queryKey: ['repoBranches', requestRepoId],
+        });
+        if (selectedRepoIdRef.current === requestRepoId) {
+          updateDraft({ default_target_branch: localBranch });
+        }
+      } catch (err) {
+        if (selectedRepoIdRef.current === requestRepoId) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to create local branch'
+          );
+        }
+      } finally {
+        setCreatingLocalBranch(false);
+      }
+    },
+    [machineClient, selectedRepoId, queryClient, updateDraft]
+  );
 
   const handleFetchRemote = useCallback(async () => {
     if (!machineClient || !selectedRepoId) return;
@@ -469,13 +514,6 @@ export function ReposSettingsSection({
     setDraft(repoToFormState(selectedRepo));
   };
 
-  const updateDraft = (updates: Partial<RepoScriptsFormState>) => {
-    setDraft((prev) => {
-      if (!prev) return prev;
-      return { ...prev, ...updates };
-    });
-  };
-
   if (reposLoading) {
     return (
       <div className="flex items-center justify-center py-8 gap-2">
@@ -627,7 +665,7 @@ export function ReposSettingsSection({
                 }
                 getItemBadge={(b) => (b.is_current ? 'Current' : undefined)}
                 getItemIcon={null}
-                onSelect={(b) => updateDraft({ default_target_branch: b.name })}
+                onSelect={(b) => void handleTargetBranchSelect(b)}
                 placeholder={t(
                   'settings.repos.general.defaultTargetBranch.search'
                 )}
@@ -649,7 +687,7 @@ export function ReposSettingsSection({
                           )
                     }
                     className="w-full justify-between"
-                    disabled={branchesLoading}
+                    disabled={branchesLoading || creatingLocalBranch}
                   />
                 }
               />
