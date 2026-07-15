@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use api_types::{
     AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
     AgentMemoryMutationInboxResponse, AgentMemoryMutationOperation, AgentMemoryReceipt,
@@ -79,6 +81,40 @@ impl TryFrom<MutationRow> for AgentMemoryMutation {
 }
 
 const MUTATION_COLUMNS: &str = "m.id, m.memory_id, m.generation, m.operation, m.scope, m.scope_key, m.match_text, m.replacement_text, m.created_at, (SELECT COUNT(*) FROM agent_memory_mutation_receipts r WHERE r.mutation_id = m.id AND r.status = 'accepted') AS receipt_count";
+
+#[derive(FromRow)]
+struct MutationDeliveryState {
+    id: Uuid,
+    memory_id: Uuid,
+    receipt_status: Option<String>,
+}
+
+fn select_mutation_deliveries(states: &[MutationDeliveryState]) -> Vec<Uuid> {
+    let mut per_memory = HashMap::<Uuid, (Uuid, Option<Uuid>)>::new();
+    for state in states {
+        let entry = per_memory
+            .entry(state.memory_id)
+            .or_insert((state.id, None));
+        entry.0 = state.id;
+        if entry.1.is_none()
+            && state
+                .receipt_status
+                .as_deref()
+                .is_none_or(|status| status == "deferred")
+        {
+            entry.1 = Some(state.id);
+        }
+    }
+
+    let selected = per_memory
+        .into_values()
+        .map(|(latest, pending)| pending.unwrap_or(latest))
+        .collect::<HashSet<_>>();
+    states
+        .iter()
+        .filter_map(|state| selected.contains(&state.id).then_some(state.id))
+        .collect()
+}
 
 pub async fn create_mutation(
     pool: &PgPool,
@@ -172,19 +208,46 @@ async fn find_mutation(
 pub async fn mutation_inbox(
     pool: &PgPool,
     owner_user_id: Uuid,
-    _target_host_id: Uuid,
-    _target_agent: AgentMemoryKind,
+    target_host_id: Uuid,
+    target_agent: AgentMemoryKind,
+    target_scope_key: &str,
     scope: AgentMemoryScope,
     scope_key: Option<&str>,
 ) -> anyhow::Result<AgentMemoryMutationInboxResponse> {
     let scope_key = normalized_scope_key(scope, scope_key)?;
+    let states = sqlx::query_as::<_, MutationDeliveryState>(
+        "SELECT m.id, m.memory_id, receipt.status AS receipt_status \
+         FROM agent_memory_mutations m \
+         LEFT JOIN agent_memory_mutation_receipts receipt \
+           ON receipt.mutation_id = m.id \
+          AND receipt.target_host_id = $4 \
+          AND receipt.target_agent = $5 \
+          AND receipt.target_scope_key = $6 \
+         WHERE m.owner_user_id = $1 AND m.scope = $2 AND m.scope_key = $3 \
+         ORDER BY m.created_at ASC, m.generation ASC",
+    )
+    .bind(owner_user_id)
+    .bind(scope_name(scope))
+    .bind(&scope_key)
+    .bind(target_host_id)
+    .bind(agent_name(target_agent))
+    .bind(target_scope_key)
+    .fetch_all(pool)
+    .await?;
+    let mutation_ids = select_mutation_deliveries(&states);
+    if mutation_ids.is_empty() {
+        return Ok(AgentMemoryMutationInboxResponse {
+            mutations: Vec::new(),
+        });
+    }
     let query = format!(
-        "SELECT {MUTATION_COLUMNS} FROM agent_memory_mutations m INNER JOIN (SELECT memory_id, MAX(generation) generation FROM agent_memory_mutations WHERE owner_user_id = $1 GROUP BY memory_id) latest ON latest.memory_id = m.memory_id AND latest.generation = m.generation WHERE m.owner_user_id = $1 AND m.scope = $2 AND m.scope_key = $3 ORDER BY m.created_at ASC"
+        "SELECT {MUTATION_COLUMNS} FROM agent_memory_mutations m \
+         WHERE m.owner_user_id = $1 AND m.id = ANY($2) \
+         ORDER BY m.created_at ASC"
     );
     let mutations = sqlx::query_as::<_, MutationRow>(&query)
         .bind(owner_user_id)
-        .bind(scope_name(scope))
-        .bind(scope_key)
+        .bind(mutation_ids)
         .fetch_all(pool)
         .await?
         .into_iter()
@@ -473,6 +536,55 @@ fn parse_receipt_status(value: &str) -> anyhow::Result<AgentMemoryReceiptStatus>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn delivery_state(
+        id: Uuid,
+        memory_id: Uuid,
+        receipt_status: Option<&str>,
+    ) -> MutationDeliveryState {
+        MutationDeliveryState {
+            id,
+            memory_id,
+            receipt_status: receipt_status.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn mutation_delivery_advances_offline_hosts_one_generation_at_a_time() {
+        let memory_id = Uuid::new_v4();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        assert_eq!(
+            select_mutation_deliveries(&[
+                delivery_state(first, memory_id, None),
+                delivery_state(second, memory_id, None),
+            ]),
+            vec![first]
+        );
+        assert_eq!(
+            select_mutation_deliveries(&[
+                delivery_state(first, memory_id, Some("accepted")),
+                delivery_state(second, memory_id, None),
+            ]),
+            vec![second]
+        );
+    }
+
+    #[test]
+    fn mutation_delivery_keeps_latest_guard_active_after_catch_up() {
+        let memory_id = Uuid::new_v4();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        assert_eq!(
+            select_mutation_deliveries(&[
+                delivery_state(first, memory_id, Some("accepted")),
+                delivery_state(second, memory_id, Some("ignored")),
+            ]),
+            vec![second]
+        );
+    }
 
     #[test]
     fn repository_scope_requires_a_key() {

@@ -109,6 +109,7 @@ async fn create_mutation(
 struct MutationInboxQuery {
     target_host_id: Uuid,
     target_agent: AgentMemoryKind,
+    target_scope_key: String,
     scope: AgentMemoryScope,
     scope_key: Option<String>,
 }
@@ -125,6 +126,7 @@ async fn mutation_inbox(
         ctx.user.id,
         query.target_host_id,
         query.target_agent,
+        &query.target_scope_key,
         query.scope,
         query.scope_key.as_deref(),
     )

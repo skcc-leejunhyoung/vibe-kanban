@@ -339,7 +339,13 @@ async fn sync_one(
         )
         .await?;
     let mut mutations = client
-        .agent_memory_mutation_inbox(host_id, agent_kind, AgentMemoryScope::UserGlobal, None)
+        .agent_memory_mutation_inbox(
+            host_id,
+            agent_kind,
+            scope_key,
+            AgentMemoryScope::UserGlobal,
+            None,
+        )
         .await?
         .mutations;
     mutations.extend(
@@ -347,6 +353,7 @@ async fn sync_one(
             .agent_memory_mutation_inbox(
                 host_id,
                 agent_kind,
+                scope_key,
                 AgentMemoryScope::Repository,
                 Some(scope_key),
             )

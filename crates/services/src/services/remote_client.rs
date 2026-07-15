@@ -780,6 +780,7 @@ impl RemoteClient {
         &self,
         target_host_id: Uuid,
         target_agent: AgentMemoryKind,
+        target_scope_key: &str,
         scope: AgentMemoryScope,
         scope_key: Option<&str>,
     ) -> Result<AgentMemoryMutationInboxResponse, RemoteClientError> {
@@ -789,6 +790,7 @@ impl RemoteClient {
             let mut query = url::form_urlencoded::Serializer::new(String::new());
             query.append_pair("target_host_id", &target_host_id.to_string());
             query.append_pair("target_agent", &target_agent);
+            query.append_pair("target_scope_key", target_scope_key);
             query.append_pair("scope", &scope);
             if let Some(scope_key) = scope_key {
                 query.append_pair("scope_key", scope_key);
