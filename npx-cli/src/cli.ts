@@ -125,26 +125,14 @@ function buildMcpArgs(args: string[]): string[] {
 
 async function extractAndRun(
   baseName: string,
-  launch: (binPath: string) => void,
+  launch: (binPath: string) => void | Promise<void>,
 ): Promise<void> {
   const binName = getBinaryName(baseName);
   const binPath = path.join(versionCacheDir, binName);
   const zipPath = path.join(versionCacheDir, `${baseName}.zip`);
 
-  // Clean old binary if exists
-  try {
-    if (fs.existsSync(binPath)) {
-      fs.unlinkSync(binPath);
-    }
-  } catch (err: unknown) {
-    if (process.env.VIBE_KANBAN_DEBUG) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`Warning: Could not delete existing binary: ${msg}`);
-    }
-  }
-
-  // Download if not cached
-  if (!fs.existsSync(zipPath)) {
+  // Download only when neither an extracted binary nor its archive is cached.
+  if (!fs.existsSync(binPath) && !fs.existsSync(zipPath)) {
     console.error(`Downloading ${baseName}...`);
     try {
       await ensureBinary(platformDir, baseName, showProgress);
@@ -193,6 +181,17 @@ async function extractAndRun(
   }
 
   return launch(binPath);
+}
+
+function runInteractive(bin: string, args: string[] = []): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(bin, args, { stdio: "inherit" });
+
+    proc.once("error", reject);
+    proc.once("exit", (code) => resolve(code ?? 1));
+    process.once("SIGINT", () => proc.kill("SIGINT"));
+    process.once("SIGTERM", () => proc.kill("SIGTERM"));
+  });
 }
 
 function checkForUpdates(): void {
@@ -273,8 +272,8 @@ async function runMain(desktopMode: boolean): Promise<void> {
 
   // Browser mode (default — headless server + opens browser)
   console.log(`Starting vibe-kanban v${CLI_VERSION}${modeLabel}...`);
-  await extractAndRun("vibe-kanban", (bin) => {
-    execSync(`"${bin}"`, { stdio: "inherit" });
+  await extractAndRun("vibe-kanban", async (bin) => {
+    process.exitCode = await runInteractive(bin);
   });
 }
 

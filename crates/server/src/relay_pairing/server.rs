@@ -273,12 +273,15 @@ impl RelayPairingServer {
             build_refresh_message(payload.timestamp, &payload.nonce, payload.client_id);
         verify_refresh_signature(&client_public_key, &refresh_message, &payload.signature_b64)?;
 
-        let signing_session_id = self.relay_signing.create_session(client_public_key).await;
+        let signing_session_id = self
+            .relay_signing
+            .get_or_create_session(client_public_key)
+            .await;
 
         tracing::info!(
             client_id = %payload.client_id,
             %signing_session_id,
-            "relay signing-session refresh succeeded: new session registered in host memory"
+            "relay signing-session refresh succeeded: active session registered in host memory"
         );
 
         Ok(RefreshRelaySigningSessionResponse { signing_session_id })

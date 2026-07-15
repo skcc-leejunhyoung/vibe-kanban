@@ -230,6 +230,51 @@ impl RelaySigningService {
         signing_session_id
     }
 
+    /// Return the active session for this peer, creating one only when needed.
+    /// Refresh requests use this path so concurrent callers converge on one
+    /// session ID instead of repeatedly invalidating each other.
+    pub async fn get_or_create_session(&self, peer_public_key: VerifyingKey) -> Uuid {
+        let now = Instant::now();
+        let mut sessions = self.sessions.write().await;
+        let previous_len = sessions.len();
+        let existing_id = sessions
+            .iter()
+            .filter(|(_, session)| {
+                is_session_active(session, now)
+                    && session.peer_public_key.as_bytes() == peer_public_key.as_bytes()
+            })
+            .max_by_key(|(_, session)| session.last_used_at)
+            .map(|(id, _)| *id);
+
+        sessions.retain(|id, session| {
+            is_session_active(session, now)
+                && (session.peer_public_key.as_bytes() != peer_public_key.as_bytes()
+                    || Some(*id) == existing_id)
+        });
+
+        let signing_session_id = existing_id.unwrap_or_else(Uuid::new_v4);
+        if let Some(session) = sessions.get_mut(&signing_session_id) {
+            session.last_used_at = now;
+        } else {
+            sessions.insert(
+                signing_session_id,
+                RelaySigningSession {
+                    peer_public_key,
+                    created_at: now,
+                    last_used_at: now,
+                    seen_nonces: HashMap::new(),
+                },
+            );
+        }
+
+        let sessions_changed = sessions.len() != previous_len || existing_id.is_none();
+        drop(sessions);
+        if sessions_changed {
+            self.persist_sessions().await;
+        }
+        signing_session_id
+    }
+
     /// Register a signing session with a known peer public key.
     /// On the server this is called via `create_session`; on the client
     /// it is called after receiving a session ID from the server.
@@ -527,7 +572,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refreshing_same_peer_replaces_old_session() {
+    async fn creating_new_session_for_same_peer_replaces_old_session() {
         let server_key = SigningKey::generate(&mut OsRng);
         let client_key = SigningKey::generate(&mut OsRng);
         let service = RelaySigningService::new(server_key);
@@ -539,6 +584,53 @@ mod tests {
         assert_eq!(service.sessions.read().await.len(), 1);
         assert!(service.get_session_peer_key(new_session_id).await.is_some());
         assert!(service.get_session_peer_key(old_session_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_refreshes_for_same_peer_reuse_active_session() {
+        let server_key = SigningKey::generate(&mut OsRng);
+        let client_key = SigningKey::generate(&mut OsRng);
+        let service = RelaySigningService::new(server_key);
+        let peer_key = client_key.verifying_key();
+
+        let (first, second) = tokio::join!(
+            service.get_or_create_session(peer_key),
+            service.get_or_create_session(peer_key),
+        );
+
+        assert_eq!(first, second);
+        assert_eq!(service.sessions.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_compacts_persisted_duplicates_for_same_peer() {
+        let path = tmp_path("compact-persisted");
+        let server_key = SigningKey::generate(&mut OsRng);
+        let client_key = SigningKey::generate(&mut OsRng);
+        let peer_key = client_key.verifying_key();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        write_persisted_sessions(
+            &path,
+            &[
+                (first, *peer_key.as_bytes()),
+                (second, *peer_key.as_bytes()),
+            ],
+        );
+        let service = RelaySigningService {
+            sessions: Arc::new(RwLock::new(read_persisted_sessions(&path))),
+            server_signing_key: Arc::new(server_key),
+            persist_path: Some(Arc::new(path.clone())),
+        };
+
+        let reused = service.get_or_create_session(peer_key).await;
+        let persisted = read_persisted_sessions(&path);
+        let _ = fs::remove_file(&path);
+
+        assert!(reused == first || reused == second);
+        assert_eq!(service.sessions.read().await.len(), 1);
+        assert_eq!(persisted.len(), 1);
+        assert!(persisted.contains_key(&reused));
     }
 
     #[tokio::test]
