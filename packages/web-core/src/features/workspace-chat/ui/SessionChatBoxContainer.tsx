@@ -345,6 +345,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const {
     addOptimisticProcess,
     patchOptimisticProcess,
+    removeOptimisticProcess,
     clearOptimisticProcess,
   } = useExecutionProcessesContext();
 
@@ -943,13 +944,37 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const handleSubmitEdit = useCallback(async () => {
     if (!editContext.activeEdit || !localMessage.trim() || !executorConfig)
       return;
-    editRetryMutation.mutate({
-      message: localMessage,
-      executorConfig,
-      executionProcessId: editContext.activeEdit.processId,
-      branchStatus,
-      processes,
-    });
+    // Retry drops the edited turn and everything created at/after it, then runs
+    // a new turn — reflect both immediately (reset + send). Backend drops
+    // `created_at >= target`; the new process is returned by the mutation.
+    const targetId = editContext.activeEdit.processId;
+    const target = processes.find((p) => p.id === targetId);
+    const idsToRemove =
+      target != null
+        ? processes
+            .filter(
+              (p) =>
+                !p.dropped &&
+                new Date(p.created_at as unknown as string).getTime() >=
+                  new Date(target.created_at as unknown as string).getTime()
+            )
+            .map((p) => p.id)
+        : [targetId];
+    editRetryMutation.mutate(
+      {
+        message: localMessage,
+        executorConfig,
+        executionProcessId: targetId,
+        branchStatus,
+        processes,
+      },
+      {
+        onSuccess: (process) => {
+          idsToRemove.forEach((id) => removeOptimisticProcess(id));
+          addOptimisticProcess(process);
+        },
+      }
+    );
   }, [
     editContext.activeEdit,
     localMessage,
@@ -957,6 +982,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     branchStatus,
     processes,
     editRetryMutation,
+    removeOptimisticProcess,
+    addOptimisticProcess,
   ]);
 
   // Handle cancel edit mode

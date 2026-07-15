@@ -37,7 +37,7 @@ export function useMessageEditRetry(
       executionProcessId,
       branchStatus,
       processes,
-    }: MessageEditRetryParams) => {
+    }: MessageEditRetryParams): Promise<ExecutionProcess> => {
       // Ask user for confirmation - dialog fetches its own preflight data
       let modalResult: RestoreLogsDialogResult | undefined;
       try {
@@ -53,8 +53,9 @@ export function useMessageEditRetry(
         throw new EditDialogCancelledError();
       }
 
-      // Send the retry request with the edited message
-      await sessionsApi.followUp(sessionId, {
+      // Send the retry request with the edited message. Return the created
+      // process so the caller can render the new turn optimistically.
+      return await sessionsApi.followUp(sessionId, {
         prompt: message,
         executor_config: executorConfig,
         retry_process_id: executionProcessId,
