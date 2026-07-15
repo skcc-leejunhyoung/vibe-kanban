@@ -1857,8 +1857,17 @@ impl GitService {
 
         let git_cli = GitCli::new();
         if let Err(e) = git_cli.push(worktree_path, &remote.url, branch_name, force, no_verify) {
-            tracing::error!("Push to remote failed: {}", e);
-            return Err(e.into());
+            if !force && matches!(e, GitCliError::PushRejected(_)) {
+                match self.pull_workspace_branch(worktree_path, branch_name)? {
+                    PullOutcome::FastForwarded { .. } => {
+                        git_cli.push(worktree_path, &remote.url, branch_name, false, no_verify)?;
+                    }
+                    PullOutcome::UpToDate | PullOutcome::Diverged { .. } => return Err(e.into()),
+                }
+            } else {
+                tracing::error!("Push to remote failed: {}", e);
+                return Err(e.into());
+            }
         }
 
         let mut branch = Self::find_branch(&repo, branch_name)?;
@@ -1900,8 +1909,22 @@ impl GitService {
 
         let git_cli = GitCli::new();
         if let Err(e) = git_cli.push(repo_path, &remote_url, branch_name, force, no_verify) {
-            tracing::error!("Push to remote '{remote_name}' failed: {}", e);
-            return Err(e.into());
+            if !force && matches!(e, GitCliError::PushRejected(_)) {
+                self.fetch_remote(repo_path, remote_name)?;
+                match self.fast_forward_local_branch_to_remote(
+                    repo_path,
+                    branch_name,
+                    remote_name,
+                )? {
+                    PullOutcome::FastForwarded { .. } => {
+                        git_cli.push(repo_path, &remote_url, branch_name, false, no_verify)?;
+                    }
+                    PullOutcome::UpToDate | PullOutcome::Diverged { .. } => return Err(e.into()),
+                }
+            } else {
+                tracing::error!("Push to remote '{remote_name}' failed: {}", e);
+                return Err(e.into());
+            }
         }
 
         // Update the local remote-tracking ref + upstream so subsequent

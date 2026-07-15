@@ -1241,6 +1241,22 @@ export const repoApi = {
     return handleApiResponse<GitBranch[]>(response);
   },
 
+  createLocalBranch: async (
+    repoId: string,
+    remoteBranch: string,
+    hostId?: string | null
+  ): Promise<string> => {
+    const response = await makeHostAwareRequest(
+      `/api/repos/${repoId}/branches/local`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify({ remote_branch: remoteBranch }),
+      }
+    );
+    return handleApiResponse<string>(response);
+  },
+
   init: async (
     data: {
       parent_path: string;

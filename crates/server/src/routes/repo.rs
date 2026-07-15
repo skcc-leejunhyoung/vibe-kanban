@@ -93,6 +93,12 @@ pub struct GetBranchesQuery {
     pub fetch: bool,
 }
 
+#[derive(Debug, Deserialize, TS)]
+pub struct CreateLocalBranchRequest {
+    /// Remote-tracking branch to materialize, for example `origin/feature`.
+    pub remote_branch: String,
+}
+
 pub async fn get_repo_branches(
     State(deployment): State<DeploymentImpl>,
     Path(repo_id): Path<Uuid>,
@@ -113,6 +119,22 @@ pub async fn get_repo_branches(
 
     let branches = deployment.git().get_all_branches(&repo.path)?;
     Ok(ResponseJson(ApiResponse::success(branches)))
+}
+
+pub async fn create_local_branch_from_remote(
+    State(deployment): State<DeploymentImpl>,
+    Path(repo_id): Path<Uuid>,
+    ResponseJson(payload): ResponseJson<CreateLocalBranchRequest>,
+) -> Result<ResponseJson<ApiResponse<String>>, ApiError> {
+    let repo = deployment
+        .repo()
+        .get_by_id(&deployment.db().pool, repo_id)
+        .await?;
+
+    let local_branch = deployment
+        .git()
+        .ensure_local_branch_for_remote(&repo.path, &payload.remote_branch)?;
+    Ok(ResponseJson(ApiResponse::success(local_branch)))
 }
 
 pub async fn get_repo_remotes(
@@ -542,6 +564,10 @@ pub fn router() -> Router<DeploymentImpl> {
             get(get_repo).put(update_repo).delete(delete_repo),
         )
         .route("/repos/{repo_id}/branches", get(get_repo_branches))
+        .route(
+            "/repos/{repo_id}/branches/local",
+            post(create_local_branch_from_remote),
+        )
         .route("/repos/{repo_id}/remotes", get(get_repo_remotes))
         .route(
             "/repos/{repo_id}/remote-status",

@@ -292,6 +292,55 @@ fn push_reports_non_fast_forward() {
 }
 
 #[test]
+fn regular_push_fast_forwards_when_remote_is_only_ahead() {
+    let temp_dir = TempDir::new().unwrap();
+    let remote_path = temp_dir.path().join("remote.git");
+    Repository::init_bare(&remote_path).expect("init bare remote");
+    let remote_url = remote_path.to_str().expect("remote path str");
+
+    let seed_path = temp_dir.path().join("seed");
+    let service = GitService::new();
+    service
+        .initialize_repo_with_main_branch(&seed_path)
+        .expect("init seed repo");
+    let seed_repo = Repository::open(&seed_path).expect("open seed repo");
+    configure_user(&seed_repo);
+    write_file(&seed_path, "file.txt", "initial\n");
+    commit_all(&seed_repo, "initial commit");
+    seed_repo.remote("origin", remote_url).expect("add remote");
+    push_ref(&seed_repo, "refs/heads/main", "refs/heads/main");
+    Repository::open_bare(&remote_path)
+        .expect("open bare remote")
+        .set_head("refs/heads/main")
+        .expect("set remote HEAD");
+
+    let local_path = temp_dir.path().join("local");
+    let local_repo = Repository::clone(remote_url, &local_path).expect("clone local");
+    configure_user(&local_repo);
+
+    let updater_path = temp_dir.path().join("updater");
+    let updater_repo = Repository::clone(remote_url, &updater_path).expect("clone updater");
+    configure_user(&updater_repo);
+    write_file(&updater_path, "upstream.txt", "new upstream commit\n");
+    commit_all(&updater_repo, "upstream commit");
+    let upstream_oid = updater_repo.head().unwrap().target().unwrap();
+    push_ref(&updater_repo, "refs/heads/main", "refs/heads/main");
+
+    service
+        .push_branch_to_named_remote(&local_path, "main", "origin", false, false)
+        .expect("pull-before-push should succeed");
+
+    let local_tip = Repository::open(&local_path)
+        .unwrap()
+        .find_branch("main", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap();
+    assert_eq!(local_tip, upstream_oid);
+}
+
+#[test]
 fn fetch_with_missing_ref_returns_error() {
     let temp_dir = TempDir::new().unwrap();
     let remote_path = temp_dir.path().join("remote.git");

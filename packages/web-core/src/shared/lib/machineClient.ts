@@ -55,6 +55,7 @@ export interface MachineClient {
     display_name?: string;
   }) => Promise<Repo>;
   getRepoBranches: (repoId: string) => Promise<GitBranch[]>;
+  createLocalBranch: (repoId: string, remoteBranch: string) => Promise<string>;
   listRepoRemotes: (repoId: string) => Promise<GitRemote[]>;
   getRepoRemoteStatus: (repoId: string) => Promise<RepoRemoteStatus>;
   fetchRepoRemote: (repoId: string) => Promise<RepoRemoteStatus>;
@@ -199,6 +200,18 @@ export function createMachineClient(
           runtime,
           target,
           `/api/repos/${repoId}/branches`
+        )
+      ),
+    createLocalBranch: async (repoId, remoteBranch) =>
+      handleApiResponse<string>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/repos/${repoId}/branches/local`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ remote_branch: remoteBranch }),
+          }
         )
       ),
     listRepoRemotes: async (repoId) =>
