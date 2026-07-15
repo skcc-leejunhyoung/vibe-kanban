@@ -420,7 +420,38 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   }, [entries, processes]);
 
   // Approvals state
-  const { getPendingForProcess } = useApprovals();
+  const { getPendingForProcess, pendingApprovals } = useApprovals();
+
+  // Optimistically clear an approval the instant the user responds, so the
+  // approve / request-changes / answer UI disappears immediately instead of
+  // waiting for the approvals WS stream to drop it. Pruned once the stream no
+  // longer reports the approval.
+  const [resolvedApprovalIds, setResolvedApprovalIds] = useState<Set<string>>(
+    new Set()
+  );
+  const resolveApprovalOptimistically = useCallback((approvalId: string) => {
+    setResolvedApprovalIds((cur) => {
+      if (cur.has(approvalId)) return cur;
+      const next = new Set(cur);
+      next.add(approvalId);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    setResolvedApprovalIds((cur) => {
+      if (cur.size === 0) return cur;
+      const stillPending = new Set(pendingApprovals.map((a) => a.approval_id));
+      let changed = false;
+      const next = new Set(cur);
+      for (const id of cur) {
+        if (!stillPending.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : cur;
+    });
+  }, [pendingApprovals]);
 
   // Get pending approval from running processes
   const pendingApproval = useMemo(() => {
@@ -429,7 +460,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     );
     for (const proc of runningProcesses) {
       const info = getPendingForProcess(proc.id);
-      if (info) {
+      if (info && !resolvedApprovalIds.has(info.approval_id)) {
         let questions: AskUserQuestionItem[] | undefined;
         for (const entry of entries) {
           if (entry.type !== 'NORMALIZED_ENTRY') continue;
@@ -453,7 +484,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }
     }
     return null;
-  }, [processes, getPendingForProcess, entries]);
+  }, [processes, getPendingForProcess, entries, resolvedApprovalIds]);
 
   // Use approval_id as scratch key when pending approval exists to avoid
   // prefilling approval response with queued follow-up message
@@ -1083,15 +1114,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Handle approve action
   const handleApprove = useCallback(async () => {
     if (!pendingApproval) return;
+    const approvalId = pendingApproval.approvalId;
 
     // Exit feedback mode if active
     feedbackContext?.exitFeedbackMode();
 
     try {
       await approveAsync({
-        approvalId: pendingApproval.approvalId,
+        approvalId,
         executionProcessId: pendingApproval.executionProcessId,
       });
+      resolveApprovalOptimistically(approvalId);
 
       // Invalidate workspace summary cache to update sidebar
       queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
@@ -1103,6 +1136,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     pendingApproval,
     feedbackContext,
     approveAsync,
+    resolveApprovalOptimistically,
     queryClient,
     onScrollToBottom,
   ]);
@@ -1110,13 +1144,15 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Handle request changes (deny with feedback)
   const handleRequestChanges = useCallback(async () => {
     if (!pendingApproval || !localMessage.trim()) return;
+    const approvalId = pendingApproval.approvalId;
 
     try {
       await denyAsync({
-        approvalId: pendingApproval.approvalId,
+        approvalId,
         executionProcessId: pendingApproval.executionProcessId,
         reason: localMessage.trim(),
       });
+      resolveApprovalOptimistically(approvalId);
       cancelDebouncedSave();
       setLocalMessage('');
       await clearDraft();
@@ -1131,6 +1167,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     pendingApproval,
     localMessage,
     denyAsync,
+    resolveApprovalOptimistically,
     cancelDebouncedSave,
     setLocalMessage,
     clearDraft,
@@ -1142,13 +1179,15 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const handleAnswerQuestion = useCallback(
     async (answers: Array<{ question: string; answer: string[] }>) => {
       if (!pendingApproval) return;
+      const approvalId = pendingApproval.approvalId;
 
       try {
         await answerAsync({
-          approvalId: pendingApproval.approvalId,
+          approvalId,
           executionProcessId: pendingApproval.executionProcessId,
           answers,
         });
+        resolveApprovalOptimistically(approvalId);
         queryClient.invalidateQueries({
           queryKey: workspaceSummaryKeys.all,
         });
@@ -1157,7 +1196,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         // Error is handled by mutation
       }
     },
-    [pendingApproval, answerAsync, queryClient, onScrollToBottom]
+    [
+      pendingApproval,
+      answerAsync,
+      resolveApprovalOptimistically,
+      queryClient,
+      onScrollToBottom,
+    ]
   );
 
   // Check if approval is timed out
