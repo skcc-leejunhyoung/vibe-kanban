@@ -1083,9 +1083,9 @@ auto_resume_on_limit?: boolean | null, base_command_override?: string | null, ad
 
 export type SandboxMode = "auto" | "read-only" | "workspace-write" | "danger-full-access";
 
-export type AskForApproval = "unless-trusted" | "on-failure" | "on-request" | "never";
+export type AskForApproval = "unless-trusted" | "on-request" | "never";
 
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 

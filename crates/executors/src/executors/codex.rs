@@ -36,17 +36,12 @@ pub(crate) fn resolve_model(model: Option<&str>) -> (Option<&str>, bool) {
 /// list. Adjust the groupings here when a model's supported efforts change.
 fn codex_reasoning_options(model_id: &str) -> Vec<ReasoningOption> {
     use ReasoningEffort::*;
-    let efforts: &[ReasoningEffort] = if model_id.ends_with("-pro") {
-        // Deep-reasoning "pro" tier: reasoning is always on (no none/minimal).
-        &[Low, Medium, High, Xhigh]
-    } else if model_id.contains("-nano") || model_id.contains("-mini") {
-        // Lightweight tiers don't offer the extra-high budget.
-        &[None, Minimal, Low, Medium, High]
-    } else if model_id.contains("codex") {
-        &[Minimal, Low, Medium, High, Xhigh]
-    } else {
-        // Flagship general models expose the full range.
-        &[None, Minimal, Low, Medium, High, Xhigh]
+    let efforts: &[ReasoningEffort] = match model_id {
+        "gpt-5.6-sol" | "gpt-5.6-terra" => &[Low, Medium, High, Xhigh, Max, Ultra],
+        "gpt-5.6-luna" => &[Low, Medium, High, Xhigh, Max],
+        // The v0.144.2 model catalog exposes the same base range for the
+        // remaining picker-visible models.
+        _ => &[Low, Medium, High, Xhigh],
     };
     ReasoningOption::from_names(efforts.iter().map(|e| e.as_ref().to_string()))
 }
@@ -126,8 +121,6 @@ pub enum SandboxMode {
 ///
 /// - `UnlessTrusted`: Read-only commands are auto-approved. Everything else will
 ///   ask the user to approve.
-/// - `OnFailure`: All commands run in a restricted sandbox initially. If a
-///   command fails, the user is asked to approve execution without the sandbox.
 /// - `OnRequest`: The model decides when to ask the user for approval.
 /// - `Never`: Commands never ask for approval. Commands that fail in the
 ///   restricted sandbox are not retried.
@@ -136,7 +129,7 @@ pub enum SandboxMode {
 #[strum(serialize_all = "kebab-case")]
 pub enum AskForApproval {
     UnlessTrusted,
-    OnFailure,
+    #[serde(alias = "on-failure")]
     OnRequest,
     Never,
 }
@@ -152,6 +145,8 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    Max,
+    Ultra,
 }
 
 /// Model reasoning summary style
@@ -365,15 +360,10 @@ impl StandardCodingAgentExecutor for Codex {
                     model("gpt-5.6-luna", "GPT-5.6 Luna"),
                     model("gpt-5.6-sol", "GPT-5.6 Sol"),
                     model("gpt-5.6-terra", "GPT-5.6 Terra"),
-                    model("gpt-5.5-pro", "GPT-5.5 Pro"),
                     model("gpt-5.5", "GPT-5.5"),
                     model("gpt-5.4", "GPT-5.4"),
                     model("gpt-5.4-mini", "GPT-5.4 Mini"),
-                    model("gpt-5.4-nano", "GPT-5.4 Nano"),
-                    model("gpt-5.3-codex", "GPT-5.3 Codex"),
                     model("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"),
-                    model("gpt-5.2", "GPT-5.2"),
-                    model("gpt-5.2-codex", "GPT-5.2 Codex"),
                 ],
                 permissions: vec![
                     PermissionPolicy::Auto,
@@ -472,7 +462,6 @@ impl Codex {
             }
             None => None,
             Some(AskForApproval::UnlessTrusted) => Some(V2AskForApproval::UnlessTrusted),
-            Some(AskForApproval::OnFailure) => Some(V2AskForApproval::OnFailure),
             Some(AskForApproval::OnRequest) => Some(V2AskForApproval::OnRequest),
             Some(AskForApproval::Never) => Some(V2AskForApproval::Never),
         };
@@ -762,7 +751,33 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReasoningEffort, resolve_model};
+    use super::{AskForApproval, ReasoningEffort, resolve_model};
+
+    #[test]
+    fn legacy_on_failure_approval_migrates_to_on_request() {
+        assert_eq!(
+            serde_json::from_str::<AskForApproval>("\"on-failure\"").unwrap(),
+            AskForApproval::OnRequest
+        );
+    }
+
+    #[test]
+    fn decodes_sub_agent_activity_from_thread_history() {
+        let item =
+            serde_json::from_value::<codex_app_server_protocol::ThreadItem>(serde_json::json!({
+                "type": "subAgentActivity",
+                "id": "activity-1",
+                "kind": "started",
+                "agentThreadId": "thread-1",
+                "agentPath": "/root/worker"
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            item,
+            codex_app_server_protocol::ThreadItem::SubAgentActivity { .. }
+        ));
+    }
 
     #[test]
     fn resolve_model_detects_fast_suffix() {
@@ -794,6 +809,11 @@ mod tests {
         assert_eq!(
             "xhigh".parse::<ReasoningEffort>(),
             Ok(ReasoningEffort::Xhigh)
+        );
+        assert_eq!("max".parse::<ReasoningEffort>(), Ok(ReasoningEffort::Max));
+        assert_eq!(
+            "ultra".parse::<ReasoningEffort>(),
+            Ok(ReasoningEffort::Ultra)
         );
     }
 }

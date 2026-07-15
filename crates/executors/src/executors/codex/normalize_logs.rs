@@ -1028,7 +1028,8 @@ fn handle_direct_item_started(
                 },
             );
         }
-        AppThreadItem::WebSearch { id, .. } => {
+        AppThreadItem::WebSearch(item) => {
+            let id = item.id;
             state.web_searches.insert(id.clone(), WebSearchState::new());
             let web_search_state = state.web_searches.get_mut(&id).unwrap();
             let normalized_entry = web_search_state.to_normalized_entry();
@@ -1192,7 +1193,9 @@ fn handle_direct_item_completed(
                 },
             );
         }
-        AppThreadItem::WebSearch { id, query, .. } => {
+        AppThreadItem::WebSearch(item) => {
+            let id = item.id;
+            let query = item.query;
             if let Some(mut entry) = state.web_searches.remove(&id) {
                 entry.status = ToolStatus::Success;
                 entry.query = Some(query);
@@ -1202,7 +1205,7 @@ fn handle_direct_item_completed(
             }
         }
         AppThreadItem::ImageView { path, .. } => {
-            let relative_path = make_path_relative(&path.to_string_lossy(), worktree_path);
+            let relative_path = make_path_relative(&path.render_for_ui(), worktree_path);
             add_normalized_entry(
                 msg_store,
                 entry_index,
@@ -2115,7 +2118,7 @@ pub fn normalize_logs(
                 EventMsg::ViewImageToolCall(ViewImageToolCallEvent { call_id: _, path }) => {
                     state.assistant = None;
                     state.thinking = None;
-                    let path_str = path.to_string_lossy().to_string();
+                    let path_str = path.inferred_native_path_string();
                     let relative_path = make_path_relative(&path_str, &worktree_path_str);
                     add_normalized_entry(
                         &msg_store,
@@ -2282,6 +2285,7 @@ pub fn normalize_logs(
                     call_id,
                     turn_id: _,
                     questions: event_questions,
+                    auto_resolution_ms: _,
                 }) => {
                     state.assistant = None;
                     state.thinking = None;

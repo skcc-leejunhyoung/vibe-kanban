@@ -5,7 +5,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -13,15 +13,15 @@ use codex_app_server_protocol::{
     AttestationGenerateResponse, ClientInfo, ClientNotification, ClientRequest,
     CommandExecutionApprovalDecision, CommandExecutionRequestApprovalResponse,
     ConfigBatchWriteParams, ConfigEdit, ConfigReadParams, ConfigReadResponse, ConfigWriteResponse,
-    DynamicToolCallOutputContentItem, DynamicToolCallResponse, FileChangeApprovalDecision,
-    FileChangeRequestApprovalResponse, GetAccountParams, GetAccountRateLimitsResponse,
-    GetAccountResponse, InitializeCapabilities, InitializeParams, InitializeResponse,
-    ItemCompletedNotification, JSONRPCError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
-    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerStatusDetail,
-    RateLimitSnapshot, RateLimitWindow, RequestId, ReviewStartParams, ReviewStartResponse,
-    ReviewTarget, ServerRequest, ThreadCompactStartParams, ThreadCompactStartResponse,
-    ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams, ThreadReadResponse,
-    ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
+    CurrentTimeReadResponse, DynamicToolCallOutputContentItem, DynamicToolCallResponse,
+    FileChangeApprovalDecision, FileChangeRequestApprovalResponse, GetAccountParams,
+    GetAccountRateLimitsResponse, GetAccountResponse, InitializeCapabilities, InitializeParams,
+    InitializeResponse, ItemCompletedNotification, JSONRPCError, JSONRPCNotification,
+    JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams, ListMcpServerStatusResponse,
+    McpServerStatusDetail, RateLimitSnapshot, RateLimitWindow, RequestId, ReviewStartParams,
+    ReviewStartResponse, ReviewTarget, ServerRequest, ThreadCompactStartParams,
+    ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams,
+    ThreadReadResponse, ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
     ToolRequestUserInputQuestion, ToolRequestUserInputResponse, TurnCompletedNotification,
     TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
 };
@@ -499,6 +499,19 @@ impl AppServerClient {
                     token: String::new(),
                 };
                 send_server_response(peer, request_id, response).await?;
+                Ok(())
+            }
+            ServerRequest::CurrentTimeRead { request_id, .. } => {
+                let current_time_at = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or_default();
+                send_server_response(
+                    peer,
+                    request_id,
+                    CurrentTimeReadResponse { current_time_at },
+                )
+                .await?;
                 Ok(())
             }
             ServerRequest::ChatgptAuthTokensRefresh { .. }
