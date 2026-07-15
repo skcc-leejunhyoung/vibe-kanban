@@ -23,6 +23,7 @@ import {
 } from '@/shared/lib/recentModels';
 import {
   getReasoningLabel,
+  getReasoningOverride,
   getSelectedModel,
   escapeAttributeValue,
   parseModelId,
@@ -284,6 +285,11 @@ export function ModelSelectorContainer({
     presetReasoningId ??
     recentReasoningId ??
     resolveDefaultReasoningId(selectedModel?.reasoning_options ?? []);
+
+  useEffect(() => {
+    const override = getReasoningOverride(executorConfig, selectedReasoningId);
+    if (override) onOverrideChange(override);
+  }, [executorConfig, onOverrideChange, selectedReasoningId]);
 
   const defaultAgentId =
     config?.agents.find((entry) => entry.is_default)?.id ?? null;
