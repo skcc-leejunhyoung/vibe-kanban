@@ -235,7 +235,13 @@ impl RelaySigningService {
     /// it is called after receiving a session ID from the server.
     pub async fn register_session(&self, signing_session_id: Uuid, peer_public_key: VerifyingKey) {
         let now = Instant::now();
-        self.sessions.write().await.insert(
+        let mut sessions = self.sessions.write().await;
+        sessions.retain(|id, session| {
+            *id == signing_session_id
+                || (is_session_active(session, now)
+                    && session.peer_public_key.as_bytes() != peer_public_key.as_bytes())
+        });
+        sessions.insert(
             signing_session_id,
             RelaySigningSession {
                 peer_public_key,
@@ -244,6 +250,7 @@ impl RelaySigningService {
                 seen_nonces: HashMap::new(),
             },
         );
+        drop(sessions);
         self.persist_sessions().await;
     }
 
@@ -254,7 +261,9 @@ impl RelaySigningService {
             return;
         };
         let snapshot: Vec<(Uuid, [u8; 32])> = {
-            let sessions = self.sessions.read().await;
+            let mut sessions = self.sessions.write().await;
+            let now = Instant::now();
+            sessions.retain(|_, session| is_session_active(session, now));
             sessions
                 .iter()
                 .map(|(id, session)| (*id, *session.peer_public_key.as_bytes()))
@@ -337,13 +346,15 @@ impl RelaySigningService {
     {
         let mut sessions = self.sessions.write().await;
         let now = Instant::now();
-        sessions.retain(|_, session| {
-            now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
-                && now.duration_since(session.last_used_at) <= RELAY_SIGNING_SESSION_IDLE_TTL
-        });
+        sessions.retain(|_, session| is_session_active(session, now));
         RwLockWriteGuard::try_map(sessions, |sessions| sessions.get_mut(&signing_session_id))
             .map_err(|_| RelaySignatureValidationError::MissingSigningSession)
     }
+}
+
+fn is_session_active(session: &RelaySigningSession, now: Instant) -> bool {
+    now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
+        && now.duration_since(session.last_used_at) <= RELAY_SIGNING_SESSION_IDLE_TTL
 }
 
 /// Read persisted (session_id, peer_public_key) pairs from disk into a fresh
@@ -513,5 +524,42 @@ mod tests {
                 .is_ok(),
             "session persisted by one instance must verify after reload",
         );
+    }
+
+    #[tokio::test]
+    async fn refreshing_same_peer_replaces_old_session() {
+        let server_key = SigningKey::generate(&mut OsRng);
+        let client_key = SigningKey::generate(&mut OsRng);
+        let service = RelaySigningService::new(server_key);
+
+        let old_session_id = service.create_session(client_key.verifying_key()).await;
+        let new_session_id = service.create_session(client_key.verifying_key()).await;
+
+        assert_ne!(old_session_id, new_session_id);
+        assert_eq!(service.sessions.read().await.len(), 1);
+        assert!(service.get_session_peer_key(new_session_id).await.is_some());
+        assert!(service.get_session_peer_key(old_session_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn persisted_snapshot_replaces_old_session_for_same_peer() {
+        let path = tmp_path("replace-persisted");
+        let server_key = SigningKey::generate(&mut OsRng);
+        let client_key = SigningKey::generate(&mut OsRng);
+        let service = RelaySigningService {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            server_signing_key: Arc::new(server_key),
+            persist_path: Some(Arc::new(path.clone())),
+        };
+
+        let old_session_id = service.create_session(client_key.verifying_key()).await;
+        let new_session_id = service.create_session(client_key.verifying_key()).await;
+
+        let map = read_persisted_sessions(&path);
+        let _ = fs::remove_file(&path);
+
+        assert!(!map.contains_key(&old_session_id));
+        assert!(map.contains_key(&new_session_id));
+        assert_eq!(map.len(), 1);
     }
 }
