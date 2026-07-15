@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BaseCodingAgent } from 'shared/types';
 import {
-  getReasoningOverride,
   splitFastSuffix,
   normalizeFastModelId,
   FAST_SUFFIX,
@@ -9,29 +7,6 @@ import {
 
 const FAST_CAPABLE = new Set(['gpt-5.5', 'gpt-5.4', 'gpt-5.6-luna']);
 const supportsFast = (baseId: string) => FAST_CAPABLE.has(baseId.toLowerCase());
-
-describe('getReasoningOverride', () => {
-  const executorConfig = {
-    executor: BaseCodingAgent.CODEX,
-    variant: 'DEFAULT',
-    model_id: 'gpt-5.6-sol-fast',
-  };
-
-  it('materializes a picker fallback missing from executor config', () => {
-    expect(getReasoningOverride(executorConfig, 'xhigh')).toEqual({
-      reasoning_id: 'xhigh',
-    });
-  });
-
-  it('does not update an already aligned executor config', () => {
-    expect(
-      getReasoningOverride(
-        { ...executorConfig, reasoning_id: 'xhigh' },
-        'xhigh'
-      )
-    ).toBeNull();
-  });
-});
 
 describe('splitFastSuffix', () => {
   it('strips the suffix and flags fast when the base supports it', () => {

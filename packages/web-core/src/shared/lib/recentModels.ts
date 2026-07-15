@@ -1,5 +1,6 @@
 import type {
   BaseCodingAgent,
+  ExecutorConfig,
   ExecutorProfile,
   ModelInfo,
   ModelProvider,
@@ -34,6 +35,27 @@ export function getRecentReasoningByModel(
     if (v) out[k] = v;
   }
   return out;
+}
+
+export function withRecentReasoning(
+  config: ExecutorConfig | null,
+  profiles: ProfilesMap
+): ExecutorConfig | null {
+  if (!config?.model_id || config.reasoning_id || !profiles) return config;
+
+  const recent = getRecentReasoningByModel(profiles, config.executor);
+  const candidates = [config.model_id];
+  if (config.model_id.toLowerCase().endsWith('-fast')) {
+    candidates.push(config.model_id.slice(0, -'-fast'.length));
+  }
+
+  for (const candidate of candidates) {
+    const match = Object.entries(recent).find(
+      ([modelId]) => modelId.toLowerCase() === candidate.toLowerCase()
+    );
+    if (match) return { ...config, reasoning_id: match[1] };
+  }
+  return config;
 }
 
 /**

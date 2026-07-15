@@ -1,5 +1,4 @@
 import type {
-  ExecutorConfig,
   ModelInfo,
   ModelSelectorConfig,
   ReasoningOption,
@@ -41,20 +40,6 @@ export function getReasoningLabel(
     options.find((option) => option.id === selectedId)?.label ??
     toPrettyCase(selectedId)
   );
-}
-
-/** Materialize a picker fallback into the config sent to the executor. */
-export function getReasoningOverride(
-  executorConfig: ExecutorConfig | null,
-  selectedReasoningId: string | null
-): Partial<ExecutorConfig> | null {
-  if (
-    !selectedReasoningId ||
-    executorConfig?.reasoning_id === selectedReasoningId
-  ) {
-    return null;
-  }
-  return { reasoning_id: selectedReasoningId };
 }
 
 export function escapeAttributeValue(value: string): string {

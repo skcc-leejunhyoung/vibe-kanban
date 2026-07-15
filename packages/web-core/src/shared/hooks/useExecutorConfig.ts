@@ -6,6 +6,7 @@ import type {
   ExecutorProfileId,
 } from 'shared/types';
 import { getVariantOptions } from '@/shared/lib/executor';
+import { withRecentReasoning } from '@/shared/lib/recentModels';
 import { usePresetOptions } from '@/shared/hooks/usePresetOptions';
 
 function getProfileKey(
@@ -252,13 +253,17 @@ export function useExecutorConfig({
     variant.resolved
   );
 
-  const executorConfig = useEffectiveOverrides(
+  const resolvedExecutorConfig = useEffectiveOverrides(
     executor.effective,
     variant.resolved,
     userSelections,
     scratchConfig,
     lastUsedConfig,
     presetOptions
+  );
+  const executorConfig = useMemo(
+    () => withRecentReasoning(resolvedExecutorConfig, profiles),
+    [resolvedExecutorConfig, profiles]
   );
 
   const profileKey = getProfileKey(executor.effective, variant.resolved);
