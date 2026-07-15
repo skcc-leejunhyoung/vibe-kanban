@@ -8,6 +8,7 @@ import type {
 import { getVariantOptions } from '@/shared/lib/executor';
 import { withRecentReasoning } from '@/shared/lib/recentModels';
 import { usePresetOptions } from '@/shared/hooks/usePresetOptions';
+import { useModelSelectorConfig } from '@/shared/hooks/useExecutorDiscovery';
 
 function getProfileKey(
   executor: BaseCodingAgent | null,
@@ -193,6 +194,8 @@ interface UseExecutorConfigOptions {
   configExecutorProfile?: ExecutorProfileId | null;
   /** Agents the user has hidden from selection. */
   disabledExecutors?: BaseCodingAgent[];
+  workspaceId?: string;
+  sessionId?: string;
   onPersist?: (config: ExecutorConfig) => void;
 }
 
@@ -215,6 +218,8 @@ export function useExecutorConfig({
   scratchConfig,
   configExecutorProfile,
   disabledExecutors,
+  workspaceId,
+  sessionId,
   onPersist,
 }: UseExecutorConfigOptions): UseExecutorConfigResult {
   const [userSelections, setUserSelections] = useState<Partial<ExecutorConfig>>(
@@ -252,6 +257,10 @@ export function useExecutorConfig({
     executor.effective,
     variant.resolved
   );
+  const { config: modelSelectorConfig } = useModelSelectorConfig(
+    executor.effective,
+    { workspaceId: sessionId ? workspaceId : undefined, sessionId }
+  );
 
   const resolvedExecutorConfig = useEffectiveOverrides(
     executor.effective,
@@ -262,8 +271,13 @@ export function useExecutorConfig({
     presetOptions
   );
   const executorConfig = useMemo(
-    () => withRecentReasoning(resolvedExecutorConfig, profiles),
-    [resolvedExecutorConfig, profiles]
+    () =>
+      withRecentReasoning(
+        resolvedExecutorConfig,
+        profiles,
+        modelSelectorConfig
+      ),
+    [resolvedExecutorConfig, profiles, modelSelectorConfig]
   );
 
   const profileKey = getProfileKey(executor.effective, variant.resolved);

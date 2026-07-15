@@ -4,7 +4,13 @@ import type {
   ExecutorProfile,
   ModelInfo,
   ModelProvider,
+  ModelSelectorConfig,
 } from 'shared/types';
+import {
+  getSelectedModel,
+  parseModelId,
+  resolveDefaultReasoningId,
+} from './modelSelector';
 
 type ProfilesMap = Record<string, ExecutorProfile> | null;
 
@@ -39,21 +45,46 @@ export function getRecentReasoningByModel(
 
 export function withRecentReasoning(
   config: ExecutorConfig | null,
-  profiles: ProfilesMap
+  profiles: ProfilesMap,
+  modelConfig?: ModelSelectorConfig | null
 ): ExecutorConfig | null {
-  if (!config?.model_id || config.reasoning_id || !profiles) return config;
+  if (!config || config.reasoning_id) return config;
+
+  const hasProviders = (modelConfig?.providers.length ?? 0) > 0;
+  const configuredModelId = config.model_id ?? modelConfig?.default_model;
+  if (!configuredModelId) return config;
+
+  const withoutFast = configuredModelId.toLowerCase().endsWith('-fast')
+    ? configuredModelId.slice(0, -'-fast'.length)
+    : configuredModelId;
+  const parsed = parseModelId(withoutFast, hasProviders);
+  const selectedModel = modelConfig
+    ? getSelectedModel(modelConfig.models, parsed.providerId, parsed.modelId)
+    : null;
 
   const recent = getRecentReasoningByModel(profiles, config.executor);
-  const candidates = [config.model_id];
-  if (config.model_id.toLowerCase().endsWith('-fast')) {
-    candidates.push(config.model_id.slice(0, -'-fast'.length));
-  }
+  const candidates = [configuredModelId, withoutFast];
 
   for (const candidate of candidates) {
     const match = Object.entries(recent).find(
       ([modelId]) => modelId.toLowerCase() === candidate.toLowerCase()
     );
-    if (match) return { ...config, reasoning_id: match[1] };
+    if (
+      match &&
+      (!selectedModel ||
+        selectedModel.reasoning_options.some(
+          (option) => option.id === match[1]
+        ))
+    ) {
+      return { ...config, reasoning_id: match[1] };
+    }
+  }
+
+  const defaultReasoning = resolveDefaultReasoningId(
+    selectedModel?.reasoning_options ?? []
+  );
+  if (defaultReasoning) {
+    return { ...config, reasoning_id: defaultReasoning };
   }
   return config;
 }

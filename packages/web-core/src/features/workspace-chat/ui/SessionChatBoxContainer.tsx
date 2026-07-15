@@ -675,6 +675,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     scratchConfig: scratchData?.executor_config ?? undefined,
     configExecutorProfile: config?.executor_profile,
     disabledExecutors: config?.disabled_executors,
+    workspaceId,
+    sessionId,
     onPersist: (cfg) => void saveToScratch(localMessageRef.current, cfg),
   });
 

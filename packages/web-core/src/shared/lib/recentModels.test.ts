@@ -11,6 +11,25 @@ const profiles = {
   } as ExecutorProfile,
 };
 
+const modelConfig = {
+  providers: [],
+  models: [
+    {
+      id: 'gpt-5.6-sol',
+      name: 'GPT-5.6 Sol',
+      provider_id: null,
+      reasoning_options: [
+        { id: 'high', label: 'High', is_default: true },
+        { id: 'xhigh', label: 'Extra high', is_default: false },
+      ],
+      supports_fast: true,
+    },
+  ],
+  default_model: 'gpt-5.6-sol',
+  agents: [],
+  permissions: [],
+};
+
 describe('withRecentReasoning', () => {
   it('materializes the base-model effort for a fast model before discovery', () => {
     expect(
@@ -33,5 +52,39 @@ describe('withRecentReasoning', () => {
       reasoning_id: 'high',
     };
     expect(withRecentReasoning(config, profiles)).toBe(config);
+  });
+
+  it('uses the discovered default when there is no recent effort', () => {
+    expect(
+      withRecentReasoning(
+        {
+          executor: BaseCodingAgent.CODEX,
+          variant: 'DEFAULT',
+        },
+        null,
+        modelConfig
+      )
+    ).toMatchObject({ reasoning_id: 'high' });
+  });
+
+  it('ignores a recent effort that discovery no longer supports', () => {
+    const staleProfiles = {
+      [BaseCodingAgent.CODEX]: {
+        recently_used_models: {
+          reasoning_by_model: { 'gpt-5.6-sol': 'max' },
+        },
+      } as ExecutorProfile,
+    };
+    expect(
+      withRecentReasoning(
+        {
+          executor: BaseCodingAgent.CODEX,
+          variant: 'DEFAULT',
+          model_id: 'gpt-5.6-sol',
+        },
+        staleProfiles,
+        modelConfig
+      )
+    ).toMatchObject({ reasoning_id: 'high' });
   });
 });
