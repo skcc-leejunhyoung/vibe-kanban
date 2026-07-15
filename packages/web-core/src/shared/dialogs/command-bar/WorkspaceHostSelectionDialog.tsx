@@ -9,7 +9,7 @@ import {
   CommandList,
 } from '@vibe/ui/components/Command';
 import { defineModal, type NoProps } from '@/shared/lib/modals';
-import { useRemoteCloudHostsState } from '@/shared/hooks/useRemoteCloudHosts';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 
 export type WorkspaceHostSelection = string | null;
@@ -18,10 +18,8 @@ const WorkspaceHostSelectionDialogImpl = create<NoProps>(() => {
   const modal = useModal();
   const { t } = useTranslation('common');
   const runtime = useAppRuntime();
-  const { data } = useRemoteCloudHostsState();
-  const remoteHosts = (data?.hosts ?? []).filter(
-    (host) => host.status === 'online'
-  );
+  const { hosts } = useWorkspaceHostOptions();
+  const remoteHosts = hosts.filter((host) => host.status === 'online');
 
   const select = (hostId: WorkspaceHostSelection) => {
     modal.resolve(hostId);

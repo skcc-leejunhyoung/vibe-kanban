@@ -71,11 +71,12 @@ async function fetchRemoteCloudHostsState(): Promise<RemoteCloudHostsState> {
   return { hosts };
 }
 
-export function useRemoteCloudHostsState() {
+export function useRemoteCloudHostsState(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
     queryFn: fetchRemoteCloudHostsState,
     staleTime: 0,
+    enabled: options?.enabled ?? true,
   });
 }
 
