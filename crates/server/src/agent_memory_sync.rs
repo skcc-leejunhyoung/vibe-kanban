@@ -390,9 +390,10 @@ async fn sync_one(
     let result = result?;
 
     let mutation_receipts = validate_mutation_result(&mutations, &result);
-    let mutations_applied = mutation_receipts
+    let deferred_mutations = mutation_receipts
         .iter()
-        .all(|receipt| receipt.status != AgentMemoryReceiptStatus::Deferred);
+        .filter(|receipt| receipt.status == AgentMemoryReceiptStatus::Deferred)
+        .count();
 
     for receipt in mutation_receipts {
         client
@@ -407,8 +408,26 @@ async fn sync_one(
             .await?;
     }
 
-    if !mutations_applied {
-        anyhow::bail!("one or more memory mutations failed post-apply verification");
+    // A deferred guard means this agent could not fully apply an update/delete
+    // (often a match_text that also occurs in unrelated memory). Record it for
+    // retry and warn, but still publish the snapshot: every host re-applies the
+    // same guards to incoming snapshots, so residual content cannot restore old
+    // memory elsewhere. Aborting here instead let one unsatisfiable guard block
+    // all snapshot syncing for this repo+agent indefinitely.
+    if deferred_mutations > 0 {
+        log_event(
+            deployment,
+            run_id,
+            trigger_kind,
+            "warn",
+            "mutation_deferred",
+            Some(repo),
+            Some(agent_kind),
+            &format!(
+                "{deferred_mutations} memory mutation guard(s) still deferred after apply; snapshot published anyway (receiving hosts enforce guards)"
+            ),
+        )
+        .await?;
     }
 
     let content_hash = hex::encode(Sha256::digest(result.snapshot.as_bytes()));
