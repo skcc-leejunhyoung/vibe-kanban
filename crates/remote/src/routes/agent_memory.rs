@@ -93,8 +93,21 @@ async fn create_mutation(
         .await
         .map(Json)
         .map_err(|error| {
-            if error.to_string().contains("generation conflict") {
+            let message = error.to_string();
+            if message.contains("generation conflict") {
                 ErrorResponse::new(StatusCode::CONFLICT, "memory generation conflict")
+            } else if message.contains("scope cannot change") {
+                ErrorResponse::new(StatusCode::CONFLICT, "memory mutation scope cannot change")
+            } else if message.contains("deleted memory cannot be changed") {
+                ErrorResponse::new(
+                    StatusCode::CONFLICT,
+                    "deleted memory cannot be changed without an explicit restore",
+                )
+            } else if message.contains("expected generation") {
+                ErrorResponse::new(
+                    StatusCode::BAD_REQUEST,
+                    "new memory cannot specify an expected generation",
+                )
             } else {
                 tracing::error!(?error, "failed to create memory mutation");
                 ErrorResponse::new(
