@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isEqual } from 'lodash';
@@ -161,6 +161,8 @@ export function ReposSettingsSection({
   const [selectedRepoId, setSelectedRepoId] = useState<string>(
     initialState?.repoId ?? ''
   );
+  const selectedRepoIdRef = useRef(selectedRepoId);
+  selectedRepoIdRef.current = selectedRepoId;
 
   // Fetch branches for the selected repo
   const { data: branches = [], isLoading: branchesLoading } =
@@ -188,15 +190,12 @@ export function ReposSettingsSection({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  const updateDraft = useCallback(
-    (updates: Partial<RepoScriptsFormState>) => {
-      setDraft((prev) => {
-        if (!prev) return prev;
-        return { ...prev, ...updates };
-      });
-    },
-    []
-  );
+  const updateDraft = useCallback((updates: Partial<RepoScriptsFormState>) => {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      return { ...prev, ...updates };
+    });
+  }, []);
 
   // ── Remote (primary remote + push/fetch) ────────────────────────────
   const { data: repoRemotes = [] } = useQuery({
@@ -236,21 +235,26 @@ export function ReposSettingsSection({
       }
       if (!machineClient || !selectedRepoId) return;
 
+      const requestRepoId = selectedRepoId;
       setCreatingLocalBranch(true);
       setError(null);
       try {
         const localBranch = await machineClient.createLocalBranch(
-          selectedRepoId,
+          requestRepoId,
           branch.name
         );
-        updateDraft({ default_target_branch: localBranch });
         await queryClient.invalidateQueries({
-          queryKey: ['repoBranches', selectedRepoId],
+          queryKey: ['repoBranches', requestRepoId],
         });
+        if (selectedRepoIdRef.current === requestRepoId) {
+          updateDraft({ default_target_branch: localBranch });
+        }
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : 'Failed to create local branch'
-        );
+        if (selectedRepoIdRef.current === requestRepoId) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to create local branch'
+          );
+        }
       } finally {
         setCreatingLocalBranch(false);
       }
