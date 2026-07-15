@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
   AgentMemoryKind,
+  AgentMemoryMutation,
+  AgentMemoryMutationOperation,
+  AgentMemoryScope,
   AgentMemorySyncConfig,
   AgentMemorySyncLogEntry,
   AgentMemorySyncStatus,
@@ -84,7 +87,19 @@ export function AutomationSettingsSection() {
   const [memoryStatus, setMemoryStatus] =
     useState<AgentMemorySyncStatus | null>(null);
   const [memoryLogs, setMemoryLogs] = useState<AgentMemorySyncLogEntry[]>([]);
+  const [memoryMutations, setMemoryMutations] = useState<AgentMemoryMutation[]>(
+    []
+  );
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [mutationTarget, setMutationTarget] =
+    useState<AgentMemoryMutation | null>(null);
+  const [mutationOperation, setMutationOperation] =
+    useState<AgentMemoryMutationOperation>('update');
+  const [mutationScope, setMutationScope] =
+    useState<AgentMemoryScope>('user_global');
+  const [mutationScopeKey, setMutationScopeKey] = useState('');
+  const [mutationMatchText, setMutationMatchText] = useState('');
+  const [mutationReplacementText, setMutationReplacementText] = useState('');
 
   const [connector, setConnector] = useState<ConnectorDraft | null>(null);
   const [rule, setRule] = useState<RuleDraft | null>(null);
@@ -124,12 +139,14 @@ export function AutomationSettingsSection() {
 
   const refreshMemory = useCallback(async () => {
     if (!machineClient) return;
-    const [nextStatus, nextLogs] = await Promise.all([
+    const [nextStatus, nextLogs, nextMutations] = await Promise.all([
       machineClient.getAgentMemorySyncStatus(),
       machineClient.getAgentMemorySyncLogs(),
+      machineClient.listAgentMemoryMutations(),
     ]);
     setMemoryStatus(nextStatus);
     setMemoryLogs(nextLogs);
+    setMemoryMutations(nextMutations);
   }, [machineClient]);
 
   useEffect(() => {
@@ -167,6 +184,67 @@ export function AutomationSettingsSection() {
         t('settings.automation.memory.started', 'Memory sync started.')
       );
       window.setTimeout(() => refreshMemory().catch(() => undefined), 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMemoryBusy(false);
+    }
+  };
+
+  const resetMutationForm = () => {
+    setMutationTarget(null);
+    setMutationOperation('update');
+    setMutationScope('user_global');
+    setMutationScopeKey('');
+    setMutationMatchText('');
+    setMutationReplacementText('');
+  };
+
+  const editMutation = (
+    mutation: AgentMemoryMutation,
+    operation: AgentMemoryMutationOperation
+  ) => {
+    setMutationTarget(mutation);
+    setMutationOperation(operation);
+    setMutationScope(mutation.scope);
+    setMutationScopeKey(mutation.scope_key ?? '');
+    setMutationMatchText(mutation.replacement_text ?? mutation.match_text);
+    setMutationReplacementText('');
+  };
+
+  const submitMutation = async () => {
+    if (!machineClient || !mutationMatchText.trim()) return;
+    if (mutationOperation === 'update' && !mutationReplacementText.trim()) {
+      setError('Replacement memory is required for an update.');
+      return;
+    }
+    if (mutationScope === 'repository' && !mutationScopeKey.trim()) {
+      setError('Repository scope requires a canonical repository key.');
+      return;
+    }
+    setMemoryBusy(true);
+    setError(null);
+    try {
+      await machineClient.createAgentMemoryMutation({
+        memory_id: mutationTarget?.memory_id ?? null,
+        expected_generation: mutationTarget?.generation ?? null,
+        operation: mutationOperation,
+        scope: mutationScope,
+        scope_key:
+          mutationScope === 'repository' ? mutationScopeKey.trim() : null,
+        match_text: mutationMatchText.trim(),
+        replacement_text:
+          mutationOperation === 'update'
+            ? mutationReplacementText.trim()
+            : null,
+      });
+      resetMutationForm();
+      await refreshMemory();
+      setNotice(
+        mutationOperation === 'delete'
+          ? 'Memory deletion guard created.'
+          : 'Memory update guard created.'
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -359,6 +437,150 @@ export function AutomationSettingsSection() {
           <p className="text-sm text-low">
             {t('settings.automation.loading', 'Loading worker state…')}
           </p>
+        )}
+      </SettingsCard>
+
+      <SettingsCard
+        title={t(
+          'settings.automation.memory.mutationsTitle',
+          'Memory corrections and deletions'
+        )}
+        description={t(
+          'settings.automation.memory.mutationsDescription',
+          'Create generation-checked update or deletion guards. Guards remain active so stale computers cannot restore old memory.'
+        )}
+      >
+        <div className="space-y-3 rounded-sm border border-border p-4">
+          {mutationTarget && (
+            <p className="text-xs text-low">
+              Editing memory {mutationTarget.memory_id}, generation{' '}
+              {String(mutationTarget.generation)}
+            </p>
+          )}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <SettingsField label="Operation">
+              <SettingsSelect
+                value={mutationOperation}
+                options={[
+                  { value: 'update', label: 'Update memory' },
+                  { value: 'delete', label: 'Delete memory' },
+                ]}
+                onChange={(value) =>
+                  setMutationOperation(value as AgentMemoryMutationOperation)
+                }
+              />
+            </SettingsField>
+            <SettingsField label="Scope">
+              <SettingsSelect
+                value={mutationScope}
+                options={[
+                  { value: 'user_global', label: 'All repositories' },
+                  { value: 'repository', label: 'One repository' },
+                ]}
+                onChange={(value) =>
+                  setMutationScope(value as AgentMemoryScope)
+                }
+                disabled={mutationTarget != null}
+              />
+            </SettingsField>
+          </div>
+          {mutationScope === 'repository' && (
+            <SettingsField
+              label="Canonical repository key"
+              description="For example: github.com/owner/repository"
+            >
+              <SettingsInput
+                value={mutationScopeKey}
+                onChange={setMutationScopeKey}
+                disabled={mutationTarget != null}
+              />
+            </SettingsField>
+          )}
+          <SettingsField
+            label="Existing memory to replace or remove"
+            description="Use the exact distinctive text exported by the agent."
+          >
+            <SettingsTextarea
+              value={mutationMatchText}
+              onChange={setMutationMatchText}
+              rows={4}
+            />
+          </SettingsField>
+          {mutationOperation === 'update' && (
+            <SettingsField label="Replacement memory">
+              <SettingsTextarea
+                value={mutationReplacementText}
+                onChange={setMutationReplacementText}
+                rows={4}
+              />
+            </SettingsField>
+          )}
+          <div className="flex gap-2">
+            <PrimaryButton
+              value={
+                mutationOperation === 'delete'
+                  ? 'Create deletion guard'
+                  : 'Create update guard'
+              }
+              onClick={submitMutation}
+              disabled={memoryBusy || !mutationMatchText.trim()}
+              actionIcon={memoryBusy ? 'spinner' : undefined}
+            />
+            {mutationTarget && (
+              <PrimaryButton
+                variant="tertiary"
+                value="Cancel"
+                onClick={resetMutationForm}
+                disabled={memoryBusy}
+              />
+            )}
+          </div>
+        </div>
+
+        {memoryMutations.length === 0 ? (
+          <p className="text-sm text-low">No memory guards yet.</p>
+        ) : (
+          <div className="max-h-96 space-y-2 overflow-y-auto">
+            {memoryMutations.map((mutation) => (
+              <div
+                key={mutation.id}
+                className="space-y-2 rounded-sm border border-border/60 bg-secondary/30 p-3 text-xs"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold uppercase">
+                    {mutation.operation}
+                  </span>
+                  <span>generation {String(mutation.generation)}</span>
+                  <span>{mutation.scope}</span>
+                  <span>{String(mutation.receipt_count)} agent receipt(s)</span>
+                </div>
+                <div className="whitespace-pre-wrap text-normal">
+                  {mutation.match_text}
+                </div>
+                {mutation.replacement_text && (
+                  <div className="whitespace-pre-wrap text-success">
+                    → {mutation.replacement_text}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  {mutation.operation !== 'delete' && (
+                    <PrimaryButton
+                      variant="secondary"
+                      value="Update again"
+                      onClick={() => editMutation(mutation, 'update')}
+                      disabled={memoryBusy}
+                    />
+                  )}
+                  <PrimaryButton
+                    variant="tertiary"
+                    value="Delete"
+                    onClick={() => editMutation(mutation, 'delete')}
+                    disabled={memoryBusy || mutation.operation === 'delete'}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </SettingsCard>
 

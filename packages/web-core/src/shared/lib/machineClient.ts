@@ -11,6 +11,8 @@ import type {
   UserSystemInfo,
   AgentMemorySyncLogEntry,
   AgentMemorySyncStatus,
+  AgentMemoryMutation,
+  CreateAgentMemoryMutationRequest,
 } from 'shared/types';
 import type { AppRuntime } from '@/shared/hooks/useAppRuntime';
 import { handleApiResponse } from './api';
@@ -87,6 +89,10 @@ export interface MachineClient {
     limit?: number
   ) => Promise<AgentMemorySyncLogEntry[]>;
   runAgentMemorySync: () => Promise<{ started: boolean }>;
+  listAgentMemoryMutations: () => Promise<AgentMemoryMutation[]>;
+  createAgentMemoryMutation: (
+    request: CreateAgentMemoryMutationRequest
+  ) => Promise<AgentMemoryMutation>;
 }
 
 function getMachineRequestOptions(
@@ -297,6 +303,24 @@ export function createMachineClient(
           {
             method: 'POST',
           }
+        )
+      ),
+    listAgentMemoryMutations: async () =>
+      readAutomationJson<AgentMemoryMutation[]>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/agent-memory-sync/mutations',
+          { cache: 'no-store' }
+        )
+      ),
+    createAgentMemoryMutation: async (request) =>
+      readAutomationJson<AgentMemoryMutation>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/agent-memory-sync/mutations',
+          { method: 'POST', body: JSON.stringify(request) }
         )
       ),
     getAutomationState: async () =>

@@ -3,8 +3,9 @@
 use std::time::Duration;
 
 use api_types::{
-    AcceptInvitationResponse, AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryReceipt,
-    AgentMemoryScope, AuthMethodsResponse, CreateInvitationRequest, CreateInvitationResponse,
+    AcceptInvitationResponse, AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
+    AgentMemoryMutationInboxResponse, AgentMemoryReceipt, AgentMemoryScope, AuthMethodsResponse,
+    CreateAgentMemoryMutationRequest, CreateInvitationRequest, CreateInvitationResponse,
     CreateIssueAssigneeRequest, CreateIssueRelationshipRequest, CreateIssueRequest,
     CreateIssueTagRequest, CreateOrganizationRequest, CreateOrganizationResponse, CreateTagRequest,
     CreateWorkspaceRequest, DeleteResponse, DeleteWorkspaceRequest, GetInvitationResponse,
@@ -14,7 +15,8 @@ use api_types::{
     ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse, ListMembersResponse,
     ListOrganizationsResponse, ListProjectStatusesResponse, ListProjectsResponse,
     ListPullRequestsResponse, ListTagsResponse, LocalLoginRequest, LocalLoginResponse,
-    MutationResponse, Organization, ProfileResponse, PullRequest, RecordAgentMemoryReceiptRequest,
+    MutationResponse, Organization, ProfileResponse, PullRequest,
+    RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
     RevokeInvitationRequest, SearchIssuesRequest, Tag, TokenRefreshRequest, TokenRefreshResponse,
     UpdateIssueRequest, UpdateMemberRoleRequest, UpdateMemberRoleResponse,
     UpdateOrganizationRequest, UpdatePullRequestApiRequest, UpdateWorkspaceRequest,
@@ -758,6 +760,56 @@ impl RemoteClient {
     ) -> Result<AgentMemoryReceipt, RemoteClientError> {
         self.post_authed("/v1/agent-memory/receipts", Some(request))
             .await
+    }
+
+    pub async fn list_agent_memory_mutations(
+        &self,
+    ) -> Result<Vec<AgentMemoryMutation>, RemoteClientError> {
+        self.get_authed("/v1/agent-memory/mutations").await
+    }
+
+    pub async fn create_agent_memory_mutation(
+        &self,
+        request: &CreateAgentMemoryMutationRequest,
+    ) -> Result<AgentMemoryMutation, RemoteClientError> {
+        self.post_authed("/v1/agent-memory/mutations", Some(request))
+            .await
+    }
+
+    pub async fn agent_memory_mutation_inbox(
+        &self,
+        target_host_id: Uuid,
+        target_agent: AgentMemoryKind,
+        scope: AgentMemoryScope,
+        scope_key: Option<&str>,
+    ) -> Result<AgentMemoryMutationInboxResponse, RemoteClientError> {
+        let target_agent = enum_query_value(target_agent)?;
+        let scope = enum_query_value(scope)?;
+        let path = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("target_host_id", &target_host_id.to_string());
+            query.append_pair("target_agent", &target_agent);
+            query.append_pair("scope", &scope);
+            if let Some(scope_key) = scope_key {
+                query.append_pair("scope_key", scope_key);
+            }
+            format!("/v1/agent-memory/mutation-inbox?{}", query.finish())
+        };
+        self.get_authed(&path).await
+    }
+
+    pub async fn record_agent_memory_mutation_receipt(
+        &self,
+        request: &RecordAgentMemoryMutationReceiptRequest,
+    ) -> Result<(), RemoteClientError> {
+        self.send(
+            reqwest::Method::POST,
+            "/v1/agent-memory/mutation-receipts",
+            true,
+            Some(request),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Deletes a workspace on the remote server by its local workspace ID.

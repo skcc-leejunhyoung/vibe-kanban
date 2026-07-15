@@ -1,3 +1,4 @@
+use api_types::{AgentMemoryMutation, CreateAgentMemoryMutationRequest};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -5,6 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use services::services::remote_client::RemoteClientError;
 
 use crate::{DeploymentImpl, agent_memory_sync};
 
@@ -23,6 +25,35 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/agent-memory-sync/status", get(status))
         .route("/agent-memory-sync/logs", get(logs))
         .route("/agent-memory-sync/run", post(run))
+        .route(
+            "/agent-memory-sync/mutations",
+            get(list_mutations).post(create_mutation),
+        )
+}
+
+async fn list_mutations(
+    State(deployment): State<DeploymentImpl>,
+) -> Result<Json<Vec<AgentMemoryMutation>>, (StatusCode, String)> {
+    deployment
+        .remote_client()
+        .map_err(|error| internal_error(error.into()))?
+        .list_agent_memory_mutations()
+        .await
+        .map(Json)
+        .map_err(remote_error)
+}
+
+async fn create_mutation(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<CreateAgentMemoryMutationRequest>,
+) -> Result<Json<AgentMemoryMutation>, (StatusCode, String)> {
+    deployment
+        .remote_client()
+        .map_err(|error| internal_error(error.into()))?
+        .create_agent_memory_mutation(&payload)
+        .await
+        .map(Json)
+        .map_err(remote_error)
 }
 
 async fn status(
@@ -59,4 +90,14 @@ fn internal_error(error: anyhow::Error) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "failed to load agent memory sync status".to_string(),
     )
+}
+
+fn remote_error(error: RemoteClientError) -> (StatusCode, String) {
+    match error {
+        RemoteClientError::Http { status, body } => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+            body,
+        ),
+        error => internal_error(error.into()),
+    }
 }

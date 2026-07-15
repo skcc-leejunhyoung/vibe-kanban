@@ -1,5 +1,7 @@
 use api_types::{
-    AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryReceipt, AgentMemoryScope,
+    AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
+    AgentMemoryMutationInboxResponse, AgentMemoryMutationOperation, AgentMemoryReceipt,
+    AgentMemoryScope, CreateAgentMemoryMutationRequest, RecordAgentMemoryMutationReceiptRequest,
     RecordAgentMemoryReceiptRequest, UpsertAgentMemorySnapshotRequest,
     UpsertAgentMemorySnapshotResponse,
 };
@@ -7,7 +9,7 @@ use axum::{
     Json, Router,
     extract::{Extension, Query, State},
     http::StatusCode,
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -18,6 +20,7 @@ use crate::{AppState, auth::RequestContext, db::agent_memory};
 
 const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
 const MAX_REASON_BYTES: usize = 4 * 1024;
+const MAX_MUTATION_TEXT_BYTES: usize = 16 * 1024;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -27,6 +30,141 @@ pub fn router() -> Router<AppState> {
         )
         .route("/agent-memory/inbox", get(inbox))
         .route("/agent-memory/receipts", post(record_receipt))
+        .route(
+            "/agent-memory/mutations",
+            get(list_mutations).post(create_mutation),
+        )
+        .route("/agent-memory/mutation-inbox", get(mutation_inbox))
+        .route(
+            "/agent-memory/mutation-receipts",
+            post(record_mutation_receipt),
+        )
+}
+
+async fn list_mutations(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Result<Json<Vec<AgentMemoryMutation>>, ErrorResponse> {
+    agent_memory::list_mutations(state.pool(), ctx.user.id)
+        .await
+        .map(Json)
+        .map_err(internal_memory_error)
+}
+
+async fn create_mutation(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Json(payload): Json<CreateAgentMemoryMutationRequest>,
+) -> Result<Json<AgentMemoryMutation>, ErrorResponse> {
+    validate_scope(payload.scope, payload.scope_key.as_deref())?;
+    if payload.match_text.trim().is_empty()
+        || payload.match_text.len() > MAX_MUTATION_TEXT_BYTES
+        || payload
+            .replacement_text
+            .as_ref()
+            .is_some_and(|text| text.len() > MAX_MUTATION_TEXT_BYTES)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "invalid memory mutation text",
+        ));
+    }
+    match payload.operation {
+        AgentMemoryMutationOperation::Update
+            if payload
+                .replacement_text
+                .as_deref()
+                .is_none_or(|text| text.trim().is_empty()) =>
+        {
+            return Err(ErrorResponse::new(
+                StatusCode::BAD_REQUEST,
+                "memory update requires replacement_text",
+            ));
+        }
+        AgentMemoryMutationOperation::Delete if payload.replacement_text.is_some() => {
+            return Err(ErrorResponse::new(
+                StatusCode::BAD_REQUEST,
+                "memory deletion cannot have replacement_text",
+            ));
+        }
+        _ => {}
+    }
+    agent_memory::create_mutation(state.pool(), ctx.user.id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            if error.to_string().contains("generation conflict") {
+                ErrorResponse::new(StatusCode::CONFLICT, "memory generation conflict")
+            } else {
+                tracing::error!(?error, "failed to create memory mutation");
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to create memory mutation",
+                )
+            }
+        })
+}
+
+#[derive(Deserialize)]
+struct MutationInboxQuery {
+    target_host_id: Uuid,
+    target_agent: AgentMemoryKind,
+    scope: AgentMemoryScope,
+    scope_key: Option<String>,
+}
+
+async fn mutation_inbox(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<MutationInboxQuery>,
+) -> Result<Json<AgentMemoryMutationInboxResponse>, ErrorResponse> {
+    ensure_owned_host(&state, ctx.user.id, query.target_host_id).await?;
+    validate_scope(query.scope, query.scope_key.as_deref())?;
+    agent_memory::mutation_inbox(
+        state.pool(),
+        ctx.user.id,
+        query.target_host_id,
+        query.target_agent,
+        query.scope,
+        query.scope_key.as_deref(),
+    )
+    .await
+    .map(Json)
+    .map_err(internal_memory_error)
+}
+
+async fn record_mutation_receipt(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Json(payload): Json<RecordAgentMemoryMutationReceiptRequest>,
+) -> Result<StatusCode, ErrorResponse> {
+    ensure_owned_host(&state, ctx.user.id, payload.target_host_id).await?;
+    if payload
+        .reason
+        .as_ref()
+        .is_some_and(|reason| reason.len() > MAX_REASON_BYTES)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "memory mutation receipt reason exceeds 4 KiB",
+        ));
+    }
+    match agent_memory::record_mutation_receipt(state.pool(), ctx.user.id, &payload).await {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(ErrorResponse::new(
+            StatusCode::NOT_FOUND,
+            "memory mutation not found",
+        )),
+        Err(error) => Err(internal_memory_error(error)),
+    }
+}
+
+fn internal_memory_error(error: anyhow::Error) -> ErrorResponse {
+    tracing::error!(?error, "agent memory operation failed");
+    ErrorResponse::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "agent memory operation failed",
+    )
 }
 
 async fn upsert_snapshot(

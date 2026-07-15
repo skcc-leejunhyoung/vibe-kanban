@@ -892,6 +892,14 @@ export type AgentMemorySyncConfig = { enabled: boolean, daily_local_time: string
 
 export type AgentMemoryKind = "claude_code" | "codex";
 
+export type AgentMemoryScope = "user_global" | "repository";
+
+export type AgentMemoryMutationOperation = "update" | "delete";
+
+export type AgentMemoryMutation = { id: string, memory_id: string, generation: number, operation: AgentMemoryMutationOperation, scope: AgentMemoryScope, scope_key: string | null, match_text: string, replacement_text: string | null, created_at: string, receipt_count: number, };
+
+export type CreateAgentMemoryMutationRequest = { memory_id: string | null, expected_generation: number | null, operation: AgentMemoryMutationOperation, scope: AgentMemoryScope, scope_key: string | null, match_text: string, replacement_text: string | null, };
+
 export type AgentMemorySyncStatus = { running: boolean, last_started_at: string | null, last_finished_at: string | null, last_status: string | null, last_error: string | null, };
 
 export type AgentMemorySyncLogEntry = { id: string, run_id: string, created_at: string, level: string, phase: string, trigger_kind: string, repo_name: string | null, repo_path: string | null, agent_kind: string | null, message: string, };

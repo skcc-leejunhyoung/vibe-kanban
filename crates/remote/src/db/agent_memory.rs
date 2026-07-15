@@ -1,7 +1,10 @@
 use api_types::{
-    AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryReceipt, AgentMemoryReceiptStatus,
-    AgentMemoryScope, AgentMemorySnapshot, RecordAgentMemoryReceiptRequest,
-    UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse,
+    AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
+    AgentMemoryMutationInboxResponse, AgentMemoryMutationOperation, AgentMemoryReceipt,
+    AgentMemoryReceiptStatus, AgentMemoryScope, AgentMemorySnapshot,
+    CreateAgentMemoryMutationRequest, RecordAgentMemoryMutationReceiptRequest,
+    RecordAgentMemoryReceiptRequest, UpsertAgentMemorySnapshotRequest,
+    UpsertAgentMemorySnapshotResponse,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
@@ -41,6 +44,174 @@ impl TryFrom<SnapshotRow> for AgentMemorySnapshot {
 }
 
 const SNAPSHOT_COLUMNS: &str = "id, source_host_id, source_agent, scope, scope_key, revision, content, content_hash, created_at, updated_at";
+
+#[derive(FromRow)]
+struct MutationRow {
+    id: Uuid,
+    memory_id: Uuid,
+    generation: i64,
+    operation: String,
+    scope: String,
+    scope_key: String,
+    match_text: String,
+    replacement_text: Option<String>,
+    created_at: DateTime<Utc>,
+    receipt_count: i64,
+}
+
+impl TryFrom<MutationRow> for AgentMemoryMutation {
+    type Error = anyhow::Error;
+
+    fn try_from(row: MutationRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row.id,
+            memory_id: row.memory_id,
+            generation: row.generation,
+            operation: parse_mutation_operation(&row.operation)?,
+            scope: parse_scope(&row.scope)?,
+            scope_key: (!row.scope_key.is_empty()).then_some(row.scope_key),
+            match_text: row.match_text,
+            replacement_text: row.replacement_text,
+            created_at: row.created_at,
+            receipt_count: row.receipt_count,
+        })
+    }
+}
+
+const MUTATION_COLUMNS: &str = "m.id, m.memory_id, m.generation, m.operation, m.scope, m.scope_key, m.match_text, m.replacement_text, m.created_at, (SELECT COUNT(*) FROM agent_memory_mutation_receipts r WHERE r.mutation_id = m.id AND r.status = 'accepted') AS receipt_count";
+
+pub async fn create_mutation(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    request: &CreateAgentMemoryMutationRequest,
+) -> anyhow::Result<AgentMemoryMutation> {
+    let memory_id = request.memory_id.unwrap_or_else(Uuid::new_v4);
+    let scope_key = normalized_scope_key(request.scope, request.scope_key.as_deref())?;
+    let mut transaction = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+        .bind(memory_id)
+        .execute(&mut *transaction)
+        .await?;
+    let current: Option<(i64, String, String, String)> = sqlx::query_as(
+        "SELECT generation, scope, scope_key, operation FROM agent_memory_mutations WHERE owner_user_id = $1 AND memory_id = $2 ORDER BY generation DESC LIMIT 1",
+    )
+    .bind(owner_user_id)
+    .bind(memory_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let current_generation = current.as_ref().map(|row| row.0);
+    if request.memory_id.is_some() && request.expected_generation != current_generation {
+        anyhow::bail!("memory generation conflict");
+    }
+    if request.memory_id.is_none() && request.expected_generation.is_some() {
+        anyhow::bail!("new memory mutation cannot have an expected generation");
+    }
+    if let Some((_, current_scope, current_scope_key, current_operation)) = &current {
+        if current_scope != scope_name(request.scope) || current_scope_key != &scope_key {
+            anyhow::bail!("memory mutation scope cannot change");
+        }
+        if current_operation == "delete" {
+            anyhow::bail!("deleted memory cannot be changed without an explicit restore");
+        }
+    }
+    let generation = current_generation.unwrap_or(0) + 1;
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_memory_mutations (id, owner_user_id, memory_id, generation, operation, scope, scope_key, match_text, replacement_text) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(id)
+    .bind(owner_user_id)
+    .bind(memory_id)
+    .bind(generation)
+    .bind(mutation_operation_name(request.operation))
+    .bind(scope_name(request.scope))
+    .bind(scope_key)
+    .bind(request.match_text.trim())
+    .bind(request.replacement_text.as_deref().map(str::trim))
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    find_mutation(pool, owner_user_id, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("created mutation not found"))
+}
+
+pub async fn list_mutations(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+) -> anyhow::Result<Vec<AgentMemoryMutation>> {
+    let query = format!(
+        "SELECT {MUTATION_COLUMNS} FROM agent_memory_mutations m INNER JOIN (SELECT memory_id, MAX(generation) generation FROM agent_memory_mutations WHERE owner_user_id = $1 GROUP BY memory_id) latest ON latest.memory_id = m.memory_id AND latest.generation = m.generation WHERE m.owner_user_id = $1 ORDER BY m.created_at DESC LIMIT 200"
+    );
+    sqlx::query_as::<_, MutationRow>(&query)
+        .bind(owner_user_id)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+}
+
+async fn find_mutation(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    id: Uuid,
+) -> anyhow::Result<Option<AgentMemoryMutation>> {
+    let query = format!(
+        "SELECT {MUTATION_COLUMNS} FROM agent_memory_mutations m WHERE m.owner_user_id = $1 AND m.id = $2"
+    );
+    sqlx::query_as::<_, MutationRow>(&query)
+        .bind(owner_user_id)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .map(TryInto::try_into)
+        .transpose()
+}
+
+pub async fn mutation_inbox(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    _target_host_id: Uuid,
+    _target_agent: AgentMemoryKind,
+    scope: AgentMemoryScope,
+    scope_key: Option<&str>,
+) -> anyhow::Result<AgentMemoryMutationInboxResponse> {
+    let scope_key = normalized_scope_key(scope, scope_key)?;
+    let query = format!(
+        "SELECT {MUTATION_COLUMNS} FROM agent_memory_mutations m INNER JOIN (SELECT memory_id, MAX(generation) generation FROM agent_memory_mutations WHERE owner_user_id = $1 GROUP BY memory_id) latest ON latest.memory_id = m.memory_id AND latest.generation = m.generation WHERE m.owner_user_id = $1 AND m.scope = $2 AND m.scope_key = $3 ORDER BY m.created_at ASC"
+    );
+    let mutations = sqlx::query_as::<_, MutationRow>(&query)
+        .bind(owner_user_id)
+        .bind(scope_name(scope))
+        .bind(scope_key)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<anyhow::Result<_>>()?;
+    Ok(AgentMemoryMutationInboxResponse { mutations })
+}
+
+pub async fn record_mutation_receipt(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    request: &RecordAgentMemoryMutationReceiptRequest,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query(
+        "INSERT INTO agent_memory_mutation_receipts (mutation_id, target_host_id, target_agent, target_scope_key, status, reason) SELECT m.id, $3, $4, $5, $6, $7 FROM agent_memory_mutations m WHERE m.id = $1 AND m.owner_user_id = $2 ON CONFLICT (mutation_id, target_host_id, target_agent, target_scope_key) DO UPDATE SET status = EXCLUDED.status, reason = EXCLUDED.reason, processed_at = NOW()",
+    )
+    .bind(request.mutation_id)
+    .bind(owner_user_id)
+    .bind(request.target_host_id)
+    .bind(agent_name(request.target_agent))
+    .bind(request.target_scope_key.as_deref().unwrap_or(""))
+    .bind(receipt_status_name(request.status))
+    .bind(&request.reason)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
 
 pub async fn upsert_snapshot(
     pool: &PgPool,
@@ -234,6 +405,21 @@ fn normalized_scope_key(scope: AgentMemoryScope, key: Option<&str>) -> anyhow::R
             .filter(|key| !key.is_empty())
             .map(str::to_owned)
             .ok_or_else(|| anyhow::anyhow!("repository scope requires scope_key")),
+    }
+}
+
+fn mutation_operation_name(operation: AgentMemoryMutationOperation) -> &'static str {
+    match operation {
+        AgentMemoryMutationOperation::Update => "update",
+        AgentMemoryMutationOperation::Delete => "delete",
+    }
+}
+
+fn parse_mutation_operation(value: &str) -> anyhow::Result<AgentMemoryMutationOperation> {
+    match value {
+        "update" => Ok(AgentMemoryMutationOperation::Update),
+        "delete" => Ok(AgentMemoryMutationOperation::Delete),
+        _ => anyhow::bail!("unknown memory mutation operation: {value}"),
     }
 }
 
