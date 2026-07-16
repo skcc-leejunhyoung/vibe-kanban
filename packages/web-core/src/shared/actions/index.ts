@@ -107,6 +107,7 @@ import type {
   NavbarItem,
 } from '@/shared/types/actions';
 import { ActionTargetType, NavbarDivider } from '@/shared/types/actions';
+import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostIdentity';
 
 async function resolveLinkedIssue(
   workspaceId: string,
@@ -118,8 +119,10 @@ async function resolveLinkedIssue(
     project_id: string;
   }[]
 ): Promise<{ issueId: string; remoteProjectId: string } | undefined> {
-  const remoteWs = remoteWorkspaces.find(
-    (w) => w.local_workspace_id === workspaceId && w.host_id === hostId
+  const remoteWs = findRemoteWorkspaceByLocalIdentity(
+    remoteWorkspaces,
+    workspaceId,
+    hostId
   );
   if (remoteWs?.issue_id) {
     return { issueId: remoteWs.issue_id, remoteProjectId: remoteWs.project_id };
@@ -377,9 +380,10 @@ export const Actions = {
       );
 
       // Check if workspace is linked to a remote issue
-      const remoteWs = ctx.remoteWorkspaces.find(
-        (w) =>
-          w.local_workspace_id === workspaceId && w.host_id === (hostId ?? null)
+      const remoteWs = findRemoteWorkspaceByLocalIdentity(
+        ctx.remoteWorkspaces,
+        workspaceId,
+        hostId ?? null
       );
       const linkedIssueSimpleId = remoteWs?.issue_id
         ? ctx.projectMutations?.getIssue(remoteWs.issue_id)?.simple_id
@@ -1015,10 +1019,10 @@ export const Actions = {
 
       // Resolve vibe-kanban identifier from remote workspace + issue
       let issueIdentifier: string | undefined;
-      const remoteWs = ctx.remoteWorkspaces.find(
-        (w) =>
-          w.local_workspace_id === workspaceId &&
-          w.host_id === ctx.currentHostId
+      const remoteWs = findRemoteWorkspaceByLocalIdentity(
+        ctx.remoteWorkspaces,
+        workspaceId,
+        ctx.currentHostId
       );
       if (remoteWs?.issue_id && ctx.projectMutations?.getIssue) {
         const issue = ctx.projectMutations.getIssue(remoteWs.issue_id);

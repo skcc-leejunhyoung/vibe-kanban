@@ -75,9 +75,12 @@ export function IssueWorkspacesSectionContainer({
 
     return rawWorkspaces.map((workspace) => {
       const localWorkspace = workspace.local_workspace_id
-        ? localWorkspacesById.get(
+        ? (localWorkspacesById.get(
             getHostWorkspaceKey(workspace.local_workspace_id, workspace.host_id)
-          )
+          ) ??
+          localWorkspacesById.get(
+            getHostWorkspaceKey(workspace.local_workspace_id, null)
+          ))
         : undefined;
 
       // Find all linked PRs for this workspace
@@ -209,7 +212,12 @@ export function IssueWorkspacesSectionContainer({
       if (!projectId || !localWorkspaceId) {
         return;
       }
-      const hostId = ownerHostId ?? workspaceHostMap.get(localWorkspaceId);
+      const currentMachineWorkspace = localWorkspacesById.get(
+        getHostWorkspaceKey(localWorkspaceId, null)
+      );
+      const hostId = currentMachineWorkspace
+        ? null
+        : (ownerHostId ?? workspaceHostMap.get(localWorkspaceId));
       if (
         !localWorkspacesById.has(
           getHostWorkspaceKey(localWorkspaceId, hostId ?? null)
@@ -256,7 +264,11 @@ export function IssueWorkspacesSectionContainer({
 
       if (result === 'confirmed') {
         try {
-          const hostId = ownerHostId ?? workspaceHostMap.get(localWorkspaceId);
+          const hostId = localWorkspacesById.has(
+            getHostWorkspaceKey(localWorkspaceId, null)
+          )
+            ? null
+            : (ownerHostId ?? workspaceHostMap.get(localWorkspaceId));
           await workspacesApi.unlinkFromIssue(localWorkspaceId, hostId);
         } catch (error) {
           ConfirmDialog.show({
@@ -277,11 +289,15 @@ export function IssueWorkspacesSectionContainer({
   // Handle deleting a workspace (unlinks first, then deletes local)
   const handleDeleteWorkspace = useCallback(
     async (localWorkspaceId: string, ownerHostId?: string | null) => {
-      const hostId =
-        ownerHostId ?? workspaceHostMap.get(localWorkspaceId) ?? null;
-      const localWorkspace = localWorkspacesById.get(
-        getHostWorkspaceKey(localWorkspaceId, hostId)
+      const currentMachineWorkspace = localWorkspacesById.get(
+        getHostWorkspaceKey(localWorkspaceId, null)
       );
+      const hostId = currentMachineWorkspace
+        ? null
+        : (ownerHostId ?? workspaceHostMap.get(localWorkspaceId) ?? null);
+      const localWorkspace =
+        currentMachineWorkspace ??
+        localWorkspacesById.get(getHostWorkspaceKey(localWorkspaceId, hostId));
       if (!localWorkspace) {
         ConfirmDialog.show({
           title: t('common:error'),

@@ -29,6 +29,7 @@ import { RetryUiProvider } from '@/features/workspace-chat/model/contexts/RetryU
 import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
+import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostIdentity';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import {
   buildKanbanIssueComposerKey,
@@ -171,16 +172,14 @@ function WorkspaceSessionPanel({
     [activeWorkspaces, archivedWorkspaces, workspaceId]
   );
 
-  const linkedWorkspace = useMemo(
-    () =>
-      remoteWorkspaces.find(
-        (ws) =>
-          ws.local_workspace_id === workspaceId &&
-          ws.host_id === routeState.hostId &&
-          ws.project_id === projectId
-      ) ?? null,
-    [remoteWorkspaces, workspaceId, routeState.hostId, projectId]
-  );
+  const linkedWorkspace = useMemo(() => {
+    const workspace = findRemoteWorkspaceByLocalIdentity(
+      remoteWorkspaces,
+      workspaceId ?? '',
+      routeState.hostId
+    );
+    return workspace?.project_id === projectId ? workspace : null;
+  }, [remoteWorkspaces, workspaceId, routeState.hostId, projectId]);
 
   const linkedIssueId = linkedWorkspace?.issue_id ?? null;
   const breadcrumbIssueId = routeState.issueId ?? linkedIssueId;

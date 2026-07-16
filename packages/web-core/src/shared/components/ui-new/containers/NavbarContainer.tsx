@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostIdentity';
 import { useActions } from '@/shared/hooks/useActions';
 import { useSyncErrorContext } from '@/shared/hooks/useSyncErrorContext';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
@@ -149,10 +150,10 @@ export function NavbarContainer({
   const linkedRemoteWorkspace = useMemo(() => {
     if (!selectedWorkspace?.id) return null;
     return (
-      workspaces.find(
-        (w) =>
-          w.local_workspace_id === selectedWorkspace.id &&
-          w.host_id === workspaceHostId
+      findRemoteWorkspaceByLocalIdentity(
+        workspaces,
+        selectedWorkspace.id,
+        workspaceHostId
       ) ?? null
     );
   }, [workspaces, selectedWorkspace?.id, workspaceHostId]);

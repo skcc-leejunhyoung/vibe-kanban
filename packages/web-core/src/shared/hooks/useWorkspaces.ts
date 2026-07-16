@@ -309,7 +309,7 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
       byId[getHostWorkspaceKey(ws.id, hostId)] = ws;
     }
     return byId;
-  }, [activeData, archivedData]);
+  }, [activeData, archivedData, hostId]);
 
   // isLoading is true when we have nothing to show for a stream yet — neither
   // its initial replay nor a cached snapshot from a previous connection.
