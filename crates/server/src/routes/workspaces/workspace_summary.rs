@@ -39,6 +39,11 @@ pub struct WorkspaceSummary {
     pub lines_added: Option<usize>,
     /// Total lines removed across all files
     pub lines_removed: Option<usize>,
+    /// When the latest execution process was started (i.e. when the message was
+    /// sent). Used together with `latest_process_completed_at` so the workspace
+    /// list can treat both sending and receiving a message as recent activity.
+    #[ts(optional)]
+    pub latest_process_started_at: Option<chrono::DateTime<chrono::Utc>>,
     /// When the latest execution process completed
     #[ts(optional)]
     pub latest_process_completed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -215,6 +220,7 @@ pub async fn get_workspace_summaries(
                 files_changed: stats.map(|s| s.files_changed),
                 lines_added: stats.map(|s| s.lines_added),
                 lines_removed: stats.map(|s| s.lines_removed),
+                latest_process_started_at: latest.map(|p| p.started_at),
                 latest_process_completed_at: latest.and_then(|p| p.completed_at),
                 latest_process_status: latest.map(|p| p.status.clone()),
                 is_waiting_on_blockers: latest

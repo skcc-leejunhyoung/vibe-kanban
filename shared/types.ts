@@ -783,6 +783,12 @@ lines_added: number | null,
  */
 lines_removed: number | null,
 /**
+ * When the latest execution process was started (i.e. when the message was
+ * sent). Used together with `latest_process_completed_at` so the workspace
+ * list can treat both sending and receiving a message as recent activity.
+ */
+latest_process_started_at?: string,
+/**
  * When the latest execution process completed
  */
 latest_process_completed_at?: string,

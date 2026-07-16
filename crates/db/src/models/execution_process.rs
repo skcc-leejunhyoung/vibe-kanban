@@ -99,6 +99,10 @@ pub struct LatestProcessInfo {
     pub execution_process_id: Uuid,
     pub session_id: Uuid,
     pub status: ExecutionProcessStatus,
+    /// When the latest process was spawned (i.e. when the message was sent).
+    pub started_at: DateTime<Utc>,
+    /// When the latest process finished (i.e. when the response was received);
+    /// `None` while it is still running.
     pub completed_at: Option<DateTime<Utc>>,
 }
 
@@ -752,6 +756,7 @@ impl ExecutionProcess {
                 execution_process_id as "execution_process_id!: Uuid",
                 session_id as "session_id!: Uuid",
                 status as "status!: ExecutionProcessStatus",
+                started_at as "started_at!: DateTime<Utc>",
                 completed_at as "completed_at?: DateTime<Utc>"
             FROM (
                 SELECT
@@ -759,6 +764,7 @@ impl ExecutionProcess {
                     ep.id as execution_process_id,
                     ep.session_id,
                     ep.status,
+                    ep.started_at,
                     ep.completed_at,
                     ROW_NUMBER() OVER (
                         PARTITION BY s.workspace_id

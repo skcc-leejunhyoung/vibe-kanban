@@ -39,6 +39,8 @@ export interface SidebarWorkspace {
   todoTotal?: number;
   /** Completed items in the agent's latest TODO list (running only). */
   todoCompleted?: number;
+  /** When the latest agent turn was sent (its process started). */
+  latestProcessStartedAt?: string;
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
@@ -92,6 +94,7 @@ function toSidebarWorkspace(
     hasUnseenActivity: summary?.has_unseen_turns,
     todoTotal: summary?.todo_total ?? undefined,
     todoCompleted: summary?.todo_completed ?? undefined,
+    latestProcessStartedAt: summary?.latest_process_started_at ?? undefined,
     latestProcessCompletedAt: summary?.latest_process_completed_at ?? undefined,
     latestProcessStatus: summary?.latest_process_status ?? undefined,
     prStatus: summary?.pr_status ?? undefined,

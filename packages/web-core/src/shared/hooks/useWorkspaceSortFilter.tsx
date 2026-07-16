@@ -38,7 +38,17 @@ function getWorkspaceSortTimestamp(
   sortBy: WorkspaceSortBy
 ): number | null {
   if (sortBy === 'updated_at') {
-    return toTimestamp(workspace.latestProcessCompletedAt);
+    // "Last activity" = the most recent of when the latest agent turn was
+    // *sent* (its process started) and when it *completed* (the response was
+    // received), so sending a message bumps the workspace up the list just
+    // like receiving a response does. A running turn has no completion time
+    // yet, so this falls back to its start time; an idle workspace uses the
+    // completion time (which is always >= its start time).
+    const started = toTimestamp(workspace.latestProcessStartedAt);
+    const completed = toTimestamp(workspace.latestProcessCompletedAt);
+    if (started === null) return completed;
+    if (completed === null) return started;
+    return Math.max(started, completed);
   }
 
   return toTimestamp(workspace.createdAt);
