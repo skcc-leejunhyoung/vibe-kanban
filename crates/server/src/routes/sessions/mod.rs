@@ -541,9 +541,11 @@ pub async fn handoff(
             "Workspace not found".to_string(),
         )))?;
 
-    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
+        .await?
+    {
         return Err(ApiError::BadRequest(
-            "Stop the running process before handing off this session".to_string(),
+            "Stop the running process before handing off this workspace session".to_string(),
         ));
     }
 
@@ -580,6 +582,8 @@ pub async fn handoff(
         .as_ref()
         .filter(|dir| !dir.is_empty())
         .cloned();
+    let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
+    let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
     let prompt = format!(
         "You are taking over an existing Vibe Kanban workspace session from {source_executor}. \
 Continue the work in place without restarting or discarding existing changes. The prior conversation \
@@ -598,7 +602,7 @@ session ID: {}. Working directory: {}.",
             handoff_from: Some(source_executor),
             handoff_session_id: source_native_session_id,
         }),
-        None,
+        cleanup_action.map(Box::new),
     );
 
     let execution_process = deployment
