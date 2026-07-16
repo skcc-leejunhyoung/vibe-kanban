@@ -534,12 +534,17 @@ export const workspacesApi = {
    * no `vk/` worktree, no new branch). Returns the same shape as createAndStart.
    */
   quickChat: async (
-    data: CreateQuickChatRequest
+    data: CreateQuickChatRequest,
+    hostId?: string | null
   ): Promise<CreateAndStartWorkspaceResponse> => {
-    const response = await makeRequest(`/api/workspaces/quick-chat`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/quick-chat`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<CreateAndStartWorkspaceResponse>(response);
   },
 
@@ -1181,18 +1186,26 @@ export const executionProcessesApi = {
 
 // File System APIs
 export const fileSystemApi = {
-  list: async (path?: string): Promise<DirectoryListResponse> => {
+  list: async (
+    path?: string,
+    hostId?: string | null
+  ): Promise<DirectoryListResponse> => {
     const queryParam = path ? `?path=${encodeURIComponent(path)}` : '';
-    const response = await makeRequest(
-      `/api/filesystem/directory${queryParam}`
+    const response = await makeHostAwareRequest(
+      `/api/filesystem/directory${queryParam}`,
+      hostId
     );
     return handleApiResponse<DirectoryListResponse>(response);
   },
 
-  listGitRepos: async (path?: string): Promise<DirectoryEntry[]> => {
+  listGitRepos: async (
+    path?: string,
+    hostId?: string | null
+  ): Promise<DirectoryEntry[]> => {
     const queryParam = path ? `?path=${encodeURIComponent(path)}` : '';
-    const response = await makeRequest(
-      `/api/filesystem/git-repos${queryParam}`
+    const response = await makeHostAwareRequest(
+      `/api/filesystem/git-repos${queryParam}`,
+      hostId
     );
     return handleApiResponse<DirectoryEntry[]>(response);
   },
@@ -1205,8 +1218,8 @@ export const repoApi = {
     return handleApiResponse<Repo[]>(response);
   },
 
-  listRecent: async (): Promise<Repo[]> => {
-    const response = await makeRequest('/api/repos/recent');
+  listRecent: async (hostId?: string | null): Promise<Repo[]> => {
+    const response = await makeHostAwareRequest('/api/repos/recent', hostId);
     return handleApiResponse<Repo[]>(response);
   },
 

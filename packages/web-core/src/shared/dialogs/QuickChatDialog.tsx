@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { create, useModal } from '@ebay/nice-modal-react';
-import { LightningIcon, StarIcon, XIcon } from '@phosphor-icons/react';
+import {
+  ComputerTowerIcon,
+  DesktopIcon,
+  LightningIcon,
+  StarIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import {
   Dialog,
   DialogDescription,
@@ -25,6 +31,9 @@ import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContain
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 import { useFolderFavoritesStore } from '@/shared/stores/useFolderFavoritesStore';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 /**
  * "Quick chat": a low-ceremony launcher to run an agent directly in an existing
@@ -41,6 +50,17 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   const modal = useModal();
   const appNavigation = useAppNavigation();
   const { config, profiles } = useUserSystem();
+  const runtime = useAppRuntime();
+  const routeHostId = useHostId();
+  const { hosts } = useWorkspaceHostOptions();
+  const onlineHosts = useMemo(
+    () => hosts.filter((host) => host.status === 'online'),
+    [hosts]
+  );
+  const [selectedHostId, setSelectedHostId] = useState<string | null>(
+    routeHostId
+  );
+  const wasVisibleRef = useRef(false);
 
   const [repo, setRepo] = useState<Repo | null>(null);
   const [prompt, setPrompt] = useState('');
@@ -53,8 +73,11 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   const favorites = useFolderFavoritesStore((s) => s.favorites);
   const addFavorite = useFolderFavoritesStore((s) => s.addFavorite);
   const removeFavorite = useFolderFavoritesStore((s) => s.removeFavorite);
+  const visibleFavorites = favorites.filter(
+    (favorite) => (favorite.hostId ?? null) === selectedHostId
+  );
   const isRepoFavorite = repo
-    ? favorites.some((f) => f.path === repo.path)
+    ? visibleFavorites.some((f) => f.path === repo.path)
     : false;
 
   const {
@@ -74,13 +97,24 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     onPersist: setScratchConfig,
   });
 
+  useEffect(() => {
+    const justOpened = modal.visible && !wasVisibleRef.current;
+    wasVisibleRef.current = modal.visible;
+    if (justOpened) {
+      setSelectedHostId(
+        routeHostId ??
+          (runtime === 'remote' ? (onlineHosts[0]?.id ?? null) : null)
+      );
+    }
+  }, [modal.visible, routeHostId, runtime, onlineHosts]);
+
   // Pre-fill the folder with the most recently used repo so the common case is
   // a single keystroke (type + send).
   useEffect(() => {
     if (!modal.visible || repo) return;
     let cancelled = false;
     repoApi
-      .listRecent()
+      .listRecent(selectedHostId)
       .then((recent) => {
         if (!cancelled && recent[0]) setRepo(recent[0]);
       })
@@ -88,7 +122,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     return () => {
       cancelled = true;
     };
-  }, [modal.visible, repo]);
+  }, [modal.visible, repo, selectedHostId]);
 
   // nice-modal keeps this component mounted under the app layout, so React
   // state survives `hide()` and the post-send SPA navigation. Reset transient
@@ -113,19 +147,22 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   // Register a path as a repo and select it. Returns the repo on success so
   // callers (folder picker, favorite chips) can react; sets `error` and returns
   // null when the path isn't a git repository.
-  const registerAndSelect = useCallback(async (path: string) => {
-    try {
-      const registered = await repoApi.register({ path });
-      setRepo(registered);
-      return registered;
-    } catch (e) {
-      setError(
-        getErrorMessage(e) ||
-          'That folder could not be opened. It must be a git repository.'
-      );
-      return null;
-    }
-  }, []);
+  const registerAndSelect = useCallback(
+    async (path: string) => {
+      try {
+        const registered = await repoApi.register({ path }, selectedHostId);
+        setRepo(registered);
+        return registered;
+      } catch (e) {
+        setError(
+          getErrorMessage(e) ||
+            'That folder could not be opened. It must be a git repository.'
+        );
+        return null;
+      }
+    },
+    [selectedHostId]
+  );
 
   const pickFolder = useCallback(async () => {
     setError(null);
@@ -133,10 +170,11 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       value: repo?.path,
       title: 'Select a folder',
       description: 'The agent runs directly in this folder.',
+      hostId: selectedHostId,
     });
     if (!path) return;
     await registerAndSelect(path);
-  }, [repo?.path, registerAndSelect]);
+  }, [repo?.path, registerAndSelect, selectedHostId]);
 
   const selectFavorite = useCallback(
     async (path: string) => {
@@ -151,14 +189,15 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   const toggleFavorite = useCallback(() => {
     if (!repo) return;
     if (isRepoFavorite) {
-      removeFavorite(repo.path);
+      removeFavorite(repo.path, selectedHostId);
     } else {
       addFavorite({
         path: repo.path,
         name: repo.display_name || repo.name,
+        hostId: selectedHostId,
       });
     }
-  }, [repo, isRepoFavorite, addFavorite, removeFavorite]);
+  }, [repo, isRepoFavorite, addFavorite, removeFavorite, selectedHostId]);
 
   const handleExecutorChange = useCallback((executor: BaseCodingAgent) => {
     setScratchConfig(
@@ -190,20 +229,23 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     setSubmitting(true);
     setError(null);
     try {
-      const { workspace } = await workspacesApi.quickChat({
-        repo_id: repo.id,
-        executor_config: executorConfig,
-        prompt: prompt.trim(),
-        name: null,
-      });
+      const { workspace } = await workspacesApi.quickChat(
+        {
+          repo_id: repo.id,
+          executor_config: executorConfig,
+          prompt: prompt.trim(),
+          name: null,
+        },
+        selectedHostId
+      );
       modal.resolve(workspace.id);
       modal.hide();
-      appNavigation.goToWorkspace(workspace.id);
+      appNavigation.goToWorkspace(workspace.id, { hostId: selectedHostId });
     } catch (e) {
       setError(getErrorMessage(e) || 'Failed to start quick chat.');
       setSubmitting(false);
     }
-  }, [repo, executorConfig, prompt, modal, appNavigation]);
+  }, [repo, executorConfig, prompt, modal, appNavigation, selectedHostId]);
 
   return (
     <Dialog
@@ -228,6 +270,32 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         </DialogDescription>
       </DialogHeader>
 
+      <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
+        {selectedHostId ? (
+          <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />
+        ) : (
+          <DesktopIcon className="size-icon-sm shrink-0 text-low" />
+        )}
+        <span className="text-sm text-low">Run on</span>
+        <select
+          value={selectedHostId ?? ''}
+          onChange={(event) => {
+            setSelectedHostId(event.target.value || null);
+            setRepo(null);
+            setError(null);
+          }}
+          className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
+          aria-label="Quick chat host"
+        >
+          {runtime === 'local' && <option value="">This machine</option>}
+          {onlineHosts.map((host) => (
+            <option key={host.id} value={host.id}>
+              {host.name}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <div className="flex flex-wrap items-center gap-base">
         <button
           type="button"
@@ -251,7 +319,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           />
           {isRepoFavorite ? 'Favorited' : 'Favorite'}
         </button>
-        {favorites.map((fav) => {
+        {visibleFavorites.map((fav) => {
           const isActive = repo?.path === fav.path;
           return (
             <span

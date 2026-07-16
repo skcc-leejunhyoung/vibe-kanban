@@ -4,7 +4,7 @@ import {
   Droppable,
   type DropResult,
 } from '@hello-pangea/dnd';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   LayoutIcon,
   DownloadSimpleIcon,
@@ -13,6 +13,7 @@ import {
   KanbanIcon,
   SpinnerIcon,
   LightningIcon,
+  FunnelIcon,
   type Icon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -104,7 +105,7 @@ const appBarItemBaseClassName =
   'flex items-center justify-center w-10 h-10 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 
 type AppBarSection = {
-  key: 'local' | 'remote' | 'projects' | 'export';
+  key: 'workspaces' | 'projects' | 'export';
   label: string;
   items: AppBarSectionItem[];
 };
@@ -215,13 +216,15 @@ export function AppBar({
   onUpdateClick,
 }: AppBarProps) {
   const { t } = useTranslation('common');
+  const [showLocalWorkspaces, setShowLocalWorkspaces] = useState(true);
+  const [showRemoteWorkspaces, setShowRemoteWorkspaces] = useState(true);
   const sections: AppBarSection[] = [];
 
-  // Quick chat is independent of the local-workspaces button: remote uses it
-  // without showing the local-workspaces entry (showWorkspacesButton=false).
-  const localItems: AppBarSectionItem[] = [];
-  if (showWorkspacesButton) {
-    localItems.push({
+  // Local and remote destinations are peers in one workspace switcher. Their
+  // origin remains available as a filter instead of defining separate groups.
+  const workspaceItems: AppBarSectionItem[] = [];
+  if (showWorkspacesButton && showLocalWorkspaces) {
+    workspaceItems.push({
       key: 'local-workspaces',
       kind: 'icon-button',
       label: 'Local workspaces',
@@ -231,7 +234,7 @@ export function AppBar({
     });
   }
   if (onQuickChatClick) {
-    localItems.push({
+    workspaceItems.push({
       key: 'quick-chat',
       kind: 'icon-button',
       label: 'Quick chat',
@@ -239,42 +242,35 @@ export function AppBar({
       onClick: onQuickChatClick,
     });
   }
-  if (localItems.length > 0) {
-    sections.push({ key: 'local', label: 'Local', items: localItems });
+  if (showRemoteWorkspaces) {
+    workspaceItems.push(
+      ...hosts.map((host) => ({
+        key: `host-${host.id}`,
+        kind: 'host-button' as const,
+        host,
+        isActive: host.id === activeHostId,
+        onClick: () => {
+          if (host.status === 'offline') return;
+          onHostClick?.(host.id, host.status);
+        },
+      }))
+    );
   }
-
-  if (hosts.length > 0 || onPairHostClick) {
+  if (onPairHostClick) {
+    workspaceItems.push({
+      key: 'pair-remote-device',
+      kind: 'icon-button',
+      label: 'Pair a remote device',
+      icon: LinkIcon,
+      onClick: onPairHostClick,
+      className: 'bg-primary text-muted hover:text-normal hover:bg-tertiary',
+    });
+  }
+  if (workspaceItems.length > 0) {
     sections.push({
-      key: 'remote',
-      label: 'Remote',
-      items: [
-        ...hosts.map((host) => ({
-          key: `host-${host.id}`,
-          kind: 'host-button' as const,
-          host,
-          isActive: host.id === activeHostId,
-          onClick: () => {
-            if (host.status === 'offline') {
-              return;
-            }
-
-            onHostClick?.(host.id, host.status);
-          },
-        })),
-        ...(onPairHostClick
-          ? [
-              {
-                key: 'pair-remote-device',
-                kind: 'icon-button' as const,
-                label: 'Pair a remote device',
-                icon: LinkIcon,
-                onClick: onPairHostClick,
-                className:
-                  'bg-primary text-muted hover:text-normal hover:bg-tertiary',
-              },
-            ]
-          : []),
-      ],
+      key: 'workspaces',
+      label: 'Workspaces',
+      items: workspaceItems,
     });
   }
 
@@ -519,7 +515,52 @@ export function AppBar({
       <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-base overflow-y-auto overflow-x-hidden">
         {sections.map((section) => (
           <div key={section.key} className="flex flex-col items-center gap-1">
-            <AppBarSectionLabel>{section.label}</AppBarSectionLabel>
+            {section.key === 'workspaces' ? (
+              <Popover>
+                <Tooltip content="Filter workspace hosts" side="right">
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex items-center gap-0.5 text-[9px] font-medium leading-none tracking-wide text-low hover:text-normal"
+                    >
+                      {section.label}
+                      <FunnelIcon className="size-2.5" weight="bold" />
+                    </button>
+                  </PopoverTrigger>
+                </Tooltip>
+                <PopoverContent side="right" sideOffset={8} className="w-44">
+                  <p className="mb-half text-xs font-medium text-high">
+                    Show workspaces
+                  </p>
+                  {showWorkspacesButton && (
+                    <label className="flex cursor-pointer items-center gap-half py-half text-sm text-normal">
+                      <input
+                        type="checkbox"
+                        checked={showLocalWorkspaces}
+                        onChange={(event) =>
+                          setShowLocalWorkspaces(event.target.checked)
+                        }
+                      />
+                      This machine
+                    </label>
+                  )}
+                  {(hosts.length > 0 || onPairHostClick) && (
+                    <label className="flex cursor-pointer items-center gap-half py-half text-sm text-normal">
+                      <input
+                        type="checkbox"
+                        checked={showRemoteWorkspaces}
+                        onChange={(event) =>
+                          setShowRemoteWorkspaces(event.target.checked)
+                        }
+                      />
+                      Remote hosts
+                    </label>
+                  )}
+                </PopoverContent>
+              </Popover>
+            ) : (
+              <AppBarSectionLabel>{section.label}</AppBarSectionLabel>
+            )}
             {section.items.map((item) => (
               <div
                 key={item.key}

@@ -50,7 +50,9 @@ import {
   SortAscendingIcon,
   SortDescendingIcon,
 } from '@phosphor-icons/react';
-import { useRemoteCloudHostsAppBarModel } from '@/shared/hooks/useRemoteCloudHosts';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
@@ -90,7 +92,9 @@ export function WorkspacesSidebarContainer({
   } = useWorkspaceContext();
 
   const isMobile = useIsMobile();
-  const { hosts: remoteCloudHosts } = useRemoteCloudHostsAppBarModel();
+  const runtime = useAppRuntime();
+  const appNavigation = useAppNavigation();
+  const { hosts: workspaceHosts } = useWorkspaceHostOptions();
   const { hostId: routeHostId } = useParams({ strict: false });
   const queryClient = useQueryClient();
   const hostId = useHostId();
@@ -354,6 +358,30 @@ export function WorkspacesSidebarContainer({
     paginatedArchivedWorkspaces,
   ]);
 
+  // Treat the visible workspace list like a tab strip. This mirrors native
+  // macOS tab switching and wraps at both ends.
+  useHotkeys(
+    ['ctrl+tab', 'ctrl+shift+tab'],
+    (event) => {
+      if (displayedWorkspaceIds.length === 0) return;
+      event.preventDefault();
+      const currentIndex = selectedWorkspaceId
+        ? displayedWorkspaceIds.indexOf(selectedWorkspaceId)
+        : -1;
+      const direction = event.shiftKey ? -1 : 1;
+      const fallbackIndex =
+        direction === 1 ? 0 : displayedWorkspaceIds.length - 1;
+      const nextIndex =
+        currentIndex === -1
+          ? fallbackIndex
+          : (currentIndex + direction + displayedWorkspaceIds.length) %
+            displayedWorkspaceIds.length;
+      handleSelectWorkspace(displayedWorkspaceIds[nextIndex]);
+    },
+    { enableOnFormTags: false },
+    [displayedWorkspaceIds, selectedWorkspaceId, handleSelectWorkspace]
+  );
+
   const moveWorkspaceFocus = useCallback(
     (delta: 1 | -1) => {
       // Only navigate to rows that are actually rendered. Collapsed accordion
@@ -490,6 +518,26 @@ export function WorkspacesSidebarContainer({
 
   const searchControls = (
     <>
+      <select
+        value={routeHostId ?? ''}
+        onChange={(event) =>
+          appNavigation.goToWorkspaces({ hostId: event.target.value || null })
+        }
+        className="h-cta min-w-0 max-w-28 rounded border border-border bg-secondary px-half text-sm text-normal outline-none focus:ring-1 focus:ring-brand"
+        aria-label="Filter workspaces by host"
+        title="Filter workspaces by host"
+      >
+        {runtime === 'local' && <option value="">This machine</option>}
+        {workspaceHosts.map((host) => (
+          <option
+            key={host.id}
+            value={host.id}
+            disabled={host.status !== 'online'}
+          >
+            {host.name}
+          </option>
+        ))}
+      </select>
       <div className="shrink-0">
         <div className="flex items-stretch">
           <IconButton
@@ -547,12 +595,12 @@ export function WorkspacesSidebarContainer({
   );
 
   const activeRemoteHost = useMemo(() => {
-    if (remoteCloudHosts.length === 0 || !routeHostId) {
+    if (workspaceHosts.length === 0 || !routeHostId) {
       return null;
     }
 
-    return remoteCloudHosts.find((host) => host.id === routeHostId) ?? null;
-  }, [routeHostId, remoteCloudHosts]);
+    return workspaceHosts.find((host) => host.id === routeHostId) ?? null;
+  }, [routeHostId, workspaceHosts]);
 
   const handleOpenRemoteHostSettings = useCallback(() => {
     void SettingsDialog.show({

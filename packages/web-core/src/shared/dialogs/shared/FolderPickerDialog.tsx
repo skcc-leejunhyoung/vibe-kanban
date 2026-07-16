@@ -29,6 +29,7 @@ export interface FolderPickerDialogProps {
   value?: string;
   title?: string;
   description?: string;
+  hostId?: string | null;
 }
 
 const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
@@ -36,6 +37,7 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
     value = '',
     title = 'Select Folder',
     description = 'Choose a folder for your project',
+    hostId,
   }) => {
     const modal = useModal();
     const { t } = useTranslation('common');
@@ -65,7 +67,10 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
       setError('');
 
       try {
-        const result: DirectoryListResponse = await fileSystemApi.list(path);
+        const result: DirectoryListResponse = await fileSystemApi.list(
+          path,
+          hostId
+        );
 
         // Ensure result exists and has the expected structure
         if (!result || typeof result !== 'object') {
