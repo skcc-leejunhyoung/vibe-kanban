@@ -64,6 +64,10 @@ import {
 } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { getCycledWorkspaceKey } from './workspaceCycle';
+import {
+  ALL_WORKSPACE_HOSTS_ID,
+  useWorkspaceHostSelectionStore,
+} from '@/shared/stores/useWorkspaceHostSelectionStore';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
@@ -187,7 +191,13 @@ export function WorkspacesSidebarContainer({
   // Shared workspace sort/filter model (project options + filter/sort pipeline).
   const sortFilter = useWorkspaceSortFilter();
   const { filterAndSort } = sortFilter;
-  const [selectedHostView, setSelectedHostView] = useState('all');
+  const selectedHostView = useWorkspaceHostSelectionStore(
+    (state) => state.selectedHostId
+  );
+  const setSelectedHostView = useWorkspaceHostSelectionStore(
+    (state) => state.selectHost
+  );
+
   const shortcutOverrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   // Pagination state for infinite scroll
@@ -315,11 +325,17 @@ export function WorkspacesSidebarContainer({
         window.open(path, '_blank', 'noopener,noreferrer');
         return;
       }
+      if (workspaceHostId) {
+        setSelectedHostView(workspaceHostId);
+      }
       if (onSelectWorkspaceOverride) {
         onSelectWorkspaceOverride(id, event, workspaceHostId);
         return;
       }
-      if (id === selectedWorkspaceId) {
+      if (
+        id === selectedWorkspaceId &&
+        (workspaceHostId ?? null) === (routeHostId ?? null)
+      ) {
         onScrollToBottom();
       } else {
         selectWorkspace(id, workspaceHostId);
@@ -331,11 +347,13 @@ export function WorkspacesSidebarContainer({
     [
       onSelectWorkspaceOverride,
       selectedWorkspaceId,
+      routeHostId,
       selectWorkspace,
       onScrollToBottom,
       isMobile,
       setMobileActiveTab,
       activeWorkspaces,
+      setSelectedHostView,
     ]
   );
 
@@ -680,7 +698,7 @@ export function WorkspacesSidebarContainer({
 
   const workspaceHostSelectorOptions = useMemo(
     () => [
-      { id: 'all', name: 'All hosts' },
+      { id: ALL_WORKSPACE_HOSTS_ID, name: 'All hosts' },
       ...(runtime === 'local'
         ? [{ id: LOCAL_HOST_FILTER_ID, name: 'This machine' }]
         : []),

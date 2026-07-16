@@ -12,6 +12,7 @@ import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
 import { useRelayAppBarHosts } from "@remote/shared/hooks/useRelayAppBarHosts";
+import { useWorkspaceHostSelectionStore } from "@/shared/stores/useWorkspaceHostSelectionStore";
 import { QuickChatDialog } from "@/shared/dialogs/QuickChatDialog";
 
 type OrganizationWithProjects = {
@@ -31,6 +32,9 @@ function getHostInitials(name: string): string {
 
 export default function HomePage() {
   const navigate = useNavigate();
+  const selectWorkspaceHost = useWorkspaceHostSelectionStore(
+    (state) => state.selectHost,
+  );
   const search = useSearch({ from: "/" });
   const setSelectedOrgId = useOrganizationStore((s) => s.setSelectedOrgId);
   const {
@@ -207,6 +211,7 @@ export default function HomePage() {
                       }`}
                       onClick={() => {
                         if (isOnline) {
+                          selectWorkspaceHost(host.id);
                           navigate({ to: "/workspaces" });
                         } else if (isUnpaired) {
                           openRelaySettings(host.id);

@@ -42,6 +42,10 @@ import {
   CreateRemoteProjectDialog,
   type CreateRemoteProjectResult,
 } from "@/shared/dialogs/org/CreateRemoteProjectDialog";
+import {
+  ALL_WORKSPACE_HOSTS_ID,
+  useWorkspaceHostSelectionStore,
+} from "@/shared/stores/useWorkspaceHostSelectionStore";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -59,6 +63,9 @@ function getHostInitials(name: string): string {
 
 export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const navigate = useNavigate();
+  const selectWorkspaceHost = useWorkspaceHostSelectionStore(
+    (state) => state.selectHost,
+  );
   const location = useLocation();
   const { isSignedIn } = useAuth();
   const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
@@ -170,8 +177,9 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   }, []);
 
   const handleWorkspacesClick = useCallback(() => {
+    selectWorkspaceHost(ALL_WORKSPACE_HOSTS_ID);
     navigate({ to: "/workspaces" });
-  }, [navigate]);
+  }, [navigate, selectWorkspaceHost]);
 
   const handleProjectClick = useCallback(
     (projectId: string) => {
@@ -211,6 +219,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const handleHostClick = useCallback(
     (hostId: string, status: AppBarHostStatus) => {
       if (status === "online") {
+        selectWorkspaceHost(hostId);
         navigate({ to: "/workspaces" });
         return;
       }
@@ -221,7 +230,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
 
       openRelaySettings(hostId);
     },
-    [navigate, openRelaySettings],
+    [navigate, openRelaySettings, selectWorkspaceHost],
   );
 
   const handlePairHostClick = useCallback(() => {
