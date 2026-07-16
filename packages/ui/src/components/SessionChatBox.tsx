@@ -874,6 +874,31 @@ export function SessionChatBox<TExecutor extends string = string>({
           {/* Existing session mode: show in-progress todo when running, otherwise file stats */}
           {!isNewSessionMode && (
             <>
+              {handoff && handoff.options.length > 1 && (
+                <ToolbarDropdown
+                  label=""
+                  ariaLabel={t('conversation.handoff.label')}
+                  icon={ArrowsClockwiseIcon}
+                  disabled={handoff.disabled}
+                >
+                  <DropdownMenuLabel>
+                    {t('conversation.handoff.target')}
+                  </DropdownMenuLabel>
+                  {handoff.options
+                    .filter((executor) => executor !== handoff.current)
+                    .map((executor) => (
+                      <DropdownMenuItem
+                        key={executor}
+                        onClick={() => handoff.onChange(executor)}
+                      >
+                        <span className="flex items-center gap-base">
+                          {renderAgentIcon?.(executor, 'size-icon-sm')}
+                          {formatExecutorLabel(executor)}
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                </ToolbarDropdown>
+              )}
               {isRunning && inProgressTodo ? (
                 <span className="text-sm flex items-center gap-1 min-w-0">
                   <SpinnerIcon className="size-icon-sm animate-spin flex-shrink-0" />
@@ -1099,30 +1124,6 @@ export function SessionChatBox<TExecutor extends string = string>({
               disabled={isDisabled || isRunning || Boolean(item.disabled)}
             />
           ))}
-          {handoff && handoff.options.length > 1 && (
-            <ToolbarDropdown
-              label={t('conversation.handoff.label')}
-              icon={ArrowsClockwiseIcon}
-              disabled={handoff.disabled}
-            >
-              <DropdownMenuLabel>
-                {t('conversation.handoff.target')}
-              </DropdownMenuLabel>
-              {handoff.options
-                .filter((executor) => executor !== handoff.current)
-                .map((executor) => (
-                  <DropdownMenuItem
-                    key={executor}
-                    onClick={() => handoff.onChange(executor)}
-                  >
-                    <span className="flex items-center gap-base">
-                      {renderAgentIcon?.(executor, 'size-icon-sm')}
-                      {formatExecutorLabel(executor)}
-                    </span>
-                  </DropdownMenuItem>
-                ))}
-            </ToolbarDropdown>
-          )}
         </>
       }
       footerRight={renderActionButtons()}

@@ -58,6 +58,7 @@ function ToolbarIconButton({
 
 interface ToolbarDropdownProps {
   label: string;
+  ariaLabel?: string;
   icon?: Icon;
   children?: ReactNode;
   className?: string;
@@ -66,6 +67,7 @@ interface ToolbarDropdownProps {
 
 function ToolbarDropdown({
   label,
+  ariaLabel,
   icon,
   children,
   className,
@@ -78,6 +80,7 @@ function ToolbarDropdown({
       <DropdownMenuTriggerButton
         icon={icon}
         label={label}
+        aria-label={ariaLabel ?? label}
         className={className}
         disabled={disabled}
       />
