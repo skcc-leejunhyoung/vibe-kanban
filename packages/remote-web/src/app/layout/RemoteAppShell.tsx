@@ -149,6 +149,8 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     isWorkspacesDestination(
       resolveRemoteDestinationFromPath(location.pathname),
     ) &&
+    resolveRemoteDestinationFromPath(location.pathname)?.kind !==
+      "workspaces" &&
     !isLeftSidebarVisible;
   const activeProjectId = useMemo(() => {
     const segments = location.pathname.split("/").filter(Boolean);

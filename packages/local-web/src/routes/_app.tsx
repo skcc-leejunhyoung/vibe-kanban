@@ -1,9 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
-import {
-  createFileRoute,
-  useParams,
-  useLocation,
-} from '@tanstack/react-router';
+import { createFileRoute, useLocation } from '@tanstack/react-router';
 import { Provider as NiceModalProvider } from '@ebay/nice-modal-react';
 import { SequenceTrackerProvider } from '@/shared/keyboard/SequenceTracker';
 import { SequenceIndicator } from '@/shared/keyboard/SequenceIndicator';
@@ -102,10 +98,8 @@ function AppRouteProviders({ children }: { children: ReactNode }) {
 }
 
 function AppLayoutRouteComponent() {
-  const { hostId } = useParams({ strict: false });
-
   return (
-    <AppRouteProviders key={hostId ?? 'local'}>
+    <AppRouteProviders>
       <ReleaseNotesHandler />
       <SequenceTrackerProvider>
         <SequenceIndicator />

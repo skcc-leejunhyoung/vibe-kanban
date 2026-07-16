@@ -63,6 +63,7 @@ import {
   resolveModifier,
 } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
+import { getCycledWorkspaceKey } from './workspaceCycle';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
@@ -73,6 +74,8 @@ const PAGE_SIZE = 50;
 
 interface WorkspacesSidebarContainerProps {
   onScrollToBottom?: (behavior?: 'auto' | 'smooth') => void;
+  /** The standalone list route is visible independently of the mobile tab. */
+  isStandalonePage?: boolean;
   /**
    * Override workspace selection. Remote mobile navigates to a workspace route
    * instead of switching the mobile tab; when provided, the default
@@ -89,6 +92,7 @@ interface WorkspacesSidebarContainerProps {
 
 export function WorkspacesSidebarContainer({
   onScrollToBottom = () => {},
+  isStandalonePage = false,
   onSelectWorkspaceOverride,
   onAddWorkspaceOverride,
 }: WorkspacesSidebarContainerProps) {
@@ -402,20 +406,15 @@ export function WorkspacesSidebarContainer({
       const selectedWorkspaceKey = selectedWorkspaceId
         ? getHostWorkspaceKey(selectedWorkspaceId, routeHostId ?? null)
         : null;
-      const currentIndex = selectedWorkspaceKey
-        ? displayedWorkspaceIds.indexOf(selectedWorkspaceKey)
-        : -1;
-      const fallbackIndex =
-        direction === 1 ? 0 : displayedWorkspaceIds.length - 1;
-      const nextIndex =
-        currentIndex === -1
-          ? fallbackIndex
-          : (currentIndex + direction + displayedWorkspaceIds.length) %
-            displayedWorkspaceIds.length;
+      const nextWorkspaceKey = getCycledWorkspaceKey(
+        displayedWorkspaceIds,
+        selectedWorkspaceKey,
+        direction
+      );
       const nextWorkspace = [...activeWorkspaces, ...archivedWorkspaces].find(
         (workspace) =>
           getHostWorkspaceKey(workspace.id, workspace.hostId) ===
-          displayedWorkspaceIds[nextIndex]
+          nextWorkspaceKey
       );
       if (nextWorkspace) {
         handleSelectWorkspace(nextWorkspace.id, nextWorkspace.hostId);
@@ -481,7 +480,8 @@ export function WorkspacesSidebarContainer({
   // Only active while the list is on screen (always on desktop; on mobile only
   // while the workspaces tab shows). enableOnFormTags:false keeps arrow keys
   // working normally inside the search box and other inputs.
-  const isListVisible = !isMobile || mobileActiveTab === 'workspaces';
+  const isListVisible =
+    isStandalonePage || !isMobile || mobileActiveTab === 'workspaces';
 
   // Arrow-key navigation is scoped to the sidebar via the ref returned by
   // useHotkeys: it only fires while keyboard focus is inside this container.

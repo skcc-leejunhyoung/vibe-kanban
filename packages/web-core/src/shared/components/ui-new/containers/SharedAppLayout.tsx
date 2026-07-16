@@ -164,7 +164,10 @@ export function SharedAppLayout() {
   );
   const isWorkspacesActive = isLocalWorkspacesDestination(currentDestination);
   const isWorkspaceSidebarPreviewEnabled =
-    !isMobile && isWorkspacesActive && !isLeftSidebarVisible;
+    !isMobile &&
+    isWorkspacesActive &&
+    currentDestination?.kind !== 'workspaces' &&
+    !isLeftSidebarVisible;
   const activeProjectId = projectDestination?.projectId ?? null;
 
   // Persist last selected project to scratch store

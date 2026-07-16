@@ -78,7 +78,9 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
   const primaryRepoId = repos[0]?.id;
 
   const currentWorkspaceSummary = activeWorkspaces.find(
-    (w) => w.id === workspaceId
+    (workspace) =>
+      getHostWorkspaceKey(workspace.id, workspace.hostId) ===
+      getHostWorkspaceKey(workspaceId ?? '', hostId)
   );
   const hasPrAttached = !!currentWorkspaceSummary?.prStatus;
 
