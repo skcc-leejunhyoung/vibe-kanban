@@ -26,8 +26,10 @@ use uuid::Uuid;
 
 use super::streams::{DiffStreamQuery, stream_workspace_diff_sse, stream_workspace_diff_ws};
 use crate::{
-    DeploymentImpl, error::ApiError, middleware::signed_ws::SignedWsUpgrade,
-    routes::repo::resolve_primary_remote,
+    DeploymentImpl,
+    error::ApiError,
+    middleware::signed_ws::SignedWsUpgrade,
+    routes::repo::{resolve_primary_remote, resolve_primary_remote_with},
 };
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -945,223 +947,211 @@ pub async fn get_workspace_branch_status(
                 acc
             });
 
-    let mut results = Vec::with_capacity(repositories.len());
+    // The per-repo work below is synchronous git (libgit2 + CLI) that takes
+    // hundreds of milliseconds on busy repos and is polled every few seconds
+    // by the frontend. Run it on the blocking pool so it can't starve the
+    // async workers (same failure class as the log-normalization starvation).
+    let git = deployment.git().clone();
+    let results = tokio::task::spawn_blocking(move || {
+        let mut results = Vec::with_capacity(repositories.len());
 
-    for repo in repositories {
-        let Some(target_branch) = target_branches.get(&repo.id).cloned() else {
-            continue;
-        };
+        for repo in repositories {
+            let Some(target_branch) = target_branches.get(&repo.id).cloned() else {
+                continue;
+            };
 
-        let mut repo_merges = merges_by_repo.get(&repo.id).cloned().unwrap_or_default();
+            let mut repo_merges = merges_by_repo.get(&repo.id).cloned().unwrap_or_default();
 
-        // Missing source repo: report it without touching git, so the caller can warn
-        // the user while still allowing cleanup/deletion to proceed.
-        if missing_repo_ids.contains(&repo.id) {
+            // Missing source repo: report it without touching git, so the caller can warn
+            // the user while still allowing cleanup/deletion to proceed.
+            if missing_repo_ids.contains(&repo.id) {
+                results.push(RepoBranchStatus {
+                    repo_id: repo.id,
+                    repo_name: repo.name,
+                    repo_missing: true,
+                    status: BranchStatus {
+                        commits_behind: None,
+                        commits_ahead: None,
+                        has_uncommitted_changes: None,
+                        head_oid: None,
+                        uncommitted_count: None,
+                        untracked_count: None,
+                        target_branch_name: target_branch,
+                        remote_commits_behind: None,
+                        remote_commits_ahead: None,
+                        target_remote_commits_ahead: None,
+                        target_remote_commits_behind: None,
+                        work_branch_has_remote: false,
+                        merges: repo_merges,
+                        is_rebase_in_progress: false,
+                        conflict_op: None,
+                        conflicted_files: Vec::new(),
+                        is_target_remote: false,
+                    },
+                });
+                continue;
+            }
+
+            // In-place ("quick chat") workspaces run in the repo root itself, so the
+            // worktree path IS `container_ref` rather than a per-repo subdir.
+            let worktree_path = if workspace.in_place {
+                workspace_dir.clone()
+            } else {
+                workspace_dir.as_ref().map(|dir| dir.join(&repo.name))
+            };
+
+            let head_oid = worktree_path
+                .as_ref()
+                .and_then(|path| git.get_head_info(path).ok())
+                .map(|h| h.oid);
+
+            let (is_rebase_in_progress, conflicted_files, conflict_op) =
+                if let Some(worktree_path) = worktree_path.as_ref() {
+                    let in_rebase = git.is_rebase_in_progress(worktree_path).unwrap_or(false);
+                    let conflicts = git.get_conflicted_files(worktree_path).unwrap_or_default();
+                    let op = if conflicts.is_empty() {
+                        None
+                    } else {
+                        git.detect_conflict_op(worktree_path).unwrap_or(None)
+                    };
+                    (in_rebase, conflicts, op)
+                } else {
+                    (false, Vec::new(), None)
+                };
+
+            let (uncommitted_count, untracked_count) = match worktree_path
+                .as_ref()
+                .map(|path| git.get_worktree_change_counts(path))
+            {
+                Some(Ok((a, b))) => (Some(a), Some(b)),
+                _ => (None, None),
+            };
+
+            let has_uncommitted_changes = uncommitted_count.map(|c| c > 0);
+
+            let is_target_remote = git.is_remote_branch(&repo.path, &target_branch)?;
+
+            let (commits_ahead, commits_behind) = if is_target_remote {
+                let (ahead, behind) = git.get_remote_branch_status(
+                    &repo.path,
+                    &workspace.branch,
+                    Some(&target_branch),
+                )?;
+                (Some(ahead), Some(behind))
+            } else {
+                let (a, b) =
+                    git.get_branch_status(&repo.path, &workspace.branch, &target_branch)?;
+                (Some(a), Some(b))
+            };
+
+            let (remote_ahead, remote_behind) = if let Some(Merge::Pr(PrMerge {
+                pr_info:
+                    PullRequestInfo {
+                        status: MergeStatus::Open,
+                        ..
+                    },
+                ..
+            })) = repo_merges.first()
+            {
+                match git.get_remote_branch_status(&repo.path, &workspace.branch, None) {
+                    Ok((ahead, behind)) => (Some(ahead), Some(behind)),
+                    Err(_) => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+
+            // Whether the work branch has a counterpart on the repo's primary remote.
+            // Checked via the local remote-tracking ref (`origin/<work_branch>`), so
+            // it's network-free and — unlike `remote_commits_ahead` above — does NOT
+            // depend on an open PR. This mirrors what the pull operation actually does
+            // (resolve origin for the branch), so the "Pull" button matches whether a
+            // pull would do anything: a pushed vk branch with no PR still shows it, a
+            // local-only branch never does.
+            let work_branch_has_remote =
+                if let Some(remote) = resolve_primary_remote_with(&git, &repo) {
+                    git.get_remote_tracking_status(&repo.path, &workspace.branch, &remote)
+                        .map(|(exists, _, _)| exists)
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
+            // How far the local target (base) branch is ahead/behind its counterpart
+            // on the repo's primary remote. Read from local tracking refs only (no
+            // network), so it's cheap to include in this poll. Only meaningful for a
+            // real local branch with a remote configured.
+            let (target_remote_ahead, target_remote_behind) = if is_target_remote {
+                (None, None)
+            } else if let Some(remote) = resolve_primary_remote_with(&git, &repo) {
+                match git.get_remote_tracking_status(&repo.path, &target_branch, &remote) {
+                    Ok((true, ahead, behind)) => (Some(ahead), Some(behind)),
+                    // Target branch has never been pushed to this remote yet.
+                    Ok((false, _, _)) => (None, None),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to compute target-branch remote status for repo {}: {e}",
+                            repo.id
+                        );
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            };
+
+            // For each open PR, compute how far its head branch is ahead/behind its
+            // base branch — the PR's own diff size — so the PR panel can show it
+            // independently of the work-branch -> target status above. In a
+            // three-branch flow the head is the feature branch (not workspace.branch)
+            // and the base is the PR's own base (e.g. develop).
+            for merge in repo_merges.iter_mut() {
+                if let Merge::Pr(pr) = merge
+                    && matches!(pr.pr_info.status, MergeStatus::Open)
+                {
+                    let head = pr
+                        .head_branch_name
+                        .clone()
+                        .unwrap_or_else(|| workspace.branch.clone());
+                    if let Some((ahead, behind)) =
+                        compute_pr_head_ahead_behind(&git, &repo, &head, &pr.target_branch_name)
+                    {
+                        pr.head_commits_ahead = Some(ahead);
+                        pr.head_commits_behind = Some(behind);
+                    }
+                }
+            }
+
             results.push(RepoBranchStatus {
                 repo_id: repo.id,
                 repo_name: repo.name,
-                repo_missing: true,
+                repo_missing: false,
                 status: BranchStatus {
-                    commits_behind: None,
-                    commits_ahead: None,
-                    has_uncommitted_changes: None,
-                    head_oid: None,
-                    uncommitted_count: None,
-                    untracked_count: None,
-                    target_branch_name: target_branch,
-                    remote_commits_behind: None,
-                    remote_commits_ahead: None,
-                    target_remote_commits_ahead: None,
-                    target_remote_commits_behind: None,
-                    work_branch_has_remote: false,
+                    commits_ahead,
+                    commits_behind,
+                    has_uncommitted_changes,
+                    head_oid,
+                    uncommitted_count,
+                    untracked_count,
+                    remote_commits_ahead: remote_ahead,
+                    remote_commits_behind: remote_behind,
+                    target_remote_commits_ahead: target_remote_ahead,
+                    target_remote_commits_behind: target_remote_behind,
+                    work_branch_has_remote,
                     merges: repo_merges,
-                    is_rebase_in_progress: false,
-                    conflict_op: None,
-                    conflicted_files: Vec::new(),
-                    is_target_remote: false,
+                    target_branch_name: target_branch,
+                    is_rebase_in_progress,
+                    conflict_op,
+                    conflicted_files,
+                    is_target_remote,
                 },
             });
-            continue;
         }
 
-        // In-place ("quick chat") workspaces run in the repo root itself, so the
-        // worktree path IS `container_ref` rather than a per-repo subdir.
-        let worktree_path = if workspace.in_place {
-            workspace_dir.clone()
-        } else {
-            workspace_dir.as_ref().map(|dir| dir.join(&repo.name))
-        };
-
-        let head_oid = worktree_path
-            .as_ref()
-            .and_then(|path| deployment.git().get_head_info(path).ok())
-            .map(|h| h.oid);
-
-        let (is_rebase_in_progress, conflicted_files, conflict_op) =
-            if let Some(worktree_path) = worktree_path.as_ref() {
-                let in_rebase = deployment
-                    .git()
-                    .is_rebase_in_progress(worktree_path)
-                    .unwrap_or(false);
-                let conflicts = deployment
-                    .git()
-                    .get_conflicted_files(worktree_path)
-                    .unwrap_or_default();
-                let op = if conflicts.is_empty() {
-                    None
-                } else {
-                    deployment
-                        .git()
-                        .detect_conflict_op(worktree_path)
-                        .unwrap_or(None)
-                };
-                (in_rebase, conflicts, op)
-            } else {
-                (false, Vec::new(), None)
-            };
-
-        let (uncommitted_count, untracked_count) = match worktree_path
-            .as_ref()
-            .map(|path| deployment.git().get_worktree_change_counts(path))
-        {
-            Some(Ok((a, b))) => (Some(a), Some(b)),
-            _ => (None, None),
-        };
-
-        let has_uncommitted_changes = uncommitted_count.map(|c| c > 0);
-
-        let is_target_remote = deployment
-            .git()
-            .is_remote_branch(&repo.path, &target_branch)?;
-
-        let (commits_ahead, commits_behind) = if is_target_remote {
-            let (ahead, behind) = deployment.git().get_remote_branch_status(
-                &repo.path,
-                &workspace.branch,
-                Some(&target_branch),
-            )?;
-            (Some(ahead), Some(behind))
-        } else {
-            let (a, b) = deployment.git().get_branch_status(
-                &repo.path,
-                &workspace.branch,
-                &target_branch,
-            )?;
-            (Some(a), Some(b))
-        };
-
-        let (remote_ahead, remote_behind) = if let Some(Merge::Pr(PrMerge {
-            pr_info:
-                PullRequestInfo {
-                    status: MergeStatus::Open,
-                    ..
-                },
-            ..
-        })) = repo_merges.first()
-        {
-            match deployment
-                .git()
-                .get_remote_branch_status(&repo.path, &workspace.branch, None)
-            {
-                Ok((ahead, behind)) => (Some(ahead), Some(behind)),
-                Err(_) => (None, None),
-            }
-        } else {
-            (None, None)
-        };
-
-        // Whether the work branch has a counterpart on the repo's primary remote.
-        // Checked via the local remote-tracking ref (`origin/<work_branch>`), so
-        // it's network-free and — unlike `remote_commits_ahead` above — does NOT
-        // depend on an open PR. This mirrors what the pull operation actually does
-        // (resolve origin for the branch), so the "Pull" button matches whether a
-        // pull would do anything: a pushed vk branch with no PR still shows it, a
-        // local-only branch never does.
-        let work_branch_has_remote =
-            if let Some(remote) = crate::routes::repo::resolve_primary_remote(&deployment, &repo) {
-                deployment
-                    .git()
-                    .get_remote_tracking_status(&repo.path, &workspace.branch, &remote)
-                    .map(|(exists, _, _)| exists)
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-
-        // How far the local target (base) branch is ahead/behind its counterpart
-        // on the repo's primary remote. Read from local tracking refs only (no
-        // network), so it's cheap to include in this poll. Only meaningful for a
-        // real local branch with a remote configured.
-        let (target_remote_ahead, target_remote_behind) = if is_target_remote {
-            (None, None)
-        } else if let Some(remote) = crate::routes::repo::resolve_primary_remote(&deployment, &repo)
-        {
-            match deployment
-                .git()
-                .get_remote_tracking_status(&repo.path, &target_branch, &remote)
-            {
-                Ok((true, ahead, behind)) => (Some(ahead), Some(behind)),
-                // Target branch has never been pushed to this remote yet.
-                Ok((false, _, _)) => (None, None),
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to compute target-branch remote status for repo {}: {e}",
-                        repo.id
-                    );
-                    (None, None)
-                }
-            }
-        } else {
-            (None, None)
-        };
-
-        // For each open PR, compute how far its head branch is ahead/behind its
-        // base branch — the PR's own diff size — so the PR panel can show it
-        // independently of the work-branch -> target status above. In a
-        // three-branch flow the head is the feature branch (not workspace.branch)
-        // and the base is the PR's own base (e.g. develop).
-        for merge in repo_merges.iter_mut() {
-            if let Merge::Pr(pr) = merge
-                && matches!(pr.pr_info.status, MergeStatus::Open)
-            {
-                let head = pr
-                    .head_branch_name
-                    .clone()
-                    .unwrap_or_else(|| workspace.branch.clone());
-                if let Some((ahead, behind)) =
-                    compute_pr_head_ahead_behind(&deployment, &repo, &head, &pr.target_branch_name)
-                {
-                    pr.head_commits_ahead = Some(ahead);
-                    pr.head_commits_behind = Some(behind);
-                }
-            }
-        }
-
-        results.push(RepoBranchStatus {
-            repo_id: repo.id,
-            repo_name: repo.name,
-            repo_missing: false,
-            status: BranchStatus {
-                commits_ahead,
-                commits_behind,
-                has_uncommitted_changes,
-                head_oid,
-                uncommitted_count,
-                untracked_count,
-                remote_commits_ahead: remote_ahead,
-                remote_commits_behind: remote_behind,
-                target_remote_commits_ahead: target_remote_ahead,
-                target_remote_commits_behind: target_remote_behind,
-                work_branch_has_remote,
-                merges: repo_merges,
-                target_branch_name: target_branch,
-                is_rebase_in_progress,
-                conflict_op,
-                conflicted_files,
-                is_target_remote,
-            },
-        });
-    }
+        Ok::<_, ApiError>(results)
+    })
+    .await
+    .map_err(|join_error| ApiError::Io(std::io::Error::other(join_error)))??;
 
     Ok(ResponseJson(ApiResponse::success(results)))
 }
@@ -1172,16 +1162,15 @@ pub async fn get_workspace_branch_status(
 /// back to the primary remote's tracking ref (e.g. `origin/develop`). Returns
 /// `None` when neither resolves.
 fn compute_pr_head_ahead_behind(
-    deployment: &DeploymentImpl,
+    git: &git::GitService,
     repo: &Repo,
     head: &str,
     base: &str,
 ) -> Option<(usize, usize)> {
-    let git = deployment.git();
     if let Ok((ahead, behind)) = git.get_branch_status(&repo.path, head, base) {
         return Some((ahead, behind));
     }
-    if let Some(remote) = resolve_primary_remote(deployment, repo) {
+    if let Some(remote) = resolve_primary_remote_with(git, repo) {
         let remote_base = format!("{remote}/{base}");
         if let Ok((ahead, behind)) = git.get_branch_status(&repo.path, head, &remote_base) {
             return Some((ahead, behind));

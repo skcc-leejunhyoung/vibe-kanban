@@ -15,6 +15,12 @@ export const workspaceRecordKeys = {
 
 type Options = {
   enabled?: boolean;
+  /**
+   * Served while the record fetch is pending — e.g. the workspace's row from
+   * the list stream, whose shape is a superset of the record. Keeps the main
+   * pane from blanking to a spinner on a cold navigation.
+   */
+  placeholderData?: Workspace;
 };
 
 export function useWorkspaceRecord(workspaceId?: string, opts?: Options) {
@@ -25,5 +31,6 @@ export function useWorkspaceRecord(workspaceId?: string, opts?: Options) {
     queryKey: workspaceRecordKeys.byId(workspaceId, hostId),
     queryFn: () => workspacesApi.get(workspaceId!),
     enabled,
+    placeholderData: opts?.placeholderData,
   });
 }

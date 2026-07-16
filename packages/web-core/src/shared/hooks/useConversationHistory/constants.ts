@@ -2,6 +2,12 @@ import type { PatchTypeWithKey } from './types';
 
 export const MIN_INITIAL_ENTRIES = 10;
 export const REMAINING_BATCH_SIZE = 50;
+/**
+ * How many historic processes the initial conversation load streams at once.
+ * Overlapping the per-process round trips matters most on the remote web,
+ * where every log stream crosses the relay.
+ */
+export const HISTORIC_LOAD_CONCURRENCY = 3;
 
 export const makeLoadingPatch = (
   executionProcessId: string

@@ -56,6 +56,12 @@ export type Workspace = SidebarWorkspace;
 export interface UseWorkspacesResult {
   workspaces: SidebarWorkspace[];
   archivedWorkspaces: SidebarWorkspace[];
+  /**
+   * Raw stream rows by id (active + archived). `WorkspaceWithStatus` is a
+   * superset of the `Workspace` record, so these can seed the per-workspace
+   * record query while its fetch is in flight.
+   */
+  workspaceRecordsById: Record<string, WorkspaceWithStatus>;
   isLoading: boolean;
   isConnected: boolean;
   error: string | null;
@@ -167,7 +173,9 @@ export function useWorkspaces(): UseWorkspacesResult {
     isConnected: activeIsConnected,
     isInitialized: activeIsInitialized,
     error: activeError,
-  } = useJsonPatchWsStream<WorkspacesState>(activeEndpoint, true, initialData);
+  } = useJsonPatchWsStream<WorkspacesState>(activeEndpoint, true, initialData, {
+    keepSnapshotForEndpoint: true,
+  });
 
   const {
     data: archivedData,
@@ -177,7 +185,8 @@ export function useWorkspaces(): UseWorkspacesResult {
   } = useJsonPatchWsStream<WorkspacesState>(
     archivedEndpoint,
     true,
-    initialData
+    initialData,
+    { keepSnapshotForEndpoint: true }
   );
 
   // Wait for both streams to be initialized before fetching summaries
@@ -239,8 +248,22 @@ export function useWorkspaces(): UseWorkspacesResult {
       .map((ws) => toSidebarWorkspace(ws, archivedSummaries.get(ws.id)));
   }, [archivedData, archivedSummaries]);
 
-  // isLoading is true when we haven't received initial data from either stream
-  const isLoading = !activeIsInitialized || !archivedIsInitialized;
+  const workspaceRecordsById = useMemo(() => {
+    const byId: Record<string, WorkspaceWithStatus> = {};
+    for (const ws of Object.values(archivedData?.workspaces ?? {})) {
+      byId[ws.id] = ws;
+    }
+    for (const ws of Object.values(activeData?.workspaces ?? {})) {
+      byId[ws.id] = ws;
+    }
+    return byId;
+  }, [activeData, archivedData]);
+
+  // isLoading is true when we have nothing to show for a stream yet — neither
+  // its initial replay nor a cached snapshot from a previous connection.
+  const isLoading =
+    (!activeIsInitialized && !activeData) ||
+    (!archivedIsInitialized && !archivedData);
 
   // Combined connection status
   const isConnected = activeIsConnected && archivedIsConnected;
@@ -251,6 +274,7 @@ export function useWorkspaces(): UseWorkspacesResult {
   return {
     workspaces,
     archivedWorkspaces,
+    workspaceRecordsById,
     isLoading,
     isConnected,
     error,

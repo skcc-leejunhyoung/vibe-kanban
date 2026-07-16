@@ -8,10 +8,14 @@ import {
   type MouseEvent,
 } from 'react';
 import { useParams } from '@tanstack/react-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useScratch } from '@/shared/hooks/useScratch';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { workspaceSessionsQuery } from '@/shared/hooks/useWorkspaceSessions';
+import { workspaceReposQuery } from '@/shared/hooks/useWorkspaceRepo';
 import { ScratchType, type DraftWorkspaceData } from 'shared/types';
 import { splitMessageToTitleDescription } from '@/shared/lib/string';
 import { cn } from '@/shared/lib/utils';
@@ -88,6 +92,48 @@ export function WorkspacesSidebarContainer({
   const isMobile = useIsMobile();
   const { hosts: remoteCloudHosts } = useRemoteCloudHostsAppBarModel();
   const { hostId: routeHostId } = useParams({ strict: false });
+  const queryClient = useQueryClient();
+  const hostId = useHostId();
+
+  // Warm the queries a workspace open waits on (sessions gate the whole
+  // conversation waterfall) once intent shows — a row dwelled on or the
+  // keyboard cursor resting. Dwell-gated so sweeping the pointer (or holding
+  // an arrow key) across many rows doesn't fire a request per row passed —
+  // on the remote web each one would cross the relay.
+  const PREFETCH_DWELL_MS = 120;
+  const prefetchTimerRef = useRef<number | null>(null);
+  const prefetchCandidateRef = useRef<string | null>(null);
+  const lastPrefetchedRef = useRef<string | null>(null);
+  const prefetchWorkspaceData = useCallback(
+    (id: string) => {
+      if (prefetchCandidateRef.current === id) return;
+      prefetchCandidateRef.current = id;
+      if (prefetchTimerRef.current !== null) {
+        window.clearTimeout(prefetchTimerRef.current);
+      }
+      prefetchTimerRef.current = window.setTimeout(() => {
+        prefetchTimerRef.current = null;
+        if (lastPrefetchedRef.current === id) return;
+        lastPrefetchedRef.current = id;
+        void queryClient.prefetchQuery({
+          ...workspaceSessionsQuery(id, hostId),
+          staleTime: 30_000,
+        });
+        void queryClient.prefetchQuery({
+          ...workspaceReposQuery(id, hostId),
+          staleTime: 30_000,
+        });
+      }, PREFETCH_DWELL_MS);
+    },
+    [queryClient, hostId]
+  );
+  useEffect(() => {
+    return () => {
+      if (prefetchTimerRef.current !== null) {
+        window.clearTimeout(prefetchTimerRef.current);
+      }
+    };
+  }, []);
   const setMobileActiveTab = useUiPreferencesStore((s) => s.setMobileActiveTab);
   const mobileActiveTab = useUiPreferencesStore((s) => s.mobileActiveTab);
   const [searchQuery, setSearchQuery] = useState('');
@@ -262,8 +308,14 @@ export function WorkspacesSidebarContainer({
   const workspaceRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const registerWorkspaceRef = useCallback(
     (id: string, node: HTMLDivElement | null) => {
-      if (node) workspaceRefs.current.set(id, node);
-      else workspaceRefs.current.delete(id);
+      if (node) {
+        // Stamped so the delegated hover-prefetch handler below can resolve
+        // the row in O(depth) via closest() instead of scanning every row.
+        node.dataset.workspaceId = id;
+        workspaceRefs.current.set(id, node);
+      } else {
+        workspaceRefs.current.delete(id);
+      }
     },
     []
   );
@@ -369,6 +421,23 @@ export function WorkspacesSidebarContainer({
     ]
   ) as RefObject<HTMLDivElement>;
 
+  // Hovering a row is the strongest pre-navigation signal we get; delegate on
+  // the sidebar root (rows live in the presentational ui package) and resolve
+  // the hovered row via the data attribute stamped in registerWorkspaceRef.
+  useEffect(() => {
+    const root = keyboardNavRef.current;
+    if (!root) return;
+    const onPointerOver = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const id = target.closest<HTMLElement>('[data-workspace-id]')?.dataset
+        .workspaceId;
+      if (id) prefetchWorkspaceData(id);
+    };
+    root.addEventListener('pointerover', onPointerOver, { passive: true });
+    return () => root.removeEventListener('pointerover', onPointerOver);
+  }, [keyboardNavRef, prefetchWorkspaceData]);
+
   // When the cursor MOVES (user navigation), move real DOM focus onto the row
   // so the cursor and keyboard focus stay in lockstep: this keeps the
   // sidebar-scoped hotkeys active and makes native Enter agree with the cursor
@@ -381,7 +450,10 @@ export function WorkspacesSidebarContainer({
     if (!node) return;
     node.focus({ preventScroll: true });
     node.scrollIntoView({ block: 'nearest' });
-  }, [focusedWorkspaceId]);
+    // The keyboard cursor is about to be opened with Enter more often than
+    // not — warm that workspace too.
+    prefetchWorkspaceData(focusedWorkspaceId);
+  }, [focusedWorkspaceId, prefetchWorkspaceData]);
 
   // Drop the cursor if its row stops being rendered (collapsed section,
   // filtered out, or removed) so it can't point at an invisible workspace.

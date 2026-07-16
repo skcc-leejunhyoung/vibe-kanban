@@ -67,7 +67,8 @@ use uuid::Uuid;
 use worktree_manager::WorktreeError;
 
 use crate::services::{
-    execution_process, notification::NotificationService, queued_message::QueuedMessageService,
+    execution_process, normalized_replay_cache, notification::NotificationService,
+    queued_message::QueuedMessageService,
 };
 pub type ContainerRef = String;
 
@@ -75,6 +76,29 @@ static HISTORICAL_LOG_REPLAY_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
 
 fn historical_log_replay_semaphore() -> &'static Semaphore {
     HISTORICAL_LOG_REPLAY_SEMAPHORE.get_or_init(|| Semaphore::new(1))
+}
+
+/// Newly finished processes are not cached for this long: finalize removes the
+/// live msg store BEFORE the JSONL writer finishes draining (bounded 5s), and
+/// the spawn-failure path appends log entries after the status flips, so a
+/// replay landing in that window can be truncated. Young replays stay uncached
+/// and self-heal on the next open.
+const NORMALIZED_REPLAY_CACHE_MIN_AGE_SECS: i64 = 60;
+
+/// Stream an already-deduplicated replay: every patch, then `Finished`.
+/// Cloning per item is the cost of sharing one cached Vec across concurrent
+/// viewers; each patch is serialized for the socket right afterwards anyway.
+fn replay_patch_stream(
+    patches: Arc<Vec<Patch>>,
+) -> BoxStream<'static, Result<LogMsg, std::io::Error>> {
+    futures::stream::iter(
+        (0..patches.len())
+            .map(move |i| Ok::<_, std::io::Error>(LogMsg::JsonPatch(patches[i].clone()))),
+    )
+    .chain(futures::stream::once(async {
+        Ok::<_, std::io::Error>(LogMsg::Finished)
+    }))
+    .boxed()
 }
 
 #[derive(Debug, Error)]
@@ -905,6 +929,13 @@ pub trait ContainerService {
                     .boxed(),
             )
         } else {
+            // Finished-process logs are immutable, so a previous replay's
+            // normalization result can be served straight from memory — no
+            // disk read, no re-normalization, no semaphore.
+            if let Some(patches) = normalized_replay_cache::get(id) {
+                return Some(replay_patch_stream(patches));
+            }
+
             // A workspace can request many completed execution logs at once.
             // Serialize their normalization so per-replay buffers cannot
             // multiply into another process-wide memory spike.
@@ -1141,16 +1172,26 @@ pub trait ContainerService {
             .collect::<Vec<_>>()
             .await;
 
-            let output = futures::stream::iter(
-                deduped
-                    .into_iter()
-                    .map(|patch| Ok::<_, std::io::Error>(LogMsg::JsonPatch(patch))),
-            )
-            .chain(futures::stream::once(async {
-                Ok::<_, std::io::Error>(LogMsg::Finished)
-            }));
+            let deduped = Arc::new(deduped);
+            // Cache only settled processes: a `running` row with no live msg
+            // store is an orphan whose log may still grow (server restart),
+            // and a just-finished process may still be draining its JSONL
+            // writer (see NORMALIZED_REPLAY_CACHE_MIN_AGE_SECS).
+            let cacheable = !matches!(process.status, ExecutionProcessStatus::Running)
+                && process.completed_at.is_some_and(|at| {
+                    (chrono::Utc::now() - at).num_seconds() > NORMALIZED_REPLAY_CACHE_MIN_AGE_SECS
+                });
+            if cacheable {
+                let cache_patches = deduped.clone();
+                let execution_id = *id;
+                // Sizing serializes every patch — keep it off the async workers
+                // and outside this fn's replay-semaphore critical section.
+                tokio::task::spawn_blocking(move || {
+                    normalized_replay_cache::insert(execution_id, cache_patches)
+                });
+            }
 
-            Some(output.boxed())
+            Some(replay_patch_stream(deduped))
         }
     }
 

@@ -6,6 +6,11 @@ import {
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { streamJsonPatchEntries } from '@/shared/lib/streamJsonPatchEntries';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import {
+  getCachedProcessEntries,
+  setCachedProcessEntries,
+} from '@/features/workspace-chat/model/processEntriesCache';
 import type {
   AddEntryType,
   ConversationTimelineSource,
@@ -34,6 +39,7 @@ export interface UseConversationHistoryResult {
   loadUntilProcess: (processId: string) => Promise<void>;
 }
 import {
+  HISTORIC_LOAD_CONCURRENCY,
   MIN_INITIAL_ENTRIES,
   REMAINING_BATCH_SIZE,
 } from '@/shared/hooks/useConversationHistory/constants';
@@ -47,6 +53,9 @@ export const useConversationHistory = ({
     isLoading,
     isConnected,
   } = useExecutionProcessesContext();
+  // Captured per render so async stream callbacks cache under the host the
+  // data was actually fetched from, even if the route changes mid-stream.
+  const hostId = useHostId();
   const executionProcesses = useRef<ExecutionProcess[]>(executionProcessesRaw);
   const displayedExecutionProcesses = useRef<ExecutionProcessStateStore>({});
   const loadedInitialEntries = useRef(false);
@@ -110,6 +119,11 @@ export const useConversationHistory = ({
   const loadEntriesForHistoricExecutionProcess = (
     executionProcess: ExecutionProcess
   ) => {
+    // Finished-process logs are immutable: entries resolved once are reused
+    // across navigations instead of re-streaming the whole history.
+    const cached = getCachedProcessEntries(hostId, executionProcess.id);
+    if (cached) return Promise.resolve(cached);
+
     let url = '';
     if (executionProcess.executor_action.typ.type === 'ScriptRequest') {
       url = `/api/execution-processes/${executionProcess.id}/raw-logs/ws`;
@@ -121,6 +135,9 @@ export const useConversationHistory = ({
       const controller = streamJsonPatchEntries<PatchType>(url, {
         onFinished: (allEntries) => {
           controller.close();
+          if (executionProcess.status !== ExecutionProcessStatus.running) {
+            setCachedProcessEntries(hostId, executionProcess.id, allEntries);
+          }
           resolve(allEntries);
         },
         onError: (err) => {
@@ -277,22 +294,37 @@ export const useConversationHistory = ({
 
       if (!executionProcesses?.current) return localDisplayedExecutionProcesses;
 
-      for (const executionProcess of [
-        ...executionProcesses.current,
-      ].reverse()) {
-        if (executionProcess.status === ExecutionProcessStatus.running)
-          continue;
-
-        const entries =
-          await loadEntriesForHistoricExecutionProcess(executionProcess);
-        const entriesWithKey = entries.map((e, idx) =>
-          patchWithKey(e, executionProcess.id, idx)
+      const historicProcesses = [...executionProcesses.current]
+        .reverse()
+        .filter(
+          (executionProcess) =>
+            executionProcess.status !== ExecutionProcessStatus.running
         );
 
-        localDisplayedExecutionProcesses[executionProcess.id] = {
-          executionProcess,
-          entries: entriesWithKey,
-        };
+      // Load a few processes concurrently: display order is decided by
+      // created_at during flatten (not resolution order), and overlapping the
+      // per-process round trips matters on high-latency transports (remote
+      // web relays every stream). The early-stop check per batch means we
+      // over-fetch at most a batch beyond maxEntries, which just becomes
+      // already-loaded history.
+      for (
+        let i = 0;
+        i < historicProcesses.length;
+        i += HISTORIC_LOAD_CONCURRENCY
+      ) {
+        const batch = historicProcesses.slice(i, i + HISTORIC_LOAD_CONCURRENCY);
+        await Promise.all(
+          batch.map(async (executionProcess) => {
+            const entries =
+              await loadEntriesForHistoricExecutionProcess(executionProcess);
+            localDisplayedExecutionProcesses[executionProcess.id] = {
+              executionProcess,
+              entries: entries.map((e, idx) =>
+                patchWithKey(e, executionProcess.id, idx)
+              ),
+            };
+          })
+        );
 
         if (
           maxEntries != null &&
@@ -517,6 +549,74 @@ export const useConversationHistory = ({
     computeHasMoreHistory,
     emitEntries,
   ]); // include idListKey so new processes trigger reload
+
+  // Late-arriving finished processes. The initial load above may have run
+  // against a CACHED (stale) process snapshot; when the fresh server replay
+  // reveals finished processes the timeline has never seen — e.g. a turn that
+  // started AND completed while the user was away — no other effect covers
+  // them: the active-process effect only handles running ones, and the
+  // status-transition effect needs a previously observed `running` status.
+  // Load anything finished, undisplayed, and within/after the loaded window
+  // (older ones stay behind scroll-up pagination).
+  const reconcileInFlightRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (isLoading || !loadedInitialEntries.current) return;
+
+    const displayed = displayedExecutionProcesses.current;
+    const displayedTimes = Object.values(displayed).map((p) =>
+      new Date(p.executionProcess.created_at as unknown as string).getTime()
+    );
+    if (displayedTimes.length === 0) return;
+    const oldestDisplayedAt = Math.min(...displayedTimes);
+
+    const missing = executionProcesses.current.filter(
+      (p) =>
+        p.status !== ExecutionProcessStatus.running &&
+        !displayed[p.id] &&
+        !reconcileInFlightRef.current.has(p.id) &&
+        new Date(p.created_at as unknown as string).getTime() >=
+          oldestDisplayedAt
+    );
+    if (missing.length === 0) {
+      setHasMoreHistory(computeHasMoreHistory());
+      return;
+    }
+
+    missing.forEach((p) => reconcileInFlightRef.current.add(p.id));
+    (async () => {
+      try {
+        await Promise.all(
+          missing.map(async (executionProcess) => {
+            const entries =
+              await loadEntriesForHistoricExecutionProcess(executionProcess);
+            // The scope may have changed while the stream resolved; the
+            // current process list is scope-authoritative, so a process no
+            // longer in it must not be merged into the new conversation.
+            if (
+              !executionProcesses.current.some(
+                (current) => current.id === executionProcess.id
+              )
+            ) {
+              return;
+            }
+            mergeIntoDisplayed((state) => {
+              state[executionProcess.id] = {
+                executionProcess,
+                entries: entries.map((e, idx) =>
+                  patchWithKey(e, executionProcess.id, idx)
+                ),
+              };
+            });
+          })
+        );
+        emitEntries(displayedExecutionProcesses.current, 'running', false);
+        setHasMoreHistory(computeHasMoreHistory());
+      } finally {
+        missing.forEach((p) => reconcileInFlightRef.current.delete(p.id));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idListKey, isLoading, computeHasMoreHistory, emitEntries]);
 
   useEffect(() => {
     const activeProcesses = getActiveAgentProcesses();

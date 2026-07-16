@@ -12,7 +12,8 @@ import { useCommitDiff } from '@/shared/hooks/useCommitDiff';
 import { workspacesApi } from '@/shared/lib/api';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
 import { useSelectedCommit } from '@/shared/stores/useChangesCommitStore';
-import type { Diff, DiffStats } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import type { Diff, DiffStats, WorkspaceSummary } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 
@@ -30,18 +31,28 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   const queryClient = useQueryClient();
+  const hostId = useHostId();
 
   const isCreateMode = currentDestination?.kind === 'workspaces-create';
 
   const {
     workspaces: activeWorkspaces,
     archivedWorkspaces,
+    workspaceRecordsById,
     isLoading: isLoadingList,
   } = useWorkspaces();
 
   const { data: workspace, isLoading: isLoadingWorkspace } = useWorkspaceRecord(
     workspaceId,
-    { enabled: !!workspaceId && !isCreateMode }
+    {
+      enabled: !!workspaceId && !isCreateMode,
+      // The list stream usually already has this workspace's row; serving it
+      // as placeholder paints the page instantly instead of a full-pane
+      // spinner while the record query fetches.
+      placeholderData: workspaceId
+        ? workspaceRecordsById[workspaceId]
+        : undefined,
+    }
   );
 
   const {
@@ -192,13 +203,35 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
     workspacesApi
       .markSeen(workspaceId)
-      .then(() => {
-        queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
+      .then(async () => {
+        // Patch the summary caches in place instead of invalidating them:
+        // invalidation refetched BOTH summary lists on every navigation, and
+        // the 15s refetchInterval already reconciles everything else. Cancel
+        // any in-flight summaries fetch first — its response predates
+        // markSeen and would clobber the patch, resurrecting the unseen
+        // badge on the workspace being viewed.
+        await queryClient
+          .cancelQueries({ queryKey: workspaceSummaryKeys.all })
+          .catch(() => {});
+        const clearUnseen = (archived: boolean) => {
+          queryClient.setQueryData<Map<string, WorkspaceSummary>>(
+            workspaceSummaryKeys.byArchived(archived, hostId),
+            (old) => {
+              const current = old?.get(workspaceId);
+              if (!old || !current?.has_unseen_turns) return old;
+              const next = new Map(old);
+              next.set(workspaceId, { ...current, has_unseen_turns: false });
+              return next;
+            }
+          );
+        };
+        clearUnseen(false);
+        clearUnseen(true);
       })
       .catch((error) => {
         console.warn('Failed to mark workspace as seen:', error);
       });
-  }, [workspaceId, isCreateMode, queryClient]);
+  }, [workspaceId, isCreateMode, queryClient, hostId]);
 
   const selectWorkspace = useCallback(
     (id: string) => {

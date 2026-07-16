@@ -14,6 +14,10 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 1000 * 60 * 5,
+      // Keep unmounted query data (workspace records, sessions, repos, ...)
+      // for 30 minutes instead of the 5-minute default, so revisiting a
+      // workspace after a pause renders from cache instead of a spinner.
+      gcTime: 1000 * 60 * 30,
       refetchOnWindowFocus: false,
     },
   },

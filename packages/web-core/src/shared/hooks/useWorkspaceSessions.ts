@@ -9,6 +9,22 @@ interface UseWorkspaceSessionsOptions {
   enabled?: boolean;
 }
 
+/**
+ * Key + fetcher for a workspace's session list. Shared by the hook below and
+ * intent prefetching (sidebar hover), so the two can never drift apart.
+ * Callers must gate fetching on a defined `workspaceId` (`enabled`/prefetch
+ * with a real id).
+ */
+export function workspaceSessionsQuery(
+  workspaceId: string | undefined,
+  hostId: string | null
+) {
+  return {
+    queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+    queryFn: () => sessionsApi.getByWorkspace(workspaceId!),
+  };
+}
+
 /** Discriminated union for session selection state */
 export type SessionSelection =
   | { mode: 'existing'; sessionId: string }
@@ -44,8 +60,7 @@ export function useWorkspaceSessions(
   const prevWorkspaceIdRef = useRef(workspaceId);
 
   const { data: sessions = [], isLoading } = useQuery<Session[]>({
-    queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
-    queryFn: () => sessionsApi.getByWorkspace(workspaceId!),
+    ...workspaceSessionsQuery(workspaceId, hostId),
     enabled: enabled && !!workspaceId,
   });
 

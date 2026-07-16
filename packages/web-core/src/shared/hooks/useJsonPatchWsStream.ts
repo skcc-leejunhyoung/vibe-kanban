@@ -3,6 +3,7 @@ import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
+import { getWsSnapshot, saveWsSnapshot } from '@/shared/lib/wsSnapshotCache';
 import {
   shouldReconnectOnResume,
   FREEZE_SUSPECT_MS,
@@ -28,6 +29,13 @@ interface UseJsonPatchStreamOptions<T> {
    * Filter/deduplicate patches before applying them
    */
   deduplicatePatches?: (patches: Operation[]) => Operation[];
+  /**
+   * Keep the last materialized state per endpoint in a module-level cache and
+   * serve it immediately when the same endpoint is consumed again (endpoint
+   * switch back, reconnect). The server's snapshot replay then refreshes it —
+   * stale-while-revalidate instead of blanking to `undefined`.
+   */
+  keepSnapshotForEndpoint?: boolean;
 }
 
 interface UseJsonPatchStreamResult<T> {
@@ -53,6 +61,18 @@ export const useJsonPatchWsStream = <T extends object>(
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const dataRef = useRef<T | undefined>(undefined);
+  // Which endpoint the current `data` state belongs to. On an endpoint switch
+  // there is one paint before the effect resets state; this lets the render
+  // below serve the new endpoint's cached snapshot instead of the stale data.
+  const dataEndpointRef = useRef<string | undefined>(undefined);
+  // Whether `dataRef` holds real streamed/cached content (vs the empty
+  // `initialData()` shell). Only real content is worth snapshotting.
+  const dataPatchedRef = useRef<boolean>(false);
+  // Endpoint that last received a LIVE server message. A cached snapshot makes
+  // `dataRef` truthy, so error escalation must not treat it as proof the
+  // stream works — a dead host would otherwise retry silently forever while
+  // stale data poses as live.
+  const liveEndpointRef = useRef<string | undefined>(undefined);
   const retryTimerRef = useRef<number | null>(null);
   const retryAttemptsRef = useRef<number>(0);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -71,6 +91,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
   const injectInitialEntry = options?.injectInitialEntry;
   const deduplicatePatches = options?.deduplicatePatches;
+  const keepSnapshotForEndpoint = options?.keepSnapshotForEndpoint ?? false;
 
   useEffect(() => {
     isConnectedRef.current = isConnected;
@@ -119,14 +140,26 @@ export const useJsonPatchWsStream = <T extends object>(
       return;
     }
 
-    // Initialize data
+    // Initialize data, preferring the endpoint's cached snapshot so returning
+    // consumers paint immediately while the server replay refreshes it.
     if (!dataRef.current) {
-      dataRef.current = initialData();
+      const cached = keepSnapshotForEndpoint
+        ? getWsSnapshot<T>(endpoint)
+        : undefined;
+      if (cached) {
+        dataRef.current = cached;
+        dataPatchedRef.current = true;
+        setData(cached);
+      } else {
+        dataRef.current = initialData();
+        dataPatchedRef.current = false;
 
-      // Inject initial entry if provided
-      if (injectInitialEntry) {
-        injectInitialEntry(dataRef.current);
+        // Inject initial entry if provided
+        if (injectInitialEntry) {
+          injectInitialEntry(dataRef.current);
+        }
       }
+      dataEndpointRef.current = endpoint;
     }
 
     let cancelled = false;
@@ -163,6 +196,7 @@ export const useJsonPatchWsStream = <T extends object>(
           ws.onmessage = (event) => {
             try {
               const msg: WsMsg = JSON.parse(event.data);
+              liveEndpointRef.current = endpoint;
 
               // Handle JsonPatch messages (same as SSE json_patch event)
               if ('JsonPatch' in msg) {
@@ -180,6 +214,7 @@ export const useJsonPatchWsStream = <T extends object>(
                 });
 
                 dataRef.current = next;
+                dataPatchedRef.current = true;
                 setData(next);
               }
 
@@ -227,8 +262,15 @@ export const useJsonPatchWsStream = <T extends object>(
 
             // Otherwise, reconnect on unexpected/error closures
             retryAttemptsRef.current += 1;
-            // Only show error if we haven't received any data yet
-            if (!dataRef.current && retryAttemptsRef.current > 6) {
+            // Surface the failure once retries stall — unless this endpoint
+            // has genuinely received live data (brief blips keep displaying it
+            // without an error flash). A cache-seeded snapshot is NOT live
+            // data: without this check a dead host would silently retry
+            // forever while stale content poses as current.
+            if (
+              liveEndpointRef.current !== endpoint &&
+              retryAttemptsRef.current > 6
+            ) {
               setError('Connection failed');
             }
             scheduleReconnect();
@@ -282,6 +324,16 @@ export const useJsonPatchWsStream = <T extends object>(
     return () => {
       cancelled = true;
       clearConnectWatchdog();
+      // Preserve the materialized state for this endpoint (closure-captured,
+      // so an endpoint switch stores it under the OLD endpoint) before the
+      // reset below discards it.
+      if (
+        keepSnapshotForEndpoint &&
+        dataRef.current &&
+        dataPatchedRef.current
+      ) {
+        saveWsSnapshot(endpoint, dataRef.current);
+      }
       if (wsRef.current) {
         const ws = wsRef.current;
 
@@ -310,6 +362,7 @@ export const useJsonPatchWsStream = <T extends object>(
     initialData,
     injectInitialEntry,
     deduplicatePatches,
+    keepSnapshotForEndpoint,
     retryNonce,
   ]);
 
@@ -396,8 +449,18 @@ export const useJsonPatchWsStream = <T extends object>(
   const isInitializedForCurrentEndpoint =
     isInitialized && initializedForEndpointRef.current === endpoint;
 
+  // Serve `data` only when it belongs to the current endpoint. During the
+  // paint between an endpoint switch and the effect reset, fall back to the
+  // new endpoint's cached snapshot (if any) instead of leaking stale data.
+  const dataForEndpoint =
+    dataEndpointRef.current === endpoint
+      ? data
+      : keepSnapshotForEndpoint
+        ? getWsSnapshot<T>(endpoint)
+        : undefined;
+
   return {
-    data,
+    data: dataForEndpoint,
     isConnected,
     isInitialized: isInitializedForCurrentEndpoint,
     error,

@@ -27,6 +27,21 @@ export const workspaceRepoKeys = {
     ] as const,
 };
 
+/**
+ * Key + fetcher for a workspace's repo list. Shared by the hook below and
+ * intent prefetching (sidebar hover), so the two can never drift apart.
+ * Callers must gate fetching on a defined `workspaceId`.
+ */
+export function workspaceReposQuery(
+  workspaceId: string | undefined,
+  hostId: string | null
+) {
+  return {
+    queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),
+    queryFn: () => workspacesApi.getRepos(workspaceId!),
+  };
+}
+
 export function useWorkspaceRepo(
   workspaceId?: string,
   options: UseWorkspaceRepoOptions = {}
@@ -36,11 +51,7 @@ export function useWorkspaceRepo(
   const queryClient = useQueryClient();
 
   const query = useQuery<RepoWithTargetBranch[]>({
-    queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),
-    queryFn: async () => {
-      const repos = await workspacesApi.getRepos(workspaceId!);
-      return repos;
-    },
+    ...workspaceReposQuery(workspaceId, hostId),
     enabled: enabled && !!workspaceId,
   });
 

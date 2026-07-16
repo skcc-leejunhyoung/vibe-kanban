@@ -47,7 +47,10 @@ export const useExecutionProcesses = (
     useJsonPatchWsStream<ExecutionProcessState>(
       endpoint,
       !!sessionId,
-      initialData
+      initialData,
+      // Re-serve the last snapshot instantly when returning to a session, so
+      // the conversation can render from cache while the stream re-syncs.
+      { keepSnapshotForEndpoint: true }
     );
 
   const streamedExecutionProcesses = Object.values(
@@ -80,7 +83,9 @@ export const useExecutionProcesses = (
         process.run_reason === 'archivescript') &&
       process.status === 'running'
   );
-  const isLoading = !!sessionId && !isInitialized && !error; // until first snapshot
+  // Loading until the first snapshot — unless a cached snapshot is already
+  // being served (data defined pre-Ready), which renders immediately.
+  const isLoading = !!sessionId && !isInitialized && !error && !data;
 
   return {
     executionProcesses,

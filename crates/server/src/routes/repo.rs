@@ -179,14 +179,16 @@ pub struct PushRepoBranchRequest {
 /// falling back to the git default remote. Returns `None` when the repo has no
 /// remotes configured.
 pub(crate) fn resolve_primary_remote(deployment: &DeploymentImpl, repo: &Repo) -> Option<String> {
+    resolve_primary_remote_with(deployment.git(), repo)
+}
+
+/// `resolve_primary_remote` for callers that only hold a `GitService` (e.g.
+/// git work moved onto the blocking pool).
+pub(crate) fn resolve_primary_remote_with(git: &git::GitService, repo: &Repo) -> Option<String> {
     if let Some(name) = repo.primary_remote.as_ref().filter(|n| !n.is_empty()) {
         return Some(name.clone());
     }
-    deployment
-        .git()
-        .get_default_remote(&repo.path)
-        .ok()
-        .map(|remote| remote.name)
+    git.get_default_remote(&repo.path).ok().map(|r| r.name)
 }
 
 fn compute_repo_remote_status(

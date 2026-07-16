@@ -59,7 +59,11 @@ export const useDiffStream = (
     endpoint,
     enabled && !!workspaceId,
     initialData
-    // No need for injectInitialEntry or deduplicatePatches for diffs
+    // No need for injectInitialEntry or deduplicatePatches for diffs.
+    // Deliberately NOT snapshot-cached: unlike the workspaces/exec-process
+    // streams, the diff stream has no root-level replace (per-repo ops only)
+    // and an empty stream (deleted worktree) never sends Ready — a cached
+    // snapshot could show phantom diffs with nothing to supersede them.
   );
 
   const derivedDiffs = useMemo(() => {
