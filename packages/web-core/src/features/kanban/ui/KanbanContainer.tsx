@@ -574,8 +574,12 @@ export function KanbanContainer() {
   }, [activeWorkspaces]);
 
   const openIssueWorkspace = useCallback(
-    async (issueId: string, workspaceAttemptId: string) => {
-      const hostId = workspaceHostMap.get(workspaceAttemptId);
+    async (
+      issueId: string,
+      workspaceAttemptId: string,
+      ownerHostId?: string | null
+    ) => {
+      const hostId = ownerHostId ?? workspaceHostMap.get(workspaceAttemptId);
       if (!localWorkspacesById.has(workspaceAttemptId) && !hostId) {
         // The workspace lives on a paired host that is offline, or whose host
         // map hasn't finished its first poll — tell the user instead of the
@@ -641,6 +645,7 @@ export function KanbanContainer() {
           return {
             id: workspace.id,
             localWorkspaceId: workspace.local_workspace_id,
+            hostId: workspace.host_id,
             name: workspace.name,
             archived: workspace.archived,
             filesChanged: workspace.files_changed ?? 0,
@@ -1346,7 +1351,8 @@ export function KanbanContainer() {
                                         ? () =>
                                             openIssueWorkspace(
                                               issue.id,
-                                              workspace.localWorkspaceId!
+                                              workspace.localWorkspaceId!,
+                                              workspace.hostId
                                             )
                                         : undefined
                                     }
