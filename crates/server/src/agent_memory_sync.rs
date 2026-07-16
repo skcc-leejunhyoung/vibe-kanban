@@ -744,9 +744,7 @@ fn scheduled_run_is_due(
 }
 
 async fn run_scheduled(deployment: DeploymentImpl, date: NaiveDate) -> anyhow::Result<()> {
-    let result = request_central_sync_and_process(deployment.clone(), &format!("scheduled:{date}"))
-        .await
-        .map(|_| ());
+    request_central_sync(&deployment, &format!("scheduled:{date}")).await?;
     // Once this host has successfully requested the user's date-keyed central
     // session, mark the local schedule done. Other hosts requesting the same key
     // reuse that session, so they cannot launch duplicate daily reconciliations.
@@ -754,7 +752,7 @@ async fn run_scheduled(deployment: DeploymentImpl, date: NaiveDate) -> anyhow::R
         .bind(date.to_string())
         .execute(&deployment.db().pool)
         .await?;
-    result
+    sync_control_plane(&deployment).await
 }
 
 async fn run_all(
