@@ -1,6 +1,7 @@
 import { router } from '@web/app/router';
 import type { FileRouteTypes } from '@web/routeTree.gen';
 import {
+  applyNavigationTransition,
   type AppDestination,
   type AppNavigation,
   type NavigationTransition,
@@ -320,7 +321,10 @@ export function createLocalAppNavigation(): AppNavigation {
         : parseLocalHostIdFromPathname(window.location.pathname);
 
     void router.navigate({
-      ...destinationToLocalTarget(destination, { currentHostId }),
+      ...destinationToLocalTarget(
+        applyNavigationTransition(destination, transition),
+        { currentHostId }
+      ),
       ...(transition?.replace !== undefined
         ? { replace: transition.replace }
         : {}),

@@ -40,6 +40,28 @@ export type NavigationTransition = {
   hostId?: string | null;
 };
 
+export function applyNavigationTransition(
+  destination: AppDestination,
+  transition?: NavigationTransition
+): AppDestination {
+  if (transition?.hostId === undefined) {
+    return destination;
+  }
+
+  switch (destination.kind) {
+    case 'workspaces':
+    case 'workspaces-create':
+    case 'workspace':
+    case 'workspace-vscode':
+    case 'project-issue-workspace':
+    case 'project-issue-workspace-create':
+    case 'project-workspace-create':
+      return { ...destination, hostId: transition.hostId };
+    default:
+      return destination;
+  }
+}
+
 export interface AppNavigation {
   resolveFromPath(path: string): AppDestination | null;
   goToRoot(transition?: NavigationTransition): void;

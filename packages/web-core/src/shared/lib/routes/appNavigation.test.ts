@@ -1,5 +1,47 @@
 import { describe, expect, it } from 'vitest';
-import { resolveDestinationHostId } from './appNavigation';
+import {
+  applyNavigationTransition,
+  resolveDestinationHostId,
+} from './appNavigation';
+
+describe('applyNavigationTransition', () => {
+  it('keeps the destination host when no host override is provided', () => {
+    expect(
+      applyNavigationTransition({ kind: 'workspaces', hostId: 'current-host' })
+    ).toEqual({ kind: 'workspaces', hostId: 'current-host' });
+  });
+
+  it('switches workspace navigation to the selected remote host', () => {
+    expect(
+      applyNavigationTransition(
+        { kind: 'workspace', workspaceId: 'workspace' },
+        { hostId: 'next-host' }
+      )
+    ).toEqual({
+      kind: 'workspace',
+      workspaceId: 'workspace',
+      hostId: 'next-host',
+    });
+  });
+
+  it('switches workspace navigation to the local machine', () => {
+    expect(
+      applyNavigationTransition(
+        { kind: 'workspaces', hostId: 'current-host' },
+        { hostId: null }
+      )
+    ).toEqual({ kind: 'workspaces', hostId: null });
+  });
+
+  it('does not add a host to destinations that are not host scoped', () => {
+    expect(
+      applyNavigationTransition(
+        { kind: 'project', projectId: 'project' },
+        { hostId: 'next-host' }
+      )
+    ).toEqual({ kind: 'project', projectId: 'project' });
+  });
+});
 
 describe('resolveDestinationHostId', () => {
   it('keeps the current host when no host override is provided', () => {

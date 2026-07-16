@@ -1,6 +1,7 @@
 import { router } from "@remote/app/router";
 import type { FileRouteTypes } from "@remote/routeTree.gen";
 import {
+  applyNavigationTransition,
   type AppDestination,
   type AppNavigation,
   type NavigationTransition,
@@ -220,9 +221,12 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     transition?: NavigationTransition,
   ) => {
     void router.navigate({
-      ...destinationToRemoteTarget(destination, {
-        currentHostId: hostId,
-      }),
+      ...destinationToRemoteTarget(
+        applyNavigationTransition(destination, transition),
+        {
+          currentHostId: hostId,
+        },
+      ),
       ...(transition?.replace !== undefined
         ? { replace: transition.replace }
         : {}),
@@ -297,9 +301,12 @@ function createRemoteFallbackAppNavigation(): AppNavigation {
     transition?: NavigationTransition,
   ) => {
     void router.navigate({
-      ...destinationToRemoteTarget(destination, {
-        currentHostId: null,
-      }),
+      ...destinationToRemoteTarget(
+        applyNavigationTransition(destination, transition),
+        {
+          currentHostId: null,
+        },
+      ),
       ...(transition?.replace !== undefined
         ? { replace: transition.replace }
         : {}),
