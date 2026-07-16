@@ -487,7 +487,12 @@ target_branch: string | null,
 /**
  * The PR's head (source) branch. Defaults to the workspace's work branch.
  */
-head_branch: string | null, };
+head_branch: string | null,
+/**
+ * Optional one-off agent configuration selected in the Create PR dialog.
+ * When absent, generation reuses the workspace's most recently used agent.
+ */
+executor_config: ExecutorConfig | null, };
 
 export type GeneratePrDescriptionResponse = { title: string, description: string, };
 

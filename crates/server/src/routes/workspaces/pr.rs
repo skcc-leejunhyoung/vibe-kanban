@@ -73,6 +73,9 @@ pub struct GeneratePrDescriptionRequest {
     pub target_branch: Option<String>,
     /// The PR's head (source) branch. Defaults to the workspace's work branch.
     pub head_branch: Option<String>,
+    /// Optional one-off agent configuration selected in the Create PR dialog.
+    /// When absent, generation reuses the workspace's most recently used agent.
+    pub executor_config: Option<ExecutorConfig>,
 }
 
 /// Generated PR title + description to pre-fill the Create PR dialog for review.
@@ -535,7 +538,9 @@ async fn generate_pr_description_inner(
         )
     };
 
-    let executor_config = resolve_generation_executor_config(deployment, workspace).await?;
+    let executor_config =
+        resolve_generation_executor_config(deployment, workspace, request.executor_config.clone())
+            .await?;
 
     let (title, description) = run_pr_generation(
         deployment,
@@ -572,7 +577,11 @@ async fn generate_pr_description_inner(
 async fn resolve_generation_executor_config(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
+    requested_config: Option<ExecutorConfig>,
 ) -> Result<ExecutorConfig, ApiError> {
+    if let Some(config) = requested_config {
+        return Ok(config);
+    }
     let pool = &deployment.db().pool;
     if let Some(session) = Session::find_latest_by_workspace_id(pool, workspace.id).await?
         && let Some(config) =

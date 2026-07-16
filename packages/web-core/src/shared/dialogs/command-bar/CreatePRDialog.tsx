@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import type { Err } from '@/shared/lib/api';
-import type { PrError } from 'shared/types';
+import type { ExecutorConfig, PrError } from 'shared/types';
 import {
   usePrBackground,
   usePrBackgroundStore,
@@ -40,6 +40,9 @@ import type {
 } from '@/shared/dialogs/auth/GhCliSetupDialog';
 import type { GhCliSetupError } from 'shared/types';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
+import { AgentSelector } from '@/shared/components/tasks/AgentSelector';
+import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { defineModal } from '@/shared/lib/modals';
 import { splitMessageToTitleDescription } from '@/shared/lib/string';
 
@@ -108,7 +111,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     const queryClient = useQueryClient();
     const { t } = useTranslation('tasks');
     const { isLoaded } = useAuth();
-    const { environment, config } = useUserSystem();
+    const { environment, config, profiles } = useUserSystem();
     const [prTitle, setPrTitle] = useState('');
     const [prBody, setPrBody] = useState('');
     const [prHeadBranch, setPrHeadBranch] = useState('');
@@ -118,9 +121,30 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       null
     );
     const [isDraft, setIsDraft] = useState(false);
+    // Leave this null until the user explicitly changes the controls. This
+    // preserves the backend's workspace-last-agent default for the usual path.
+    const [generationExecutorConfig, setGenerationExecutorConfig] =
+      useState<ExecutorConfig | null>(null);
     // The settings toggle acts as a master switch for the AI generate button;
     // treat an unloaded config as enabled (backend default) so the button shows.
     const aiEnabled = config?.pr_auto_description_enabled !== false;
+    const {
+      executorConfig,
+      effectiveExecutor,
+      selectedVariant,
+      variantOptions,
+      presetOptions,
+      setExecutor,
+      setVariant,
+      setOverrides,
+    } = useExecutorConfig({
+      profiles,
+      lastUsedConfig: config?.executor_profile ?? null,
+      scratchConfig: generationExecutorConfig,
+      configExecutorProfile: config?.executor_profile,
+      disabledExecutors: config?.disabled_executors,
+      onPersist: setGenerationExecutorConfig,
+    });
 
     // The two slow operations (AI generate + PR creation) live in a per-workspace
     // background store so they keep running when the dialog is dismissed with
@@ -553,7 +577,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // Generate a PR title + description by running the configured agent, once,
     // read-only, over the branch diff. Runs in the background store so it keeps
     // going if the dialog is dismissed; the result is applied by the effect
-    // above. Local-app only (backend rejects relayed calls).
+    // above.
     const handleGenerate = useCallback(() => {
       if (!repoId || !attempt.id || generating) return;
       setError(null);
@@ -561,6 +585,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         repo_id: repoId,
         target_branch: prBaseBranch || null,
         head_branch: prHeadBranch || null,
+        executor_config: generationExecutorConfig,
       });
     }, [
       attempt.id,
@@ -569,6 +594,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       prHeadBranch,
       generating,
       startGenerate,
+      generationExecutorConfig,
     ]);
 
     // X button / ESC: keep any running background operation alive and just hide.
@@ -630,25 +656,56 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
             ) : (
               <div className="space-y-4 py-4">
                 {aiEnabled && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleGenerate}
-                    disabled={generating || creatingPR}
-                    className="w-full"
-                  >
-                    {generating ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        {t('createPrDialog.generating')}
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="mr-2 h-4 w-4" />
-                        {t('createPrDialog.generateButton')}
-                      </>
-                    )}
-                  </Button>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      {profiles && (
+                        <AgentSelector
+                          profiles={profiles}
+                          selectedExecutorProfile={
+                            effectiveExecutor
+                              ? {
+                                  executor: effectiveExecutor,
+                                  variant: selectedVariant,
+                                }
+                              : null
+                          }
+                          onChange={(profile) => setExecutor(profile.executor)}
+                          disabled={generating || creatingPR}
+                        />
+                      )}
+                      {effectiveExecutor && (
+                        <ModelSelectorContainer
+                          agent={effectiveExecutor}
+                          workspaceId={attempt.id}
+                          presets={variantOptions}
+                          selectedPreset={selectedVariant}
+                          onPresetSelect={setVariant}
+                          onOverrideChange={setOverrides}
+                          executorConfig={executorConfig}
+                          presetOptions={presetOptions}
+                        />
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleGenerate}
+                      disabled={generating || creatingPR || !executorConfig}
+                      className="w-full"
+                    >
+                      {generating ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          {t('createPrDialog.generating')}
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="mr-2 h-4 w-4" />
+                          {t('createPrDialog.generateButton')}
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 )}
                 <div className="space-y-2">
                   <Label htmlFor="pr-title">
