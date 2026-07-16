@@ -252,6 +252,12 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   supportsContextUsage?: boolean;
   autoResume?: AutoResumeProps;
   dropzone?: DropzoneProps;
+  /**
+   * Fill the height-bounded parent and let the editor area shrink (with internal
+   * scroll) so the footer stays visible instead of the box growing tall enough
+   * to cover the conversation. Requires a height-capped wrapper.
+   */
+  fillHeight?: boolean;
 }
 
 function defaultExecutorLabel(executor: string) {
@@ -323,6 +329,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   supportsContextUsage,
   autoResume,
   dropzone,
+  fillHeight,
 }: SessionChatBoxProps<TExecutor>) {
   const { t } = useTranslation('tasks');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -826,6 +833,7 @@ export function SessionChatBox<TExecutor extends string = string>({
 
   return (
     <ChatBoxBase
+      fillHeight={fillHeight}
       editor={renderEditor({
         focusKey,
         placeholder,

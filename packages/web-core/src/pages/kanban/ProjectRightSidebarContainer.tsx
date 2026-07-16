@@ -325,7 +325,7 @@ function WorkspaceSessionPanel({
                 </div>
               )}
 
-              <div className="flex justify-center @container pl-px">
+              <div className="flex min-h-0 max-h-[50%] justify-center @container pl-px">
                 <SessionChatBoxContainer
                   {...(isSessionsLoading || isWorkspaceLoading
                     ? {

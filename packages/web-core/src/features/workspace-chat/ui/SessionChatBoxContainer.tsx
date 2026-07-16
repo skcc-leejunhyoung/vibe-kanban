@@ -1311,7 +1311,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onChange={onChange}
         onCmdEnter={onCmdEnter}
         disabled={disabled}
-        className="min-h-double max-h-[50vh] overflow-y-auto"
+        fillHeight
+        // fillHeight makes the editor the internal scroll region so it grows
+        // with content but shrinks (scrolling) once the height-capped chat box
+        // wrapper is reached, keeping the conversation visible and the footer
+        // pinned. max-h-[50vh] is a secondary upper cap.
+        className="min-h-0 flex-1 max-h-[50vh] overflow-y-auto"
         repoIds={repoIds}
         executor={executor}
         sessionId={sessionId}
@@ -1344,6 +1349,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     return (
       <SessionChatBox<BaseCodingAgent>
         status="idle"
+        fillHeight
         renderEditor={renderEditor}
         repoIds={repoIds}
         tokenUsageInfo={tokenUsageInfo}
@@ -1392,6 +1398,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   return (
     <SessionChatBox<BaseCodingAgent>
       status={status}
+      fillHeight
       onViewCode={disableViewCode ? undefined : handleViewCode}
       onOpenWorkspace={
         showOpenWorkspaceButton && workspaceId ? handleOpenWorkspace : undefined

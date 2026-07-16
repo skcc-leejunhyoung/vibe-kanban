@@ -79,9 +79,13 @@ export function WorkspacesMain({
           </div>
         </div>
       )}
-      {/* Chat box - always rendered to prevent flash during workspace switch */}
+      {/* Chat box - always rendered to prevent flash during workspace switch.
+          `max-h-[50%]` caps the box to half the available column so a long
+          prompt can't cover the conversation; the editor scrolls internally
+          (see `fillHeight`). `min-h-0` lets it shrink further on short
+          viewports so the footer stays visible. */}
       <div
-        className="flex justify-center @container pl-px"
+        className="flex min-h-0 max-h-[50%] justify-center @container pl-px"
         data-chatbox-container="true"
       >
         {chatBoxContent}

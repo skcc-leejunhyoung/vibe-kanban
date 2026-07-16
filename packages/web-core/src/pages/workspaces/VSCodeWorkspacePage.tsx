@@ -243,7 +243,7 @@ export function VSCodeWorkspacePage() {
                   </div>
                 )}
                 <div
-                  className="flex justify-center @container pl-px"
+                  className="flex min-h-0 max-h-[50%] justify-center @container pl-px"
                   data-chatbox-container="true"
                 >
                   <VSCodeChatBox
