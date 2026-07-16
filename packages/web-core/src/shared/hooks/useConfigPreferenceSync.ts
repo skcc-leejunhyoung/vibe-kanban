@@ -85,7 +85,7 @@ function favoritesEqual(a: FolderFavorite[], b: FolderFavorite[]): boolean {
 }
 
 /** Coerce opaque config JSON into a clean, well-formed favorites list. */
-function readFolderFavorites(raw: unknown): FolderFavorite[] {
+export function readFolderFavorites(raw: unknown): FolderFavorite[] {
   if (!Array.isArray(raw)) return [];
   const out: FolderFavorite[] = [];
   for (const item of raw) {
@@ -96,7 +96,19 @@ function readFolderFavorites(raw: unknown): FolderFavorite[] {
       typeof (item as { name?: unknown }).name === 'string'
     ) {
       const fav = item as FolderFavorite;
-      out.push({ path: fav.path, name: fav.name });
+      const hostId = fav.hostId;
+      if (
+        hostId !== undefined &&
+        hostId !== null &&
+        typeof hostId !== 'string'
+      ) {
+        continue;
+      }
+      out.push({
+        path: fav.path,
+        name: fav.name,
+        ...(hostId !== undefined ? { hostId } : {}),
+      });
     }
   }
   return out;

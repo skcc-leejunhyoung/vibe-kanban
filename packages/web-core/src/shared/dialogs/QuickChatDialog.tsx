@@ -340,7 +340,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               </button>
               <button
                 type="button"
-                onClick={() => removeFavorite(fav.path)}
+                onClick={() => removeFavorite(fav.path, selectedHostId)}
                 aria-label={`Remove ${fav.name} from favorites`}
                 title="Remove from favorites"
                 className="inline-flex items-center text-low hover:text-error transition-colors"
