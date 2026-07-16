@@ -5,6 +5,7 @@ import type { PairRelayHostRequest, RelayPairedHost } from 'shared/types';
 import type { RelayHost } from 'shared/remote-types';
 import { relayApi } from '@/shared/lib/api';
 import { listRelayHosts } from '@/shared/lib/remoteApi';
+import { REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
 
 export type RemoteCloudHostStatus = AppBarHostStatus;
 
@@ -19,11 +20,6 @@ export interface RemoteCloudHost {
 interface RemoteCloudHostsState {
   hosts: RemoteCloudHost[];
 }
-
-export const REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY = [
-  'remote-cloud-hosts',
-  'state',
-] as const;
 
 function normalizeRemoteCloudHostStatus(
   status: RelayHost['status'] | undefined

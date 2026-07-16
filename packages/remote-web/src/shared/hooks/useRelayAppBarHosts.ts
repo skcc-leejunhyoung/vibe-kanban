@@ -4,12 +4,10 @@ import type { AppBarHost } from "@vibe/ui/components/AppBar";
 import type { RelayHost } from "shared/remote-types";
 import { listPairedRelayHosts } from "@/shared/lib/relayPairingStorage";
 import { listRelayHosts } from "@/shared/lib/remoteApi";
-
-const RELAY_APP_BAR_HOSTS_QUERY_KEY = ["relay-app-bar-hosts", "hosts"] as const;
-const RELAY_APP_BAR_PAIRED_HOSTS_QUERY_KEY = [
-  "relay-app-bar-hosts",
-  "paired-hosts",
-] as const;
+import {
+  RELAY_REMOTE_HOSTS_QUERY_KEY,
+  RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
+} from "@/shared/lib/relayHostQueryKeys";
 
 interface UseRelayAppBarHostsResult {
   hosts: AppBarHost[];
@@ -52,7 +50,7 @@ export function useRelayAppBarHosts(
   enabled: boolean,
 ): UseRelayAppBarHostsResult {
   const hostsQuery = useQuery({
-    queryKey: RELAY_APP_BAR_HOSTS_QUERY_KEY,
+    queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
     queryFn: listRelayHosts,
     enabled,
     staleTime: 30_000,
@@ -60,7 +58,7 @@ export function useRelayAppBarHosts(
   });
 
   const pairedHostsQuery = useQuery({
-    queryKey: RELAY_APP_BAR_PAIRED_HOSTS_QUERY_KEY,
+    queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
     queryFn: async () => {
       try {
         return await listPairedRelayHosts();

@@ -22,6 +22,10 @@ import {
   type RemoteCloudHost,
 } from '@/shared/hooks/useRemoteCloudHosts';
 import { listPairedRelayHosts } from '@/shared/lib/relayPairingStorage';
+import {
+  RELAY_REMOTE_HOSTS_QUERY_KEY,
+  RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
+} from '@/shared/lib/relayHostQueryKeys';
 
 export type SettingsHostTargetId = 'local' | string;
 
@@ -104,14 +108,14 @@ export function SettingsHostProvider({
   const { isSignedIn } = useAuth();
   const { data: localRemoteHosts } = useRemoteCloudHostsState();
   const { data: relayHosts = [], isLoading: relayHostsLoading } = useQuery({
-    queryKey: ['settings-dialog', 'relay-hosts'],
+    queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
     queryFn: listRelayHosts,
     enabled: runtime === 'remote' && isSignedIn,
     staleTime: 30_000,
   });
   const { data: pairedRelayHosts = [], isLoading: pairedRelayHostsLoading } =
     useQuery({
-      queryKey: ['settings-dialog', 'paired-relay-hosts'],
+      queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
       queryFn: async () => {
         try {
           return await listPairedRelayHosts();

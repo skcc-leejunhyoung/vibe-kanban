@@ -7,15 +7,10 @@ import { listPairedRelayHosts } from '@/shared/lib/relayPairingStorage';
 import { listRelayHosts } from '@/shared/lib/remoteApi';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useRemoteCloudHostsState } from '@/shared/hooks/useRemoteCloudHosts';
-
-const WORKSPACE_HOST_OPTIONS_RELAY_HOSTS_QUERY_KEY = [
-  'workspace-host-options',
-  'relay-hosts',
-] as const;
-const WORKSPACE_HOST_OPTIONS_PAIRED_HOSTS_QUERY_KEY = [
-  'workspace-host-options',
-  'paired-hosts',
-] as const;
+import {
+  RELAY_REMOTE_HOSTS_QUERY_KEY,
+  RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
+} from '@/shared/lib/relayHostQueryKeys';
 
 function mapRelayHostStatus(
   host: RelayHost,
@@ -62,7 +57,7 @@ export function useWorkspaceHostOptions(): { hosts: AppBarHost[] } {
   const localHostsQuery = useRemoteCloudHostsState({ enabled: !isRemote });
 
   const relayHostsQuery = useQuery({
-    queryKey: WORKSPACE_HOST_OPTIONS_RELAY_HOSTS_QUERY_KEY,
+    queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
     queryFn: listRelayHosts,
     enabled: isRemote,
     staleTime: 30_000,
@@ -70,7 +65,7 @@ export function useWorkspaceHostOptions(): { hosts: AppBarHost[] } {
   });
 
   const pairedHostsQuery = useQuery({
-    queryKey: WORKSPACE_HOST_OPTIONS_PAIRED_HOSTS_QUERY_KEY,
+    queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
     queryFn: async () => {
       try {
         return await listPairedRelayHosts();

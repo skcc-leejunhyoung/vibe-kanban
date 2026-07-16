@@ -18,18 +18,11 @@ import {
   savePairedRelayHost,
 } from '@/shared/lib/relayPairingStorage';
 import { createRelayClientIdentity } from '@/shared/lib/relayClientIdentity';
-
-export const RELAY_REMOTE_HOSTS_QUERY_KEY = [
-  'relay',
-  'remote',
-  'hosts',
-] as const;
-export const RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY = [
-  'relay',
-  'remote',
-  'paired-hosts',
-] as const;
-export const RELAY_APP_BAR_HOSTS_QUERY_KEY = ['relay-app-bar-hosts'] as const;
+import {
+  RELAY_REMOTE_HOSTS_QUERY_KEY,
+  RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
+  REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
+} from '@/shared/lib/relayHostQueryKeys';
 
 interface PairRelayHostInput {
   hostId: string;
@@ -141,7 +134,7 @@ export function usePairRelayHostMutation() {
           queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
         }),
         queryClient.invalidateQueries({
-          queryKey: RELAY_APP_BAR_HOSTS_QUERY_KEY,
+          queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
         }),
       ]);
     },
@@ -159,7 +152,7 @@ export function useRemovePairedRelayHostMutation() {
           queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
         }),
         queryClient.invalidateQueries({
-          queryKey: RELAY_APP_BAR_HOSTS_QUERY_KEY,
+          queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
         }),
       ]);
     },
@@ -178,7 +171,7 @@ export function useUpdateRelayHostMutation() {
           queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
         }),
         queryClient.invalidateQueries({
-          queryKey: RELAY_APP_BAR_HOSTS_QUERY_KEY,
+          queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
         }),
       ]);
     },
