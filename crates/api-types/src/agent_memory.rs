@@ -134,3 +134,75 @@ pub struct RecordAgentMemoryMutationReceiptRequest {
     pub status: AgentMemoryReceiptStatus,
     pub reason: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct RegisterAgentMemorySyncTargetRequest {
+    pub host_id: Uuid,
+    pub enabled: bool,
+    pub agents: Vec<AgentMemoryKind>,
+    pub repository_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct AgentMemorySyncTarget {
+    pub host_id: Uuid,
+    pub enabled: bool,
+    pub agents: Vec<AgentMemoryKind>,
+    pub repository_keys: Vec<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct CreateAgentMemorySyncSessionRequest {
+    pub requested_by_host_id: Uuid,
+    pub trigger_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct AgentMemorySyncSession {
+    pub id: Uuid,
+    pub status: String,
+    #[ts(type = "number")]
+    pub round: i64,
+    #[ts(type = "number")]
+    pub max_rounds: i64,
+    #[ts(type = "number")]
+    pub target_count: i64,
+    #[ts(type = "number")]
+    pub completed_count: i64,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct AgentMemorySyncSessionTarget {
+    pub host_id: Uuid,
+    pub host_name: String,
+    #[ts(type = "number")]
+    pub round: i64,
+    pub status: String,
+    #[ts(type = "number")]
+    pub attempts: i64,
+    pub error: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct AgentMemorySyncJob {
+    pub session_id: Uuid,
+    #[ts(type = "number")]
+    pub round: i64,
+    #[ts(type = "number")]
+    pub max_rounds: i64,
+    pub trigger_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct ReportAgentMemorySyncJobRequest {
+    pub session_id: Uuid,
+    pub host_id: Uuid,
+    #[ts(type = "number")]
+    pub round: i64,
+    pub succeeded: bool,
+    pub error: Option<String>,
+}

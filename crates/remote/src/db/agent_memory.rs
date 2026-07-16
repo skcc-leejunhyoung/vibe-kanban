@@ -3,10 +3,12 @@ use std::collections::{HashMap, HashSet};
 use api_types::{
     AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
     AgentMemoryMutationInboxResponse, AgentMemoryMutationOperation, AgentMemoryReceipt,
-    AgentMemoryReceiptStatus, AgentMemoryScope, AgentMemorySnapshot,
-    CreateAgentMemoryMutationRequest, RecordAgentMemoryMutationReceiptRequest,
-    RecordAgentMemoryReceiptRequest, UpsertAgentMemorySnapshotRequest,
-    UpsertAgentMemorySnapshotResponse,
+    AgentMemoryReceiptStatus, AgentMemoryScope, AgentMemorySnapshot, AgentMemorySyncJob,
+    AgentMemorySyncSession, AgentMemorySyncSessionTarget, AgentMemorySyncTarget,
+    CreateAgentMemoryMutationRequest, CreateAgentMemorySyncSessionRequest,
+    RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
+    RegisterAgentMemorySyncTargetRequest, ReportAgentMemorySyncJobRequest,
+    UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
@@ -458,6 +460,386 @@ pub async fn host_belongs_to_user(
     .bind(user_id)
     .fetch_one(pool)
     .await
+}
+
+#[derive(FromRow)]
+struct SyncTargetRow {
+    host_id: Uuid,
+    enabled: bool,
+    agents: Vec<String>,
+    repository_keys: Vec<String>,
+    updated_at: DateTime<Utc>,
+}
+
+impl TryFrom<SyncTargetRow> for AgentMemorySyncTarget {
+    type Error = anyhow::Error;
+
+    fn try_from(row: SyncTargetRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            host_id: row.host_id,
+            enabled: row.enabled,
+            agents: row
+                .agents
+                .iter()
+                .map(|agent| parse_agent(agent))
+                .collect::<anyhow::Result<_>>()?,
+            repository_keys: row.repository_keys,
+            updated_at: row.updated_at,
+        })
+    }
+}
+
+#[derive(FromRow)]
+struct SyncSessionRow {
+    id: Uuid,
+    status: String,
+    round: i64,
+    max_rounds: i64,
+    target_count: i64,
+    completed_count: i64,
+    created_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+}
+
+impl From<SyncSessionRow> for AgentMemorySyncSession {
+    fn from(row: SyncSessionRow) -> Self {
+        Self {
+            id: row.id,
+            status: row.status,
+            round: row.round,
+            max_rounds: row.max_rounds,
+            target_count: row.target_count,
+            completed_count: row.completed_count,
+            created_at: row.created_at,
+            finished_at: row.finished_at,
+        }
+    }
+}
+
+const SYNC_SESSION_COLUMNS: &str = "s.id, s.status, s.round, s.max_rounds, (SELECT COUNT(*) FROM agent_memory_sync_session_targets t WHERE t.session_id = s.id) AS target_count, (SELECT COUNT(*) FROM agent_memory_sync_session_targets t WHERE t.session_id = s.id AND t.status = 'completed') AS completed_count, s.created_at, s.finished_at";
+
+pub async fn register_sync_target(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    request: &RegisterAgentMemorySyncTargetRequest,
+) -> anyhow::Result<AgentMemorySyncTarget> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 1))")
+        .bind(owner_user_id)
+        .execute(&mut *tx)
+        .await?;
+    let mut agents = request
+        .agents
+        .iter()
+        .map(|agent| agent_name(*agent).to_string())
+        .collect::<Vec<_>>();
+    agents.sort();
+    agents.dedup();
+    let mut repository_keys = request
+        .repository_keys
+        .iter()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .collect::<Vec<_>>();
+    repository_keys.sort();
+    repository_keys.dedup();
+    let row = sqlx::query_as::<_, SyncTargetRow>(
+        "INSERT INTO agent_memory_sync_targets (owner_user_id, host_id, enabled, agents, repository_keys) SELECT $1, h.id, $3, $4, $5 FROM hosts h WHERE h.id = $2 AND h.owner_user_id = $1 ON CONFLICT (owner_user_id, host_id) DO UPDATE SET enabled = EXCLUDED.enabled, agents = EXCLUDED.agents, repository_keys = EXCLUDED.repository_keys, updated_at = NOW() RETURNING host_id, enabled, agents, repository_keys, updated_at",
+    )
+    .bind(owner_user_id)
+    .bind(request.host_id)
+    .bind(request.enabled)
+    .bind(agents)
+    .bind(repository_keys)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("host not found"))?;
+    if request.enabled && !request.agents.is_empty() && !request.repository_keys.is_empty() {
+        sqlx::query("INSERT INTO agent_memory_sync_session_targets (session_id, host_id, round, status) SELECT session.id, $2, session.round, 'pending' FROM agent_memory_sync_sessions session WHERE session.owner_user_id = $1 AND session.status = 'running' ON CONFLICT (session_id, host_id) DO NOTHING")
+            .bind(owner_user_id)
+            .bind(request.host_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        sqlx::query("DELETE FROM agent_memory_sync_session_targets target USING agent_memory_sync_sessions session WHERE target.session_id = session.id AND session.owner_user_id = $1 AND session.status = 'running' AND target.host_id = $2")
+            .bind(owner_user_id)
+            .bind(request.host_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE agent_memory_sync_sessions session SET status = 'partial', error = 'target opted out during synchronization', finished_at = NOW() WHERE session.owner_user_id = $1 AND session.status = 'running' AND NOT EXISTS (SELECT 1 FROM agent_memory_sync_session_targets target WHERE target.session_id = session.id AND target.status IN ('pending', 'running'))")
+            .bind(owner_user_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    row.try_into()
+}
+
+pub async fn create_sync_session(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    request: &CreateAgentMemorySyncSessionRequest,
+) -> anyhow::Result<AgentMemorySyncSession> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 1))")
+        .bind(owner_user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM agent_memory_sync_session_targets target USING agent_memory_sync_sessions session, hosts host WHERE target.session_id = session.id AND host.id = target.host_id AND session.owner_user_id = $1 AND session.status = 'running' AND host.status <> 'online'")
+        .bind(owner_user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE agent_memory_sync_sessions session SET status = 'partial', error = 'all targets went offline', finished_at = NOW() WHERE session.owner_user_id = $1 AND session.status = 'running' AND NOT EXISTS (SELECT 1 FROM agent_memory_sync_session_targets target WHERE target.session_id = session.id)")
+        .bind(owner_user_id)
+        .execute(&mut *tx)
+        .await?;
+    let query = format!(
+        "SELECT {SYNC_SESSION_COLUMNS} FROM agent_memory_sync_sessions s WHERE s.owner_user_id = $1 AND s.status = 'running' LIMIT 1"
+    );
+    if let Some(row) = sqlx::query_as::<_, SyncSessionRow>(&query)
+        .bind(owner_user_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    {
+        tx.commit().await?;
+        return Ok(row.into());
+    }
+    if request.trigger_kind.starts_with("scheduled:") {
+        let query = format!(
+            "SELECT {SYNC_SESSION_COLUMNS} FROM agent_memory_sync_sessions s WHERE s.owner_user_id = $1 AND s.trigger_kind = $2 ORDER BY s.created_at DESC LIMIT 1"
+        );
+        if let Some(row) = sqlx::query_as::<_, SyncSessionRow>(&query)
+            .bind(owner_user_id)
+            .bind(request.trigger_kind.trim())
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            tx.commit().await?;
+            return Ok(row.into());
+        }
+    }
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM hosts WHERE id = $1 AND owner_user_id = $2)",
+    )
+    .bind(request.requested_by_host_id)
+    .bind(owner_user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !owned {
+        anyhow::bail!("requesting host not found");
+    }
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO agent_memory_sync_sessions (id, owner_user_id, requested_by_host_id, trigger_kind, status) VALUES ($1, $2, $3, $4, 'running')")
+        .bind(id)
+        .bind(owner_user_id)
+        .bind(request.requested_by_host_id)
+        .bind(request.trigger_kind.trim())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO agent_memory_sync_session_targets (session_id, host_id, status) SELECT $1, t.host_id, 'pending' FROM agent_memory_sync_targets t INNER JOIN hosts h ON h.id = t.host_id WHERE t.owner_user_id = $2 AND t.enabled AND cardinality(t.agents) > 0 AND cardinality(t.repository_keys) > 0 AND h.status = 'online'")
+        .bind(id)
+        .bind(owner_user_id)
+        .execute(&mut *tx)
+        .await?;
+    let target_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_memory_sync_session_targets WHERE session_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if target_count == 0 {
+        sqlx::query("UPDATE agent_memory_sync_sessions SET status = 'completed', finished_at = NOW() WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    let query =
+        format!("SELECT {SYNC_SESSION_COLUMNS} FROM agent_memory_sync_sessions s WHERE s.id = $1");
+    let row = sqlx::query_as::<_, SyncSessionRow>(&query)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(row.into())
+}
+
+pub async fn latest_sync_session(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+) -> anyhow::Result<Option<AgentMemorySyncSession>> {
+    let query = format!(
+        "SELECT {SYNC_SESSION_COLUMNS} FROM agent_memory_sync_sessions s WHERE s.owner_user_id = $1 ORDER BY s.created_at DESC LIMIT 1"
+    );
+    let row = sqlx::query_as::<_, SyncSessionRow>(&query)
+        .bind(owner_user_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(Into::into))
+}
+
+pub async fn list_sync_session_targets(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    session_id: Uuid,
+) -> anyhow::Result<Vec<AgentMemorySyncSessionTarget>> {
+    #[derive(FromRow)]
+    struct Row {
+        host_id: Uuid,
+        host_name: String,
+        round: i64,
+        status: String,
+        attempts: i64,
+        error: Option<String>,
+        updated_at: DateTime<Utc>,
+    }
+    Ok(sqlx::query_as::<_, Row>(
+        "SELECT target.host_id, host.name AS host_name, target.round, target.status, target.attempts, target.error, target.updated_at FROM agent_memory_sync_session_targets target INNER JOIN agent_memory_sync_sessions session ON session.id = target.session_id INNER JOIN hosts host ON host.id = target.host_id WHERE target.session_id = $1 AND session.owner_user_id = $2 ORDER BY host.name, target.host_id",
+    )
+    .bind(session_id)
+    .bind(owner_user_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| AgentMemorySyncSessionTarget {
+        host_id: row.host_id,
+        host_name: row.host_name,
+        round: row.round,
+        status: row.status,
+        attempts: row.attempts,
+        error: row.error,
+        updated_at: row.updated_at,
+    })
+    .collect())
+}
+
+pub async fn claim_sync_job(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    host_id: Uuid,
+) -> anyhow::Result<Option<AgentMemorySyncJob>> {
+    #[derive(FromRow)]
+    struct Row {
+        session_id: Uuid,
+        round: i64,
+        max_rounds: i64,
+        trigger_kind: String,
+    }
+    sqlx::query("DELETE FROM agent_memory_sync_session_targets target USING agent_memory_sync_sessions session, hosts host WHERE target.session_id = session.id AND host.id = target.host_id AND session.owner_user_id = $1 AND session.status = 'running' AND host.status <> 'online'")
+        .bind(owner_user_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE agent_memory_sync_sessions session SET status = 'partial', error = 'no online targets remain', finished_at = NOW() WHERE session.owner_user_id = $1 AND session.status = 'running' AND NOT EXISTS (SELECT 1 FROM agent_memory_sync_session_targets target WHERE target.session_id = session.id AND target.status IN ('pending', 'running'))")
+        .bind(owner_user_id)
+        .execute(pool)
+        .await?;
+    let row = sqlx::query_as::<_, Row>(
+        "UPDATE agent_memory_sync_session_targets t SET status = 'running', attempts = attempts + 1, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = s.id AND s.owner_user_id = $1 AND t.host_id = $2 AND s.status = 'running' AND t.round = s.round AND (t.status = 'pending' OR (t.status = 'running' AND t.updated_at < NOW() - INTERVAL '20 minutes')) RETURNING s.id AS session_id, s.round, s.max_rounds, s.trigger_kind",
+    )
+    .bind(owner_user_id)
+    .bind(host_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| AgentMemorySyncJob {
+        session_id: row.session_id,
+        round: row.round,
+        max_rounds: row.max_rounds,
+        trigger_kind: row.trigger_kind,
+    }))
+}
+
+pub async fn report_sync_job(
+    pool: &PgPool,
+    owner_user_id: Uuid,
+    request: &ReportAgentMemorySyncJobRequest,
+) -> anyhow::Result<AgentMemorySyncSession> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 2))")
+        .bind(request.session_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 1))")
+        .bind(owner_user_id)
+        .execute(&mut *tx)
+        .await?;
+    let updated = sqlx::query("UPDATE agent_memory_sync_session_targets t SET status = $5, error = $6, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = $1 AND t.host_id = $2 AND t.round = $3 AND s.id = t.session_id AND s.owner_user_id = $4 AND s.status = 'running'")
+        .bind(request.session_id)
+        .bind(request.host_id)
+        .bind(request.round)
+        .bind(owner_user_id)
+        .bind(if request.succeeded { "completed" } else { "failed" })
+        .bind(&request.error)
+        .execute(&mut *tx)
+        .await?;
+    if updated.rows_affected() == 0 {
+        anyhow::bail!("stale or unknown sync job");
+    }
+    sqlx::query("DELETE FROM agent_memory_sync_session_targets target USING hosts host WHERE target.session_id = $1 AND host.id = target.host_id AND host.status <> 'online'")
+        .bind(request.session_id)
+        .execute(&mut *tx)
+        .await?;
+    let unsettled: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_memory_sync_session_targets WHERE session_id = $1 AND status IN ('pending', 'running')")
+        .bind(request.session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if unsettled == 0 {
+        let (round, max_rounds): (i64, i64) = sqlx::query_as(
+            "SELECT round, max_rounds FROM agent_memory_sync_sessions WHERE id = $1",
+        )
+        .bind(request.session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let failures: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_memory_sync_session_targets WHERE session_id = $1 AND status = 'failed'")
+            .bind(request.session_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let pending: bool =
+            sync_session_has_pending(&mut tx, owner_user_id, request.session_id).await?;
+        if failures == 0 && !pending {
+            sqlx::query("UPDATE agent_memory_sync_sessions SET status = 'completed', finished_at = NOW() WHERE id = $1")
+                .bind(request.session_id)
+                .execute(&mut *tx)
+                .await?;
+        } else if round < max_rounds {
+            sqlx::query("UPDATE agent_memory_sync_sessions SET round = round + 1 WHERE id = $1")
+                .bind(request.session_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE agent_memory_sync_session_targets SET round = round + 1, status = 'pending', error = NULL, updated_at = NOW() WHERE session_id = $1")
+                .bind(request.session_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query("UPDATE agent_memory_sync_sessions SET status = 'partial', error = 'targets did not converge before max rounds', finished_at = NOW() WHERE id = $1")
+                .bind(request.session_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    let query = format!(
+        "SELECT {SYNC_SESSION_COLUMNS} FROM agent_memory_sync_sessions s WHERE s.id = $1 AND s.owner_user_id = $2"
+    );
+    let row = sqlx::query_as::<_, SyncSessionRow>(&query)
+        .bind(request.session_id)
+        .bind(owner_user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(row.into())
+}
+
+async fn sync_session_has_pending(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner_user_id: Uuid,
+    session_id: Uuid,
+) -> anyhow::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_snapshots snapshot ON snapshot.owner_user_id = $1 AND snapshot.scope = 'repository' AND snapshot.scope_key = repo_key AND NOT (snapshot.source_host_id = st.host_id AND snapshot.source_agent = agent) LEFT JOIN agent_memory_receipts receipt ON receipt.snapshot_id = snapshot.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent WHERE st.session_id = $2 AND (receipt.snapshot_id IS NULL OR receipt.processed_revision < snapshot.revision OR receipt.status = 'deferred')) OR EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_mutations mutation ON mutation.owner_user_id = $1 AND (mutation.scope = 'user_global' OR (mutation.scope = 'repository' AND mutation.scope_key = repo_key)) LEFT JOIN agent_memory_mutation_receipts receipt ON receipt.mutation_id = mutation.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent AND receipt.target_scope_key = repo_key WHERE st.session_id = $2 AND (receipt.mutation_id IS NULL OR receipt.status = 'deferred'))",
+    )
+    .bind(owner_user_id)
+    .bind(session_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(Into::into)
 }
 
 fn normalized_scope_key(scope: AgentMemoryScope, key: Option<&str>) -> anyhow::Result<String> {

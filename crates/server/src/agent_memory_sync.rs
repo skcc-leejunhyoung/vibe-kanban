@@ -2,8 +2,9 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use api_types::{
     AgentMemoryKind, AgentMemoryMutation, AgentMemoryMutationOperation, AgentMemoryReceiptStatus,
-    AgentMemoryScope, RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
-    UpsertAgentMemorySnapshotRequest,
+    AgentMemoryScope, CreateAgentMemorySyncSessionRequest, RecordAgentMemoryMutationReceiptRequest,
+    RecordAgentMemoryReceiptRequest, RegisterAgentMemorySyncTargetRequest,
+    ReportAgentMemorySyncJobRequest, UpsertAgentMemorySnapshotRequest,
 };
 use axum::http::{HeaderMap, Method};
 use chrono::{Local, NaiveDate, NaiveTime, Utc};
@@ -37,6 +38,8 @@ pub struct AgentMemorySyncStatus {
     pub last_finished_at: Option<String>,
     pub last_status: Option<String>,
     pub last_error: Option<String>,
+    pub central_session: Option<api_types::AgentMemorySyncSession>,
+    pub central_targets: Vec<api_types::AgentMemorySyncSessionTarget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -112,11 +115,120 @@ pub fn spawn(deployment: DeploymentImpl) {
     tokio::spawn(async move {
         loop {
             sleep(CHECK_INTERVAL).await;
+            if let Err(error) = sync_control_plane(&deployment).await {
+                tracing::warn!(?error, "agent memory sync control-plane check failed");
+            }
             if let Err(error) = run_if_due(&deployment).await {
                 tracing::warn!(?error, "agent memory sync schedule check failed");
             }
         }
     });
+}
+
+async fn current_remote_host(
+    deployment: &DeploymentImpl,
+) -> anyhow::Result<relay_types::RelayHost> {
+    let machine_id = deployment.user_id().to_string();
+    deployment
+        .remote_client()?
+        .list_relay_hosts()
+        .await?
+        .into_iter()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or_else(|| anyhow::anyhow!("this computer is not registered as a remote host"))
+}
+
+async fn register_central_target(
+    deployment: &DeploymentImpl,
+) -> anyhow::Result<(Uuid, services::services::config::AgentMemorySyncConfig)> {
+    let host = current_remote_host(deployment).await?;
+    let config = deployment.config().read().await.agent_memory_sync.clone();
+    let mut repository_keys = Vec::new();
+    for repo in Repo::list_all(&deployment.db().pool).await? {
+        if let Ok(key) = canonical_repo_key(deployment, &repo.path) {
+            repository_keys.push(key);
+        }
+    }
+    repository_keys.sort();
+    repository_keys.dedup();
+    deployment
+        .remote_client()?
+        .register_agent_memory_sync_target(&RegisterAgentMemorySyncTargetRequest {
+            host_id: host.id,
+            enabled: config.enabled,
+            agents: config.agents.clone(),
+            repository_keys,
+        })
+        .await?;
+    Ok((host.id, config))
+}
+
+pub async fn request_central_sync(
+    deployment: &DeploymentImpl,
+    trigger_kind: &str,
+) -> anyhow::Result<api_types::AgentMemorySyncSession> {
+    let (host_id, config) = register_central_target(deployment).await?;
+    if !config.enabled || config.agents.is_empty() {
+        anyhow::bail!("this computer is not opted in to memory synchronization");
+    }
+    deployment
+        .remote_client()?
+        .create_agent_memory_sync_session(&CreateAgentMemorySyncSessionRequest {
+            requested_by_host_id: host_id,
+            trigger_kind: trigger_kind.to_string(),
+        })
+        .await
+        .map_err(Into::into)
+}
+
+pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<()> {
+    let (host_id, config) = register_central_target(deployment).await?;
+    if !config.enabled || config.agents.is_empty() || RUN_LOCK.try_lock().is_err() {
+        return Ok(());
+    }
+    let client = deployment.remote_client()?;
+    let mut job = client.claim_agent_memory_sync_job(host_id).await?;
+    if job.is_none() {
+        let pending = pending_status(deployment).await?;
+        if pending.pending_snapshots > 0 || pending.pending_mutations > 0 {
+            client
+                .create_agent_memory_sync_session(&CreateAgentMemorySyncSessionRequest {
+                    requested_by_host_id: host_id,
+                    trigger_kind: "catch_up".to_string(),
+                })
+                .await?;
+            job = client.claim_agent_memory_sync_job(host_id).await?;
+        }
+    }
+    let Some(job) = job else {
+        return Ok(());
+    };
+    let result = run_now(deployment.clone(), &job.trigger_kind).await;
+    let report = deployment
+        .remote_client()?
+        .report_agent_memory_sync_job(&ReportAgentMemorySyncJobRequest {
+            session_id: job.session_id,
+            host_id,
+            round: job.round,
+            succeeded: result.is_ok(),
+            error: result.as_ref().err().map(ToString::to_string),
+        })
+        .await;
+    if let Err(report_error) = report {
+        return Err(anyhow::anyhow!(
+            "memory sync finished but job report failed: {report_error}"
+        ));
+    }
+    result
+}
+
+pub async fn request_central_sync_and_process(
+    deployment: DeploymentImpl,
+    trigger_kind: &str,
+) -> anyhow::Result<api_types::AgentMemorySyncSession> {
+    let session = request_central_sync(&deployment, trigger_kind).await?;
+    sync_control_plane(&deployment).await?;
+    Ok(session)
 }
 
 pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::Result<()> {
@@ -540,12 +652,36 @@ pub async fn status(deployment: &DeploymentImpl) -> anyhow::Result<AgentMemorySy
     )
     .fetch_one(&deployment.db().pool)
     .await?;
+    let (central_session, central_targets) = match deployment.remote_client() {
+        Ok(client) => {
+            let session = client
+                .latest_agent_memory_sync_session()
+                .await
+                .ok()
+                .flatten();
+            let targets = match &session {
+                Some(session) => client
+                    .agent_memory_sync_session_targets(session.id)
+                    .await
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            (session, targets)
+        }
+        Err(_) => (None, Vec::new()),
+    };
     Ok(AgentMemorySyncStatus {
-        running: RUN_LOCK.try_lock().is_err() || GLOBAL_RUN_LOCK.try_lock().is_err(),
+        running: RUN_LOCK.try_lock().is_err()
+            || GLOBAL_RUN_LOCK.try_lock().is_err()
+            || central_session
+                .as_ref()
+                .is_some_and(|session| session.status == "running"),
         last_started_at: row.last_started_at,
         last_finished_at: row.last_finished_at,
         last_status: row.last_status,
         last_error: row.last_error,
+        central_session,
+        central_targets,
     })
 }
 
@@ -595,14 +731,12 @@ fn scheduled_run_is_due(
 }
 
 async fn run_scheduled(deployment: DeploymentImpl, date: NaiveDate) -> anyhow::Result<()> {
-    let result = run_now(deployment.clone(), "scheduled").await;
-    // Mark the day done once the run has executed to completion, even if some
-    // repos/agents failed. Otherwise a single repo that reliably fails keeps
-    // `last_scheduled_local_date` unadvanced, so run_if_due (every 60s) relaunches
-    // a full run — re-spawning coding agents across every repo — back-to-back all
-    // day. A run that never completes (process crash / machine off) doesn't reach
-    // here, so genuinely missed runs still retry; per-repo failures surface via
-    // the sync status (`last_error`) instead.
+    let result = request_central_sync_and_process(deployment.clone(), &format!("scheduled:{date}"))
+        .await
+        .map(|_| ());
+    // Once this host has successfully requested the user's date-keyed central
+    // session, mark the local schedule done. Other hosts requesting the same key
+    // reuse that session, so they cannot launch duplicate daily reconciliations.
     sqlx::query("UPDATE agent_memory_sync_state SET last_scheduled_local_date = ? WHERE id = 1")
         .bind(date.to_string())
         .execute(&deployment.db().pool)

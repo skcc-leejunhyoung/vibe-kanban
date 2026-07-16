@@ -1,15 +1,17 @@
 use api_types::{
     AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
     AgentMemoryMutationInboxResponse, AgentMemoryMutationOperation, AgentMemoryReceipt,
-    AgentMemoryScope, CreateAgentMemoryMutationRequest, RecordAgentMemoryMutationReceiptRequest,
-    RecordAgentMemoryReceiptRequest, UpsertAgentMemorySnapshotRequest,
-    UpsertAgentMemorySnapshotResponse,
+    AgentMemoryScope, AgentMemorySyncJob, AgentMemorySyncSession, AgentMemorySyncSessionTarget,
+    AgentMemorySyncTarget, CreateAgentMemoryMutationRequest, CreateAgentMemorySyncSessionRequest,
+    RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
+    RegisterAgentMemorySyncTargetRequest, ReportAgentMemorySyncJobRequest,
+    UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse,
 };
 use axum::{
     Json, Router,
     extract::{Extension, Query, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -39,6 +41,119 @@ pub fn router() -> Router<AppState> {
             "/agent-memory/mutation-receipts",
             post(record_mutation_receipt),
         )
+        .route("/agent-memory/sync-targets", put(register_sync_target))
+        .route(
+            "/agent-memory/sync-sessions",
+            get(latest_sync_session).post(create_sync_session),
+        )
+        .route(
+            "/agent-memory/sync-session-targets",
+            get(list_sync_session_targets),
+        )
+        .route("/agent-memory/sync-jobs", get(claim_sync_job))
+        .route("/agent-memory/sync-jobs/report", post(report_sync_job))
+}
+
+async fn register_sync_target(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Json(payload): Json<RegisterAgentMemorySyncTargetRequest>,
+) -> Result<Json<AgentMemorySyncTarget>, ErrorResponse> {
+    if payload.agents.len() > 2
+        || payload.repository_keys.len() > 500
+        || payload.repository_keys.iter().any(|key| key.len() > 2_048)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "invalid memory sync target registration",
+        ));
+    }
+    agent_memory::register_sync_target(state.pool(), ctx.user.id, &payload)
+        .await
+        .map(Json)
+        .map_err(internal_memory_error)
+}
+
+async fn create_sync_session(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Json(payload): Json<CreateAgentMemorySyncSessionRequest>,
+) -> Result<Json<AgentMemorySyncSession>, ErrorResponse> {
+    if payload.trigger_kind.trim().is_empty() || payload.trigger_kind.len() > 64 {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "invalid memory sync trigger",
+        ));
+    }
+    agent_memory::create_sync_session(state.pool(), ctx.user.id, &payload)
+        .await
+        .map(Json)
+        .map_err(internal_memory_error)
+}
+
+async fn latest_sync_session(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+) -> Result<Json<Option<AgentMemorySyncSession>>, ErrorResponse> {
+    agent_memory::latest_sync_session(state.pool(), ctx.user.id)
+        .await
+        .map(Json)
+        .map_err(internal_memory_error)
+}
+
+#[derive(Deserialize)]
+struct SyncSessionTargetsQuery {
+    session_id: Uuid,
+}
+
+async fn list_sync_session_targets(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<SyncSessionTargetsQuery>,
+) -> Result<Json<Vec<AgentMemorySyncSessionTarget>>, ErrorResponse> {
+    agent_memory::list_sync_session_targets(state.pool(), ctx.user.id, query.session_id)
+        .await
+        .map(Json)
+        .map_err(internal_memory_error)
+}
+
+#[derive(Deserialize)]
+struct SyncJobQuery {
+    host_id: Uuid,
+}
+
+async fn claim_sync_job(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<SyncJobQuery>,
+) -> Result<Json<Option<AgentMemorySyncJob>>, ErrorResponse> {
+    ensure_owned_host(&state, ctx.user.id, query.host_id).await?;
+    agent_memory::claim_sync_job(state.pool(), ctx.user.id, query.host_id)
+        .await
+        .map(Json)
+        .map_err(internal_memory_error)
+}
+
+async fn report_sync_job(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Json(payload): Json<ReportAgentMemorySyncJobRequest>,
+) -> Result<Json<AgentMemorySyncSession>, ErrorResponse> {
+    ensure_owned_host(&state, ctx.user.id, payload.host_id).await?;
+    if payload
+        .error
+        .as_ref()
+        .is_some_and(|error| error.len() > MAX_REASON_BYTES)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "memory sync job error exceeds 4 KiB",
+        ));
+    }
+    agent_memory::report_sync_job(state.pool(), ctx.user.id, &payload)
+        .await
+        .map(Json)
+        .map_err(internal_memory_error)
 }
 
 async fn list_mutations(

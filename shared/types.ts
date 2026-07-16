@@ -910,7 +910,21 @@ export type AgentMemoryMutation = { id: string, memory_id: string, generation: n
 
 export type CreateAgentMemoryMutationRequest = { memory_id: string | null, expected_generation: number | null, operation: AgentMemoryMutationOperation, scope: AgentMemoryScope, scope_key: string | null, match_text: string, replacement_text: string | null, };
 
-export type AgentMemorySyncStatus = { running: boolean, last_started_at: string | null, last_finished_at: string | null, last_status: string | null, last_error: string | null, };
+export type AgentMemorySyncTarget = { host_id: string, enabled: boolean, agents: Array<AgentMemoryKind>, repository_keys: Array<string>, updated_at: string, };
+
+export type RegisterAgentMemorySyncTargetRequest = { host_id: string, enabled: boolean, agents: Array<AgentMemoryKind>, repository_keys: Array<string>, };
+
+export type AgentMemorySyncSession = { id: string, status: string, round: number, max_rounds: number, target_count: number, completed_count: number, created_at: string, finished_at: string | null, };
+
+export type AgentMemorySyncSessionTarget = { host_id: string, host_name: string, round: number, status: string, attempts: number, error: string | null, updated_at: string, };
+
+export type CreateAgentMemorySyncSessionRequest = { requested_by_host_id: string, trigger_kind: string, };
+
+export type AgentMemorySyncJob = { session_id: string, round: number, max_rounds: number, trigger_kind: string, };
+
+export type ReportAgentMemorySyncJobRequest = { session_id: string, host_id: string, round: number, succeeded: boolean, error: string | null, };
+
+export type AgentMemorySyncStatus = { running: boolean, last_started_at: string | null, last_finished_at: string | null, last_status: string | null, last_error: string | null, central_session: AgentMemorySyncSession | null, central_targets: Array<AgentMemorySyncSessionTarget>, };
 
 export type AgentMemorySyncLogEntry = { id: string, run_id: string, created_at: string, level: string, phase: string, trigger_kind: string, repo_name: string | null, repo_path: string | null, agent_kind: string | null, message: string, };
 

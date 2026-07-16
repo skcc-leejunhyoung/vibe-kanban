@@ -4,10 +4,12 @@ use std::time::Duration;
 
 use api_types::{
     AcceptInvitationResponse, AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
-    AgentMemoryMutationInboxResponse, AgentMemoryReceipt, AgentMemoryScope, AuthMethodsResponse,
-    CreateAgentMemoryMutationRequest, CreateInvitationRequest, CreateInvitationResponse,
-    CreateIssueAssigneeRequest, CreateIssueRelationshipRequest, CreateIssueRequest,
-    CreateIssueTagRequest, CreateOrganizationRequest, CreateOrganizationResponse, CreateTagRequest,
+    AgentMemoryMutationInboxResponse, AgentMemoryReceipt, AgentMemoryScope, AgentMemorySyncJob,
+    AgentMemorySyncSession, AgentMemorySyncSessionTarget, AgentMemorySyncTarget,
+    AuthMethodsResponse, CreateAgentMemoryMutationRequest, CreateAgentMemorySyncSessionRequest,
+    CreateInvitationRequest, CreateInvitationResponse, CreateIssueAssigneeRequest,
+    CreateIssueRelationshipRequest, CreateIssueRequest, CreateIssueTagRequest,
+    CreateOrganizationRequest, CreateOrganizationResponse, CreateTagRequest,
     CreateWorkspaceRequest, DeleteResponse, DeleteWorkspaceRequest, GetInvitationResponse,
     GetOrganizationResponse, HandoffInitRequest, HandoffInitResponse, HandoffRedeemRequest,
     HandoffRedeemResponse, Issue, IssueAssignee, IssueRelationship, IssueTag,
@@ -17,11 +19,11 @@ use api_types::{
     ListPullRequestsResponse, ListTagsResponse, LocalLoginRequest, LocalLoginResponse,
     MutationResponse, Organization, ProfileResponse, PullRequest,
     RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
-    RevokeInvitationRequest, SearchIssuesRequest, Tag, TokenRefreshRequest, TokenRefreshResponse,
-    UpdateIssueRequest, UpdateMemberRoleRequest, UpdateMemberRoleResponse,
-    UpdateOrganizationRequest, UpdatePullRequestApiRequest, UpdateWorkspaceRequest,
-    UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse, UpsertPullRequestRequest,
-    Workspace,
+    RegisterAgentMemorySyncTargetRequest, ReportAgentMemorySyncJobRequest, RevokeInvitationRequest,
+    SearchIssuesRequest, Tag, TokenRefreshRequest, TokenRefreshResponse, UpdateIssueRequest,
+    UpdateMemberRoleRequest, UpdateMemberRoleResponse, UpdateOrganizationRequest,
+    UpdatePullRequestApiRequest, UpdateWorkspaceRequest, UpsertAgentMemorySnapshotRequest,
+    UpsertAgentMemorySnapshotResponse, UpsertPullRequestRequest, Workspace,
 };
 use backon::{ExponentialBuilder, Retryable};
 use chrono::Duration as ChronoDuration;
@@ -812,6 +814,64 @@ impl RemoteClient {
         )
         .await?;
         Ok(())
+    }
+
+    pub async fn register_agent_memory_sync_target(
+        &self,
+        request: &RegisterAgentMemorySyncTargetRequest,
+    ) -> Result<AgentMemorySyncTarget, RemoteClientError> {
+        let response = self
+            .send(
+                reqwest::Method::PUT,
+                "/v1/agent-memory/sync-targets",
+                true,
+                Some(request),
+            )
+            .await?;
+        response
+            .json()
+            .await
+            .map_err(|error| RemoteClientError::Serde(error.to_string()))
+    }
+
+    pub async fn create_agent_memory_sync_session(
+        &self,
+        request: &CreateAgentMemorySyncSessionRequest,
+    ) -> Result<AgentMemorySyncSession, RemoteClientError> {
+        self.post_authed("/v1/agent-memory/sync-sessions", Some(request))
+            .await
+    }
+
+    pub async fn latest_agent_memory_sync_session(
+        &self,
+    ) -> Result<Option<AgentMemorySyncSession>, RemoteClientError> {
+        self.get_authed("/v1/agent-memory/sync-sessions").await
+    }
+
+    pub async fn agent_memory_sync_session_targets(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Vec<AgentMemorySyncSessionTarget>, RemoteClientError> {
+        self.get_authed(&format!(
+            "/v1/agent-memory/sync-session-targets?session_id={session_id}"
+        ))
+        .await
+    }
+
+    pub async fn claim_agent_memory_sync_job(
+        &self,
+        host_id: Uuid,
+    ) -> Result<Option<AgentMemorySyncJob>, RemoteClientError> {
+        self.get_authed(&format!("/v1/agent-memory/sync-jobs?host_id={host_id}"))
+            .await
+    }
+
+    pub async fn report_agent_memory_sync_job(
+        &self,
+        request: &ReportAgentMemorySyncJobRequest,
+    ) -> Result<AgentMemorySyncSession, RemoteClientError> {
+        self.post_authed("/v1/agent-memory/sync-jobs/report", Some(request))
+            .await
     }
 
     /// Deletes a workspace on the remote server by its local workspace ID.

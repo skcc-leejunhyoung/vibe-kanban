@@ -692,11 +692,23 @@ export function AutomationSettingsSection() {
           })}
         </div>
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-low">
-            {memoryStatus?.last_status
-              ? `${memoryStatus.last_status} · ${memoryStatus.last_finished_at ?? memoryStatus.last_started_at ?? ''}`
-              : t('settings.automation.memory.neverRun', 'Not run yet')}
-          </p>
+          <div className="text-xs text-low">
+            <p>
+              {memoryStatus?.last_status
+                ? `${memoryStatus.last_status} · ${memoryStatus.last_finished_at ?? memoryStatus.last_started_at ?? ''}`
+                : t('settings.automation.memory.neverRun', 'Not run yet')}
+            </p>
+            {memoryStatus?.central_session && (
+              <p>
+                {`Central session ${memoryStatus.central_session.status} · round ${memoryStatus.central_session.round}/${memoryStatus.central_session.max_rounds} · ${memoryStatus.central_session.completed_count}/${memoryStatus.central_session.target_count} hosts`}
+              </p>
+            )}
+            {memoryStatus?.central_targets.map((target) => (
+              <p key={target.host_id}>
+                {`${target.host_name}: ${target.status} · round ${target.round} · attempts ${target.attempts}${target.error ? ` · ${target.error}` : ''}`}
+              </p>
+            ))}
+          </div>
           <PrimaryButton
             value={t('settings.automation.memory.save', 'Save schedule')}
             onClick={saveMemoryConfig}

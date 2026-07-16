@@ -83,19 +83,19 @@ async fn run_wait(
     Json(agent_memory_sync::run_if_opted_in(deployment, "global").await)
 }
 
-async fn run_all(State(deployment): State<DeploymentImpl>) -> (StatusCode, Json<StartResponse>) {
+async fn run_all(
+    State(deployment): State<DeploymentImpl>,
+) -> Result<(StatusCode, Json<StartResponse>), (StatusCode, String)> {
+    let session = agent_memory_sync::request_central_sync(&deployment, "manual")
+        .await
+        .map_err(internal_error)?;
     tokio::spawn(async move {
-        match agent_memory_sync::run_all_online(deployment).await {
-            Ok(result) => tracing::info!(
-                rounds = result.rounds,
-                hosts = result.hosts.len(),
-                converged = result.converged,
-                "global agent memory sync completed"
-            ),
-            Err(error) => tracing::warn!(?error, "global agent memory sync failed"),
+        if let Err(error) = agent_memory_sync::sync_control_plane(&deployment).await {
+            tracing::warn!(?error, "central agent memory sync execution failed");
         }
     });
-    (StatusCode::ACCEPTED, Json(StartResponse { started: true }))
+    tracing::info!(session_id = %session.id, round = session.round, "central agent memory sync requested");
+    Ok((StatusCode::ACCEPTED, Json(StartResponse { started: true })))
 }
 
 async fn pending(
