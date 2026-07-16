@@ -1,13 +1,5 @@
-import { getActiveRelayHostId } from "@remote/shared/lib/relay/activeHostContext";
-import {
-  invalidateAllRemoteSessionIds,
-  refreshActiveHostSigningSessionForResume,
-} from "@remote/shared/lib/relay/context";
-import {
-  getWebRtcConnection,
-  resetWebRtcConnectionsForResume,
-  WEBRTC_ENABLED,
-} from "@remote/shared/lib/webrtc/connectionManager";
+import { invalidateAllRemoteSessionIds } from "@remote/shared/lib/relay/context";
+import { resetWebRtcConnectionsForResume } from "@remote/shared/lib/webrtc/connectionManager";
 
 // Only treat a visibility change as a "resume" if the app was hidden at least
 // this long. The host's relay signing session has a 15-min idle TTL, so a short
@@ -37,21 +29,8 @@ export function installRelayResumeReconnect(): void {
   const recover = () => {
     invalidateAllRemoteSessionIds();
     resetWebRtcConnectionsForResume();
-    // Proactively rebuild the data channel for the host the user is viewing.
-    // `refetchOnWindowFocus` is off, so without this nudge a focus-only resume
-    // (network never dropped, just the idle signing session expired) would have
-    // nothing to re-trigger the connection until the user interacts.
-    const activeHostId = getActiveRelayHostId();
-    if (!activeHostId) return;
-    // Refresh the (likely expired) signing session so the next relayed request
-    // lands on a valid session on the first try. When WebRTC is enabled, also
-    // proactively rebuild the data channel (focus-only resume has nothing else
-    // to re-trigger it). With WebRTC off, relay requests resume on their own.
-    void refreshActiveHostSigningSessionForResume(activeHostId).finally(() => {
-      if (WEBRTC_ENABLED) {
-        getWebRtcConnection(activeHostId);
-      }
-    });
+    // Each explicitly scoped stream/request re-establishes its own host
+    // session. There is no single active host to reconnect preferentially.
   };
 
   document.addEventListener("visibilitychange", () => {

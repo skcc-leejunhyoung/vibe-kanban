@@ -642,12 +642,9 @@ export function WorkspacesSidebarContainer({
       ...(runtime === 'local'
         ? [{ id: LOCAL_HOST_FILTER_ID, name: 'This machine' }]
         : []),
-      ...workspaceHosts.map((host) => ({
-        ...host,
-        name: host.id === routeHostId ? `This host · ${host.name}` : host.name,
-      })),
+      ...workspaceHosts,
     ],
-    [runtime, routeHostId, workspaceHosts]
+    [runtime, workspaceHosts]
   );
 
   const handleOpenRemoteHostSettings = useCallback(() => {

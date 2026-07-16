@@ -1,6 +1,5 @@
 import type { DataChannelResponse } from "shared/types";
 import { base64ToBytes } from "@remote/shared/lib/relay/bytes";
-import { getActiveRelayHostId } from "@remote/shared/lib/relay/activeHostContext";
 import {
   shouldRelayApiPath,
   toPathAndQuery,
@@ -20,11 +19,7 @@ import { createDataChannelWebSocket } from "./dataChannelWebSocket";
 function resolveHostId(
   options: { relayHostId?: string | null } = {},
 ): string | null {
-  return (
-    options.relayHostId ??
-    resolveRelayHostIdForCurrentPage() ??
-    getActiveRelayHostId()
-  );
+  return options.relayHostId ?? resolveRelayHostIdForCurrentPage();
 }
 
 function normalizeWebSocketUrl(pathOrUrl: string): string {

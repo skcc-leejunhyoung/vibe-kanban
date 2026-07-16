@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import {
   createRootRoute,
   Outlet,
@@ -41,7 +41,6 @@ import {
   resolveRelayNavigationHostId,
   useRelayAppBarHosts,
 } from "@remote/shared/hooks/useRelayAppBarHosts";
-import { setActiveRelayHostId } from "@remote/shared/lib/relay/activeHostContext";
 import {
   isProjectDestination,
   isWorkspacesDestination,
@@ -124,10 +123,6 @@ function RootLayout() {
     () => resolveRelayNavigationHostId(relayHosts, { routeHostId }),
     [relayHosts, routeHostId],
   );
-
-  useEffect(() => {
-    setActiveRelayHostId(navigationHostId);
-  }, [navigationHostId]);
 
   const appNavigation = useMemo(
     () =>
