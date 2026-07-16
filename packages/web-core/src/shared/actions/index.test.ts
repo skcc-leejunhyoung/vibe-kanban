@@ -12,6 +12,9 @@ vi.mock('@/shared/lib/api', () => ({
   workspacesApi: {
     update: vi.fn(),
     get: vi.fn(),
+    getFirstUserMessage: vi.fn(),
+    getRepos: vi.fn(),
+    getWithSession: vi.fn(),
     getBranchStatus: vi.fn(),
     merge: vi.fn(),
     runSetupScript: vi.fn(),
@@ -37,6 +40,9 @@ import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
 const merge = vi.mocked(workspacesApi.merge);
+const getFirstUserMessage = vi.mocked(workspacesApi.getFirstUserMessage);
+const getRepos = vi.mocked(workspacesApi.getRepos);
+const getWithSession = vi.mocked(workspacesApi.getWithSession);
 const runSetupScript = vi.mocked(workspacesApi.runSetupScript);
 const runCleanupScript = vi.mocked(workspacesApi.runCleanupScript);
 const runArchiveScript = vi.mocked(workspacesApi.runArchiveScript);
@@ -71,6 +77,42 @@ function makeCtx(
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('remote workspace action scoping', () => {
+  it('loads duplicate seed data from the workspace host and keeps creation on that host', async () => {
+    getFirstUserMessage.mockResolvedValue('prompt');
+    getRepos.mockResolvedValue([]);
+    getWithSession.mockResolvedValue({ workspace: {}, session: undefined });
+    const goToWorkspacesCreate = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'remote-ws' },
+      { appNavigation: { goToWorkspacesCreate } as never }
+    );
+
+    await Actions.DuplicateWorkspace.execute(ctx, 'remote-ws', 'host-2');
+
+    expect(getFirstUserMessage).toHaveBeenCalledWith('remote-ws', 'host-2');
+    expect(getRepos).toHaveBeenCalledWith('remote-ws', 'host-2');
+    expect(getWithSession).toHaveBeenCalledWith('remote-ws', 'host-2');
+    expect(goToWorkspacesCreate).toHaveBeenCalledWith({ hostId: 'host-2' });
+  });
+
+  it('routes all script actions to the workspace host', async () => {
+    const success = { success: true, data: {} } as never;
+    runSetupScript.mockResolvedValue(success);
+    runCleanupScript.mockResolvedValue(success);
+    runArchiveScript.mockResolvedValue(success);
+    const { ctx } = makeCtx({ id: 'remote-ws' });
+
+    await Actions.RunSetupScript.execute(ctx, 'remote-ws', 'host-2');
+    await Actions.RunCleanupScript.execute(ctx, 'remote-ws', 'host-2');
+    await Actions.RunArchiveScript.execute(ctx, 'remote-ws', 'host-2');
+
+    expect(runSetupScript).toHaveBeenCalledWith('remote-ws', 'host-2');
+    expect(runCleanupScript).toHaveBeenCalledWith('remote-ws', 'host-2');
+    expect(runArchiveScript).toHaveBeenCalledWith('remote-ws', 'host-2');
+  });
 });
 
 describe('Actions.ArchiveWorkspace', () => {

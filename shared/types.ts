@@ -770,7 +770,12 @@ export type UpdateWorkspace = { archived: boolean | null, pinned: boolean | null
 
 export type UpdateSession = { name: string | null, };
 
-export type WorkspaceSummaryRequest = { archived: boolean, };
+export type WorkspaceSummaryRequest = { archived: boolean,
+/**
+ * Include the latest user prompt in each summary. Unified cross-host lists
+ * disable this because they only need workspace metadata and status.
+ */
+include_latest_prompt: boolean, };
 
 export type WorkspaceSummary = { workspace_id: string,
 /**
@@ -835,7 +840,7 @@ todo_completed: number | null,
 /**
  * The most recent prompt sent in this workspace (what it's working on)
  */
-latest_prompt: string | null,
+latest_prompt?: string,
 /**
  * PR status for this workspace (if any PR exists)
  */

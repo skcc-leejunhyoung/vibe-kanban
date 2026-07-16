@@ -23,6 +23,14 @@ use crate::{DeploymentImpl, error::ApiError};
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct WorkspaceSummaryRequest {
     pub archived: bool,
+    /// Include the latest user prompt in each summary. Unified cross-host lists
+    /// disable this because they only need workspace metadata and status.
+    #[serde(default = "default_include_latest_prompt")]
+    pub include_latest_prompt: bool,
+}
+
+fn default_include_latest_prompt() -> bool {
+    true
 }
 
 /// Summary info for a single workspace
@@ -65,6 +73,8 @@ pub struct WorkspaceSummary {
     /// Completed items in the agent's latest TODO list (see `todo_total`).
     pub todo_completed: Option<usize>,
     /// The most recent prompt sent in this workspace (what it's working on)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub latest_prompt: Option<String>,
     /// PR status for this workspace (if any PR exists)
     pub pr_status: Option<MergeStatus>,
@@ -167,8 +177,11 @@ pub async fn get_workspace_summaries(
     let unseen_workspaces = CodingAgentTurn::find_workspaces_with_unseen(pool, archived).await?;
 
     // 5b. Fetch the latest prompt for each workspace (what it's working on)
-    let latest_prompts =
-        CodingAgentTurn::find_latest_prompts_for_workspaces(pool, archived).await?;
+    let latest_prompts = if request.include_latest_prompt {
+        CodingAgentTurn::find_latest_prompts_for_workspaces(pool, archived).await?
+    } else {
+        HashMap::new()
+    };
 
     // 6. Get PR status for each workspace
     let pr_statuses = PullRequest::get_latest_for_workspaces(pool, archived).await?;
@@ -260,4 +273,25 @@ pub async fn compute_workspace_diff_stats(
         lines_added: stats.lines_added,
         lines_removed: stats.lines_removed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkspaceSummaryRequest;
+
+    #[test]
+    fn latest_prompt_is_included_by_default_for_existing_clients() {
+        let request: WorkspaceSummaryRequest =
+            serde_json::from_str(r#"{"archived":false}"#).unwrap();
+
+        assert!(request.include_latest_prompt);
+    }
+
+    #[test]
+    fn latest_prompt_can_be_excluded_for_cross_host_lists() {
+        let request: WorkspaceSummaryRequest =
+            serde_json::from_str(r#"{"archived":false,"include_latest_prompt":false}"#).unwrap();
+
+        assert!(!request.include_latest_prompt);
+    }
 }

@@ -145,7 +145,8 @@ export const workspaceKeys = {
 // Fetch workspace summaries from the API by archived status
 export async function fetchWorkspaceSummariesByArchived(
   archived: boolean,
-  hostId: string | null
+  hostId: string | null,
+  includeLatestPrompt = true
 ): Promise<Map<string, WorkspaceSummary>> {
   try {
     const basePath = hostId ? `/api/host/${hostId}` : '/api';
@@ -154,7 +155,10 @@ export async function fetchWorkspaceSummariesByArchived(
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ archived }),
+        body: JSON.stringify({
+          archived,
+          include_latest_prompt: includeLatestPrompt,
+        }),
       }
     );
 
@@ -318,8 +322,8 @@ async function fetchHostWorkspaceSnapshot(
 ): Promise<HostWorkspaceSnapshot> {
   const [records, activeSummaries, archivedSummaries] = await Promise.all([
     workspacesApi.getAllWorkspaces(hostId),
-    fetchWorkspaceSummariesByArchived(false, hostId),
-    fetchWorkspaceSummariesByArchived(true, hostId),
+    fetchWorkspaceSummariesByArchived(false, hostId, false),
+    fetchWorkspaceSummariesByArchived(true, hostId, false),
   ]);
 
   const active: SidebarWorkspace[] = [];
