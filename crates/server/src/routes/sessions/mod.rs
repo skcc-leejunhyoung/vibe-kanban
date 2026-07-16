@@ -26,6 +26,7 @@ use deployment::Deployment;
 use executors::{
     actions::{
         ExecutorAction, ExecutorActionType, coding_agent_follow_up::CodingAgentFollowUpRequest,
+        coding_agent_initial::CodingAgentInitialRequest,
     },
     executors::BaseCodingAgent,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
@@ -300,6 +301,11 @@ pub struct CreateFollowUpAttempt {
 }
 
 #[derive(Debug, Deserialize, TS)]
+pub struct CreateHandoffAttempt {
+    pub executor_config: ExecutorConfig,
+}
+
+#[derive(Debug, Deserialize, TS)]
 pub struct ResetProcessRequest {
     pub process_id: Uuid,
     pub force_when_dirty: Option<bool>,
@@ -423,13 +429,13 @@ pub async fn follow_up(
             working_dir: working_dir.clone(),
         })
     } else {
-        ExecutorActionType::CodingAgentInitialRequest(
-            executors::actions::coding_agent_initial::CodingAgentInitialRequest {
-                prompt,
-                executor_config: executor_config.clone(),
-                working_dir,
-            },
-        )
+        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+            prompt,
+            executor_config: executor_config.clone(),
+            working_dir,
+            handoff_from: None,
+            handoff_session_id: None,
+        })
     };
 
     let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
@@ -523,6 +529,96 @@ pub async fn follow_up(
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }
 
+pub async fn handoff(
+    Extension(mut session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<CreateHandoffAttempt>,
+) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+        .await?
+        .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
+            "Workspace not found".to_string(),
+        )))?;
+
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+        return Err(ApiError::BadRequest(
+            "Stop the running process before handing off this session".to_string(),
+        ));
+    }
+
+    deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+
+    let latest_executor_config =
+        ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?;
+    let source_executor = latest_executor_config
+        .as_ref()
+        .map(|config| config.executor)
+        .or_else(|| {
+            session
+                .executor
+                .as_deref()
+                .and_then(|value| BaseCodingAgent::from_str(value).ok())
+        })
+        .ok_or(ApiError::BadRequest(
+            "Session has no executor to hand off from".to_string(),
+        ))?;
+
+    if source_executor == payload.executor_config.executor {
+        return Err(ApiError::BadRequest(
+            "Handoff target must be a different executor".to_string(),
+        ));
+    }
+
+    let latest_session_info = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
+    let source_native_session_id = latest_session_info.map(|info| info.session_id);
+    let working_dir = session
+        .agent_working_dir
+        .as_ref()
+        .filter(|dir| !dir.is_empty())
+        .cloned();
+    let prompt = format!(
+        "You are taking over an existing Vibe Kanban workspace session from {source_executor}. \
+Continue the work in place without restarting or discarding existing changes. The prior conversation \
+remains visible to the user in Vibe Kanban, but is not replayed into your native session. Inspect the \
+repository state, git diff, and relevant files before proceeding. Vibe session ID: {}. Previous agent \
+session ID: {}. Working directory: {}.",
+        session.id,
+        source_native_session_id.as_deref().unwrap_or("unavailable"),
+        working_dir.as_deref().unwrap_or("workspace root")
+    );
+    let action = ExecutorAction::new(
+        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+            prompt,
+            executor_config: payload.executor_config.clone(),
+            working_dir,
+            handoff_from: Some(source_executor),
+            handoff_session_id: source_native_session_id,
+        }),
+        None,
+    );
+
+    let execution_process = deployment
+        .container()
+        .start_execution(
+            &workspace,
+            &session,
+            &action,
+            &ExecutionProcessRunReason::CodingAgent,
+        )
+        .await?;
+
+    let target = payload.executor_config.executor.to_string();
+    Session::update_executor(pool, session.id, &target).await?;
+    session.executor = Some(target);
+    let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
+
+    Ok(ResponseJson(ApiResponse::success(execution_process)))
+}
+
 pub async fn reset_process(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -608,6 +704,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             get(get_session).put(update_session).delete(delete_session),
         )
         .route("/follow-up", post(follow_up))
+        .route("/handoff", post(handoff))
         .route("/auto-resume", get(get_auto_resume).post(set_auto_resume))
         .route("/reset", post(reset_process))
         .route("/setup", post(run_setup_script))

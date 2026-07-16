@@ -401,6 +401,8 @@ export type RefreshRelaySigningSessionResponse = { signing_session_id: string, }
 
 export type CreateFollowUpAttempt = { prompt: string, executor_config: ExecutorConfig, retry_process_id: string | null, force_when_dirty: boolean | null, perform_git_reset: boolean | null, };
 
+export type CreateHandoffAttempt = { executor_config: ExecutorConfig, };
+
 export type ResetProcessRequest = { process_id: string, force_when_dirty: boolean | null, perform_git_reset: boolean | null, };
 
 export type ChangeTargetBranchRequest = { repo_id: string, new_target_branch: string, };
@@ -1159,7 +1161,16 @@ executor_config: ExecutorConfig,
  * Optional relative path to execute the agent in (relative to container_ref).
  * If None, uses the container_ref directory directly.
  */
-working_dir: string | null, };
+working_dir: string | null,
+/**
+ * Source executor when this initial request takes over an existing Vibe
+ * session. The target executor still receives a fresh native session.
+ */
+handoff_from: BaseCodingAgent | null,
+/**
+ * Native session identifier of the source executor, when available.
+ */
+handoff_session_id: string | null, };
 
 export type CodingAgentFollowUpRequest = { prompt: string, session_id: string, reset_to_message_id: string | null,
 /**

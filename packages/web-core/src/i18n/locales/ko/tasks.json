@@ -371,6 +371,12 @@
     }
   },
   "conversation": {
+    "handoff": {
+      "label": "에이전트 전환",
+      "target": "전환할 에이전트",
+      "failedTitle": "에이전트 전환 실패",
+      "failedDescription": "세션을 다른 에이전트로 전환하지 못했습니다."
+    },
     "you": "나",
     "thinking": "생각 중",
     "todo": "할 일",

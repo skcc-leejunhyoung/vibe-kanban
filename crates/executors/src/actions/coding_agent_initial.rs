@@ -24,6 +24,13 @@ pub struct CodingAgentInitialRequest {
     /// If None, uses the container_ref directory directly.
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// Source executor when this initial request takes over an existing Vibe
+    /// session. The target executor still receives a fresh native session.
+    #[serde(default)]
+    pub handoff_from: Option<BaseCodingAgent>,
+    /// Native session identifier of the source executor, when available.
+    #[serde(default)]
+    pub handoff_session_id: Option<String>,
 }
 
 impl CodingAgentInitialRequest {

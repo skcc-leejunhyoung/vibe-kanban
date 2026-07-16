@@ -179,6 +179,9 @@ function reviewErrorKey(error: unknown): string {
 // (matches the `isFirstTurn` derivation in useConversationHistory).
 function getUserPromptFromProcess(process: ExecutionProcess): string | null {
   const typ: ExecutorActionType = process.executor_action.typ;
+  if (typ.type === 'CodingAgentInitialRequest' && typ.handoff_from != null) {
+    return null;
+  }
   if (
     typ.type === 'CodingAgentInitialRequest' ||
     typ.type === 'CodingAgentFollowUpRequest'
@@ -189,6 +192,7 @@ function getUserPromptFromProcess(process: ExecutionProcess): string | null {
 }
 
 export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
+  const [isHandoffPending, setIsHandoffPending] = useState(false);
   const {
     mode,
     sessions,
@@ -718,6 +722,39 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     executorConfig,
     onOptimisticProcess: addOptimisticProcess,
   });
+
+  const handleHandoff = useCallback(
+    async (target: BaseCodingAgent) => {
+      if (!sessionId || target === effectiveExecutor) return;
+      setIsHandoffPending(true);
+      try {
+        const process = await sessionsApi.handoff(sessionId, {
+          executor_config: { executor: target, variant: null },
+        });
+        handleExecutorChange(target);
+        addOptimisticProcess(process);
+        onScrollToBottom('auto');
+      } catch (error) {
+        void ErrorDialog.show({
+          title: t('conversation.handoff.failedTitle'),
+          message:
+            error instanceof Error
+              ? error.message
+              : t('conversation.handoff.failedDescription'),
+        });
+      } finally {
+        setIsHandoffPending(false);
+      }
+    },
+    [
+      sessionId,
+      effectiveExecutor,
+      handleExecutorChange,
+      addOptimisticProcess,
+      onScrollToBottom,
+      t,
+    ]
+  );
 
   const handleSend = useCallback(async () => {
     const { prompt, isSlashCommand } = buildAgentPrompt(localMessage, [
@@ -1398,6 +1435,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       toolbarActions={{
         items: toolbarActionItems,
       }}
+      handoff={
+        mode === 'existing-session' && effectiveExecutor
+          ? {
+              current: effectiveExecutor,
+              options: executorOptions,
+              onChange: handleHandoff,
+              disabled: isAttemptRunning || isHandoffPending,
+            }
+          : undefined
+      }
       onPrCommentClick={
         actionCtx.hasOpenPR ? handleInsertPrComments : undefined
       }

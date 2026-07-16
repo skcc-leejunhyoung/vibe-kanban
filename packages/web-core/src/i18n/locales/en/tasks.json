@@ -96,6 +96,12 @@
   },
   "conversation": {
     "executors": "Executors",
+    "handoff": {
+      "label": "Handoff",
+      "target": "Handoff to",
+      "failedTitle": "Handoff failed",
+      "failedDescription": "The session could not be handed off."
+    },
     "saveAsDefault": "Save as default",
     "you": "You",
     "thinking": "Thinking",

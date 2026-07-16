@@ -127,7 +127,7 @@ function deriveAgentTurn(
   const needsSetup = Boolean(setupHelpText);
   const shouldEmitUserMessage = !(
     executorActionType.type === 'CodingAgentInitialRequest' &&
-    hasSetupScriptWithPrompt
+    (hasSetupScriptWithPrompt || executorActionType.handoff_from != null)
   );
 
   if (process.hasPendingApprovalEntry) {

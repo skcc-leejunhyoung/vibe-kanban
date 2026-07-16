@@ -5,6 +5,7 @@ import {
   ApiResponse,
   Config,
   CreateFollowUpAttempt,
+  CreateHandoffAttempt,
   ResetProcessRequest,
   EditorType,
   CreatePrApiRequest,
@@ -383,6 +384,17 @@ export const sessionsApi = {
     data: CreateFollowUpAttempt
   ): Promise<ExecutionProcess> => {
     const response = await makeRequest(`/api/sessions/${sessionId}/follow-up`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleApiResponse<ExecutionProcess>(response);
+  },
+
+  handoff: async (
+    sessionId: string,
+    data: CreateHandoffAttempt
+  ): Promise<ExecutionProcess> => {
+    const response = await makeRequest(`/api/sessions/${sessionId}/handoff`, {
       method: 'POST',
       body: JSON.stringify(data),
     });

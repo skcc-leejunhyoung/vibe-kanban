@@ -115,6 +115,7 @@ fn generate_types_content() -> String {
         relay_types::RefreshRelaySigningSessionRequest::decl(),
         relay_types::RefreshRelaySigningSessionResponse::decl(),
         server::routes::sessions::CreateFollowUpAttempt::decl(),
+        server::routes::sessions::CreateHandoffAttempt::decl(),
         server::routes::sessions::ResetProcessRequest::decl(),
         server::routes::workspaces::git::ChangeTargetBranchRequest::decl(),
         server::routes::workspaces::git::ChangeTargetBranchResponse::decl(),
