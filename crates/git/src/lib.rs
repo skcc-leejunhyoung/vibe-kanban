@@ -396,6 +396,32 @@ impl GitService {
         Ok(entries.into_iter().map(|e| e.path).collect())
     }
 
+    /// Return aggregate diff stats without loading file contents.
+    pub fn get_diff_stats(
+        &self,
+        worktree_path: &Path,
+        base_commit: &Commit,
+    ) -> Result<(usize, usize, usize), GitServiceError> {
+        let git = GitCli::new();
+        let entries = git
+            .diff_numstat(
+                worktree_path,
+                base_commit,
+                cli::StatusDiffOptions { path_filter: None },
+            )
+            .map_err(|e| GitServiceError::InvalidRepository(format!("git diff failed: {e}")))?;
+
+        let mut files_changed = 0usize;
+        let mut lines_added = 0usize;
+        let mut lines_removed = 0usize;
+        for entry in entries {
+            files_changed += 1;
+            lines_added += entry.additions.unwrap_or(0);
+            lines_removed += entry.deletions.unwrap_or(0);
+        }
+        Ok((files_changed, lines_added, lines_removed))
+    }
+
     /// List the commits that `branch_name` added on top of `base_branch_name`
     /// (i.e. everything reachable from the branch tip but not from the base),
     /// newest first. This is the set of commits "added" by a workspace.

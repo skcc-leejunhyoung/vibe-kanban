@@ -93,6 +93,9 @@ struct CommandState {
     call_id: String,
 }
 
+const MAX_NORMALIZED_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
+const COMMAND_OUTPUT_TRUNCATION_MARKER: &str = "\n\n... command output truncated ...\n\n";
+
 impl ToNormalizedEntry for CommandState {
     fn to_normalized_entry(&self) -> NormalizedEntry {
         let content = self.command.to_string();
@@ -107,8 +110,11 @@ impl ToNormalizedEntry for CommandState {
                         exit_status: self
                             .exit_code
                             .map(|code| CommandExitStatus::ExitCode { code }),
-                        output: if self.formatted_output.is_some() {
-                            self.formatted_output.clone()
+                        output: if let Some(formatted_output) = &self.formatted_output {
+                            Some(truncate_command_output(
+                                formatted_output,
+                                MAX_NORMALIZED_COMMAND_OUTPUT_BYTES,
+                            ))
                         } else {
                             build_command_output(Some(&self.stdout), Some(&self.stderr))
                         },
@@ -2441,25 +2447,59 @@ fn handle_model_params(
 }
 
 fn build_command_output(stdout: Option<&str>, stderr: Option<&str>) -> Option<String> {
-    let mut sections = Vec::new();
-    if let Some(out) = stdout {
-        let cleaned = out.trim();
-        if !cleaned.is_empty() {
-            sections.push(format!("stdout:\n{cleaned}"));
-        }
+    let stdout = stdout.map(str::trim).filter(|value| !value.is_empty());
+    let stderr = stderr.map(str::trim).filter(|value| !value.is_empty());
+    let fixed_bytes = match (stdout, stderr) {
+        (None, None) => return None,
+        (Some(_), None) => "stdout:\n".len(),
+        (None, Some(_)) => "stderr:\n".len(),
+        (Some(_), Some(_)) => "stdout:\n".len() + "\n\nstderr:\n".len(),
+    };
+    let content_budget = MAX_NORMALIZED_COMMAND_OUTPUT_BYTES.saturating_sub(fixed_bytes);
+    let (stdout_budget, stderr_budget) = match (stdout, stderr) {
+        (Some(_), Some(_)) => (content_budget / 2, content_budget - content_budget / 2),
+        (Some(_), None) => (content_budget, 0),
+        (None, Some(_)) => (0, content_budget),
+        (None, None) => unreachable!(),
+    };
+
+    let mut output = String::with_capacity(MAX_NORMALIZED_COMMAND_OUTPUT_BYTES);
+    if let Some(stdout) = stdout {
+        output.push_str("stdout:\n");
+        output.push_str(&truncate_command_output(stdout, stdout_budget));
     }
-    if let Some(err) = stderr {
-        let cleaned = err.trim();
-        if !cleaned.is_empty() {
-            sections.push(format!("stderr:\n{cleaned}"));
+    if let Some(stderr) = stderr {
+        if !output.is_empty() {
+            output.push_str("\n\n");
         }
+        output.push_str("stderr:\n");
+        output.push_str(&truncate_command_output(stderr, stderr_budget));
+    }
+    Some(output)
+}
+
+fn truncate_command_output(output: &str, max_bytes: usize) -> String {
+    if output.len() <= max_bytes {
+        return output.to_string();
     }
 
-    if sections.is_empty() {
-        None
-    } else {
-        Some(sections.join("\n\n"))
+    let content_budget = max_bytes.saturating_sub(COMMAND_OUTPUT_TRUNCATION_MARKER.len());
+    let mut head_end = content_budget / 2;
+    while head_end > 0 && !output.is_char_boundary(head_end) {
+        head_end -= 1;
     }
+
+    let tail_budget = content_budget.saturating_sub(head_end);
+    let mut tail_start = output.len().saturating_sub(tail_budget);
+    while tail_start < output.len() && !output.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+
+    let mut truncated = String::with_capacity(max_bytes);
+    truncated.push_str(&output[..head_end]);
+    truncated.push_str(COMMAND_OUTPUT_TRUNCATION_MARKER);
+    truncated.push_str(&output[tail_start..]);
+    truncated
 }
 
 static SESSION_ID: LazyLock<Regex> = LazyLock::new(|| {
@@ -2720,6 +2760,37 @@ mod tests {
         }
 
         latest_normalized_entries(&msg_store)
+    }
+
+    #[test]
+    fn truncates_large_command_output_without_losing_ends() {
+        let stdout = format!(
+            "stdout-start{}stdout-end",
+            "x".repeat(MAX_NORMALIZED_COMMAND_OUTPUT_BYTES * 2)
+        );
+        let stderr = format!(
+            "stderr-start{}stderr-end",
+            "y".repeat(MAX_NORMALIZED_COMMAND_OUTPUT_BYTES * 2)
+        );
+
+        let output = build_command_output(Some(&stdout), Some(&stderr)).unwrap();
+
+        assert!(output.len() <= MAX_NORMALIZED_COMMAND_OUTPUT_BYTES);
+        assert!(output.contains("stdout-start"));
+        assert!(output.contains("stdout-end"));
+        assert!(output.contains("stderr-start"));
+        assert!(output.contains("stderr-end"));
+        assert_eq!(output.matches(COMMAND_OUTPUT_TRUNCATION_MARKER).count(), 2);
+    }
+
+    #[test]
+    fn truncates_command_output_on_utf8_boundaries() {
+        let output = "한".repeat(MAX_NORMALIZED_COMMAND_OUTPUT_BYTES);
+        let truncated = truncate_command_output(&output, MAX_NORMALIZED_COMMAND_OUTPUT_BYTES);
+
+        assert!(truncated.len() <= MAX_NORMALIZED_COMMAND_OUTPUT_BYTES);
+        assert!(truncated.contains(COMMAND_OUTPUT_TRUNCATION_MARKER));
+        assert!(truncated.is_char_boundary(truncated.len()));
     }
 
     fn tool_use<'a>(entries: &'a [NormalizedEntry], tool_name: &str) -> &'a NormalizedEntry {

@@ -168,27 +168,33 @@ pub async fn get_workspace_summaries(
     // 6. Get PR status for each workspace
     let pr_statuses = PullRequest::get_latest_for_workspaces(pool, archived).await?;
 
-    // 7. Compute diff stats for each workspace (in parallel)
-    let diff_futures: Vec<_> = workspaces
-        .iter()
-        .map(|ws| {
-            let workspace = ws.clone();
-            let deployment = deployment.clone();
-            async move {
-                if workspace.container_ref.is_some() {
-                    compute_workspace_diff_stats(&deployment, &workspace)
-                        .await
-                        .map(|stats| (workspace.id, stats))
-                } else {
-                    None
+    // 7. Compute diff stats for active workspaces only. Archived workspace lists
+    // can be large and are used for lookup/history, where live diff counts are
+    // not worth fanning out git work for every old worktree.
+    let diff_stats: HashMap<Uuid, DiffStats> = if archived {
+        HashMap::new()
+    } else {
+        let diff_futures: Vec<_> = workspaces
+            .iter()
+            .map(|ws| {
+                let workspace = ws.clone();
+                let deployment = deployment.clone();
+                async move {
+                    if workspace.container_ref.is_some() {
+                        compute_workspace_diff_stats(&deployment, &workspace)
+                            .await
+                            .map(|stats| (workspace.id, stats))
+                    } else {
+                        None
+                    }
                 }
-            }
-        })
-        .collect();
+            })
+            .collect();
 
-    let diff_results: Vec<Option<(Uuid, DiffStats)>> =
-        futures_util::future::join_all(diff_futures).await;
-    let diff_stats: HashMap<Uuid, DiffStats> = diff_results.into_iter().flatten().collect();
+        let diff_results: Vec<Option<(Uuid, DiffStats)>> =
+            futures_util::future::join_all(diff_futures).await;
+        diff_results.into_iter().flatten().collect()
+    };
 
     // 8. Assemble response
     let summaries: Vec<WorkspaceSummary> = workspaces

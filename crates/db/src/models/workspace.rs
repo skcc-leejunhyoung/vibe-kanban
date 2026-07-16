@@ -72,6 +72,24 @@ pub struct WorkspaceWithStatus {
     pub is_errored: bool,
 }
 
+struct WorkspaceStatusRow {
+    id: Uuid,
+    task_id: Option<Uuid>,
+    container_ref: Option<String>,
+    branch: String,
+    setup_completed_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    archived: bool,
+    pinned: bool,
+    name: Option<String>,
+    worktree_deleted: bool,
+    ephemeral: bool,
+    in_place: bool,
+    is_running: i64,
+    is_errored: i64,
+}
+
 impl std::ops::Deref for WorkspaceWithStatus {
     type Target = Workspace;
     fn deref(&self) -> &Self::Target {
@@ -614,9 +632,56 @@ impl Workspace {
         archived: Option<bool>,
         limit: Option<i64>,
     ) -> Result<Vec<WorkspaceWithStatus>, sqlx::Error> {
-        // Fetch all workspaces with status (uses cached SQLx query)
-        let records = sqlx::query!(
-            r#"SELECT
+        let records = if let Some(archived) = archived {
+            sqlx::query_as!(
+                WorkspaceStatusRow,
+                r#"SELECT
+                w.id AS "id!: Uuid",
+                w.task_id AS "task_id: Uuid",
+                w.container_ref,
+                w.branch,
+                w.setup_completed_at AS "setup_completed_at: DateTime<Utc>",
+                w.created_at AS "created_at!: DateTime<Utc>",
+                w.updated_at AS "updated_at!: DateTime<Utc>",
+                w.archived AS "archived!: bool",
+                w.pinned AS "pinned!: bool",
+                w.name,
+                w.worktree_deleted AS "worktree_deleted!: bool",
+                w.ephemeral AS "ephemeral!: bool",
+                w.in_place AS "in_place!: bool",
+
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM sessions s
+                    JOIN execution_processes ep ON ep.session_id = s.id
+                    WHERE s.workspace_id = w.id
+                      AND ep.status = 'running'
+                      AND ep.run_reason IN ('setupscript','cleanupscript','codingagent')
+                    LIMIT 1
+                ) THEN 1 ELSE 0 END AS "is_running!: i64",
+
+                CASE WHEN (
+                    SELECT ep.status
+                    FROM sessions s
+                    JOIN execution_processes ep ON ep.session_id = s.id
+                    WHERE s.workspace_id = w.id
+                      AND ep.run_reason IN ('setupscript','cleanupscript','codingagent')
+                    ORDER BY ep.created_at DESC
+                    LIMIT 1
+                ) IN ('failed','killed') THEN 1 ELSE 0 END AS "is_errored!: i64"
+
+            FROM workspaces w
+            WHERE w.ephemeral = FALSE
+              AND w.archived = $1
+            ORDER BY w.updated_at DESC"#,
+                archived
+            )
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_as!(
+                WorkspaceStatusRow,
+                r#"SELECT
                 w.id AS "id!: Uuid",
                 w.task_id AS "task_id: Uuid",
                 w.container_ref,
@@ -654,9 +719,10 @@ impl Workspace {
             FROM workspaces w
             WHERE w.ephemeral = FALSE
             ORDER BY w.updated_at DESC"#
-        )
-        .fetch_all(pool)
-        .await?;
+            )
+            .fetch_all(pool)
+            .await?
+        };
 
         let mut workspaces: Vec<WorkspaceWithStatus> = records
             .into_iter()
@@ -679,8 +745,6 @@ impl Workspace {
                 is_running: rec.is_running != 0,
                 is_errored: rec.is_errored != 0,
             })
-            // Apply archived filter if provided
-            .filter(|ws| archived.is_none_or(|a| ws.workspace.archived == a))
             .collect();
 
         // Apply limit if provided (already sorted by updated_at DESC from query)
@@ -714,7 +778,8 @@ impl Workspace {
         pool: &SqlitePool,
         id: Uuid,
     ) -> Result<Option<WorkspaceWithStatus>, sqlx::Error> {
-        let rec = sqlx::query!(
+        let rec = sqlx::query_as!(
+            WorkspaceStatusRow,
             r#"SELECT
                 w.id AS "id!: Uuid",
                 w.task_id AS "task_id: Uuid",

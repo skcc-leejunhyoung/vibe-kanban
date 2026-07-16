@@ -65,6 +65,14 @@ pub struct StatusDiffEntry {
     pub old_path: Option<String>,
 }
 
+/// One entry from `git diff --numstat`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumstatDiffEntry {
+    pub additions: Option<usize>,
+    pub deletions: Option<usize>,
+    pub path: String,
+}
+
 /// Parsed worktree entry from `git worktree list --porcelain`
 #[derive(Debug, Clone)]
 pub struct WorktreeEntry {
@@ -225,6 +233,66 @@ impl GitCli {
         args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
         let out = self.git_with_env(worktree_path, args, &envs)?;
         Ok(Self::parse_name_status(&out))
+    }
+
+    /// Diff line stats vs a base commit using a temporary index.
+    /// This mirrors `diff_status` semantics, but avoids loading file contents.
+    pub fn diff_numstat(
+        &self,
+        worktree_path: &Path,
+        base_commit: &Commit,
+        opts: StatusDiffOptions,
+    ) -> Result<Vec<NumstatDiffEntry>, GitCliError> {
+        let tmp_dir = tempfile::TempDir::new()
+            .map_err(|e| GitCliError::CommandFailed(format!("temp dir create failed: {e}")))?;
+        let tmp_index = tmp_dir.path().join("index");
+        let envs = vec![(
+            OsString::from("GIT_INDEX_FILE"),
+            tmp_index.as_os_str().to_os_string(),
+        )];
+
+        let _ = self.git_with_env(worktree_path, ["read-tree", "HEAD"], &envs)?;
+
+        let status = self.get_worktree_status(worktree_path)?;
+        let mut paths_to_add: Vec<Vec<u8>> = Vec::new();
+        for entry in status.entries {
+            paths_to_add.push(entry.path);
+            if let Some(orig) = entry.orig_path {
+                paths_to_add.push(orig);
+            }
+        }
+        if !paths_to_add.is_empty() {
+            paths_to_add.extend(
+                Self::get_default_pathspec_excludes()
+                    .iter()
+                    .map(|s| s.as_encoded_bytes().to_vec()),
+            );
+            let mut input = Vec::new();
+            for p in paths_to_add {
+                input.extend_from_slice(&p);
+                input.push(0);
+            }
+            let args = vec![
+                OsString::from("add"),
+                OsString::from("-A"),
+                OsString::from("--pathspec-from-file=-"),
+                OsString::from("--pathspec-file-nul"),
+            ];
+            self.git_with_stdin(worktree_path, args, Some(&envs), &input)?;
+        }
+
+        let mut args: Vec<OsString> = vec![
+            "-c".into(),
+            "core.quotepath=false".into(),
+            "diff".into(),
+            "--cached".into(),
+            "-M".into(),
+            "--numstat".into(),
+            OsString::from(base_commit.to_string()),
+        ];
+        args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
+        let out = self.git_with_env(worktree_path, args, &envs)?;
+        Ok(Self::parse_numstat(&out))
     }
 
     /// Return `git status --porcelain` parsed into a structured summary
@@ -509,6 +577,28 @@ impl GitCli {
                         });
                     }
                 }
+            }
+        }
+        out
+    }
+
+    fn parse_numstat(output: &str) -> Vec<NumstatDiffEntry> {
+        let mut out = Vec::new();
+        for line in output.lines() {
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+
+            let mut parts = line.split('\t');
+            let additions = parts.next().and_then(|s| s.parse::<usize>().ok());
+            let deletions = parts.next().and_then(|s| s.parse::<usize>().ok());
+            if let Some(path) = parts.next() {
+                out.push(NumstatDiffEntry {
+                    additions,
+                    deletions,
+                    path: path.to_string(),
+                });
             }
         }
         out
@@ -988,4 +1078,30 @@ pub struct WorktreeStatus {
     pub uncommitted_tracked: usize,
     pub untracked: usize,
     pub entries: Vec<StatusEntry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GitCli, NumstatDiffEntry};
+
+    #[test]
+    fn parses_numstat_text_and_binary_entries() {
+        let output = "12\t3\tsrc/main.rs\n-\t-\tassets/logo.png\n";
+
+        assert_eq!(
+            GitCli::parse_numstat(output),
+            vec![
+                NumstatDiffEntry {
+                    additions: Some(12),
+                    deletions: Some(3),
+                    path: "src/main.rs".to_string(),
+                },
+                NumstatDiffEntry {
+                    additions: None,
+                    deletions: None,
+                    path: "assets/logo.png".to_string(),
+                },
+            ]
+        );
+    }
 }

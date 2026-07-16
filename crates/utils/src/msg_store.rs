@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    io::{self, Write},
     sync::{Arc, RwLock},
 };
 
@@ -11,6 +12,33 @@ use crate::{log_msg::LogMsg, stream_lines::LinesStreamExt};
 
 // 100 MB Limit
 const HISTORY_BYTES: usize = 100000 * 1024;
+const BROADCAST_CAPACITY: usize = 1024;
+const REPLAY_BROADCAST_CAPACITY: usize = 256;
+
+pub(crate) struct ByteCounter {
+    bytes: usize,
+}
+
+impl ByteCounter {
+    pub(crate) fn new() -> Self {
+        Self { bytes: 0 }
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+impl Write for ByteCounter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 struct StoredMsg {
@@ -36,7 +64,18 @@ impl Default for MsgStore {
 
 impl MsgStore {
     pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(100000);
+        Self::with_broadcast_capacity(BROADCAST_CAPACITY)
+    }
+
+    /// Historical normalization can produce thousands of cumulative replacement
+    /// patches before a remote client can drain them. A small replay queue keeps
+    /// those snapshots from retaining gigabytes while preserving recent state.
+    pub fn new_for_replay() -> Self {
+        Self::with_broadcast_capacity(REPLAY_BROADCAST_CAPACITY)
+    }
+
+    fn with_broadcast_capacity(capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(capacity);
         Self {
             inner: RwLock::new(Inner {
                 history: VecDeque::with_capacity(32),
