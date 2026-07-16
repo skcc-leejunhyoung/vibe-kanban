@@ -175,7 +175,10 @@ async fn notify_self(
                     ctx.user.id,
                     api_types::NotificationType::WorkspaceTaskCompleted,
                     api_types::NotificationPayload {
-                        deeplink_path: Some(format!("/workspace/{workspace_id}")),
+                        deeplink_path: Some(workspace_deeplink_path(
+                            workspace.host_id,
+                            workspace_id,
+                        )),
                         title: Some(payload.title.clone()),
                         body: Some(payload.body.clone()),
                         workspace_id: Some(workspace_id),
@@ -226,4 +229,39 @@ async fn notify_self(
     ));
 
     Ok(StatusCode::ACCEPTED)
+}
+
+fn workspace_deeplink_path(host_id: Option<Uuid>, workspace_id: Uuid) -> String {
+    match host_id {
+        Some(host_id) => format!("/hosts/{host_id}/workspaces/{workspace_id}"),
+        None => format!("/workspace/{workspace_id}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::workspace_deeplink_path;
+
+    #[test]
+    fn workspace_notification_uses_host_scoped_route() {
+        let host_id = Uuid::parse_str("018f5f99-7f0d-7a7f-9abc-001122334455").unwrap();
+        let workspace_id = Uuid::parse_str("028f5f99-7f0d-7a7f-9abc-001122334455").unwrap();
+
+        assert_eq!(
+            workspace_deeplink_path(Some(host_id), workspace_id),
+            "/hosts/018f5f99-7f0d-7a7f-9abc-001122334455/workspaces/028f5f99-7f0d-7a7f-9abc-001122334455"
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_keeps_resolvable_alias_route() {
+        let workspace_id = Uuid::parse_str("028f5f99-7f0d-7a7f-9abc-001122334455").unwrap();
+
+        assert_eq!(
+            workspace_deeplink_path(None, workspace_id),
+            "/workspace/028f5f99-7f0d-7a7f-9abc-001122334455"
+        );
+    }
 }
