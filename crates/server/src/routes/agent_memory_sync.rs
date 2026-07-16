@@ -25,6 +25,9 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/agent-memory-sync/status", get(status))
         .route("/agent-memory-sync/logs", get(logs))
         .route("/agent-memory-sync/run", post(run))
+        .route("/agent-memory-sync/run-wait", post(run_wait))
+        .route("/agent-memory-sync/run-all", post(run_all))
+        .route("/agent-memory-sync/pending", get(pending))
         .route(
             "/agent-memory-sync/mutations",
             get(list_mutations).post(create_mutation),
@@ -72,6 +75,36 @@ async fn run(State(deployment): State<DeploymentImpl>) -> (StatusCode, Json<Star
         }
     });
     (StatusCode::ACCEPTED, Json(StartResponse { started: true }))
+}
+
+async fn run_wait(
+    State(deployment): State<DeploymentImpl>,
+) -> Json<agent_memory_sync::AgentMemoryHostRunResult> {
+    Json(agent_memory_sync::run_if_opted_in(deployment, "global").await)
+}
+
+async fn run_all(State(deployment): State<DeploymentImpl>) -> (StatusCode, Json<StartResponse>) {
+    tokio::spawn(async move {
+        match agent_memory_sync::run_all_online(deployment).await {
+            Ok(result) => tracing::info!(
+                rounds = result.rounds,
+                hosts = result.hosts.len(),
+                converged = result.converged,
+                "global agent memory sync completed"
+            ),
+            Err(error) => tracing::warn!(?error, "global agent memory sync failed"),
+        }
+    });
+    (StatusCode::ACCEPTED, Json(StartResponse { started: true }))
+}
+
+async fn pending(
+    State(deployment): State<DeploymentImpl>,
+) -> Result<Json<agent_memory_sync::AgentMemoryPendingStatus>, (StatusCode, String)> {
+    agent_memory_sync::pending_status(&deployment)
+        .await
+        .map(Json)
+        .map_err(internal_error)
 }
 
 async fn logs(

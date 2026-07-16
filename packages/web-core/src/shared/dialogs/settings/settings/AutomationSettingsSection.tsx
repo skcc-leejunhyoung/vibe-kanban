@@ -155,8 +155,19 @@ export function AutomationSettingsSection() {
     );
   }, [refreshMemory]);
 
+  useEffect(() => {
+    if (!memoryStatus?.running) return;
+    const interval = window.setInterval(
+      () => refreshMemory().catch(() => undefined),
+      2000
+    );
+    return () => window.clearInterval(interval);
+  }, [memoryStatus?.running, refreshMemory]);
+
   const saveMemoryConfig = async () => {
     if (!memoryConfig) return;
+    const shouldCatchUp =
+      memoryConfig.enabled && !config?.agent_memory_sync.enabled;
     setMemoryBusy(true);
     setError(null);
     try {
@@ -164,9 +175,20 @@ export function AutomationSettingsSection() {
         agent_memory_sync: memoryConfig,
       });
       if (!saved) throw new Error('Failed to save memory sync settings');
+      if (shouldCatchUp && machineClient) {
+        await machineClient.runAgentMemorySync();
+      }
       setNotice(
-        t('settings.automation.memory.saved', 'Memory sync settings saved.')
+        shouldCatchUp
+          ? t(
+              'settings.automation.memory.optedIn',
+              'Memory sync enabled. Catch-up started.'
+            )
+          : t('settings.automation.memory.saved', 'Memory sync settings saved.')
       );
+      if (shouldCatchUp) {
+        window.setTimeout(() => refreshMemory().catch(() => undefined), 1000);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -593,7 +615,10 @@ export function AutomationSettingsSection() {
         headerAction={
           <PrimaryButton
             variant="secondary"
-            value={t('settings.automation.memory.runNow', 'Run now')}
+            value={t(
+              'settings.automation.memory.runNow',
+              'Sync all online computers'
+            )}
             onClick={runMemoryNow}
             disabled={memoryBusy || memoryStatus?.running}
             actionIcon={memoryStatus?.running ? 'spinner' : undefined}

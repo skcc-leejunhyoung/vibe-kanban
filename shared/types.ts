@@ -914,6 +914,12 @@ export type AgentMemorySyncStatus = { running: boolean, last_started_at: string 
 
 export type AgentMemorySyncLogEntry = { id: string, run_id: string, created_at: string, level: string, phase: string, trigger_kind: string, repo_name: string | null, repo_path: string | null, agent_kind: string | null, message: string, };
 
+export type AgentMemoryHostRunResult = { host_id: string | null, host_name: string, executed: boolean, succeeded: boolean, error: string | null, };
+
+export type AgentMemoryGlobalRunResult = { rounds: number, converged: boolean, hosts: Array<AgentMemoryHostRunResult>, };
+
+export type AgentMemoryPendingStatus = { enabled: boolean, pending_snapshots: number, pending_mutations: number, };
+
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 
 export enum ThemeMode { LIGHT = "LIGHT", DARK = "DARK", SYSTEM = "SYSTEM" }

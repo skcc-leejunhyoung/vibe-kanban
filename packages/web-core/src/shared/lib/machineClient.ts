@@ -312,7 +312,7 @@ export function createMachineClient(
         await makeMachineRequest(
           runtime,
           target,
-          '/api/agent-memory-sync/run',
+          '/api/agent-memory-sync/run-all',
           {
             method: 'POST',
           }
