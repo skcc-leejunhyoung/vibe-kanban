@@ -28,7 +28,7 @@ interface DeriveConversationEntriesParams {
 function patchWithKey(
   patch: PatchType,
   executionProcessId: string,
-  index: number | 'user' | 'script'
+  index: number | 'user' | 'script' | 'handoff'
 ): PatchTypeWithKey {
   return {
     ...patch,
@@ -41,6 +41,30 @@ function appendAgentTurnEntries(
   turn: ConversationAgentTurn,
   turnEntries: PatchTypeWithKey[]
 ) {
+  const action = turn.process.executionProcess.executor_action.typ;
+  if (
+    action.type === 'CodingAgentInitialRequest' &&
+    action.handoff_from != null
+  ) {
+    const prettyExecutor = (executor: string) =>
+      executor
+        .replace(/[_-]+/g, ' ')
+        .toLowerCase()
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+    const handoffEntry: NormalizedEntry = {
+      entry_type: { type: 'system_message' },
+      content: `--- ${prettyExecutor(action.handoff_from)} → ${prettyExecutor(action.executor_config.executor)} ---`,
+      timestamp: null,
+    };
+    turnEntries.push(
+      patchWithKey(
+        { type: 'NORMALIZED_ENTRY', content: handoffEntry },
+        turn.process.executionProcess.id,
+        'handoff'
+      )
+    );
+  }
+
   if (turn.shouldEmitUserMessage && turn.prompt) {
     const userNormalizedEntry: NormalizedEntry = {
       entry_type: { type: 'user_message' },

@@ -1274,6 +1274,8 @@ pub trait ContainerService {
                 prompt,
                 executor_config,
                 working_dir,
+                handoff_from: None,
+                handoff_session_id: None,
             }),
             None,
         );
@@ -1353,6 +1355,8 @@ pub trait ContainerService {
                 prompt,
                 executor_config: executor_config.clone(),
                 working_dir,
+                handoff_from: None,
+                handoff_session_id: None,
             }),
             cleanup_action.map(Box::new),
         );
@@ -1457,6 +1461,8 @@ pub trait ContainerService {
                 prompt,
                 executor_config: executor_config.clone(),
                 working_dir,
+                handoff_from: None,
+                handoff_session_id: None,
             }),
             cleanup_action.map(Box::new),
         );
@@ -1572,6 +1578,8 @@ pub trait ContainerService {
                 prompt: data.message.clone(),
                 executor_config: data.executor_config.clone(),
                 working_dir,
+                handoff_from: None,
+                handoff_session_id: None,
             })
         };
 

@@ -219,6 +219,12 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   askQuestionMode?: AskQuestionModeProps;
   reviewComments?: ReviewCommentsProps;
   toolbarActions?: ToolbarActionsProps;
+  handoff?: {
+    current: TExecutor;
+    options: TExecutor[];
+    onChange: (executor: TExecutor) => void;
+    disabled?: boolean;
+  };
   modelSelector?: ReactNode;
   error?: string | null;
   repoIds?: string[];
@@ -292,6 +298,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   askQuestionMode,
   reviewComments,
   toolbarActions,
+  handoff,
   modelSelector,
   error,
   repoIds,
@@ -1092,6 +1099,30 @@ export function SessionChatBox<TExecutor extends string = string>({
               disabled={isDisabled || isRunning || Boolean(item.disabled)}
             />
           ))}
+          {handoff && handoff.options.length > 1 && (
+            <ToolbarDropdown
+              label={t('conversation.handoff.label')}
+              icon={ArrowsClockwiseIcon}
+              disabled={handoff.disabled}
+            >
+              <DropdownMenuLabel>
+                {t('conversation.handoff.target')}
+              </DropdownMenuLabel>
+              {handoff.options
+                .filter((executor) => executor !== handoff.current)
+                .map((executor) => (
+                  <DropdownMenuItem
+                    key={executor}
+                    onClick={() => handoff.onChange(executor)}
+                  >
+                    <span className="flex items-center gap-base">
+                      {renderAgentIcon?.(executor, 'size-icon-sm')}
+                      {formatExecutorLabel(executor)}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+            </ToolbarDropdown>
+          )}
         </>
       }
       footerRight={renderActionButtons()}

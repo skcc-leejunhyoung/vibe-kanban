@@ -1871,6 +1871,8 @@ impl LocalContainerService {
                 prompt: prompt.to_string(),
                 executor_config,
                 working_dir,
+                handoff_from: None,
+                handoff_session_id: None,
             })
         };
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
@@ -1924,6 +1926,8 @@ impl LocalContainerService {
                 prompt: prompt.to_string(),
                 executor_config,
                 working_dir,
+                handoff_from: None,
+                handoff_session_id: None,
             }),
             cleanup_action.map(Box::new),
         );
