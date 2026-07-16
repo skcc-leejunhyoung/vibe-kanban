@@ -737,10 +737,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const handleHandoff = useCallback(
     (target: BaseCodingAgent) => {
+      if (handoffTarget === target) {
+        setHandoffTarget(null);
+        if (activeExecutor) {
+          handleExecutorChange(activeExecutor);
+        }
+        return;
+      }
       setHandoffTarget(target);
       handleExecutorChange(target);
     },
-    [handleExecutorChange]
+    [handoffTarget, activeExecutor, handleExecutorChange]
   );
 
   useEffect(() => {
@@ -751,6 +758,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       activeExecutor !== effectiveExecutor
     ) {
       setHandoffTarget(effectiveExecutor);
+    } else if (activeExecutor === effectiveExecutor) {
+      setHandoffTarget(null);
     }
   }, [mode, activeExecutor, effectiveExecutor]);
 

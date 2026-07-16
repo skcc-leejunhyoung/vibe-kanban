@@ -229,6 +229,13 @@ export function useExecutorConfig({
     {}
   );
 
+  // Executor choices are scoped to a session. Without resetting here, a
+  // handoff target selected in one session can override the active executor
+  // when the same chat container navigates to another session.
+  useEffect(() => {
+    setUserSelections({});
+  }, [sessionId]);
+
   const executor = useEffectiveExecutor(
     userSelections,
     profiles,
