@@ -617,6 +617,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const needsExecutorSelection =
     isNewSessionMode || (!session?.executor && !latestConfig?.executor);
+  const activeExecutor =
+    latestConfig?.executor ??
+    (session?.executor as BaseCodingAgent | null | undefined);
 
   // Message editor state
   const {
@@ -732,22 +735,39 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     onOptimisticProcess: addOptimisticProcess,
   });
 
-  const handleHandoff = useCallback((target: BaseCodingAgent) => {
-    setHandoffTarget((current) => (current === target ? null : target));
-  }, []);
+  const handleHandoff = useCallback(
+    (target: BaseCodingAgent) => {
+      setHandoffTarget(target);
+      handleExecutorChange(target);
+    },
+    [handleExecutorChange]
+  );
+
+  useEffect(() => {
+    if (
+      mode === 'existing-session' &&
+      activeExecutor &&
+      effectiveExecutor &&
+      activeExecutor !== effectiveExecutor
+    ) {
+      setHandoffTarget(effectiveExecutor);
+    }
+  }, [mode, activeExecutor, effectiveExecutor]);
 
   const sendHandoff = useCallback(
     async (prompt: string): Promise<boolean> => {
-      if (!sessionId || !handoffTarget || handoffTarget === effectiveExecutor) {
+      if (!sessionId || !handoffTarget) {
         return false;
       }
       setIsHandoffPending(true);
       try {
         const process = await sessionsApi.handoff(sessionId, {
           prompt,
-          executor_config: getInitialExecutorConfig(handoffTarget, profiles),
+          executor_config:
+            executorConfig?.executor === handoffTarget
+              ? executorConfig
+              : getInitialExecutorConfig(handoffTarget, profiles),
         });
-        handleExecutorChange(handoffTarget);
         setHandoffTarget(null);
         addOptimisticProcess(process);
         onScrollToBottom('auto');
@@ -768,9 +788,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [
       sessionId,
       handoffTarget,
-      effectiveExecutor,
+      executorConfig,
       profiles,
-      handleExecutorChange,
       addOptimisticProcess,
       onScrollToBottom,
       t,
@@ -1468,9 +1487,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         items: toolbarActionItems,
       }}
       handoff={
-        mode === 'existing-session' && effectiveExecutor
+        mode === 'existing-session' && activeExecutor
           ? {
-              current: effectiveExecutor,
+              current: activeExecutor,
               selected: handoffTarget,
               options: executorOptions,
               onChange: handleHandoff,

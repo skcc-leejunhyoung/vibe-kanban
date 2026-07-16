@@ -35,9 +35,12 @@ import { ChatBoxBase, VisualVariant, type DropzoneProps } from './ChatBoxBase';
 import { type EditorProps, type ExecutorProps } from './CreateChatBox';
 import type { AskUserQuestionItem, QuestionAnswer } from 'shared/types';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from './Dropdown';
 import { PrimaryButton } from './PrimaryButton';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
@@ -883,34 +886,6 @@ export function SessionChatBox<TExecutor extends string = string>({
           {/* Existing session mode: show in-progress todo when running, otherwise file stats */}
           {!isNewSessionMode && (
             <>
-              {handoff && handoff.options.length > 1 && (
-                <ToolbarDropdown
-                  label=""
-                  ariaLabel={t('conversation.handoff.label')}
-                  icon={ArrowsClockwiseIcon}
-                  disabled={handoff.disabled}
-                >
-                  <DropdownMenuLabel>
-                    {t('conversation.handoff.target')}
-                  </DropdownMenuLabel>
-                  {handoff.options
-                    .filter((executor) => executor !== handoff.current)
-                    .map((executor) => (
-                      <DropdownMenuItem
-                        key={executor}
-                        onClick={() => handoff.onChange(executor)}
-                      >
-                        <span className="flex items-center gap-base">
-                          {handoff.selected === executor && (
-                            <CheckIcon className="size-icon-sm" />
-                          )}
-                          {renderAgentIcon?.(executor, 'size-icon-sm')}
-                          {formatExecutorLabel(executor)}
-                        </span>
-                      </DropdownMenuItem>
-                    ))}
-                </ToolbarDropdown>
-              )}
               {isRunning && inProgressTodo ? (
                 <span className="text-sm flex items-center gap-1 min-w-0">
                   <SpinnerIcon className="size-icon-sm animate-spin flex-shrink-0" />
@@ -1013,7 +988,43 @@ export function SessionChatBox<TExecutor extends string = string>({
                   />
                 </TurnNavigationPopup>
               )}
-              {renderAgentIcon?.(agent, 'size-icon-xl')}
+              {handoff && handoff.options.length > 1 ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex items-center justify-center rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-brand disabled:opacity-50"
+                      aria-label={t('conversation.handoff.label')}
+                      disabled={handoff.disabled}
+                    >
+                      {renderAgentIcon?.(agent, 'size-icon-xl')}
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuLabel>
+                      {t('conversation.handoff.target')}
+                    </DropdownMenuLabel>
+                    {handoff.options
+                      .filter((executor) => executor !== handoff.current)
+                      .map((executor) => (
+                        <DropdownMenuItem
+                          key={executor}
+                          onClick={() => handoff.onChange(executor)}
+                        >
+                          <span className="flex items-center gap-base">
+                            {handoff.selected === executor && (
+                              <CheckIcon className="size-icon-sm" />
+                            )}
+                            {renderAgentIcon?.(executor, 'size-icon-sm')}
+                            {formatExecutorLabel(executor)}
+                          </span>
+                        </DropdownMenuItem>
+                      ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                renderAgentIcon?.(agent, 'size-icon-xl')
+              )}
             </>
           )}
           {/* Todo progress popup - always rendered, disabled when no todos */}
