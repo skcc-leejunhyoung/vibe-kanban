@@ -23,6 +23,7 @@ import {
   useRelayRemoteHostsQuery,
   useRelayRemotePairedHostsQuery,
   useRemovePairedRelayHostMutation,
+  useUpdateRelayHostMutation,
 } from './useRelayRemoteHostMutations';
 import { createRelayClientIdentity } from '@/shared/lib/relayClientIdentity';
 
@@ -44,6 +45,8 @@ export function RemoteCloudHostsSettingsCardContent({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [removingHostId, setRemovingHostId] = useState<string | null>(null);
+  const [editingHostId, setEditingHostId] = useState<string | null>(null);
+  const [editingHostName, setEditingHostName] = useState('');
   const hasAppliedInitialHostRef = useRef(false);
   const { machineId } = useUserSystem();
 
@@ -66,6 +69,8 @@ export function RemoteCloudHostsSettingsCardContent({
     usePairRelayHostMutation();
   const { mutateAsync: removeRemoteHost, isPending: isRemovingRemote } =
     useRemovePairedRelayHostMutation();
+  const { mutateAsync: updateHost, isPending: isUpdatingHost } =
+    useUpdateRelayHostMutation();
   const isDevMode = import.meta.env.DEV;
   const pairableRelayHosts = useMemo(() => {
     if (isRemoteMode || !machineId || isDevMode) {
@@ -140,13 +145,21 @@ export function RemoteCloudHostsSettingsCardContent({
             status: liveHost?.status ?? 'offline',
             pairedAt: host.paired_at ?? '',
             lastUsedAt: host.paired_at ?? '',
+            canRename: liveHost?.access_role === 'owner',
           };
         })
         .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
     }
 
-    const hosts = localData?.hosts ?? [];
-    return [...hosts].sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+    const hosts = (localData?.hosts ?? []).map((host) => {
+      const liveHost = relayHosts.find((entry) => entry.id === host.id);
+      return {
+        ...host,
+        name: liveHost?.name ?? host.name,
+        canRename: liveHost?.access_role === 'owner',
+      };
+    });
+    return hosts.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
   }, [isRemoteMode, localData?.hosts, relayHosts, remotePairedHosts]);
 
   const isLoading = isRemoteMode ? remotePairedHostsLoading : localStateLoading;
@@ -248,6 +261,29 @@ export function RemoteCloudHostsSettingsCardContent({
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setRemovingHostId(null);
+    }
+  };
+
+  const handleRename = async () => {
+    const name = editingHostName.trim();
+    if (!editingHostId || !name || name.length > 100) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      await updateHost({ hostId: editingHostId, name });
+      setEditingHostId(null);
+      setEditingHostName('');
+      setSuccessMessage(
+        t(
+          'settings.relay.remoteCloudHost.renameSuccess',
+          'Computer name updated.'
+        )
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -377,6 +413,7 @@ export function RemoteCloudHostsSettingsCardContent({
               <div className="space-y-2">
                 {connectedHosts.map((host) => {
                   const isOffline = isRemoteMode && host.status === 'offline';
+                  const isEditing = editingHostId === host.id;
 
                   return (
                     <div
@@ -389,9 +426,7 @@ export function RemoteCloudHostsSettingsCardContent({
                       ].join(' ')}
                       onClick={(event) => {
                         const target = event.target as HTMLElement | null;
-                        if (
-                          target?.closest('[data-relay-host-action="remove"]')
-                        ) {
+                        if (target?.closest('[data-relay-host-action]')) {
                           return;
                         }
                         void handleGoToHostWorkspaces(host.id, host.status);
@@ -399,17 +434,69 @@ export function RemoteCloudHostsSettingsCardContent({
                       role="button"
                       tabIndex={0}
                     >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-high truncate">
-                          {host.name}
-                        </p>
+                      <div className="min-w-0 flex-1">
+                        {isEditing ? (
+                          <SettingsInput
+                            value={editingHostName}
+                            onChange={setEditingHostName}
+                            maxLength={100}
+                            autoFocus
+                          />
+                        ) : (
+                          <p className="text-sm font-medium text-high truncate">
+                            {host.name}
+                          </p>
+                        )}
                         <p className="text-xs text-low truncate">
                           {isRemoteMode && host.status
                             ? `${host.status === 'online' ? 'Online' : 'Offline'}${host.pairedAt ? ` · Paired ${new Date(host.pairedAt).toLocaleDateString(undefined, withDisplayTimeZone())}` : ''}`
                             : host.id}
                         </p>
                       </div>
-                      <span data-relay-host-action="remove">
+                      <div
+                        className="flex items-center gap-1"
+                        data-relay-host-action
+                      >
+                        {host.canRename &&
+                          (isEditing ? (
+                            <>
+                              <PrimaryButton
+                                variant="tertiary"
+                                value={t('common:buttons.save')}
+                                onClick={() => void handleRename()}
+                                disabled={
+                                  isUpdatingHost ||
+                                  !editingHostName.trim() ||
+                                  editingHostName.trim().length > 100
+                                }
+                                actionIcon={
+                                  isUpdatingHost ? 'spinner' : undefined
+                                }
+                              />
+                              <PrimaryButton
+                                variant="tertiary"
+                                value={t('common:buttons.cancel')}
+                                onClick={() => {
+                                  setEditingHostId(null);
+                                  setEditingHostName('');
+                                }}
+                                disabled={isUpdatingHost}
+                              />
+                            </>
+                          ) : (
+                            <PrimaryButton
+                              variant="tertiary"
+                              value={t(
+                                'settings.relay.remoteCloudHost.rename',
+                                'Rename'
+                              )}
+                              onClick={() => {
+                                setEditingHostId(host.id);
+                                setEditingHostName(host.name);
+                              }}
+                              disabled={isRemoving}
+                            />
+                          ))}
                         <PrimaryButton
                           variant="tertiary"
                           value={t(
@@ -422,7 +509,7 @@ export function RemoteCloudHostsSettingsCardContent({
                             removingHostId === host.id ? 'spinner' : undefined
                           }
                         />
-                      </span>
+                      </div>
                     </div>
                   );
                 })}

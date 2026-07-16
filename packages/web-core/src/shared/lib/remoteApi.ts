@@ -171,6 +171,20 @@ export async function listRelayHosts(): Promise<RelayHost[]> {
   return body.hosts;
 }
 
+export async function updateRelayHost(
+  hostId: string,
+  request: { name: string }
+): Promise<RelayHost> {
+  const response = await makeRequest(
+    `/v1/hosts/${encodeURIComponent(hostId)}`,
+    { method: 'PATCH', body: JSON.stringify(request) }
+  );
+  if (!response.ok) {
+    throw await parseErrorResponse(response, 'Failed to update relay host');
+  }
+  return (await response.json()) as RelayHost;
+}
+
 // ---------------------------------------------------------------------------
 // SAS URL cache with TTL — SAS URLs expire after 5 minutes, cache for 4
 // ---------------------------------------------------------------------------

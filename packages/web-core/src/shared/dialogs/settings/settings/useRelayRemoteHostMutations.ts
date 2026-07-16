@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { listRelayHosts } from '@/shared/lib/remoteApi';
+import { listRelayHosts, updateRelayHost } from '@/shared/lib/remoteApi';
 import {
   createRemoteSession,
   finishRelaySpake2Enrollment,
@@ -157,6 +157,25 @@ export function useRemovePairedRelayHostMutation() {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: RELAY_APP_BAR_HOSTS_QUERY_KEY,
+        }),
+      ]);
+    },
+  });
+}
+
+export function useUpdateRelayHostMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ hostId, name }: { hostId: string; name: string }) =>
+      updateRelayHost(hostId, { name }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
         }),
         queryClient.invalidateQueries({
           queryKey: RELAY_APP_BAR_HOSTS_QUERY_KEY,

@@ -22,7 +22,7 @@ impl<'a> HostRepository<'a> {
                 h.id,
                 h.owner_user_id,
                 h.machine_id AS "machine_id!",
-                h.name,
+                COALESCE(h.custom_name, h.name) AS "name!",
                 h.status,
                 h.last_seen_at,
                 h.agent_version,
@@ -42,6 +42,39 @@ impl<'a> HostRepository<'a> {
             user_id
         )
         .fetch_all(self.pool)
+        .await
+    }
+
+    pub async fn update_name(
+        &self,
+        host_id: Uuid,
+        owner_user_id: Uuid,
+        name: &str,
+    ) -> Result<Option<RelayHost>, sqlx::Error> {
+        sqlx::query_as!(
+            RelayHost,
+            r#"
+            UPDATE hosts
+            SET custom_name = $3,
+                updated_at = NOW()
+            WHERE id = $1 AND owner_user_id = $2
+            RETURNING
+                id,
+                owner_user_id,
+                machine_id AS "machine_id!",
+                COALESCE(custom_name, name) AS "name!",
+                status,
+                last_seen_at,
+                agent_version,
+                created_at,
+                updated_at,
+                'owner' AS "access_role!"
+            "#,
+            host_id,
+            owner_user_id,
+            name
+        )
+        .fetch_optional(self.pool)
         .await
     }
 }

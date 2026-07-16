@@ -298,12 +298,16 @@ export function SettingsInput({
   placeholder,
   error,
   disabled,
+  maxLength,
+  autoFocus,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   error?: boolean;
   disabled?: boolean;
+  maxLength?: number;
+  autoFocus?: boolean;
 }) {
   return (
     <input
@@ -312,6 +316,8 @@ export function SettingsInput({
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       disabled={disabled}
+      maxLength={maxLength}
+      autoFocus={autoFocus}
       className={cn(
         'w-full bg-secondary border rounded-sm px-base py-half text-sm text-high',
         'placeholder:text-low placeholder:opacity-80 focus:outline-none focus:ring-1 focus:ring-brand',

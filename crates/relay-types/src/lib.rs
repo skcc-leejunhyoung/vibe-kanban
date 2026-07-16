@@ -22,6 +22,11 @@ pub struct ListRelayHostsResponse {
     pub hosts: Vec<RelayHost>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRelayHostRequest {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct CreateRemoteSessionResponse {
     pub session_id: Uuid,
