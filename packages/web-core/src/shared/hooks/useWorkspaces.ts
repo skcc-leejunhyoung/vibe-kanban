@@ -404,6 +404,11 @@ const RemoteWorkspaceStreamsContext = createContext<
   ReadonlyMap<string, RemoteHostWorkspaceStream> | undefined
 >(undefined);
 
+// Stable empty reference: defaulting useQuery `data` to a fresh `new Map()` per
+// render gave `result` a new identity every render, driving the onUpdate effect
+// into an infinite setStreams loop on remote web (local bypasses this provider).
+const EMPTY_WORKSPACE_SUMMARIES = new Map<string, WorkspaceSummary>();
+
 function useRemoteHostWorkspaceStream(
   hostId: string
 ): RemoteHostWorkspaceStream {
@@ -418,26 +423,24 @@ function useRemoteHostWorkspaceStream(
       targetHostId: hostId,
     });
 
-  const { data: activeSummaries = new Map<string, WorkspaceSummary>() } =
-    useQuery({
-      queryKey: workspaceSummaryKeys.byArchived(false, hostId),
-      queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
-      enabled: isInitialized,
-      staleTime: 1000,
-      refetchInterval: 15_000,
-      refetchOnWindowFocus: false,
-      placeholderData: keepPreviousData,
-    });
-  const { data: archivedSummaries = new Map<string, WorkspaceSummary>() } =
-    useQuery({
-      queryKey: workspaceSummaryKeys.byArchived(true, hostId),
-      queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
-      enabled: isInitialized,
-      staleTime: 1000,
-      refetchInterval: 15_000,
-      refetchOnWindowFocus: false,
-      placeholderData: keepPreviousData,
-    });
+  const { data: activeSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
+    queryKey: workspaceSummaryKeys.byArchived(false, hostId),
+    queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
+    enabled: isInitialized,
+    staleTime: 1000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
+  });
+  const { data: archivedSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
+    queryKey: workspaceSummaryKeys.byArchived(true, hostId),
+    queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
+    enabled: isInitialized,
+    staleTime: 1000,
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
+  });
 
   return useMemo(() => {
     const materialized = materializeHostWorkspaceStream(
