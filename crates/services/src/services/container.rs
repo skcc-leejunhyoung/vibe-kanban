@@ -1276,6 +1276,7 @@ pub trait ContainerService {
                 working_dir,
                 handoff_from: None,
                 handoff_session_id: None,
+                handoff_user_prompt: None,
             }),
             None,
         );
@@ -1357,6 +1358,7 @@ pub trait ContainerService {
                 working_dir,
                 handoff_from: None,
                 handoff_session_id: None,
+                handoff_user_prompt: None,
             }),
             cleanup_action.map(Box::new),
         );
@@ -1463,6 +1465,7 @@ pub trait ContainerService {
                 working_dir,
                 handoff_from: None,
                 handoff_session_id: None,
+                handoff_user_prompt: None,
             }),
             cleanup_action.map(Box::new),
         );
@@ -1580,6 +1583,7 @@ pub trait ContainerService {
                 working_dir,
                 handoff_from: None,
                 handoff_session_id: None,
+                handoff_user_prompt: None,
             })
         };
 

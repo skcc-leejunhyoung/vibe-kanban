@@ -183,7 +183,7 @@ function reviewErrorKey(error: unknown): string {
 function getUserPromptFromProcess(process: ExecutionProcess): string | null {
   const typ: ExecutorActionType = process.executor_action.typ;
   if (typ.type === 'CodingAgentInitialRequest' && typ.handoff_from != null) {
-    return null;
+    return typ.handoff_user_prompt ?? null;
   }
   if (
     typ.type === 'CodingAgentInitialRequest' ||
@@ -196,6 +196,9 @@ function getUserPromptFromProcess(process: ExecutionProcess): string | null {
 
 export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const [isHandoffPending, setIsHandoffPending] = useState(false);
+  const [handoffTarget, setHandoffTarget] = useState<BaseCodingAgent | null>(
+    null
+  );
   const {
     mode,
     sessions,
@@ -225,6 +228,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     mode === 'existing-session' ? props.onStartNewSession : undefined;
 
   const sessionId = session?.id;
+  useEffect(() => {
+    setHandoffTarget(null);
+  }, [sessionId]);
   const queryClient = useQueryClient();
   const hostId = useHostId();
   const { t } = useTranslation('tasks');
@@ -726,17 +732,26 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     onOptimisticProcess: addOptimisticProcess,
   });
 
-  const handleHandoff = useCallback(
-    async (target: BaseCodingAgent) => {
-      if (!sessionId || target === effectiveExecutor) return;
+  const handleHandoff = useCallback((target: BaseCodingAgent) => {
+    setHandoffTarget((current) => (current === target ? null : target));
+  }, []);
+
+  const sendHandoff = useCallback(
+    async (prompt: string): Promise<boolean> => {
+      if (!sessionId || !handoffTarget || handoffTarget === effectiveExecutor) {
+        return false;
+      }
       setIsHandoffPending(true);
       try {
         const process = await sessionsApi.handoff(sessionId, {
-          executor_config: getInitialExecutorConfig(target, profiles),
+          prompt,
+          executor_config: getInitialExecutorConfig(handoffTarget, profiles),
         });
-        handleExecutorChange(target);
+        handleExecutorChange(handoffTarget);
+        setHandoffTarget(null);
         addOptimisticProcess(process);
         onScrollToBottom('auto');
+        return true;
       } catch (error) {
         void ErrorDialog.show({
           title: t('conversation.handoff.failedTitle'),
@@ -745,12 +760,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               ? error.message
               : t('conversation.handoff.failedDescription'),
         });
+        return false;
       } finally {
         setIsHandoffPending(false);
       }
     },
     [
       sessionId,
+      handoffTarget,
       effectiveExecutor,
       profiles,
       handleExecutorChange,
@@ -767,7 +784,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
     onScrollToBottom('auto');
 
-    const success = await send(prompt);
+    const success = handoffTarget
+      ? await sendHandoff(prompt)
+      : await send(prompt);
     if (success) {
       cancelDebouncedSave();
       setLocalMessage('');
@@ -787,6 +806,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   }, [
     onScrollToBottom,
     send,
+    sendHandoff,
+    handoffTarget,
     localMessage,
     reviewMarkdown,
     cancelDebouncedSave,
@@ -1258,7 +1279,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isInEditMode,
     isStopping,
     isQueueLoading,
-    isSendingFollowUp: isSending,
+    isSendingFollowUp: isSending || isHandoffPending,
     isAttemptRunning,
   });
 
@@ -1443,6 +1464,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         mode === 'existing-session' && effectiveExecutor
           ? {
               current: effectiveExecutor,
+              selected: handoffTarget,
               options: executorOptions,
               onChange: handleHandoff,
               disabled: isAttemptRunning || isHandoffPending,

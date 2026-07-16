@@ -405,7 +405,7 @@ export type RefreshRelaySigningSessionResponse = { signing_session_id: string, }
 
 export type CreateFollowUpAttempt = { prompt: string, executor_config: ExecutorConfig, retry_process_id: string | null, force_when_dirty: boolean | null, perform_git_reset: boolean | null, };
 
-export type CreateHandoffAttempt = { executor_config: ExecutorConfig, };
+export type CreateHandoffAttempt = { prompt: string, executor_config: ExecutorConfig, };
 
 export type ResetProcessRequest = { process_id: string, force_when_dirty: boolean | null, perform_git_reset: boolean | null, };
 
@@ -1179,7 +1179,12 @@ handoff_from: BaseCodingAgent | null,
 /**
  * Native session identifier of the source executor, when available.
  */
-handoff_session_id: string | null, };
+handoff_session_id: string | null,
+/**
+ * User-authored prompt that initiated the handoff. Kept separate from the
+ * internal bootstrap prompt so conversation UIs can render only this text.
+ */
+handoff_user_prompt: string | null, };
 
 export type CodingAgentFollowUpRequest = { prompt: string, session_id: string, reset_to_message_id: string | null,
 /**

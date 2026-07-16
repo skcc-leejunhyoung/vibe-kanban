@@ -221,6 +221,7 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   toolbarActions?: ToolbarActionsProps;
   handoff?: {
     current: TExecutor;
+    selected: TExecutor | null;
     options: TExecutor[];
     onChange: (executor: TExecutor) => void;
     disabled?: boolean;
@@ -892,6 +893,9 @@ export function SessionChatBox<TExecutor extends string = string>({
                         onClick={() => handoff.onChange(executor)}
                       >
                         <span className="flex items-center gap-base">
+                          {handoff.selected === executor && (
+                            <CheckIcon className="size-icon-sm" />
+                          )}
                           {renderAgentIcon?.(executor, 'size-icon-sm')}
                           {formatExecutorLabel(executor)}
                         </span>

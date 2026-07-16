@@ -1873,6 +1873,7 @@ impl LocalContainerService {
                 working_dir,
                 handoff_from: None,
                 handoff_session_id: None,
+                handoff_user_prompt: None,
             })
         };
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
@@ -1928,6 +1929,7 @@ impl LocalContainerService {
                 working_dir,
                 handoff_from: None,
                 handoff_session_id: None,
+                handoff_user_prompt: None,
             }),
             cleanup_action.map(Box::new),
         );

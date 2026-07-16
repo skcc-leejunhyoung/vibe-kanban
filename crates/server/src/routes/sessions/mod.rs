@@ -302,6 +302,7 @@ pub struct CreateFollowUpAttempt {
 
 #[derive(Debug, Deserialize, TS)]
 pub struct CreateHandoffAttempt {
+    pub prompt: String,
     pub executor_config: ExecutorConfig,
 }
 
@@ -435,6 +436,7 @@ pub async fn follow_up(
             working_dir,
             handoff_from: None,
             handoff_session_id: None,
+            handoff_user_prompt: None,
         })
     };
 
@@ -535,6 +537,12 @@ pub async fn handoff(
     Json(payload): Json<CreateHandoffAttempt>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
     let pool = &deployment.db().pool;
+    let user_prompt = payload.prompt.trim();
+    if user_prompt.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Handoff prompt must not be empty".to_string(),
+        ));
+    }
     let workspace = Workspace::find_by_id(pool, session.workspace_id)
         .await?
         .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
@@ -589,10 +597,11 @@ pub async fn handoff(
 Continue the work in place without restarting or discarding existing changes. The prior conversation \
 remains visible to the user in Vibe Kanban, but is not replayed into your native session. Inspect the \
 repository state, git diff, and relevant files before proceeding. Vibe session ID: {}. Previous agent \
-session ID: {}. Working directory: {}.",
+session ID: {}. Working directory: {}.\n\nUser request:\n{}",
         session.id,
         source_native_session_id.as_deref().unwrap_or("unavailable"),
-        working_dir.as_deref().unwrap_or("workspace root")
+        working_dir.as_deref().unwrap_or("workspace root"),
+        user_prompt
     );
     let action = ExecutorAction::new(
         ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
@@ -601,6 +610,7 @@ session ID: {}. Working directory: {}.",
             working_dir,
             handoff_from: Some(source_executor),
             handoff_session_id: source_native_session_id,
+            handoff_user_prompt: Some(user_prompt.to_string()),
         }),
         cleanup_action.map(Box::new),
     );

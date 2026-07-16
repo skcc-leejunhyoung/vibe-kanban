@@ -31,6 +31,10 @@ pub struct CodingAgentInitialRequest {
     /// Native session identifier of the source executor, when available.
     #[serde(default)]
     pub handoff_session_id: Option<String>,
+    /// User-authored prompt that initiated the handoff. Kept separate from the
+    /// internal bootstrap prompt so conversation UIs can render only this text.
+    #[serde(default)]
+    pub handoff_user_prompt: Option<String>,
 }
 
 impl CodingAgentInitialRequest {

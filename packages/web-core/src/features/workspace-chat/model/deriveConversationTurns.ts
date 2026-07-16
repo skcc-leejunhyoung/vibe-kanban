@@ -118,16 +118,18 @@ function deriveAgentTurn(
   isLastTurn: boolean
 ): ConversationAgentTurn {
   const executorActionType = process.executionProcess.executor_action.typ;
-  const prompt = getPromptFromActionChain(
-    process.executionProcess.executor_action
-  );
+  const prompt =
+    executorActionType.type === 'CodingAgentInitialRequest' &&
+    executorActionType.handoff_from != null
+      ? (executorActionType.handoff_user_prompt ?? null)
+      : getPromptFromActionChain(process.executionProcess.executor_action);
   const setupHelpText = process.failedOrKilled
     ? getSetupRequiredHelp(process)
     : undefined;
   const needsSetup = Boolean(setupHelpText);
   const shouldEmitUserMessage = !(
     executorActionType.type === 'CodingAgentInitialRequest' &&
-    (hasSetupScriptWithPrompt || executorActionType.handoff_from != null)
+    hasSetupScriptWithPrompt
   );
 
   if (process.hasPendingApprovalEntry) {
