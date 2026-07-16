@@ -256,8 +256,8 @@ export function WorkspacesIssueGroupedList({
       <IssueGroupBlock
         key={group.key}
         group={group}
-          selectedWorkspaceId={selectedWorkspaceId}
-          selectedWorkspaceHostId={selectedWorkspaceHostId}
+        selectedWorkspaceId={selectedWorkspaceId}
+        selectedWorkspaceHostId={selectedWorkspaceHostId}
         onSelectWorkspace={onSelectWorkspace}
         onOpenWorkspaceActions={onOpenWorkspaceActions}
         focusedWorkspaceId={focusedWorkspaceId}

@@ -474,7 +474,7 @@ export function WorkspacesSidebar({
               archivedWorkspaces.map((workspace) => (
                 <WorkspaceSummary
                   summary
-                      key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
+                  key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
                   name={workspace.name}
                   workspaceId={workspace.id}
                   filesChanged={workspace.filesChanged}

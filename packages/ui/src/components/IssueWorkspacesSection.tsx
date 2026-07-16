@@ -18,8 +18,14 @@ export interface IssueWorkspacesSectionProps {
     hostId?: string | null
   ) => void;
   onCreateWorkspace?: () => void;
-  onUnlinkWorkspace?: (localWorkspaceId: string, hostId?: string | null) => void;
-  onDeleteWorkspace?: (localWorkspaceId: string, hostId?: string | null) => void;
+  onUnlinkWorkspace?: (
+    localWorkspaceId: string,
+    hostId?: string | null
+  ) => void;
+  onDeleteWorkspace?: (
+    localWorkspaceId: string,
+    hostId?: string | null
+  ) => void;
   shouldAnimateCreateButton?: boolean;
 }
 
