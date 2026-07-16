@@ -1208,7 +1208,7 @@ export const Actions = {
   // fast-forward is impossible (diverged) instead of changing anything.
   GitPull: {
     id: 'git-pull',
-    label: 'Pull',
+    label: 'Pull work branch',
     icon: ArrowDownIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,

@@ -43,7 +43,7 @@ const repoActionOptions: SplitButtonOption<RepoAction>[] = [
   },
   { value: 'link-pr', label: 'Link pull request', icon: LinkIcon },
   { value: 'merge', label: 'Merge', icon: GitMergeIcon },
-  { value: 'pull', label: 'Pull', icon: ArrowDownIcon },
+  { value: 'pull', label: 'Pull work branch', icon: ArrowDownIcon },
 ];
 
 interface RepoCardProps {
