@@ -15,4 +15,6 @@ pub struct UpsertPullRequestRequest {
     pub merge_commit_sha: Option<String>,
     pub target_branch_name: String,
     pub local_workspace_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<Uuid>,
 }

@@ -146,6 +146,55 @@ impl WorkspaceRepository {
         Ok(record)
     }
 
+    pub async fn find_owned_by_local_id(
+        pool: &PgPool,
+        local_workspace_id: Uuid,
+        owner_user_id: Uuid,
+    ) -> Result<Option<Workspace>, WorkspaceError> {
+        let record = sqlx::query_as::<_, Workspace>(
+            r#"
+            SELECT
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
+            FROM workspaces
+            WHERE local_workspace_id = $1 AND owner_user_id = $2
+            "#,
+        )
+        .bind(local_workspace_id)
+        .bind(owner_user_id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(record)
+    }
+
+    pub async fn claim_legacy_host(
+        pool: &PgPool,
+        workspace_id: Uuid,
+        owner_user_id: Uuid,
+        host_id: Uuid,
+    ) -> Result<Option<Workspace>, WorkspaceError> {
+        let record = sqlx::query_as::<_, Workspace>(
+            r#"
+            UPDATE workspaces
+            SET host_id = $3, updated_at = NOW()
+            WHERE id = $1 AND owner_user_id = $2 AND host_id IS NULL
+            RETURNING
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(owner_user_id)
+        .bind(host_id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(record)
+    }
+
     pub async fn exists_by_local_id(
         pool: &PgPool,
         local_workspace_id: Uuid,

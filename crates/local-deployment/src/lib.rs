@@ -187,7 +187,7 @@ impl Deployment for LocalDeployment {
         }
 
         let remote_client = match remote_info.get_api_base() {
-            Some(url) => match RemoteClient::new(&url, auth_context.clone()) {
+            Some(url) => match RemoteClient::new(&url, auth_context.clone(), user_id.clone()) {
                 Ok(client) => {
                     tracing::info!("Remote client initialized with URL: {}", url);
                     Ok(client)

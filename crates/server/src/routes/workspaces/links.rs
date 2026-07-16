@@ -94,6 +94,7 @@ pub async fn link_workspace(
                 remote_sync::sync_pr_to_remote(
                     &client,
                     UpsertPullRequestRequest {
+                        host_id: None,
                         url: pr.pr_url,
                         number: pr.pr_number as i32,
                         status: pr_status,

@@ -261,6 +261,7 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
                 Err(RemoteClientError::Http { status: 404, .. }) => {
                     if let Some(workspace_id) = pr.workspace_id {
                         let request = UpsertPullRequestRequest {
+                            host_id: None,
                             url: pr.pr_url.clone(),
                             number: pr.pr_number as i32,
                             status: pr_api_status,

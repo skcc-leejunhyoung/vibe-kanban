@@ -1,7 +1,7 @@
 use api_types::{DeleteWorkspaceRequest, UpdateWorkspaceRequest, Workspace};
 use axum::{
     Json, Router,
-    extract::{Extension, Path, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
     routing::{delete, get, head, post},
 };
@@ -37,6 +37,92 @@ struct CreateWorkspaceRequest {
     pub files_changed: Option<i32>,
     pub lines_added: Option<i32>,
     pub lines_removed: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HostScopedWorkspaceQuery {
+    host_id: Uuid,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WorkspaceHostAccess {
+    Matched,
+    ClaimLegacy,
+    Denied,
+}
+
+fn workspace_host_access(
+    workspace: &Workspace,
+    user_id: Uuid,
+    host_id: Uuid,
+) -> WorkspaceHostAccess {
+    if workspace.owner_user_id != user_id {
+        return WorkspaceHostAccess::Denied;
+    }
+    match workspace.host_id {
+        Some(workspace_host_id) if workspace_host_id == host_id => WorkspaceHostAccess::Matched,
+        Some(_) => WorkspaceHostAccess::Denied,
+        None => WorkspaceHostAccess::ClaimLegacy,
+    }
+}
+
+pub(super) async fn load_owned_workspace_for_host(
+    state: &AppState,
+    ctx: &RequestContext,
+    local_workspace_id: Uuid,
+    host_id: Uuid,
+) -> Result<Workspace, ErrorResponse> {
+    let owns_host = HostRepository::new(state.pool())
+        .is_owned_by(host_id, ctx.user.id)
+        .await
+        .map_err(|error| db_error(error, "failed to verify workspace host"))?;
+    if !owns_host {
+        return Err(ErrorResponse::new(
+            StatusCode::NOT_FOUND,
+            "workspace not found",
+        ));
+    }
+
+    let workspace =
+        WorkspaceRepository::find_owned_by_local_id(state.pool(), local_workspace_id, ctx.user.id)
+            .await
+            .map_err(|error| db_error(error, "failed to find workspace"))?
+            .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
+
+    match workspace_host_access(&workspace, ctx.user.id, host_id) {
+        WorkspaceHostAccess::Matched => Ok(workspace),
+        WorkspaceHostAccess::Denied => Err(ErrorResponse::new(
+            StatusCode::NOT_FOUND,
+            "workspace not found",
+        )),
+        WorkspaceHostAccess::ClaimLegacy => {
+            if let Some(claimed) = WorkspaceRepository::claim_legacy_host(
+                state.pool(),
+                workspace.id,
+                ctx.user.id,
+                host_id,
+            )
+            .await
+            .map_err(|error| db_error(error, "failed to claim legacy workspace host"))?
+            {
+                return Ok(claimed);
+            }
+
+            // A concurrent request may have claimed the same legacy row first.
+            // Re-read it so same-host requests converge while a competing host
+            // still receives a non-enumerating 404.
+            let current = WorkspaceRepository::find_owned_by_local_id(
+                state.pool(),
+                local_workspace_id,
+                ctx.user.id,
+            )
+            .await
+            .map_err(|error| db_error(error, "failed to verify claimed workspace host"))?;
+            current
+                .filter(|workspace| workspace.host_id == Some(host_id))
+                .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))
+        }
+    }
 }
 
 pub(super) fn router() -> Router<AppState> {
@@ -152,15 +238,9 @@ async fn update_workspace(
     Extension(ctx): Extension<RequestContext>,
     Json(payload): Json<UpdateWorkspaceRequest>,
 ) -> Result<Json<Workspace>, ErrorResponse> {
-    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), payload.local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, local_workspace_id = %payload.local_workspace_id, "failed to find workspace");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to find workspace")
-        })?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
-
-    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+    let workspace =
+        load_owned_workspace_for_host(&state, &ctx, payload.local_workspace_id, payload.host_id)
+            .await?;
 
     let updated = WorkspaceRepository::update(
         state.pool(),
@@ -192,16 +272,10 @@ async fn sync_issue_status_from_local_merge(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Path(local_workspace_id): Path<Uuid>,
+    Query(query): Query<HostScopedWorkspaceQuery>,
 ) -> Result<StatusCode, ErrorResponse> {
-    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, local_workspace_id = %local_workspace_id, "failed to find workspace");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to find workspace")
-        })?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
-
-    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+    let workspace =
+        load_owned_workspace_for_host(&state, &ctx, local_workspace_id, query.host_id).await?;
 
     let Some(issue_id) = workspace.issue_id else {
         return Ok(StatusCode::NO_CONTENT);
@@ -231,16 +305,10 @@ async fn auto_merge_check(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Path(local_workspace_id): Path<Uuid>,
+    Query(query): Query<HostScopedWorkspaceQuery>,
 ) -> Result<Json<AutoMergeCheckResponse>, ErrorResponse> {
-    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, local_workspace_id = %local_workspace_id, "failed to find workspace");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to find workspace")
-        })?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
-
-    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+    let workspace =
+        load_owned_workspace_for_host(&state, &ctx, local_workspace_id, query.host_id).await?;
 
     let Some(issue_id) = workspace.issue_id else {
         return Ok(Json(AutoMergeCheckResponse {
@@ -272,16 +340,10 @@ async fn mark_for_review(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Path(local_workspace_id): Path<Uuid>,
+    Query(query): Query<HostScopedWorkspaceQuery>,
 ) -> Result<StatusCode, ErrorResponse> {
-    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, local_workspace_id = %local_workspace_id, "failed to find workspace");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to find workspace")
-        })?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
-
-    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+    let workspace =
+        load_owned_workspace_for_host(&state, &ctx, local_workspace_id, query.host_id).await?;
 
     let Some(issue_id) = workspace.issue_id else {
         return Ok(StatusCode::NO_CONTENT);
@@ -312,18 +374,9 @@ async fn delete_workspace(
     Extension(ctx): Extension<RequestContext>,
     Json(payload): Json<DeleteWorkspaceRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
-    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), payload.local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to find workspace");
-            ErrorResponse::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to find workspace",
-            )
-        })?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
-
-    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+    let workspace =
+        load_owned_workspace_for_host(&state, &ctx, payload.local_workspace_id, payload.host_id)
+            .await?;
 
     unlink_pull_request_issue_links(state.pool(), &workspace).await?;
 
@@ -361,7 +414,12 @@ async fn unlink_workspace(
         })?
         .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
 
-    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+    if workspace.owner_user_id != ctx.user.id {
+        return Err(ErrorResponse::new(
+            StatusCode::NOT_FOUND,
+            "workspace not found",
+        ));
+    }
 
     unlink_pull_request_issue_links(state.pool(), &workspace).await?;
 
@@ -435,49 +493,90 @@ async fn get_workspace_by_local_id(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Path(local_workspace_id): Path<Uuid>,
+    Query(query): Query<HostScopedWorkspaceQuery>,
 ) -> Result<Json<Workspace>, ErrorResponse> {
-    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to find workspace");
-            ErrorResponse::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to find workspace",
-            )
-        })?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
-
-    ensure_project_access(state.pool(), ctx.user.id, workspace.project_id).await?;
+    let workspace =
+        load_owned_workspace_for_host(&state, &ctx, local_workspace_id, query.host_id).await?;
 
     Ok(Json(workspace))
 }
 
 #[instrument(
     name = "workspaces.workspace_exists",
-    skip(state, _ctx),
+    skip(state, ctx),
     fields(local_workspace_id = %local_workspace_id)
 )]
 async fn workspace_exists(
     State(state): State<AppState>,
-    Extension(_ctx): Extension<RequestContext>,
+    Extension(ctx): Extension<RequestContext>,
     Path(local_workspace_id): Path<Uuid>,
+    Query(query): Query<HostScopedWorkspaceQuery>,
 ) -> Result<StatusCode, ErrorResponse> {
-    let exists = WorkspaceRepository::exists_by_local_id(state.pool(), local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to check workspace existence");
-            ErrorResponse::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to check workspace",
-            )
-        })?;
+    load_owned_workspace_for_host(&state, &ctx, local_workspace_id, query.host_id).await?;
+    Ok(StatusCode::OK)
+}
 
-    if exists {
-        Ok(StatusCode::OK)
-    } else {
-        Err(ErrorResponse::new(
-            StatusCode::NOT_FOUND,
-            "workspace not found",
-        ))
+#[cfg(test)]
+mod tests {
+    use api_types::Workspace;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::{WorkspaceHostAccess, workspace_host_access};
+
+    fn workspace(owner_user_id: Uuid, host_id: Option<Uuid>) -> Workspace {
+        Workspace {
+            id: Uuid::new_v4(),
+            project_id: Uuid::new_v4(),
+            owner_user_id,
+            host_id,
+            issue_id: None,
+            local_workspace_id: Some(Uuid::new_v4()),
+            name: None,
+            archived: false,
+            files_changed: None,
+            lines_added: None,
+            lines_removed: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn matching_owner_and_host_are_allowed() {
+        let user_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+        assert_eq!(
+            workspace_host_access(&workspace(user_id, Some(host_id)), user_id, host_id),
+            WorkspaceHostAccess::Matched
+        );
+    }
+
+    #[test]
+    fn another_owner_or_host_is_denied() {
+        let user_id = Uuid::new_v4();
+        let host_id = Uuid::new_v4();
+        assert_eq!(
+            workspace_host_access(&workspace(Uuid::new_v4(), Some(host_id)), user_id, host_id),
+            WorkspaceHostAccess::Denied
+        );
+        assert_eq!(
+            workspace_host_access(&workspace(user_id, Some(Uuid::new_v4())), user_id, host_id),
+            WorkspaceHostAccess::Denied
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_can_be_claimed_only_by_its_owner() {
+        let user_id = Uuid::new_v4();
+        let legacy = workspace(user_id, None);
+        assert_eq!(
+            workspace_host_access(&legacy, user_id, Uuid::new_v4()),
+            WorkspaceHostAccess::ClaimLegacy
+        );
+        assert_eq!(
+            workspace_host_access(&legacy, Uuid::new_v4(), Uuid::new_v4()),
+            WorkspaceHostAccess::Denied
+        );
     }
 }

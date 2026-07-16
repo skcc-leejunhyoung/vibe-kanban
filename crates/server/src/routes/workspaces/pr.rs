@@ -1049,6 +1049,7 @@ pub async fn create_pr(
 
             if let Ok(client) = deployment.remote_client() {
                 let request = UpsertPullRequestRequest {
+                    host_id: None,
                     url: pr_info.url.clone(),
                     number: pr_info.number as i32,
                     status: PullRequestStatus::Open,
@@ -1249,6 +1250,7 @@ pub async fn attach_existing_pr(
                 MergeStatus::Unknown => PullRequestStatus::Open,
             };
             let request = UpsertPullRequestRequest {
+                host_id: None,
                 url: pr_info.url.clone(),
                 number: pr_info.number as i32,
                 status: pr_status,

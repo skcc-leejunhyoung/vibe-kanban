@@ -22,7 +22,7 @@ use crate::{
     auth::RequestContext,
     db::{
         get_txid, issues::IssueRepository, pull_request_issues::PullRequestIssueRepository,
-        pull_requests::PullRequestRepository, workspaces::WorkspaceRepository,
+        pull_requests::PullRequestRepository,
     },
 };
 
@@ -267,19 +267,19 @@ async fn upsert_pull_request(
     Extension(ctx): Extension<RequestContext>,
     Json(payload): Json<UpsertPullRequestRequest>,
 ) -> Result<Json<MutationResponse<PullRequest>>, ErrorResponse> {
-    let workspace = WorkspaceRepository::find_by_local_id(state.pool(), payload.local_workspace_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, local_workspace_id = %payload.local_workspace_id, "failed to find workspace");
-            ErrorResponse::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to find workspace",
-            )
-        })?
-        .ok_or_else(|| {
-            tracing::info!(local_workspace_id = %payload.local_workspace_id, "workspace not found");
-            ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found")
-        })?;
+    let Some(host_id) = payload.host_id else {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "workspace host is required",
+        ));
+    };
+    let workspace = super::workspaces::load_owned_workspace_for_host(
+        &state,
+        &ctx,
+        payload.local_workspace_id,
+        host_id,
+    )
+    .await?;
 
     let issue_id = workspace
         .issue_id

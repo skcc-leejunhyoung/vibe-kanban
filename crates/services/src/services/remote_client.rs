@@ -1,6 +1,6 @@
 //! OAuth client for authorization-code handoffs with automatic retries.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use api_types::{
     AcceptInvitationResponse, AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
@@ -150,6 +150,8 @@ pub struct RemoteClient {
     base: Url,
     http: Client,
     auth_context: AuthContext,
+    machine_id: String,
+    host_id: Arc<tokio::sync::RwLock<Option<Uuid>>>,
 }
 
 impl std::fmt::Debug for RemoteClient {
@@ -168,6 +170,8 @@ impl Clone for RemoteClient {
             base: self.base.clone(),
             http: self.http.clone(),
             auth_context: self.auth_context.clone(),
+            machine_id: self.machine_id.clone(),
+            host_id: self.host_id.clone(),
         }
     }
 }
@@ -176,7 +180,11 @@ impl RemoteClient {
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     const TOKEN_REFRESH_LEEWAY_SECS: i64 = 20;
 
-    pub fn new(base_url: &str, auth_context: AuthContext) -> Result<Self, RemoteClientError> {
+    pub fn new(
+        base_url: &str,
+        auth_context: AuthContext,
+        machine_id: String,
+    ) -> Result<Self, RemoteClientError> {
         let base = Url::parse(base_url).map_err(|e| RemoteClientError::Url(e.to_string()))?;
         let mut builder = Client::builder()
             .timeout(Self::REQUEST_TIMEOUT)
@@ -194,7 +202,29 @@ impl RemoteClient {
             base,
             http,
             auth_context,
+            machine_id,
+            host_id: Arc::new(tokio::sync::RwLock::new(None)),
         })
+    }
+
+    async fn current_host_id(&self) -> Result<Uuid, RemoteClientError> {
+        if let Some(host_id) = *self.host_id.read().await {
+            return Ok(host_id);
+        }
+
+        let host_id = self
+            .list_relay_hosts()
+            .await?
+            .into_iter()
+            .find(|host| host.machine_id == self.machine_id)
+            .map(|host| host.id)
+            .ok_or_else(|| {
+                RemoteClientError::Transport(
+                    "this computer is not registered as a remote host".to_string(),
+                )
+            })?;
+        *self.host_id.write().await = Some(host_id);
+        Ok(host_id)
     }
 
     /// Returns a valid access token, refreshing when it's about to expire.
@@ -879,9 +909,13 @@ impl RemoteClient {
         &self,
         local_workspace_id: Uuid,
     ) -> Result<(), RemoteClientError> {
+        let host_id = self.current_host_id().await?;
         self.delete_authed_with_body(
             "/v1/workspaces",
-            &DeleteWorkspaceRequest { local_workspace_id },
+            &DeleteWorkspaceRequest {
+                local_workspace_id,
+                host_id,
+            },
         )
         .await
     }
@@ -891,8 +925,11 @@ impl RemoteClient {
         &self,
         local_workspace_id: Uuid,
     ) -> Result<Workspace, RemoteClientError> {
-        self.get_authed(&format!("/v1/workspaces/by-local-id/{local_workspace_id}"))
-            .await
+        let host_id = self.current_host_id().await?;
+        self.get_authed(&format!(
+            "/v1/workspaces/by-local-id/{local_workspace_id}?host_id={host_id}"
+        ))
+        .await
     }
 
     /// Checks if a workspace exists on the remote server.
@@ -900,10 +937,11 @@ impl RemoteClient {
         &self,
         local_workspace_id: Uuid,
     ) -> Result<bool, RemoteClientError> {
+        let host_id = self.current_host_id().await?;
         match self
             .send(
                 reqwest::Method::HEAD,
-                &format!("/v1/workspaces/exists/{local_workspace_id}"),
+                &format!("/v1/workspaces/exists/{local_workspace_id}?host_id={host_id}"),
                 true,
                 None::<&()>,
             )
@@ -925,12 +963,14 @@ impl RemoteClient {
         lines_added: Option<i32>,
         lines_removed: Option<i32>,
     ) -> Result<(), RemoteClientError> {
+        let host_id = self.current_host_id().await?;
         self.send(
             reqwest::Method::PATCH,
             "/v1/workspaces",
             true,
             Some(&UpdateWorkspaceRequest {
                 local_workspace_id,
+                host_id,
                 name,
                 archived,
                 files_changed: files_changed.map(Some),
@@ -947,9 +987,10 @@ impl RemoteClient {
         &self,
         local_workspace_id: Uuid,
     ) -> Result<(), RemoteClientError> {
+        let host_id = self.current_host_id().await?;
         self.send(
             reqwest::Method::POST,
-            &format!("/v1/workspaces/{local_workspace_id}/sync_issue_status_from_local_merge"),
+            &format!("/v1/workspaces/{local_workspace_id}/sync_issue_status_from_local_merge?host_id={host_id}"),
             true,
             None::<&()>,
         )
@@ -962,13 +1003,14 @@ impl RemoteClient {
         &self,
         local_workspace_id: Uuid,
     ) -> Result<bool, RemoteClientError> {
+        let host_id = self.current_host_id().await?;
         #[derive(serde::Deserialize)]
         struct Resp {
             should_auto_merge: bool,
         }
         let resp: Resp = self
             .get_authed(&format!(
-                "/v1/workspaces/{local_workspace_id}/auto_merge_check"
+                "/v1/workspaces/{local_workspace_id}/auto_merge_check?host_id={host_id}"
             ))
             .await?;
         Ok(resp.should_auto_merge)
@@ -979,9 +1021,10 @@ impl RemoteClient {
         &self,
         local_workspace_id: Uuid,
     ) -> Result<(), RemoteClientError> {
+        let host_id = self.current_host_id().await?;
         self.send(
             reqwest::Method::POST,
-            &format!("/v1/workspaces/{local_workspace_id}/mark_for_review"),
+            &format!("/v1/workspaces/{local_workspace_id}/mark_for_review?host_id={host_id}"),
             true,
             None::<&()>,
         )
@@ -1262,8 +1305,9 @@ impl RemoteClient {
     /// Creates if not exists, updates if exists.
     pub async fn upsert_pull_request(
         &self,
-        request: UpsertPullRequestRequest,
+        mut request: UpsertPullRequestRequest,
     ) -> Result<(), RemoteClientError> {
+        request.host_id = Some(self.current_host_id().await?);
         self.send(
             reqwest::Method::PUT,
             "/v1/pull_requests",
