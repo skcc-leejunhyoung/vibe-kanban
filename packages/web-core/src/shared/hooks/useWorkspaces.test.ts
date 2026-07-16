@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { WorkspaceWithStatus } from 'shared/types';
 import {
   combineRemoteWorkspaceStreams,
+  getHostWorkspaceKey,
   materializeHostWorkspaceStream,
   type SidebarWorkspace,
   type UseWorkspacesResult,
@@ -31,7 +32,7 @@ function hostResult(
   }));
   const workspaceRecordsById = Object.fromEntries(
     [...activeIds, ...archivedIds].map((id) => [
-      id,
+      getHostWorkspaceKey(id, hostId),
       { id } as WorkspaceWithStatus,
     ])
   );
@@ -64,9 +65,24 @@ describe('combineRemoteWorkspaceStreams', () => {
       result.archivedWorkspaces.map(({ id, hostId }) => [id, hostId])
     ).toEqual([['a-2', 'host-a']]);
     expect(Object.keys(result.workspaceRecordsById)).toEqual([
-      'a-1',
-      'a-2',
-      'b-1',
+      'host-a:a-1',
+      'host-a:a-2',
+      'host-b:b-1',
+    ]);
+  });
+
+  it('keeps identical workspace IDs isolated by host', () => {
+    const result = combineRemoteWorkspaceStreams(
+      new Map([
+        ['host-a', hostResult('host-a', ['same-id'])],
+        ['host-b', hostResult('host-b', ['same-id'])],
+      ]),
+      ['host-a', 'host-b']
+    );
+
+    expect(Object.keys(result.workspaceRecordsById)).toEqual([
+      'host-a:same-id',
+      'host-b:same-id',
     ]);
   });
 

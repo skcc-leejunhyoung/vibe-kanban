@@ -31,6 +31,7 @@ export interface WorkspacePr {
 export interface WorkspaceWithStats {
   id: string;
   localWorkspaceId: string | null;
+  hostId?: string | null;
   name: string | null;
   archived: boolean;
   filesChanged: number;

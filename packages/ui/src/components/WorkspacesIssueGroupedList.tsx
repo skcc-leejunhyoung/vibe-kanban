@@ -56,8 +56,10 @@ export interface WorkspacesIssueGroupedListProps {
   /** Flat issue groups, used when `sections` is null. */
   groups: WorkspaceIssueGroup[];
   selectedWorkspaceId: string | null;
+  selectedWorkspaceHostId?: string | null;
   onSelectWorkspace: (
     id: string,
+    hostId?: string | null,
     event?: MouseEvent<HTMLButtonElement>
   ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
@@ -74,6 +76,7 @@ export interface WorkspacesIssueGroupedListProps {
 function WorkspaceRows({
   workspaces,
   selectedWorkspaceId,
+  selectedWorkspaceHostId,
   onSelectWorkspace,
   onOpenWorkspaceActions,
   focusedWorkspaceId,
@@ -81,8 +84,10 @@ function WorkspaceRows({
 }: {
   workspaces: WorkspacesSidebarWorkspace[];
   selectedWorkspaceId: string | null;
+  selectedWorkspaceHostId?: string | null;
   onSelectWorkspace: (
     id: string,
+    hostId?: string | null,
     event?: MouseEvent<HTMLButtonElement>
   ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
@@ -93,17 +98,27 @@ function WorkspaceRows({
     <>
       {workspaces.map((workspace) => (
         <WorkspaceSummary
-          key={workspace.id}
+          key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
           name={workspace.name}
           workspaceId={workspace.id}
           filesChanged={workspace.filesChanged}
           linesAdded={workspace.linesAdded}
           linesRemoved={workspace.linesRemoved}
-          isActive={selectedWorkspaceId === workspace.id}
-          isFocused={focusedWorkspaceId === workspace.id}
+          isActive={
+            selectedWorkspaceId === workspace.id &&
+            selectedWorkspaceHostId === (workspace.hostId ?? null)
+          }
+          isFocused={
+            focusedWorkspaceId ===
+            `${workspace.hostId ?? 'local'}:${workspace.id}`
+          }
           forwardedRef={
             registerWorkspaceRef
-              ? (node) => registerWorkspaceRef(workspace.id, node)
+              ? (node) =>
+                  registerWorkspaceRef(
+                    `${workspace.hostId ?? 'local'}:${workspace.id}`,
+                    node
+                  )
               : undefined
           }
           isRunning={workspace.isRunning}
@@ -119,7 +134,9 @@ function WorkspaceRows({
           latestPrompt={workspace.latestPrompt}
           isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
-          onClick={(event) => onSelectWorkspace(workspace.id, event)}
+          onClick={(event) =>
+            onSelectWorkspace(workspace.id, workspace.hostId, event)
+          }
         />
       ))}
     </>
@@ -129,6 +146,7 @@ function WorkspaceRows({
 function IssueGroupBlock({
   group,
   selectedWorkspaceId,
+  selectedWorkspaceHostId,
   onSelectWorkspace,
   onOpenWorkspaceActions,
   focusedWorkspaceId,
@@ -136,8 +154,10 @@ function IssueGroupBlock({
 }: {
   group: WorkspaceIssueGroup;
   selectedWorkspaceId: string | null;
+  selectedWorkspaceHostId?: string | null;
   onSelectWorkspace: (
     id: string,
+    hostId?: string | null,
     event?: MouseEvent<HTMLButtonElement>
   ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
@@ -150,6 +170,7 @@ function IssueGroupBlock({
     <WorkspaceRows
       workspaces={group.workspaces}
       selectedWorkspaceId={selectedWorkspaceId}
+      selectedWorkspaceHostId={selectedWorkspaceHostId}
       onSelectWorkspace={onSelectWorkspace}
       onOpenWorkspaceActions={onOpenWorkspaceActions}
       focusedWorkspaceId={focusedWorkspaceId}
@@ -219,6 +240,7 @@ export function WorkspacesIssueGroupedList({
   sections,
   groups,
   selectedWorkspaceId,
+  selectedWorkspaceHostId,
   onSelectWorkspace,
   onOpenWorkspaceActions,
   focusedWorkspaceId,
@@ -234,7 +256,8 @@ export function WorkspacesIssueGroupedList({
       <IssueGroupBlock
         key={group.key}
         group={group}
-        selectedWorkspaceId={selectedWorkspaceId}
+          selectedWorkspaceId={selectedWorkspaceId}
+          selectedWorkspaceHostId={selectedWorkspaceHostId}
         onSelectWorkspace={onSelectWorkspace}
         onOpenWorkspaceActions={onOpenWorkspaceActions}
         focusedWorkspaceId={focusedWorkspaceId}

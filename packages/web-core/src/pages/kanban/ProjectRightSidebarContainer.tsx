@@ -175,9 +175,11 @@ function WorkspaceSessionPanel({
     () =>
       remoteWorkspaces.find(
         (ws) =>
-          ws.local_workspace_id === workspaceId && ws.project_id === projectId
+          ws.local_workspace_id === workspaceId &&
+          ws.host_id === routeState.hostId &&
+          ws.project_id === projectId
       ) ?? null,
-    [remoteWorkspaces, workspaceId, projectId]
+    [remoteWorkspaces, workspaceId, routeState.hostId, projectId]
   );
 
   const linkedIssueId = linkedWorkspace?.issue_id ?? null;

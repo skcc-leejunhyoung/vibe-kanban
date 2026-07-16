@@ -147,7 +147,7 @@ function destinationToRemoteTarget(
           params: { hostId: effectiveHostId },
         } as const;
       }
-      return { to: "/" } as const;
+      throw new Error("A host is required to create a workspace");
     case "workspace":
       if (effectiveHostId) {
         return {
@@ -158,7 +158,7 @@ function destinationToRemoteTarget(
           },
         } as const;
       }
-      return { to: "/" } as const;
+      throw new Error("A host is required to open a workspace");
     case "workspace-vscode":
       if (effectiveHostId) {
         return {
@@ -169,7 +169,7 @@ function destinationToRemoteTarget(
           },
         } as const;
       }
-      return { to: "/" } as const;
+      throw new Error("A host is required to open a workspace in VS Code");
     case "export":
       return { to: "/export" } as const;
     case "project":
@@ -297,7 +297,7 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
   return navigation;
 }
 
-function createRemoteFallbackAppNavigation(): AppNavigation {
+function createRemoteAppNavigation(): AppNavigation {
   const navigateTo = (
     destination: AppDestination,
     transition?: NavigationTransition,
@@ -377,4 +377,4 @@ function createRemoteFallbackAppNavigation(): AppNavigation {
   return navigation;
 }
 
-export const remoteFallbackAppNavigation = createRemoteFallbackAppNavigation();
+export const remoteAppNavigation = createRemoteAppNavigation();

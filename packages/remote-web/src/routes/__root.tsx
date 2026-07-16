@@ -16,7 +16,6 @@ import { TerminalProvider } from "@/shared/providers/TerminalProvider";
 import { LogsPanelProvider } from "@/shared/providers/LogsPanelProvider";
 import { ActionsProvider } from "@/shared/providers/ActionsProvider";
 import { HostIdProvider } from "@/shared/providers/HostIdProvider";
-import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useKanbanIssueComposerScratch } from "@/shared/hooks/useKanbanIssueComposerScratch";
 import { useServiceWorkerNavigation } from "@/shared/hooks/useServiceWorkerNavigation";
 import { useUiPreferencesScratch } from "@/shared/hooks/useUiPreferencesScratch";
@@ -34,13 +33,9 @@ import {
 import { KeyboardShortcutsDialog } from "@/shared/dialogs/shared/KeyboardShortcutsDialog";
 import {
   createRemoteHostAppNavigation,
-  remoteFallbackAppNavigation,
+  remoteAppNavigation,
   resolveRemoteDestinationFromPath,
 } from "@remote/app/navigation/AppNavigation";
-import {
-  resolveRelayNavigationHostId,
-  useRelayAppBarHosts,
-} from "@remote/shared/hooks/useRelayAppBarHosts";
 import {
   isProjectDestination,
   isWorkspacesDestination,
@@ -114,22 +109,15 @@ function RootLayout() {
   // Inject the selected theme variant ("skin") CSS. The selection + presets
   // come from config (synced via useConfigPreferenceSync), matching local web.
   useApplyThemeVariant();
-  const { isSignedIn } = useAuth();
   const location = useLocation();
   const { hostId } = useParams({ strict: false });
   const routeHostId = hostId ?? null;
-  const { hosts: relayHosts } = useRelayAppBarHosts(isSignedIn);
-  const navigationHostId = useMemo(
-    () => resolveRelayNavigationHostId(relayHosts, { routeHostId }),
-    [relayHosts, routeHostId],
-  );
-
   const appNavigation = useMemo(
     () =>
-      navigationHostId
-        ? createRemoteHostAppNavigation(navigationHostId)
-        : remoteFallbackAppNavigation,
-    [navigationHostId],
+      routeHostId
+        ? createRemoteHostAppNavigation(routeHostId)
+        : remoteAppNavigation,
+    [routeHostId],
   );
   const isStandaloneRoute =
     location.pathname.startsWith("/account") ||

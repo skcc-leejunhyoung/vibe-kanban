@@ -13,10 +13,13 @@ export interface IssueWorkspacesSectionProps {
   workspaces: WorkspaceWithStats[];
   isLoading?: boolean;
   actions?: SectionAction[];
-  onWorkspaceClick?: (localWorkspaceId: string | null) => void;
+  onWorkspaceClick?: (
+    localWorkspaceId: string | null,
+    hostId?: string | null
+  ) => void;
   onCreateWorkspace?: () => void;
-  onUnlinkWorkspace?: (localWorkspaceId: string) => void;
-  onDeleteWorkspace?: (localWorkspaceId: string) => void;
+  onUnlinkWorkspace?: (localWorkspaceId: string, hostId?: string | null) => void;
+  onDeleteWorkspace?: (localWorkspaceId: string, hostId?: string | null) => void;
   shouldAnimateCreateButton?: boolean;
 }
 
@@ -53,7 +56,7 @@ export function IssueWorkspacesSection({
           />
         ) : (
           workspaces.map((workspace) => {
-            const { localWorkspaceId } = workspace;
+            const { localWorkspaceId, hostId } = workspace;
             return (
               <IssueWorkspaceCard
                 key={workspace.id}
@@ -62,19 +65,19 @@ export function IssueWorkspacesSection({
                   onWorkspaceClick &&
                   localWorkspaceId &&
                   workspace.isOwnedByCurrentUser
-                    ? () => onWorkspaceClick(localWorkspaceId)
+                    ? () => onWorkspaceClick(localWorkspaceId, hostId)
                     : undefined
                 }
                 onUnlink={
                   onUnlinkWorkspace && localWorkspaceId
-                    ? () => onUnlinkWorkspace(localWorkspaceId)
+                    ? () => onUnlinkWorkspace(localWorkspaceId, hostId)
                     : undefined
                 }
                 onDelete={
                   onDeleteWorkspace &&
                   localWorkspaceId &&
                   workspace.isOwnedByCurrentUser
-                    ? () => onDeleteWorkspace(localWorkspaceId)
+                    ? () => onDeleteWorkspace(localWorkspaceId, hostId)
                     : undefined
                 }
               />

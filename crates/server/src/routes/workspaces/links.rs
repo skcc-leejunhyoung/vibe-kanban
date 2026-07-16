@@ -31,9 +31,21 @@ pub async fn link_workspace(
     let stats =
         diff_stream::compute_diff_stats(&deployment.db().pool, deployment.git(), &workspace).await;
 
+    let machine_id = deployment.user_id().to_string();
+    let host_id = client
+        .list_relay_hosts()
+        .await?
+        .into_iter()
+        .find(|host| host.machine_id == machine_id)
+        .map(|host| host.id)
+        .ok_or_else(|| {
+            ApiError::BadRequest("this computer is not registered as a remote host".into())
+        })?;
+
     client
         .create_workspace(CreateWorkspaceRequest {
             project_id: payload.project_id,
+            host_id,
             local_workspace_id: workspace.id,
             issue_id: payload.issue_id,
             name: workspace.name.clone(),

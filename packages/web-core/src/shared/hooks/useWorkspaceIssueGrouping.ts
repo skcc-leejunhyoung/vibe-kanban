@@ -16,6 +16,7 @@ import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useAllOrganizationProjects } from '@/shared/hooks/useAllOrganizationProjects';
 import type { WorkspaceIssueMeta } from '@/shared/lib/workspaceIssueGrouping';
+import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 
 /**
  * Aggregate a project-scoped Electric shape across many projects. Mirrors
@@ -168,7 +169,7 @@ export function useWorkspaceIssueGrouping(
 
       const issue = rw.issue_id ? issuesById.get(rw.issue_id) : undefined;
       if (!issue) {
-        map.set(rw.local_workspace_id, null);
+        map.set(getHostWorkspaceKey(rw.local_workspace_id, rw.host_id), null);
         continue;
       }
 
@@ -176,7 +177,7 @@ export function useWorkspaceIssueGrouping(
       const status = statusesById.get(issue.status_id) ?? null;
       const issueTagObjects = tagsByIssueId.get(issue.id) ?? [];
 
-      map.set(rw.local_workspace_id, {
+      map.set(getHostWorkspaceKey(rw.local_workspace_id, rw.host_id), {
         issueId: issue.id,
         statusName: status?.name ?? null,
         header: {

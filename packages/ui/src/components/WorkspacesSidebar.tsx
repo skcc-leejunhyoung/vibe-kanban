@@ -34,6 +34,7 @@ export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
 export interface WorkspacesSidebarWorkspace {
   id: string;
+  hostId?: string | null;
   name: string;
   filesChanged?: number;
   linesAdded?: number;
@@ -79,8 +80,10 @@ export interface WorkspacesSidebarProps {
   archivedWorkspaces?: WorkspacesSidebarWorkspace[];
   isLoading?: boolean;
   selectedWorkspaceId: string | null;
+  selectedWorkspaceOwnerHostId?: string | null;
   onSelectWorkspace: (
     id: string,
+    hostId?: string | null,
     event?: MouseEvent<HTMLButtonElement>
   ) => void;
   onAddWorkspace?: () => void;
@@ -189,6 +192,7 @@ export function categorizeWorkspaces(
 function WorkspaceList({
   workspaces,
   selectedWorkspaceId,
+  selectedWorkspaceOwnerHostId,
   onSelectWorkspace,
   onOpenWorkspaceActions,
   focusedWorkspaceId,
@@ -196,8 +200,10 @@ function WorkspaceList({
 }: {
   workspaces: WorkspacesSidebarWorkspace[];
   selectedWorkspaceId: string | null;
+  selectedWorkspaceOwnerHostId?: string | null;
   onSelectWorkspace: (
     id: string,
+    hostId?: string | null,
     event?: MouseEvent<HTMLButtonElement>
   ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
@@ -208,17 +214,27 @@ function WorkspaceList({
     <>
       {workspaces.map((workspace) => (
         <WorkspaceSummary
-          key={workspace.id}
+          key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
           name={workspace.name}
           workspaceId={workspace.id}
           filesChanged={workspace.filesChanged}
           linesAdded={workspace.linesAdded}
           linesRemoved={workspace.linesRemoved}
-          isActive={selectedWorkspaceId === workspace.id}
-          isFocused={focusedWorkspaceId === workspace.id}
+          isActive={
+            selectedWorkspaceId === workspace.id &&
+            selectedWorkspaceOwnerHostId === (workspace.hostId ?? null)
+          }
+          isFocused={
+            focusedWorkspaceId ===
+            `${workspace.hostId ?? 'local'}:${workspace.id}`
+          }
           forwardedRef={
             registerWorkspaceRef
-              ? (node) => registerWorkspaceRef(workspace.id, node)
+              ? (node) =>
+                  registerWorkspaceRef(
+                    `${workspace.hostId ?? 'local'}:${workspace.id}`,
+                    node
+                  )
               : undefined
           }
           isRunning={workspace.isRunning}
@@ -234,7 +250,9 @@ function WorkspaceList({
           prStatus={workspace.prStatus}
           isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
-          onClick={(event) => onSelectWorkspace(workspace.id, event)}
+          onClick={(event) =>
+            onSelectWorkspace(workspace.id, workspace.hostId, event)
+          }
         />
       ))}
     </>
@@ -247,6 +265,7 @@ export function WorkspacesSidebar({
   archivedWorkspaces = [],
   isLoading = false,
   selectedWorkspaceId,
+  selectedWorkspaceOwnerHostId,
   onSelectWorkspace,
   onAddWorkspace,
   searchQuery,
@@ -455,17 +474,27 @@ export function WorkspacesSidebar({
               archivedWorkspaces.map((workspace) => (
                 <WorkspaceSummary
                   summary
-                  key={workspace.id}
+                      key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
                   name={workspace.name}
                   workspaceId={workspace.id}
                   filesChanged={workspace.filesChanged}
                   linesAdded={workspace.linesAdded}
                   linesRemoved={workspace.linesRemoved}
-                  isActive={selectedWorkspaceId === workspace.id}
-                  isFocused={focusedWorkspaceId === workspace.id}
+                  isActive={
+                    selectedWorkspaceId === workspace.id &&
+                    selectedWorkspaceOwnerHostId === (workspace.hostId ?? null)
+                  }
+                  isFocused={
+                    focusedWorkspaceId ===
+                    `${workspace.hostId ?? 'local'}:${workspace.id}`
+                  }
                   forwardedRef={
                     registerWorkspaceRef
-                      ? (node) => registerWorkspaceRef(workspace.id, node)
+                      ? (node) =>
+                          registerWorkspaceRef(
+                            `${workspace.hostId ?? 'local'}:${workspace.id}`,
+                            node
+                          )
                       : undefined
                   }
                   isRunning={workspace.isRunning}
@@ -481,7 +510,9 @@ export function WorkspacesSidebar({
                   prStatus={workspace.prStatus}
                   isInPlace={workspace.isInPlace}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
-                  onClick={(event) => onSelectWorkspace(workspace.id, event)}
+                  onClick={(event) =>
+                    onSelectWorkspace(workspace.id, workspace.hostId, event)
+                  }
                 />
               ))
             )}
@@ -492,6 +523,7 @@ export function WorkspacesSidebar({
             sections={layoutMode === 'accordion' ? issueSections : null}
             groups={issueGroups}
             selectedWorkspaceId={selectedWorkspaceId}
+            selectedWorkspaceHostId={selectedWorkspaceOwnerHostId}
             onSelectWorkspace={onSelectWorkspace}
             onOpenWorkspaceActions={handleOpenWorkspaceActions}
             focusedWorkspaceId={focusedWorkspaceId}
@@ -526,6 +558,7 @@ export function WorkspacesSidebar({
                   <WorkspaceList
                     workspaces={raisedHandWorkspaces}
                     selectedWorkspaceId={selectedWorkspaceId}
+                    selectedWorkspaceOwnerHostId={selectedWorkspaceOwnerHostId}
                     onSelectWorkspace={onSelectWorkspace}
                     onOpenWorkspaceActions={handleOpenWorkspaceActions}
                     focusedWorkspaceId={focusedWorkspaceId}
@@ -550,6 +583,7 @@ export function WorkspacesSidebar({
                   <WorkspaceList
                     workspaces={runningWorkspaces}
                     selectedWorkspaceId={selectedWorkspaceId}
+                    selectedWorkspaceOwnerHostId={selectedWorkspaceOwnerHostId}
                     onSelectWorkspace={onSelectWorkspace}
                     onOpenWorkspaceActions={handleOpenWorkspaceActions}
                     focusedWorkspaceId={focusedWorkspaceId}
@@ -574,6 +608,7 @@ export function WorkspacesSidebar({
                   <WorkspaceList
                     workspaces={idleWorkspaces}
                     selectedWorkspaceId={selectedWorkspaceId}
+                    selectedWorkspaceOwnerHostId={selectedWorkspaceOwnerHostId}
                     onSelectWorkspace={onSelectWorkspace}
                     onOpenWorkspaceActions={handleOpenWorkspaceActions}
                     focusedWorkspaceId={focusedWorkspaceId}
@@ -602,17 +637,27 @@ export function WorkspacesSidebar({
             )}
             {workspaces.map((workspace) => (
               <WorkspaceSummary
-                key={workspace.id}
+                key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
                 name={workspace.name}
                 workspaceId={workspace.id}
                 filesChanged={workspace.filesChanged}
                 linesAdded={workspace.linesAdded}
                 linesRemoved={workspace.linesRemoved}
-                isActive={selectedWorkspaceId === workspace.id}
-                isFocused={focusedWorkspaceId === workspace.id}
+                isActive={
+                  selectedWorkspaceId === workspace.id &&
+                  selectedWorkspaceOwnerHostId === (workspace.hostId ?? null)
+                }
+                isFocused={
+                  focusedWorkspaceId ===
+                  `${workspace.hostId ?? 'local'}:${workspace.id}`
+                }
                 forwardedRef={
                   registerWorkspaceRef
-                    ? (node) => registerWorkspaceRef(workspace.id, node)
+                    ? (node) =>
+                        registerWorkspaceRef(
+                          `${workspace.hostId ?? 'local'}:${workspace.id}`,
+                          node
+                        )
                     : undefined
                 }
                 isRunning={workspace.isRunning}
@@ -628,7 +673,9 @@ export function WorkspacesSidebar({
                 prStatus={workspace.prStatus}
                 isInPlace={workspace.isInPlace}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
-                onClick={(event) => onSelectWorkspace(workspace.id, event)}
+                onClick={(event) =>
+                  onSelectWorkspace(workspace.id, workspace.hostId, event)
+                }
               />
             ))}
           </div>

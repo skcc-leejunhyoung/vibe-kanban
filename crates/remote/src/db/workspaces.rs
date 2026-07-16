@@ -1,5 +1,4 @@
 use api_types::Workspace;
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use thiserror::Error;
 use uuid::Uuid;
@@ -13,6 +12,7 @@ pub enum WorkspaceError {
 pub struct CreateWorkspaceParams {
     pub project_id: Uuid,
     pub owner_user_id: Uuid,
+    pub host_id: Uuid,
     pub local_workspace_id: Option<Uuid>,
     pub issue_id: Option<Uuid>,
     pub name: Option<String>,
@@ -29,27 +29,17 @@ impl WorkspaceRepository {
         pool: &PgPool,
         owner_user_id: Uuid,
     ) -> Result<Vec<Workspace>, WorkspaceError> {
-        let records = sqlx::query_as!(
-            Workspace,
+        let records = sqlx::query_as::<_, Workspace>(
             r#"
             SELECT
-                id                  AS "id!: Uuid",
-                project_id          AS "project_id!: Uuid",
-                owner_user_id       AS "owner_user_id!: Uuid",
-                issue_id            AS "issue_id: Uuid",
-                local_workspace_id  AS "local_workspace_id: Uuid",
-                name                AS "name: String",
-                archived            AS "archived!: bool",
-                files_changed       AS "files_changed: i32",
-                lines_added         AS "lines_added: i32",
-                lines_removed       AS "lines_removed: i32",
-                created_at          AS "created_at!: DateTime<Utc>",
-                updated_at          AS "updated_at!: DateTime<Utc>"
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
             FROM workspaces
             WHERE owner_user_id = $1
             "#,
-            owner_user_id
         )
+        .bind(owner_user_id)
         .fetch_all(pool)
         .await?;
         Ok(records)
@@ -59,27 +49,17 @@ impl WorkspaceRepository {
         pool: &PgPool,
         project_id: Uuid,
     ) -> Result<Vec<Workspace>, WorkspaceError> {
-        let records = sqlx::query_as!(
-            Workspace,
+        let records = sqlx::query_as::<_, Workspace>(
             r#"
             SELECT
-                id                  AS "id!: Uuid",
-                project_id          AS "project_id!: Uuid",
-                owner_user_id       AS "owner_user_id!: Uuid",
-                issue_id            AS "issue_id: Uuid",
-                local_workspace_id  AS "local_workspace_id: Uuid",
-                name                AS "name: String",
-                archived            AS "archived!: bool",
-                files_changed       AS "files_changed: i32",
-                lines_added         AS "lines_added: i32",
-                lines_removed       AS "lines_removed: i32",
-                created_at          AS "created_at!: DateTime<Utc>",
-                updated_at          AS "updated_at!: DateTime<Utc>"
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
             FROM workspaces
             WHERE project_id = $1
             "#,
-            project_id
         )
+        .bind(project_id)
         .fetch_all(pool)
         .await?;
         Ok(records)
@@ -92,6 +72,7 @@ impl WorkspaceRepository {
         let CreateWorkspaceParams {
             project_id,
             owner_user_id,
+            host_id,
             local_workspace_id,
             issue_id,
             name,
@@ -101,62 +82,43 @@ impl WorkspaceRepository {
             lines_removed,
         } = params;
         let archived = archived.unwrap_or(false);
-        let record = sqlx::query_as!(
-            Workspace,
+        let record = sqlx::query_as::<_, Workspace>(
             r#"
-            INSERT INTO workspaces (project_id, owner_user_id, local_workspace_id, issue_id, name, archived, files_changed, lines_added, lines_removed)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO workspaces (project_id, owner_user_id, host_id, local_workspace_id, issue_id, name, archived, files_changed, lines_added, lines_removed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING
-                id                  AS "id!: Uuid",
-                project_id          AS "project_id!: Uuid",
-                owner_user_id       AS "owner_user_id!: Uuid",
-                issue_id            AS "issue_id: Uuid",
-                local_workspace_id  AS "local_workspace_id: Uuid",
-                name                AS "name: String",
-                archived            AS "archived!: bool",
-                files_changed       AS "files_changed: i32",
-                lines_added         AS "lines_added: i32",
-                lines_removed       AS "lines_removed: i32",
-                created_at          AS "created_at!: DateTime<Utc>",
-                updated_at          AS "updated_at!: DateTime<Utc>"
-            "#,
-            project_id,
-            owner_user_id,
-            local_workspace_id,
-            issue_id,
-            name,
-            archived,
-            files_changed,
-            lines_added,
-            lines_removed
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
+            "#
         )
+        .bind(project_id)
+        .bind(owner_user_id)
+        .bind(host_id)
+        .bind(local_workspace_id)
+        .bind(issue_id)
+        .bind(name)
+        .bind(archived)
+        .bind(files_changed)
+        .bind(lines_added)
+        .bind(lines_removed)
         .fetch_one(pool)
         .await?;
         Ok(record)
     }
 
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Workspace>, WorkspaceError> {
-        let record = sqlx::query_as!(
-            Workspace,
+        let record = sqlx::query_as::<_, Workspace>(
             r#"
             SELECT
-                id                  AS "id!: Uuid",
-                project_id          AS "project_id!: Uuid",
-                owner_user_id       AS "owner_user_id!: Uuid",
-                issue_id            AS "issue_id: Uuid",
-                local_workspace_id  AS "local_workspace_id: Uuid",
-                name                AS "name: String",
-                archived            AS "archived!: bool",
-                files_changed       AS "files_changed: i32",
-                lines_added         AS "lines_added: i32",
-                lines_removed       AS "lines_removed: i32",
-                created_at          AS "created_at!: DateTime<Utc>",
-                updated_at          AS "updated_at!: DateTime<Utc>"
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
             FROM workspaces
             WHERE id = $1
             "#,
-            id
         )
+        .bind(id)
         .fetch_optional(pool)
         .await?;
 
@@ -167,27 +129,17 @@ impl WorkspaceRepository {
         pool: &PgPool,
         local_workspace_id: Uuid,
     ) -> Result<Option<Workspace>, WorkspaceError> {
-        let record = sqlx::query_as!(
-            Workspace,
+        let record = sqlx::query_as::<_, Workspace>(
             r#"
             SELECT
-                id                  AS "id!: Uuid",
-                project_id          AS "project_id!: Uuid",
-                owner_user_id       AS "owner_user_id!: Uuid",
-                issue_id            AS "issue_id: Uuid",
-                local_workspace_id  AS "local_workspace_id: Uuid",
-                name                AS "name: String",
-                archived            AS "archived!: bool",
-                files_changed       AS "files_changed: i32",
-                lines_added         AS "lines_added: i32",
-                lines_removed       AS "lines_removed: i32",
-                created_at          AS "created_at!: DateTime<Utc>",
-                updated_at          AS "updated_at!: DateTime<Utc>"
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
             FROM workspaces
             WHERE local_workspace_id = $1
             "#,
-            local_workspace_id
         )
+        .bind(local_workspace_id)
         .fetch_optional(pool)
         .await?;
 
@@ -261,8 +213,7 @@ impl WorkspaceRepository {
         let update_lines_removed = lines_removed.is_some();
         let lines_removed_value = lines_removed.flatten();
 
-        let record = sqlx::query_as!(
-            Workspace,
+        let record = sqlx::query_as::<_, Workspace>(
             r#"
             UPDATE workspaces SET
                 name = CASE WHEN $1 THEN $2 ELSE name END,
@@ -273,31 +224,22 @@ impl WorkspaceRepository {
                 updated_at = NOW()
             WHERE id = $11
             RETURNING
-                id                  AS "id!: Uuid",
-                project_id          AS "project_id!: Uuid",
-                owner_user_id       AS "owner_user_id!: Uuid",
-                issue_id            AS "issue_id: Uuid",
-                local_workspace_id  AS "local_workspace_id: Uuid",
-                name                AS "name: String",
-                archived            AS "archived!: bool",
-                files_changed       AS "files_changed: i32",
-                lines_added         AS "lines_added: i32",
-                lines_removed       AS "lines_removed: i32",
-                created_at          AS "created_at!: DateTime<Utc>",
-                updated_at          AS "updated_at!: DateTime<Utc>"
+                id, project_id, owner_user_id, host_id, issue_id,
+                local_workspace_id, name, archived, files_changed,
+                lines_added, lines_removed, created_at, updated_at
             "#,
-            update_name,
-            name_value,
-            update_archived,
-            archived_value,
-            update_files_changed,
-            files_changed_value,
-            update_lines_added,
-            lines_added_value,
-            update_lines_removed,
-            lines_removed_value,
-            id
         )
+        .bind(update_name)
+        .bind(name_value)
+        .bind(update_archived)
+        .bind(archived_value)
+        .bind(update_files_changed)
+        .bind(files_changed_value)
+        .bind(update_lines_added)
+        .bind(lines_added_value)
+        .bind(update_lines_removed)
+        .bind(lines_removed_value)
+        .bind(id)
         .fetch_one(pool)
         .await?;
 

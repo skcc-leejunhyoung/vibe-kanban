@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { UserContext } from '@/shared/hooks/useUserContext';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 /**
  * Resolve the project id a workspace belongs to.
@@ -25,6 +26,7 @@ export function useWorkspaceProjectId(
 ): string | null {
   const runtime = useAppRuntime();
   const isRemote = runtime === 'remote';
+  const hostId = useHostId();
 
   // Remote: resolve from synced workspace rows. The route param is a local
   // workspace id, while remote rows carry it as `local_workspace_id`.
@@ -34,7 +36,9 @@ export function useWorkspaceProjectId(
   const remoteProjectId =
     isRemote && workspaceId
       ? (userContext?.workspaces.find(
-          (workspace) => workspace.local_workspace_id === workspaceId
+          (workspace) =>
+            workspace.local_workspace_id === workspaceId &&
+            workspace.host_id === hostId
         )?.project_id ?? null)
       : null;
 

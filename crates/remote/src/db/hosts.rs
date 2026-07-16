@@ -11,6 +11,16 @@ impl<'a> HostRepository<'a> {
         Self { pool }
     }
 
+    pub async fn is_owned_by(&self, host_id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM hosts WHERE id = $1 AND owner_user_id = $2)",
+        )
+        .bind(host_id)
+        .bind(user_id)
+        .fetch_one(self.pool)
+        .await
+    }
+
     pub async fn list_accessible_hosts(
         &self,
         user_id: Uuid,

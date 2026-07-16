@@ -136,14 +136,11 @@ function WorkspaceSelectionContent({
   }, [filteredWorkspaces, isSearching]);
 
   const handleLinkWorkspace = useCallback(
-    async (workspaceId: string) => {
+    async (workspaceId: string, hostId: string | null) => {
       if (isLinking) return;
 
       setIsLinking(true);
       try {
-        const hostId = allWorkspaces.find(
-          (workspace) => workspace.id === workspaceId
-        )?.hostId;
         await workspacesApi.linkToIssue(
           workspaceId,
           projectId,
@@ -166,7 +163,7 @@ function WorkspaceSelectionContent({
         setIsLinking(false);
       }
     },
-    [projectId, issueId, isLinking, modal, t, allWorkspaces]
+    [projectId, issueId, isLinking, modal, t]
   );
 
   const handleCreateNewWorkspace = useCallback(async () => {
@@ -289,9 +286,11 @@ function WorkspaceSelectionContent({
             <CommandGroup heading={t('kanban.workspaces', 'Workspaces')}>
               {displayedWorkspaces.map((workspace) => (
                 <CommandItem
-                  key={workspace.id}
+                  key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
                   value={`${workspace.id} ${workspace.name} ${workspace.branch}${workspace.isArchived ? ' archived' : ''}`}
-                  onSelect={() => handleLinkWorkspace(workspace.id)}
+                  onSelect={() =>
+                    handleLinkWorkspace(workspace.id, workspace.hostId)
+                  }
                   disabled={isLinking}
                 >
                   <GitBranchIcon

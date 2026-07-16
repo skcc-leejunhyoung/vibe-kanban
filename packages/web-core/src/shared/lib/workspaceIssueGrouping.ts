@@ -4,6 +4,7 @@ import type {
   WorkspaceIssueStatusSection,
   WorkspacesSidebarWorkspace,
 } from '@vibe/ui/components/WorkspacesIssueGroupedList';
+import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 
 /** Sentinel keys for the two special buckets. */
 export const UNLINKED_GROUP_KEY = '__unlinked__';
@@ -36,7 +37,9 @@ export function groupWorkspacesByIssue(
   const unlinked: WorkspacesSidebarWorkspace[] = [];
 
   for (const ws of workspaces) {
-    const meta = metaByWorkspaceId.get(ws.id) ?? null;
+    const meta =
+      metaByWorkspaceId.get(getHostWorkspaceKey(ws.id, ws.hostId ?? null)) ??
+      null;
     if (!meta) {
       unlinked.push(ws);
       continue;

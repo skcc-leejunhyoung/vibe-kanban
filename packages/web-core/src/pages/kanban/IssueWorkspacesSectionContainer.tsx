@@ -24,6 +24,7 @@ import { IssueWorkspacesSection } from '@vibe/ui/components/IssueWorkspacesSecti
 import type { SectionAction } from '@vibe/ui/components/CollapsibleSectionHeader';
 import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import { useWorkspaceHostMap } from '@/shared/hooks/useWorkspaceHostMap';
+import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 
 interface IssueWorkspacesSectionContainerProps {
   issueId: string;
@@ -58,11 +59,11 @@ export function IssueWorkspacesSectionContainer({
     const map = new Map<string, (typeof activeWorkspaces)[number]>();
 
     for (const workspace of activeWorkspaces) {
-      map.set(workspace.id, workspace);
+      map.set(getHostWorkspaceKey(workspace.id, workspace.hostId), workspace);
     }
 
     for (const workspace of archivedWorkspaces) {
-      map.set(workspace.id, workspace);
+      map.set(getHostWorkspaceKey(workspace.id, workspace.hostId), workspace);
     }
 
     return map;
@@ -74,7 +75,9 @@ export function IssueWorkspacesSectionContainer({
 
     return rawWorkspaces.map((workspace) => {
       const localWorkspace = workspace.local_workspace_id
-        ? localWorkspacesById.get(workspace.local_workspace_id)
+        ? localWorkspacesById.get(
+            getHostWorkspaceKey(workspace.local_workspace_id, workspace.host_id)
+          )
         : undefined;
 
       // Find all linked PRs for this workspace
@@ -93,6 +96,7 @@ export function IssueWorkspacesSectionContainer({
       return {
         id: workspace.id,
         localWorkspaceId: workspace.local_workspace_id,
+        hostId: workspace.host_id,
         name: workspace.name,
         archived: workspace.archived,
         filesChanged: workspace.files_changed ?? 0,
@@ -201,12 +205,17 @@ export function IssueWorkspacesSectionContainer({
 
   // Handle clicking a workspace card to open it
   const handleWorkspaceClick = useCallback(
-    async (localWorkspaceId: string | null) => {
+    async (localWorkspaceId: string | null, ownerHostId?: string | null) => {
       if (!projectId || !localWorkspaceId) {
         return;
       }
-      const hostId = workspaceHostMap.get(localWorkspaceId);
-      if (!localWorkspacesById.has(localWorkspaceId) && !hostId) {
+      const hostId = ownerHostId ?? workspaceHostMap.get(localWorkspaceId);
+      if (
+        !localWorkspacesById.has(
+          getHostWorkspaceKey(localWorkspaceId, hostId ?? null)
+        ) &&
+        !hostId
+      ) {
         // The workspace lives on a paired host that is offline, or whose host
         // map hasn't finished its first poll — tell the user instead of the
         // click silently doing nothing.
@@ -237,7 +246,7 @@ export function IssueWorkspacesSectionContainer({
 
   // Handle unlinking a workspace from the issue
   const handleUnlinkWorkspace = useCallback(
-    async (localWorkspaceId: string) => {
+    async (localWorkspaceId: string, ownerHostId?: string | null) => {
       const result = await ConfirmDialog.show({
         title: t('workspaces.unlinkFromIssue'),
         message: t('workspaces.unlinkConfirmMessage'),
@@ -247,9 +256,7 @@ export function IssueWorkspacesSectionContainer({
 
       if (result === 'confirmed') {
         try {
-          const hostId =
-            localWorkspacesById.get(localWorkspaceId)?.hostId ??
-            workspaceHostMap.get(localWorkspaceId);
+          const hostId = ownerHostId ?? workspaceHostMap.get(localWorkspaceId);
           await workspacesApi.unlinkFromIssue(localWorkspaceId, hostId);
         } catch (error) {
           ConfirmDialog.show({
@@ -269,8 +276,12 @@ export function IssueWorkspacesSectionContainer({
 
   // Handle deleting a workspace (unlinks first, then deletes local)
   const handleDeleteWorkspace = useCallback(
-    async (localWorkspaceId: string) => {
-      const localWorkspace = localWorkspacesById.get(localWorkspaceId);
+    async (localWorkspaceId: string, ownerHostId?: string | null) => {
+      const hostId =
+        ownerHostId ?? workspaceHostMap.get(localWorkspaceId) ?? null;
+      const localWorkspace = localWorkspacesById.get(
+        getHostWorkspaceKey(localWorkspaceId, hostId)
+      );
       if (!localWorkspace) {
         ConfirmDialog.show({
           title: t('common:error'),

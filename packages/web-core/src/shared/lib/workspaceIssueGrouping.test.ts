@@ -7,7 +7,8 @@ import {
   type WorkspaceIssueMeta,
 } from './workspaceIssueGrouping';
 
-const ws = (id: string) => ({ id, name: id });
+const ws = (id: string, hostId = 'host-a') => ({ id, name: id, hostId });
+const key = (id: string, hostId = 'host-a') => `${hostId}:${id}`;
 
 function meta(issueId: string, statusName: string | null): WorkspaceIssueMeta {
   return {
@@ -30,9 +31,9 @@ describe('groupWorkspacesByIssue', () => {
     const groups = groupWorkspacesByIssue(
       [ws('a'), ws('b'), ws('c')],
       new Map<string, WorkspaceIssueMeta | null>([
-        ['a', meta('I1', 'To do')],
-        ['b', meta('I2', 'Done')],
-        ['c', meta('I1', 'To do')],
+        [key('a'), meta('I1', 'To do')],
+        [key('b'), meta('I2', 'Done')],
+        [key('c'), meta('I1', 'To do')],
       ])
     );
     expect(groups.map((g) => g.key)).toEqual(['I1', 'I2']);
@@ -44,8 +45,8 @@ describe('groupWorkspacesByIssue', () => {
     const groups = groupWorkspacesByIssue(
       [ws('a'), ws('b'), ws('c')],
       new Map<string, WorkspaceIssueMeta | null>([
-        ['a', meta('I1', 'To do')],
-        ['b', null],
+        [key('a'), meta('I1', 'To do')],
+        [key('b'), null],
         // 'c' is missing entirely → also unlinked
       ])
     );
@@ -58,7 +59,9 @@ describe('groupWorkspacesByIssue', () => {
   it('omits the unlinked bucket when every workspace is linked', () => {
     const groups = groupWorkspacesByIssue(
       [ws('a')],
-      new Map<string, WorkspaceIssueMeta | null>([['a', meta('I1', 'To do')]])
+      new Map<string, WorkspaceIssueMeta | null>([
+        [key('a'), meta('I1', 'To do')],
+      ])
     );
     expect(groups).toHaveLength(1);
     expect(groups[0].key).toBe('I1');
@@ -72,8 +75,8 @@ describe('bucketIssueGroupsByStatus', () => {
     const groups = groupWorkspacesByIssue(
       [ws('a'), ws('b')],
       new Map<string, WorkspaceIssueMeta | null>([
-        ['a', meta('I1', 'to do')], // lowercase → matches "To do"
-        ['b', meta('I2', 'Done')],
+        [key('a'), meta('I1', 'to do')], // lowercase → matches "To do"
+        [key('b'), meta('I2', 'Done')],
       ])
     );
     const sections = bucketIssueGroupsByStatus(
@@ -95,7 +98,7 @@ describe('bucketIssueGroupsByStatus', () => {
     const groups = groupWorkspacesByIssue(
       [ws('a')],
       new Map<string, WorkspaceIssueMeta | null>([
-        ['a', meta('I1', 'Archived')],
+        [key('a'), meta('I1', 'Archived')],
       ])
     );
     const sections = bucketIssueGroupsByStatus(groups, ['To do'], labels);
@@ -109,7 +112,9 @@ describe('bucketIssueGroupsByStatus', () => {
   it('puts the unlinked bucket into its own trailing section', () => {
     const groups = groupWorkspacesByIssue(
       [ws('a'), ws('b')],
-      new Map<string, WorkspaceIssueMeta | null>([['a', meta('I1', 'To do')]])
+      new Map<string, WorkspaceIssueMeta | null>([
+        [key('a'), meta('I1', 'To do')],
+      ])
     );
     const sections = bucketIssueGroupsByStatus(groups, ['To do'], labels);
     const unlinked = sections.find((s) => s.key === UNLINKED_GROUP_KEY);

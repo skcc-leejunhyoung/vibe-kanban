@@ -2,6 +2,7 @@ import { ReactNode, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
+  getHostWorkspaceKey,
   UnifiedWorkspaceStreamsProvider,
   useUnifiedWorkspaces,
 } from '@/shared/hooks/useWorkspaces';
@@ -53,7 +54,7 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
       // as placeholder paints the page instantly instead of a full-pane
       // spinner while the record query fetches.
       placeholderData: workspaceId
-        ? workspaceRecordsById[workspaceId]
+        ? workspaceRecordsById[getHostWorkspaceKey(workspaceId, hostId)]
         : undefined,
     }
   );

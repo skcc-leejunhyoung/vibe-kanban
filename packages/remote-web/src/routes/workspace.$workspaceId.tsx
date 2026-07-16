@@ -1,12 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   createFileRoute,
   useNavigate,
   useParams,
 } from "@tanstack/react-router";
 import { requireAuthenticated } from "@remote/shared/lib/route-auth";
-import { useRelayAppBarHosts } from "@remote/shared/hooks/useRelayAppBarHosts";
-import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserContext } from "@/shared/hooks/useUserContext";
 
 export const Route = createFileRoute("/workspace/$workspaceId")({
@@ -19,18 +17,11 @@ export const Route = createFileRoute("/workspace/$workspaceId")({
 function WorkspaceAliasRoute() {
   const { workspaceId } = useParams({ from: "/workspace/$workspaceId" });
   const navigate = useNavigate();
-  const { isSignedIn } = useAuth();
-  const { hosts, isLoading: hostsLoading } = useRelayAppBarHosts(isSignedIn);
   const { workspaces, isLoading: workspacesLoading } = useUserContext();
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (hostsLoading || workspacesLoading) {
-      return;
-    }
-
-    const host = hosts.find((candidate) => candidate.status === "online");
-    if (!host) {
-      void navigate({ to: "/", replace: true });
+    if (workspacesLoading) {
       return;
     }
 
@@ -39,21 +30,35 @@ function WorkspaceAliasRoute() {
         candidate.local_workspace_id === workspaceId ||
         candidate.id === workspaceId,
     );
-    const localWorkspaceId = workspace?.local_workspace_id ?? workspaceId;
+    if (!workspace?.local_workspace_id) {
+      setResolutionError("Workspace not found");
+      return;
+    }
+    if (!workspace.host_id) {
+      setResolutionError("This legacy workspace has no recorded owner host");
+      return;
+    }
 
     void navigate({
       to: "/hosts/$hostId/workspaces/$workspaceId",
-      params: { hostId: host.id, workspaceId: localWorkspaceId },
+      params: {
+        hostId: workspace.host_id,
+        workspaceId: workspace.local_workspace_id,
+      },
       replace: true,
     });
-  }, [
-    hosts,
-    hostsLoading,
-    navigate,
-    workspaceId,
-    workspaces,
-    workspacesLoading,
-  ]);
+  }, [navigate, workspaceId, workspaces, workspacesLoading]);
 
-  return null;
+  if (!resolutionError) return null;
+
+  return (
+    <div className="flex h-full items-center justify-center p-6">
+      <div className="max-w-md text-center">
+        <h1 className="text-lg font-semibold text-high">
+          Unable to open workspace
+        </h1>
+        <p className="mt-2 text-sm text-low">{resolutionError}</p>
+      </div>
+    </div>
+  );
 }

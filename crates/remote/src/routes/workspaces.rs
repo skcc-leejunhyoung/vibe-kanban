@@ -18,6 +18,7 @@ use crate::{
     auth::RequestContext,
     db::{
         begin_tx,
+        hosts::HostRepository,
         issues::IssueRepository,
         pull_request_issues::PullRequestIssueRepository,
         pull_requests::PullRequestRepository,
@@ -28,6 +29,7 @@ use crate::{
 #[derive(Debug, Deserialize)]
 struct CreateWorkspaceRequest {
     pub project_id: Uuid,
+    pub host_id: Uuid,
     pub local_workspace_id: Option<Uuid>,
     pub issue_id: Option<Uuid>,
     pub name: Option<String>,
@@ -84,12 +86,23 @@ async fn create_workspace(
     Json(payload): Json<CreateWorkspaceRequest>,
 ) -> Result<Json<Workspace>, ErrorResponse> {
     ensure_project_access(state.pool(), ctx.user.id, payload.project_id).await?;
+    let owns_host = HostRepository::new(state.pool())
+        .is_owned_by(payload.host_id, ctx.user.id)
+        .await
+        .map_err(|error| db_error(error, "failed to verify workspace host"))?;
+    if !owns_host {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "invalid workspace host",
+        ));
+    }
 
     let workspace = WorkspaceRepository::create(
         state.pool(),
         CreateWorkspaceParams {
             project_id: payload.project_id,
             owner_user_id: ctx.user.id,
+            host_id: payload.host_id,
             local_workspace_id: payload.local_workspace_id,
             issue_id: payload.issue_id,
             name: payload.name,

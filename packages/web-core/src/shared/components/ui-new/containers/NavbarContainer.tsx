@@ -2,6 +2,7 @@ import { useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useUserContext } from '@/shared/hooks/useUserContext';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useActions } from '@/shared/hooks/useActions';
 import { useSyncErrorContext } from '@/shared/hooks/useSyncErrorContext';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
@@ -142,15 +143,19 @@ export function NavbarContainer({
   const isOnProjectSubRoute =
     projectDestination !== null && projectDestination.kind !== 'project';
   const [mobileActiveTab, setMobileActiveTab] = useMobileActiveTab();
+  const workspaceHostId = useHostId();
 
   // Find remote workspace linked to current local workspace
   const linkedRemoteWorkspace = useMemo(() => {
     if (!selectedWorkspace?.id) return null;
     return (
-      workspaces.find((w) => w.local_workspace_id === selectedWorkspace.id) ??
-      null
+      workspaces.find(
+        (w) =>
+          w.local_workspace_id === selectedWorkspace.id &&
+          w.host_id === workspaceHostId
+      ) ?? null
     );
-  }, [workspaces, selectedWorkspace?.id]);
+  }, [workspaces, selectedWorkspace?.id, workspaceHostId]);
 
   const { data: orgsData } = useUserOrganizations();
   const selectedOrgId = useOrganizationStore((s) => s.selectedOrgId);

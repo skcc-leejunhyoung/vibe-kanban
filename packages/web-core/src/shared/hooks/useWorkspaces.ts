@@ -82,6 +82,13 @@ export interface UseWorkspacesResult {
   error: string | null;
 }
 
+export function getHostWorkspaceKey(
+  workspaceId: string,
+  hostId: string | null
+): string {
+  return `${hostId ?? 'local'}:${workspaceId}`;
+}
+
 // State shape from the WebSocket stream
 type WorkspacesState = {
   workspaces: Record<string, WorkspaceWithStatus>;
@@ -296,10 +303,10 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
   const workspaceRecordsById = useMemo(() => {
     const byId: Record<string, WorkspaceWithStatus> = {};
     for (const ws of Object.values(archivedData?.workspaces ?? {})) {
-      byId[ws.id] = ws;
+      byId[getHostWorkspaceKey(ws.id, hostId)] = ws;
     }
     for (const ws of Object.values(activeData?.workspaces ?? {})) {
-      byId[ws.id] = ws;
+      byId[getHostWorkspaceKey(ws.id, hostId)] = ws;
     }
     return byId;
   }, [activeData, archivedData]);
@@ -353,7 +360,7 @@ export function materializeHostWorkspaceStream(
   const workspaceRecordsById: Record<string, WorkspaceWithStatus> = {};
 
   for (const workspace of records) {
-    workspaceRecordsById[workspace.id] = workspace;
+    workspaceRecordsById[getHostWorkspaceKey(workspace.id, hostId)] = workspace;
     const summaries = workspace.archived ? archivedSummaries : activeSummaries;
     const item = toSidebarWorkspace(
       workspace,

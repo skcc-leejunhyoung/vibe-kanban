@@ -14,7 +14,7 @@ export type NotificationPayload = { deeplink_path?: string | null, issue_id?: st
 
 export type NotificationType = "issue_comment_added" | "issue_status_changed" | "issue_assignee_changed" | "issue_priority_changed" | "issue_unassigned" | "issue_comment_reaction" | "issue_deleted" | "issue_title_changed" | "issue_description_changed" | "issue_review_requested" | "workspace_task_completed";
 
-export type Workspace = { id: string, project_id: string, owner_user_id: string, issue_id: string | null, local_workspace_id: string | null, name: string | null, archived: boolean, files_changed: number | null, lines_added: number | null, lines_removed: number | null, created_at: string, updated_at: string, };
+export type Workspace = { id: string, project_id: string, owner_user_id: string, host_id: string | null, issue_id: string | null, local_workspace_id: string | null, name: string | null, archived: boolean, files_changed: number | null, lines_added: number | null, lines_removed: number | null, created_at: string, updated_at: string, };
 
 export type ProjectStatus = { id: string, project_id: string, name: string, color: string, sort_order: number, hidden: boolean, created_at: string, };
 

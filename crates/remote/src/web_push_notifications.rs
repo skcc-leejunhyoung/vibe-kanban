@@ -158,18 +158,17 @@ pub async fn send_custom_notification(
     };
 
     let deeplink_path = match (workspace_id, config.remote_base_url.as_deref()) {
-        (Some(workspace_id), Some(base_url)) => match resolve_user_host_id(&pool, user_id).await {
-            // Direct link to the workspace on its host. This is the canonical
-            // route (`/hosts/{host}/workspaces/{ws}`); the `/workspace/{ws}`
-            // alias requires client-side host resolution which is unreliable.
-            Some(host_id) => Some(format!(
-                "{base_url}/hosts/{host_id}/workspaces/{workspace_id}"
-            )),
-            None => Some(format!(
-                "{base_url}{}",
-                workspace_path(&config.workspace_path_template, workspace_id)
-            )),
-        },
+        (Some(workspace_id), Some(base_url)) => {
+            match resolve_workspace_host_id(&pool, user_id, workspace_id).await {
+                // Direct link to the workspace on its host. This is the canonical
+                // route (`/hosts/{host}/workspaces/{ws}`); the `/workspace/{ws}`
+                // alias requires client-side host resolution which is unreliable.
+                Some(host_id) => Some(format!(
+                    "{base_url}/hosts/{host_id}/workspaces/{workspace_id}"
+                )),
+                None => None,
+            }
+        }
         _ => None,
     };
 
@@ -308,19 +307,21 @@ async fn notification_workspace_id(pool: &PgPool, notification: &Notification) -
     }
 }
 
-/// Resolve the host a user's workspace deep-link should point at. Prefers an
-/// online host, falling back to the most recently seen one.
-async fn resolve_user_host_id(pool: &PgPool, user_id: Uuid) -> Option<Uuid> {
+/// Resolve the host that owns a workspace. Never substitute another host.
+async fn resolve_workspace_host_id(
+    pool: &PgPool,
+    user_id: Uuid,
+    workspace_id: Uuid,
+) -> Option<Uuid> {
     sqlx::query_scalar::<_, Uuid>(
         r#"
-        SELECT id
-        FROM hosts
-        WHERE owner_user_id = $1
-        ORDER BY (status = 'online') DESC, last_seen_at DESC NULLS LAST
-        LIMIT 1
+        SELECT host_id
+        FROM workspaces
+        WHERE owner_user_id = $1 AND local_workspace_id = $2
         "#,
     )
     .bind(user_id)
+    .bind(workspace_id)
     .fetch_optional(pool)
     .await
     .ok()

@@ -110,14 +110,16 @@ import { ActionTargetType, NavbarDivider } from '@/shared/types/actions';
 
 async function resolveLinkedIssue(
   workspaceId: string,
+  hostId: string | null,
   remoteWorkspaces: {
     local_workspace_id: string | null;
+    host_id: string | null;
     issue_id: string | null;
     project_id: string;
   }[]
 ): Promise<{ issueId: string; remoteProjectId: string } | undefined> {
   const remoteWs = remoteWorkspaces.find(
-    (w) => w.local_workspace_id === workspaceId
+    (w) => w.local_workspace_id === workspaceId && w.host_id === hostId
   );
   if (remoteWs?.issue_id) {
     return { issueId: remoteWs.issue_id, remoteProjectId: remoteWs.project_id };
@@ -248,6 +250,7 @@ export const Actions = {
 
         const linkedIssue = await resolveLinkedIssue(
           workspaceId,
+          hostId ?? null,
           ctx.remoteWorkspaces
         );
 
@@ -375,7 +378,8 @@ export const Actions = {
 
       // Check if workspace is linked to a remote issue
       const remoteWs = ctx.remoteWorkspaces.find(
-        (w) => w.local_workspace_id === workspaceId
+        (w) =>
+          w.local_workspace_id === workspaceId && w.host_id === (hostId ?? null)
       );
       const linkedIssueSimpleId = remoteWs?.issue_id
         ? ctx.projectMutations?.getIssue(remoteWs.issue_id)?.simple_id
@@ -464,6 +468,7 @@ export const Actions = {
         ]);
         const linkedIssue = await resolveLinkedIssue(
           workspaceId,
+          hostId ?? null,
           ctx.remoteWorkspaces
         );
 
@@ -1011,7 +1016,9 @@ export const Actions = {
       // Resolve vibe-kanban identifier from remote workspace + issue
       let issueIdentifier: string | undefined;
       const remoteWs = ctx.remoteWorkspaces.find(
-        (w) => w.local_workspace_id === workspaceId
+        (w) =>
+          w.local_workspace_id === workspaceId &&
+          w.host_id === ctx.currentHostId
       );
       if (remoteWs?.issue_id && ctx.projectMutations?.getIssue) {
         const issue = ctx.projectMutations.getIssue(remoteWs.issue_id);

@@ -7,6 +7,7 @@ import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useAllOrganizationProjects } from '@/shared/hooks/useAllOrganizationProjects';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
 import type { Workspace } from '@/shared/hooks/useWorkspaces';
+import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import {
@@ -143,7 +144,10 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
     const map = new Map<string, string>();
     for (const rw of remoteWorkspaces) {
       if (rw.local_workspace_id) {
-        map.set(rw.local_workspace_id, rw.project_id);
+        map.set(
+          getHostWorkspaceKey(rw.local_workspace_id, rw.host_id),
+          rw.project_id
+        );
       }
     }
     return map;
@@ -235,7 +239,9 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
           (id) => id !== NO_PROJECT_ID
         );
         result = result.filter((ws) => {
-          const projectId = remoteProjectByLocalId.get(ws.id);
+          const projectId = remoteProjectByLocalId.get(
+            getHostWorkspaceKey(ws.id, ws.hostId)
+          );
           if (!projectId) return includeNoProject;
           return realProjectIds.includes(projectId);
         });

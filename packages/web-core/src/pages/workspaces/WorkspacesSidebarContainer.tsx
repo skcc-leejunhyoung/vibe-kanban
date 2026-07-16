@@ -27,6 +27,7 @@ import {
   useWorkspaceIssueStatuses,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useWorkspaceIssueGrouping } from '@/shared/hooks/useWorkspaceIssueGrouping';
+import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 import {
   groupWorkspacesByIssue,
   bucketIssueGroupsByStatus,
@@ -117,30 +118,32 @@ export function WorkspacesSidebarContainer({
   const prefetchCandidateRef = useRef<string | null>(null);
   const lastPrefetchedRef = useRef<string | null>(null);
   const prefetchWorkspaceData = useCallback(
-    (id: string) => {
-      if (prefetchCandidateRef.current === id) return;
-      prefetchCandidateRef.current = id;
+    (workspaceKey: string) => {
+      if (prefetchCandidateRef.current === workspaceKey) return;
+      prefetchCandidateRef.current = workspaceKey;
       if (prefetchTimerRef.current !== null) {
         window.clearTimeout(prefetchTimerRef.current);
       }
       prefetchTimerRef.current = window.setTimeout(() => {
         prefetchTimerRef.current = null;
-        if (lastPrefetchedRef.current === id) return;
-        lastPrefetchedRef.current = id;
-        const workspaceHostId = activeWorkspaces.find(
-          (workspace) => workspace.id === id
-        )?.hostId;
+        if (lastPrefetchedRef.current === workspaceKey) return;
+        lastPrefetchedRef.current = workspaceKey;
+        const workspace = [...activeWorkspaces, ...archivedWorkspaces].find(
+          (candidate) =>
+            getHostWorkspaceKey(candidate.id, candidate.hostId) === workspaceKey
+        );
+        if (!workspace) return;
         void queryClient.prefetchQuery({
-          ...workspaceSessionsQuery(id, workspaceHostId ?? null),
+          ...workspaceSessionsQuery(workspace.id, workspace.hostId),
           staleTime: 30_000,
         });
         void queryClient.prefetchQuery({
-          ...workspaceReposQuery(id, workspaceHostId ?? null),
+          ...workspaceReposQuery(workspace.id, workspace.hostId),
           staleTime: 30_000,
         });
       }, PREFETCH_DWELL_MS);
     },
-    [queryClient, activeWorkspaces]
+    [queryClient, activeWorkspaces, archivedWorkspaces]
   );
   useEffect(() => {
     return () => {
@@ -295,12 +298,13 @@ export function WorkspacesSidebarContainer({
 
   // Handle workspace selection - scroll to bottom if re-selecting same workspace
   const handleSelectWorkspace = useCallback(
-    (id: string, event?: MouseEvent<HTMLButtonElement>) => {
+    (
+      id: string,
+      workspaceHostId?: string | null,
+      event?: MouseEvent<HTMLButtonElement>
+    ) => {
       if (event?.metaKey || event?.ctrlKey) {
         event.preventDefault();
-        const workspaceHostId = activeWorkspaces.find(
-          (workspace) => workspace.id === id
-        )?.hostId;
         const path = workspaceHostId
           ? `/hosts/${encodeURIComponent(workspaceHostId)}/workspaces/${encodeURIComponent(id)}`
           : `/workspaces/${encodeURIComponent(id)}`;
@@ -308,18 +312,12 @@ export function WorkspacesSidebarContainer({
         return;
       }
       if (onSelectWorkspaceOverride) {
-        const workspaceHostId = activeWorkspaces.find(
-          (workspace) => workspace.id === id
-        )?.hostId;
         onSelectWorkspaceOverride(id, event, workspaceHostId);
         return;
       }
       if (id === selectedWorkspaceId) {
         onScrollToBottom();
       } else {
-        const workspaceHostId = activeWorkspaces.find(
-          (workspace) => workspace.id === id
-        )?.hostId;
         selectWorkspace(id, workspaceHostId);
       }
       if (isMobile) {
@@ -360,7 +358,9 @@ export function WorkspacesSidebarContainer({
   // what the user sees (archive view, accordion sections, or the flat list).
   const displayedWorkspaceIds = useMemo(() => {
     if (showArchive) {
-      return paginatedArchivedWorkspaces.map((w) => w.id);
+      return paginatedArchivedWorkspaces.map((w) =>
+        getHostWorkspaceKey(w.id, w.hostId)
+      );
     }
     if (isIssueGrouped) {
       // Follow the issue-grouped display order (status sections when present,
@@ -368,7 +368,9 @@ export function WorkspacesSidebarContainer({
       const source = issueSections
         ? issueSections.flatMap((s) => s.groups)
         : issueGroups;
-      return source.flatMap((g) => g.workspaces.map((w) => w.id));
+      return source.flatMap((g) =>
+        g.workspaces.map((w) => getHostWorkspaceKey(w.id, w.hostId ?? null))
+      );
     }
     if (layoutMode === 'accordion') {
       const { raisedHandWorkspaces, runningWorkspaces, idleWorkspaces } =
@@ -377,9 +379,11 @@ export function WorkspacesSidebarContainer({
         ...raisedHandWorkspaces,
         ...runningWorkspaces,
         ...idleWorkspaces,
-      ].map((w) => w.id);
+      ].map((w) => getHostWorkspaceKey(w.id, w.hostId ?? null));
     }
-    return paginatedActiveWorkspaces.map((w) => w.id);
+    return paginatedActiveWorkspaces.map((w) =>
+      getHostWorkspaceKey(w.id, w.hostId)
+    );
   }, [
     showArchive,
     isIssueGrouped,
@@ -395,8 +399,11 @@ export function WorkspacesSidebarContainer({
   const cycleWorkspace = useCallback(
     (direction: 1 | -1) => {
       if (displayedWorkspaceIds.length === 0) return;
-      const currentIndex = selectedWorkspaceId
-        ? displayedWorkspaceIds.indexOf(selectedWorkspaceId)
+      const selectedWorkspaceKey = selectedWorkspaceId
+        ? getHostWorkspaceKey(selectedWorkspaceId, routeHostId ?? null)
+        : null;
+      const currentIndex = selectedWorkspaceKey
+        ? displayedWorkspaceIds.indexOf(selectedWorkspaceKey)
         : -1;
       const fallbackIndex =
         direction === 1 ? 0 : displayedWorkspaceIds.length - 1;
@@ -405,9 +412,23 @@ export function WorkspacesSidebarContainer({
           ? fallbackIndex
           : (currentIndex + direction + displayedWorkspaceIds.length) %
             displayedWorkspaceIds.length;
-      handleSelectWorkspace(displayedWorkspaceIds[nextIndex]);
+      const nextWorkspace = [...activeWorkspaces, ...archivedWorkspaces].find(
+        (workspace) =>
+          getHostWorkspaceKey(workspace.id, workspace.hostId) ===
+          displayedWorkspaceIds[nextIndex]
+      );
+      if (nextWorkspace) {
+        handleSelectWorkspace(nextWorkspace.id, nextWorkspace.hostId);
+      }
     },
-    [displayedWorkspaceIds, selectedWorkspaceId, handleSelectWorkspace]
+    [
+      displayedWorkspaceIds,
+      selectedWorkspaceId,
+      routeHostId,
+      activeWorkspaces,
+      archivedWorkspaces,
+      handleSelectWorkspace,
+    ]
   );
   useReboundHotkey(
     resolveModifier(NEXT_WORKSPACE_BINDING_ID, shortcutOverrides),
@@ -434,7 +455,11 @@ export function WorkspacesSidebarContainer({
       if (ids.length === 0) return;
       // Start from the cursor, falling back to the open workspace, then either
       // end depending on direction.
-      const current = focusedWorkspaceId ?? selectedWorkspaceId ?? null;
+      const current =
+        focusedWorkspaceId ??
+        (selectedWorkspaceId
+          ? getHostWorkspaceKey(selectedWorkspaceId, routeHostId ?? null)
+          : null);
       const currentIndex = current ? ids.indexOf(current) : -1;
       const nextIndex =
         currentIndex === -1
@@ -445,7 +470,12 @@ export function WorkspacesSidebarContainer({
       if (nextIndex < 0 || nextIndex >= ids.length) return;
       setFocusedWorkspaceId(ids[nextIndex]);
     },
-    [displayedWorkspaceIds, focusedWorkspaceId, selectedWorkspaceId]
+    [
+      displayedWorkspaceIds,
+      focusedWorkspaceId,
+      selectedWorkspaceId,
+      routeHostId,
+    ]
   );
 
   // Only active while the list is on screen (always on desktop; on mobile only
@@ -477,7 +507,17 @@ export function WorkspacesSidebarContainer({
         // handleSelectWorkspace already no-ops into a scroll-to-bottom when the
         // cursor is on the already-open workspace.
         e.preventDefault();
-        handleSelectWorkspace(focusedWorkspaceId);
+        const focusedWorkspace = [
+          ...activeWorkspaces,
+          ...archivedWorkspaces,
+        ].find(
+          (workspace) =>
+            getHostWorkspaceKey(workspace.id, workspace.hostId) ===
+            focusedWorkspaceId
+        );
+        if (focusedWorkspace) {
+          handleSelectWorkspace(focusedWorkspace.id, focusedWorkspace.hostId);
+        }
       }
     },
     { enabled: isListVisible, enableOnFormTags: false },
@@ -486,6 +526,8 @@ export function WorkspacesSidebarContainer({
       focusedWorkspaceId,
       handleSelectWorkspace,
       isListVisible,
+      activeWorkspaces,
+      archivedWorkspaces,
     ]
   ) as RefObject<HTMLDivElement>;
 
@@ -661,6 +703,7 @@ export function WorkspacesSidebarContainer({
       archivedWorkspaces={paginatedArchivedWorkspaces}
       isLoading={isWorkspacesListLoading}
       selectedWorkspaceId={selectedWorkspaceId ?? null}
+      selectedWorkspaceOwnerHostId={routeHostId ?? null}
       onSelectWorkspace={handleSelectWorkspace}
       searchQuery={searchQuery}
       onSearchChange={setSearchQuery}

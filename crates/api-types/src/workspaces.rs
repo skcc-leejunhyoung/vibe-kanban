@@ -9,6 +9,7 @@ pub struct DeleteWorkspaceRequest {
 #[derive(Debug, Serialize)]
 pub struct CreateWorkspaceRequest {
     pub project_id: Uuid,
+    pub host_id: Uuid,
     pub local_workspace_id: Uuid,
     pub issue_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
