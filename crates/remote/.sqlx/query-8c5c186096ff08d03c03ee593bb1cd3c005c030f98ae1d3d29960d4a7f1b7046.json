@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                h.id,\n                h.owner_user_id,\n                h.machine_id AS \"machine_id!\",\n                h.name,\n                h.status,\n                h.last_seen_at,\n                h.agent_version,\n                h.created_at,\n                h.updated_at,\n                CASE\n                    WHEN h.owner_user_id = $1 THEN 'owner'\n                    ELSE 'member'\n                END AS \"access_role!\"\n            FROM hosts h\n            LEFT JOIN organization_member_metadata om\n                ON om.organization_id = h.shared_with_organization_id\n                AND om.user_id = $1\n            WHERE h.owner_user_id = $1 OR om.user_id IS NOT NULL\n            ORDER BY h.updated_at DESC\n            ",
+  "query": "\n            UPDATE hosts\n            SET custom_name = $3,\n                updated_at = NOW()\n            WHERE id = $1 AND owner_user_id = $2\n            RETURNING\n                id,\n                owner_user_id,\n                machine_id AS \"machine_id!\",\n                COALESCE(custom_name, name) AS \"name!\",\n                status,\n                last_seen_at,\n                agent_version,\n                created_at,\n                updated_at,\n                'owner' AS \"access_role!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -20,7 +20,7 @@
       },
       {
         "ordinal": 3,
-        "name": "name",
+        "name": "name!",
         "type_info": "Text"
       },
       {
@@ -56,14 +56,16 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      false,
+      null,
       false,
       true,
       true,
@@ -72,5 +74,5 @@
       null
     ]
   },
-  "hash": "0b61fae2b631dfbcfe0d979e76a8682e6137f528b75d5a2661fc0e1c610f2d68"
+  "hash": "8c5c186096ff08d03c03ee593bb1cd3c005c030f98ae1d3d29960d4a7f1b7046"
 }
