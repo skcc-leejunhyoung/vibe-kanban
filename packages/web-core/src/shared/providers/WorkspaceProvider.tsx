@@ -1,7 +1,7 @@
 import { ReactNode, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { useWorkspaces } from '@/shared/hooks/useWorkspaces';
+import { useUnifiedWorkspaces } from '@/shared/hooks/useWorkspaces';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
@@ -40,7 +40,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     archivedWorkspaces,
     workspaceRecordsById,
     isLoading: isLoadingList,
-  } = useWorkspaces();
+  } = useUnifiedWorkspaces();
 
   const { data: workspace, isLoading: isLoadingWorkspace } = useWorkspaceRecord(
     workspaceId,
@@ -234,8 +234,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   }, [workspaceId, isCreateMode, queryClient, hostId]);
 
   const selectWorkspace = useCallback(
-    (id: string) => {
-      appNavigation.goToWorkspace(id);
+    (id: string, destinationHostId?: string | null) => {
+      appNavigation.goToWorkspace(id, { hostId: destinationHostId });
     },
     [appNavigation]
   );

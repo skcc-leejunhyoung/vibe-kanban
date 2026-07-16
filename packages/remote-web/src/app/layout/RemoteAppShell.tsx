@@ -277,7 +277,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               activeHostId ? () => void QuickChatDialog.show() : undefined
             }
             onHostClick={handleHostClick}
-            showWorkspacesButton={false}
+            showWorkspacesButton
             onProjectClick={handleProjectClick}
             onProjectsDragEnd={() => {}}
             isSavingProjectOrder={true}

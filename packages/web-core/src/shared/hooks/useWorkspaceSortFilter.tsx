@@ -7,6 +7,8 @@ import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useAllOrganizationProjects } from '@/shared/hooks/useAllOrganizationProjects';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
 import type { Workspace } from '@/shared/hooks/useWorkspaces';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import {
   useUiPreferencesStore,
   type WorkspaceActivityStatus,
@@ -18,6 +20,7 @@ import {
 // Sentinel project id used to filter workspaces that aren't linked to any
 // remote project.
 export const NO_PROJECT_ID = '__no_project__';
+export const LOCAL_HOST_FILTER_ID = '__local__';
 
 const DEFAULT_WORKSPACE_SORT = {
   sortBy: 'updated_at' as WorkspaceSortBy,
@@ -57,6 +60,7 @@ function getWorkspaceSortTimestamp(
 export interface WorkspaceSortFilterModel {
   /** Options for the project multi-select (includes the "No project" entry). */
   projectOptions: MultiSelectDropdownOption<string>[];
+  hostOptions: MultiSelectDropdownOption<string>[];
   /** True when a project or PR filter is active. */
   hasActiveFilters: boolean;
   /** True when sort differs from the default (updated_at desc). */
@@ -73,9 +77,11 @@ export interface WorkspaceSortFilterModel {
     projectIds: string[];
     prFilter: WorkspacePrFilter;
     statusFilters: WorkspaceActivityStatus[];
+    excludedHostIds: string[];
     setProjectFilter: (projectIds: string[]) => void;
     setPrFilter: (prFilter: WorkspacePrFilter) => void;
     setStatusFilter: (statusFilters: WorkspaceActivityStatus[]) => void;
+    setHostFilter: (excludedHostIds: string[]) => void;
     clearFilters: () => void;
   };
 }
@@ -100,6 +106,9 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
   const setWorkspaceStatusFilter = useUiPreferencesStore(
     (s) => s.setWorkspaceStatusFilter
   );
+  const setWorkspaceHostFilter = useUiPreferencesStore(
+    (s) => s.setWorkspaceHostFilter
+  );
   const clearWorkspaceFilters = useUiPreferencesStore(
     (s) => s.clearWorkspaceFilters
   );
@@ -116,6 +125,17 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
   const organizations = useMemo(
     () => orgsData?.organizations ?? [],
     [orgsData?.organizations]
+  );
+  const runtime = useAppRuntime();
+  const { hosts } = useWorkspaceHostOptions();
+  const hostOptions = useMemo<MultiSelectDropdownOption<string>[]>(
+    () => [
+      ...(runtime === 'local'
+        ? [{ value: LOCAL_HOST_FILTER_ID, label: 'This machine' }]
+        : []),
+      ...hosts.map((host) => ({ value: host.id, label: host.name })),
+    ],
+    [runtime, hosts]
   );
 
   // Map local workspace ID → remote project ID.
@@ -186,10 +206,12 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
     [projectGroups, t]
   );
 
+  const excludedHostIds = workspaceFilters.excludedHostIds ?? [];
   const hasActiveFilters =
     workspaceFilters.projectIds.length > 0 ||
     workspaceFilters.prFilter !== 'all' ||
-    workspaceFilters.statusFilters.length > 0;
+    workspaceFilters.statusFilters.length > 0 ||
+    excludedHostIds.length > 0;
   const hasNonDefaultSort =
     workspaceSort.sortBy !== DEFAULT_WORKSPACE_SORT.sortBy ||
     workspaceSort.sortOrder !== DEFAULT_WORKSPACE_SORT.sortOrder;
@@ -197,6 +219,13 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
   const filterAndSort = useCallback(
     (workspaces: Workspace[], searchQuery: string): Workspace[] => {
       let result = workspaces;
+
+      if (excludedHostIds.length > 0) {
+        result = result.filter(
+          (workspace) =>
+            !excludedHostIds.includes(workspace.hostId ?? LOCAL_HOST_FILTER_ID)
+        );
+      }
 
       // Project filter
       if (workspaceFilters.projectIds.length > 0) {
@@ -268,6 +297,7 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
     },
     [
       workspaceFilters,
+      excludedHostIds,
       remoteProjectByLocalId,
       workspaceSort.sortBy,
       workspaceSort.sortOrder,
@@ -276,6 +306,7 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
 
   return {
     projectOptions,
+    hostOptions,
     hasActiveFilters,
     hasNonDefaultSort,
     filterAndSort,
@@ -289,9 +320,11 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
       projectIds: workspaceFilters.projectIds,
       prFilter: workspaceFilters.prFilter,
       statusFilters: workspaceFilters.statusFilters,
+      excludedHostIds,
       setProjectFilter: setWorkspaceProjectFilter,
       setPrFilter: setWorkspacePrFilter,
       setStatusFilter: setWorkspaceStatusFilter,
+      setHostFilter: setWorkspaceHostFilter,
       clearFilters: clearWorkspaceFilters,
     },
   };

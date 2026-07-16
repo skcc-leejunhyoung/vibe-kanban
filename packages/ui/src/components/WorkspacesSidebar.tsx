@@ -7,12 +7,19 @@ import {
   StackIcon,
   CardsIcon,
   SpinnerIcon,
+  CaretDownIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { InputField } from './InputField';
 import { WorkspaceSummary } from './WorkspaceSummary';
 import type { AppBarHostStatus } from './AppBar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './DropdownMenu';
 import {
   CollapsibleSectionHeader,
   type SectionAction,
@@ -122,10 +129,13 @@ export interface WorkspacesSidebarProps {
   keyboardNavRef?: Ref<HTMLDivElement>;
   /** Persist keys for collapsible sections */
   persistKeys?: WorkspacesSidebarPersistKeys;
-  activeRemoteHost?: {
+  workspaceHosts?: Array<{
+    id: string;
     name: string;
-    status: AppBarHostStatus;
-  } | null;
+    status?: AppBarHostStatus;
+  }>;
+  selectedWorkspaceHostId?: string;
+  onSelectWorkspaceHost?: (hostId: string) => void;
   onOpenRemoteHostSettings?: () => void;
   /** Enlarge the header action buttons (group / issue / add) for touch. */
   isMobile?: boolean;
@@ -261,7 +271,9 @@ export function WorkspacesSidebar({
   registerWorkspaceRef,
   keyboardNavRef,
   persistKeys = DEFAULT_PERSIST_KEYS,
-  activeRemoteHost = null,
+  workspaceHosts = [],
+  selectedWorkspaceHostId = 'all',
+  onSelectWorkspaceHost,
   onOpenRemoteHostSettings,
   isMobile = false,
 }: WorkspacesSidebarProps) {
@@ -354,31 +366,52 @@ export function WorkspacesSidebar({
           </div>
         )}
 
-        {activeRemoteHost && (
+        {workspaceHosts.length > 0 && (
           <div className="px-base">
             <div className="rounded-sm border border-border bg-panel/60 px-base py-half flex items-center justify-between gap-base">
-              <div className="min-w-0">
-                <p className="text-xs text-low uppercase tracking-wide">
-                  {t('common:workspaces.remoteHostLabel', {
-                    defaultValue: 'Remote host',
-                  })}
-                </p>
-                <p className="text-sm text-high truncate">
-                  {activeRemoteHost.name}
-                </p>
-              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" className="min-w-0 text-left">
+                    <p className="text-xs text-low uppercase tracking-wide">
+                      Workspace host
+                    </p>
+                    <span className="flex items-center gap-half text-sm text-high">
+                      <span className="truncate">
+                        {workspaceHosts.find(
+                          (host) => host.id === selectedWorkspaceHostId
+                        )?.name ?? 'All hosts'}
+                      </span>
+                      <CaretDownIcon className="size-icon-sm shrink-0" />
+                    </span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-48">
+                  {workspaceHosts.map((host) => (
+                    <DropdownMenuItem
+                      key={host.id}
+                      onSelect={() => onSelectWorkspaceHost?.(host.id)}
+                      className={cn(
+                        host.id === selectedWorkspaceHostId && 'text-brand'
+                      )}
+                    >
+                      {host.status && (
+                        <span
+                          className={cn(
+                            'inline-flex h-2 w-2 rounded-full',
+                            host.status === 'online'
+                              ? 'bg-success'
+                              : host.status === 'offline'
+                                ? 'bg-low'
+                                : 'bg-warning'
+                          )}
+                        />
+                      )}
+                      {host.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <div className="flex items-center gap-half shrink-0">
-                <span
-                  className={cn(
-                    'inline-flex h-2.5 w-2.5 rounded-full',
-                    activeRemoteHost.status === 'online'
-                      ? 'bg-success'
-                      : activeRemoteHost.status === 'offline'
-                        ? 'bg-low'
-                        : 'bg-warning'
-                  )}
-                  aria-hidden="true"
-                />
                 {onOpenRemoteHostSettings && (
                   <button
                     type="button"

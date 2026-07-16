@@ -96,7 +96,11 @@ export type WorkspaceSortByData = "updated_at" | "created_at";
 
 export type WorkspaceSortOrderData = "asc" | "desc";
 
-export type WorkspaceFilterStateData = { project_ids: Array<string>, pr_filter: WorkspacePrFilterData, status_filters: Array<WorkspaceActivityStatusData>, };
+export type WorkspaceFilterStateData = { project_ids: Array<string>, pr_filter: WorkspacePrFilterData, status_filters: Array<WorkspaceActivityStatusData>,
+/**
+ * Host IDs hidden from the unified workspace list. `__local__` is this machine.
+ */
+excluded_host_ids: Array<string>, };
 
 export type WorkspaceSortStateData = { sort_by: WorkspaceSortByData, sort_order: WorkspaceSortOrderData, };
 

@@ -349,6 +349,7 @@ export type WorkspaceFilterState = {
   projectIds: string[]; // remote project IDs
   prFilter: WorkspacePrFilter;
   statusFilters: WorkspaceActivityStatus[]; // empty = all statuses
+  excludedHostIds: string[]; // '__local__' represents this machine
 };
 
 export type WorkspaceSortState = {
@@ -360,6 +361,7 @@ const DEFAULT_WORKSPACE_FILTER_STATE: WorkspaceFilterState = {
   projectIds: [],
   prFilter: 'all',
   statusFilters: [],
+  excludedHostIds: [],
 };
 
 const DEFAULT_WORKSPACE_SORT_STATE: WorkspaceSortState = {
@@ -591,6 +593,7 @@ type State = {
   setWorkspaceProjectFilter: (projectIds: string[]) => void;
   setWorkspacePrFilter: (prFilter: WorkspacePrFilter) => void;
   setWorkspaceStatusFilter: (statusFilters: WorkspaceActivityStatus[]) => void;
+  setWorkspaceHostFilter: (excludedHostIds: string[]) => void;
   clearWorkspaceFilters: () => void;
   setWorkspaceSortBy: (sortBy: WorkspaceSortBy) => void;
   setWorkspaceSortOrder: (sortOrder: WorkspaceSortOrder) => void;
@@ -1005,6 +1008,10 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   setWorkspaceStatusFilter: (statusFilters) =>
     set((s) => ({
       workspaceFilters: { ...s.workspaceFilters, statusFilters },
+    })),
+  setWorkspaceHostFilter: (excludedHostIds) =>
+    set((s) => ({
+      workspaceFilters: { ...s.workspaceFilters, excludedHostIds },
     })),
 
   clearWorkspaceFilters: () =>

@@ -13,7 +13,6 @@ import { useHotkeys } from 'react-hotkeys-hook';
 import { useTranslation } from 'react-i18next';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useScratch } from '@/shared/hooks/useScratch';
-import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionsQuery } from '@/shared/hooks/useWorkspaceSessions';
 import { workspaceReposQuery } from '@/shared/hooks/useWorkspaceRepo';
 import { ScratchType, type DraftWorkspaceData } from 'shared/types';
@@ -32,7 +31,10 @@ import {
   groupWorkspacesByIssue,
   bucketIssueGroupsByStatus,
 } from '@/shared/lib/workspaceIssueGrouping';
-import { useWorkspaceSortFilter } from '@/shared/hooks/useWorkspaceSortFilter';
+import {
+  LOCAL_HOST_FILTER_ID,
+  useWorkspaceSortFilter,
+} from '@/shared/hooks/useWorkspaceSortFilter';
 import {
   WorkspacesSortDialog,
   WorkspacesFilterDialog,
@@ -51,7 +53,6 @@ import {
   SortDescendingIcon,
 } from '@phosphor-icons/react';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
-import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
@@ -70,7 +71,8 @@ interface WorkspacesSidebarContainerProps {
    */
   onSelectWorkspaceOverride?: (
     id: string,
-    event?: MouseEvent<HTMLButtonElement>
+    event?: MouseEvent<HTMLButtonElement>,
+    hostId?: string | null
   ) => void;
   /** Override the add-workspace action (remote mobile routes to create). */
   onAddWorkspaceOverride?: () => void;
@@ -93,11 +95,9 @@ export function WorkspacesSidebarContainer({
 
   const isMobile = useIsMobile();
   const runtime = useAppRuntime();
-  const appNavigation = useAppNavigation();
   const { hosts: workspaceHosts } = useWorkspaceHostOptions();
   const { hostId: routeHostId } = useParams({ strict: false });
   const queryClient = useQueryClient();
-  const hostId = useHostId();
 
   // Warm the queries a workspace open waits on (sessions gate the whole
   // conversation waterfall) once intent shows — a row dwelled on or the
@@ -119,17 +119,20 @@ export function WorkspacesSidebarContainer({
         prefetchTimerRef.current = null;
         if (lastPrefetchedRef.current === id) return;
         lastPrefetchedRef.current = id;
+        const workspaceHostId = activeWorkspaces.find(
+          (workspace) => workspace.id === id
+        )?.hostId;
         void queryClient.prefetchQuery({
-          ...workspaceSessionsQuery(id, hostId),
+          ...workspaceSessionsQuery(id, workspaceHostId ?? null),
           staleTime: 30_000,
         });
         void queryClient.prefetchQuery({
-          ...workspaceReposQuery(id, hostId),
+          ...workspaceReposQuery(id, workspaceHostId ?? null),
           staleTime: 30_000,
         });
       }, PREFETCH_DWELL_MS);
     },
-    [queryClient, hostId]
+    [queryClient, activeWorkspaces]
   );
   useEffect(() => {
     return () => {
@@ -169,6 +172,7 @@ export function WorkspacesSidebarContainer({
   // Shared workspace sort/filter model (project options + filter/sort pipeline).
   const sortFilter = useWorkspaceSortFilter();
   const { filterAndSort } = sortFilter;
+  const [selectedHostView, setSelectedHostView] = useState('all');
 
   // Pagination state for infinite scroll
   const [displayLimit, setDisplayLimit] = useState(PAGE_SIZE);
@@ -183,22 +187,32 @@ export function WorkspacesSidebarContainer({
     showArchive,
     sortFilter.filter.projectIds,
     sortFilter.filter.prFilter,
+    sortFilter.filter.excludedHostIds,
     sortFilter.sort.sortBy,
     sortFilter.sort.sortOrder,
+    selectedHostView,
   ]);
 
   const isSearching = searchQuery.length > 0;
 
   // Apply sidebar filters (project + PR) + search, then sort.
-  const sortedActiveWorkspaces = useMemo(
-    () => filterAndSort(activeWorkspaces, searchQuery),
-    [filterAndSort, activeWorkspaces, searchQuery]
-  );
+  const sortedActiveWorkspaces = useMemo(() => {
+    const filtered = filterAndSort(activeWorkspaces, searchQuery);
+    if (selectedHostView === 'all') return filtered;
+    return filtered.filter(
+      (workspace) =>
+        (workspace.hostId ?? LOCAL_HOST_FILTER_ID) === selectedHostView
+    );
+  }, [filterAndSort, activeWorkspaces, searchQuery, selectedHostView]);
 
-  const sortedArchivedWorkspaces = useMemo(
-    () => filterAndSort(archivedWorkspaces, searchQuery),
-    [filterAndSort, archivedWorkspaces, searchQuery]
-  );
+  const sortedArchivedWorkspaces = useMemo(() => {
+    const filtered = filterAndSort(archivedWorkspaces, searchQuery);
+    if (selectedHostView === 'all') return filtered;
+    return filtered.filter(
+      (workspace) =>
+        (workspace.hostId ?? LOCAL_HOST_FILTER_ID) === selectedHostView
+    );
+  }, [filterAndSort, archivedWorkspaces, searchQuery, selectedHostView]);
 
   // Apply pagination (only when not searching)
   const paginatedActiveWorkspaces = useMemo(
@@ -275,20 +289,29 @@ export function WorkspacesSidebarContainer({
     (id: string, event?: MouseEvent<HTMLButtonElement>) => {
       if (event?.metaKey || event?.ctrlKey) {
         event.preventDefault();
-        const path = routeHostId
-          ? `/hosts/${encodeURIComponent(routeHostId)}/workspaces/${encodeURIComponent(id)}`
+        const workspaceHostId = activeWorkspaces.find(
+          (workspace) => workspace.id === id
+        )?.hostId;
+        const path = workspaceHostId
+          ? `/hosts/${encodeURIComponent(workspaceHostId)}/workspaces/${encodeURIComponent(id)}`
           : `/workspaces/${encodeURIComponent(id)}`;
         window.open(path, '_blank', 'noopener,noreferrer');
         return;
       }
       if (onSelectWorkspaceOverride) {
-        onSelectWorkspaceOverride(id, event);
+        const workspaceHostId = activeWorkspaces.find(
+          (workspace) => workspace.id === id
+        )?.hostId;
+        onSelectWorkspaceOverride(id, event, workspaceHostId);
         return;
       }
       if (id === selectedWorkspaceId) {
         onScrollToBottom();
       } else {
-        selectWorkspace(id);
+        const workspaceHostId = activeWorkspaces.find(
+          (workspace) => workspace.id === id
+        )?.hostId;
+        selectWorkspace(id, workspaceHostId);
       }
       if (isMobile) {
         setMobileActiveTab('chat');
@@ -301,7 +324,7 @@ export function WorkspacesSidebarContainer({
       onScrollToBottom,
       isMobile,
       setMobileActiveTab,
-      routeHostId,
+      activeWorkspaces,
     ]
   );
 
@@ -518,26 +541,6 @@ export function WorkspacesSidebarContainer({
 
   const searchControls = (
     <>
-      <select
-        value={routeHostId ?? ''}
-        onChange={(event) =>
-          appNavigation.goToWorkspaces({ hostId: event.target.value || null })
-        }
-        className="h-cta min-w-0 max-w-28 rounded border border-border bg-secondary px-half text-sm text-normal outline-none focus:ring-1 focus:ring-brand"
-        aria-label="Filter workspaces by host"
-        title="Filter workspaces by host"
-      >
-        {runtime === 'local' && <option value="">This machine</option>}
-        {workspaceHosts.map((host) => (
-          <option
-            key={host.id}
-            value={host.id}
-            disabled={host.status !== 'online'}
-          >
-            {host.name}
-          </option>
-        ))}
-      </select>
       <div className="shrink-0">
         <div className="flex items-stretch">
           <IconButton
@@ -582,6 +585,8 @@ export function WorkspacesSidebarContainer({
         open={isFilterDialogOpen}
         onOpenChange={setIsFilterDialogOpen}
         projectOptions={sortFilter.projectOptions}
+        hostOptions={sortFilter.hostOptions}
+        excludedHostIds={sortFilter.filter.excludedHostIds}
         projectIds={sortFilter.filter.projectIds}
         prFilter={sortFilter.filter.prFilter}
         statusFilters={sortFilter.filter.statusFilters}
@@ -589,18 +594,25 @@ export function WorkspacesSidebarContainer({
         onProjectFilterChange={sortFilter.filter.setProjectFilter}
         onPrFilterChange={sortFilter.filter.setPrFilter}
         onStatusFilterChange={sortFilter.filter.setStatusFilter}
+        onHostFilterChange={sortFilter.filter.setHostFilter}
         onClearFilters={sortFilter.filter.clearFilters}
       />
     </>
   );
 
-  const activeRemoteHost = useMemo(() => {
-    if (workspaceHosts.length === 0 || !routeHostId) {
-      return null;
-    }
-
-    return workspaceHosts.find((host) => host.id === routeHostId) ?? null;
-  }, [routeHostId, workspaceHosts]);
+  const workspaceHostSelectorOptions = useMemo(
+    () => [
+      { id: 'all', name: 'All hosts' },
+      ...(runtime === 'local'
+        ? [{ id: LOCAL_HOST_FILTER_ID, name: 'This machine' }]
+        : []),
+      ...workspaceHosts.map((host) => ({
+        ...host,
+        name: host.id === routeHostId ? `This host · ${host.name}` : host.name,
+      })),
+    ],
+    [runtime, routeHostId, workspaceHosts]
+  );
 
   const handleOpenRemoteHostSettings = useCallback(() => {
     void SettingsDialog.show({
@@ -639,7 +651,9 @@ export function WorkspacesSidebarContainer({
       registerWorkspaceRef={registerWorkspaceRef}
       keyboardNavRef={keyboardNavRef}
       persistKeys={sidebarPersistKeys}
-      activeRemoteHost={activeRemoteHost}
+      workspaceHosts={workspaceHostSelectorOptions}
+      selectedWorkspaceHostId={selectedHostView}
+      onSelectWorkspaceHost={setSelectedHostView}
       onOpenRemoteHostSettings={handleOpenRemoteHostSettings}
       isMobile={isMobile}
     />

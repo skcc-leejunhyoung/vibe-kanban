@@ -36,7 +36,7 @@ export interface WorkspaceContextValue {
   isWorkspacesListLoading: boolean;
   isLoading: boolean;
   isCreateMode: boolean;
-  selectWorkspace: (id: string) => void;
+  selectWorkspace: (id: string, hostId?: string | null) => void;
   navigateToCreate: () => void;
   /** Sessions for the current workspace */
   sessions: Session[];

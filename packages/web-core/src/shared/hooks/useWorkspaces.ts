@@ -1,10 +1,13 @@
 import { useCallback, useMemo } from 'react';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useQuery, useQueries, keepPreviousData } from '@tanstack/react-query';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { workspacesApi } from '@/shared/lib/api';
 import type {
+  Workspace as WorkspaceRecord,
   WorkspaceWithStatus,
   WorkspaceSummary,
   WorkspaceSummaryResponse,
@@ -48,6 +51,8 @@ export interface SidebarWorkspace {
   prUrl?: string;
   /** Most recent prompt sent in this workspace (what it's working on) */
   latestPrompt?: string;
+  /** Host that owns the workspace. `null` is this machine. */
+  hostId: string | null;
 }
 
 // Keep the old export name for backwards compatibility
@@ -75,7 +80,8 @@ type WorkspacesState = {
 // Transform WorkspaceWithStatus to SidebarWorkspace, optionally merging summary data
 function toSidebarWorkspace(
   ws: WorkspaceWithStatus,
-  summary?: WorkspaceSummary
+  summary?: WorkspaceSummary,
+  hostId: string | null = null
 ): SidebarWorkspace {
   return {
     id: ws.id,
@@ -108,7 +114,26 @@ function toSidebarWorkspace(
       summary?.pr_number != null ? Number(summary.pr_number) : undefined,
     prUrl: summary?.pr_url ?? undefined,
     latestPrompt: summary?.latest_prompt ?? undefined,
+    hostId,
   };
+}
+
+function toSnapshotSidebarWorkspace(
+  ws: WorkspaceRecord,
+  summary: WorkspaceSummary | undefined,
+  hostId: string
+): SidebarWorkspace {
+  const latestStatus = summary?.latest_process_status?.toLowerCase();
+  return toSidebarWorkspace(
+    {
+      ...ws,
+      is_running:
+        latestStatus === 'running' && !summary?.is_waiting_on_blockers,
+      is_errored: latestStatus === 'failed',
+    },
+    summary,
+    hostId
+  );
 }
 
 export const workspaceKeys = {
@@ -118,7 +143,7 @@ export const workspaceKeys = {
 // workspaceSummaryKeys is imported from @/shared/hooks/workspaceSummaryKeys
 
 // Fetch workspace summaries from the API by archived status
-async function fetchWorkspaceSummariesByArchived(
+export async function fetchWorkspaceSummariesByArchived(
   archived: boolean,
   hostId: string | null
 ): Promise<Map<string, WorkspaceSummary>> {
@@ -229,8 +254,8 @@ export function useWorkspaces(): UseWorkspacesResult {
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
       })
-      .map((ws) => toSidebarWorkspace(ws, activeSummaries.get(ws.id)));
-  }, [activeData, activeSummaries]);
+      .map((ws) => toSidebarWorkspace(ws, activeSummaries.get(ws.id), hostId));
+  }, [activeData, activeSummaries, hostId]);
 
   const archivedWorkspaces = useMemo(() => {
     if (!archivedData?.workspaces) return [];
@@ -245,8 +270,10 @@ export function useWorkspaces(): UseWorkspacesResult {
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
       })
-      .map((ws) => toSidebarWorkspace(ws, archivedSummaries.get(ws.id)));
-  }, [archivedData, archivedSummaries]);
+      .map((ws) =>
+        toSidebarWorkspace(ws, archivedSummaries.get(ws.id), hostId)
+      );
+  }, [archivedData, archivedSummaries, hostId]);
 
   const workspaceRecordsById = useMemo(() => {
     const byId: Record<string, WorkspaceWithStatus> = {};
@@ -279,4 +306,71 @@ export function useWorkspaces(): UseWorkspacesResult {
     isConnected,
     error,
   };
+}
+
+type HostWorkspaceSnapshot = {
+  active: SidebarWorkspace[];
+  archived: SidebarWorkspace[];
+};
+
+async function fetchHostWorkspaceSnapshot(
+  hostId: string
+): Promise<HostWorkspaceSnapshot> {
+  const [records, activeSummaries, archivedSummaries] = await Promise.all([
+    workspacesApi.getAllWorkspaces(hostId),
+    fetchWorkspaceSummariesByArchived(false, hostId),
+    fetchWorkspaceSummariesByArchived(true, hostId),
+  ]);
+
+  const active: SidebarWorkspace[] = [];
+  const archived: SidebarWorkspace[] = [];
+  for (const workspace of records) {
+    const summaries = workspace.archived ? archivedSummaries : activeSummaries;
+    const item = toSnapshotSidebarWorkspace(
+      workspace,
+      summaries.get(workspace.id),
+      hostId
+    );
+    (workspace.archived ? archived : active).push(item);
+  }
+  return { active, archived };
+}
+
+/**
+ * Unified local + remote workspace list. The route's current host keeps its
+ * live WebSocket stream; other online hosts are refreshed as lightweight
+ * snapshots. Both local and remote web consume this hook through the shared
+ * WorkspaceProvider, including their mobile workspace lists.
+ */
+export function useUnifiedWorkspaces(): UseWorkspacesResult {
+  const current = useWorkspaces();
+  const currentHostId = useHostId();
+  const { hosts } = useWorkspaceHostOptions();
+  const otherOnlineHosts = useMemo(
+    () =>
+      hosts.filter(
+        (host) => host.status === 'online' && host.id !== currentHostId
+      ),
+    [hosts, currentHostId]
+  );
+  const snapshots = useQueries({
+    queries: otherOnlineHosts.map((host) => ({
+      queryKey: ['unified-workspaces', host.id],
+      queryFn: () => fetchHostWorkspaceSnapshot(host.id),
+      staleTime: 15_000,
+      refetchInterval: 15_000,
+    })),
+  });
+
+  return useMemo(() => {
+    const remoteActive = snapshots.flatMap((query) => query.data?.active ?? []);
+    const remoteArchived = snapshots.flatMap(
+      (query) => query.data?.archived ?? []
+    );
+    return {
+      ...current,
+      workspaces: [...current.workspaces, ...remoteActive],
+      archivedWorkspaces: [...current.archivedWorkspaces, ...remoteArchived],
+    };
+  }, [current, snapshots]);
 }

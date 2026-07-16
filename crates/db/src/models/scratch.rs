@@ -117,6 +117,9 @@ pub struct WorkspaceFilterStateData {
     pub pr_filter: WorkspacePrFilterData,
     #[serde(default)]
     pub status_filters: Vec<WorkspaceActivityStatusData>,
+    /// Host IDs hidden from the unified workspace list. `__local__` is this machine.
+    #[serde(default)]
+    pub excluded_host_ids: Vec<String>,
 }
 
 /// Workspace sidebar sort state

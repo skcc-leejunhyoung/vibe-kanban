@@ -81,6 +81,7 @@ function storeToScratchData(state: {
       project_ids: state.workspaceFilters.projectIds,
       pr_filter: state.workspaceFilters.prFilter,
       status_filters: state.workspaceFilters.statusFilters,
+      excluded_host_ids: state.workspaceFilters.excludedHostIds,
     },
     workspace_sort: {
       sort_by: state.workspaceSort.sortBy,
@@ -198,6 +199,7 @@ function scratchDataToStore(data: UiPreferencesData): {
       statusFilters:
         (data.workspace_filters?.status_filters as WorkspaceActivityStatus[]) ??
         [],
+      excludedHostIds: data.workspace_filters?.excluded_host_ids ?? [],
     },
     workspaceSort: {
       sortBy: (data.workspace_sort?.sort_by as WorkspaceSortBy) ?? 'updated_at',

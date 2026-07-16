@@ -20,6 +20,7 @@ import {
   FolderIcon,
   GitPullRequestIcon,
   PulseIcon,
+  ComputerTowerIcon,
   XIcon,
 } from '@phosphor-icons/react';
 import type {
@@ -123,6 +124,8 @@ export interface WorkspacesFilterDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projectOptions: MultiSelectDropdownOption<string>[];
+  hostOptions: MultiSelectDropdownOption<string>[];
+  excludedHostIds: string[];
   projectIds: string[];
   prFilter: WorkspacePrFilter;
   statusFilters: WorkspaceActivityStatus[];
@@ -130,6 +133,7 @@ export interface WorkspacesFilterDialogProps {
   onProjectFilterChange: (projectIds: string[]) => void;
   onPrFilterChange: (prFilter: WorkspacePrFilter) => void;
   onStatusFilterChange: (statusFilters: WorkspaceActivityStatus[]) => void;
+  onHostFilterChange: (excludedHostIds: string[]) => void;
   onClearFilters: () => void;
 }
 
@@ -137,6 +141,8 @@ export function WorkspacesFilterDialog({
   open,
   onOpenChange,
   projectOptions,
+  hostOptions,
+  excludedHostIds,
   projectIds,
   prFilter,
   statusFilters,
@@ -144,6 +150,7 @@ export function WorkspacesFilterDialog({
   onProjectFilterChange,
   onPrFilterChange,
   onStatusFilterChange,
+  onHostFilterChange,
   onClearFilters,
 }: WorkspacesFilterDialogProps) {
   const { t } = useTranslation('common');
@@ -164,6 +171,38 @@ export function WorkspacesFilterDialog({
 
         <div className="px-double py-double">
           <div className="flex flex-col items-start gap-base">
+            <div className="w-full rounded border border-border p-base">
+              <div className="mb-half flex items-center gap-half text-sm text-low">
+                <ComputerTowerIcon className="size-icon-sm" />
+                Hosts
+              </div>
+              <div className="flex flex-col gap-half">
+                {hostOptions.map((option) => {
+                  const isVisible = !excludedHostIds.includes(option.value);
+                  return (
+                    <label
+                      key={option.value}
+                      className="flex cursor-pointer items-center gap-half text-sm text-normal"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isVisible}
+                        onChange={() =>
+                          onHostFilterChange(
+                            isVisible
+                              ? [...excludedHostIds, option.value]
+                              : excludedHostIds.filter(
+                                  (hostId) => hostId !== option.value
+                                )
+                          )
+                        }
+                      />
+                      {option.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
             <MultiSelectDropdown
               values={projectIds}
               options={projectOptions}

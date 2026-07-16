@@ -65,13 +65,9 @@ function RemoteMobileWorkspacesSidebar() {
 
   return (
     <WorkspacesSidebarContainer
-      onSelectWorkspaceOverride={(id) => {
-        selectWorkspace(id);
-        navigate({
-          to: "/hosts/$hostId/workspaces/$workspaceId",
-          params: { hostId, workspaceId: id },
-        });
-      }}
+      onSelectWorkspaceOverride={(id, _event, workspaceHostId) =>
+        selectWorkspace(id, workspaceHostId ?? hostId)
+      }
       onAddWorkspaceOverride={() =>
         navigate({
           to: "/hosts/$hostId/workspaces/create",

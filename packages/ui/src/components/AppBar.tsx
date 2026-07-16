@@ -4,16 +4,14 @@ import {
   Droppable,
   type DropResult,
 } from '@hello-pangea/dnd';
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import {
   LayoutIcon,
   DownloadSimpleIcon,
-  LinkIcon,
   PlusIcon,
   KanbanIcon,
   SpinnerIcon,
   LightningIcon,
-  FunnelIcon,
   type Icon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -189,14 +187,10 @@ function getHostButtonClassName({
 
 export function AppBar({
   projects,
-  hosts = [],
-  onPairHostClick,
-  activeHostId = null,
   onCreateProject,
   onExportClick,
   onWorkspacesClick,
   onQuickChatClick,
-  onHostClick,
   showWorkspacesButton = true,
   onProjectClick,
   onProjectsDragEnd,
@@ -216,14 +210,12 @@ export function AppBar({
   onUpdateClick,
 }: AppBarProps) {
   const { t } = useTranslation('common');
-  const [showLocalWorkspaces, setShowLocalWorkspaces] = useState(true);
-  const [showRemoteWorkspaces, setShowRemoteWorkspaces] = useState(true);
   const sections: AppBarSection[] = [];
 
   // Local and remote destinations are peers in one workspace switcher. Their
   // origin remains available as a filter instead of defining separate groups.
   const workspaceItems: AppBarSectionItem[] = [];
-  if (showWorkspacesButton && showLocalWorkspaces) {
+  if (showWorkspacesButton) {
     workspaceItems.push({
       key: 'local-workspaces',
       kind: 'icon-button',
@@ -240,30 +232,6 @@ export function AppBar({
       label: 'Quick chat',
       icon: LightningIcon,
       onClick: onQuickChatClick,
-    });
-  }
-  if (showRemoteWorkspaces) {
-    workspaceItems.push(
-      ...hosts.map((host) => ({
-        key: `host-${host.id}`,
-        kind: 'host-button' as const,
-        host,
-        isActive: host.id === activeHostId,
-        onClick: () => {
-          if (host.status === 'offline') return;
-          onHostClick?.(host.id, host.status);
-        },
-      }))
-    );
-  }
-  if (onPairHostClick) {
-    workspaceItems.push({
-      key: 'pair-remote-device',
-      kind: 'icon-button',
-      label: 'Pair a remote device',
-      icon: LinkIcon,
-      onClick: onPairHostClick,
-      className: 'bg-primary text-muted hover:text-normal hover:bg-tertiary',
     });
   }
   if (workspaceItems.length > 0) {
@@ -515,52 +483,7 @@ export function AppBar({
       <div className="flex w-full min-h-0 flex-1 flex-col items-center gap-base overflow-y-auto overflow-x-hidden">
         {sections.map((section) => (
           <div key={section.key} className="flex flex-col items-center gap-1">
-            {section.key === 'workspaces' ? (
-              <Popover>
-                <Tooltip content="Filter workspace hosts" side="right">
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex items-center gap-0.5 text-[9px] font-medium leading-none tracking-wide text-low hover:text-normal"
-                    >
-                      {section.label}
-                      <FunnelIcon className="size-2.5" weight="bold" />
-                    </button>
-                  </PopoverTrigger>
-                </Tooltip>
-                <PopoverContent side="right" sideOffset={8} className="w-44">
-                  <p className="mb-half text-xs font-medium text-high">
-                    Show workspaces
-                  </p>
-                  {showWorkspacesButton && (
-                    <label className="flex cursor-pointer items-center gap-half py-half text-sm text-normal">
-                      <input
-                        type="checkbox"
-                        checked={showLocalWorkspaces}
-                        onChange={(event) =>
-                          setShowLocalWorkspaces(event.target.checked)
-                        }
-                      />
-                      This machine
-                    </label>
-                  )}
-                  {(hosts.length > 0 || onPairHostClick) && (
-                    <label className="flex cursor-pointer items-center gap-half py-half text-sm text-normal">
-                      <input
-                        type="checkbox"
-                        checked={showRemoteWorkspaces}
-                        onChange={(event) =>
-                          setShowRemoteWorkspaces(event.target.checked)
-                        }
-                      />
-                      Remote hosts
-                    </label>
-                  )}
-                </PopoverContent>
-              </Popover>
-            ) : (
-              <AppBarSectionLabel>{section.label}</AppBarSectionLabel>
-            )}
+            <AppBarSectionLabel>{section.label}</AppBarSectionLabel>
             {section.items.map((item) => (
               <div
                 key={item.key}
