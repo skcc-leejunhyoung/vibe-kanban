@@ -89,6 +89,13 @@ export function getHostWorkspaceKey(
   return `${hostId ?? 'local'}:${workspaceId}`;
 }
 
+// Stable empty map for React Query's `data = <default>` fallback. Without a
+// shared reference, every render allocates a fresh Map while the summary query
+// is disabled/pending, which destabilizes the downstream useMemo and — for the
+// remote host streams — drives an onUpdate -> setStreams -> re-render loop
+// (Maximum update depth exceeded) on the unified multi-host list. Never mutate.
+const EMPTY_WORKSPACE_SUMMARIES = new Map<string, WorkspaceSummary>();
+
 // State shape from the WebSocket stream
 type WorkspacesState = {
   workspaces: Record<string, WorkspaceWithStatus>;
@@ -241,30 +248,28 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
 
   // Wait for both streams to be initialized before fetching summaries
   // Fetch summaries for active workspaces
-  const { data: activeSummaries = new Map<string, WorkspaceSummary>() } =
-    useQuery({
-      queryKey: workspaceSummaryKeys.byArchived(false, hostId),
-      queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
-      enabled: enabled && activeIsInitialized,
-      staleTime: 1000,
-      refetchInterval: 15000,
-      refetchOnWindowFocus: false,
-      refetchOnMount: 'always',
-      placeholderData: keepPreviousData,
-    });
+  const { data: activeSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
+    queryKey: workspaceSummaryKeys.byArchived(false, hostId),
+    queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
+    enabled: enabled && activeIsInitialized,
+    staleTime: 1000,
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: 'always',
+    placeholderData: keepPreviousData,
+  });
 
   // Fetch summaries for archived workspaces
-  const { data: archivedSummaries = new Map<string, WorkspaceSummary>() } =
-    useQuery({
-      queryKey: workspaceSummaryKeys.byArchived(true, hostId),
-      queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
-      enabled: enabled && archivedIsInitialized,
-      staleTime: 1000,
-      refetchInterval: 15000,
-      refetchOnWindowFocus: false,
-      refetchOnMount: 'always',
-      placeholderData: keepPreviousData,
-    });
+  const { data: archivedSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
+    queryKey: workspaceSummaryKeys.byArchived(true, hostId),
+    queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
+    enabled: enabled && archivedIsInitialized,
+    staleTime: 1000,
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: 'always',
+    placeholderData: keepPreviousData,
+  });
 
   const workspaces = useMemo(() => {
     if (!activeData?.workspaces) return [];

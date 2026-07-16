@@ -25,16 +25,20 @@ import { toPrettyCase } from '@/shared/lib/string';
 import {
   DEFAULT_PRIMARY_COLOR,
   applyPrimaryColor,
+  applyTheme,
   isValidPrimaryColor,
   normalizePrimaryColor,
   persistPrimaryColor,
+  persistTheme,
 } from '@/shared/lib/themeColors';
 import {
   getExecutorVariantKeys,
   getSortedExecutorVariantKeys,
 } from '@/shared/lib/executor';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useTheme } from '@/shared/hooks/useTheme';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { persistLanguage, updateLanguageFromConfig } from '@/i18n/config';
 import { TagManager } from '@/shared/components/TagManager';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
@@ -105,6 +109,7 @@ export function GeneralSettingsSection() {
     null
   );
   const { setTheme } = useTheme();
+  const runtime = useAppRuntime();
 
   // Executor options for the default coding agent dropdown. Hidden agents are
   // filtered out, but the current default stays visible so the selection holds.
@@ -232,6 +237,19 @@ export function GeneralSettingsSection() {
       setTheme(nextDraft.theme);
       applyPrimaryColor(nextDraft.primary_color);
       persistPrimaryColor(nextDraft.primary_color);
+      // remote-web has no ThemeProvider and treats appearance as browser-local
+      // (Bootstrap restores it before first paint), so setTheme() is a no-op
+      // there. Apply + persist the user's explicit theme/language change here,
+      // mirroring primary color. This only runs on the save action, so host
+      // config still does not drive the shell's appearance on navigation.
+      if (runtime === 'remote') {
+        applyTheme(nextDraft.theme);
+        persistTheme(nextDraft.theme);
+        if (nextDraft.language) {
+          updateLanguageFromConfig(nextDraft.language);
+          persistLanguage(nextDraft.language);
+        }
+      }
       setDirty(false);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
