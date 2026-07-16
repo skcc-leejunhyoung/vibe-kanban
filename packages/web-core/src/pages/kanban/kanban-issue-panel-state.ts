@@ -66,6 +66,7 @@ export function createBlankCreateFormData(
     assigneeIds: [],
     tagIds: [],
     createDraftWorkspace: createDraftWorkspaceByDefault,
+    workspaceHostId: null,
   };
 }
 
@@ -189,6 +190,7 @@ export function selectDisplayData({
     assigneeIds: currentAssigneeIds,
     tagIds: currentTagIds,
     createDraftWorkspace: false,
+    workspaceHostId: null,
   };
 }
 
@@ -220,6 +222,7 @@ export function selectIsCreateDraftDirty({
       createModeDefaults.tagIds
     ) ||
     state.createFormData.createDraftWorkspace !==
-      createModeDefaults.createDraftWorkspace
+      createModeDefaults.createDraftWorkspace ||
+    state.createFormData.workspaceHostId !== createModeDefaults.workspaceHostId
   );
 }

@@ -38,6 +38,15 @@ import {
   TooltipTrigger,
 } from './RadixTooltip';
 import { ErrorAlert } from './ErrorAlert';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from './Select';
+
+const LOCAL_WORKSPACE_HOST_VALUE = '__local__';
 
 export type IssuePanelMode = 'create' | 'edit';
 type IssuePriority = IssuePropertyRowProps['priority'];
@@ -58,6 +67,12 @@ export interface IssueFormData {
   assigneeIds: string[];
   tagIds: string[];
   createDraftWorkspace: boolean;
+  workspaceHostId: string | null;
+}
+
+export interface WorkspaceHostOption {
+  id: string | null;
+  name: string;
 }
 
 export interface LinkedPullRequest extends IssueTagsLinkedPullRequest {}
@@ -93,6 +108,7 @@ export interface KanbanIssuePanelProps {
   // Options for dropdowns
   statuses: IssueStatus[];
   tags: KanbanIssueTag[];
+  workspaceHosts?: WorkspaceHostOption[];
 
   // Resolved assignee profiles for avatar display
   assigneeUsers?: IssueAssignee[];
@@ -169,6 +185,7 @@ export function KanbanIssuePanel({
   onFormChange,
   statuses,
   tags,
+  workspaceHosts = [],
   assigneeUsers,
   issueId,
   creatorUser,
@@ -514,7 +531,7 @@ export function KanbanIssuePanel({
 
         {/* Create Draft Workspace Toggle (Create mode only) */}
         {isCreateMode && (
-          <div className="p-base border-t">
+          <div className="p-base border-t flex flex-col gap-base">
             <Toggle
               checked={formData.createDraftWorkspace}
               onCheckedChange={(checked) =>
@@ -524,6 +541,40 @@ export function KanbanIssuePanel({
               description={t('kanban.createDraftWorkspaceDescription')}
               disabled={isSubmitting}
             />
+            {formData.createDraftWorkspace && workspaceHosts.length > 0 && (
+              <div className="flex flex-col gap-half pl-double">
+                <label
+                  htmlFor="workspace-host-select"
+                  className="text-sm font-medium text-high"
+                >
+                  {t('kanban.workspaceHost')}
+                </label>
+                <Select
+                  value={formData.workspaceHostId ?? LOCAL_WORKSPACE_HOST_VALUE}
+                  onValueChange={(value) =>
+                    onFormChange(
+                      'workspaceHostId',
+                      value === LOCAL_WORKSPACE_HOST_VALUE ? null : value
+                    )
+                  }
+                  disabled={isSubmitting}
+                >
+                  <SelectTrigger id="workspace-host-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {workspaceHosts.map((host) => (
+                      <SelectItem
+                        key={host.id ?? LOCAL_WORKSPACE_HOST_VALUE}
+                        value={host.id ?? LOCAL_WORKSPACE_HOST_VALUE}
+                      >
+                        {host.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
         )}
 

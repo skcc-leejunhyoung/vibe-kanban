@@ -376,6 +376,8 @@
     "issueTitlePlaceholder": "課題タイトル...",
     "issueDescriptionPlaceholder": "タスクの説明を入力してください...",
     "createDraftWorkspaceImmediately": "下書きワークスペースをすぐに作成",
+    "workspaceHost": "ワークスペースホスト",
+    "thisMachine": "このマシン",
     "createDraftWorkspaceDescription": "課題を作成した後、課題の詳細が入力されたワークスペース作成フォームを開きます",
     "createIssue": "タスクを作成",
     "newIssue": "新しい課題",

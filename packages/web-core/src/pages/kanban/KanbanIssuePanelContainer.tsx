@@ -56,6 +56,8 @@ import {
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
@@ -82,6 +84,29 @@ export function KanbanIssuePanelContainer({
   const { t } = useTranslation('common');
   const appNavigation = useAppNavigation();
   const routeState = useCurrentKanbanRouteState();
+  const runtime = useAppRuntime();
+  const { hosts: availableWorkspaceHosts } = useWorkspaceHostOptions();
+
+  const workspaceHosts = useMemo(
+    () => [
+      ...(runtime === 'local'
+        ? [{ id: null, name: t('kanban.thisMachine') }]
+        : []),
+      ...availableWorkspaceHosts
+        .filter((host) => host.status === 'online')
+        .map((host) => ({ id: host.id, name: host.name })),
+    ],
+    [availableWorkspaceHosts, runtime, t]
+  );
+  const defaultWorkspaceHostId = useMemo(() => {
+    if (
+      routeState.hostId &&
+      workspaceHosts.some((host) => host.id === routeState.hostId)
+    ) {
+      return routeState.hostId;
+    }
+    return workspaceHosts[0]?.id ?? null;
+  }, [routeState.hostId, workspaceHosts]);
 
   const { openWorkspaceCreateFromState } = useProjectWorkspaceCreateDraft();
   const { workspaces } = useUserContext();
@@ -162,6 +187,7 @@ export function KanbanIssuePanelContainer({
       description?: string | null;
       tagIds?: string[];
       createDraftWorkspace?: boolean;
+      workspaceHostId?: string | null;
     }) => {
       if (!kanbanCreateMode || !issueComposerKey) {
         return;
@@ -269,12 +295,14 @@ export function KanbanIssuePanelContainer({
       assigneeIds: [...(kanbanCreateDefaultAssigneeIds ?? [])],
       tagIds: [],
       createDraftWorkspace: createDraftWorkspaceByDefault,
+      workspaceHostId: defaultWorkspaceHostId,
     }),
     [
       defaultStatusId,
       kanbanCreateDefaultPriority,
       kanbanCreateDefaultAssigneeIds,
       createDraftWorkspaceByDefault,
+      defaultWorkspaceHostId,
     ]
   );
 
@@ -608,6 +636,10 @@ export function KanbanIssuePanelContainer({
           createDraftWorkspace:
             composerDraft.createDraftWorkspace ??
             createModeDefaults.createDraftWorkspace,
+          workspaceHostId:
+            composerDraft.workspaceHostId === undefined
+              ? createModeDefaults.workspaceHostId
+              : composerDraft.workspaceHostId,
         };
         restoredFromScratch = true;
       } else {
@@ -941,6 +973,7 @@ export function KanbanIssuePanelContainer({
           });
           const draftId = await openWorkspaceCreateFromState(createState, {
             issueId: syncedIssue.id,
+            hostId: displayData.workspaceHostId,
           });
           if (!draftId) {
             await ConfirmDialog.show({
@@ -1102,6 +1135,7 @@ export function KanbanIssuePanelContainer({
       onFormChange={handlePropertyChange}
       statuses={sortedStatuses}
       tags={tags}
+      workspaceHosts={workspaceHosts}
       issueId={selectedKanbanIssueId}
       creatorUser={issueCreator}
       parentIssue={parentIssue}

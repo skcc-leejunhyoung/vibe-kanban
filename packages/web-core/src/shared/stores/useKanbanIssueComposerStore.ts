@@ -17,6 +17,7 @@ export interface KanbanIssueComposerDraft {
   assigneeIds?: string[];
   tagIds?: string[];
   createDraftWorkspace?: boolean;
+  workspaceHostId?: string | null;
   parentIssueId?: string;
 }
 
@@ -55,6 +56,9 @@ function normalizeComposerDraft(
     ...(draft.tagIds !== undefined ? { tagIds: [...draft.tagIds] } : {}),
     ...(draft.createDraftWorkspace !== undefined
       ? { createDraftWorkspace: draft.createDraftWorkspace }
+      : {}),
+    ...(draft.workspaceHostId !== undefined
+      ? { workspaceHostId: draft.workspaceHostId }
       : {}),
     ...(draft.parentIssueId ? { parentIssueId: draft.parentIssueId } : {}),
   };
