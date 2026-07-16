@@ -7,7 +7,6 @@ import {
 import type { ReactNode } from 'react';
 import {
   LayoutIcon,
-  DownloadSimpleIcon,
   PlusIcon,
   KanbanIcon,
   SpinnerIcon,
@@ -37,21 +36,15 @@ function getProjectInitials(name: string): string {
 
 interface AppBarProps {
   projects: AppBarProject[];
-  hosts?: AppBarHost[];
-  onPairHostClick?: () => void;
-  activeHostId?: string | null;
   onCreateProject: () => void;
-  onExportClick?: () => void;
   onWorkspacesClick: () => void;
   /** Opens the Quick chat launcher. When omitted, the entry is hidden. */
   onQuickChatClick?: () => void;
-  onHostClick?: (hostId: string, status: AppBarHostStatus) => void;
   showWorkspacesButton?: boolean;
   onProjectClick: (projectId: string) => void;
   onProjectsDragEnd: (result: DropResult) => void;
   isSavingProjectOrder?: boolean;
   isWorkspacesActive: boolean;
-  isExportActive?: boolean;
   activeProjectId: string | null;
   isSignedIn?: boolean;
   isLoadingProjects?: boolean;
@@ -103,7 +96,7 @@ const appBarItemBaseClassName =
   'flex items-center justify-center w-10 h-10 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 
 type AppBarSection = {
-  key: 'workspaces' | 'projects' | 'export';
+  key: 'workspaces' | 'projects';
   label: string;
   items: AppBarSectionItem[];
 };
@@ -188,7 +181,6 @@ function getHostButtonClassName({
 export function AppBar({
   projects,
   onCreateProject,
-  onExportClick,
   onWorkspacesClick,
   onQuickChatClick,
   showWorkspacesButton = true,
@@ -196,7 +188,6 @@ export function AppBar({
   onProjectsDragEnd,
   isSavingProjectOrder,
   isWorkspacesActive,
-  isExportActive = false,
   activeProjectId,
   isSignedIn,
   isLoadingProjects,
@@ -219,7 +210,7 @@ export function AppBar({
     workspaceItems.push({
       key: 'local-workspaces',
       kind: 'icon-button',
-      label: 'Local workspaces',
+      label: 'Workspace',
       icon: LayoutIcon,
       isActive: isWorkspacesActive,
       onClick: onWorkspacesClick,
@@ -237,7 +228,7 @@ export function AppBar({
   if (workspaceItems.length > 0) {
     sections.push({
       key: 'workspaces',
-      label: 'Workspaces',
+      label: 'Workspace',
       items: workspaceItems,
     });
   }
@@ -286,23 +277,6 @@ export function AppBar({
       key: 'projects',
       label: 'Projects',
       items: projectSectionItems,
-    });
-  }
-
-  if (isSignedIn && onExportClick) {
-    sections.push({
-      key: 'export',
-      label: 'Export',
-      items: [
-        {
-          key: 'export-data',
-          kind: 'icon-button',
-          label: 'Export data',
-          icon: DownloadSimpleIcon,
-          isActive: isExportActive,
-          onClick: onExportClick,
-        },
-      ],
     });
   }
 

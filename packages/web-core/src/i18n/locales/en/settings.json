@@ -36,6 +36,7 @@
         "remote-projects": "Projects",
         "remote-projectsDesc": "Manage projects",
         "relay": "Remote Access",
+        "export": "Export",
         "relayDesc": "Relay tunnel and enrollment",
         "automation": "Automation",
         "automationDesc": "Connectors and rules for the automation worker"

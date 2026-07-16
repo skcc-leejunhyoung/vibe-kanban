@@ -30,6 +30,7 @@ interface ExportPageProps {
   projectsLoading: boolean;
   selectedOrgId: string | null;
   onOrgChange: (orgId: string) => void;
+  embedded?: boolean;
 }
 
 export function ExportPage({
@@ -40,6 +41,7 @@ export function ExportPage({
   projectsLoading,
   selectedOrgId,
   onOrgChange,
+  embedded = false,
 }: ExportPageProps) {
   const { theme } = useTheme();
 
@@ -47,6 +49,30 @@ export function ExportPage({
     resolveTheme(theme) === 'dark'
       ? '/vibe-kanban-logo-dark.svg'
       : '/vibe-kanban-logo.svg';
+
+  const content = (
+    <ExportLayout
+      exportFn={exportFn}
+      organizations={organizations}
+      orgsLoading={orgsLoading}
+      projects={projects}
+      projectsLoading={projectsLoading}
+      selectedOrgId={selectedOrgId}
+      onOrgChange={onOrgChange}
+    />
+  );
+
+  if (embedded) {
+    return (
+      <div className="space-y-base pb-double">
+        <p className="text-sm text-low">
+          Download your project and issue data to CSV files. Optionally
+          downloads your file attachments too.
+        </p>
+        {content}
+      </div>
+    );
+  }
 
   return (
     <div className="h-full overflow-auto bg-primary">
@@ -65,22 +91,18 @@ export function ExportPage({
               downloads your file attachments too.
             </p>
           </header>
-          <ExportLayout
-            exportFn={exportFn}
-            organizations={organizations}
-            orgsLoading={orgsLoading}
-            projects={projects}
-            projectsLoading={projectsLoading}
-            selectedOrgId={selectedOrgId}
-            onOrgChange={onOrgChange}
-          />
+          {content}
         </div>
       </div>
     </div>
   );
 }
 
-export function ExportPageContainer() {
+export function ExportPageContainer({
+  embedded = false,
+}: {
+  embedded?: boolean;
+}) {
   const { isLoaded, isSignedIn } = useAuth();
   const { data: orgsData, isLoading: orgsLoading } = useUserOrganizations();
   const organizations = useMemo<ExportOrganization[]>(
@@ -156,6 +178,7 @@ export function ExportPageContainer() {
       projectsLoading={projectsLoading}
       selectedOrgId={selectedOrgId}
       onOrgChange={setSelectedOrgId}
+      embedded={embedded}
     />
   );
 }

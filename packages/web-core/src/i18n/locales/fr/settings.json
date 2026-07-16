@@ -30,6 +30,7 @@
         "remote-projects": "Projets",
         "remote-projectsDesc": "Gérer les projets",
         "relay": "Remote Access",
+        "export": "Exporter",
         "relayDesc": "Relay tunnel and enrollment",
         "machineSettings": "Machine Settings",
         "accountSettings": "Account Settings",

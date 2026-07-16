@@ -32,6 +32,7 @@
         "remote-projects": "프로젝트",
         "remote-projectsDesc": "프로젝트 관리",
         "relay": "Remote Access",
+        "export": "내보내기",
         "relayDesc": "Relay tunnel and enrollment",
         "automation": "자동화",
         "automationDesc": "자동화 워커의 커넥터 및 규칙",

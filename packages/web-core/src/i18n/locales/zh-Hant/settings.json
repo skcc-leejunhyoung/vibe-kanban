@@ -30,6 +30,7 @@
         "remote-projects": "專案",
         "remote-projectsDesc": "管理專案",
         "relay": "Remote Access",
+        "export": "匯出",
         "relayDesc": "Relay tunnel and enrollment",
         "machineSettings": "Machine Settings",
         "accountSettings": "Account Settings",

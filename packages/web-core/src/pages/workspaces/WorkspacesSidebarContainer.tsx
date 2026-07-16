@@ -54,6 +54,13 @@ import {
 } from '@phosphor-icons/react';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import {
+  NEXT_WORKSPACE_BINDING_ID,
+  PREVIOUS_WORKSPACE_BINDING_ID,
+  resolveModifier,
+} from '@/shared/keyboard/registry';
+import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
@@ -173,6 +180,7 @@ export function WorkspacesSidebarContainer({
   const sortFilter = useWorkspaceSortFilter();
   const { filterAndSort } = sortFilter;
   const [selectedHostView, setSelectedHostView] = useState('all');
+  const shortcutOverrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   // Pagination state for infinite scroll
   const [displayLimit, setDisplayLimit] = useState(PAGE_SIZE);
@@ -383,15 +391,12 @@ export function WorkspacesSidebarContainer({
 
   // Treat the visible workspace list like a tab strip. This mirrors native
   // macOS tab switching and wraps at both ends.
-  useHotkeys(
-    ['ctrl+tab', 'ctrl+shift+tab'],
-    (event) => {
+  const cycleWorkspace = useCallback(
+    (direction: 1 | -1) => {
       if (displayedWorkspaceIds.length === 0) return;
-      event.preventDefault();
       const currentIndex = selectedWorkspaceId
         ? displayedWorkspaceIds.indexOf(selectedWorkspaceId)
         : -1;
-      const direction = event.shiftKey ? -1 : 1;
       const fallbackIndex =
         direction === 1 ? 0 : displayedWorkspaceIds.length - 1;
       const nextIndex =
@@ -401,8 +406,19 @@ export function WorkspacesSidebarContainer({
             displayedWorkspaceIds.length;
       handleSelectWorkspace(displayedWorkspaceIds[nextIndex]);
     },
-    { enableOnFormTags: false },
     [displayedWorkspaceIds, selectedWorkspaceId, handleSelectWorkspace]
+  );
+  useReboundHotkey(
+    resolveModifier(NEXT_WORKSPACE_BINDING_ID, shortcutOverrides),
+    () => cycleWorkspace(1),
+    {},
+    [cycleWorkspace, shortcutOverrides]
+  );
+  useReboundHotkey(
+    resolveModifier(PREVIOUS_WORKSPACE_BINDING_ID, shortcutOverrides),
+    () => cycleWorkspace(-1),
+    {},
+    [cycleWorkspace, shortcutOverrides]
   );
 
   const moveWorkspaceFocus = useCallback(

@@ -30,6 +30,7 @@
         "remote-projects": "プロジェクト",
         "remote-projectsDesc": "プロジェクトを管理",
         "relay": "Remote Access",
+        "export": "エクスポート",
         "relayDesc": "Relay tunnel and enrollment",
         "machineSettings": "Machine Settings",
         "accountSettings": "Account Settings",

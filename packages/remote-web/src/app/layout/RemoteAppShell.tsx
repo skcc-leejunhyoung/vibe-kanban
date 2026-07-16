@@ -268,15 +268,11 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
         {!isMobile && (
           <AppBar
             projects={projects}
-            hosts={relayHosts}
-            onPairHostClick={isSignedIn ? handlePairHostClick : undefined}
-            activeHostId={activeHostId}
             onCreateProject={handleCreateProject}
             onWorkspacesClick={handleWorkspacesClick}
             onQuickChatClick={
               activeHostId ? () => void QuickChatDialog.show() : undefined
             }
-            onHostClick={handleHostClick}
             showWorkspacesButton
             onProjectClick={handleProjectClick}
             onProjectsDragEnd={() => {}}

@@ -9,6 +9,7 @@ import {
   BellIcon,
   KeyboardIcon,
   RobotIcon,
+  DownloadSimpleIcon,
 } from '@phosphor-icons/react';
 import type { Icon } from '@phosphor-icons/react';
 import { GeneralSettingsSection } from './GeneralSettingsSection';
@@ -21,6 +22,7 @@ import { RelaySettingsSectionContent } from './RelaySettingsSection';
 import { AccountNotificationsSettingsSection } from './AccountNotificationsSettingsSection';
 import { KeyboardShortcutsSettingsSection } from './KeyboardShortcutsSettingsSection';
 import { AutomationSettingsSection } from './AutomationSettingsSection';
+import { ExportPageContainer } from '@/pages/export/ExportPage';
 
 export type SettingsSectionType =
   | 'general'
@@ -32,7 +34,8 @@ export type SettingsSectionType =
   | 'mcp'
   | 'relay'
   | 'keyboard-shortcuts'
-  | 'automation';
+  | 'automation'
+  | 'export';
 
 export type SettingsSectionGroup = 'host' | 'universal';
 
@@ -49,6 +52,7 @@ export type SettingsSectionInitialState = {
   relay: { hostId?: string } | undefined;
   'keyboard-shortcuts': undefined;
   automation: undefined;
+  export: undefined;
 };
 
 export interface SettingsSectionDefinition {
@@ -68,6 +72,7 @@ export const SETTINGS_SECTION_DEFINITIONS: SettingsSectionDefinition[] = [
   { id: 'keyboard-shortcuts', icon: KeyboardIcon, group: 'universal' },
   { id: 'remote-projects', icon: CloudIcon, group: 'universal' },
   { id: 'relay', icon: BroadcastIcon, group: 'universal' },
+  { id: 'export', icon: DownloadSimpleIcon, group: 'universal' },
 ];
 
 export function isHostSpecificSettingsSection(
@@ -120,6 +125,8 @@ export function renderSettingsSection(
       return <KeyboardShortcutsSettingsSection />;
     case 'automation':
       return <AutomationSettingsSection />;
+    case 'export':
+      return <ExportPageContainer embedded />;
     default:
       return <GeneralSettingsSection />;
   }

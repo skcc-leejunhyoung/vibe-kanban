@@ -320,6 +320,8 @@
       "moveLeft": "Move left",
       "moveRight": "Move right",
       "openCommandBar": "Open command bar",
+      "nextWorkspace": "Next workspace",
+      "previousWorkspace": "Previous workspace",
       "formatInlineCode": "Format inline code",
       "sendMessage": "Send message",
       "settings": "Go to Settings",

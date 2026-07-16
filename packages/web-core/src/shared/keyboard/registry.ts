@@ -547,6 +547,8 @@ export const keyBindings: KeyBinding[] = [
  * `keyBindings`, these are user-rebindable via the Keyboard Shortcuts settings.
  */
 export const COMMAND_BAR_BINDING_ID = 'command-bar';
+export const NEXT_WORKSPACE_BINDING_ID = 'next-workspace';
+export const PREVIOUS_WORKSPACE_BINDING_ID = 'previous-workspace';
 
 export interface ModifierBinding {
   id: string;
@@ -562,6 +564,18 @@ export const modifierBindings: ModifierBinding[] = [
     id: COMMAND_BAR_BINDING_ID,
     keys: 'mod+k',
     actionId: 'openCommandBar',
+    group: 'Modifiers',
+  },
+  {
+    id: NEXT_WORKSPACE_BINDING_ID,
+    keys: 'ctrl+tab',
+    actionId: 'nextWorkspace',
+    group: 'Modifiers',
+  },
+  {
+    id: PREVIOUS_WORKSPACE_BINDING_ID,
+    keys: 'ctrl+shift+tab',
+    actionId: 'previousWorkspace',
     group: 'Modifiers',
   },
 ];

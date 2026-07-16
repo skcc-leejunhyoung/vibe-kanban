@@ -12,6 +12,8 @@ import {
   resolveModifier,
   displayKeyParts,
   COMMAND_BAR_BINDING_ID,
+  NEXT_WORKSPACE_BINDING_ID,
+  PREVIOUS_WORKSPACE_BINDING_ID,
   Scope,
 } from '@/shared/keyboard/registry';
 import { isMac, getModifierKey } from '@/shared/lib/platform';
@@ -72,6 +74,19 @@ function useShortcutGroups(): ShortcutGroup[] {
         {
           keys: chips(resolveModifier(COMMAND_BAR_BINDING_ID, overrides)),
           description: t('shortcuts.actions.openCommandBar'),
+        },
+        {
+          keys: chips(resolveModifier(NEXT_WORKSPACE_BINDING_ID, overrides)),
+          description: t('shortcuts.actions.nextWorkspace', 'Next workspace'),
+        },
+        {
+          keys: chips(
+            resolveModifier(PREVIOUS_WORKSPACE_BINDING_ID, overrides)
+          ),
+          description: t(
+            'shortcuts.actions.previousWorkspace',
+            'Previous workspace'
+          ),
         },
         {
           keys: [mod, 'E'],
