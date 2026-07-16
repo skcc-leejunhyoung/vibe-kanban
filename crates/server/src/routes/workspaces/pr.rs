@@ -1,7 +1,8 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    panic::AssertUnwindSafe,
     path::PathBuf,
-    sync::LazyLock,
+    sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
 
@@ -25,6 +26,7 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::profile::ExecutorConfig;
+use futures_util::FutureExt;
 use git::{GitCliError, GitRemote, GitServiceError};
 use git_host::{
     CreatePrRequest, GitHostError, GitHostProvider, GitHostService, ProviderKind, UnifiedPrComment,
@@ -36,6 +38,8 @@ use services::services::{
     container::{ContainerService, assistant_message_in_store},
     remote_sync,
 };
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -99,13 +103,94 @@ pub enum PrDescriptionGenerationStatus {
 struct PrDescriptionGenerationJob {
     workspace_id: Uuid,
     status: PrDescriptionGenerationStatus,
-    abort_handle: Option<tokio::task::AbortHandle>,
+    cancel_token: CancellationToken,
+    execution_process_id: Option<Uuid>,
     created_at: Instant,
 }
 
 static PR_DESCRIPTION_GENERATION_JOBS: LazyLock<
     tokio::sync::RwLock<HashMap<Uuid, PrDescriptionGenerationJob>>,
 > = LazyLock::new(|| tokio::sync::RwLock::new(HashMap::new()));
+
+const PR_GENERATE_GLOBAL_CONCURRENCY: usize = 2;
+
+struct PrGenerationScheduler {
+    active_workspaces: Arc<Mutex<HashSet<Uuid>>>,
+    semaphore: Arc<Semaphore>,
+}
+
+impl PrGenerationScheduler {
+    fn new(global_concurrency: usize) -> Self {
+        Self {
+            active_workspaces: Arc::new(Mutex::new(HashSet::new())),
+            semaphore: Arc::new(Semaphore::new(global_concurrency)),
+        }
+    }
+
+    fn try_acquire(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<PrGenerationAdmission, PrGenerationAdmissionError> {
+        let mut active_workspaces = self
+            .active_workspaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active_workspaces.contains(&workspace_id) {
+            return Err(PrGenerationAdmissionError::WorkspaceBusy);
+        }
+
+        let global_permit = self
+            .semaphore
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| PrGenerationAdmissionError::GlobalLimitReached)?;
+        active_workspaces.insert(workspace_id);
+
+        Ok(PrGenerationAdmission {
+            workspace_id,
+            active_workspaces: self.active_workspaces.clone(),
+            global_permit: Some(global_permit),
+        })
+    }
+}
+
+enum PrGenerationAdmissionError {
+    WorkspaceBusy,
+    GlobalLimitReached,
+}
+
+impl From<PrGenerationAdmissionError> for ApiError {
+    fn from(error: PrGenerationAdmissionError) -> Self {
+        match error {
+            PrGenerationAdmissionError::WorkspaceBusy => ApiError::Conflict(
+                "PR description generation is already running for this workspace.".to_string(),
+            ),
+            PrGenerationAdmissionError::GlobalLimitReached => ApiError::TooManyRequests(
+                "Too many PR description generation jobs are running. Try again later.".to_string(),
+            ),
+        }
+    }
+}
+
+struct PrGenerationAdmission {
+    workspace_id: Uuid,
+    active_workspaces: Arc<Mutex<HashSet<Uuid>>>,
+    global_permit: Option<OwnedSemaphorePermit>,
+}
+
+impl Drop for PrGenerationAdmission {
+    fn drop(&mut self) {
+        let mut active_workspaces = self
+            .active_workspaces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        active_workspaces.remove(&self.workspace_id);
+        self.global_permit.take();
+    }
+}
+
+static PR_GENERATION_SCHEDULER: LazyLock<PrGenerationScheduler> =
+    LazyLock::new(|| PrGenerationScheduler::new(PR_GENERATE_GLOBAL_CONCURRENCY));
 
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct PrDraft {
@@ -234,8 +319,25 @@ pub struct GetPrCommentsQuery {
 /// Whole-request budget for PR title/description generation: container reuse +
 /// agent run + capture. The client timeout must strictly exceed this.
 const PR_GENERATE_TIMEOUT: Duration = Duration::from_secs(120);
+const PR_GENERATE_RUNNING_JOB_TTL: Duration = Duration::from_secs(150);
+const PR_GENERATE_FINISHED_JOB_TTL: Duration = Duration::from_secs(10 * 60);
 /// How often to poll the execution-process status while waiting for the agent.
 const PR_GENERATE_POLL_INTERVAL: Duration = Duration::from_millis(750);
+
+fn prune_pr_description_generation_jobs(jobs: &mut HashMap<Uuid, PrDescriptionGenerationJob>) {
+    jobs.retain(|_, job| {
+        let ttl = if matches!(job.status, PrDescriptionGenerationStatus::Running) {
+            PR_GENERATE_RUNNING_JOB_TTL
+        } else {
+            PR_GENERATE_FINISHED_JOB_TTL
+        };
+        let keep = job.created_at.elapsed() < ttl;
+        if !keep {
+            job.cancel_token.cancel();
+        }
+        keep
+    });
+}
 
 /// Run a coding agent ONCE, read-only, in the workspace worktree that holds the
 /// branch's changes, and return a generated PR title + description for the user
@@ -254,7 +356,15 @@ pub async fn generate_pr_description(
                 .to_string(),
         ));
     }
-    let response = generate_pr_description_inner(&deployment, &workspace, request).await?;
+    let _admission = PR_GENERATION_SCHEDULER.try_acquire(workspace.id)?;
+    let response = generate_pr_description_inner(
+        &deployment,
+        &workspace,
+        request,
+        CancellationToken::new(),
+        None,
+    )
+    .await?;
     Ok(ResponseJson(ApiResponse::success(response)))
 }
 
@@ -272,33 +382,58 @@ pub async fn start_pr_description_generation(
     .await?
     .ok_or(RepoError::NotFound)?;
 
-    let job_id = Uuid::new_v4();
     let mut jobs = PR_DESCRIPTION_GENERATION_JOBS.write().await;
-    jobs.retain(|_, job| {
-        matches!(job.status, PrDescriptionGenerationStatus::Running)
-            || job.created_at.elapsed() < Duration::from_secs(10 * 60)
-    });
+    prune_pr_description_generation_jobs(&mut jobs);
+    drop(jobs);
+
+    let admission = PR_GENERATION_SCHEDULER.try_acquire(workspace.id)?;
+    let job_id = Uuid::new_v4();
+    let cancel_token = CancellationToken::new();
+    let mut jobs = PR_DESCRIPTION_GENERATION_JOBS.write().await;
     jobs.insert(
         job_id,
         PrDescriptionGenerationJob {
             workspace_id: workspace.id,
             status: PrDescriptionGenerationStatus::Running,
-            abort_handle: None,
+            cancel_token: cancel_token.clone(),
+            execution_process_id: None,
             created_at: Instant::now(),
         },
     );
     drop(jobs);
 
-    let task = tokio::spawn(async move {
-        let status = match generate_pr_description_inner(&deployment, &workspace, request).await {
-            Ok(result) => PrDescriptionGenerationStatus::Completed {
+    tokio::spawn(async move {
+        let _admission = admission;
+        let generation_cancel_token = cancel_token.clone();
+        let result = AssertUnwindSafe(generate_pr_description_inner(
+            &deployment,
+            &workspace,
+            request,
+            generation_cancel_token,
+            Some(job_id),
+        ))
+        .catch_unwind()
+        .await;
+
+        let status = match result {
+            Ok(Ok(result)) => PrDescriptionGenerationStatus::Completed {
                 title: result.title,
                 description: result.description,
             },
-            Err(error) => PrDescriptionGenerationStatus::Failed {
+            Ok(Err(error)) => PrDescriptionGenerationStatus::Failed {
                 error: error.to_string(),
             },
+            Err(_) => {
+                cleanup_tracked_pr_generation_execution(&deployment, job_id).await;
+                PrDescriptionGenerationStatus::Failed {
+                    error: "PR description generation stopped unexpectedly.".to_string(),
+                }
+            }
         };
+        if cancel_token.is_cancelled() {
+            PR_DESCRIPTION_GENERATION_JOBS.write().await.remove(&job_id);
+            return;
+        }
         if let Some(job) = PR_DESCRIPTION_GENERATION_JOBS
             .write()
             .await
@@ -307,16 +442,6 @@ pub async fn start_pr_description_generation(
             job.status = status;
         }
     });
-    let abort_handle = task.abort_handle();
-    if let Some(job) = PR_DESCRIPTION_GENERATION_JOBS
-        .write()
-        .await
-        .get_mut(&job_id)
-    {
-        job.abort_handle = Some(abort_handle);
-    } else {
-        abort_handle.abort();
-    }
 
     Ok(ResponseJson(ApiResponse::success(
         StartPrDescriptionGenerationResponse { job_id },
@@ -327,15 +452,14 @@ pub async fn cancel_pr_description_generation(
     Extension(workspace): Extension<Workspace>,
     Query(query): Query<PrDescriptionGenerationQuery>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
-    let mut jobs = PR_DESCRIPTION_GENERATION_JOBS.write().await;
-    if let Some(job) = jobs
+    let jobs = PR_DESCRIPTION_GENERATION_JOBS.read().await;
+    let cancel_token = jobs
         .get(&query.job_id)
         .filter(|job| job.workspace_id == workspace.id)
-    {
-        if let Some(abort_handle) = &job.abort_handle {
-            abort_handle.abort();
-        }
-        jobs.remove(&query.job_id);
+        .map(|job| job.cancel_token.clone());
+    drop(jobs);
+    if let Some(cancel_token) = cancel_token {
+        cancel_token.cancel();
     }
     Ok(ResponseJson(ApiResponse::success(())))
 }
@@ -369,6 +493,8 @@ async fn generate_pr_description_inner(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
     request: GeneratePrDescriptionRequest,
+    cancel_token: CancellationToken,
+    job_id: Option<Uuid>,
 ) -> Result<GeneratePrDescriptionResponse, ApiError> {
     let pool = &deployment.db().pool;
 
@@ -409,18 +535,21 @@ async fn generate_pr_description_inner(
         )
     };
 
-    let executor_config = resolve_generation_executor_config(&deployment, &workspace).await?;
+    let executor_config = resolve_generation_executor_config(deployment, workspace).await?;
 
-    let (title, description) = tokio::time::timeout(
-        PR_GENERATE_TIMEOUT,
-        run_pr_generation(&deployment, &workspace, executor_config, prompt),
+    let (title, description) = run_pr_generation(
+        deployment,
+        workspace,
+        executor_config,
+        prompt,
+        &cancel_token,
+        job_id,
     )
-    .await
-    .map_err(|_| {
-        ApiError::BadGateway(
-            "PR description generation timed out. Try again or write it manually.".to_string(),
-        )
-    })??;
+    .await?;
+
+    if cancel_token.is_cancelled() {
+        return Err(pr_generation_cancelled_error());
+    }
 
     save_pr_draft(
         pool,
@@ -500,8 +629,22 @@ async fn run_pr_generation(
     workspace: &Workspace,
     executor_config: ExecutorConfig,
     prompt: String,
+    cancel_token: &CancellationToken,
+    job_id: Option<Uuid>,
 ) -> Result<(String, String), ApiError> {
+    let deadline = tokio::time::Instant::now() + PR_GENERATE_TIMEOUT;
+
     for attempt in 1..=PR_GENERATE_MAX_ATTEMPTS {
+        if cancel_token.is_cancelled() {
+            return Err(pr_generation_cancelled_error());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(pr_generation_timeout_error());
+        }
+
+        // Starting an execution mutates both the DB and the child-process tracker.
+        // Let that operation reach a consistent state before honoring cancellation;
+        // dropping it inside select! could orphan a partially registered process.
         let ep = deployment
             .container()
             .start_oneshot_coding_agent_reusing_container(
@@ -511,18 +654,27 @@ async fn run_pr_generation(
                 Some("create-pr".to_string()),
             )
             .await?;
+        set_tracked_pr_generation_execution(job_id, Some(ep.id)).await;
 
         // Capture, then tear down the throwaway session regardless of outcome so
         // PR generation never adds a visible session/turn to the workspace.
         // Deletion cascades to the execution process + turn.
-        let outcome = capture_pr_generation(deployment, &ep).await;
-        if let Err(e) = Session::delete(&deployment.db().pool, ep.session_id).await {
-            tracing::warn!(
-                "Failed to delete throwaway PR-generation session {}: {}",
-                ep.session_id,
-                e
-            );
-        }
+        let outcome = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                terminate_pr_generation_execution(deployment, ep.id).await;
+                set_tracked_pr_generation_execution(job_id, None).await;
+                return Err(pr_generation_cancelled_error());
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                terminate_pr_generation_execution(deployment, ep.id).await;
+                set_tracked_pr_generation_execution(job_id, None).await;
+                return Err(pr_generation_timeout_error());
+            }
+            outcome = capture_pr_generation(deployment, &ep) => outcome,
+        };
+        delete_pr_generation_session(deployment, ep.session_id).await;
+        set_tracked_pr_generation_execution(job_id, None).await;
 
         match outcome {
             Ok(Some(pr)) => return Ok(pr),
@@ -545,6 +697,83 @@ async fn run_pr_generation(
     Err(ApiError::BadGateway(
         "The agent couldn't produce a valid PR title and description. Please try again or write them manually.".to_string(),
     ))
+}
+
+fn pr_generation_cancelled_error() -> ApiError {
+    ApiError::BadRequest("PR description generation was cancelled.".to_string())
+}
+
+fn pr_generation_timeout_error() -> ApiError {
+    ApiError::BadGateway(
+        "PR description generation timed out. Try again or write it manually.".to_string(),
+    )
+}
+
+async fn set_tracked_pr_generation_execution(
+    job_id: Option<Uuid>,
+    execution_process_id: Option<Uuid>,
+) {
+    let Some(job_id) = job_id else {
+        return;
+    };
+    if let Some(job) = PR_DESCRIPTION_GENERATION_JOBS
+        .write()
+        .await
+        .get_mut(&job_id)
+    {
+        job.execution_process_id = execution_process_id;
+    }
+}
+
+async fn cleanup_tracked_pr_generation_execution(deployment: &DeploymentImpl, job_id: Uuid) {
+    let execution_process_id = PR_DESCRIPTION_GENERATION_JOBS
+        .read()
+        .await
+        .get(&job_id)
+        .and_then(|job| job.execution_process_id);
+    if let Some(execution_process_id) = execution_process_id {
+        terminate_pr_generation_execution(deployment, execution_process_id).await;
+        set_tracked_pr_generation_execution(Some(job_id), None).await;
+    }
+}
+
+async fn terminate_pr_generation_execution(
+    deployment: &DeploymentImpl,
+    execution_process_id: Uuid,
+) {
+    let execution_process = match ExecutionProcess::find_by_id(
+        &deployment.db().pool,
+        execution_process_id,
+    )
+    .await
+    {
+        Ok(Some(execution_process)) => execution_process,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                "Failed to load PR-generation execution {execution_process_id} for termination: {error}"
+            );
+            return;
+        }
+    };
+
+    if execution_process.status == ExecutionProcessStatus::Running
+        && let Err(error) = deployment
+            .container()
+            .stop_execution(&execution_process, ExecutionProcessStatus::Killed)
+            .await
+    {
+        tracing::warn!("Failed to stop PR-generation execution {execution_process_id}: {error}");
+        return;
+    }
+
+    delete_pr_generation_session(deployment, execution_process.session_id).await;
+}
+
+async fn delete_pr_generation_session(deployment: &DeploymentImpl, session_id: Uuid) {
+    if let Err(error) = Session::delete(&deployment.db().pool, session_id).await {
+        tracing::warn!("Failed to delete throwaway PR-generation session {session_id}: {error}");
+    }
 }
 
 /// Poll the one-shot agent to completion and parse its final message. Mirrors
@@ -1425,10 +1654,100 @@ pub fn router() -> Router<DeploymentImpl> {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, time::Instant};
+
     use sqlx::SqlitePool;
+    use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
-    use super::{PrDraft, build_pr_generation_prompt, parse_pr_description, save_pr_draft};
+    use super::{
+        PR_GENERATE_FINISHED_JOB_TTL, PR_GENERATE_RUNNING_JOB_TTL, PrDescriptionGenerationJob,
+        PrDescriptionGenerationStatus, PrDraft, PrGenerationAdmissionError, PrGenerationScheduler,
+        build_pr_generation_prompt, parse_pr_description, prune_pr_description_generation_jobs,
+        save_pr_draft,
+    };
+
+    #[test]
+    fn pr_generation_scheduler_allows_only_one_job_per_workspace() {
+        let scheduler = PrGenerationScheduler::new(2);
+        let workspace_id = Uuid::new_v4();
+
+        let first = scheduler
+            .try_acquire(workspace_id)
+            .unwrap_or_else(|_| panic!("first admission should succeed"));
+        assert!(matches!(
+            scheduler.try_acquire(workspace_id),
+            Err(PrGenerationAdmissionError::WorkspaceBusy)
+        ));
+
+        drop(first);
+        assert!(scheduler.try_acquire(workspace_id).is_ok());
+    }
+
+    #[test]
+    fn pr_generation_scheduler_rejects_instead_of_queueing_at_global_limit() {
+        let scheduler = PrGenerationScheduler::new(1);
+        let first = scheduler
+            .try_acquire(Uuid::new_v4())
+            .unwrap_or_else(|_| panic!("first admission should succeed"));
+
+        assert!(matches!(
+            scheduler.try_acquire(Uuid::new_v4()),
+            Err(PrGenerationAdmissionError::GlobalLimitReached)
+        ));
+        assert_eq!(scheduler.semaphore.available_permits(), 0);
+
+        drop(first);
+        assert!(scheduler.try_acquire(Uuid::new_v4()).is_ok());
+    }
+
+    #[test]
+    fn stale_pr_generation_jobs_are_cancelled_and_removed() {
+        let stale_running_token = CancellationToken::new();
+        let stale_finished_token = CancellationToken::new();
+        let fresh_token = CancellationToken::new();
+        let mut jobs = HashMap::from([
+            (
+                Uuid::new_v4(),
+                PrDescriptionGenerationJob {
+                    workspace_id: Uuid::new_v4(),
+                    status: PrDescriptionGenerationStatus::Running,
+                    cancel_token: stale_running_token.clone(),
+                    execution_process_id: None,
+                    created_at: Instant::now() - PR_GENERATE_RUNNING_JOB_TTL,
+                },
+            ),
+            (
+                Uuid::new_v4(),
+                PrDescriptionGenerationJob {
+                    workspace_id: Uuid::new_v4(),
+                    status: PrDescriptionGenerationStatus::Failed {
+                        error: "failed".to_string(),
+                    },
+                    cancel_token: stale_finished_token.clone(),
+                    execution_process_id: None,
+                    created_at: Instant::now() - PR_GENERATE_FINISHED_JOB_TTL,
+                },
+            ),
+            (
+                Uuid::new_v4(),
+                PrDescriptionGenerationJob {
+                    workspace_id: Uuid::new_v4(),
+                    status: PrDescriptionGenerationStatus::Running,
+                    cancel_token: fresh_token.clone(),
+                    execution_process_id: None,
+                    created_at: Instant::now(),
+                },
+            ),
+        ]);
+
+        prune_pr_description_generation_jobs(&mut jobs);
+
+        assert_eq!(jobs.len(), 1);
+        assert!(stale_running_token.is_cancelled());
+        assert!(stale_finished_token.is_cancelled());
+        assert!(!fresh_token.is_cancelled());
+    }
 
     #[tokio::test]
     async fn generated_pr_draft_is_upserted_by_workspace_and_repo() {
