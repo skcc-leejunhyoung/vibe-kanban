@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { requireAuthenticated } from "@remote/shared/lib/route-auth";
-import { Workspaces } from "@/pages/workspaces/Workspaces";
-import { RemoteWorkspacesPageShell } from "@remote/pages/RemoteWorkspacesPageShell";
+import { HostGatedWorkspaces } from "@remote/pages/RemoteWorkspacesPageShell";
 
 export const Route = createFileRoute("/hosts/$hostId/workspaces_/create")({
   beforeLoad: async ({ location }) => {
@@ -11,9 +10,6 @@ export const Route = createFileRoute("/hosts/$hostId/workspaces_/create")({
 });
 
 function WorkspacesCreateRouteComponent() {
-  return (
-    <RemoteWorkspacesPageShell>
-      <Workspaces />
-    </RemoteWorkspacesPageShell>
-  );
+  const { hostId } = Route.useParams();
+  return <HostGatedWorkspaces hostId={hostId} />;
 }

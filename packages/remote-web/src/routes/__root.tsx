@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import {
   createRootRoute,
   Outlet,
@@ -41,7 +41,6 @@ import {
   isWorkspacesDestination,
 } from "@/shared/lib/routes/appNavigation";
 import NotFoundPage from "../pages/NotFoundPage";
-import { useWorkspaceHostSelectionStore } from "@/shared/stores/useWorkspaceHostSelectionStore";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -113,18 +112,10 @@ function RootLayout() {
   const location = useLocation();
   const { hostId } = useParams({ strict: false });
   const routeHostId = hostId ?? null;
-  const selectWorkspaceHost = useWorkspaceHostSelectionStore(
-    (state) => state.selectHost,
-  );
-
-  // Project and workspace detail routes both carry the concrete owner host for
-  // API routing. Keep that route scope in the shared unified-page selector;
-  // hostless routes deliberately retain the last selection.
-  useEffect(() => {
-    if (routeHostId) {
-      selectWorkspaceHost(routeHostId);
-    }
-  }, [routeHostId, selectWorkspaceHost]);
+  // The route's hostId is used only for API routing / app navigation below. It
+  // is deliberately NOT pushed into the workspace host selector: that selector
+  // is a user-controlled filter for the unified list and must stay put when a
+  // workspace on another host is opened. See useWorkspaceHostSelectionStore.
   const appNavigation = useMemo(
     () =>
       routeHostId

@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Group, Layout, Panel, Separator } from 'react-resizable-panels';
@@ -44,7 +45,20 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
-export function WorkspacesLayout() {
+interface WorkspacesLayoutProps {
+  /**
+   * When set, replaces the detail (main) pane while keeping the sidebar list
+   * mounted. Remote web uses this to show a host-unavailable notice for an
+   * offline host without blanking the unified multi-host list. It takes
+   * precedence over both the normal conversation view and create mode, since
+   * neither can function while the target host is unreachable.
+   */
+  detailUnavailable?: ReactNode;
+}
+
+export function WorkspacesLayout({
+  detailUnavailable,
+}: WorkspacesLayoutProps = {}) {
   const appNavigation = useAppNavigation();
   const {
     workspaceId,
@@ -312,7 +326,9 @@ export function WorkspacesLayout() {
     return (
       <div className="flex flex-1 min-h-0 h-full">
         <div className="flex-1 min-w-0 h-full">
-          {isCreateMode ? (
+          {detailUnavailable ? (
+            detailUnavailable
+          ) : isCreateMode ? (
             <CreateModeProvider
               key={createModeProviderKey}
               initialState={createModeSeed.state}
@@ -422,7 +438,9 @@ export function WorkspacesLayout() {
       )}
 
       <div className="flex-1 min-w-0 h-full">
-        {isCreateMode ? (
+        {detailUnavailable ? (
+          detailUnavailable
+        ) : isCreateMode ? (
           <CreateModeProvider
             key={createModeProviderKey}
             initialState={createModeSeed.state}

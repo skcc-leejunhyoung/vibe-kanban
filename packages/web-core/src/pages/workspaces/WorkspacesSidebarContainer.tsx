@@ -325,9 +325,10 @@ export function WorkspacesSidebarContainer({
         window.open(path, '_blank', 'noopener,noreferrer');
         return;
       }
-      if (workspaceHostId) {
-        setSelectedHostView(workspaceHostId);
-      }
+      // The host selector is a user-controlled list filter, not a mirror of the
+      // open workspace's route. Opening a workspace on another host must not
+      // reset an "All hosts" (or any) selection — that is the whole point of the
+      // unified multi-host list. Selection is only changed via the picker.
       if (onSelectWorkspaceOverride) {
         onSelectWorkspaceOverride(id, event, workspaceHostId);
         return;
@@ -353,7 +354,6 @@ export function WorkspacesSidebarContainer({
       isMobile,
       setMobileActiveTab,
       activeWorkspaces,
-      setSelectedHostView,
     ]
   );
 
