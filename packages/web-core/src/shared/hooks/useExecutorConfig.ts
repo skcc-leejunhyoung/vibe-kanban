@@ -5,7 +5,10 @@ import type {
   ExecutorProfile,
   ExecutorProfileId,
 } from 'shared/types';
-import { getVariantOptions } from '@/shared/lib/executor';
+import {
+  getInitialExecutorConfig,
+  getVariantOptions,
+} from '@/shared/lib/executor';
 import { withRecentReasoning } from '@/shared/lib/recentModels';
 import { usePresetOptions } from '@/shared/hooks/usePresetOptions';
 import { useModelSelectorConfig } from '@/shared/hooks/useExecutorDiscovery';
@@ -307,9 +310,7 @@ export function useExecutorConfig({
     (exec: BaseCodingAgent) => {
       setUserSelections({ executor: exec });
       // Persist with auto-resolved variant (no overrides)
-      const newVariants = getVariantOptions(exec, profiles);
-      const newVariant = newVariants[0] ?? null;
-      persist({ executor: exec, variant: newVariant });
+      persist(getInitialExecutorConfig(exec, profiles));
     },
     [profiles, persist]
   );

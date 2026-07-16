@@ -64,6 +64,16 @@ export function getVariantOptions(
   return sortVariantKeys(variants);
 }
 
+export function getInitialExecutorConfig(
+  executor: BaseCodingAgent,
+  profiles: ExecutorConfigs['executors'] | null | undefined
+): ExecutorConfig {
+  return {
+    executor,
+    variant: getVariantOptions(executor, profiles)[0] ?? null,
+  };
+}
+
 /**
  * Extract full ExecutorConfig from an ExecutorAction chain.
  * Traverses the action chain to find the first coding agent request.

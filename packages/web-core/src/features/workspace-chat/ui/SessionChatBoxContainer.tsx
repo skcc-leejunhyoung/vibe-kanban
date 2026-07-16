@@ -28,7 +28,10 @@ import { useExecutionProcesses } from '@/shared/hooks/useExecutionProcesses';
 import { useReviewOptional } from '@/shared/hooks/useReview';
 import { useActions } from '@/shared/hooks/useActions';
 import { useTodos } from '../model/hooks/useTodos';
-import { getLatestConfigFromProcesses } from '@/shared/lib/executor';
+import {
+  getInitialExecutorConfig,
+  getLatestConfigFromProcesses,
+} from '@/shared/lib/executor';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { useSessionMessageEditor } from '../model/hooks/useSessionMessageEditor';
 import { useSessionQueueInteraction } from '../model/hooks/useSessionQueueInteraction';
@@ -729,7 +732,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       setIsHandoffPending(true);
       try {
         const process = await sessionsApi.handoff(sessionId, {
-          executor_config: { executor: target, variant: null },
+          executor_config: getInitialExecutorConfig(target, profiles),
         });
         handleExecutorChange(target);
         addOptimisticProcess(process);
@@ -749,6 +752,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [
       sessionId,
       effectiveExecutor,
+      profiles,
       handleExecutorChange,
       addOptimisticProcess,
       onScrollToBottom,
