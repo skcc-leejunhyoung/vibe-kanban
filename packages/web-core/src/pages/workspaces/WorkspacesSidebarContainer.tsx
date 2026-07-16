@@ -542,12 +542,19 @@ export function WorkspacesSidebarContainer({
     }
   }, [onAddWorkspaceOverride, navigateToCreate, isMobile, setMobileActiveTab]);
 
-  const handleOpenWorkspaceActions = useCallback((workspaceId: string) => {
-    CommandBarDialog.show({
-      page: 'workspaceActions',
-      workspaceId,
-    });
-  }, []);
+  const handleOpenWorkspaceActions = useCallback(
+    (workspaceId: string) => {
+      const workspace = [...activeWorkspaces, ...archivedWorkspaces].find(
+        (candidate) => candidate.id === workspaceId
+      );
+      CommandBarDialog.show({
+        page: 'workspaceActions',
+        workspaceId,
+        hostId: workspace?.hostId,
+      });
+    },
+    [activeWorkspaces, archivedWorkspaces]
+  );
 
   const sidebarPersistKeys: WorkspacesSidebarPersistKeys = {
     raisedHand: PERSIST_KEYS.workspacesSidebarRaisedHand,

@@ -16,7 +16,8 @@ export interface ActionsContextValue {
     action: ActionDefinition,
     workspaceId?: string,
     repoIdOrProjectId?: string,
-    issueIds?: string[]
+    issueIds?: string[],
+    hostId?: string | null
   ) => Promise<void>;
 
   // Get resolved label for an action (supports dynamic labels via visibility context)

@@ -188,7 +188,8 @@ export interface WorkspaceActionDefinition extends ActionBase {
   requiresTarget: ActionTargetType.WORKSPACE;
   execute: (
     ctx: ActionExecutorContext,
-    workspaceId: string
+    workspaceId: string,
+    hostId?: string | null
   ) => Promise<void> | void;
 }
 

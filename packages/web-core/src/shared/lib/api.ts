@@ -571,8 +571,14 @@ export const workspacesApi = {
     return handleApiResponse<Workspace[]>(response);
   },
 
-  get: async (workspaceId: string): Promise<Workspace> => {
-    const response = await makeRequest(`/api/workspaces/${workspaceId}`);
+  get: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<Workspace> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}`,
+      hostId
+    );
     return handleApiResponse<Workspace>(response);
   },
 
@@ -586,12 +592,17 @@ export const workspacesApi = {
 
   update: async (
     workspaceId: string,
-    data: { archived?: boolean; pinned?: boolean; name?: string }
+    data: { archived?: boolean; pinned?: boolean; name?: string },
+    hostId?: string | null
   ): Promise<Workspace> => {
-    const response = await makeRequest(`/api/workspaces/${workspaceId}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}`,
+      hostId,
+      {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<Workspace>(response);
   },
 
@@ -618,7 +629,8 @@ export const workspacesApi = {
 
   delete: async (
     workspaceId: string,
-    deleteBranches?: boolean
+    deleteBranches?: boolean,
+    hostId?: string | null
   ): Promise<void> => {
     const params = new URLSearchParams();
     if (deleteBranches) {
@@ -626,7 +638,7 @@ export const workspacesApi = {
     }
     const queryString = params.toString();
     const url = `/api/workspaces/${workspaceId}${queryString ? `?${queryString}` : ''}`;
-    const response = await makeRequest(url, {
+    const response = await makeHostAwareRequest(url, hostId, {
       method: 'DELETE',
     });
     return handleApiResponse<void>(response);
@@ -644,10 +656,15 @@ export const workspacesApi = {
     return handleApiResponse<void>(response);
   },
 
-  unlinkFromIssue: async (workspaceId: string): Promise<void> => {
-    const response = await makeRequest(`/api/workspaces/${workspaceId}/links`, {
-      method: 'DELETE',
-    });
+  unlinkFromIssue: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/links`,
+      hostId,
+      { method: 'DELETE' }
+    );
     return handleApiResponse<void>(response);
   },
 
@@ -688,9 +705,13 @@ export const workspacesApi = {
     return handleApiResponse<{ workspace_path: string }>(response);
   },
 
-  getBranchStatus: async (workspaceId: string): Promise<RepoBranchStatus[]> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/git/status`
+  getBranchStatus: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<RepoBranchStatus[]> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/git/status`,
+      hostId
     );
     return handleApiResponse<RepoBranchStatus[]>(response);
   },

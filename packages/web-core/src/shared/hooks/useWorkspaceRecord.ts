@@ -15,6 +15,7 @@ export const workspaceRecordKeys = {
 
 type Options = {
   enabled?: boolean;
+  hostId?: string | null;
   /**
    * Served while the record fetch is pending — e.g. the workspace's row from
    * the list stream, whose shape is a superset of the record. Keeps the main
@@ -24,12 +25,13 @@ type Options = {
 };
 
 export function useWorkspaceRecord(workspaceId?: string, opts?: Options) {
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = opts?.hostId !== undefined ? opts.hostId : contextHostId;
   const enabled = (opts?.enabled ?? true) && !!workspaceId;
 
   return useQuery<Workspace>({
     queryKey: workspaceRecordKeys.byId(workspaceId, hostId),
-    queryFn: () => workspacesApi.get(workspaceId!),
+    queryFn: () => workspacesApi.get(workspaceId!, hostId),
     enabled,
     placeholderData: opts?.placeholderData,
   });

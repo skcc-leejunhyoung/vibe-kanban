@@ -127,25 +127,27 @@ async function resolveLinkedIssue(
 
 async function getWorkspace(
   queryClient: QueryClient,
-  workspaceId: string
+  workspaceId: string,
+  hostId?: string | null
 ): Promise<Workspace> {
   const cached = queryClient.getQueryData<Workspace>(
-    workspaceRecordKeys.byId(workspaceId)
+    workspaceRecordKeys.byId(workspaceId, hostId ?? null)
   );
   if (cached) {
     return cached;
   }
   // Fetch from API if not in cache
-  return workspacesApi.get(workspaceId);
+  return workspacesApi.get(workspaceId, hostId);
 }
 
 // Helper to invalidate workspace-related queries
 function invalidateWorkspaceQueries(
   queryClient: QueryClient,
-  workspaceId: string
+  workspaceId: string,
+  hostId?: string | null
 ) {
   queryClient.invalidateQueries({
-    queryKey: workspaceRecordKeys.byId(workspaceId),
+    queryKey: workspaceRecordKeys.byId(workspaceId, hostId ?? null),
   });
   queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
 }
@@ -281,13 +283,17 @@ export const Actions = {
     icon: PencilSimpleIcon,
     shortcut: 'W R',
     requiresTarget: ActionTargetType.WORKSPACE,
-    execute: async (ctx, workspaceId) => {
-      const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+    execute: async (ctx, workspaceId, hostId) => {
+      const workspace = await getWorkspace(
+        ctx.queryClient,
+        workspaceId,
+        hostId
+      );
       await RenameWorkspaceDialog.show({
         currentName: workspace.name || workspace.branch,
         onRename: async (newName) => {
-          await workspacesApi.update(workspaceId, { name: newName });
-          invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+          await workspacesApi.update(workspaceId, { name: newName }, hostId);
+          invalidateWorkspaceQueries(ctx.queryClient, workspaceId, hostId);
         },
       });
     },
@@ -299,12 +305,20 @@ export const Actions = {
     icon: PushPinIcon,
     shortcut: 'W P',
     requiresTarget: ActionTargetType.WORKSPACE,
-    execute: async (ctx, workspaceId) => {
-      const workspace = await getWorkspace(ctx.queryClient, workspaceId);
-      await workspacesApi.update(workspaceId, {
-        pinned: !workspace.pinned,
-      });
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+    execute: async (ctx, workspaceId, hostId) => {
+      const workspace = await getWorkspace(
+        ctx.queryClient,
+        workspaceId,
+        hostId
+      );
+      await workspacesApi.update(
+        workspaceId,
+        {
+          pinned: !workspace.pinned,
+        },
+        hostId
+      );
+      invalidateWorkspaceQueries(ctx.queryClient, workspaceId, hostId);
     },
   },
 
@@ -322,8 +336,12 @@ export const Actions = {
     // `layoutMode` is 'kanban'.
     isVisible: (ctx) => ctx.hasWorkspace,
     isActive: (ctx) => ctx.workspaceArchived,
-    execute: async (ctx, workspaceId) => {
-      const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+    execute: async (ctx, workspaceId, hostId) => {
+      const workspace = await getWorkspace(
+        ctx.queryClient,
+        workspaceId,
+        hostId
+      );
       const wasArchived = workspace.archived;
 
       // Toggle the archive state without navigating anywhere. Archiving — from
@@ -332,8 +350,12 @@ export const Actions = {
       // moves between the active and Archived sections. (Previously this jumped
       // to a neighbouring workspace, which on mobile yanked the user into a
       // different workspace's screen.)
-      await workspacesApi.update(workspaceId, { archived: !wasArchived });
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+      await workspacesApi.update(
+        workspaceId,
+        { archived: !wasArchived },
+        hostId
+      );
+      invalidateWorkspaceQueries(ctx.queryClient, workspaceId, hostId);
     },
   },
 
@@ -344,8 +366,12 @@ export const Actions = {
     shortcut: 'W X',
     variant: 'destructive',
     requiresTarget: ActionTargetType.WORKSPACE,
-    execute: async (ctx, workspaceId) => {
-      const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+    execute: async (ctx, workspaceId, hostId) => {
+      const workspace = await getWorkspace(
+        ctx.queryClient,
+        workspaceId,
+        hostId
+      );
 
       // Check if workspace is linked to a remote issue
       const remoteWs = ctx.remoteWorkspaces.find(
@@ -360,7 +386,7 @@ export const Actions = {
       let branchStatus: RepoBranchStatus[] = [];
       let branchStatusFailed = false;
       try {
-        branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+        branchStatus = await workspacesApi.getBranchStatus(workspaceId, hostId);
       } catch {
         branchStatusFailed = true;
       }
@@ -387,11 +413,11 @@ export const Actions = {
           ? getNextWorkspaceId(ctx.activeWorkspaces, workspaceId)
           : null;
 
-        await workspacesApi.delete(workspaceId, result.deleteBranches);
+        await workspacesApi.delete(workspaceId, result.deleteBranches, hostId);
 
         // Unlink from remote issue after successful deletion
         if (result.unlinkFromIssue) {
-          await workspacesApi.unlinkFromIssue(workspaceId);
+          await workspacesApi.unlinkFromIssue(workspaceId, hostId);
         }
         ctx.queryClient.invalidateQueries({
           queryKey: workspaceSummaryKeys.all,

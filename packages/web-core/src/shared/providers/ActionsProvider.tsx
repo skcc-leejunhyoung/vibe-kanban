@@ -268,7 +268,8 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       action: ActionDefinition,
       workspaceId?: string,
       repoIdOrProjectId?: string,
-      issueIds?: string[]
+      issueIds?: string[],
+      hostId?: string | null
     ): Promise<void> => {
       try {
         switch (action.requiresTarget) {
@@ -282,7 +283,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
                 `Action "${action.id}" requires a workspace target`
               );
             }
-            await action.execute(executorContext, workspaceId);
+            await action.execute(executorContext, workspaceId, hostId);
             break;
 
           case ActionTargetType.GIT:

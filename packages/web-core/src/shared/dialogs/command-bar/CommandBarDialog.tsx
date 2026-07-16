@@ -28,6 +28,7 @@ import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 export interface CommandBarDialogProps {
   page?: PageId;
   workspaceId?: string;
+  hostId?: string | null;
   repoId?: string;
   /** Issue context for kanban mode - projectId */
   projectId?: string;
@@ -38,12 +39,14 @@ export interface CommandBarDialogProps {
 function CommandBarContent({
   page,
   workspaceId,
+  hostId,
   initialRepoId,
   propProjectId,
   propIssueIds,
 }: {
   page: PageId;
   workspaceId?: string;
+  hostId?: string | null;
   initialRepoId?: string;
   propProjectId?: string;
   propIssueIds?: string[];
@@ -79,7 +82,9 @@ function CommandBarContent({
   // Fetch the *target* workspace record (host-scoped) so labels and visibility
   // reflect the workspace the menu was opened on, regardless of which
   // workspace — if any — is selected in the current route.
-  const { data: workspace } = useWorkspaceRecord(effectiveWorkspaceId);
+  const { data: workspace } = useWorkspaceRecord(effectiveWorkspaceId, {
+    hostId,
+  });
 
   // The command bar is always opened against a specific target workspace (e.g.
   // the three-dot menu on a workspace row). On list-only routes — such as the
@@ -168,7 +173,13 @@ function CommandBarContent({
           executeAction(effect.action, effectiveWorkspaceId, repoId);
         }
       } else {
-        executeAction(effect.action, effectiveWorkspaceId);
+        executeAction(
+          effect.action,
+          effectiveWorkspaceId,
+          undefined,
+          undefined,
+          hostId
+        );
       }
     },
     [
@@ -178,6 +189,7 @@ function CommandBarContent({
       effectiveWorkspaceId,
       effectiveProjectId,
       effectiveIssueIds,
+      hostId,
       repos,
       initialRepoId,
     ]
@@ -230,6 +242,7 @@ const CommandBarDialogImpl = create<CommandBarDialogProps>(
   ({
     page = 'root',
     workspaceId,
+    hostId,
     repoId: initialRepoId,
     projectId: propProjectId,
     issueIds: propIssueIds,
@@ -237,6 +250,7 @@ const CommandBarDialogImpl = create<CommandBarDialogProps>(
     <CommandBarContent
       page={page}
       workspaceId={workspaceId}
+      hostId={hostId}
       initialRepoId={initialRepoId}
       propProjectId={propProjectId}
       propIssueIds={propIssueIds}

@@ -80,7 +80,7 @@ describe('Actions.ArchiveWorkspace', () => {
 
     await Actions.ArchiveWorkspace.execute(ctx, 'ws1');
 
-    expect(update).toHaveBeenCalledWith('ws1', { archived: true });
+    expect(update).toHaveBeenCalledWith('ws1', { archived: true }, undefined);
     expect(invalidateQueries).toHaveBeenCalled();
     // Regression guard: archiving must never jump to a neighbouring workspace.
     // This previously yanked mobile users into a different workspace's screen.
@@ -95,7 +95,7 @@ describe('Actions.ArchiveWorkspace', () => {
 
     await Actions.ArchiveWorkspace.execute(ctx, 'ws2');
 
-    expect(update).toHaveBeenCalledWith('ws2', { archived: true });
+    expect(update).toHaveBeenCalledWith('ws2', { archived: true }, undefined);
     expect(selectWorkspace).not.toHaveBeenCalled();
   });
 
@@ -104,8 +104,26 @@ describe('Actions.ArchiveWorkspace', () => {
 
     await Actions.ArchiveWorkspace.execute(ctx, 'ws1');
 
-    expect(update).toHaveBeenCalledWith('ws1', { archived: false });
+    expect(update).toHaveBeenCalledWith('ws1', { archived: false }, undefined);
     expect(selectWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('sends archive mutations to the workspace host from the unified list', async () => {
+    const { ctx, invalidateQueries } = makeCtx({
+      id: 'remote-ws',
+      archived: false,
+    });
+
+    await Actions.ArchiveWorkspace.execute(ctx, 'remote-ws', 'host-2');
+
+    expect(update).toHaveBeenCalledWith(
+      'remote-ws',
+      { archived: true },
+      'host-2'
+    );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['workspaceRecord', 'host-2', 'remote-ws'],
+    });
   });
 });
 
