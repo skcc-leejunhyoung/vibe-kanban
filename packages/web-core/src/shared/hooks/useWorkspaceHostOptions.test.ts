@@ -45,13 +45,25 @@ describe('buildRelayHostOptions', () => {
     expect(options[0].status).toBe('offline');
   });
 
-  it('marks hosts not paired in this browser as unpaired', () => {
+  it('excludes hosts not paired directly with this browser', () => {
     const options = buildRelayHostOptions(
       [relayHost({ id: 'h1', status: 'online' })],
       []
     );
 
-    expect(options[0].status).toBe('unpaired');
+    expect(options).toEqual([]);
+  });
+
+  it('does not include hosts paired through another host', () => {
+    const options = buildRelayHostOptions(
+      [
+        relayHost({ id: 'm4', name: 'm4-mbp' }),
+        relayHost({ id: 'i9', name: 'i9-mbp' }),
+      ],
+      [pairedHost('m4')]
+    );
+
+    expect(options).toEqual([{ id: 'm4', name: 'm4-mbp', status: 'online' }]);
   });
 
   it('returns an empty list when there are no relay hosts', () => {

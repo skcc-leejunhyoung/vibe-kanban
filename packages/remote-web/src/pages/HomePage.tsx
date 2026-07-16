@@ -207,10 +207,7 @@ export default function HomePage() {
                       }`}
                       onClick={() => {
                         if (isOnline) {
-                          navigate({
-                            to: "/hosts/$hostId/workspaces",
-                            params: { hostId: host.id },
-                          });
+                          navigate({ to: "/workspaces" });
                         } else if (isUnpaired) {
                           openRelaySettings(host.id);
                         }

@@ -209,10 +209,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const handleHostClick = useCallback(
     (hostId: string, status: AppBarHostStatus) => {
       if (status === "online") {
-        navigate({
-          to: "/hosts/$hostId/workspaces",
-          params: { hostId },
-        });
+        navigate({ to: "/workspaces" });
         return;
       }
 

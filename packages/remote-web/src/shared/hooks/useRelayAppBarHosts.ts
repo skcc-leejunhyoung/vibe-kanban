@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { AppBarHost } from "@vibe/ui/components/AppBar";
-import type { RelayHost } from "shared/remote-types";
+import { buildRelayHostOptions } from "@/shared/hooks/useWorkspaceHostOptions";
 import { listPairedRelayHosts } from "@/shared/lib/relayPairingStorage";
 import { listRelayHosts } from "@/shared/lib/remoteApi";
 import {
@@ -12,17 +12,6 @@ import {
 interface UseRelayAppBarHostsResult {
   hosts: AppBarHost[];
   isLoading: boolean;
-}
-
-function mapRelayHostStatus(
-  host: RelayHost,
-  pairedHostIds: Set<string>,
-): AppBarHost["status"] {
-  if (!pairedHostIds.has(host.id)) {
-    return "unpaired";
-  }
-
-  return host.status === "online" ? "online" : "offline";
 }
 
 export function useRelayAppBarHosts(
@@ -57,15 +46,7 @@ export function useRelayAppBarHosts(
     }
 
     const relayHosts = hostsQuery.data ?? [];
-    const pairedHostIds = new Set(
-      (pairedHostsQuery.data ?? []).map((host) => host.host_id),
-    );
-
-    return relayHosts.map((host) => ({
-      id: host.id,
-      name: host.name,
-      status: mapRelayHostStatus(host, pairedHostIds),
-    }));
+    return buildRelayHostOptions(relayHosts, pairedHostsQuery.data ?? []);
   }, [enabled, hostsQuery.data, pairedHostsQuery.data]);
 
   return {

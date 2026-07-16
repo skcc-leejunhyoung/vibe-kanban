@@ -12,21 +12,14 @@ import {
   RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
 } from '@/shared/lib/relayHostQueryKeys';
 
-function mapRelayHostStatus(
-  host: RelayHost,
-  pairedHostIds: Set<string>
-): AppBarHostStatus {
-  if (!pairedHostIds.has(host.id)) {
-    return 'unpaired';
-  }
-
+function mapRelayHostStatus(host: RelayHost): AppBarHostStatus {
   return host.status === 'online' ? 'online' : 'offline';
 }
 
 /**
- * Build the relay host options shown to the remote (cloud) web app, joining
- * the relay cloud host list with the browser's IndexedDB pairings. Mirrors the
- * remote AppBar host switcher so both surfaces stay in sync.
+ * Build the directly reachable relay host options shown to the remote web app.
+ * Hosts known only through another machine are deliberately excluded: this
+ * browser must have its own IndexedDB pairing for every selectable host.
  */
 export function buildRelayHostOptions(
   relayHosts: RelayHost[],
@@ -34,11 +27,13 @@ export function buildRelayHostOptions(
 ): AppBarHost[] {
   const pairedHostIds = new Set(pairedHosts.map((host) => host.host_id));
 
-  return relayHosts.map((host) => ({
-    id: host.id,
-    name: host.name,
-    status: mapRelayHostStatus(host, pairedHostIds),
-  }));
+  return relayHosts
+    .filter((host) => pairedHostIds.has(host.id))
+    .map((host) => ({
+      id: host.id,
+      name: host.name,
+      status: mapRelayHostStatus(host),
+    }));
 }
 
 /**

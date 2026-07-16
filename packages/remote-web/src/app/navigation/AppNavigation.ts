@@ -133,12 +133,6 @@ function destinationToRemoteTarget(
     case "onboarding-sign-in":
       return { to: "/" } as const;
     case "workspaces":
-      if (destination.hostId !== undefined && effectiveHostId) {
-        return {
-          to: "/hosts/$hostId/workspaces",
-          params: { hostId: effectiveHostId },
-        } as const;
-      }
       return { to: "/workspaces" } as const;
     case "workspaces-create":
       if (effectiveHostId) {

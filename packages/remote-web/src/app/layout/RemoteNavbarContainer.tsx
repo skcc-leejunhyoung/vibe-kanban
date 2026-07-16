@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
-import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   MOBILE_TABS,
   Navbar,
@@ -110,7 +110,6 @@ export function RemoteNavbarContainer({
   mobileUserSlot,
 }: RemoteNavbarContainerProps) {
   const location = useLocation();
-  const { hostId } = useParams({ strict: false });
   const mobileWorkspaceTitle = useMobileWorkspaceTitle((s) => s.title);
   const { executeAction } = useActions();
   const { workspace: selectedWorkspace } = useWorkspaceContext();
@@ -126,9 +125,9 @@ export function RemoteNavbarContainer({
   const isOnWorkspaceView = /^\/hosts\/[^/]+\/workspaces\/[^/]+/.test(
     location.pathname,
   );
-  const isOnWorkspaceList = /^\/hosts\/[^/]+\/workspaces\/?$/.test(
-    location.pathname,
-  );
+  const isOnWorkspaceList =
+    /^\/workspaces\/?$/.test(location.pathname) ||
+    /^\/hosts\/[^/]+\/workspaces\/?$/.test(location.pathname);
 
   useEffect(() => {
     if (isOnWorkspaceView) {
@@ -199,9 +198,9 @@ export function RemoteNavbarContainer({
     mobileWorkspaceTitle,
   ]);
 
-  // The workspace list is the host's top-level screen, so it opens the drawer
-  // (like local mobile) instead of a back button — this is the only mobile path
-  // to the Quick chat entry. The workspace detail view keeps the back button.
+  // The unified workspace list opens the drawer (like local mobile) instead of
+  // a back button. A concrete workspace still carries its owner host and keeps
+  // the back button.
   const mobileShowBack = isOnWorkspaceView;
 
   const handleNavigateBack = useCallback(() => {
@@ -211,15 +210,11 @@ export function RemoteNavbarContainer({
         params: { projectId },
       });
     } else if (isOnWorkspaceView) {
-      if (!hostId) {
-        navigate({ to: "/" });
-        return;
-      }
-      navigate({ to: "/hosts/$hostId/workspaces", params: { hostId } });
+      navigate({ to: "/workspaces" });
     } else {
       navigate({ to: "/" });
     }
-  }, [navigate, hostId, isOnProjectPage, projectId, isOnWorkspaceView]);
+  }, [navigate, isOnProjectPage, projectId, isOnWorkspaceView]);
 
   const handleOpenSettings = useCallback(() => {
     SettingsDialog.show();

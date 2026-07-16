@@ -293,10 +293,14 @@ export function RemoteCloudHostsSettingsCardContent({
     }
 
     onClose?.();
-    void navigate({
-      to: '/hosts/$hostId/workspaces',
-      params: { hostId },
-    });
+    if (isRemoteMode) {
+      void navigate({ to: '/workspaces' });
+    } else {
+      void navigate({
+        to: '/hosts/$hostId/workspaces',
+        params: { hostId },
+      });
+    }
   };
 
   return (
