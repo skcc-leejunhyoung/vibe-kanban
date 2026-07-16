@@ -238,12 +238,12 @@ export const Actions = {
     icon: CopyIcon,
     shortcut: 'W D',
     requiresTarget: ActionTargetType.WORKSPACE,
-    execute: async (ctx, workspaceId) => {
+    execute: async (ctx, workspaceId, hostId) => {
       try {
         const [firstMessage, repos, workspaceWithSession] = await Promise.all([
-          workspacesApi.getFirstUserMessage(workspaceId),
-          workspacesApi.getRepos(workspaceId),
-          workspacesApi.getWithSession(workspaceId),
+          workspacesApi.getFirstUserMessage(workspaceId, hostId),
+          workspacesApi.getRepos(workspaceId, hostId),
+          workspacesApi.getWithSession(workspaceId, hostId),
         ]);
 
         const linkedIssue = await resolveLinkedIssue(
@@ -270,9 +270,9 @@ export const Actions = {
           executorConfig,
         });
         setCreateModeSeedState(createState);
-        ctx.appNavigation.goToWorkspacesCreate();
+        ctx.appNavigation.goToWorkspacesCreate({ hostId });
       } catch {
-        ctx.appNavigation.goToWorkspacesCreate();
+        ctx.appNavigation.goToWorkspacesCreate({ hostId });
       }
     },
   },
@@ -442,9 +442,10 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     getTooltip: () => 'Review changes with agent',
-    execute: async (_ctx, workspaceId) => {
+    execute: async (_ctx, workspaceId, hostId) => {
       await StartReviewDialog.show({
         workspaceId,
+        hostId,
       });
     },
   },
@@ -455,11 +456,11 @@ export const Actions = {
     icon: GitForkIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
-    execute: async (ctx, workspaceId) => {
+    execute: async (ctx, workspaceId, hostId) => {
       try {
         const [workspace, repos] = await Promise.all([
-          getWorkspace(ctx.queryClient, workspaceId),
-          workspacesApi.getRepos(workspaceId),
+          getWorkspace(ctx.queryClient, workspaceId, hostId),
+          workspacesApi.getRepos(workspaceId, hostId),
         ]);
         const linkedIssue = await resolveLinkedIssue(
           workspaceId,
@@ -477,9 +478,9 @@ export const Actions = {
           linkedIssue,
         });
         setCreateModeSeedState(createState);
-        ctx.appNavigation.goToWorkspacesCreate();
+        ctx.appNavigation.goToWorkspacesCreate({ hostId });
       } catch {
-        ctx.appNavigation.goToWorkspacesCreate();
+        ctx.appNavigation.goToWorkspacesCreate({ hostId });
       }
     },
   },
@@ -1585,8 +1586,8 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     isEnabled: (ctx) => !ctx.isAttemptRunning,
-    execute: async (_ctx, workspaceId) => {
-      const result = await workspacesApi.runSetupScript(workspaceId);
+    execute: async (_ctx, workspaceId, hostId) => {
+      const result = await workspacesApi.runSetupScript(workspaceId, hostId);
       if (!result.success) {
         if (result.error?.type === 'no_script_configured') {
           throw new Error('No setup script configured for this project');
@@ -1607,8 +1608,8 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     isEnabled: (ctx) => !ctx.isAttemptRunning,
-    execute: async (_ctx, workspaceId) => {
-      const result = await workspacesApi.runCleanupScript(workspaceId);
+    execute: async (_ctx, workspaceId, hostId) => {
+      const result = await workspacesApi.runCleanupScript(workspaceId, hostId);
       if (!result.success) {
         if (result.error?.type === 'no_script_configured') {
           throw new Error('No cleanup script configured for this project');
@@ -1629,8 +1630,8 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     isEnabled: (ctx) => !ctx.isAttemptRunning,
-    execute: async (_ctx, workspaceId) => {
-      const result = await workspacesApi.runArchiveScript(workspaceId);
+    execute: async (_ctx, workspaceId, hostId) => {
+      const result = await workspacesApi.runArchiveScript(workspaceId, hostId);
       if (!result.success) {
         if (result.error?.type === 'no_script_configured') {
           throw new Error('No archive script configured for this project');

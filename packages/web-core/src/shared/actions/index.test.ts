@@ -14,6 +14,9 @@ vi.mock('@/shared/lib/api', () => ({
     get: vi.fn(),
     getBranchStatus: vi.fn(),
     merge: vi.fn(),
+    runSetupScript: vi.fn(),
+    runCleanupScript: vi.fn(),
+    runArchiveScript: vi.fn(),
   },
   relayApi: {},
   repoApi: {},
@@ -34,6 +37,9 @@ import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
 const merge = vi.mocked(workspacesApi.merge);
+const runSetupScript = vi.mocked(workspacesApi.runSetupScript);
+const runCleanupScript = vi.mocked(workspacesApi.runCleanupScript);
+const runArchiveScript = vi.mocked(workspacesApi.runArchiveScript);
 const showConfirm = vi.mocked(ConfirmDialog.show);
 
 // Build a minimal action context. Seeding the query cache with the workspace
@@ -203,5 +209,20 @@ describe('Actions.GitMerge', () => {
     );
     expect(merge).toHaveBeenCalledWith('ws1', { repo_id: 'repo1' });
     expect(invalidateQueries).toHaveBeenCalled();
+  });
+});
+
+describe('workspace script host scope', () => {
+  it.each([
+    [Actions.RunSetupScript, runSetupScript],
+    [Actions.RunCleanupScript, runCleanupScript],
+    [Actions.RunArchiveScript, runArchiveScript],
+  ])('forwards the target host for $id', async (action, apiCall) => {
+    apiCall.mockResolvedValue({ success: true, data: {} } as never);
+    const { ctx } = makeCtx({ id: 'remote-ws' });
+
+    await action.execute(ctx, 'remote-ws', 'host-2');
+
+    expect(apiCall).toHaveBeenCalledWith('remote-ws', 'host-2');
   });
 });

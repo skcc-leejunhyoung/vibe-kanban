@@ -354,9 +354,13 @@ export const handleApiResponse = async <T, E = T>(
 
 // Sessions API
 export const sessionsApi = {
-  getByWorkspace: async (workspaceId: string): Promise<Session[]> => {
-    const response = await makeRequest(
-      `/api/sessions?workspace_id=${workspaceId}`
+  getByWorkspace: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<Session[]> => {
+    const response = await makeHostAwareRequest(
+      `/api/sessions?workspace_id=${workspaceId}`,
+      hostId
     );
     return handleApiResponse<Session[]>(response);
   },
@@ -366,13 +370,16 @@ export const sessionsApi = {
     return handleApiResponse<Session>(response);
   },
 
-  create: async (data: {
-    workspace_id: string;
-    executor?: string;
-    variant?: string | null;
-    name?: string;
-  }): Promise<Session> => {
-    const response = await makeRequest('/api/sessions', {
+  create: async (
+    data: {
+      workspace_id: string;
+      executor?: string;
+      variant?: string | null;
+      name?: string;
+    },
+    hostId?: string | null
+  ): Promise<Session> => {
+    const response = await makeHostAwareRequest('/api/sessions', hostId, {
       method: 'POST',
       body: JSON.stringify(data),
     });
@@ -403,12 +410,14 @@ export const sessionsApi = {
 
   startReview: async (
     sessionId: string,
-    data: StartReviewRequest
+    data: StartReviewRequest,
+    hostId?: string | null
   ): Promise<ExecutionProcess> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/review`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/review`,
+      hostId,
+      { method: 'POST', body: JSON.stringify(data) }
+    );
     return handleApiResponse<ExecutionProcess, ReviewError>(response);
   },
 
@@ -436,11 +445,16 @@ export const sessionsApi = {
   },
 
   runSetupScript: async (
-    sessionId: string
+    sessionId: string,
+    hostId?: string | null
   ): Promise<Result<ExecutionProcess, RunScriptError>> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/setup`, {
-      method: 'POST',
-    });
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/setup`,
+      hostId,
+      {
+        method: 'POST',
+      }
+    );
     return handleApiResponseAsResult<ExecutionProcess, RunScriptError>(
       response
     );
@@ -608,11 +622,12 @@ export const workspacesApi = {
 
   /** Get workspace with latest session */
   getWithSession: async (
-    workspaceId: string
+    workspaceId: string,
+    hostId?: string | null
   ): Promise<WorkspaceWithSession> => {
     const [workspace, sessions] = await Promise.all([
-      workspacesApi.get(workspaceId),
-      sessionsApi.getByWorkspace(workspaceId),
+      workspacesApi.get(workspaceId, hostId),
+      sessionsApi.getByWorkspace(workspaceId, hostId),
     ]);
     return createWorkspaceWithSession(workspace, sessions[0]);
   },
@@ -735,14 +750,24 @@ export const workspacesApi = {
     return handleApiResponse<Diff[]>(response);
   },
 
-  getRepos: async (workspaceId: string): Promise<RepoWithTargetBranch[]> => {
-    const response = await makeRequest(`/api/workspaces/${workspaceId}/repos`);
+  getRepos: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<RepoWithTargetBranch[]> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/repos`,
+      hostId
+    );
     return handleApiResponse<RepoWithTargetBranch[]>(response);
   },
 
-  getFirstUserMessage: async (workspaceId: string): Promise<string | null> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/messages/first`
+  getFirstUserMessage: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<string | null> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/messages/first`,
+      hostId
     );
     return handleApiResponse<string | null>(response);
   },
@@ -1117,23 +1142,24 @@ export const workspacesApi = {
   },
 
   runSetupScript: async (
-    workspaceId: string
+    workspaceId: string,
+    hostId?: string | null
   ): Promise<Result<ExecutionProcess, RunScriptError>> => {
-    const sessions = await sessionsApi.getByWorkspace(workspaceId);
+    const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
     const session =
       sessions[0] ??
-      (await sessionsApi.create({
-        workspace_id: workspaceId,
-      }));
+      (await sessionsApi.create({ workspace_id: workspaceId }, hostId));
 
-    return sessionsApi.runSetupScript(session.id);
+    return sessionsApi.runSetupScript(session.id, hostId);
   },
 
   runCleanupScript: async (
-    workspaceId: string
+    workspaceId: string,
+    hostId?: string | null
   ): Promise<Result<ExecutionProcess, RunScriptError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/execution/cleanup`,
+      hostId,
       {
         method: 'POST',
       }
@@ -1144,10 +1170,12 @@ export const workspacesApi = {
   },
 
   runArchiveScript: async (
-    workspaceId: string
+    workspaceId: string,
+    hostId?: string | null
   ): Promise<Result<ExecutionProcess, RunScriptError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/execution/archive`,
+      hostId,
       {
         method: 'POST',
       }

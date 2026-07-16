@@ -38,7 +38,7 @@ export function workspaceReposQuery(
 ) {
   return {
     queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),
-    queryFn: () => workspacesApi.getRepos(workspaceId!),
+    queryFn: () => workspacesApi.getRepos(workspaceId!, hostId),
   };
 }
 

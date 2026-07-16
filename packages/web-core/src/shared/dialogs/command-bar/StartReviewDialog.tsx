@@ -20,7 +20,7 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { sessionsApi } from '@/shared/lib/api';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
 import type { BaseCodingAgent, ExecutorProfileId } from 'shared/types';
@@ -28,22 +28,45 @@ import type { BaseCodingAgent, ExecutorProfileId } from 'shared/types';
 export interface StartReviewDialogProps {
   sessionId?: string;
   workspaceId: string;
+  hostId?: string | null;
   reviewMarkdown?: string;
   defaultProfile?: ExecutorProfileId | null;
   onSuccess?: (newSessionId?: string) => void;
 }
 
 const StartReviewDialogImpl = create<StartReviewDialogProps>(
-  ({ sessionId, workspaceId, reviewMarkdown, defaultProfile, onSuccess }) => {
+  ({
+    sessionId,
+    workspaceId,
+    hostId: targetHostId,
+    reviewMarkdown,
+    defaultProfile,
+    onSuccess,
+  }) => {
     const modal = useModal();
     const queryClient = useQueryClient();
-    const hostId = useHostId();
+    const contextHostId = useHostId();
+    const hostId = targetHostId !== undefined ? targetHostId : contextHostId;
     const { profiles, config } = useUserSystem();
-    const { sessions, selectedSession, selectedSessionId, selectSession } =
-      useWorkspaceContext();
+    const {
+      workspaceId: contextWorkspaceId,
+      selectedSession: contextSelectedSession,
+      selectedSessionId: contextSelectedSessionId,
+      selectSession,
+    } = useWorkspaceContext();
+    const { data: sessions = [] } = useQuery({
+      queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+      queryFn: () => sessionsApi.getByWorkspace(workspaceId, hostId),
+    });
     const { t } = useTranslation(['tasks', 'common']);
 
-    const resolvedSessionId = sessionId ?? selectedSessionId;
+    const isCurrentWorkspace =
+      contextWorkspaceId === workspaceId && contextHostId === hostId;
+    const selectedSessionId = isCurrentWorkspace
+      ? contextSelectedSessionId
+      : undefined;
+    const selectedSession = isCurrentWorkspace ? contextSelectedSession : null;
+    const resolvedSessionId = sessionId ?? selectedSessionId ?? sessions[0]?.id;
     const resolvedSession = useMemo(() => {
       if (!resolvedSessionId) return selectedSession ?? null;
       return (
@@ -90,12 +113,15 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
         let targetSessionId = resolvedSessionId;
 
         if (createNewSession || !resolvedSessionId) {
-          const session = await sessionsApi.create({
-            workspace_id: workspaceId,
-            executor: effectiveProfile.executor,
-            variant: effectiveProfile.variant,
-            name: t('startReviewDialog.sessionName'),
-          });
+          const session = await sessionsApi.create(
+            {
+              workspace_id: workspaceId,
+              executor: effectiveProfile.executor,
+              variant: effectiveProfile.variant,
+              name: t('startReviewDialog.sessionName'),
+            },
+            hostId
+          );
           targetSessionId = session.id;
 
           queryClient.invalidateQueries({
@@ -112,14 +138,18 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
         const promptParts = [reviewMarkdown, additionalPrompt].filter(Boolean);
         const combinedPrompt = promptParts.join('\n\n');
 
-        await sessionsApi.startReview(targetSessionId, {
-          executor_config: {
-            executor: effectiveProfile.executor,
-            variant: effectiveProfile.variant,
+        await sessionsApi.startReview(
+          targetSessionId,
+          {
+            executor_config: {
+              executor: effectiveProfile.executor,
+              variant: effectiveProfile.variant,
+            },
+            additional_prompt: combinedPrompt || null,
+            use_all_workspace_commits: includeGitContext,
           },
-          additional_prompt: combinedPrompt || null,
-          use_all_workspace_commits: includeGitContext,
-        });
+          hostId
+        );
 
         queryClient.invalidateQueries({
           queryKey: ['processes', workspaceId],
@@ -129,7 +159,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
         });
 
         const createdNewSession = targetSessionId !== resolvedSessionId;
-        if (createdNewSession && targetSessionId) {
+        if (createdNewSession && targetSessionId && isCurrentWorkspace) {
           selectSession(targetSessionId);
         }
         onSuccess?.(createdNewSession ? targetSessionId : undefined);
@@ -151,6 +181,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
       additionalPrompt,
       queryClient,
       selectSession,
+      isCurrentWorkspace,
       onSuccess,
       modal,
     ]);
