@@ -937,12 +937,11 @@ async fn sync_one(
             .await?;
     }
 
-    // A deferred guard means this agent could not fully apply an update/delete
-    // (often a match_text that also occurs in unrelated memory). Record it for
-    // retry and warn, but still publish the snapshot: every host re-applies the
-    // same guards to incoming snapshots, so residual content cannot restore old
-    // memory elsewhere. Aborting here instead let one unsatisfiable guard block
-    // all snapshot syncing for this repo+agent indefinitely.
+    // Never publish while an update/delete guard is still deferred. The
+    // generated snapshot can still contain the guarded text, so uploading it
+    // would leak content the user asked to change or delete to the central
+    // store and other hosts. Receipts were recorded above, so the guard remains
+    // pending and a later reconciliation can retry it.
     if deferred_mutations > 0 {
         log_event(
             deployment,
@@ -953,10 +952,11 @@ async fn sync_one(
             Some(repo),
             Some(agent_kind),
             &format!(
-                "{deferred_mutations} memory mutation guard(s) still deferred after apply; snapshot published anyway (receiving hosts enforce guards)"
+                "{deferred_mutations} memory mutation guard(s) still deferred after apply; snapshot publication blocked"
             ),
         )
         .await?;
+        ensure_snapshot_publication_allowed(deferred_mutations)?;
     }
 
     let content_hash = hex::encode(Sha256::digest(result.snapshot.as_bytes()));
@@ -1161,6 +1161,15 @@ fn validate_mutation_result(
             }
         })
         .collect()
+}
+
+fn ensure_snapshot_publication_allowed(deferred_mutations: usize) -> anyhow::Result<()> {
+    if deferred_mutations > 0 {
+        anyhow::bail!(
+            "snapshot publication blocked by {deferred_mutations} deferred memory mutation guard(s)"
+        );
+    }
+    Ok(())
 }
 
 async fn run_agent(
@@ -1450,6 +1459,13 @@ mod tests {
             validate_mutation_result(&[mutation], &result)[0].status,
             AgentMemoryReceiptStatus::Accepted
         );
+    }
+
+    #[test]
+    fn deferred_mutation_blocks_snapshot_publication() {
+        let error = ensure_snapshot_publication_allowed(1).unwrap_err();
+        assert!(error.to_string().contains("snapshot publication blocked"));
+        assert!(ensure_snapshot_publication_allowed(0).is_ok());
     }
 
     #[test]
