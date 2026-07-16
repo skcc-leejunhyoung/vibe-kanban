@@ -184,6 +184,7 @@ pub struct AgentMemorySyncSessionTarget {
     #[ts(type = "number")]
     pub attempts: i64,
     pub error: Option<String>,
+    pub retry_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -205,4 +206,5 @@ pub struct ReportAgentMemorySyncJobRequest {
     pub round: i64,
     pub succeeded: bool,
     pub error: Option<String>,
+    pub retry_at: Option<DateTime<Utc>>,
 }

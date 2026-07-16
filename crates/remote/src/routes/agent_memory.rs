@@ -140,6 +140,21 @@ async fn report_sync_job(
     Json(payload): Json<ReportAgentMemorySyncJobRequest>,
 ) -> Result<Json<AgentMemorySyncSession>, ErrorResponse> {
     ensure_owned_host(&state, ctx.user.id, payload.host_id).await?;
+    if payload.succeeded && payload.retry_at.is_some() {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "successful memory sync job cannot be deferred",
+        ));
+    }
+    if payload
+        .retry_at
+        .is_some_and(|retry_at| retry_at <= chrono::Utc::now())
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "memory sync retry time must be in the future",
+        ));
+    }
     if payload
         .error
         .as_ref()

@@ -566,7 +566,7 @@ pub async fn register_sync_target(
             .bind(request.host_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE agent_memory_sync_sessions session SET status = 'partial', error = 'target opted out during synchronization', finished_at = NOW() WHERE session.owner_user_id = $1 AND session.status = 'running' AND NOT EXISTS (SELECT 1 FROM agent_memory_sync_session_targets target WHERE target.session_id = session.id AND target.status IN ('pending', 'running'))")
+        sqlx::query("UPDATE agent_memory_sync_sessions session SET status = 'partial', error = 'target opted out during synchronization', finished_at = NOW() WHERE session.owner_user_id = $1 AND session.status = 'running' AND NOT EXISTS (SELECT 1 FROM agent_memory_sync_session_targets target WHERE target.session_id = session.id AND target.status IN ('pending', 'running', 'waiting'))")
             .bind(owner_user_id)
             .execute(&mut *tx)
             .await?;
@@ -690,10 +690,11 @@ pub async fn list_sync_session_targets(
         status: String,
         attempts: i64,
         error: Option<String>,
+        retry_at: Option<DateTime<Utc>>,
         updated_at: DateTime<Utc>,
     }
     Ok(sqlx::query_as::<_, Row>(
-        "SELECT target.host_id, host.name AS host_name, target.round, target.status, target.attempts, target.error, target.updated_at FROM agent_memory_sync_session_targets target INNER JOIN agent_memory_sync_sessions session ON session.id = target.session_id INNER JOIN hosts host ON host.id = target.host_id WHERE target.session_id = $1 AND session.owner_user_id = $2 ORDER BY host.name, target.host_id",
+        "SELECT target.host_id, host.name AS host_name, target.round, target.status, target.attempts, target.error, target.retry_at, target.updated_at FROM agent_memory_sync_session_targets target INNER JOIN agent_memory_sync_sessions session ON session.id = target.session_id INNER JOIN hosts host ON host.id = target.host_id WHERE target.session_id = $1 AND session.owner_user_id = $2 ORDER BY host.name, target.host_id",
     )
     .bind(session_id)
     .bind(owner_user_id)
@@ -707,6 +708,7 @@ pub async fn list_sync_session_targets(
         status: row.status,
         attempts: row.attempts,
         error: row.error,
+        retry_at: row.retry_at,
         updated_at: row.updated_at,
     })
     .collect())
@@ -728,12 +730,12 @@ pub async fn claim_sync_job(
         .bind(owner_user_id)
         .execute(pool)
         .await?;
-    sqlx::query("UPDATE agent_memory_sync_sessions session SET status = 'partial', error = 'no online targets remain', finished_at = NOW() WHERE session.owner_user_id = $1 AND session.status = 'running' AND NOT EXISTS (SELECT 1 FROM agent_memory_sync_session_targets target WHERE target.session_id = session.id AND target.status IN ('pending', 'running'))")
+    sqlx::query("UPDATE agent_memory_sync_sessions session SET status = 'partial', error = 'no online targets remain', finished_at = NOW() WHERE session.owner_user_id = $1 AND session.status = 'running' AND NOT EXISTS (SELECT 1 FROM agent_memory_sync_session_targets target WHERE target.session_id = session.id AND target.status IN ('pending', 'running', 'waiting'))")
         .bind(owner_user_id)
         .execute(pool)
         .await?;
     let row = sqlx::query_as::<_, Row>(
-        "UPDATE agent_memory_sync_session_targets t SET status = 'running', attempts = attempts + 1, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = s.id AND s.owner_user_id = $1 AND t.host_id = $2 AND s.status = 'running' AND t.round = s.round AND (t.status = 'pending' OR (t.status = 'running' AND t.updated_at < NOW() - INTERVAL '20 minutes')) RETURNING s.id AS session_id, s.round, s.max_rounds, s.trigger_kind",
+        "UPDATE agent_memory_sync_session_targets t SET status = 'running', attempts = attempts + 1, retry_at = NULL, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = s.id AND s.owner_user_id = $1 AND t.host_id = $2 AND s.status = 'running' AND t.round = s.round AND (t.status = 'pending' OR (t.status = 'waiting' AND t.retry_at <= NOW()) OR (t.status = 'running' AND t.updated_at < NOW() - INTERVAL '20 minutes')) RETURNING s.id AS session_id, s.round, s.max_rounds, s.trigger_kind",
     )
     .bind(owner_user_id)
     .bind(host_id)
@@ -761,13 +763,20 @@ pub async fn report_sync_job(
         .bind(owner_user_id)
         .execute(&mut *tx)
         .await?;
-    let updated = sqlx::query("UPDATE agent_memory_sync_session_targets t SET status = $5, error = $6, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = $1 AND t.host_id = $2 AND t.round = $3 AND s.id = t.session_id AND s.owner_user_id = $4 AND s.status = 'running'")
+    let updated = sqlx::query("UPDATE agent_memory_sync_session_targets t SET status = $5, error = $6, retry_at = $7, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = $1 AND t.host_id = $2 AND t.round = $3 AND s.id = t.session_id AND s.owner_user_id = $4 AND s.status = 'running'")
         .bind(request.session_id)
         .bind(request.host_id)
         .bind(request.round)
         .bind(owner_user_id)
-        .bind(if request.succeeded { "completed" } else { "failed" })
+        .bind(if request.succeeded {
+            "completed"
+        } else if request.retry_at.is_some() {
+            "waiting"
+        } else {
+            "failed"
+        })
         .bind(&request.error)
+        .bind(request.retry_at)
         .execute(&mut *tx)
         .await?;
     if updated.rows_affected() == 0 {
@@ -777,7 +786,7 @@ pub async fn report_sync_job(
         .bind(request.session_id)
         .execute(&mut *tx)
         .await?;
-    let unsettled: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_memory_sync_session_targets WHERE session_id = $1 AND status IN ('pending', 'running')")
+    let unsettled: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_memory_sync_session_targets WHERE session_id = $1 AND status IN ('pending', 'running', 'waiting')")
         .bind(request.session_id)
         .fetch_one(&mut *tx)
         .await?;
@@ -804,7 +813,7 @@ pub async fn report_sync_job(
                 .bind(request.session_id)
                 .execute(&mut *tx)
                 .await?;
-            sqlx::query("UPDATE agent_memory_sync_session_targets SET round = round + 1, status = 'pending', error = NULL, updated_at = NOW() WHERE session_id = $1")
+            sqlx::query("UPDATE agent_memory_sync_session_targets SET round = round + 1, status = 'pending', error = NULL, retry_at = NULL, updated_at = NOW() WHERE session_id = $1")
                 .bind(request.session_id)
                 .execute(&mut *tx)
                 .await?;

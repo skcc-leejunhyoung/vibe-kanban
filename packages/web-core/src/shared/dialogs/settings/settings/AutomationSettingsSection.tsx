@@ -705,7 +705,7 @@ export function AutomationSettingsSection() {
             )}
             {memoryStatus?.central_targets.map((target) => (
               <p key={target.host_id}>
-                {`${target.host_name}: ${target.status} · round ${target.round} · attempts ${target.attempts}${target.error ? ` · ${target.error}` : ''}`}
+                {`${target.host_name}: ${target.status} · round ${target.round} · attempts ${target.attempts}${target.retry_at ? ` · retry ${new Date(target.retry_at).toLocaleString()}` : ''}${target.error ? ` · ${target.error}` : ''}`}
               </p>
             ))}
           </div>

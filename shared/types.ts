@@ -916,13 +916,13 @@ export type RegisterAgentMemorySyncTargetRequest = { host_id: string, enabled: b
 
 export type AgentMemorySyncSession = { id: string, status: string, round: number, max_rounds: number, target_count: number, completed_count: number, created_at: string, finished_at: string | null, };
 
-export type AgentMemorySyncSessionTarget = { host_id: string, host_name: string, round: number, status: string, attempts: number, error: string | null, updated_at: string, };
+export type AgentMemorySyncSessionTarget = { host_id: string, host_name: string, round: number, status: string, attempts: number, error: string | null, retry_at: string | null, updated_at: string, };
 
 export type CreateAgentMemorySyncSessionRequest = { requested_by_host_id: string, trigger_kind: string, };
 
 export type AgentMemorySyncJob = { session_id: string, round: number, max_rounds: number, trigger_kind: string, };
 
-export type ReportAgentMemorySyncJobRequest = { session_id: string, host_id: string, round: number, succeeded: boolean, error: string | null, };
+export type ReportAgentMemorySyncJobRequest = { session_id: string, host_id: string, round: number, succeeded: boolean, error: string | null, retry_at: string | null, };
 
 export type AgentMemorySyncStatus = { running: boolean, last_started_at: string | null, last_finished_at: string | null, last_status: string | null, last_error: string | null, central_session: AgentMemorySyncSession | null, central_targets: Array<AgentMemorySyncSessionTarget>, };
 

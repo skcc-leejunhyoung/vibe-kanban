@@ -7,7 +7,7 @@ use api_types::{
     ReportAgentMemorySyncJobRequest, UpsertAgentMemorySnapshotRequest,
 };
 use axum::http::{HeaderMap, Method};
-use chrono::{Local, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, Utc};
 use db::models::repo::Repo;
 use deployment::Deployment;
 use executors::{
@@ -26,10 +26,17 @@ use crate::DeploymentImpl;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const RATE_LIMIT_RETRY_DELAY: chrono::Duration = chrono::Duration::minutes(305);
 static RUN_LOCK: Mutex<()> = Mutex::const_new(());
 static GLOBAL_RUN_LOCK: Mutex<()> = Mutex::const_new(());
 
 const GLOBAL_SYNC_ROUNDS: usize = 3;
+
+#[derive(Debug, thiserror::Error)]
+#[error("agent usage limit reached; retry scheduled for {retry_at}")]
+struct MemorySyncRateLimited {
+    retry_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct AgentMemorySyncStatus {
@@ -204,6 +211,11 @@ pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<(
         return Ok(());
     };
     let result = run_now(deployment.clone(), &job.trigger_kind).await;
+    let retry_at = result.as_ref().err().and_then(|error| {
+        error
+            .downcast_ref::<MemorySyncRateLimited>()
+            .map(|limited| limited.retry_at)
+    });
     let report = deployment
         .remote_client()?
         .report_agent_memory_sync_job(&ReportAgentMemorySyncJobRequest {
@@ -212,6 +224,7 @@ pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<(
             round: job.round,
             succeeded: result.is_ok(),
             error: result.as_ref().err().map(ToString::to_string),
+            retry_at,
         })
         .await;
     if let Err(report_error) = report {
@@ -816,6 +829,9 @@ async fn run_all(
                 )
                 .await;
                 failures.push(format!("{} / {:?}: {error}", repo.display_name, agent));
+                if error.downcast_ref::<MemorySyncRateLimited>().is_some() {
+                    return Err(error);
+                }
             }
         }
     }
@@ -1189,11 +1205,13 @@ async fn run_agent(
         .ok_or_else(|| anyhow::anyhow!("agent stderr is unavailable"))?;
     let stdout_task = tokio::spawn(async move {
         let mut sink = Vec::new();
-        stdout.read_to_end(&mut sink).await
+        stdout.read_to_end(&mut sink).await?;
+        Ok::<_, std::io::Error>(sink)
     });
     let stderr_task = tokio::spawn(async move {
         let mut sink = Vec::new();
-        stderr.read_to_end(&mut sink).await
+        stderr.read_to_end(&mut sink).await?;
+        Ok::<_, std::io::Error>(sink)
     });
 
     let mut exit_signal = spawned.exit_signal.take();
@@ -1216,9 +1234,12 @@ async fn run_agent(
     if exit_signal.is_some() {
         let _ = utils::process::kill_process_group(&mut spawned.child).await;
     }
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
+    let stdout = stdout_task.await??;
+    let stderr = stderr_task.await??;
     if !succeeded {
+        if let Some(retry_at) = rate_limit_retry_at(&stdout, &stderr) {
+            return Err(MemorySyncRateLimited { retry_at }.into());
+        }
         anyhow::bail!("memory sync agent failed");
     }
 
@@ -1230,6 +1251,49 @@ async fn run_agent(
         anyhow::bail!("agent memory snapshot exceeds 64 KiB");
     }
     Ok(result)
+}
+
+fn rate_limit_retry_at(stdout: &[u8], stderr: &[u8]) -> Option<DateTime<Utc>> {
+    let output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
+    );
+    let lower = output.to_ascii_lowercase();
+    let limit_reached = lower.contains("usage limit")
+        || lower.contains("rate limit reached")
+        || lower.contains("rate_limit_reached")
+        || lower.contains("\"limit_reached\":true")
+        || lower.contains("\"type\":\"rate_limit_event\"");
+    if !limit_reached {
+        return None;
+    }
+
+    let now = Utc::now();
+    output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(find_reset_timestamp)
+        .map(|reset_at| reset_at + chrono::Duration::minutes(1))
+        .filter(|retry_at| *retry_at > now)
+        .or_else(|| Some(now + RATE_LIMIT_RETRY_DELAY))
+}
+
+fn find_reset_timestamp(value: serde_json::Value) -> Option<DateTime<Utc>> {
+    match value {
+        serde_json::Value::Object(values) => {
+            for key in ["resets_at", "reset_at", "resetsAt", "resetAt"] {
+                if let Some(timestamp) = values.get(key).and_then(serde_json::Value::as_str)
+                    && let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp)
+                {
+                    return Some(parsed.with_timezone(&Utc));
+                }
+            }
+            values.into_values().find_map(find_reset_timestamp)
+        }
+        serde_json::Value::Array(values) => values.into_iter().find_map(find_reset_timestamp),
+        _ => None,
+    }
 }
 
 fn canonical_repo_key(deployment: &DeploymentImpl, path: &Path) -> anyhow::Result<String> {
@@ -1282,6 +1346,25 @@ async fn set_finished(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limit_retry_uses_agent_reset_hint() {
+        let output = br#"{"type":"rate_limit_event","rate_limit_info":{"resets_at":"2099-01-01T00:00:00Z"}}"#;
+        let retry_at = rate_limit_retry_at(output, &[]).expect("rate limit should be detected");
+        assert_eq!(retry_at.to_rfc3339(), "2099-01-01T00:01:00+00:00");
+    }
+
+    #[test]
+    fn rate_limit_retry_falls_back_for_plain_usage_error() {
+        let before = Utc::now() + chrono::Duration::hours(5);
+        let retry_at = rate_limit_retry_at(&[], b"Usage limit reached").unwrap();
+        assert!(retry_at > before);
+    }
+
+    #[test]
+    fn unrelated_agent_failure_is_not_deferred() {
+        assert!(rate_limit_retry_at(&[], b"authentication failed").is_none());
+    }
 
     #[test]
     fn prompt_exports_final_state_after_import() {
