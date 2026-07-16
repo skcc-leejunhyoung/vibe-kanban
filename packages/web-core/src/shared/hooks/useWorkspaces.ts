@@ -1,10 +1,20 @@
-import { useCallback, useMemo } from 'react';
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useQuery, useQueries, keepPreviousData } from '@tanstack/react-query';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { workspacesApi } from '@/shared/lib/api';
 import type {
   Workspace as WorkspaceRecord,
@@ -149,18 +159,17 @@ export async function fetchWorkspaceSummariesByArchived(
   includeLatestPrompt = true
 ): Promise<Map<string, WorkspaceSummary>> {
   try {
-    const basePath = hostId ? `/api/host/${hostId}` : '/api';
-    const response = await makeLocalApiRequest(
-      `${basePath}/workspaces/summaries`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          archived,
-          include_latest_prompt: includeLatestPrompt,
-        }),
-      }
-    );
+    const response = await makeLocalApiRequest('/api/workspaces/summaries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        archived,
+        include_latest_prompt: includeLatestPrompt,
+      }),
+      hostScope: 'explicit',
+      hostId,
+      relayHostId: hostId,
+    });
 
     if (!response.ok) {
       console.warn('Failed to fetch workspace summaries:', response.status);
@@ -183,7 +192,7 @@ export async function fetchWorkspaceSummariesByArchived(
   }
 }
 
-export function useWorkspaces(): UseWorkspacesResult {
+export function useWorkspaces(enabled = true): UseWorkspacesResult {
   const hostId = useHostId();
 
   // Two separate WebSocket connections: one for active, one for archived
@@ -202,9 +211,14 @@ export function useWorkspaces(): UseWorkspacesResult {
     isConnected: activeIsConnected,
     isInitialized: activeIsInitialized,
     error: activeError,
-  } = useJsonPatchWsStream<WorkspacesState>(activeEndpoint, true, initialData, {
-    keepSnapshotForEndpoint: true,
-  });
+  } = useJsonPatchWsStream<WorkspacesState>(
+    activeEndpoint,
+    enabled,
+    initialData,
+    {
+      keepSnapshotForEndpoint: true,
+    }
+  );
 
   const {
     data: archivedData,
@@ -213,7 +227,7 @@ export function useWorkspaces(): UseWorkspacesResult {
     error: archivedError,
   } = useJsonPatchWsStream<WorkspacesState>(
     archivedEndpoint,
-    true,
+    enabled,
     initialData,
     { keepSnapshotForEndpoint: true }
   );
@@ -224,7 +238,7 @@ export function useWorkspaces(): UseWorkspacesResult {
     useQuery({
       queryKey: workspaceSummaryKeys.byArchived(false, hostId),
       queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
-      enabled: activeIsInitialized,
+      enabled: enabled && activeIsInitialized,
       staleTime: 1000,
       refetchInterval: 15000,
       refetchOnWindowFocus: false,
@@ -237,7 +251,7 @@ export function useWorkspaces(): UseWorkspacesResult {
     useQuery({
       queryKey: workspaceSummaryKeys.byArchived(true, hostId),
       queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
-      enabled: archivedIsInitialized,
+      enabled: enabled && archivedIsInitialized,
       staleTime: 1000,
       refetchInterval: 15000,
       refetchOnWindowFocus: false,
@@ -293,8 +307,9 @@ export function useWorkspaces(): UseWorkspacesResult {
   // isLoading is true when we have nothing to show for a stream yet — neither
   // its initial replay nor a cached snapshot from a previous connection.
   const isLoading =
-    (!activeIsInitialized && !activeData) ||
-    (!archivedIsInitialized && !archivedData);
+    enabled &&
+    ((!activeIsInitialized && !activeData) ||
+      (!archivedIsInitialized && !archivedData));
 
   // Combined connection status
   const isConnected = activeIsConnected && archivedIsConnected;
@@ -316,6 +331,211 @@ type HostWorkspaceSnapshot = {
   active: SidebarWorkspace[];
   archived: SidebarWorkspace[];
 };
+
+type RemoteHostWorkspaceStream = UseWorkspacesResult;
+
+export function materializeHostWorkspaceStream(
+  recordsById: Record<string, WorkspaceWithStatus>,
+  activeSummaries: ReadonlyMap<string, WorkspaceSummary>,
+  archivedSummaries: ReadonlyMap<string, WorkspaceSummary>,
+  hostId: string
+): Pick<
+  UseWorkspacesResult,
+  'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById'
+> {
+  const records = Object.values(recordsById).sort(
+    (a, b) =>
+      Number(b.pinned) - Number(a.pinned) ||
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+  const workspaces: SidebarWorkspace[] = [];
+  const archivedWorkspaces: SidebarWorkspace[] = [];
+  const workspaceRecordsById: Record<string, WorkspaceWithStatus> = {};
+
+  for (const workspace of records) {
+    workspaceRecordsById[workspace.id] = workspace;
+    const summaries = workspace.archived ? archivedSummaries : activeSummaries;
+    const item = toSidebarWorkspace(
+      workspace,
+      summaries.get(workspace.id),
+      hostId
+    );
+    (workspace.archived ? archivedWorkspaces : workspaces).push(item);
+  }
+
+  return { workspaces, archivedWorkspaces, workspaceRecordsById };
+}
+
+export function combineRemoteWorkspaceStreams(
+  streams: ReadonlyMap<string, RemoteHostWorkspaceStream>,
+  onlineHostIds: readonly string[]
+): UseWorkspacesResult {
+  const results = onlineHostIds.flatMap((hostId) => {
+    const result = streams.get(hostId);
+    return result ? [result] : [];
+  });
+  const workspaceRecordsById = Object.assign(
+    {},
+    ...results.map((result) => result.workspaceRecordsById)
+  );
+
+  return {
+    workspaces: results.flatMap((result) => result.workspaces),
+    archivedWorkspaces: results.flatMap((result) => result.archivedWorkspaces),
+    workspaceRecordsById,
+    isLoading:
+      onlineHostIds.length > 0 &&
+      (results.length < onlineHostIds.length ||
+        results.some((result) => result.isLoading)),
+    isConnected:
+      results.length > 0 && results.every((result) => result.isConnected),
+    error: results.find((result) => result.error)?.error ?? null,
+  };
+}
+
+const RemoteWorkspaceStreamsContext = createContext<
+  ReadonlyMap<string, RemoteHostWorkspaceStream> | undefined
+>(undefined);
+
+function useRemoteHostWorkspaceStream(
+  hostId: string
+): RemoteHostWorkspaceStream {
+  const endpoint = `/api/host/${hostId}/workspaces/streams/ws`;
+  const initialData = useCallback(
+    (): WorkspacesState => ({ workspaces: {} }),
+    []
+  );
+  const { data, isConnected, isInitialized, error } =
+    useJsonPatchWsStream<WorkspacesState>(endpoint, true, initialData, {
+      keepSnapshotForEndpoint: true,
+      targetHostId: hostId,
+    });
+
+  const { data: activeSummaries = new Map<string, WorkspaceSummary>() } =
+    useQuery({
+      queryKey: workspaceSummaryKeys.byArchived(false, hostId),
+      queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
+      enabled: isInitialized,
+      staleTime: 1000,
+      refetchInterval: 15_000,
+      refetchOnWindowFocus: false,
+      placeholderData: keepPreviousData,
+    });
+  const { data: archivedSummaries = new Map<string, WorkspaceSummary>() } =
+    useQuery({
+      queryKey: workspaceSummaryKeys.byArchived(true, hostId),
+      queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
+      enabled: isInitialized,
+      staleTime: 1000,
+      refetchInterval: 15_000,
+      refetchOnWindowFocus: false,
+      placeholderData: keepPreviousData,
+    });
+
+  return useMemo(() => {
+    const materialized = materializeHostWorkspaceStream(
+      data?.workspaces ?? {},
+      activeSummaries,
+      archivedSummaries,
+      hostId
+    );
+
+    return {
+      ...materialized,
+      isLoading: !isInitialized && !data,
+      isConnected,
+      error,
+    };
+  }, [
+    data,
+    activeSummaries,
+    archivedSummaries,
+    hostId,
+    isInitialized,
+    isConnected,
+    error,
+  ]);
+}
+
+function RemoteHostWorkspaceStreamSource({
+  hostId,
+  onUpdate,
+  onRemove,
+}: {
+  hostId: string;
+  onUpdate: (hostId: string, result: RemoteHostWorkspaceStream) => void;
+  onRemove: (hostId: string) => void;
+}) {
+  const result = useRemoteHostWorkspaceStream(hostId);
+
+  useEffect(() => {
+    onUpdate(hostId, result);
+  }, [hostId, onUpdate, result]);
+
+  useEffect(
+    () => () => {
+      onRemove(hostId);
+    },
+    [hostId, onRemove]
+  );
+
+  return null;
+}
+
+export function UnifiedWorkspaceStreamsProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const runtime = useAppRuntime();
+  const { hosts } = useWorkspaceHostOptions();
+  const onlineHostIds = useMemo(
+    () =>
+      hosts.filter((host) => host.status === 'online').map((host) => host.id),
+    [hosts]
+  );
+  const [streams, setStreams] = useState<
+    Map<string, RemoteHostWorkspaceStream>
+  >(() => new Map());
+
+  const handleUpdate = useCallback(
+    (hostId: string, result: RemoteHostWorkspaceStream) => {
+      setStreams((current) => {
+        if (current.get(hostId) === result) return current;
+        const next = new Map(current);
+        next.set(hostId, result);
+        return next;
+      });
+    },
+    []
+  );
+  const handleRemove = useCallback((hostId: string) => {
+    setStreams((current) => {
+      if (!current.has(hostId)) return current;
+      const next = new Map(current);
+      next.delete(hostId);
+      return next;
+    });
+  }, []);
+
+  if (runtime !== 'remote') {
+    return children;
+  }
+
+  return createElement(
+    RemoteWorkspaceStreamsContext.Provider,
+    { value: streams },
+    ...onlineHostIds.map((hostId) =>
+      createElement(RemoteHostWorkspaceStreamSource, {
+        key: hostId,
+        hostId,
+        onUpdate: handleUpdate,
+        onRemove: handleRemove,
+      })
+    ),
+    children
+  );
+}
 
 async function fetchHostWorkspaceSnapshot(
   hostId: string
@@ -347,15 +567,19 @@ async function fetchHostWorkspaceSnapshot(
  * WorkspaceProvider, including their mobile workspace lists.
  */
 export function useUnifiedWorkspaces(): UseWorkspacesResult {
-  const current = useWorkspaces();
+  const runtime = useAppRuntime();
+  const remoteStreams = useContext(RemoteWorkspaceStreamsContext);
+  const current = useWorkspaces(runtime !== 'remote');
   const currentHostId = useHostId();
   const { hosts } = useWorkspaceHostOptions();
   const otherOnlineHosts = useMemo(
     () =>
-      hosts.filter(
-        (host) => host.status === 'online' && host.id !== currentHostId
-      ),
-    [hosts, currentHostId]
+      runtime === 'local'
+        ? hosts.filter(
+            (host) => host.status === 'online' && host.id !== currentHostId
+          )
+        : [],
+    [hosts, currentHostId, runtime]
   );
   const snapshots = useQueries({
     queries: otherOnlineHosts.map((host) => ({
@@ -367,6 +591,13 @@ export function useUnifiedWorkspaces(): UseWorkspacesResult {
   });
 
   return useMemo(() => {
+    if (runtime === 'remote') {
+      return combineRemoteWorkspaceStreams(
+        remoteStreams ?? new Map(),
+        hosts.filter((host) => host.status === 'online').map((host) => host.id)
+      );
+    }
+
     const remoteActive = snapshots.flatMap((query) => query.data?.active ?? []);
     const remoteArchived = snapshots.flatMap(
       (query) => query.data?.archived ?? []
@@ -376,5 +607,5 @@ export function useUnifiedWorkspaces(): UseWorkspacesResult {
       workspaces: [...current.workspaces, ...remoteActive],
       archivedWorkspaces: [...current.archivedWorkspaces, ...remoteArchived],
     };
-  }, [current, snapshots]);
+  }, [current, snapshots, runtime, remoteStreams, hosts]);
 }

@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { AppBar, type AppBarHostStatus } from "@vibe/ui/components/AppBar";
 import {
   XIcon,
@@ -35,10 +35,7 @@ import { listOrganizationProjects } from "@remote/shared/lib/api";
 import { RemoteAppBarUserPopoverContainer } from "@remote/app/layout/RemoteAppBarUserPopoverContainer";
 import { RemoteNavbarContainer } from "@remote/app/layout/RemoteNavbarContainer";
 import { RemoteDesktopNavbar } from "@remote/app/layout/RemoteDesktopNavbar";
-import {
-  resolveRelayNavigationHostId,
-  useRelayAppBarHosts,
-} from "@remote/shared/hooks/useRelayAppBarHosts";
+import { useRelayAppBarHosts } from "@remote/shared/hooks/useRelayAppBarHosts";
 import { resolveRemoteDestinationFromPath } from "@remote/app/navigation/AppNavigation";
 import { isWorkspacesDestination } from "@/shared/lib/routes/appNavigation";
 import {
@@ -63,7 +60,6 @@ function getHostInitials(name: string): string {
 export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { hostId: routeHostId } = useParams({ strict: false });
   const { isSignedIn } = useAuth();
   const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
   const isProjectRoute = /^\/projects\/[^/]+/.test(location.pathname);
@@ -154,11 +150,6 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       resolveRemoteDestinationFromPath(location.pathname),
     ) &&
     !isLeftSidebarVisible;
-  const preferredHostId = useMemo(
-    () => resolveRelayNavigationHostId(relayHosts, { routeHostId }),
-    [relayHosts, routeHostId],
-  );
-
   const activeProjectId = useMemo(() => {
     const segments = location.pathname.split("/").filter(Boolean);
     const projectSegmentIndex = segments.indexOf("projects");
@@ -177,16 +168,8 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   }, []);
 
   const handleWorkspacesClick = useCallback(() => {
-    if (preferredHostId) {
-      navigate({
-        to: "/hosts/$hostId/workspaces",
-        params: { hostId: preferredHostId },
-      });
-      return;
-    }
-
-    openRelaySettings();
-  }, [navigate, openRelaySettings, preferredHostId]);
+    navigate({ to: "/workspaces" });
+  }, [navigate]);
 
   const handleProjectClick = useCallback(
     (projectId: string) => {

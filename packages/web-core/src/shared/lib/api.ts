@@ -183,6 +183,7 @@ const makeScopedRequest = async (
     headers,
     hostScope: 'explicit',
     hostId,
+    relayHostId: hostId,
   });
 };
 
@@ -662,12 +663,17 @@ export const workspacesApi = {
   linkToIssue: async (
     workspaceId: string,
     projectId: string,
-    issueId: string
+    issueId: string,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(`/api/workspaces/${workspaceId}/links`, {
-      method: 'POST',
-      body: JSON.stringify({ project_id: projectId, issue_id: issueId }),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/links`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId, issue_id: issueId }),
+      }
+    );
     return handleApiResponse<void>(response);
   },
 

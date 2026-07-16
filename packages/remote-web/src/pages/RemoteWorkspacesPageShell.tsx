@@ -28,7 +28,7 @@ export function RemoteWorkspacesPageShell({
   const hostHealth = useRelayWorkspaceHostHealth(hostId ?? null);
 
   if (!hostId) {
-    return <WorkspacesUnavailablePage />;
+    return <>{children}</>;
   }
 
   if (hostHealth.isChecking) {

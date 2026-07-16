@@ -37,6 +37,8 @@ export function resolveRemoteDestinationFromPath(
       const hostId = getPathParam(routeParams, "hostId");
       return hostId ? { kind: "workspaces", hostId } : null;
     }
+    case "/workspaces":
+      return { kind: "workspaces" };
     case "/hosts/$hostId/workspaces_/create": {
       const hostId = getPathParam(routeParams, "hostId");
       return hostId ? { kind: "workspaces-create", hostId } : null;
@@ -131,13 +133,13 @@ function destinationToRemoteTarget(
     case "onboarding-sign-in":
       return { to: "/" } as const;
     case "workspaces":
-      if (effectiveHostId) {
+      if (destination.hostId !== undefined && effectiveHostId) {
         return {
           to: "/hosts/$hostId/workspaces",
           params: { hostId: effectiveHostId },
         } as const;
       }
-      return { to: "/" } as const;
+      return { to: "/workspaces" } as const;
     case "workspaces-create":
       if (effectiveHostId) {
         return {
@@ -241,7 +243,7 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     goToOnboardingSignIn: (transition) =>
       navigateTo({ kind: "onboarding-sign-in" }, transition),
     goToWorkspaces: (transition) =>
-      navigateTo({ kind: "workspaces", hostId }, transition),
+      navigateTo({ kind: "workspaces" }, transition),
     goToWorkspacesCreate: (transition) =>
       navigateTo({ kind: "workspaces-create", hostId }, transition),
     goToWorkspace: (workspaceId, transition) =>

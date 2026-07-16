@@ -247,7 +247,10 @@ export function IssueWorkspacesSectionContainer({
 
       if (result === 'confirmed') {
         try {
-          await workspacesApi.unlinkFromIssue(localWorkspaceId);
+          const hostId =
+            localWorkspacesById.get(localWorkspaceId)?.hostId ??
+            workspaceHostMap.get(localWorkspaceId);
+          await workspacesApi.unlinkFromIssue(localWorkspaceId, hostId);
         } catch (error) {
           ConfirmDialog.show({
             title: t('common:error'),
@@ -261,7 +264,7 @@ export function IssueWorkspacesSectionContainer({
         }
       }
     },
-    [t]
+    [t, localWorkspacesById, workspaceHostMap]
   );
 
   // Handle deleting a workspace (unlinks first, then deletes local)
@@ -282,8 +285,10 @@ export function IssueWorkspacesSectionContainer({
       // fail. Tolerate that and warn instead of blocking deletion.
       let hasMissingRepo = false;
       try {
-        const branchStatus =
-          await workspacesApi.getBranchStatus(localWorkspaceId);
+        const branchStatus = await workspacesApi.getBranchStatus(
+          localWorkspaceId,
+          localWorkspace.hostId
+        );
         hasMissingRepo = branchStatus.some((s) => s.repo_missing);
       } catch {
         hasMissingRepo = true;
@@ -308,10 +313,17 @@ export function IssueWorkspacesSectionContainer({
 
       try {
         // Delete local workspace first
-        await workspacesApi.delete(localWorkspaceId, result.deleteBranches);
+        await workspacesApi.delete(
+          localWorkspaceId,
+          result.deleteBranches,
+          localWorkspace.hostId
+        );
         // Unlink from remote after successful deletion
         if (result.unlinkFromIssue) {
-          await workspacesApi.unlinkFromIssue(localWorkspaceId);
+          await workspacesApi.unlinkFromIssue(
+            localWorkspaceId,
+            localWorkspace.hostId
+          );
         }
       } catch (error) {
         ConfirmDialog.show({

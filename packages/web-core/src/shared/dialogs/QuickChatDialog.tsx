@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { create, useModal } from '@ebay/nice-modal-react';
+import { useQuery } from '@tanstack/react-query';
 import {
   ComputerTowerIcon,
   DesktopIcon,
@@ -20,7 +21,7 @@ import {
   getErrorMessage,
   type NoProps,
 } from '@/shared/lib/modals';
-import { repoApi, workspacesApi } from '@/shared/lib/api';
+import { configApi, repoApi, workspacesApi } from '@/shared/lib/api';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
@@ -49,7 +50,7 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 const QuickChatDialogImpl = create<NoProps>(() => {
   const modal = useModal();
   const appNavigation = useAppNavigation();
-  const { config, profiles } = useUserSystem();
+  const { config: routeConfig, profiles: routeProfiles } = useUserSystem();
   const runtime = useAppRuntime();
   const routeHostId = useHostId();
   const { hosts } = useWorkspaceHostOptions();
@@ -61,6 +62,21 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     routeHostId
   );
   const wasVisibleRef = useRef(false);
+
+  const selectedHostSystem = useQuery({
+    queryKey: ['user-system', 'quick-chat', selectedHostId],
+    queryFn: () => configApi.getConfig(selectedHostId),
+    enabled: modal.visible && runtime === 'remote' && !!selectedHostId,
+    staleTime: 5 * 60 * 1000,
+  });
+  const config =
+    runtime === 'remote'
+      ? (selectedHostSystem.data?.config ?? null)
+      : routeConfig;
+  const profiles =
+    runtime === 'remote'
+      ? (selectedHostSystem.data?.executors ?? null)
+      : routeProfiles;
 
   const [repo, setRepo] = useState<Repo | null>(null);
   const [prompt, setPrompt] = useState('');

@@ -492,7 +492,16 @@ export const Actions = {
     icon: PlusIcon,
     shortcut: 'G N',
     requiresTarget: ActionTargetType.NONE,
-    execute: (ctx) => {
+    execute: async (ctx) => {
+      if (ctx.appRuntime === 'remote') {
+        const { selectWorkspaceHost } = await import(
+          '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog'
+        );
+        const hostId = await selectWorkspaceHost();
+        if (hostId === undefined) return;
+        ctx.appNavigation.goToWorkspacesCreate({ hostId });
+        return;
+      }
       ctx.appNavigation.goToWorkspacesCreate();
     },
   },

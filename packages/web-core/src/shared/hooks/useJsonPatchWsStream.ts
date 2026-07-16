@@ -37,6 +37,8 @@ interface UseJsonPatchStreamOptions<T> {
    * stale-while-revalidate instead of blanking to `undefined`.
    */
   keepSnapshotForEndpoint?: boolean;
+  /** Route the stream to this host explicitly instead of inheriting page context. */
+  targetHostId?: string;
 }
 
 interface UseJsonPatchStreamResult<T> {
@@ -91,6 +93,7 @@ export const useJsonPatchWsStream = <T extends object>(
   const injectInitialEntry = options?.injectInitialEntry;
   const deduplicatePatches = options?.deduplicatePatches;
   const keepSnapshotForEndpoint = options?.keepSnapshotForEndpoint ?? false;
+  const targetHostId = options?.targetHostId;
 
   useEffect(() => {
     isConnectedRef.current = isConnected;
@@ -184,7 +187,16 @@ export const useJsonPatchWsStream = <T extends object>(
 
       void (async () => {
         try {
-          const ws = await openLocalApiStream(endpoint);
+          const ws = await openLocalApiStream(
+            endpoint,
+            targetHostId
+              ? {
+                  hostScope: 'explicit',
+                  hostId: targetHostId,
+                  relayHostId: targetHostId,
+                }
+              : undefined
+          );
 
           if (cancelled) {
             ws.close();
@@ -360,6 +372,7 @@ export const useJsonPatchWsStream = <T extends object>(
     injectInitialEntry,
     deduplicatePatches,
     keepSnapshotForEndpoint,
+    targetHostId,
     retryNonce,
   ]);
 

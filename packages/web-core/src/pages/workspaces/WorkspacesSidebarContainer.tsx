@@ -41,6 +41,7 @@ import {
 } from './WorkspacesSortFilterDialogs';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
+import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import {
   WorkspacesSidebar,
   categorizeWorkspaces,
@@ -531,16 +532,28 @@ export function WorkspacesSidebarContainer({
     }
   }, [focusedWorkspaceId, displayedWorkspaceIds]);
 
-  const handleAddWorkspace = useCallback(() => {
+  const handleAddWorkspace = useCallback(async () => {
     if (onAddWorkspaceOverride) {
       onAddWorkspaceOverride();
       return;
     }
-    navigateToCreate();
+    if (runtime === 'remote') {
+      const hostId = await selectWorkspaceHost();
+      if (hostId === undefined) return;
+      navigateToCreate(hostId);
+    } else {
+      navigateToCreate();
+    }
     if (isMobile) {
       setMobileActiveTab('chat');
     }
-  }, [onAddWorkspaceOverride, navigateToCreate, isMobile, setMobileActiveTab]);
+  }, [
+    onAddWorkspaceOverride,
+    navigateToCreate,
+    runtime,
+    isMobile,
+    setMobileActiveTab,
+  ]);
 
   const handleOpenWorkspaceActions = useCallback(
     (workspaceId: string) => {
@@ -657,7 +670,7 @@ export function WorkspacesSidebarContainer({
       onAddWorkspace={handleAddWorkspace}
       isCreateMode={isCreateMode}
       draftTitle={persistedDraftTitle}
-      onSelectCreate={navigateToCreate}
+      onSelectCreate={() => void handleAddWorkspace()}
       showArchive={showArchive}
       onShowArchiveChange={setShowArchive}
       layoutMode={layoutMode}

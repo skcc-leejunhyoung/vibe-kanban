@@ -141,7 +141,15 @@ function WorkspaceSelectionContent({
 
       setIsLinking(true);
       try {
-        await workspacesApi.linkToIssue(workspaceId, projectId, issueId);
+        const hostId = allWorkspaces.find(
+          (workspace) => workspace.id === workspaceId
+        )?.hostId;
+        await workspacesApi.linkToIssue(
+          workspaceId,
+          projectId,
+          issueId,
+          hostId
+        );
         // Success - close dialog. UI will auto-update via Electric sync.
         modal.hide();
       } catch (err) {
@@ -158,7 +166,7 @@ function WorkspaceSelectionContent({
         setIsLinking(false);
       }
     },
-    [projectId, issueId, isLinking, modal, t]
+    [projectId, issueId, isLinking, modal, t, allWorkspaces]
   );
 
   const handleCreateNewWorkspace = useCallback(async () => {

@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { LightningIcon } from "@phosphor-icons/react";
 import type { Project } from "shared/remote-types";
@@ -17,10 +11,8 @@ import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
 import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
-import {
-  resolveRelayNavigationHostId,
-  useRelayAppBarHosts,
-} from "@remote/shared/hooks/useRelayAppBarHosts";
+import { useRelayAppBarHosts } from "@remote/shared/hooks/useRelayAppBarHosts";
+import { QuickChatDialog } from "@/shared/dialogs/QuickChatDialog";
 
 type OrganizationWithProjects = {
   organization: OrganizationWithRole;
@@ -53,10 +45,6 @@ export default function HomePage() {
   const { isSignedIn } = useAuth();
   const { hosts } = useRelayAppBarHosts(isSignedIn);
   const isMobile = useIsMobile();
-  const preferredHostId = useMemo(
-    () => resolveRelayNavigationHostId(hosts),
-    [hosts],
-  );
 
   const openRelaySettings = useCallback((hostId?: string) => {
     void SettingsDialog.show({
@@ -272,22 +260,14 @@ export default function HomePage() {
           </div>
           {isMobile && isSignedIn && (
             <div className="flex shrink-0 items-center gap-base">
-              {preferredHostId && (
-                <button
-                  type="button"
-                  aria-label="Quick chat"
-                  onClick={() => {
-                    navigate({
-                      to: "/hosts/$hostId/workspaces",
-                      params: { hostId: preferredHostId },
-                      search: { quickChat: true },
-                    });
-                  }}
-                  className="relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg bg-panel text-normal transition-colors hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-                >
-                  <LightningIcon className="h-5 w-5" weight="bold" />
-                </button>
-              )}
+              <button
+                type="button"
+                aria-label="Quick chat"
+                onClick={() => void QuickChatDialog.show()}
+                className="relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg bg-panel text-normal transition-colors hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              >
+                <LightningIcon className="h-5 w-5" weight="bold" />
+              </button>
               <AppBarNotificationBellContainer />
             </div>
           )}
@@ -309,8 +289,6 @@ export default function HomePage() {
                 key={organization.id}
                 organization={organization}
                 projects={projects}
-                hostId={preferredHostId}
-                onRequireHost={openRelaySettings}
               />
             ))}
           </div>
@@ -333,12 +311,7 @@ function CenteredCard({ children }: { children: ReactNode }) {
 function OrganizationSection({
   organization,
   projects,
-  hostId,
-  onRequireHost,
-}: OrganizationWithProjects & {
-  hostId: string | null;
-  onRequireHost: () => void;
-}) {
+}: OrganizationWithProjects) {
   return (
     <section className="space-y-base">
       <header className="flex items-center justify-between gap-base">
@@ -358,11 +331,7 @@ function OrganizationSection({
         <ul className="grid gap-base sm:grid-cols-2">
           {projects.map((project) => (
             <li key={project.id}>
-              <ProjectCard
-                project={project}
-                hostId={hostId}
-                onRequireHost={onRequireHost}
-              />
+              <ProjectCard project={project} />
             </li>
           ))}
           {projects.length % 2 === 1 ? (
@@ -376,29 +345,8 @@ function OrganizationSection({
   );
 }
 
-function ProjectCard({
-  project,
-  hostId,
-  onRequireHost,
-}: {
-  project: Project;
-  hostId: string | null;
-  onRequireHost: () => void;
-}) {
+function ProjectCard({ project }: { project: Project }) {
   const setSelectedOrgId = useOrganizationStore((s) => s.setSelectedOrgId);
-
-  if (!hostId) {
-    return (
-      <button
-        type="button"
-        className="group flex h-[61px] w-full flex-col justify-center rounded-sm border border-border bg-primary px-base py-base text-left hover:border-brand/60 hover:bg-panel"
-        onClick={onRequireHost}
-      >
-        <p className="text-sm font-medium text-high">{project.name}</p>
-        <p className="mt-half text-xs text-low">Link a host to open project</p>
-      </button>
-    );
-  }
 
   return (
     <Link

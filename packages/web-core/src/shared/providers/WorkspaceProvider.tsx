@@ -1,7 +1,10 @@
 import { ReactNode, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { useUnifiedWorkspaces } from '@/shared/hooks/useWorkspaces';
+import {
+  UnifiedWorkspaceStreamsProvider,
+  useUnifiedWorkspaces,
+} from '@/shared/hooks/useWorkspaces';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
@@ -26,7 +29,7 @@ interface WorkspaceProviderProps {
 // Stable reference so an empty commit-diff result doesn't churn downstream memos.
 const EMPTY_DIFFS: Diff[] = [];
 
-export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
+function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
   const { workspaceId } = useParams({ strict: false });
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
@@ -241,8 +244,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   );
 
   const navigateToCreate = useMemo(
-    () => () => {
-      appNavigation.goToWorkspacesCreate();
+    () => (destinationHostId?: string | null) => {
+      appNavigation.goToWorkspacesCreate({ hostId: destinationHostId });
     },
     [appNavigation]
   );
@@ -296,5 +299,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     <WorkspaceContext.Provider value={coreValue}>
       {children}
     </WorkspaceContext.Provider>
+  );
+}
+
+export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
+  return (
+    <UnifiedWorkspaceStreamsProvider>
+      <WorkspaceProviderContent>{children}</WorkspaceProviderContent>
+    </UnifiedWorkspaceStreamsProvider>
   );
 }
