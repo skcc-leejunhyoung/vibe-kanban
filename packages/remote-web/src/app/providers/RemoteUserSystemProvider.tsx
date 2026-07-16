@@ -1,17 +1,9 @@
-import { ReactNode, useCallback, useEffect, useMemo } from "react";
+import { ReactNode, useCallback, useMemo } from "react";
 import { useParams } from "@tanstack/react-router";
 import { configApi } from "@/shared/lib/api";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserSystemController } from "@/shared/hooks/useUserSystemController";
-import { useConfigPreferenceSync } from "@/shared/hooks/useConfigPreferenceSync";
 import { UserSystemContext } from "@/shared/hooks/useUserSystem";
-import {
-  applyPrimaryColor,
-  applyTheme,
-  persistPrimaryColor,
-  persistTheme,
-} from "@/shared/lib/themeColors";
-import { persistLanguage, updateLanguageFromConfig } from "@/i18n/config";
 
 interface RemoteUserSystemProviderProps {
   children: ReactNode;
@@ -47,40 +39,12 @@ export function RemoteUserSystemProvider({
     [isLoaded, isLoading, isSignedIn, value],
   );
 
-  // Apply + cache UI preferences whenever config is (re)loaded. Only act when a
-  // value is present: routes without a hostId (e.g. /projects/$id) don't load
-  // host config, so these are undefined there and must NOT reset to defaults —
-  // the values cached at boot (Bootstrap) keep them on those routes.
-  useEffect(() => {
-    const primaryColor = contextValue.config?.primary_color;
-    if (primaryColor) {
-      applyPrimaryColor(primaryColor);
-      persistPrimaryColor(primaryColor);
-    }
-  }, [contextValue.config?.primary_color]);
-
-  useEffect(() => {
-    const theme = contextValue.config?.theme;
-    if (theme) {
-      applyTheme(theme);
-      persistTheme(theme);
-    }
-  }, [contextValue.config?.theme]);
-
-  useEffect(() => {
-    const language = contextValue.config?.language;
-    if (language) {
-      updateLanguageFromConfig(language);
-      persistLanguage(language);
-    }
-  }, [contextValue.config?.language]);
-
-  // Sync device-local UI preferences (keyboard shortcuts, theme variant/presets,
-  // diff view) with config so they persist + surface across devices.
-  useConfigPreferenceSync(
-    contextValue.config,
-    contextValue.updateAndSaveConfig,
-  );
+  // Host config is still exposed for host-owned behavior (executors, editor,
+  // repositories, etc.), but it must not drive the remote shell's appearance.
+  // The remote app is one unified browser surface: Bootstrap restores its
+  // browser-local theme before first paint, and navigating to a host only
+  // changes the data/API scope. Applying primary color, theme, language, or UI
+  // presets here made every host route look like a separate application.
 
   return (
     <UserSystemContext.Provider value={contextValue}>
