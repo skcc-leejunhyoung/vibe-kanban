@@ -4,6 +4,8 @@ import type { PatchType } from 'shared/types';
 import {
   clearProcessEntriesCache,
   getCachedProcessEntries,
+  hasStableCompletedLog,
+  PROCESS_ENTRIES_CACHE_MIN_AGE_MS,
   processEntriesCacheStats,
   setCachedProcessEntries,
 } from './processEntriesCache';
@@ -24,6 +26,21 @@ describe('processEntriesCache', () => {
     setCachedProcessEntries(null, 'p1', value);
     expect(getCachedProcessEntries(null, 'p1')).toBe(value);
     expect(getCachedProcessEntries(null, 'p2')).toBeUndefined();
+  });
+
+  it('only treats completed logs as stable after the writer settling window', () => {
+    const now = Date.parse('2026-07-16T06:00:00.000Z');
+    const atBoundary = new Date(
+      now - PROCESS_ENTRIES_CACHE_MIN_AGE_MS
+    ).toISOString();
+    const settled = new Date(
+      now - PROCESS_ENTRIES_CACHE_MIN_AGE_MS - 1
+    ).toISOString();
+
+    expect(hasStableCompletedLog(null, now)).toBe(false);
+    expect(hasStableCompletedLog('invalid', now)).toBe(false);
+    expect(hasStableCompletedLog(atBoundary, now)).toBe(false);
+    expect(hasStableCompletedLog(settled, now)).toBe(true);
   });
 
   it('scopes entries by host id', () => {

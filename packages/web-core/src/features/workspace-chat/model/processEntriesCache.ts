@@ -28,6 +28,13 @@ const MAX_ENTRY_BYTES = 4 * 1024 * 1024;
  * measurement is not repeated on every revisit. */
 const MAX_REJECTED_IDS = 512;
 
+/**
+ * Match the server replay cache's settling window. Process status is updated
+ * before the JSONL writer necessarily finishes draining, so replay results
+ * from younger processes may be truncated and must remain self-healing.
+ */
+export const PROCESS_ENTRIES_CACHE_MIN_AGE_MS = 60_000;
+
 interface CacheEntry {
   entries: PatchType[];
   bytes: number;
@@ -42,6 +49,18 @@ function cacheKey(hostId: string | null, processId: string): string {
   // Process ids are UUIDs, but scope by host anyway so multi-host browsing
   // can never serve another host's data.
   return `${hostId ?? 'local'}:${processId}`;
+}
+
+export function hasStableCompletedLog(
+  completedAt: string | null,
+  nowMs = Date.now()
+): boolean {
+  if (!completedAt) return false;
+  const completedAtMs = Date.parse(completedAt);
+  return (
+    Number.isFinite(completedAtMs) &&
+    nowMs - completedAtMs > PROCESS_ENTRIES_CACHE_MIN_AGE_MS
+  );
 }
 
 /**

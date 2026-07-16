@@ -9,6 +9,7 @@ import { streamJsonPatchEntries } from '@/shared/lib/streamJsonPatchEntries';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import {
   getCachedProcessEntries,
+  hasStableCompletedLog,
   setCachedProcessEntries,
 } from '@/features/workspace-chat/model/processEntriesCache';
 import type {
@@ -135,7 +136,10 @@ export const useConversationHistory = ({
       const controller = streamJsonPatchEntries<PatchType>(url, {
         onFinished: (allEntries) => {
           controller.close();
-          if (executionProcess.status !== ExecutionProcessStatus.running) {
+          if (
+            executionProcess.status !== ExecutionProcessStatus.running &&
+            hasStableCompletedLog(executionProcess.completed_at)
+          ) {
             setCachedProcessEntries(hostId, executionProcess.id, allEntries);
           }
           resolve(allEntries);
