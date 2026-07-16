@@ -4,6 +4,7 @@ import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 import { getWsSnapshot, saveWsSnapshot } from '@/shared/lib/wsSnapshotCache';
+import { WsConnectionHealth } from '@/shared/lib/wsConnectionHealth';
 import {
   shouldReconnectOnResume,
   FREEZE_SUSPECT_MS,
@@ -68,13 +69,11 @@ export const useJsonPatchWsStream = <T extends object>(
   // Whether `dataRef` holds real streamed/cached content (vs the empty
   // `initialData()` shell). Only real content is worth snapshotting.
   const dataPatchedRef = useRef<boolean>(false);
-  // Endpoint that last received a LIVE server message. A cached snapshot makes
-  // `dataRef` truthy, so error escalation must not treat it as proof the
-  // stream works — a dead host would otherwise retry silently forever while
-  // stale data poses as live.
-  const liveEndpointRef = useRef<string | undefined>(undefined);
+  // A cached snapshot (or an older successful connection to this endpoint)
+  // must not count as proof that the current connection generation is live.
+  const connectionHealthRef = useRef(new WsConnectionHealth());
+  const healthEndpointRef = useRef<string | undefined>(undefined);
   const retryTimerRef = useRef<number | null>(null);
-  const retryAttemptsRef = useRef<number>(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const finishedRef = useRef<boolean>(false);
   const connectWatchdogRef = useRef<number | null>(null);
@@ -110,7 +109,7 @@ export const useJsonPatchWsStream = <T extends object>(
   function scheduleReconnect() {
     if (retryTimerRef.current) return; // already scheduled
     // Exponential backoff with cap: 1s, 2s, 4s, 8s (max), then stay at 8s
-    const attempt = retryAttemptsRef.current;
+    const attempt = connectionHealthRef.current.failureCount();
     const delay = Math.min(8000, 1000 * Math.pow(2, attempt));
     retryTimerRef.current = window.setTimeout(() => {
       retryTimerRef.current = null;
@@ -130,7 +129,8 @@ export const useJsonPatchWsStream = <T extends object>(
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
-      retryAttemptsRef.current = 0;
+      connectionHealthRef.current.reset();
+      healthEndpointRef.current = undefined;
       finishedRef.current = false;
       setData(undefined);
       setIsConnected(false);
@@ -163,6 +163,19 @@ export const useJsonPatchWsStream = <T extends object>(
     }
 
     let cancelled = false;
+    if (healthEndpointRef.current !== endpoint) {
+      healthEndpointRef.current = endpoint;
+      setError(null);
+    }
+    const connectionGeneration =
+      connectionHealthRef.current.startConnection(endpoint);
+
+    const recordConnectionFailure = () => {
+      if (connectionHealthRef.current.recordFailure(connectionGeneration)) {
+        setError('Connection failed');
+      }
+      scheduleReconnect();
+    };
 
     // Create WebSocket if it doesn't exist
     if (!wsRef.current) {
@@ -183,10 +196,7 @@ export const useJsonPatchWsStream = <T extends object>(
             // Back to a normal connection: subsequent reconnects (if any) use
             // the cold-connect watchdog again until the next resume.
             resumeReconnectRef.current = false;
-            setError(null);
             setIsConnected(true);
-            // Reset backoff on successful connection
-            retryAttemptsRef.current = 0;
             if (retryTimerRef.current) {
               window.clearTimeout(retryTimerRef.current);
               retryTimerRef.current = null;
@@ -196,7 +206,8 @@ export const useJsonPatchWsStream = <T extends object>(
           ws.onmessage = (event) => {
             try {
               const msg: WsMsg = JSON.parse(event.data);
-              liveEndpointRef.current = endpoint;
+              connectionHealthRef.current.markLive(connectionGeneration);
+              setError(null);
 
               // Handle JsonPatch messages (same as SSE json_patch event)
               if ('JsonPatch' in msg) {
@@ -261,19 +272,7 @@ export const useJsonPatchWsStream = <T extends object>(
             }
 
             // Otherwise, reconnect on unexpected/error closures
-            retryAttemptsRef.current += 1;
-            // Surface the failure once retries stall — unless this endpoint
-            // has genuinely received live data (brief blips keep displaying it
-            // without an error flash). A cache-seeded snapshot is NOT live
-            // data: without this check a dead host would silently retry
-            // forever while stale content poses as current.
-            if (
-              liveEndpointRef.current !== endpoint &&
-              retryAttemptsRef.current > 6
-            ) {
-              setError('Connection failed');
-            }
-            scheduleReconnect();
+            recordConnectionFailure();
           };
 
           wsRef.current = ws;
@@ -306,8 +305,7 @@ export const useJsonPatchWsStream = <T extends object>(
               wsRef.current = null;
             }
             setIsConnected(false);
-            retryAttemptsRef.current += 1;
-            scheduleReconnect();
+            recordConnectionFailure();
           }, connectTimeoutMs);
         } catch (error) {
           if (cancelled) {
@@ -315,8 +313,7 @@ export const useJsonPatchWsStream = <T extends object>(
           }
 
           console.error('Failed to open WebSocket stream:', error);
-          retryAttemptsRef.current += 1;
-          scheduleReconnect();
+          recordConnectionFailure();
         }
       })();
     }
@@ -412,7 +409,6 @@ export const useJsonPatchWsStream = <T extends object>(
       // The socket we're about to open is a freeze-recovery reconnect → use the
       // shorter resume watchdog.
       resumeReconnectRef.current = true;
-      retryAttemptsRef.current = 0;
       if (retryTimerRef.current) {
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
