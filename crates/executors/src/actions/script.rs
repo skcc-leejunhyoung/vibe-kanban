@@ -53,7 +53,7 @@ impl Executable for ScriptRequest {
         };
 
         let (shell_cmd, shell_arg) = get_shell_command();
-        let mut command = Command::new(shell_cmd);
+        let mut command = self.command_with_resource_policy(&shell_cmd);
         command
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null())
@@ -69,5 +69,84 @@ impl Executable for ScriptRequest {
         let child = command.group_spawn_no_window()?;
 
         Ok(child.into())
+    }
+}
+
+impl ScriptRequest {
+    fn command_with_resource_policy(&self, shell_cmd: &str) -> Command {
+        if !matches!(
+            self.context,
+            ScriptContext::SetupScript | ScriptContext::CleanupScript
+        ) {
+            return Command::new(shell_cmd);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let mut command = Command::new("/usr/bin/nice");
+            command
+                .args(["-n", "19", "/usr/sbin/taskpolicy", "-b"])
+                .arg(shell_cmd);
+            command
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let mut command = Command::new("nice");
+            command.args(["-n", "19"]).arg(shell_cmd);
+            command
+        }
+
+        #[cfg(windows)]
+        Command::new(shell_cmd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(context: ScriptContext) -> ScriptRequest {
+        ScriptRequest {
+            script: "true".to_string(),
+            language: ScriptRequestLanguage::Bash,
+            context,
+            working_dir: None,
+        }
+    }
+
+    #[test]
+    fn dev_server_uses_shell_directly() {
+        let command = request(ScriptContext::DevServer).command_with_resource_policy("test-shell");
+
+        assert_eq!(command.as_std().get_program(), "test-shell");
+        assert_eq!(command.as_std().get_args().count(), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn setup_and_cleanup_use_macos_background_policy() {
+        for context in [ScriptContext::SetupScript, ScriptContext::CleanupScript] {
+            let command = request(context).command_with_resource_policy("test-shell");
+            let args: Vec<_> = command.as_std().get_args().collect();
+
+            assert_eq!(command.as_std().get_program(), "/usr/bin/nice");
+            assert_eq!(
+                args,
+                ["-n", "19", "/usr/sbin/taskpolicy", "-b", "test-shell"]
+            );
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn setup_and_cleanup_use_unix_nice() {
+        for context in [ScriptContext::SetupScript, ScriptContext::CleanupScript] {
+            let command = request(context).command_with_resource_policy("test-shell");
+            let args: Vec<_> = command.as_std().get_args().collect();
+
+            assert_eq!(command.as_std().get_program(), "nice");
+            assert_eq!(args, ["-n", "19", "test-shell"]);
+        }
     }
 }
