@@ -154,7 +154,6 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       resolveRemoteDestinationFromPath(location.pathname),
     ) &&
     !isLeftSidebarVisible;
-  const activeHostId = routeHostId ?? null;
   const preferredHostId = useMemo(
     () => resolveRelayNavigationHostId(relayHosts, { routeHostId }),
     [relayHosts, routeHostId],
@@ -270,9 +269,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
             projects={projects}
             onCreateProject={handleCreateProject}
             onWorkspacesClick={handleWorkspacesClick}
-            onQuickChatClick={
-              activeHostId ? () => void QuickChatDialog.show() : undefined
-            }
+            onQuickChatClick={() => void QuickChatDialog.show()}
             showWorkspacesButton
             onProjectClick={handleProjectClick}
             onProjectsDragEnd={() => {}}
@@ -331,21 +328,19 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               Home
             </button>
 
-            {/* Quick chat link — only with a host in context, so the agent runs
-                on that paired host's filesystem via the relay proxy. */}
-            {activeHostId && (
-              <button
-                type="button"
-                onClick={() => {
-                  void QuickChatDialog.show();
-                  setIsDrawerOpen(false);
-                }}
-                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
-              >
-                <LightningIcon className="h-4 w-4" />
-                Quick chat
-              </button>
-            )}
+            {/* The dialog owns host selection, so opening it must not depend on
+                whether the current route happens to carry a host id. */}
+            <button
+              type="button"
+              onClick={() => {
+                void QuickChatDialog.show();
+                setIsDrawerOpen(false);
+              }}
+              className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+            >
+              <LightningIcon className="h-4 w-4" />
+              Quick chat
+            </button>
 
             {/* Notifications link */}
             {isSignedIn && (
