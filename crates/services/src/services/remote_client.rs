@@ -815,6 +815,7 @@ impl RemoteClient {
         target_scope_key: &str,
         scope: AgentMemoryScope,
         scope_key: Option<&str>,
+        include_applied_guards: bool,
     ) -> Result<AgentMemoryMutationInboxResponse, RemoteClientError> {
         let target_agent = enum_query_value(target_agent)?;
         let scope = enum_query_value(scope)?;
@@ -824,6 +825,14 @@ impl RemoteClient {
             query.append_pair("target_agent", &target_agent);
             query.append_pair("target_scope_key", target_scope_key);
             query.append_pair("scope", &scope);
+            query.append_pair(
+                "include_applied_guards",
+                if include_applied_guards {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
             if let Some(scope_key) = scope_key {
                 query.append_pair("scope_key", scope_key);
             }

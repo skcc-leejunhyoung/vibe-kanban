@@ -347,6 +347,20 @@ pub async fn pending_status(
     let repos = Repo::list_all(&deployment.db().pool).await?;
     let mut pending_snapshots = 0;
     let mut pending_mutations = 0;
+    for agent in &config.agents {
+        pending_mutations += client
+            .agent_memory_mutation_inbox(
+                host.id,
+                *agent,
+                "",
+                AgentMemoryScope::UserGlobal,
+                None,
+                false,
+            )
+            .await?
+            .mutations
+            .len();
+    }
     for repo in repos {
         let Ok(scope_key) = canonical_repo_key(deployment, &repo.path) else {
             continue;
@@ -366,20 +380,10 @@ pub async fn pending_status(
                 .agent_memory_mutation_inbox(
                     host.id,
                     *agent,
-                    "",
-                    AgentMemoryScope::UserGlobal,
-                    None,
-                )
-                .await?
-                .mutations
-                .len();
-            pending_mutations += client
-                .agent_memory_mutation_inbox(
-                    host.id,
-                    *agent,
                     &scope_key,
                     AgentMemoryScope::Repository,
                     Some(&scope_key),
+                    false,
                 )
                 .await?
                 .mutations
@@ -888,7 +892,14 @@ async fn sync_one(
         )
         .await?;
     let mut mutations = client
-        .agent_memory_mutation_inbox(host_id, agent_kind, "", AgentMemoryScope::UserGlobal, None)
+        .agent_memory_mutation_inbox(
+            host_id,
+            agent_kind,
+            "",
+            AgentMemoryScope::UserGlobal,
+            None,
+            true,
+        )
         .await?
         .mutations;
     mutations.extend(
@@ -899,6 +910,7 @@ async fn sync_one(
                 scope_key,
                 AgentMemoryScope::Repository,
                 Some(scope_key),
+                true,
             )
             .await?
             .mutations,

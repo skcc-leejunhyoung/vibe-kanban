@@ -91,7 +91,10 @@ struct MutationDeliveryState {
     receipt_status: Option<String>,
 }
 
-fn select_mutation_deliveries(states: &[MutationDeliveryState]) -> Vec<Uuid> {
+fn select_mutation_deliveries(
+    states: &[MutationDeliveryState],
+    include_applied_guards: bool,
+) -> Vec<Uuid> {
     let mut per_memory = HashMap::<Uuid, (Uuid, Option<Uuid>)>::new();
     for state in states {
         let entry = per_memory
@@ -110,7 +113,9 @@ fn select_mutation_deliveries(states: &[MutationDeliveryState]) -> Vec<Uuid> {
 
     let selected = per_memory
         .into_values()
-        .map(|(latest, pending)| pending.unwrap_or(latest))
+        .filter_map(|(latest, pending)| {
+            pending.or_else(|| include_applied_guards.then_some(latest))
+        })
         .collect::<HashSet<_>>();
     states
         .iter()
@@ -215,6 +220,7 @@ pub async fn mutation_inbox(
     target_scope_key: &str,
     scope: AgentMemoryScope,
     scope_key: Option<&str>,
+    include_applied_guards: bool,
 ) -> anyhow::Result<AgentMemoryMutationInboxResponse> {
     let scope_key = normalized_scope_key(scope, scope_key)?;
     let states = sqlx::query_as::<_, MutationDeliveryState>(
@@ -236,7 +242,7 @@ pub async fn mutation_inbox(
     .bind(target_scope_key)
     .fetch_all(pool)
     .await?;
-    let mutation_ids = select_mutation_deliveries(&states);
+    let mutation_ids = select_mutation_deliveries(&states, include_applied_guards);
     if mutation_ids.is_empty() {
         return Ok(AgentMemoryMutationInboxResponse {
             mutations: Vec::new(),
@@ -947,17 +953,23 @@ mod tests {
         let second = Uuid::new_v4();
 
         assert_eq!(
-            select_mutation_deliveries(&[
-                delivery_state(first, memory_id, None),
-                delivery_state(second, memory_id, None),
-            ]),
+            select_mutation_deliveries(
+                &[
+                    delivery_state(first, memory_id, None),
+                    delivery_state(second, memory_id, None),
+                ],
+                true,
+            ),
             vec![first]
         );
         assert_eq!(
-            select_mutation_deliveries(&[
-                delivery_state(first, memory_id, Some("accepted")),
-                delivery_state(second, memory_id, None),
-            ]),
+            select_mutation_deliveries(
+                &[
+                    delivery_state(first, memory_id, Some("accepted")),
+                    delivery_state(second, memory_id, None),
+                ],
+                true,
+            ),
             vec![second]
         );
     }
@@ -969,11 +981,35 @@ mod tests {
         let second = Uuid::new_v4();
 
         assert_eq!(
-            select_mutation_deliveries(&[
-                delivery_state(first, memory_id, Some("accepted")),
-                delivery_state(second, memory_id, Some("ignored")),
-            ]),
+            select_mutation_deliveries(
+                &[
+                    delivery_state(first, memory_id, Some("accepted")),
+                    delivery_state(second, memory_id, Some("ignored")),
+                ],
+                true,
+            ),
             vec![second]
+        );
+    }
+
+    #[test]
+    fn pending_mutation_delivery_excludes_applied_latest_guard() {
+        let memory_id = Uuid::new_v4();
+        let latest = Uuid::new_v4();
+
+        assert!(
+            select_mutation_deliveries(
+                &[delivery_state(latest, memory_id, Some("ignored"))],
+                false,
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            select_mutation_deliveries(
+                &[delivery_state(latest, memory_id, Some("deferred"))],
+                false,
+            ),
+            vec![latest]
         );
     }
 

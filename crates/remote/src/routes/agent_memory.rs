@@ -255,6 +255,12 @@ struct MutationInboxQuery {
     target_scope_key: String,
     scope: AgentMemoryScope,
     scope_key: Option<String>,
+    #[serde(default = "default_include_applied_guards")]
+    include_applied_guards: bool,
+}
+
+fn default_include_applied_guards() -> bool {
+    true
 }
 
 async fn mutation_inbox(
@@ -272,6 +278,7 @@ async fn mutation_inbox(
         &query.target_scope_key,
         query.scope,
         query.scope_key.as_deref(),
+        query.include_applied_guards,
     )
     .await
     .map(Json)
