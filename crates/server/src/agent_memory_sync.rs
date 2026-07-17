@@ -888,13 +888,7 @@ async fn sync_one(
         )
         .await?;
     let mut mutations = client
-        .agent_memory_mutation_inbox(
-            host_id,
-            agent_kind,
-            scope_key,
-            AgentMemoryScope::UserGlobal,
-            None,
-        )
+        .agent_memory_mutation_inbox(host_id, agent_kind, "", AgentMemoryScope::UserGlobal, None)
         .await?
         .mutations;
     mutations.extend(
@@ -952,7 +946,12 @@ async fn sync_one(
                 mutation_id: receipt.mutation_id,
                 target_host_id: host_id,
                 target_agent: agent_kind,
-                target_scope_key: Some(scope_key.to_string()),
+                // A user-global mutation changes one native agent memory per
+                // host, not one copy per repository. Repository mutations are
+                // still acknowledged independently for their own scope.
+                target_scope_key: (mutation_scope(&mutations, receipt.mutation_id)
+                    == Some(AgentMemoryScope::Repository))
+                .then(|| scope_key.to_string()),
                 status: receipt.status,
                 reason: receipt.reason,
             })
@@ -1175,11 +1174,19 @@ fn validate_mutation_result(
                     .is_some_and(|replacement| {
                         let expected_old_occurrences =
                             replacement.matches(&mutation.match_text).count();
-                        result.snapshot.matches(replacement).count() == 1
-                            && result.snapshot.matches(&mutation.match_text).count()
-                                == expected_old_occurrences
-                            && result.snapshot.contains(&expected_marker)
-                            && result.snapshot.matches(&marker_prefix).count() == 1
+                        let repository_replacement_is_valid =
+                            result.snapshot.matches(replacement).count() == 1
+                                && result.snapshot.matches(&mutation.match_text).count()
+                                    == expected_old_occurrences
+                                && result.snapshot.contains(&expected_marker)
+                                && result.snapshot.matches(&marker_prefix).count() == 1;
+                        repository_replacement_is_valid
+                            || (mutation.scope == AgentMemoryScope::UserGlobal
+                                && reported.is_some_and(|receipt| {
+                                    receipt.status == AgentMemoryReceiptStatus::Accepted
+                                })
+                                && !result.snapshot.contains(&mutation.match_text)
+                                && !result.snapshot.contains(&marker_prefix))
                     }),
                 AgentMemoryMutationOperation::Delete => {
                     !result.snapshot.contains(&mutation.match_text)
@@ -1207,6 +1214,16 @@ fn validate_mutation_result(
             }
         })
         .collect()
+}
+
+fn mutation_scope(
+    mutations: &[AgentMemoryMutation],
+    mutation_id: Uuid,
+) -> Option<AgentMemoryScope> {
+    mutations
+        .iter()
+        .find(|mutation| mutation.id == mutation_id)
+        .map(|mutation| mutation.scope)
 }
 
 fn ensure_snapshot_publication_allowed(deferred_mutations: usize) -> anyhow::Result<()> {
@@ -1557,6 +1574,37 @@ mod tests {
             receipts: Vec::new(),
             mutation_receipts: Vec::new(),
         };
+        assert_eq!(
+            validate_mutation_result(&[mutation], &result)[0].status,
+            AgentMemoryReceiptStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn user_global_mutation_does_not_require_global_text_in_repo_snapshot() {
+        let mutation_id = Uuid::new_v4();
+        let mutation = AgentMemoryMutation {
+            id: mutation_id,
+            memory_id: Uuid::new_v4(),
+            generation: 1,
+            operation: AgentMemoryMutationOperation::Update,
+            scope: AgentMemoryScope::UserGlobal,
+            scope_key: None,
+            match_text: "old global value".to_string(),
+            replacement_text: Some("new global value".to_string()),
+            created_at: Utc::now(),
+            receipt_count: 0,
+        };
+        let result = SyncResult {
+            snapshot: "repository-only memory".to_string(),
+            receipts: Vec::new(),
+            mutation_receipts: vec![SyncMutationReceipt {
+                mutation_id,
+                status: AgentMemoryReceiptStatus::Accepted,
+                reason: Some("updated native global memory".to_string()),
+            }],
+        };
+
         assert_eq!(
             validate_mutation_result(&[mutation], &result)[0].status,
             AgentMemoryReceiptStatus::Accepted
