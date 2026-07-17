@@ -20,7 +20,7 @@ use uuid::Uuid;
 use super::error::ErrorResponse;
 use crate::{AppState, auth::RequestContext, db::agent_memory};
 
-const MAX_SNAPSHOT_BYTES: usize = 64 * 1024;
+const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const MAX_REASON_BYTES: usize = 4 * 1024;
 const MAX_MUTATION_TEXT_BYTES: usize = 16 * 1024;
 
@@ -321,7 +321,7 @@ async fn upsert_snapshot(
     if payload.content.len() > MAX_SNAPSHOT_BYTES {
         return Err(ErrorResponse::new(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "memory snapshot exceeds 64 KiB",
+            "memory snapshot exceeds 256 KiB",
         ));
     }
     validate_scope(payload.scope, payload.scope_key.as_deref())?;
