@@ -39,6 +39,23 @@ impl Server {
             .await
             .context("failed to run database migrations")?;
 
+        let mut backfilled_snapshots = 0;
+        loop {
+            let backfilled = db::agent_memory::backfill_snapshot_entries(&pool, 100)
+                .await
+                .context("failed to backfill agent memory snapshot entries")?;
+            backfilled_snapshots += backfilled;
+            if backfilled < 100 {
+                break;
+            }
+        }
+        if backfilled_snapshots > 0 {
+            tracing::info!(
+                snapshot_count = backfilled_snapshots,
+                "backfilled agent memory snapshot entries"
+            );
+        }
+
         if let Some(password) = config.electric_role_password.as_ref() {
             db::ensure_electric_role_password(&pool, password.expose_secret())
                 .await
