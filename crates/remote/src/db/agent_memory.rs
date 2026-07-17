@@ -11,6 +11,7 @@ use api_types::{
     UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse,
 };
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
@@ -48,6 +49,134 @@ impl TryFrom<SnapshotRow> for AgentMemorySnapshot {
 }
 
 const SNAPSHOT_COLUMNS: &str = "id, source_host_id, source_agent, scope, scope_key, revision, content, content_hash, created_at, updated_at";
+
+#[derive(Debug, PartialEq, Eq)]
+struct CanonicalMemoryEntry {
+    key: String,
+    ordinal: i32,
+    content: String,
+}
+
+fn canonical_snapshot_entries(content: &str) -> (String, Vec<CanonicalMemoryEntry>) {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = normalized.lines().collect::<Vec<_>>();
+    if lines
+        .first()
+        .is_some_and(|line| line.starts_with("VIBE_MEMORY_SNAPSHOT_FORMAT:"))
+        && lines.len() >= 3
+    {
+        lines.drain(..3);
+    }
+
+    let mut sections = Vec::<String>::new();
+    let mut current = Vec::<&str>::new();
+    for line in lines {
+        if line.starts_with("## ") && !current.is_empty() {
+            let section = current
+                .drain(..)
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string();
+            if !section.is_empty() {
+                sections.push(section);
+            }
+        }
+        current.push(line);
+    }
+    let section = current
+        .into_iter()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    if !section.is_empty() {
+        sections.push(section);
+    }
+
+    let mut unique = HashMap::<String, (usize, String)>::new();
+    for (ordinal, section) in sections.into_iter().enumerate() {
+        let hash = hex::encode(Sha256::digest(section.as_bytes()));
+        unique.entry(hash).or_insert((ordinal, section));
+    }
+    let mut hashes = unique.keys().cloned().collect::<Vec<_>>();
+    hashes.sort();
+    let entry_set_hash = hex::encode(Sha256::digest(hashes.join("\n").as_bytes()));
+    let mut entries = unique
+        .into_iter()
+        .map(|(key, (ordinal, content))| CanonicalMemoryEntry {
+            key,
+            ordinal: ordinal as i32,
+            content,
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.ordinal);
+    (entry_set_hash, entries)
+}
+
+async fn replace_snapshot_entries(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    snapshot_id: Uuid,
+    entries: &[CanonicalMemoryEntry],
+) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM agent_memory_snapshot_entries WHERE snapshot_id = $1")
+        .bind(snapshot_id)
+        .execute(&mut **transaction)
+        .await?;
+    for entry in entries {
+        sqlx::query(
+            "INSERT INTO agent_memory_entries (entry_key, content, content_hash) VALUES ($1, $2, $1) ON CONFLICT (entry_key) DO NOTHING",
+        )
+        .bind(&entry.key)
+        .bind(&entry.content)
+        .execute(&mut **transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO agent_memory_snapshot_entries (snapshot_id, entry_key, ordinal) VALUES ($1, $2, $3)",
+        )
+        .bind(snapshot_id)
+        .bind(&entry.key)
+        .bind(entry.ordinal)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+pub async fn backfill_snapshot_entries(pool: &PgPool, limit: i64) -> anyhow::Result<u64> {
+    let snapshot_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM agent_memory_snapshots WHERE entry_set_hash IS NULL ORDER BY created_at ASC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let mut backfilled = 0;
+    for snapshot_id in snapshot_ids {
+        let mut transaction = pool.begin().await?;
+        let snapshot = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT content, entry_set_hash FROM agent_memory_snapshots WHERE id = $1 FOR UPDATE",
+        )
+        .bind(snapshot_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((content, None)) = snapshot else {
+            transaction.commit().await?;
+            continue;
+        };
+        let (entry_set_hash, entries) = canonical_snapshot_entries(&content);
+        replace_snapshot_entries(&mut transaction, snapshot_id, &entries).await?;
+        sqlx::query("UPDATE agent_memory_snapshots SET entry_set_hash = $2 WHERE id = $1")
+            .bind(snapshot_id)
+            .bind(entry_set_hash)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        backfilled += 1;
+    }
+    Ok(backfilled)
+}
 
 #[derive(FromRow)]
 struct MutationRow {
@@ -289,19 +418,23 @@ pub async fn upsert_snapshot(
     owner_user_id: Uuid,
     request: &UpsertAgentMemorySnapshotRequest,
 ) -> anyhow::Result<UpsertAgentMemorySnapshotResponse> {
+    backfill_snapshot_entries(pool, 100).await?;
     let scope_key = normalized_scope_key(request.scope, request.scope_key.as_deref())?;
     let agent = agent_name(request.source_agent);
     let scope = scope_name(request.scope);
     let id = Uuid::new_v4();
+    let (entry_set_hash, entries) = canonical_snapshot_entries(&request.content);
+    let mut transaction = pool.begin().await?;
 
     let query = format!(
         "INSERT INTO agent_memory_snapshots \
-         (id, owner_user_id, source_host_id, source_agent, scope, scope_key, content, content_hash) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         (id, owner_user_id, source_host_id, source_agent, scope, scope_key, content, content_hash, entry_set_hash) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          ON CONFLICT (owner_user_id, source_host_id, source_agent, scope, scope_key) DO UPDATE SET \
            revision = agent_memory_snapshots.revision + 1, \
-           content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, updated_at = NOW() \
-         WHERE agent_memory_snapshots.content_hash <> EXCLUDED.content_hash \
+           content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, \
+           entry_set_hash = EXCLUDED.entry_set_hash, updated_at = NOW() \
+         WHERE agent_memory_snapshots.entry_set_hash IS DISTINCT FROM EXCLUDED.entry_set_hash \
          RETURNING {SNAPSHOT_COLUMNS}"
     );
     let changed = sqlx::query_as::<_, SnapshotRow>(&query)
@@ -313,11 +446,15 @@ pub async fn upsert_snapshot(
         .bind(&scope_key)
         .bind(&request.content)
         .bind(&request.content_hash)
-        .fetch_optional(pool)
+        .bind(&entry_set_hash)
+        .fetch_optional(&mut *transaction)
         .await?;
 
     let (row, changed) = match changed {
-        Some(row) => (row, true),
+        Some(row) => {
+            replace_snapshot_entries(&mut transaction, row.id, &entries).await?;
+            (row, true)
+        }
         None => {
             let query = format!(
                 "SELECT {SNAPSHOT_COLUMNS} FROM agent_memory_snapshots \
@@ -330,11 +467,12 @@ pub async fn upsert_snapshot(
                 .bind(agent)
                 .bind(scope)
                 .bind(&scope_key)
-                .fetch_one(pool)
+                .fetch_one(&mut *transaction)
                 .await?;
             (row, false)
         }
     };
+    transaction.commit().await?;
 
     Ok(UpsertAgentMemorySnapshotResponse {
         snapshot: row.try_into()?,
@@ -350,6 +488,7 @@ pub async fn inbox(
     scope: AgentMemoryScope,
     scope_key: Option<&str>,
 ) -> anyhow::Result<AgentMemoryInboxResponse> {
+    backfill_snapshot_entries(pool, 100).await?;
     let scope_key = normalized_scope_key(scope, scope_key)?;
     let query = format!(
         "SELECT {SNAPSHOT_COLUMNS} FROM agent_memory_snapshots s \
@@ -1028,6 +1167,41 @@ mod tests {
         assert_eq!(
             normalized_scope_key(AgentMemoryScope::UserGlobal, Some("ignored")).unwrap(),
             ""
+        );
+    }
+
+    #[test]
+    fn canonical_entries_ignore_section_order_and_exact_duplicates() {
+        let first = "VIBE_MEMORY_SNAPSHOT_FORMAT: 1\nSOURCE: codex\nSCOPE: repository\n\n## Alpha\nRemember A.\n\n## Beta\nRemember B.";
+        let reordered = "VIBE_MEMORY_SNAPSHOT_FORMAT: 1\nSOURCE: codex\nSCOPE: repository\n\n## Beta\nRemember B.\n\n## Alpha\nRemember A.\n\n## Alpha\nRemember A.";
+
+        let (first_hash, first_entries) = canonical_snapshot_entries(first);
+        let (reordered_hash, reordered_entries) = canonical_snapshot_entries(reordered);
+
+        assert_eq!(first_hash, reordered_hash);
+        assert_eq!(first_entries.len(), 2);
+        assert_eq!(reordered_entries.len(), 2);
+    }
+
+    #[test]
+    fn canonical_entries_preserve_semantic_content_changes() {
+        let before = "## Build\nRun pnpm check.";
+        let after = "## Build\nRun pnpm run check.";
+
+        assert_ne!(
+            canonical_snapshot_entries(before).0,
+            canonical_snapshot_entries(after).0
+        );
+    }
+
+    #[test]
+    fn canonical_entries_normalize_line_endings_and_trailing_whitespace() {
+        let unix = "## Build\nRun tests.\n";
+        let windows = "## Build  \r\nRun tests.   \r\n";
+
+        assert_eq!(
+            canonical_snapshot_entries(unix).0,
+            canonical_snapshot_entries(windows).0
         );
     }
 }
