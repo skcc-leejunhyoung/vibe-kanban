@@ -212,7 +212,8 @@ pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<(
     let Some(job) = job else {
         return Ok(());
     };
-    let result = run_now(deployment.clone(), &job.trigger_kind).await;
+    let skip_idle = job.round > 1 || job.trigger_kind == "catch_up";
+    let result = run_now_with_mode(deployment.clone(), &job.trigger_kind, skip_idle).await;
     let retry_at = result.as_ref().err().and_then(|error| {
         error
             .downcast_ref::<MemorySyncRateLimited>()
@@ -247,6 +248,14 @@ pub async fn request_central_sync_and_process(
 }
 
 pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::Result<()> {
+    run_now_with_mode(deployment, trigger_kind, false).await
+}
+
+async fn run_now_with_mode(
+    deployment: DeploymentImpl,
+    trigger_kind: &str,
+    skip_idle: bool,
+) -> anyhow::Result<()> {
     let _guard = RUN_LOCK
         .try_lock()
         .map_err(|_| anyhow::anyhow!("agent memory sync is already running"))?;
@@ -266,7 +275,7 @@ pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::
         "Memory synchronization started",
     )
     .await;
-    let result = run_all(&deployment, &run_id, trigger_kind).await;
+    let result = run_all(&deployment, &run_id, trigger_kind, skip_idle).await;
     let (level, message) = match &result {
         Ok(()) => ("info", "Memory synchronization completed".to_string()),
         Err(error) => ("error", format!("Memory synchronization failed: {error}")),
@@ -783,6 +792,7 @@ async fn run_all(
     deployment: &DeploymentImpl,
     run_id: &str,
     trigger_kind: &str,
+    skip_idle: bool,
 ) -> anyhow::Result<()> {
     let client = deployment.remote_client()?;
     let machine_id = deployment.user_id().to_string();
@@ -835,6 +845,7 @@ async fn run_all(
                 *agent,
                 run_id,
                 trigger_kind,
+                skip_idle,
             )
             .await
             {
@@ -873,6 +884,7 @@ async fn sync_one(
     agent_kind: AgentMemoryKind,
     run_id: &str,
     trigger_kind: &str,
+    skip_idle: bool,
 ) -> anyhow::Result<()> {
     let client = deployment.remote_client()?;
     let previous = client
@@ -891,6 +903,50 @@ async fn sync_one(
             Some(scope_key),
         )
         .await?;
+    if skip_idle {
+        let mut pending_mutation_count = client
+            .agent_memory_mutation_inbox(
+                host_id,
+                agent_kind,
+                "",
+                AgentMemoryScope::UserGlobal,
+                None,
+                false,
+            )
+            .await?
+            .mutations
+            .len();
+        pending_mutation_count += client
+            .agent_memory_mutation_inbox(
+                host_id,
+                agent_kind,
+                scope_key,
+                AgentMemoryScope::Repository,
+                Some(scope_key),
+                false,
+            )
+            .await?
+            .mutations
+            .len();
+        if should_skip_idle(
+            previous.is_some(),
+            inbox.snapshots.len(),
+            pending_mutation_count,
+        ) {
+            log_event(
+                deployment,
+                run_id,
+                trigger_kind,
+                "info",
+                "agent_skipped",
+                Some(repo),
+                Some(agent_kind),
+                "No incoming snapshots or pending mutations; existing snapshot kept unchanged",
+            )
+            .await;
+            return Ok(());
+        }
+    }
     let mut mutations = client
         .agent_memory_mutation_inbox(
             host_id,
@@ -1039,6 +1095,14 @@ async fn sync_one(
     )
     .await;
     Ok(())
+}
+
+fn should_skip_idle(
+    has_previous_snapshot: bool,
+    incoming_snapshot_count: usize,
+    pending_mutation_count: usize,
+) -> bool {
+    has_previous_snapshot && incoming_snapshot_count == 0 && pending_mutation_count == 0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1539,6 +1603,14 @@ mod tests {
             }
             .is_converged()
         );
+    }
+
+    #[test]
+    fn idle_follow_up_skips_only_after_an_initial_snapshot_exists() {
+        assert!(should_skip_idle(true, 0, 0));
+        assert!(!should_skip_idle(false, 0, 0));
+        assert!(!should_skip_idle(true, 1, 0));
+        assert!(!should_skip_idle(true, 0, 1));
     }
 
     #[test]
