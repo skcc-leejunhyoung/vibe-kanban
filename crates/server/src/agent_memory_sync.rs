@@ -250,7 +250,9 @@ pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::
         .map_err(|_| anyhow::anyhow!("agent memory sync is already running"))?;
     let run_id = Uuid::new_v4().to_string();
     set_started(&deployment).await?;
-    prune_logs(&deployment).await?;
+    if let Err(error) = prune_logs(&deployment).await {
+        tracing::warn!(?error, "failed to prune agent memory sync logs");
+    }
     log_event(
         &deployment,
         &run_id,
@@ -261,13 +263,13 @@ pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::
         None,
         "Memory synchronization started",
     )
-    .await?;
+    .await;
     let result = run_all(&deployment, &run_id, trigger_kind).await;
     let (level, message) = match &result {
         Ok(()) => ("info", "Memory synchronization completed".to_string()),
         Err(error) => ("error", format!("Memory synchronization failed: {error}")),
     };
-    let _ = log_event(
+    log_event(
         &deployment,
         &run_id,
         trigger_kind,
@@ -278,7 +280,14 @@ pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::
         &message,
     )
     .await;
-    set_finished(&deployment, result.as_ref().err()).await?;
+    if let Err(state_error) = set_finished(&deployment, result.as_ref().err()).await {
+        return match result {
+            Ok(()) => Err(state_error),
+            Err(run_error) => Err(run_error.context(format!(
+                "also failed to persist memory sync completion state: {state_error}"
+            ))),
+        };
+    }
     result
 }
 
@@ -390,7 +399,9 @@ pub async fn run_all_online(
         .map_err(|_| anyhow::anyhow!("global agent memory sync is already running"))?;
     let run_id = Uuid::new_v4().to_string();
     set_started(&deployment).await?;
-    prune_logs(&deployment).await?;
+    if let Err(error) = prune_logs(&deployment).await {
+        tracing::warn!(?error, "failed to prune agent memory sync logs");
+    }
     log_event(
         &deployment,
         &run_id,
@@ -401,7 +412,7 @@ pub async fn run_all_online(
         None,
         "Online computer memory synchronization started",
     )
-    .await?;
+    .await;
     let result = run_all_online_inner(&deployment).await;
     if let Ok(global) = &result {
         for host in &global.hosts {
@@ -420,7 +431,7 @@ pub async fn run_all_online(
                     host.error.as_deref().unwrap_or("unknown error")
                 )
             };
-            let _ = log_event(
+            log_event(
                 &deployment,
                 &run_id,
                 "global",
@@ -448,7 +459,7 @@ pub async fn run_all_online(
         ),
         Some(error) => ("error", error.to_string()),
     };
-    let _ = log_event(
+    log_event(
         &deployment,
         &run_id,
         "global",
@@ -459,7 +470,14 @@ pub async fn run_all_online(
         &message,
     )
     .await;
-    set_finished(&deployment, completion_error.as_ref()).await?;
+    if let Err(state_error) = set_finished(&deployment, completion_error.as_ref()).await {
+        return match result {
+            Ok(_) => Err(state_error),
+            Err(run_error) => Err(run_error.context(format!(
+                "also failed to persist memory sync completion state: {state_error}"
+            ))),
+        };
+    }
     result
 }
 
@@ -904,7 +922,7 @@ async fn sync_one(
             mutations.len()
         ),
     )
-    .await?;
+    .await;
     let result_path = repo
         .path
         .join(format!(".vibe-memory-sync-{}.json", Uuid::new_v4()));
@@ -955,7 +973,7 @@ async fn sync_one(
                 "{deferred_mutations} memory mutation guard(s) still deferred after apply; snapshot publication blocked"
             ),
         )
-        .await?;
+        .await;
         ensure_snapshot_publication_allowed(deferred_mutations)?;
     }
 
@@ -1004,7 +1022,7 @@ async fn sync_one(
             snapshot.snapshot.revision, recorded_receipts
         ),
     )
-    .await?;
+    .await;
     Ok(())
 }
 
@@ -1018,8 +1036,8 @@ async fn log_event(
     repo: Option<&Repo>,
     agent: Option<AgentMemoryKind>,
     message: &str,
-) -> anyhow::Result<()> {
-    sqlx::query(
+) {
+    if let Err(error) = sqlx::query(
         "INSERT INTO agent_memory_sync_logs (id, run_id, created_at, level, phase, trigger_kind, repo_name, repo_path, agent_kind, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
@@ -1036,8 +1054,10 @@ async fn log_event(
     }))
     .bind(message)
     .execute(&deployment.db().pool)
-    .await?;
-    Ok(())
+    .await
+    {
+        tracing::warn!(?error, phase, trigger_kind, "failed to record agent memory sync log");
+    }
 }
 
 fn build_prompt(
