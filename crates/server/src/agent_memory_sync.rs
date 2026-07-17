@@ -366,7 +366,7 @@ pub async fn pending_status(
                 .agent_memory_mutation_inbox(
                     host.id,
                     *agent,
-                    &scope_key,
+                    "",
                     AgentMemoryScope::UserGlobal,
                     None,
                 )
