@@ -66,10 +66,17 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const selectWorkspaceHost = useWorkspaceHostSelectionStore(
     (state) => state.selectHost,
   );
+  const syncWorkspaceHostUser = useWorkspaceHostSelectionStore(
+    (state) => state.syncUser,
+  );
   const location = useLocation();
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, userId } = useAuth();
   const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
   const isProjectRoute = /^\/projects\/[^/]+/.test(location.pathname);
+
+  useEffect(() => {
+    syncWorkspaceHostUser(isSignedIn ? userId : null);
+  }, [isSignedIn, syncWorkspaceHostUser, userId]);
 
   useCommandBarShortcut(
     () => CommandBarDialog.show(),

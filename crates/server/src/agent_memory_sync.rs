@@ -938,6 +938,7 @@ pub async fn mirror_local_claude_to_codex(
             content_hash,
         })
         .await?;
+    ensure_published_snapshot_matches(&snapshot, &published.snapshot.content)?;
     client
         .record_agent_memory_receipt(&RecordAgentMemoryReceiptRequest {
             snapshot_id: source.id,
@@ -959,6 +960,13 @@ pub async fn mirror_local_claude_to_codex(
             .filter(|line| line.starts_with("## "))
             .count(),
     })
+}
+
+fn ensure_published_snapshot_matches(expected: &str, published: &str) -> anyhow::Result<()> {
+    if published != expected {
+        anyhow::bail!("published Codex snapshot does not match the lossless mirror");
+    }
+    Ok(())
 }
 
 fn replace_snapshot_agent(
@@ -1754,6 +1762,13 @@ mod tests {
             source.replacen("SOURCE_AGENT: claude_code", "SOURCE_AGENT: codex", 1)
         );
         validate_snapshot_scope(&mirrored, "github.com/acme/repo", AgentMemoryKind::Codex).unwrap();
+    }
+
+    #[test]
+    fn targeted_mirror_rejects_a_stale_published_snapshot() {
+        ensure_published_snapshot_matches("## Beta\nB\n\n## Alpha\nA", "## Alpha\nA\n\n## Beta\nB")
+            .unwrap_err();
+        ensure_published_snapshot_matches("exact snapshot", "exact snapshot").unwrap();
     }
 
     #[test]

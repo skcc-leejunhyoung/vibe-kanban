@@ -4,7 +4,9 @@ export const ALL_WORKSPACE_HOSTS_ID = 'all';
 
 interface WorkspaceHostSelectionState {
   selectedHostId: string;
+  activeUserId: string | null;
   selectHost: (hostId: string) => void;
+  syncUser: (userId: string | null) => void;
 }
 
 /**
@@ -25,5 +27,15 @@ interface WorkspaceHostSelectionState {
 export const useWorkspaceHostSelectionStore =
   create<WorkspaceHostSelectionState>((set) => ({
     selectedHostId: ALL_WORKSPACE_HOSTS_ID,
+    activeUserId: null,
     selectHost: (selectedHostId) => set({ selectedHostId }),
+    syncUser: (activeUserId) =>
+      set((state) =>
+        state.activeUserId === activeUserId
+          ? state
+          : {
+              activeUserId,
+              selectedHostId: ALL_WORKSPACE_HOSTS_ID,
+            }
+      ),
   }));

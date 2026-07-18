@@ -434,7 +434,7 @@ pub async fn upsert_snapshot(
            revision = agent_memory_snapshots.revision + 1, \
            content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, \
            entry_set_hash = EXCLUDED.entry_set_hash, updated_at = NOW() \
-         WHERE agent_memory_snapshots.entry_set_hash IS DISTINCT FROM EXCLUDED.entry_set_hash \
+         WHERE agent_memory_snapshots.content_hash IS DISTINCT FROM EXCLUDED.content_hash \
          RETURNING {SNAPSHOT_COLUMNS}"
     );
     let changed = sqlx::query_as::<_, SnapshotRow>(&query)
@@ -1179,6 +1179,10 @@ mod tests {
         let (reordered_hash, reordered_entries) = canonical_snapshot_entries(reordered);
 
         assert_eq!(first_hash, reordered_hash);
+        assert_ne!(
+            hex::encode(Sha256::digest(first.as_bytes())),
+            hex::encode(Sha256::digest(reordered.as_bytes()))
+        );
         assert_eq!(first_entries.len(), 2);
         assert_eq!(reordered_entries.len(), 2);
     }
