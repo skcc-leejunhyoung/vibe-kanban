@@ -7,6 +7,7 @@ import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserSystem } from "@/shared/hooks/useUserSystem";
 import { clearLocalStorageScratchForUser } from "@/shared/hooks/useLocalStorageScratch";
+import { clearKanbanIssueComposerScratchForUser } from "@/shared/hooks/useKanbanIssueComposerScratch";
 
 interface RemoteAppBarUserPopoverContainerProps {
   organizations: OrganizationWithRole[];
@@ -52,6 +53,7 @@ export function RemoteAppBarUserPopoverContainer({
   const handleLogout = useCallback(async () => {
     if (userId) {
       clearLocalStorageScratchForUser(userId);
+      clearKanbanIssueComposerScratchForUser(userId);
     }
     try {
       await logout();

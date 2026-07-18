@@ -1,5 +1,15 @@
-import { useEffect, useMemo, type ReactNode } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { AUTH_CHANGED_EVENT, isLoggedIn } from "@remote/shared/lib/auth";
 import { getIdentity } from "@remote/shared/lib/api";
 import {
@@ -11,12 +21,20 @@ import { clearLegacyLocalStorageScratch } from "@/shared/hooks/useLocalStorageSc
 const TOKENS_QUERY_KEY = ["remote-auth", "tokens"] as const;
 const IDENTITY_QUERY_KEY = ["remote-auth", "identity"] as const;
 
+export function clearRemoteUserQueryCache(queryClient: QueryClient): void {
+  queryClient.removeQueries({
+    predicate: (query) => query.queryKey[0] !== "remote-auth",
+  });
+  queryClient.getMutationCache().clear();
+}
+
 interface RemoteAuthProviderProps {
   children: ReactNode;
 }
 
 export function RemoteAuthProvider({ children }: RemoteAuthProviderProps) {
   const queryClient = useQueryClient();
+  const activeUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     clearLegacyLocalStorageScratch();
@@ -41,15 +59,31 @@ export function RemoteAuthProvider({ children }: RemoteAuthProviderProps) {
   });
   const identityUserId = identityQuery.data?.user_id ?? null;
 
+  useLayoutEffect(() => {
+    if (!identityUserId || activeUserIdRef.current === identityUserId) {
+      return;
+    }
+    clearRemoteUserQueryCache(queryClient);
+    activeUserIdRef.current = identityUserId;
+  }, [identityUserId, queryClient]);
+
   useEffect(() => {
-    const handleAuthChanged = () => {
+    const handleAuthChanged = async () => {
       void queryClient.invalidateQueries({ queryKey: TOKENS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: IDENTITY_QUERY_KEY });
+      if (await isLoggedIn()) {
+        await queryClient.resetQueries({ queryKey: IDENTITY_QUERY_KEY });
+        return;
+      }
+
+      clearRemoteUserQueryCache(queryClient);
+      queryClient.removeQueries({ queryKey: IDENTITY_QUERY_KEY });
+      activeUserIdRef.current = null;
     };
 
-    window.addEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
+    const listener = () => void handleAuthChanged();
+    window.addEventListener(AUTH_CHANGED_EVENT, listener);
     return () => {
-      window.removeEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
+      window.removeEventListener(AUTH_CHANGED_EVENT, listener);
     };
   }, [queryClient]);
 
