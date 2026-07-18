@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use services::services::remote_client::RemoteClientError;
+use uuid::Uuid;
 
 use crate::{DeploymentImpl, agent_memory_sync};
 
@@ -20,6 +21,11 @@ struct LogsQuery {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct TargetedMirrorRequest {
+    repo_id: Uuid,
+}
+
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/agent-memory-sync/status", get(status))
@@ -27,11 +33,25 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/agent-memory-sync/run", post(run))
         .route("/agent-memory-sync/run-wait", post(run_wait))
         .route("/agent-memory-sync/run-all", post(run_all))
+        .route(
+            "/agent-memory-sync/targeted-mirror/claude-to-codex",
+            post(targeted_claude_to_codex),
+        )
         .route("/agent-memory-sync/pending", get(pending))
         .route(
             "/agent-memory-sync/mutations",
             get(list_mutations).post(create_mutation),
         )
+}
+
+async fn targeted_claude_to_codex(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<TargetedMirrorRequest>,
+) -> Result<Json<agent_memory_sync::AgentMemoryTargetedMirrorResult>, (StatusCode, String)> {
+    agent_memory_sync::mirror_local_claude_to_codex(&deployment, payload.repo_id)
+        .await
+        .map(Json)
+        .map_err(internal_error)
 }
 
 async fn list_mutations(

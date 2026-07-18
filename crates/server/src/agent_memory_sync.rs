@@ -67,6 +67,15 @@ pub struct AgentMemoryGlobalRunResult {
     pub hosts: Vec<AgentMemoryHostRunResult>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentMemoryTargetedMirrorResult {
+    pub source_snapshot_id: Uuid,
+    pub source_revision: i64,
+    pub target_revision: i64,
+    pub bytes: usize,
+    pub sections: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AgentMemoryPendingStatus {
     pub enabled: bool,
@@ -876,6 +885,116 @@ async fn run_all(
     }
 }
 
+/// Re-materialize one repository-scoped Codex memory from this host's Claude
+/// snapshot without invoking an LLM. This is intentionally narrow: it is a
+/// lossless repair path for a target that previously over-summarized a source.
+pub async fn mirror_local_claude_to_codex(
+    deployment: &DeploymentImpl,
+    repo_id: Uuid,
+) -> anyhow::Result<AgentMemoryTargetedMirrorResult> {
+    let _guard = RUN_LOCK.lock().await;
+    let client = deployment.remote_client()?;
+    let machine_id = deployment.user_id().to_string();
+    let host = client
+        .list_relay_hosts()
+        .await?
+        .into_iter()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or_else(|| anyhow::anyhow!("this computer is not registered as a remote host"))?;
+    let repo = Repo::find_by_id(&deployment.db().pool, repo_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("repository not found"))?;
+    let scope_key = canonical_repo_key(deployment, &repo.path)?;
+    let source = client
+        .agent_memory_snapshot(
+            host.id,
+            AgentMemoryKind::ClaudeCode,
+            AgentMemoryScope::Repository,
+            Some(&scope_key),
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("local Claude snapshot not found"))?;
+    validate_snapshot_scope(&source.content, &scope_key, AgentMemoryKind::ClaudeCode)?;
+
+    let snapshot = replace_snapshot_agent(
+        &source.content,
+        AgentMemoryKind::ClaudeCode,
+        AgentMemoryKind::Codex,
+    )?;
+    validate_snapshot_scope(&snapshot, &scope_key, AgentMemoryKind::Codex)?;
+    if snapshot.len() > MAX_SNAPSHOT_BYTES {
+        anyhow::bail!("agent memory snapshot exceeds 256 KiB");
+    }
+
+    write_codex_scope_snapshot(&scope_key, &snapshot).await?;
+    let content_hash = hex::encode(Sha256::digest(snapshot.as_bytes()));
+    let published = client
+        .upsert_agent_memory_snapshot(&UpsertAgentMemorySnapshotRequest {
+            source_host_id: host.id,
+            source_agent: AgentMemoryKind::Codex,
+            scope: AgentMemoryScope::Repository,
+            scope_key: Some(scope_key),
+            content: snapshot.clone(),
+            content_hash,
+        })
+        .await?;
+    client
+        .record_agent_memory_receipt(&RecordAgentMemoryReceiptRequest {
+            snapshot_id: source.id,
+            target_host_id: host.id,
+            target_agent: AgentMemoryKind::Codex,
+            processed_revision: source.revision,
+            status: AgentMemoryReceiptStatus::Accepted,
+            reason: Some("lossless targeted Claude-to-Codex mirror".to_string()),
+        })
+        .await?;
+
+    Ok(AgentMemoryTargetedMirrorResult {
+        source_snapshot_id: source.id,
+        source_revision: source.revision,
+        target_revision: published.snapshot.revision,
+        bytes: snapshot.len(),
+        sections: snapshot
+            .lines()
+            .filter(|line| line.starts_with("## "))
+            .count(),
+    })
+}
+
+fn replace_snapshot_agent(
+    snapshot: &str,
+    source: AgentMemoryKind,
+    target: AgentMemoryKind,
+) -> anyhow::Result<String> {
+    let agent_name = |agent| match agent {
+        AgentMemoryKind::ClaudeCode => "claude_code",
+        AgentMemoryKind::Codex => "codex",
+    };
+    let source_line = format!("SOURCE_AGENT: {}", agent_name(source));
+    let target_line = format!("SOURCE_AGENT: {}", agent_name(target));
+    if snapshot.matches(&source_line).count() != 1 {
+        anyhow::bail!("source snapshot has an invalid agent header");
+    }
+    Ok(snapshot.replacen(&source_line, &target_line, 1))
+}
+
+async fn write_codex_scope_snapshot(scope_key: &str, snapshot: &str) -> anyhow::Result<()> {
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    let directory = Path::new(&home).join(".codex/memories/extensions/ad_hoc/vibe-sync");
+    tokio::fs::create_dir_all(&directory).await?;
+    let path = directory.join(format!(
+        "{}.md",
+        hex::encode(Sha256::digest(scope_key.as_bytes()))
+    ));
+    let temporary = directory.join(format!(".{}.tmp", Uuid::new_v4()));
+    tokio::fs::write(&temporary, snapshot).await?;
+    if let Err(error) = tokio::fs::rename(&temporary, &path).await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 async fn sync_one(
     deployment: &DeploymentImpl,
     host_id: Uuid,
@@ -1621,6 +1740,20 @@ mod tests {
                 .to_string()
                 .contains("duplicate topic heading")
         );
+    }
+
+    #[test]
+    fn targeted_mirror_changes_only_the_agent_header() {
+        let source = "VIBE_MEMORY_SNAPSHOT_FORMAT: 2\nREPOSITORY_SCOPE: github.com/acme/repo\nSOURCE_AGENT: claude_code\n\n## Detailed recovery\n\nKeep every command and path verbatim.\n";
+        let mirrored =
+            replace_snapshot_agent(source, AgentMemoryKind::ClaudeCode, AgentMemoryKind::Codex)
+                .unwrap();
+
+        assert_eq!(
+            mirrored,
+            source.replacen("SOURCE_AGENT: claude_code", "SOURCE_AGENT: codex", 1)
+        );
+        validate_snapshot_scope(&mirrored, "github.com/acme/repo", AgentMemoryKind::Codex).unwrap();
     }
 
     #[test]
