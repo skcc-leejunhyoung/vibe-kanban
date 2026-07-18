@@ -4,6 +4,7 @@ import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useLocalStorageScratch } from '@/shared/hooks/useLocalStorageScratch';
 import { scratchApi } from '@/shared/lib/api';
 import { ScratchType, type Scratch, type UpdateScratch } from 'shared/types';
+import { useAuth } from '@/shared/hooks/auth/useAuth';
 
 type ScratchState = {
   scratch: Scratch | null;
@@ -37,10 +38,11 @@ export const useScratch = (
   options?: UseScratchOptions
 ): UseScratchResult => {
   const runtime = useAppRuntime();
+  const { userId } = useAuth();
   const isRemote = runtime === 'remote';
 
   // --- localStorage path (remote-web) ---
-  const localResult = useLocalStorageScratch(scratchType, id, {
+  const localResult = useLocalStorageScratch(userId, scratchType, id, {
     enabled: isRemote && (options?.enabled ?? true),
   });
 

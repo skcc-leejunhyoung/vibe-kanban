@@ -2,17 +2,32 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ScratchType, Scratch, UpdateScratch } from 'shared/types';
 import type { UseScratchResult } from './useScratch';
 
-const STORAGE_PREFIX = 'vk-scratch';
+const STORAGE_PREFIX = 'vk-scratch-user';
+const LEGACY_STORAGE_PREFIX = 'vk-scratch:';
+const SCRATCH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-function buildStorageKey(scratchType: ScratchType, id: string): string {
-  return `${STORAGE_PREFIX}:${scratchType}:${id}`;
+function buildStorageKey(
+  userId: string,
+  scratchType: ScratchType,
+  id: string
+): string {
+  return `${STORAGE_PREFIX}:${encodeURIComponent(userId)}:${scratchType}:${id}`;
 }
 
 function readFromStorage(key: string): Scratch | null {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
-    return JSON.parse(raw) as Scratch;
+    const scratch = JSON.parse(raw) as Scratch;
+    const updatedAt = Date.parse(scratch.updated_at);
+    if (
+      !Number.isFinite(updatedAt) ||
+      Date.now() - updatedAt > SCRATCH_TTL_MS
+    ) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return scratch;
   } catch {
     return null;
   }
@@ -49,11 +64,13 @@ function buildScratchEntry(
 }
 
 export function localStorageScratchUpdate(
+  userId: string,
   scratchType: ScratchType,
   id: string,
   update: UpdateScratch
 ): boolean {
-  const key = buildStorageKey(scratchType, id);
+  if (!userId) return false;
+  const key = buildStorageKey(userId, scratchType, id);
   const previousRaw = (() => {
     try {
       return localStorage.getItem(key);
@@ -85,6 +102,27 @@ export function localStorageScratchUpdate(
   return true;
 }
 
+export function clearLocalStorageScratchForUser(userId: string): void {
+  if (!userId) return;
+  const prefix = `${STORAGE_PREFIX}:${encodeURIComponent(userId)}:`;
+  removeStorageKeysWithPrefix(prefix);
+}
+
+export function clearLegacyLocalStorageScratch(): void {
+  removeStorageKeysWithPrefix(LEGACY_STORAGE_PREFIX);
+}
+
+function removeStorageKeysWithPrefix(prefix: string): void {
+  try {
+    const keys = Array.from({ length: localStorage.length }, (_, index) =>
+      localStorage.key(index)
+    ).filter((key): key is string => key?.startsWith(prefix) === true);
+    keys.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
 interface UseLocalStorageScratchOptions {
   enabled?: boolean;
 }
@@ -95,12 +133,14 @@ interface UseLocalStorageScratchOptions {
  * so consumers can swap between them transparently.
  */
 export const useLocalStorageScratch = (
+  userId: string | null,
   scratchType: ScratchType,
   id: string,
   options?: UseLocalStorageScratchOptions
 ): UseScratchResult => {
-  const enabled = (options?.enabled ?? true) && id.length > 0;
-  const storageKey = buildStorageKey(scratchType, id);
+  const enabled =
+    (options?.enabled ?? true) && userId !== null && id.length > 0;
+  const storageKey = userId ? buildStorageKey(userId, scratchType, id) : '';
 
   const [scratch, setScratch] = useState<Scratch | null>(() =>
     enabled ? readFromStorage(storageKey) : null

@@ -418,7 +418,6 @@ pub async fn upsert_snapshot(
     owner_user_id: Uuid,
     request: &UpsertAgentMemorySnapshotRequest,
 ) -> anyhow::Result<UpsertAgentMemorySnapshotResponse> {
-    backfill_snapshot_entries(pool, 100).await?;
     let scope_key = normalized_scope_key(request.scope, request.scope_key.as_deref())?;
     let agent = agent_name(request.source_agent);
     let scope = scope_name(request.scope);
@@ -488,7 +487,6 @@ pub async fn inbox(
     scope: AgentMemoryScope,
     scope_key: Option<&str>,
 ) -> anyhow::Result<AgentMemoryInboxResponse> {
-    backfill_snapshot_entries(pool, 100).await?;
     let scope_key = normalized_scope_key(scope, scope_key)?;
     let query = format!(
         "SELECT {SNAPSHOT_COLUMNS} FROM agent_memory_snapshots s \

@@ -6,6 +6,7 @@ import { logout } from "@remote/shared/lib/api";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserSystem } from "@/shared/hooks/useUserSystem";
+import { clearLocalStorageScratchForUser } from "@/shared/hooks/useLocalStorageScratch";
 
 interface RemoteAppBarUserPopoverContainerProps {
   organizations: OrganizationWithRole[];
@@ -26,7 +27,7 @@ export function RemoteAppBarUserPopoverContainer({
   selectedOrgId,
   onOrgSelect,
 }: RemoteAppBarUserPopoverContainerProps) {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, userId } = useAuth();
   const { loginStatus } = useUserSystem();
 
   // Extract avatar URL from first provider (matches local-web behavior)
@@ -49,6 +50,9 @@ export function RemoteAppBarUserPopoverContainer({
   }, [location, navigate]);
 
   const handleLogout = useCallback(async () => {
+    if (userId) {
+      clearLocalStorageScratchForUser(userId);
+    }
     try {
       await logout();
     } catch (error) {
@@ -59,7 +63,7 @@ export function RemoteAppBarUserPopoverContainer({
       to: "/account",
       replace: true,
     });
-  }, [navigate]);
+  }, [navigate, userId]);
 
   const handleOrgSettings = useCallback(
     async (orgId: string) => {

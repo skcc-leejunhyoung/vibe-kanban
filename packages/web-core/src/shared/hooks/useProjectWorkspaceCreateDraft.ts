@@ -5,12 +5,14 @@ import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRoute
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import type { CreateModeInitialState } from '@/shared/types/createMode';
 import { persistWorkspaceCreateDraft } from '@/shared/lib/workspaceCreateState';
+import { useAuth } from '@/shared/hooks/auth/useAuth';
 
 export function useProjectWorkspaceCreateDraft() {
   const { projectId } = useProjectContext();
   const appNavigation = useAppNavigation();
   const routeState = useCurrentKanbanRouteState();
   const runtime = useAppRuntime();
+  const { userId } = useAuth();
 
   const openWorkspaceCreateFromState = useCallback(
     async (
@@ -23,7 +25,8 @@ export function useProjectWorkspaceCreateDraft() {
         initialState,
         crypto.randomUUID(),
         runtime,
-        options?.hostId
+        options?.hostId,
+        userId
       );
       if (!draftId) {
         return null;
@@ -49,7 +52,7 @@ export function useProjectWorkspaceCreateDraft() {
 
       return draftId;
     },
-    [projectId, appNavigation, routeState.issueId, runtime]
+    [projectId, appNavigation, routeState.issueId, runtime, userId]
   );
 
   return {

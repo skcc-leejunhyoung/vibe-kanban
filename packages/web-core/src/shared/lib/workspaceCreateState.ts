@@ -105,7 +105,8 @@ export async function persistWorkspaceCreateDraft(
   initialState: CreateModeInitialState,
   draftId = DEFAULT_WORKSPACE_CREATE_DRAFT_ID,
   runtime: AppRuntime = 'local',
-  hostId?: string | null
+  hostId?: string | null,
+  userId?: string | null
 ): Promise<string | null> {
   const draftData = toDraftWorkspaceData(initialState);
   const payload = {
@@ -115,7 +116,11 @@ export async function persistWorkspaceCreateDraft(
 
   try {
     if (runtime === 'remote') {
+      if (!userId) {
+        throw new Error('Cannot persist a remote draft without a user');
+      }
       const didPersist = localStorageScratchUpdate(
+        userId,
         ScratchType.DRAFT_WORKSPACE,
         draftId,
         {

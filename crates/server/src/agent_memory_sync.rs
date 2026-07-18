@@ -1135,23 +1135,16 @@ async fn sync_one(
         .filter(|receipt| receipt.status == AgentMemoryReceiptStatus::Deferred)
         .count();
 
-    for receipt in mutation_receipts {
-        client
-            .record_agent_memory_mutation_receipt(&RecordAgentMemoryMutationReceiptRequest {
-                mutation_id: receipt.mutation_id,
-                target_host_id: host_id,
-                target_agent: agent_kind,
-                // A user-global mutation changes one native agent memory per
-                // host, not one copy per repository. Repository mutations are
-                // still acknowledged independently for their own scope.
-                target_scope_key: (mutation_scope(&mutations, receipt.mutation_id)
-                    == Some(AgentMemoryScope::Repository))
-                .then(|| scope_key.to_string()),
-                status: receipt.status,
-                reason: receipt.reason,
-            })
-            .await?;
-    }
+    record_mutation_receipts(
+        &client,
+        host_id,
+        agent_kind,
+        scope_key,
+        &mutations,
+        &mutation_receipts,
+        false,
+    )
+    .await?;
 
     // Never publish while an update/delete guard is still deferred. The
     // generated snapshot can still contain the guarded text, so uploading it
@@ -1186,6 +1179,17 @@ async fn sync_one(
             content_hash,
         })
         .await?;
+
+    record_mutation_receipts(
+        &client,
+        host_id,
+        agent_kind,
+        scope_key,
+        &mutations,
+        &mutation_receipts,
+        true,
+    )
+    .await?;
 
     let mut recorded_receipts = 0;
     for receipt in result.receipts {
@@ -1222,6 +1226,47 @@ async fn sync_one(
     )
     .await;
     Ok(())
+}
+
+async fn record_mutation_receipts(
+    client: &services::services::remote_client::RemoteClient,
+    host_id: Uuid,
+    agent_kind: AgentMemoryKind,
+    scope_key: &str,
+    mutations: &[AgentMemoryMutation],
+    receipts: &[SyncMutationReceipt],
+    snapshot_published: bool,
+) -> anyhow::Result<()> {
+    for receipt in recordable_mutation_receipts(receipts, snapshot_published) {
+        client
+            .record_agent_memory_mutation_receipt(&RecordAgentMemoryMutationReceiptRequest {
+                mutation_id: receipt.mutation_id,
+                target_host_id: host_id,
+                target_agent: agent_kind,
+                // A user-global mutation changes one native agent memory per
+                // host, not one copy per repository. Repository mutations are
+                // still acknowledged independently for their own scope.
+                target_scope_key: (mutation_scope(mutations, receipt.mutation_id)
+                    == Some(AgentMemoryScope::Repository))
+                .then(|| scope_key.to_string()),
+                status: receipt.status,
+                reason: receipt.reason.clone(),
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+fn recordable_mutation_receipts(
+    receipts: &[SyncMutationReceipt],
+    snapshot_published: bool,
+) -> Vec<&SyncMutationReceipt> {
+    receipts
+        .iter()
+        .filter(|receipt| {
+            (receipt.status == AgentMemoryReceiptStatus::Deferred) != snapshot_published
+        })
+        .collect()
 }
 
 fn should_skip_idle(
@@ -1894,6 +1939,42 @@ mod tests {
         let error = ensure_snapshot_publication_allowed(1).unwrap_err();
         assert!(error.to_string().contains("snapshot publication blocked"));
         assert!(ensure_snapshot_publication_allowed(0).is_ok());
+    }
+
+    #[test]
+    fn publication_failure_keeps_successful_mutation_receipts_pending() {
+        let accepted = SyncMutationReceipt {
+            mutation_id: Uuid::new_v4(),
+            status: AgentMemoryReceiptStatus::Accepted,
+            reason: None,
+        };
+        let ignored = SyncMutationReceipt {
+            mutation_id: Uuid::new_v4(),
+            status: AgentMemoryReceiptStatus::Ignored,
+            reason: None,
+        };
+        let deferred = SyncMutationReceipt {
+            mutation_id: Uuid::new_v4(),
+            status: AgentMemoryReceiptStatus::Deferred,
+            reason: None,
+        };
+        let receipts = vec![accepted, ignored, deferred];
+
+        let before_publication = recordable_mutation_receipts(&receipts, false);
+        assert_eq!(before_publication.len(), 1);
+        assert_eq!(
+            before_publication[0].status,
+            AgentMemoryReceiptStatus::Deferred
+        );
+
+        let after_publication = recordable_mutation_receipts(&receipts, true);
+        assert_eq!(after_publication.len(), 2);
+        assert!(after_publication.iter().all(|receipt| {
+            matches!(
+                receipt.status,
+                AgentMemoryReceiptStatus::Accepted | AgentMemoryReceiptStatus::Ignored
+            )
+        }));
     }
 
     #[test]

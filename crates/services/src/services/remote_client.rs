@@ -1,6 +1,6 @@
 //! OAuth client for authorization-code handoffs with automatic retries.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use api_types::{
     AcceptInvitationResponse, AgentMemoryInboxResponse, AgentMemoryKind, AgentMemoryMutation,
@@ -151,7 +151,6 @@ pub struct RemoteClient {
     http: Client,
     auth_context: AuthContext,
     machine_id: String,
-    host_id: Arc<tokio::sync::RwLock<Option<Uuid>>>,
 }
 
 impl std::fmt::Debug for RemoteClient {
@@ -171,7 +170,6 @@ impl Clone for RemoteClient {
             http: self.http.clone(),
             auth_context: self.auth_context.clone(),
             machine_id: self.machine_id.clone(),
-            host_id: self.host_id.clone(),
         }
     }
 }
@@ -203,17 +201,14 @@ impl RemoteClient {
             http,
             auth_context,
             machine_id,
-            host_id: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
     async fn current_host_id(&self) -> Result<Uuid, RemoteClientError> {
-        if let Some(host_id) = *self.host_id.read().await {
-            return Ok(host_id);
-        }
-
-        let host_id = self
-            .list_relay_hosts()
+        // Host registrations and authenticated accounts can change while the
+        // local backend stays alive. Resolve against the current account on
+        // every host-scoped operation instead of retaining a stale UUID.
+        self.list_relay_hosts()
             .await?
             .into_iter()
             .find(|host| host.machine_id == self.machine_id)
@@ -222,9 +217,7 @@ impl RemoteClient {
                 RemoteClientError::Transport(
                     "this computer is not registered as a remote host".to_string(),
                 )
-            })?;
-        *self.host_id.write().await = Some(host_id);
-        Ok(host_id)
+            })
     }
 
     /// Returns a valid access token, refreshing when it's about to expire.

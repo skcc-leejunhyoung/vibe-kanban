@@ -6,6 +6,7 @@ import {
   AuthContext,
   type AuthContextValue,
 } from "@/shared/hooks/auth/useAuth";
+import { clearLegacyLocalStorageScratch } from "@/shared/hooks/useLocalStorageScratch";
 
 const TOKENS_QUERY_KEY = ["remote-auth", "tokens"] as const;
 const IDENTITY_QUERY_KEY = ["remote-auth", "identity"] as const;
@@ -16,6 +17,10 @@ interface RemoteAuthProviderProps {
 
 export function RemoteAuthProvider({ children }: RemoteAuthProviderProps) {
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    clearLegacyLocalStorageScratch();
+  }, []);
 
   const tokensQuery = useQuery({
     queryKey: TOKENS_QUERY_KEY,
