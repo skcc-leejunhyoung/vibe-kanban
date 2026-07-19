@@ -2001,8 +2001,15 @@ export const scratchApi = {
     return handleApiResponse<Scratch>(response);
   },
 
-  get: async (scratchType: ScratchType, id: string): Promise<Scratch> => {
-    const response = await makeRequest(`/api/scratch/${scratchType}/${id}`);
+  get: async (
+    scratchType: ScratchType,
+    id: string,
+    hostId?: string | null
+  ): Promise<Scratch> => {
+    const response = await makeHostAwareRequest(
+      `/api/scratch/${scratchType}/${id}`,
+      hostId
+    );
     return handleApiResponse<Scratch>(response);
   },
 
