@@ -53,6 +53,8 @@ interface ModelSelectorContainerProps {
   agent: BaseCodingAgent | null;
   workspaceId: string | undefined;
   sessionId?: string;
+  /** Route model discovery to this host (remote runtime, host-picker flows). */
+  hostId?: string | null;
   onAdvancedSettings?: () => void;
   presets: string[];
   selectedPreset: string | null;
@@ -75,6 +77,7 @@ export function ModelSelectorContainer({
   agent,
   workspaceId,
   sessionId,
+  hostId,
   onAdvancedSettings,
   presets,
   selectedPreset,
@@ -125,6 +128,7 @@ export function ModelSelectorContainer({
   } = useModelSelectorConfig(agent, {
     workspaceId: sessionId ? workspaceId : undefined,
     sessionId,
+    hostId,
   });
 
   useEffect(() => {

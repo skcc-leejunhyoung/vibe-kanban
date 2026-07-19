@@ -118,6 +118,8 @@ type WysiwygProps = {
   sessionId?: string;
   /** Repo ID for slash commands when no workspace yet */
   repoId?: string;
+  /** Route slash-command discovery to this host (remote host-picker flows). */
+  hostId?: string | null;
   /** Local attachments for immediate rendering (before saved to server) */
   localAttachments?: LocalAttachmentMetadata[];
   /** Optional edit callback - shows edit button in read-only mode when provided */
@@ -273,6 +275,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       workspaceId,
       sessionId,
       repoId,
+      hostId,
       localAttachments,
       onEdit,
       onDelete,
@@ -320,6 +323,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       workspaceId: sessionId ? workspaceId : undefined,
       sessionId,
       repoId,
+      hostId,
     });
     const listRecentRepos = useCallback(async () => repoApi.listRecent(), []);
     const getRepoById = useCallback(async (targetRepoId: string) => {

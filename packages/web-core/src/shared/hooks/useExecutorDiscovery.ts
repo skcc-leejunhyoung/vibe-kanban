@@ -7,6 +7,19 @@ type ExecutorDiscoveryStreamState = {
   options: ExecutorDiscoveredOptions | null;
 };
 
+interface ExecutorDiscoveryOpts {
+  workspaceId?: string;
+  sessionId?: string;
+  repoId?: string;
+  /**
+   * Route the discovery stream to this host. Required when the consumer is not
+   * on a host-scoped route — e.g. the global Quick chat modal, which picks a
+   * host explicitly. Defaults to the current page's host when omitted, so the
+   * stream would otherwise never reach the selected host in remote runtime.
+   */
+  hostId?: string | null;
+}
+
 const defaultOptions: ExecutorDiscoveredOptions = {
   model_selector: {
     providers: [],
@@ -24,9 +37,9 @@ const defaultOptions: ExecutorDiscoveredOptions = {
 
 function useExecutorDiscovery(
   agent: BaseCodingAgent | null | undefined,
-  opts?: { workspaceId?: string; sessionId?: string; repoId?: string }
+  opts?: ExecutorDiscoveryOpts
 ) {
-  const { workspaceId, sessionId, repoId } = opts ?? {};
+  const { workspaceId, sessionId, repoId, hostId } = opts ?? {};
   const endpoint = useMemo(() => {
     if (!agent) return undefined;
     return agentsApi.getDiscoveredOptionsStreamUrl(agent, {
@@ -47,7 +60,8 @@ function useExecutorDiscovery(
     useJsonPatchWsStream<ExecutorDiscoveryStreamState>(
       endpoint,
       !!endpoint,
-      initialData
+      initialData,
+      hostId ? { targetHostId: hostId } : undefined
     );
 
   // Prefer the backend-reported error from the data payload. Only fall back
@@ -76,7 +90,7 @@ function useExecutorDiscovery(
 
 export function useModelSelectorConfig(
   agent: BaseCodingAgent | null | undefined,
-  opts?: { workspaceId?: string; sessionId?: string; repoId?: string }
+  opts?: ExecutorDiscoveryOpts
 ) {
   const { options, error, isConnected, isInitialized } = useExecutorDiscovery(
     agent,
@@ -95,7 +109,7 @@ export function useModelSelectorConfig(
 
 export function useSlashCommands(
   agent: BaseCodingAgent | null | undefined,
-  opts?: { workspaceId?: string; sessionId?: string; repoId?: string }
+  opts?: ExecutorDiscoveryOpts
 ) {
   const { options, error, isConnected, isInitialized } = useExecutorDiscovery(
     agent,

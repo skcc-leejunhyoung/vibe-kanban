@@ -110,6 +110,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     scratchConfig,
     configExecutorProfile: config?.executor_profile,
     disabledExecutors: config?.disabled_executors,
+    // Quick chat is a global modal with its own host picker, so model discovery
+    // must target the selected host rather than the (often absent) page host.
+    hostId: selectedHostId,
     onPersist: setScratchConfig,
   });
 
@@ -389,6 +392,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               repoIds={repoIds}
               repoId={repoId}
               executor={executor}
+              hostId={selectedHostId}
               autoFocus
               sendShortcut={config?.send_message_shortcut}
             />
@@ -413,6 +417,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               <ModelSelectorContainer
                 agent={effectiveExecutor}
                 workspaceId={undefined}
+                hostId={selectedHostId}
                 onAdvancedSettings={handleCustomise}
                 presets={variantOptions}
                 selectedPreset={selectedVariant}

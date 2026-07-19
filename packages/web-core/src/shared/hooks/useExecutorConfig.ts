@@ -199,6 +199,8 @@ interface UseExecutorConfigOptions {
   disabledExecutors?: BaseCodingAgent[];
   workspaceId?: string;
   sessionId?: string;
+  /** Route model discovery to this host (remote runtime, host-picker flows). */
+  hostId?: string | null;
   onPersist?: (config: ExecutorConfig) => void;
 }
 
@@ -223,6 +225,7 @@ export function useExecutorConfig({
   disabledExecutors,
   workspaceId,
   sessionId,
+  hostId,
   onPersist,
 }: UseExecutorConfigOptions): UseExecutorConfigResult {
   const [userSelections, setUserSelections] = useState<Partial<ExecutorConfig>>(
@@ -269,7 +272,7 @@ export function useExecutorConfig({
   );
   const { config: modelSelectorConfig } = useModelSelectorConfig(
     executor.effective,
-    { workspaceId: sessionId ? workspaceId : undefined, sessionId }
+    { workspaceId: sessionId ? workspaceId : undefined, sessionId, hostId }
   );
 
   const resolvedExecutorConfig = useEffectiveOverrides(
