@@ -26,7 +26,7 @@ export function findOpenPrDetailForIssue(
   issuePrUrls: string[]
 ): PullRequestDetail | null {
   const urls = new Set(issuePrUrls);
-  return openPrs.find((pr) => urls.has(pr.url)) ?? null;
+  return openPrs.find((pr) => pr.status === 'open' && urls.has(pr.url)) ?? null;
 }
 
 /** Assemble the backend `pr_review` payload from a resolved open-PR detail. */

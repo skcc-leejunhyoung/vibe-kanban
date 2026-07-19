@@ -1,7 +1,7 @@
 import { useContext, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQueries } from '@tanstack/react-query';
 import { ProjectContext } from '@/shared/hooks/useProjectContext';
-import { repoApi } from '@/shared/lib/api';
+import { issuePrsApi } from '@/shared/lib/api';
 import { hasReviewTag, resolveReviewMode } from '@/shared/lib/reviewMode';
 import type { PrReviewInput, PullRequestDetail } from 'shared/types';
 
@@ -66,28 +66,34 @@ export function useReviewMode(
   // the user has flipped review mode off.
   const canResolve = reviewTagPresent && !!repoId && issuePrUrls.length > 0;
 
-  const { data: prsResult, isFetching } = useQuery({
-    queryKey: ['review-mode-open-prs', repoId],
-    queryFn: () => repoApi.listOpenPrs(repoId!),
-    enabled: canResolve,
-    staleTime: 30_000,
+  const prQueries = useQueries({
+    queries: issuePrUrls.map((url) => ({
+      queryKey: ['review-mode-pr', url],
+      queryFn: () => issuePrsApi.getPrInfo(url),
+      enabled: canResolve,
+      staleTime: 30_000,
+    })),
   });
 
-  const openPrs = useMemo<PullRequestDetail[]>(
-    () => (prsResult?.success === true ? prsResult.data : []),
-    [prsResult]
+  const linkedPrs = useMemo<PullRequestDetail[]>(
+    () =>
+      prQueries.flatMap((query) =>
+        query.data?.success === true ? [query.data.data] : []
+      ),
+    [prQueries]
   );
+  const isFetching = prQueries.some((query) => query.isFetching);
 
   const resolvedReview = useMemo(() => {
     if (!canResolve) return null;
     return resolveReviewMode({
       tags,
-      openPrs,
+      openPrs: linkedPrs,
       issuePrUrls,
       repoId: repoId!,
       remoteName: null,
     });
-  }, [canResolve, tags, openPrs, issuePrUrls, repoId]);
+  }, [canResolve, tags, linkedPrs, issuePrUrls, repoId]);
 
   return {
     reviewTagPresent,

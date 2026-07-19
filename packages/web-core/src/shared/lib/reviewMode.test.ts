@@ -71,6 +71,11 @@ describe('findOpenPrDetailForIssue', () => {
       findOpenPrDetailForIssue([a], ['https://github.com/o/r/pull/9'])
     ).toBeNull();
   });
+
+  it('ignores a linked PR that is no longer open', () => {
+    const closed = prDetail({ status: 'closed' });
+    expect(findOpenPrDetailForIssue([closed], [closed.url])).toBeNull();
+  });
 });
 
 describe('buildPrReviewInput', () => {
