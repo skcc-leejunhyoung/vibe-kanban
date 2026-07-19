@@ -14,6 +14,7 @@ import { repoApi, specApi, ApiError } from '@/shared/lib/api';
 
 interface IssueIntakeSectionProps {
   projectId: string;
+  hostId?: string | null;
   /** The issue's current title (header) — used as the brief to expand. */
   title: string;
   /** The issue's current description — appended to the brief for context. */
@@ -56,6 +57,7 @@ function prettyExecutor(executor: BaseCodingAgent): string {
  */
 export function IssueIntakeSection({
   projectId,
+  hostId,
   title,
   description,
   disabled,
@@ -104,8 +106,8 @@ export function IssueIntakeSection({
     (async () => {
       try {
         const [defaults, repos] = await Promise.all([
-          getProjectRepoDefaults(projectId),
-          repoApi.list(),
+          getProjectRepoDefaults(projectId, hostId),
+          repoApi.list(hostId),
         ]);
         if (cancelled) return;
         const repoById = new Map<string, Repo>(repos.map((r) => [r.id, r]));
@@ -138,7 +140,7 @@ export function IssueIntakeSection({
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [hostId, projectId]);
 
   const toggleRepo = useCallback((repoId: string) => {
     setSelectedRepoIds((prev) => {

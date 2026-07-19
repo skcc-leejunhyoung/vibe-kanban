@@ -324,7 +324,7 @@ export function ReposSettingsSection({
   const [linkedProjectsLoading, setLinkedProjectsLoading] = useState(false);
 
   useEffect(() => {
-    if (!selectedRepoId || allProjects.length === 0) {
+    if (!machineClient || !selectedRepoId || allProjects.length === 0) {
       setLinkedProjectNames([]);
       return;
     }
@@ -335,7 +335,10 @@ export function ReposSettingsSection({
     (async () => {
       const names: string[] = [];
       for (const project of allProjects) {
-        const defaults = await getProjectRepoDefaults(project.id);
+        const defaults = await getProjectRepoDefaults(
+          project.id,
+          machineClient.target.apiHostId
+        );
         if (cancelled) return;
         if (defaults?.some((r) => r.repo_id === selectedRepoId)) {
           names.push(project.name);
@@ -350,7 +353,7 @@ export function ReposSettingsSection({
     return () => {
       cancelled = true;
     };
-  }, [selectedRepoId, allProjects]);
+  }, [selectedRepoId, allProjects, machineClient]);
 
   // Check for unsaved changes
   const hasUnsavedChanges = useMemo(() => {

@@ -945,7 +945,8 @@ export function KanbanIssuePanelContainer({
           const defaults = await getWorkspaceDefaults(
             workspaces,
             localWorkspaceIds,
-            projectId
+            projectId,
+            displayData.workspaceHostId
           );
 
           const createState = buildWorkspaceCreateInitialState({
@@ -1159,6 +1160,7 @@ export function KanbanIssuePanelContainer({
       renderIntake={() => (
         <IssueIntakeSection
           projectId={projectId}
+          hostId={displayData.workspaceHostId}
           title={displayData.title}
           description={displayData.description}
           disabled={isSubmitting}

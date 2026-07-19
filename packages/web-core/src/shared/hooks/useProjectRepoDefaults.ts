@@ -59,9 +59,10 @@ export async function saveProjectRepoDefaults(
  */
 export async function getValidProjectRepoDefaults(
   projectId: string,
-  availableRepoIds: Set<string>
+  availableRepoIds: Set<string>,
+  hostId?: string | null
 ): Promise<DraftWorkspaceRepo[]> {
-  const defaults = await getProjectRepoDefaults(projectId);
+  const defaults = await getProjectRepoDefaults(projectId, hostId);
   if (!defaults) {
     return [];
   }
