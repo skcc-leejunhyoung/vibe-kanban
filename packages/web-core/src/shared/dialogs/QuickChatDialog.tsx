@@ -327,13 +327,12 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               ? 'Remove this folder from favorites'
               : 'Add this folder to favorites'
           }
-          className="inline-flex items-center gap-half rounded-md border border-border px-base py-half text-sm text-normal hover:text-high disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center rounded-md border border-border p-half text-normal hover:text-high disabled:cursor-not-allowed disabled:opacity-50"
         >
           <StarIcon
             weight={isRepoFavorite ? 'fill' : 'regular'}
             className={`size-icon-sm ${isRepoFavorite ? 'text-brand' : ''}`}
           />
-          {isRepoFavorite ? 'Favorited' : 'Favorite'}
         </button>
         {visibleFavorites.map((fav) => {
           const isActive = repo?.path === fav.path;
