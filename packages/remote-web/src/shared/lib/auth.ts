@@ -1,8 +1,23 @@
+import { getAccessTokenSubject } from "shared/jwt";
+import { clearPairedRelayHosts } from "@/shared/lib/relayPairingStorage";
+
 const DB_NAME = "rf-auth";
 const STORE_NAME = "tokens";
 const ACCESS_TOKEN_KEY = "access_token";
 const REFRESH_TOKEN_KEY = "refresh_token";
 export const AUTH_CHANGED_EVENT = "remote-auth-changed";
+
+export function accessTokensBelongToDifferentUsers(
+  previousToken: string,
+  nextToken: string,
+): boolean {
+  const previousSubject = getAccessTokenSubject(previousToken);
+  const nextSubject = getAccessTokenSubject(nextToken);
+  if (!previousSubject || !nextSubject) {
+    return previousToken !== nextToken;
+  }
+  return previousSubject !== nextSubject;
+}
 
 function emitAuthChanged(): void {
   if (typeof window !== "undefined") {
@@ -72,6 +87,13 @@ export async function storeTokens(
   accessToken: string,
   refreshToken: string,
 ): Promise<void> {
+  const previousAccessToken = await getAccessToken();
+  if (
+    previousAccessToken &&
+    accessTokensBelongToDifferentUsers(previousAccessToken, accessToken)
+  ) {
+    await clearPairedRelayHosts();
+  }
   await put(ACCESS_TOKEN_KEY, accessToken);
   await put(REFRESH_TOKEN_KEY, refreshToken);
   emitAuthChanged();
@@ -90,9 +112,15 @@ export async function clearAccessToken(): Promise<void> {
 }
 
 export async function clearTokens(): Promise<void> {
-  await del(ACCESS_TOKEN_KEY);
-  await del(REFRESH_TOKEN_KEY);
-  emitAuthChanged();
+  try {
+    await Promise.all([
+      del(ACCESS_TOKEN_KEY),
+      del(REFRESH_TOKEN_KEY),
+      clearPairedRelayHosts(),
+    ]);
+  } finally {
+    emitAuthChanged();
+  }
 }
 
 export async function isLoggedIn(): Promise<boolean> {

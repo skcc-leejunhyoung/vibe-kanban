@@ -118,3 +118,30 @@ export async function removePairedRelayHost(hostId: string): Promise<void> {
     };
   });
 }
+
+export async function clearPairedRelayHosts(): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(PAIRED_HOSTS_STORE, 'readwrite');
+    const store = tx.objectStore(PAIRED_HOSTS_STORE);
+    const keysRequest = store.getAllKeys();
+
+    keysRequest.onerror = () => reject(keysRequest.error);
+    keysRequest.onsuccess = () => {
+      const hostIds = keysRequest.result.filter(
+        (key): key is string => typeof key === 'string'
+      );
+      const clearRequest = store.clear();
+      clearRequest.onerror = () => reject(clearRequest.error);
+      tx.oncomplete = () => {
+        db.close();
+        hostIds.forEach((hostId) =>
+          emitRelayPairingChange({ hostId, type: 'removed' })
+        );
+        resolve();
+      };
+    };
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
