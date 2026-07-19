@@ -26,7 +26,17 @@ use crate::DeploymentImpl;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const RATE_LIMIT_RETRY_DELAY: chrono::Duration = chrono::Duration::minutes(305);
+/// Base wait before re-probing a rate-limited agent when it did not report an
+/// exact reset time. Unlike an interactive session (which waits out the full
+/// ~5h window), background memory reconciliation re-probes on a short exponential
+/// backoff: the limit often carries a reset hint we honor instead, a "limit"
+/// with no structured hint is frequently transient, and a long fixed wait would
+/// pin the central `waiting` target — and thus the whole sync session — for
+/// hours even after usage recovers.
+const RATE_LIMIT_BACKOFF_BASE_MINUTES: i64 = 5;
+/// Ceiling for the no-hint backoff so a recovered limit is retried within tens
+/// of minutes and the central session cannot stall indefinitely.
+const RATE_LIMIT_BACKOFF_CAP_MINUTES: i64 = 20;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 static RUN_LOCK: Mutex<()> = Mutex::const_new(());
@@ -34,10 +44,14 @@ static GLOBAL_RUN_LOCK: Mutex<()> = Mutex::const_new(());
 
 const GLOBAL_SYNC_ROUNDS: usize = 3;
 
+/// Raised when an agent stopped because a usage rate limit was reached. Carries
+/// the agent-reported reset time when one was found in structured output; the
+/// central retry schedule (reset + margin, or an attempt-scaled backoff) is
+/// finalized by the claim caller, which knows this target's attempt count.
 #[derive(Debug, thiserror::Error)]
-#[error("agent usage limit reached; retry scheduled for {retry_at}")]
+#[error("agent usage limit reached")]
 struct MemorySyncRateLimited {
-    retry_at: DateTime<Utc>,
+    reset_hint: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -226,7 +240,7 @@ pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<(
     let retry_at = result.as_ref().err().and_then(|error| {
         error
             .downcast_ref::<MemorySyncRateLimited>()
-            .map(|limited| limited.retry_at)
+            .map(|limited| rate_limit_retry_at(limited.reset_hint, job.attempts))
     });
     let report = deployment
         .remote_client()?
@@ -1558,8 +1572,8 @@ async fn run_agent(
     let stdout = stdout_task.await??;
     let stderr = stderr_task.await??;
     if !succeeded {
-        if let Some(retry_at) = rate_limit_retry_at(&stdout, &stderr) {
-            return Err(MemorySyncRateLimited { retry_at }.into());
+        if let Some(reset_hint) = detect_rate_limit(&stdout, &stderr) {
+            return Err(MemorySyncRateLimited { reset_hint }.into());
         }
         anyhow::bail!("memory sync agent failed");
     }
@@ -1610,30 +1624,95 @@ fn validate_snapshot_scope(
     Ok(())
 }
 
-fn rate_limit_retry_at(stdout: &[u8], stderr: &[u8]) -> Option<DateTime<Utc>> {
-    let output = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(stdout),
-        String::from_utf8_lossy(stderr)
-    );
-    let lower = output.to_ascii_lowercase();
-    let limit_reached = lower.contains("usage limit")
-        || lower.contains("rate limit reached")
-        || lower.contains("rate_limit_reached")
-        || lower.contains("\"limit_reached\":true")
-        || lower.contains("\"type\":\"rate_limit_event\"");
-    if !limit_reached {
-        return None;
+/// Decide whether an agent stopped because of a usage rate limit, using only
+/// *structured* signals the coding agents emit — never a bare substring.
+///
+/// The memory-sync agents stream their reconciliation (and echo the very
+/// snapshots being synced) to stdout, so an incidental phrase like "usage limit"
+/// in message content or a synced memory must not be read as a limit; doing so
+/// once pinned a host in `waiting` for ~5h. Detection therefore matches the
+/// exact shapes the executors produce:
+///   - Codex writes a synthetic `{"LimitReached":{...}}` line when, and only
+///     when, `account/rateLimits/read` reports the window is exhausted.
+///   - Claude's terminal `{"type":"result","is_error":true,...}` event whose
+///     error text names a usage/rate limit (mirrors the Claude executor's own
+///     rate-limit normalization). A routine `rate_limit_event` is ignored: it is
+///     a periodic usage update, not a stop.
+///
+/// Returns `None` when no structured limit is present. `Some(reset_hint)` marks
+/// a confirmed limit, carrying the agent-reported reset time when one was found.
+fn detect_rate_limit(stdout: &[u8], stderr: &[u8]) -> Option<Option<DateTime<Utc>>> {
+    let mut confirmed = false;
+    let mut reset_hint: Option<DateTime<Utc>> = None;
+    for stream in [stdout, stderr] {
+        for line in String::from_utf8_lossy(stream).lines() {
+            let Ok(serde_json::Value::Object(object)) =
+                serde_json::from_str::<serde_json::Value>(line)
+            else {
+                continue;
+            };
+            if let Some(inner) = object.get("LimitReached") {
+                // Codex synthetic RateLimit::LimitReached line.
+                confirmed = true;
+                reset_hint = reset_hint.or_else(|| find_reset_timestamp(inner.clone()));
+            } else if object.get("type").and_then(serde_json::Value::as_str)
+                == Some("rate_limit_info")
+                && object
+                    .get("limit_reached")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            {
+                // Already-normalized RateLimitInfo entry (defensive).
+                confirmed = true;
+                reset_hint = reset_hint
+                    .or_else(|| find_reset_timestamp(serde_json::Value::Object(object.clone())));
+            } else if object.get("type").and_then(serde_json::Value::as_str) == Some("result")
+                && object.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
+                && result_error_names_rate_limit(&object)
+            {
+                // Claude terminal error result that stopped on a usage limit.
+                confirmed = true;
+            }
+        }
     }
+    confirmed.then_some(reset_hint)
+}
 
+/// True when a Claude `result` error names a usage/rate limit. Checks the
+/// human-readable `result` message when present, else the serialized event —
+/// matching the substring gate the Claude executor applies to the same event.
+fn result_error_names_rate_limit(object: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let haystack = object
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| serde_json::to_string(object).unwrap_or_default())
+        .to_ascii_lowercase();
+    haystack.contains("usage limit")
+        || haystack.contains("rate limit")
+        || haystack.contains("rate_limit")
+}
+
+/// Finalize the central retry time for a confirmed limit. Honors the agent's
+/// reset hint (plus a small margin) when it is in the future; otherwise waits a
+/// short, attempt-scaled backoff so a recovered or transient limit is re-probed
+/// within tens of minutes rather than after a fixed multi-hour wait.
+fn rate_limit_retry_at(reset_hint: Option<DateTime<Utc>>, attempts: i64) -> DateTime<Utc> {
     let now = Utc::now();
-    output
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find_map(find_reset_timestamp)
+    reset_hint
         .map(|reset_at| reset_at + chrono::Duration::minutes(1))
         .filter(|retry_at| *retry_at > now)
-        .or_else(|| Some(now + RATE_LIMIT_RETRY_DELAY))
+        .unwrap_or_else(|| now + rate_limit_backoff(attempts))
+}
+
+/// Exponential backoff for the no-reset-hint case: the base delay doubles per
+/// central claim attempt, capped so the wait stays in the tens-of-minutes range.
+fn rate_limit_backoff(attempts: i64) -> chrono::Duration {
+    let exponent = attempts.clamp(1, 16) - 1;
+    let minutes = RATE_LIMIT_BACKOFF_BASE_MINUTES
+        .saturating_mul(1i64 << exponent)
+        .min(RATE_LIMIT_BACKOFF_CAP_MINUTES);
+    chrono::Duration::minutes(minutes)
 }
 
 fn find_reset_timestamp(value: serde_json::Value) -> Option<DateTime<Utc>> {
@@ -1705,22 +1784,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rate_limit_retry_uses_agent_reset_hint() {
-        let output = br#"{"type":"rate_limit_event","rate_limit_info":{"resets_at":"2099-01-01T00:00:00Z"}}"#;
-        let retry_at = rate_limit_retry_at(output, &[]).expect("rate limit should be detected");
-        assert_eq!(retry_at.to_rfc3339(), "2099-01-01T00:01:00+00:00");
+    fn codex_limit_reached_line_uses_reset_hint() {
+        // Codex emits the synthetic RateLimit::LimitReached line only when the
+        // account's usage window is actually exhausted.
+        let stdout = br#"{"LimitReached":{"resets_at":"2099-01-01T00:00:00Z","scope":"5h"}}"#;
+        let reset_hint = detect_rate_limit(stdout, &[]).expect("codex limit should be detected");
+        assert_eq!(
+            rate_limit_retry_at(reset_hint, 1).to_rfc3339(),
+            "2099-01-01T00:01:00+00:00"
+        );
     }
 
     #[test]
-    fn rate_limit_retry_falls_back_for_plain_usage_error() {
-        let before = Utc::now() + chrono::Duration::hours(5);
-        let retry_at = rate_limit_retry_at(&[], b"Usage limit reached").unwrap();
-        assert!(retry_at > before);
+    fn codex_limit_reached_without_reset_backs_off_briefly() {
+        let stdout = br#"{"LimitReached":{}}"#;
+        let reset_hint = detect_rate_limit(stdout, &[]).expect("codex limit should be detected");
+        assert!(reset_hint.is_none());
+        let now = Utc::now();
+        let retry_at = rate_limit_retry_at(reset_hint, 1);
+        assert!(retry_at > now);
+        assert!(retry_at <= now + chrono::Duration::minutes(RATE_LIMIT_BACKOFF_BASE_MINUTES + 1));
+    }
+
+    #[test]
+    fn claude_error_result_backs_off_without_a_reset_hint() {
+        // Claude reports the limit through its terminal error result event.
+        let stdout = br#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached. Your limit will reset soon."}"#;
+        let reset_hint = detect_rate_limit(stdout, &[]).expect("claude limit should be detected");
+        assert!(reset_hint.is_none());
+        let now = Utc::now();
+        let retry_at = rate_limit_retry_at(reset_hint, 1);
+        assert!(retry_at > now);
+        assert!(retry_at <= now + chrono::Duration::minutes(RATE_LIMIT_BACKOFF_BASE_MINUTES + 1));
+    }
+
+    #[test]
+    fn incidental_usage_limit_in_streamed_content_is_not_a_limit() {
+        // The agent echoes the memory it is reconciling (here, literally about a
+        // usage-limit bug) to stdout; that must not be read as a rate limit.
+        let assistant = br#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Documented the usage limit that waited 305 minutes."}]}}"#;
+        assert!(detect_rate_limit(assistant, &[]).is_none());
+        // A successful terminal result naming the phrase is likewise not a limit.
+        let success =
+            br#"{"type":"result","is_error":false,"result":"Recorded the rate limit fix."}"#;
+        assert!(detect_rate_limit(success, &[]).is_none());
+    }
+
+    #[test]
+    fn routine_rate_limit_event_is_not_a_limit() {
+        // Periodic usage updates stream as rate_limit_event; the executor ignores
+        // them, so the memory sync must too (the old substring check tripped here
+        // and deferred for 305 minutes).
+        let stdout = br#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resets_at":"2099-01-01T00:00:00Z"}}"#;
+        assert!(detect_rate_limit(stdout, &[]).is_none());
+    }
+
+    #[test]
+    fn normalized_rate_limit_entry_is_honored() {
+        // Defensive: an already-normalized RateLimitInfo entry also counts.
+        let stdout =
+            br#"{"type":"rate_limit_info","limit_reached":true,"resets_at":"2099-01-01T00:00:00Z"}"#;
+        let reset_hint =
+            detect_rate_limit(stdout, &[]).expect("normalized limit should be detected");
+        assert_eq!(
+            rate_limit_retry_at(reset_hint, 1).to_rfc3339(),
+            "2099-01-01T00:01:00+00:00"
+        );
     }
 
     #[test]
     fn unrelated_agent_failure_is_not_deferred() {
-        assert!(rate_limit_retry_at(&[], b"authentication failed").is_none());
+        assert!(detect_rate_limit(&[], b"authentication failed").is_none());
+        assert!(detect_rate_limit(b"panic: index out of bounds", &[]).is_none());
+    }
+
+    #[test]
+    fn rate_limit_backoff_grows_and_caps() {
+        assert_eq!(rate_limit_backoff(1), chrono::Duration::minutes(5));
+        assert_eq!(rate_limit_backoff(2), chrono::Duration::minutes(10));
+        assert_eq!(rate_limit_backoff(3), chrono::Duration::minutes(20));
+        assert_eq!(rate_limit_backoff(4), chrono::Duration::minutes(20));
+        assert_eq!(rate_limit_backoff(100), chrono::Duration::minutes(20));
+        // Degenerate/default attempt counts stay at the base, never negative.
+        assert_eq!(rate_limit_backoff(0), chrono::Duration::minutes(5));
+        assert_eq!(rate_limit_backoff(-5), chrono::Duration::minutes(5));
     }
 
     #[test]

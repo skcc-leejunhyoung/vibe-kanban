@@ -196,6 +196,13 @@ pub struct AgentMemorySyncJob {
     #[ts(type = "number")]
     pub max_rounds: i64,
     pub trigger_kind: String,
+    /// Central per-target claim count (>= 1 on first claim). Used by the host to
+    /// grow the rate-limit retry backoff across successive deferred probes.
+    /// Defaulted so a host paired with an older central server that does not yet
+    /// report it still claims jobs (backoff then starts at its base delay).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub attempts: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

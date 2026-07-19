@@ -936,7 +936,14 @@ export type AgentMemorySyncSessionTarget = { host_id: string, host_name: string,
 
 export type CreateAgentMemorySyncSessionRequest = { requested_by_host_id: string, trigger_kind: string, };
 
-export type AgentMemorySyncJob = { session_id: string, round: number, max_rounds: number, trigger_kind: string, };
+export type AgentMemorySyncJob = { session_id: string, round: number, max_rounds: number, trigger_kind: string,
+/**
+ * Central per-target claim count (>= 1 on first claim). Used by the host to
+ * grow the rate-limit retry backoff across successive deferred probes.
+ * Defaulted so a host paired with an older central server that does not yet
+ * report it still claims jobs (backoff then starts at its base delay).
+ */
+attempts: number, };
 
 export type ReportAgentMemorySyncJobRequest = { session_id: string, host_id: string, round: number, succeeded: boolean, error: string | null, retry_at: string | null, };
 

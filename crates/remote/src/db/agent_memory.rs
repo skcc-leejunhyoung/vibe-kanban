@@ -868,6 +868,7 @@ pub async fn claim_sync_job(
         round: i64,
         max_rounds: i64,
         trigger_kind: String,
+        attempts: i64,
     }
     sqlx::query("DELETE FROM agent_memory_sync_session_targets target USING agent_memory_sync_sessions session, hosts host WHERE target.session_id = session.id AND host.id = target.host_id AND session.owner_user_id = $1 AND session.status = 'running' AND host.status <> 'online'")
         .bind(owner_user_id)
@@ -878,7 +879,7 @@ pub async fn claim_sync_job(
         .execute(pool)
         .await?;
     let row = sqlx::query_as::<_, Row>(
-        "UPDATE agent_memory_sync_session_targets t SET status = 'running', attempts = attempts + 1, retry_at = NULL, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = s.id AND s.owner_user_id = $1 AND t.host_id = $2 AND s.status = 'running' AND t.round = s.round AND (t.status = 'pending' OR (t.status = 'waiting' AND t.retry_at <= NOW()) OR (t.status = 'running' AND t.updated_at < NOW() - INTERVAL '20 minutes')) RETURNING s.id AS session_id, s.round, s.max_rounds, s.trigger_kind",
+        "UPDATE agent_memory_sync_session_targets t SET status = 'running', attempts = attempts + 1, retry_at = NULL, updated_at = NOW() FROM agent_memory_sync_sessions s WHERE t.session_id = s.id AND s.owner_user_id = $1 AND t.host_id = $2 AND s.status = 'running' AND t.round = s.round AND (t.status = 'pending' OR (t.status = 'waiting' AND t.retry_at <= NOW()) OR (t.status = 'running' AND t.updated_at < NOW() - INTERVAL '20 minutes')) RETURNING s.id AS session_id, s.round, s.max_rounds, s.trigger_kind, t.attempts",
     )
     .bind(owner_user_id)
     .bind(host_id)
@@ -889,6 +890,7 @@ pub async fn claim_sync_job(
         round: row.round,
         max_rounds: row.max_rounds,
         trigger_kind: row.trigger_kind,
+        attempts: row.attempts,
     }))
 }
 
