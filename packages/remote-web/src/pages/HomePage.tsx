@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { LightningIcon } from "@phosphor-icons/react";
+import { LightningIcon, StackIcon } from "@phosphor-icons/react";
 import type { Project } from "shared/remote-types";
 import type { OrganizationWithRole } from "shared/types";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
@@ -12,7 +12,10 @@ import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
 import { useRelayAppBarHosts } from "@remote/shared/hooks/useRelayAppBarHosts";
-import { useWorkspaceHostSelectionStore } from "@/shared/stores/useWorkspaceHostSelectionStore";
+import {
+  ALL_WORKSPACE_HOSTS_ID,
+  useWorkspaceHostSelectionStore,
+} from "@/shared/stores/useWorkspaceHostSelectionStore";
 import { QuickChatDialog } from "@/shared/dialogs/QuickChatDialog";
 
 type OrganizationWithProjects = {
@@ -56,6 +59,11 @@ export default function HomePage() {
       ...(hostId ? { initialState: { hostId } } : {}),
     });
   }, []);
+
+  const handleSelectAllHosts = useCallback(() => {
+    selectWorkspaceHost(ALL_WORKSPACE_HOSTS_ID);
+    navigate({ to: "/workspaces" });
+  }, [navigate, selectWorkspaceHost]);
 
   useEffect(() => {
     const legacyOrgId = search.legacyOrgSettingsOrgId;
@@ -194,6 +202,21 @@ export default function HomePage() {
               </div>
             ) : (
               <div className="mt-base space-y-half">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-base rounded-sm border border-border bg-primary px-base py-base text-left transition-colors hover:border-high/20 hover:bg-panel"
+                  onClick={handleSelectAllHosts}
+                >
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand">
+                    <StackIcon className="h-4 w-4" weight="bold" />
+                  </div>
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-high">
+                    All Hosts
+                  </span>
+                  <span className="shrink-0 text-xs text-low">
+                    {hosts.length}
+                  </span>
+                </button>
                 {hosts.map((host) => {
                   const isOnline = host.status === "online";
                   const isUnpaired = host.status === "unpaired";

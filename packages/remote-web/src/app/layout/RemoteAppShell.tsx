@@ -15,6 +15,7 @@ import {
   KanbanIcon,
   BellIcon,
   LightningIcon,
+  StackIcon,
 } from "@phosphor-icons/react";
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
@@ -365,6 +366,27 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
                   Hosts
                 </p>
                 <div className="px-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleWorkspacesClick();
+                      setIsDrawerOpen(false);
+                    }}
+                    className={cn(
+                      "flex items-center gap-3 w-full px-3 py-2 rounded-md text-sm text-left",
+                      "transition-colors cursor-pointer hover:bg-secondary",
+                    )}
+                  >
+                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand/15 text-brand">
+                      <StackIcon className="h-3.5 w-3.5" weight="bold" />
+                    </div>
+                    <span className="min-w-0 flex-1 truncate text-normal">
+                      All Hosts
+                    </span>
+                    <span className="shrink-0 text-xs text-low">
+                      {relayHosts.length}
+                    </span>
+                  </button>
                   {relayHosts.map((host) => {
                     const isOnline = host.status === "online";
                     const isUnpaired = host.status === "unpaired";
