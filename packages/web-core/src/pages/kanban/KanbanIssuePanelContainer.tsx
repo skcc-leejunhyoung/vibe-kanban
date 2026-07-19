@@ -40,7 +40,6 @@ import {
   createInitialKanbanIssuePanelFormState,
   kanbanIssuePanelFormReducer,
   selectDisplayData,
-  selectIsCreateDraftDirty,
 } from './kanban-issue-panel-state';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { useAzureAttachments } from '@/shared/hooks/useAzureAttachments';
@@ -62,7 +61,6 @@ import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
   patchKanbanIssueComposer,
-  resetKanbanIssueComposer,
   useKanbanIssueComposer,
   useKanbanIssueComposerStore,
 } from '@/shared/stores/useKanbanIssueComposerStore';
@@ -197,14 +195,6 @@ export function KanbanIssuePanelContainer({
     },
     [kanbanCreateMode, issueComposerKey]
   );
-  const resetIssueComposerDraft = useCallback(() => {
-    if (!issueComposerKey) {
-      return;
-    }
-
-    resetKanbanIssueComposer(issueComposerKey);
-  }, [issueComposerKey]);
-
   const { isLoading: orgLoading, membersWithProfilesById } = useOrgContext();
 
   // Get action methods from actions context
@@ -376,14 +366,6 @@ export function KanbanIssuePanelContainer({
   useEffect(() => {
     intakeMetadataRef.current = null;
   }, [issueComposerKey]);
-
-  const isCreateDraftDirty = useMemo(() => {
-    return selectIsCreateDraftDirty({
-      state: formState,
-      mode,
-      createModeDefaults,
-    });
-  }, [formState, mode, createModeDefaults]);
 
   // Resolve assignee IDs to full profiles for avatar display
   const displayAssigneeUsers = useMemo(() => {
@@ -1031,15 +1013,6 @@ export function KanbanIssuePanelContainer({
     void handleSubmit();
   }, [mode, handleSubmit]);
 
-  const handleDeleteDraft = useCallback(() => {
-    intakeMetadataRef.current = null;
-    dispatchFormState({
-      type: 'setCreateFormData',
-      createFormData: createModeDefaults,
-    });
-    resetIssueComposerDraft();
-  }, [createModeDefaults, resetIssueComposerDraft]);
-
   // Tag create callback - returns the new tag ID so it can be auto-selected
   const handleCreateTag = useCallback(
     (data: { name: string; color: string }): string => {
@@ -1171,9 +1144,6 @@ export function KanbanIssuePanelContainer({
         mode === 'edit' ? descriptionSaveStatus : undefined
       }
       titleInputRef={titleInputRef}
-      onDeleteDraft={
-        mode === 'create' && isCreateDraftDirty ? handleDeleteDraft : undefined
-      }
       onCopyLink={mode === 'edit' ? handleCopyLink : undefined}
       onMoreActions={mode === 'edit' ? handleMoreActions : undefined}
       onPasteFiles={onPasteFiles}

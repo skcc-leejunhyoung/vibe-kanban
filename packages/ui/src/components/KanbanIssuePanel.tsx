@@ -13,7 +13,6 @@ import {
   XIcon,
   LinkIcon,
   DotsThreeIcon,
-  TrashIcon,
   PaperclipIcon,
   ImageIcon,
 } from '@phosphor-icons/react';
@@ -29,7 +28,6 @@ import {
   IssuePropertyRow,
   type IssuePropertyRowProps,
 } from './IssuePropertyRow';
-import { IconButton } from './IconButton';
 import { AutoResizeTextarea } from './AutoResizeTextarea';
 import {
   Tooltip,
@@ -127,7 +125,6 @@ export interface KanbanIssuePanelProps {
   onClose: () => void;
   onSubmit: () => void;
   onCmdEnterSubmit?: () => void;
-  onDeleteDraft?: () => void;
 
   // Tag create callback - returns the new tag ID
   onCreateTag?: (data: { name: string; color: string }) => string;
@@ -198,7 +195,6 @@ export function KanbanIssuePanel({
   onClose,
   onSubmit,
   onCmdEnterSubmit,
-  onDeleteDraft,
   onCreateTag,
   renderAddTagControl,
   renderDescriptionEditor,
@@ -580,7 +576,7 @@ export function KanbanIssuePanel({
 
         {/* Create Issue Button (Create mode only) */}
         {isCreateMode && (
-          <div className="px-base pb-base flex items-center gap-half">
+          <div className="px-base pb-base flex items-center justify-end">
             <PrimaryButton
               value={t('kanban.createIssue')}
               onClick={onSubmit}
@@ -588,16 +584,6 @@ export function KanbanIssuePanel({
               actionIcon={isSubmitting ? 'spinner' : undefined}
               variant="default"
             />
-            {onDeleteDraft && (
-              <IconButton
-                icon={TrashIcon}
-                onClick={onDeleteDraft}
-                disabled={isSubmitting}
-                aria-label="Delete draft"
-                title="Delete draft"
-                className="hover:text-error hover:bg-error/10"
-              />
-            )}
           </div>
         )}
 
