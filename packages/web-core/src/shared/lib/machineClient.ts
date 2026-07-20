@@ -19,6 +19,7 @@ import {
   handleApiResponse,
   getCompatibleConfigSaveBody,
   getCompatibleProfilesSaveBody,
+  getCompatibleProfilesSaveRevision,
   isLegacyUnversionedRevision,
   LEGACY_UNVERSIONED_REVISION,
   withCompatibleProfilesRevision,
@@ -286,8 +287,8 @@ export function createMachineClient(
           revision: string;
         }>(await makeMachineRequest(runtime, target, '/api/profiles'))
       ),
-    saveProfiles: async (content, revision) =>
-      handleApiResponse<string>(
+    saveProfiles: async (content, revision) => {
+      const savedRevision = await handleApiResponse<string>(
         await makeMachineRequest(runtime, target, '/api/profiles', {
           method: 'PUT',
           body: getCompatibleProfilesSaveBody(content, revision),
@@ -295,7 +296,9 @@ export function createMachineClient(
             'Content-Type': 'application/json',
           },
         })
-      ),
+      );
+      return getCompatibleProfilesSaveRevision(savedRevision, revision);
+    },
     loadMcpServers: async (query) => {
       const params = new URLSearchParams(query);
       return handleApiResponse<GetMcpServerResponse>(

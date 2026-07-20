@@ -39,6 +39,7 @@ import { isLegacyUnversionedRevision, profilesApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
+import { RevisionSaveQueue } from '@/shared/lib/revisionSaveQueue';
 import { useModelSelectorConfig } from '@/shared/hooks/useExecutorDiscovery';
 import { ModelSelectorPopover } from '@vibe/ui/components/ModelSelectorPopover';
 import {
@@ -315,13 +316,37 @@ export function ModelSelectorContainer({
   const recentModelEntries = getRecentModelEntries(profiles, agent);
   const pendingModelRef = useRef<ModelInfo | null>(null);
   const pendingReasoningRef = useRef<string | null>(null);
+  const recentSaveScope = `${targetHostId ?? 'local'}:${agent ?? ''}`;
+  const latestProfilesRef = useRef(profiles);
+  const recentSaveQueueRef = useRef({
+    scope: recentSaveScope,
+    queue: new RevisionSaveQueue<
+      Record<string, import('shared/types').ExecutorProfile>
+    >(profilesRevision ?? ''),
+  });
+  useEffect(() => {
+    latestProfilesRef.current = profiles;
+  }, [profiles]);
+  useEffect(() => {
+    if (recentSaveQueueRef.current.scope !== recentSaveScope) {
+      recentSaveQueueRef.current = {
+        scope: recentSaveScope,
+        queue: new RevisionSaveQueue(profilesRevision ?? ''),
+      };
+      latestProfilesRef.current = profiles;
+      return;
+    }
+    if (profilesRevision) {
+      recentSaveQueueRef.current.queue.syncRevision(profilesRevision);
+    }
+  }, [profiles, profilesRevision, recentSaveScope]);
 
   const persistPendingSelections = useCallback(() => {
     if (!persistRecent) return;
     if (!profiles || !profilesRevision || !agent) return;
     if (!pendingModelRef.current && !pendingReasoningRef.current) return;
 
-    let nextProfiles = profiles;
+    let nextProfiles = latestProfilesRef.current ?? profiles;
 
     const model = pendingModelRef.current;
     if (model) {
@@ -347,36 +372,42 @@ export function ModelSelectorContainer({
     }
 
     if (nextProfiles !== profiles) {
+      latestProfilesRef.current = nextProfiles;
       setProfiles(nextProfiles);
       const recent = nextProfiles[agent]?.recently_used_models;
       if (!recent) return;
-      const saveRecentModels = isLegacyUnversionedRevision(profilesRevision)
-        ? profilesApi
-            .save(
-              JSON.stringify({ executors: nextProfiles }, null, 2),
-              profilesRevision,
+      const saveScope = recentSaveScope;
+      void recentSaveQueueRef.current.queue
+        .enqueue(nextProfiles, async (profilesToSave, revision) => {
+          if (isLegacyUnversionedRevision(revision)) {
+            return profilesApi.save(
+              JSON.stringify({ executors: profilesToSave }, null, 2),
+              revision,
               targetHostId
-            )
-            .then(() => ({
-              content: JSON.stringify({ executors: nextProfiles }),
-              revision: profilesRevision,
-            }))
-        : profilesApi.updateRecentModels(
+            );
+          }
+          const saved = await profilesApi.updateRecentModels(
             agent,
-            recent,
-            profilesRevision,
+            profilesToSave[agent]?.recently_used_models ?? recent,
+            revision,
             targetHostId
           );
-      void saveRecentModels
+          return saved.revision;
+        })
         .then((saved) => {
-          const parsed = JSON.parse(saved.content) as {
-            executors: Record<string, import('shared/types').ExecutorProfile>;
-          };
-          setProfiles(parsed.executors, saved.revision);
+          if (
+            saved.isLatest &&
+            recentSaveQueueRef.current.scope === saveScope
+          ) {
+            latestProfilesRef.current = saved.value;
+            setProfiles(saved.value, saved.revision);
+          }
         })
         .catch((error) => {
           console.error('Failed to save recent models', error);
-          void reloadSystem();
+          if (recentSaveQueueRef.current.scope === saveScope) {
+            void reloadSystem();
+          }
         });
     }
   }, [
@@ -386,6 +417,7 @@ export function ModelSelectorContainer({
     profiles,
     profilesRevision,
     reloadSystem,
+    recentSaveScope,
     selectedModelId,
     selectedProviderId,
     setProfiles,

@@ -1539,6 +1539,15 @@ export function getCompatibleProfilesSaveBody(
     : JSON.stringify({ content, revision });
 }
 
+export function getCompatibleProfilesSaveRevision(
+  savedRevision: string,
+  requestedRevision: string
+): string {
+  return isLegacyUnversionedRevision(requestedRevision)
+    ? LEGACY_UNVERSIONED_REVISION
+    : savedRevision;
+}
+
 // Config APIs (backwards compatible with unversioned hosts)
 export const configApi = {
   getConfig: async (hostId: string | null): Promise<UserSystemInfo> => {
@@ -1688,7 +1697,10 @@ export const profilesApi = {
         'Content-Type': 'application/json',
       },
     });
-    return handleApiResponse<string>(response);
+    return getCompatibleProfilesSaveRevision(
+      await handleApiResponse<string>(response),
+      revision
+    );
   },
   updateRecentModels: async (
     executor: BaseCodingAgent,

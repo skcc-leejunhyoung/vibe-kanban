@@ -3,6 +3,7 @@ import type { Config, UserSystemInfo } from 'shared/types';
 import {
   getCompatibleConfigSaveBody,
   getCompatibleProfilesSaveBody,
+  getCompatibleProfilesSaveRevision,
   LEGACY_UNVERSIONED_REVISION,
   withCompatibleProfilesRevision,
   withCompatibleUserSystemRevisions,
@@ -41,5 +42,15 @@ describe('settings API rolling-upgrade compatibility', () => {
     expect(
       JSON.parse(getCompatibleProfilesSaveBody(content, 'revision-1'))
     ).toEqual({ content, revision: 'revision-1' });
+  });
+
+  it('keeps the legacy sentinel after a legacy host save response', () => {
+    expect(
+      getCompatibleProfilesSaveRevision(
+        'Executor profiles updated successfully',
+        LEGACY_UNVERSIONED_REVISION
+      )
+    ).toBe(LEGACY_UNVERSIONED_REVISION);
+    expect(getCompatibleProfilesSaveRevision('next', 'current')).toBe('next');
   });
 });
