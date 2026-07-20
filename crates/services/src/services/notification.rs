@@ -564,9 +564,12 @@ async fn send_macos_notification(title: &str, message: &str, click_url: Option<&
     display notification (item 1 of argv) with title (item 2 of argv) sound name "Glass"
 end run"#;
 
+    // `--` stops osascript's own option parsing: a message starting with `-`
+    // would otherwise be consumed as a flag and the notification dropped.
     let _ = tokio::process::Command::new("osascript")
         .arg("-e")
         .arg(NOTIFY_SCRIPT)
+        .arg("--")
         .arg(message)
         .arg(title)
         .spawn();

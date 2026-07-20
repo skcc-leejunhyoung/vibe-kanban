@@ -488,9 +488,19 @@ fn is_valid_challenge(challenge: &str) -> bool {
         && challenge.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
+/// Loopback destinations per RFC 6761 §6.3: `localhost`, any `*.localhost`
+/// subdomain (browsers resolve these to the loopback interface and treat them
+/// as secure contexts — used locally e.g. via a Caddy `vibe-kanban.localhost`
+/// TLS proxy), and the literal loopback addresses.
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]") || host.ends_with(".localhost")
+}
+
 fn is_allowed_return_to(url: &Url, public_origin: &str) -> bool {
-    if url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
-    {
+    // Redirecting to the user's own machine is safe regardless of scheme: an
+    // attacker-supplied loopback return_to hands the app_code to a server on
+    // the *victim's* machine, which the attacker does not control.
+    if matches!(url.scheme(), "http" | "https") && url.host_str().is_some_and(is_loopback_host) {
         return true;
     }
 
@@ -610,5 +620,42 @@ mod tests {
         ));
         assert!(!is_valid_challenge("not-hex"));
         assert!(!is_valid_challenge(""));
+    }
+
+    const PUBLIC_ORIGIN: &str = "https://vibe.example.com";
+
+    fn allowed(url: &str) -> bool {
+        is_allowed_return_to(&Url::parse(url).unwrap(), PUBLIC_ORIGIN)
+    }
+
+    #[test]
+    fn return_to_allows_loopback_and_public_origin() {
+        assert!(allowed("http://127.0.0.1:8080/api/auth/handoff/complete"));
+        assert!(allowed("http://localhost:3000/done"));
+        assert!(allowed("http://[::1]:8080/done"));
+        // *.localhost resolves to loopback (RFC 6761), including behind a
+        // local TLS proxy.
+        assert!(allowed(
+            "https://vibe-kanban.localhost/api/auth/handoff/complete"
+        ));
+        assert!(allowed("http://vibe-kanban.localhost/done"));
+        assert!(allowed("https://vibe.example.com/account/complete"));
+    }
+
+    #[test]
+    fn return_to_rejects_external_and_lookalike_urls() {
+        assert!(!allowed("https://attacker.example.net/steal"));
+        // Host suffix lookalikes must not pass the allowlist.
+        assert!(!allowed("https://evil-vibe.example.com.attacker.net/x"));
+        assert!(!allowed("https://notlocalhost.example.com/x"));
+        assert!(!allowed("http://localhost.attacker.net/x"));
+        // Userinfo tricks: the real host is the attacker's.
+        assert!(!allowed("https://vibe.example.com@attacker.net/x"));
+        // Non-web schemes are never a valid return target.
+        assert!(!allowed("javascript:alert(1)"));
+        assert!(!allowed(
+            "http://public-origin-but-plain-http.example.com/x"
+        ));
+        assert!(!allowed("http://vibe.example.com/x"));
     }
 }
