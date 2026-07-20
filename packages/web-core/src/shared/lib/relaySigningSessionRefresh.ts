@@ -12,7 +12,7 @@ export function buildRelaySigningSessionRefreshMessage(
 
 export async function buildRelaySigningSessionRefreshPayload(
   clientId: string,
-  privateKeyJwk: JsonWebKey
+  signingKey: CryptoKey
 ): Promise<RelaySigningSessionRefreshPayload> {
   const timestamp = Math.floor(Date.now() / 1000);
   const nonce = crypto.randomUUID();
@@ -21,16 +21,9 @@ export async function buildRelaySigningSessionRefreshPayload(
     nonce,
     clientId
   );
-  const key = await crypto.subtle.importKey(
-    'jwk',
-    privateKeyJwk,
-    { name: 'Ed25519' },
-    false,
-    ['sign']
-  );
   const signature = await crypto.subtle.sign(
     'Ed25519',
-    key,
+    signingKey,
     toArrayBuffer(TEXT_ENCODER.encode(message))
   );
 

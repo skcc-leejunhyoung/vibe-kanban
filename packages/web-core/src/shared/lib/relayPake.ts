@@ -102,23 +102,25 @@ export async function finishSpake2Enrollment(
 }
 
 export async function generateRelaySigningKeyPair(): Promise<{
-  privateKeyJwk: JsonWebKey;
+  privateKey: CryptoKey;
   publicKeyBytes: Uint8Array;
   publicKeyB64: string;
 }> {
-  const keyPair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, [
+  // extractable=false: the private key is a non-exportable handle. It is
+  // persisted in IndexedDB as a CryptoKey (structured clone preserves
+  // non-extractability), so an XSS on the app origin cannot read the raw key
+  // material back out. The public key is always exportable regardless of this
+  // flag, so the raw export below still works.
+  const keyPair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, false, [
     'sign',
     'verify',
   ])) as CryptoKeyPair;
 
-  const [privateKeyJwk, publicKeyRaw] = await Promise.all([
-    crypto.subtle.exportKey('jwk', keyPair.privateKey),
-    crypto.subtle.exportKey('raw', keyPair.publicKey),
-  ]);
+  const publicKeyRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
 
   const publicKeyBytes = new Uint8Array(publicKeyRaw);
   return {
-    privateKeyJwk,
+    privateKey: keyPair.privateKey,
     publicKeyBytes,
     publicKeyB64: bytesToBase64(publicKeyBytes),
   };

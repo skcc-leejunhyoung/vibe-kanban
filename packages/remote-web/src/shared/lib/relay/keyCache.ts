@@ -1,5 +1,9 @@
 import type { PairedRelayHost } from "@/shared/lib/relayPairingStorage";
-import { subscribeRelayPairingChanges } from "@/shared/lib/relayPairingStorage";
+import {
+  migratePairedHostKey,
+  resolveSigningKey,
+  subscribeRelayPairingChanges,
+} from "@/shared/lib/relayPairingStorage";
 
 import { base64ToBytes, toArrayBuffer } from "@remote/shared/lib/relay/bytes";
 
@@ -24,16 +28,19 @@ export async function getSigningKey(
     return cachedKey;
   }
 
-  const importedKey = await crypto.subtle.importKey(
-    "jwk",
-    pairedHost.private_key_jwk,
-    { name: "Ed25519" },
-    false,
-    ["sign"],
-  );
+  const signingKey = await resolveSigningKey(pairedHost);
+  signingKeyCache.set(cacheKey, signingKey);
 
-  signingKeyCache.set(cacheKey, importedKey);
-  return importedKey;
+  // Opportunistically upgrade a legacy extractable JWK at rest to a
+  // non-extractable CryptoKey. Fire-and-forget: signing already works with the
+  // key above; the rewrite just strips the raw material from IndexedDB. The
+  // resulting pairing-change event clears this cache, which then re-resolves
+  // cleanly from `private_key`.
+  if (!pairedHost.private_key && pairedHost.private_key_jwk) {
+    void migratePairedHostKey(pairedHost).catch(() => {});
+  }
+
+  return signingKey;
 }
 
 export async function getServerVerifyKey(

@@ -1,4 +1,43 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&family=IBM+Plex+Mono:ital,wght@0,100..700;1,100..700&family=Noto+Emoji:wght@300..700&family=Roboto:wght@500&display=swap');
+/*
+ * Self-hosted fonts. Previously these were fetched from fonts.googleapis.com on
+ * every page load, which leaked the client IP/User-Agent to Google and violated
+ * the "all traffic stays on the tailnet" policy. The woff2 files ship in
+ * ./fonts (Pretendard + IBM Plex Mono, both SIL OFL 1.1) and are bundled by Vite
+ * so nothing is requested from a third party at runtime.
+ */
+@font-face {
+  font-family: 'Pretendard Variable';
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src:
+    local('Pretendard Variable'),
+    url('./fonts/PretendardVariable.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-mono-latin-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-mono-latin-500.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  src: url('./fonts/ibm-plex-mono-latin-600.woff2') format('woff2');
+}
 
 @tailwind base;
 @tailwind components;

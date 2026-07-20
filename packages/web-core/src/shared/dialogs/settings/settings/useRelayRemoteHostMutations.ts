@@ -54,7 +54,7 @@ async function pairRelayHost({
     startData.server_message_b64
   );
 
-  const { privateKeyJwk, publicKeyB64, publicKeyBytes } =
+  const { privateKey, publicKeyB64, publicKeyBytes } =
     await generateRelaySigningKeyPair();
   const clientProofB64 = await buildClientProofB64(
     sharedKey,
@@ -96,7 +96,7 @@ async function pairRelayHost({
     client_name: relayClientIdentity.clientName,
     signing_session_id: finishData.signing_session_id,
     public_key_b64: publicKeyB64,
-    private_key_jwk: privateKeyJwk,
+    private_key: privateKey,
     server_public_key_b64: finishData.server_public_key_b64,
     paired_at: new Date().toISOString(),
   });

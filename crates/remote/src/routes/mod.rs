@@ -158,11 +158,16 @@ pub fn router(state: AppState) -> Router {
             crate::middleware::version::add_version_headers,
         ))
         .layer(
+            // Reflect the request origin but DO NOT allow credentials. This API
+            // authenticates with an `Authorization: Bearer` token (plus relay
+            // request signatures) and sets no cookies, so a cross-origin page has
+            // no ambient authority to abuse. Reflecting the origin *with*
+            // credentials was an anti-pattern: it would turn into cross-origin
+            // credential theft the moment any cookie-based auth were introduced.
             CorsLayer::new()
                 .allow_origin(AllowOrigin::mirror_request())
                 .allow_methods(AllowMethods::mirror_request())
-                .allow_headers(AllowHeaders::mirror_request())
-                .allow_credentials(true),
+                .allow_headers(AllowHeaders::mirror_request()),
         )
         .layer(trace_layer)
         .layer(PropagateRequestIdLayer::new(HeaderName::from_static(

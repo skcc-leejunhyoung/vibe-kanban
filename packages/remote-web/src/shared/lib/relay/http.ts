@@ -41,6 +41,6 @@ export async function sendRelayHostRequest(
     ...params.requestInit,
     body: params.body,
     headers,
-    credentials: "include",
+    credentials: "same-origin",
   });
 }

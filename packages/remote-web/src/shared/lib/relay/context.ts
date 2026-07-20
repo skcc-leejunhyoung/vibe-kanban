@@ -1,6 +1,7 @@
 import {
   type PairedRelayHost,
   listPairedRelayHosts,
+  resolveSigningKey,
   savePairedRelayHost,
   subscribeRelayPairingChanges,
 } from "@/shared/lib/relayPairingStorage";
@@ -108,19 +109,25 @@ async function refreshSigningSessionForHost(
   }
 
   try {
+    const signingKey = await resolveSigningKey(pairedHost);
     const payload = await buildRelaySigningSessionRefreshPayload(
       clientId,
-      pairedHost.private_key_jwk,
+      signingKey,
     );
     const refreshed = await refreshRelaySigningSession(
       pairedHost.host_id,
       sessionId,
       payload,
     );
+    // Persist the refreshed session, and for legacy pairings migrate the
+    // extractable JWK to the non-extractable CryptoKey at the same time so the
+    // raw key material never lingers in IndexedDB.
     const updatedPairedHost: PairedRelayHost = {
       ...pairedHost,
+      private_key: pairedHost.private_key ?? signingKey,
       signing_session_id: refreshed.signing_session_id,
     };
+    delete updatedPairedHost.private_key_jwk;
     await savePairedRelayHost(updatedPairedHost);
     return updatedPairedHost;
   } catch (error) {

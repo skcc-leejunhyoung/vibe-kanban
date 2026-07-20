@@ -20,7 +20,18 @@ export interface PairedRelayHost {
   client_name?: string;
   signing_session_id?: string;
   public_key_b64: string;
-  private_key_jwk: JsonWebKey;
+  /**
+   * Non-extractable Ed25519 signing key, stored as a CryptoKey (structured
+   * clone keeps it non-extractable) so an XSS cannot read the raw key material
+   * out of IndexedDB. New pairings always set this.
+   */
+  private_key?: CryptoKey;
+  /**
+   * Legacy: an extractable private-key JWK persisted by older builds. Retained
+   * only so pre-existing pairings keep working; `migratePairedHostKey` upgrades
+   * these to `private_key` and drops the raw material.
+   */
+  private_key_jwk?: JsonWebKey;
   server_public_key_b64: string;
   paired_at: string;
 }
@@ -144,4 +155,53 @@ export async function clearPairedRelayHosts(): Promise<void> {
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
   });
+}
+
+/**
+ * Resolve a paired host's Ed25519 signing key as a NON-EXTRACTABLE CryptoKey.
+ * New pairings persist `private_key` directly. Legacy pairings only have an
+ * extractable `private_key_jwk`; it is imported as a non-extractable key so
+ * signing keeps working, while `migratePairedHostKey` removes the raw material
+ * at rest.
+ */
+export async function resolveSigningKey(
+  host: PairedRelayHost
+): Promise<CryptoKey> {
+  if (host.private_key) {
+    return host.private_key;
+  }
+  if (host.private_key_jwk) {
+    return crypto.subtle.importKey(
+      'jwk',
+      host.private_key_jwk,
+      { name: 'Ed25519' },
+      false,
+      ['sign']
+    );
+  }
+  throw new Error('This host pairing is missing its signing key. Re-pair it.');
+}
+
+/**
+ * Upgrade a legacy pairing (extractable `private_key_jwk`) in place to the
+ * non-extractable `private_key` CryptoKey form, removing the raw key material
+ * from IndexedDB. No-op for already-migrated or unpaired hosts.
+ */
+export async function migratePairedHostKey(
+  host: PairedRelayHost
+): Promise<PairedRelayHost> {
+  if (host.private_key || !host.private_key_jwk) {
+    return host;
+  }
+  const privateKey = await crypto.subtle.importKey(
+    'jwk',
+    host.private_key_jwk,
+    { name: 'Ed25519' },
+    false,
+    ['sign']
+  );
+  const migrated: PairedRelayHost = { ...host, private_key: privateKey };
+  delete migrated.private_key_jwk;
+  await savePairedRelayHost(migrated);
+  return migrated;
 }

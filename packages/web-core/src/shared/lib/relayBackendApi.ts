@@ -144,7 +144,7 @@ async function makeAuthenticatedRequest(
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers,
-    credentials: 'include',
+    credentials: 'same-origin',
   });
 
   if (response.status === 401 && retryOn401) {
@@ -154,7 +154,7 @@ async function makeAuthenticatedRequest(
       return fetch(`${baseUrl}${path}`, {
         ...options,
         headers,
-        credentials: 'include',
+        credentials: 'same-origin',
       });
     }
 

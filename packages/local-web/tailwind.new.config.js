@@ -137,8 +137,29 @@ module.exports = {
         half: getSize('base', 0.5),
       },
       fontFamily: {
-        'ibm-plex-sans': ['"IBM Plex Sans"', '"Noto Emoji"', 'sans-serif'],
-        'ibm-plex-mono': ['"IBM Plex Mono"', 'monospace'],
+        // Key names kept for backwards-compat with existing `font-ibm-plex-*`
+        // usages. The sans family now resolves to self-hosted Pretendard (see
+        // the @font-face block in web-core .../styles/new/index.css); emoji fall
+        // back to the OS color-emoji fonts instead of Google's Noto Emoji.
+        'ibm-plex-sans': [
+          '"Pretendard Variable"',
+          'Pretendard',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"Segoe UI"',
+          'Roboto',
+          '"Apple Color Emoji"',
+          '"Segoe UI Emoji"',
+          'sans-serif',
+        ],
+        'ibm-plex-mono': [
+          '"IBM Plex Mono"',
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Consolas',
+          'monospace',
+        ],
       },
       keyframes: {
         "accordion-down": {

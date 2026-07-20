@@ -75,7 +75,7 @@ async function makeAuthenticatedRequest(
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers,
-    credentials: 'include',
+    credentials: 'same-origin',
   });
 
   // Handle 401 - token may have expired
@@ -87,7 +87,7 @@ async function makeAuthenticatedRequest(
       return fetch(`${baseUrl}${path}`, {
         ...options,
         headers,
-        credentials: 'include',
+        credentials: 'same-origin',
       });
     }
     // Refresh failed, throw an auth error

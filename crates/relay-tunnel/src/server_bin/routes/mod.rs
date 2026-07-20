@@ -58,6 +58,12 @@ pub fn build_router(state: RelayAppState) -> Router {
             preview_subdomain_dispatch,
         ))
         .layer(
+            // Reflect the request origin but DO NOT allow credentials. Relay
+            // requests are authenticated with cryptographic signed headers/frames
+            // and a bearer session id, never cookies, so a cross-origin page has
+            // no ambient authority. Pairing reflected origin with credentials was
+            // an anti-pattern that would become exploitable if cookie auth were
+            // ever added.
             CorsLayer::new()
                 .allow_origin(AllowOrigin::mirror_request())
                 .allow_methods(AllowMethods::mirror_request())
@@ -66,8 +72,7 @@ pub fn build_router(state: RelayAppState) -> Router {
                     HeaderName::from_static("x-vk-resp-ts"),
                     HeaderName::from_static("x-vk-resp-nonce"),
                     HeaderName::from_static("x-vk-resp-signature"),
-                ]))
-                .allow_credentials(true),
+                ])),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)

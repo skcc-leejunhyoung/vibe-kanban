@@ -41,6 +41,19 @@ pub enum GitCliError {
     RebaseInProgress,
 }
 
+/// Reject a remote URL that git would parse as a command-line option rather than
+/// a repository (argument injection). Remote URLs are read from a repo's own git
+/// config, so a crafted `remote.url` such as `--upload-pack=...` must never reach
+/// `git fetch`/`push`/`ls-remote` as a bare positional argument.
+fn ensure_safe_remote_url(remote_url: &str) -> Result<(), GitCliError> {
+    if remote_url.starts_with('-') {
+        return Err(GitCliError::CommandFailed(format!(
+            "refusing remote URL that resembles a command-line option: {remote_url}"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Default)]
 pub struct GitCli;
 
@@ -417,6 +430,7 @@ impl GitCli {
         remote_url: &str,
         refspec: &str,
     ) -> Result<(), GitCliError> {
+        ensure_safe_remote_url(remote_url)?;
         let envs = vec![(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"))];
 
         let args = [
@@ -449,6 +463,7 @@ impl GitCli {
         } else {
             format!("refs/heads/{branch}:refs/heads/{branch}")
         };
+        ensure_safe_remote_url(remote_url)?;
         let envs = vec![(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"))];
 
         let mut args = vec![OsString::from("push")];
@@ -472,6 +487,7 @@ impl GitCli {
         remote_url: &str,
         branch_name: &str,
     ) -> Result<bool, GitCliError> {
+        ensure_safe_remote_url(remote_url)?;
         let envs = vec![(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"))];
 
         let args = [
@@ -908,6 +924,11 @@ impl GitCli {
         self.ensure_available()?;
         let git = resolve_executable_path_blocking("git").ok_or(GitCliError::NotAvailable)?;
         let mut cmd = Command::new(&git);
+        // Disable the `ext::` transport for every git invocation. A remote URL is
+        // read from a repo's own git config; `ext::<cmd>` makes git run an
+        // arbitrary command as its "transport helper", so a booby-trapped
+        // `remote.url` would be RCE on the host. We never use ext:: ourselves.
+        cmd.arg("-c").arg("protocol.ext.allow=never");
         cmd.arg("-C").arg(repo_path);
 
         if let Some(envs) = envs {

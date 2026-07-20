@@ -1595,7 +1595,7 @@ export const attachmentsApi = {
     const response = await makeLocalApiRequest('/api/attachments/upload', {
       method: 'POST',
       body: formData,
-      credentials: 'include',
+      credentials: 'same-origin',
     });
 
     if (!response.ok) {
@@ -1622,7 +1622,7 @@ export const attachmentsApi = {
       {
         method: 'POST',
         body: formData,
-        credentials: 'include',
+        credentials: 'same-origin',
       }
     );
 
@@ -1651,7 +1651,7 @@ export const attachmentsApi = {
       {
         method: 'POST',
         body: formData,
-        credentials: 'include',
+        credentials: 'same-origin',
       }
     );
 

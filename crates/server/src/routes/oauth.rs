@@ -28,10 +28,12 @@ const APP_ICON_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAB
 /// Colors and typography match the app's design system (light mode defaults
 /// from `packages/web-core/src/app/styles/new/index.css`).
 const AUTH_PAGE_STYLES: &str = r#"<style>
-  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+  /* No web-font @import: this standalone page must not phone a third party
+     (e.g. fonts.googleapis.com). Use a locally-installed Pretendard if present,
+     otherwise the OS system font. */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: #f2f2f2;
     color: #333;
     min-height: 100vh;

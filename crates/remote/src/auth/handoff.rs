@@ -504,9 +504,16 @@ fn is_allowed_return_to(url: &Url, public_origin: &str) -> bool {
         return true;
     }
 
-    // Log and allow web-hosted clients. Rely on PKCE for security.
-    tracing::info!(%url, "allowing external redirect URL");
-    true
+    // Anything that is neither loopback nor the configured public origin is
+    // rejected. This branch previously returned `true` for every URL ("rely on
+    // PKCE"), which was an open redirect: an attacker who initiates the handoff
+    // (and therefore holds the PKCE verifier) could point `return_to` at their
+    // own origin, have a victim complete the flow, receive the victim's
+    // `app_code`, and redeem it to obtain the victim's session. PKCE does not
+    // defend against an attacker-initiated flow, so the redirect target must be
+    // allowlisted.
+    tracing::warn!(%url, "rejecting disallowed OAuth return_to URL");
+    false
 }
 
 fn hash_sha256_hex(input: &str) -> String {

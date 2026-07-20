@@ -554,15 +554,21 @@ async fn send_macos_notification(title: &str, message: &str, click_url: Option<&
         return;
     }
 
-    let script = format!(
-        r#"display notification "{message}" with title "{title}" sound name "Glass""#,
-        message = message.replace('"', r#"\""#),
-        title = title.replace('"', r#"\""#)
-    );
+    // Pass title/message as AppleScript `argv` instead of interpolating them into
+    // the script source. The previous version only escaped `"`, so a value
+    // containing a backslash or newline (workspace/issue names and agent-emitted
+    // tool names are untrusted content) could terminate the string literal and
+    // execute arbitrary AppleScript — e.g. `do shell script` — as the user.
+    // With `on run argv` the values are opaque argument strings.
+    const NOTIFY_SCRIPT: &str = r#"on run argv
+    display notification (item 1 of argv) with title (item 2 of argv) sound name "Glass"
+end run"#;
 
     let _ = tokio::process::Command::new("osascript")
         .arg("-e")
-        .arg(script)
+        .arg(NOTIFY_SCRIPT)
+        .arg(message)
+        .arg(title)
         .spawn();
 }
 

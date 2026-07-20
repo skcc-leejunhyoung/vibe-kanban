@@ -13,6 +13,7 @@ vi.mock("@/shared/lib/relayPairingStorage", () => ({
   listPairedRelayHosts: vi.fn(async () => []),
   savePairedRelayHost: (...args: unknown[]) => savePairedRelayHostMock(...args),
   subscribeRelayPairingChanges: () => () => {},
+  resolveSigningKey: vi.fn(async () => ({}) as CryptoKey),
 }));
 
 vi.mock("@/shared/lib/relayBackendApi", () => ({

@@ -176,7 +176,10 @@ function OAuthButton({
     <button
       type="button"
       className="flex h-10 min-w-[280px] items-center justify-center rounded-[4px] border border-[#dadce0] bg-[#f2f2f2] px-3 text-[14px] font-medium text-[#1f1f1f] transition-colors hover:bg-[#e8eaed] active:bg-[#e2e3e5] disabled:cursor-not-allowed disabled:opacity-50"
-      style={{ fontFamily: "'Roboto', Arial, sans-serif" }}
+      style={{
+        fontFamily:
+          "'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      }}
       onClick={onClick}
       disabled={disabled || loading}
     >
