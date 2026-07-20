@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyNavigationTransition,
+  collapseSelfHostId,
   resolveDestinationHostId,
 } from './appNavigation';
 
@@ -69,5 +70,24 @@ describe('resolveDestinationHostId', () => {
         'current-host'
       )
     ).toBe('next-host');
+  });
+});
+
+describe('collapseSelfHostId', () => {
+  it("collapses this machine's own cloud host id to the local host", () => {
+    // A self-host deep link must be served directly, never relay-proxied to us.
+    expect(collapseSelfHostId('self-host', 'self-host')).toBeNull();
+  });
+
+  it('leaves a genuine remote host id untouched', () => {
+    expect(collapseSelfHostId('remote-host', 'self-host')).toBe('remote-host');
+  });
+
+  it('leaves the local host (null) untouched', () => {
+    expect(collapseSelfHostId(null, 'self-host')).toBeNull();
+  });
+
+  it('does not collapse anything while the self host id is unknown', () => {
+    expect(collapseSelfHostId('remote-host', null)).toBe('remote-host');
   });
 });

@@ -118,6 +118,7 @@ import {
   PairRelayHostResponse,
   RelayPairedHost,
   ListRelayPairedHostsResponse,
+  SelfRelayHostResponse,
   RemoveRelayPairedHostResponse,
   OpenRemoteWorkspaceInEditorRequest,
   OpenRemoteEditorResponse,
@@ -2212,6 +2213,12 @@ export const relayApi = {
     const body =
       await handleApiResponse<ListRelayPairedHostsResponse>(response);
     return body.hosts;
+  },
+
+  getSelfRelayHostId: async (): Promise<string | null> => {
+    const response = await makeRequest('/api/relay-auth/client/self-host');
+    const body = await handleApiResponse<SelfRelayHostResponse>(response);
+    return body.host_id;
   },
 
   removePairedRelayHost: async (

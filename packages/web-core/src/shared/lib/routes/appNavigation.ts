@@ -152,6 +152,25 @@ export function getDestinationHostId(
   return destination.hostId ?? null;
 }
 
+/**
+ * Collapse a route's host id to the local host (`null`) when it points at this
+ * machine's own cloud host id. Self is never in the relay pairing store — a
+ * machine cannot pair with itself — so relay-proxying to it always 400s ("No
+ * paired relay credentials"); such routes must be served directly via `/api`.
+ * Returns `routeHostId` unchanged otherwise, including when `selfHostId` is
+ * unknown (`null`), so remote hosts keep proxying as before.
+ */
+export function collapseSelfHostId(
+  routeHostId: string | null,
+  selfHostId: string | null
+): string | null {
+  if (routeHostId !== null && routeHostId === selfHostId) {
+    return null;
+  }
+
+  return routeHostId;
+}
+
 export function resolveDestinationHostId(
   destination: AppDestination,
   currentHostId: string | null

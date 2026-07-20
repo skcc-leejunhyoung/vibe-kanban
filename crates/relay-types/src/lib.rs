@@ -112,6 +112,15 @@ pub struct ListRelayPairedHostsResponse {
     pub hosts: Vec<RelayPairedHost>,
 }
 
+/// The cloud relay host id assigned to the calling machine itself, or `None`
+/// when the relay is unreachable or the machine has not registered yet. The
+/// local web app uses this to route self-owned workspaces directly instead of
+/// relay-proxying to itself (a machine is never paired with itself).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct SelfRelayHostResponse {
+    pub host_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct RemoveRelayPairedHostResponse {
     pub removed: bool,

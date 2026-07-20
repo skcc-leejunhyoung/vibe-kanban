@@ -141,6 +141,7 @@ fn generate_types_content() -> String {
         relay_types::PairRelayHostResponse::decl(),
         relay_types::RelayPairedHost::decl(),
         relay_types::ListRelayPairedHostsResponse::decl(),
+        relay_types::SelfRelayHostResponse::decl(),
         relay_types::RemoveRelayPairedHostResponse::decl(),
         db::models::requests::CreateWorkspaceApiRequest::decl(),
         db::models::requests::LinkedIssueInfo::decl(),

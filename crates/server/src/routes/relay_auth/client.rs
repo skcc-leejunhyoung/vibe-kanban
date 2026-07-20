@@ -7,7 +7,7 @@ use axum::{
 use deployment::Deployment;
 use relay_types::{
     ListRelayPairedHostsResponse, PairRelayHostRequest, PairRelayHostResponse,
-    RemoveRelayPairedHostResponse,
+    RemoveRelayPairedHostResponse, SelfRelayHostResponse,
 };
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -18,6 +18,7 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/relay-auth/client/pair", post(pair_relay_host))
         .route("/relay-auth/client/hosts", get(list_relay_paired_hosts))
+        .route("/relay-auth/client/self-host", get(get_self_relay_host))
         .route(
             "/relay-auth/client/hosts/{host_id}",
             delete(remove_relay_paired_host),
@@ -56,6 +57,32 @@ pub async fn list_relay_paired_hosts(
     Ok(ResponseJson(ApiResponse::success(
         ListRelayPairedHostsResponse { hosts },
     )))
+}
+
+/// Cloud relay host id of this machine itself, so the local web app can route
+/// self-owned workspaces directly (`/api`) instead of relay-proxying to
+/// ourselves — self is never in the pairing store, so that would 400 with
+/// "No paired relay credentials". Any failure resolves to `None` so callers
+/// simply fall back to the route host.
+pub async fn get_self_relay_host(
+    State(deployment): State<DeploymentImpl>,
+) -> ResponseJson<ApiResponse<SelfRelayHostResponse>> {
+    let host_id = resolve_self_relay_host_id(&deployment).await;
+    ResponseJson(ApiResponse::success(SelfRelayHostResponse { host_id }))
+}
+
+async fn resolve_self_relay_host_id(deployment: &DeploymentImpl) -> Option<Uuid> {
+    let hosts = deployment
+        .remote_client()
+        .ok()?
+        .list_relay_hosts()
+        .await
+        .ok()?;
+    let user_id = deployment.user_id();
+    hosts
+        .into_iter()
+        .find(|host| host.machine_id == user_id)
+        .map(|host| host.id)
 }
 
 pub async fn remove_relay_paired_host(

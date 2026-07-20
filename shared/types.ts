@@ -467,6 +467,8 @@ export type RelayPairedHost = { host_id: string, host_name: string | null, paire
 
 export type ListRelayPairedHostsResponse = { hosts: Array<RelayPairedHost>, };
 
+export type SelfRelayHostResponse = { host_id: string | null, };
+
 export type RemoveRelayPairedHostResponse = { removed: boolean, };
 
 export type CreateWorkspaceApiRequest = { name: string | null, };
