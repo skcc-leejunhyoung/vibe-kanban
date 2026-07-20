@@ -871,10 +871,17 @@ impl GitCli {
         {
             GitCliError::AuthFailed(msg)
         } else if lower.contains("non-fast-forward")
-            || lower.contains("failed to push some refs")
             || lower.contains("fetch first")
             || lower.contains("updates were rejected because the tip")
         {
+            // Only genuine non-fast-forward rejections become PushRejected — the
+            // one case where the caller offers a force push. We deliberately do
+            // NOT match the generic "failed to push some refs" summary line: git
+            // prints it for EVERY failed push (rejected pre-push hooks,
+            // protected-branch / permission denials, ...), none of which a force
+            // push can fix. Those fall through to CommandFailed so the full git
+            // output reaches the user instead of a misleading "branch diverged,
+            // force push?" prompt.
             GitCliError::PushRejected(msg)
         } else {
             GitCliError::CommandFailed(msg)
@@ -1103,7 +1110,58 @@ pub struct WorktreeStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitCli, NumstatDiffEntry};
+    use super::{GitCli, GitCliError, NumstatDiffEntry};
+
+    #[test]
+    fn classify_cli_error_only_flags_true_non_fast_forward_as_push_rejected() {
+        let git = GitCli;
+
+        // Genuine non-fast-forward rejections stay PushRejected so the caller can
+        // offer a force push.
+        for msg in [
+            "! [rejected]        main -> main (non-fast-forward)\n\
+             error: failed to push some refs to 'https://github.com/x/y.git'\n\
+             hint: Updates were rejected because the tip of your current branch is behind",
+            "! [rejected]        main -> main (fetch first)\n\
+             error: failed to push some refs to 'https://github.com/x/y.git'",
+        ] {
+            assert!(
+                matches!(
+                    git.classify_cli_error(msg.to_string()),
+                    GitCliError::PushRejected(_)
+                ),
+                "expected PushRejected for: {msg}"
+            );
+        }
+
+        // A failing pre-push hook or a protected-branch rejection is NOT a
+        // divergence — a force push cannot fix it — so it must surface as
+        // CommandFailed (full output shown to the user), never a force-push prompt.
+        for msg in [
+            "ruff format check....................Failed\n\
+             - hook id: ruff-format\n\
+             error: failed to push some refs to 'https://github.com/x/y.git'",
+            "remote: error: GH006: Protected branch update failed for refs/heads/main.\n\
+             ! [remote rejected] main -> main (protected branch hook declined)\n\
+             error: failed to push some refs to 'https://github.com/x/y.git'",
+        ] {
+            assert!(
+                matches!(
+                    git.classify_cli_error(msg.to_string()),
+                    GitCliError::CommandFailed(_)
+                ),
+                "expected CommandFailed for: {msg}"
+            );
+        }
+
+        // Auth failures keep their dedicated classification.
+        assert!(matches!(
+            git.classify_cli_error(
+                "fatal: Authentication failed for 'https://github.com/x/y.git'".to_string()
+            ),
+            GitCliError::AuthFailed(_)
+        ));
+    }
 
     #[test]
     fn parses_numstat_text_and_binary_entries() {
