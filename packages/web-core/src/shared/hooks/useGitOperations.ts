@@ -8,6 +8,7 @@ import { useGitOperationsError } from '@/shared/hooks/GitOperationsContext';
 import { Result } from '@/shared/lib/api';
 import type { GitOperationError, PushWorkspaceRequest } from 'shared/types';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
+import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 
 export function useGitOperations(
   workspaceId: string | undefined,
@@ -73,6 +74,26 @@ export function useGitOperations(
     () => setError(null),
     async (err: unknown, errorData, params?: PushWorkspaceRequest) => {
       // Handle typed push errors
+      if (errorData?.type === 'diverged') {
+        // Diverged: lead with the safe pull-first resolution; force push is an
+        // explicit opt-in fallback, never the default (it discards remote work).
+        if (workspaceId && params?.repo_id) {
+          const choice = await PullFirstDialog.show({
+            workspaceId,
+            repoId: params.repo_id,
+            ahead: errorData.ahead,
+            behind: errorData.behind,
+          });
+          if (choice === 'force') {
+            await ForcePushDialog.show({
+              workspaceId,
+              repoId: params.repo_id,
+            });
+          }
+        }
+        return;
+      }
+
       if (errorData?.type === 'force_push_required') {
         // Show confirmation dialog - dialog handles the force push internally
         if (workspaceId && params?.repo_id) {

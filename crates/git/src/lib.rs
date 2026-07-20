@@ -48,6 +48,10 @@ pub enum GitServiceError {
     },
     #[error("Branches diverged: {0}")]
     BranchesDiverged(String),
+    #[error(
+        "Push rejected: the remote branch has {behind} commit(s) the local branch is missing (local is {ahead} ahead). Pull first."
+    )]
+    PushDiverged { ahead: usize, behind: usize },
     #[error("{0} has uncommitted changes: {1}")]
     WorktreeDirty(String, String),
     #[error("Rebase in progress; resolve or abort it before retrying")]
@@ -1431,6 +1435,119 @@ impl GitService {
         })
     }
 
+    /// Integrate the work branch's own diverged remote into the local branch by
+    /// merging the remote-tracking ref into the checked-out branch (the
+    /// equivalent of `git pull` with the default merge strategy). This is the
+    /// safe, non-destructive counterpart to a force push: it never rewrites the
+    /// remote and never drops remote commits.
+    ///
+    /// Fast-forwards when the remote is strictly ahead, is a no-op when the local
+    /// branch already contains every remote commit, and otherwise creates a merge
+    /// commit. Returns [`GitServiceError::MergeConflicts`] when the merge stops on
+    /// conflicts — the worktree is left mid-merge for the existing conflict UI to
+    /// resolve or abort, exactly like [`Self::merge_base_into_workspace`].
+    ///
+    /// `worktree_path` must be the worktree where `work_branch` is checked out.
+    pub fn merge_remote_into_workspace_branch(
+        &self,
+        worktree_path: &Path,
+        work_branch: &str,
+    ) -> Result<(), GitServiceError> {
+        let repo = self.open_repo(worktree_path)?;
+
+        let remote = self.resolve_remote_for_branch(worktree_path, work_branch)?;
+        let remote_tracking = format!("{}/{work_branch}", remote.name);
+
+        // Refresh the remote-tracking ref so the comparison and merge below see
+        // the latest remote tip (same refspec fetch as `pull_workspace_branch`).
+        let refspec = format!(
+            "+refs/heads/{work_branch}:refs/remotes/{}/{work_branch}",
+            remote.name
+        );
+        let git = GitCli::new();
+        if let Err(e) = git.fetch_with_refspec(repo.path(), &remote.url, &refspec) {
+            let msg = e.to_string();
+            if msg.contains("find remote ref") {
+                return Err(GitServiceError::BranchNotFound(format!(
+                    "'{work_branch}' does not exist on remote '{}' yet (nothing to pull)",
+                    remote.name
+                )));
+            }
+            return Err(GitServiceError::InvalidRepository(format!(
+                "Failed to fetch '{work_branch}' from '{}': {}",
+                remote.name,
+                msg.lines().next().unwrap_or(&msg)
+            )));
+        }
+
+        let (ahead, behind) =
+            self.get_branch_status(worktree_path, work_branch, &remote_tracking)?;
+        if behind == 0 {
+            // Local already contains every remote commit; nothing to integrate.
+            return Ok(());
+        }
+
+        // Never operate on a dirty worktree or mid-rebase — mirror the merge guards.
+        self.check_worktree_clean(&repo)?;
+        if git.is_rebase_in_progress(worktree_path).unwrap_or(false) {
+            return Err(GitServiceError::RebaseInProgress);
+        }
+        self.ensure_cli_commit_identity(worktree_path)?;
+
+        if ahead == 0 {
+            // Remote is strictly ahead: fast-forward in place, no merge commit.
+            git.merge_ff_only_current(worktree_path, &remote_tracking)
+                .map_err(|e| {
+                    GitServiceError::InvalidRepository(format!("Fast-forward pull failed: {e}"))
+                })?;
+            return Ok(());
+        }
+
+        // Diverged: merge the remote-tracking ref into the current branch.
+        let message =
+            format!("Merge remote-tracking branch '{remote_tracking}' into '{work_branch}'");
+        match git.merge_branch_into_current(worktree_path, &remote_tracking, &message) {
+            Ok(_) => Ok(()),
+            Err(GitCliError::CommandFailed(output)) => {
+                let looks_like_conflict = output.contains("CONFLICT")
+                    || output.to_lowercase().contains("automatic merge failed");
+                if looks_like_conflict {
+                    let conflicted_files =
+                        git.get_conflicted_files(worktree_path).unwrap_or_default();
+                    let files_part = if conflicted_files.is_empty() {
+                        String::new()
+                    } else {
+                        let mut sample = conflicted_files.clone();
+                        let total = sample.len();
+                        sample.truncate(10);
+                        let list = sample.join(", ");
+                        if total > sample.len() {
+                            format!(
+                                " Conflicted files (showing {} of {}): {}.",
+                                sample.len(),
+                                total,
+                                list
+                            )
+                        } else {
+                            format!(" Conflicted files: {list}.")
+                        }
+                    };
+                    return Err(GitServiceError::MergeConflicts {
+                        message: format!(
+                            "Merge encountered conflicts while pulling '{remote_tracking}' into '{work_branch}'.{files_part} Resolve conflicts and commit, or abort."
+                        ),
+                        conflicted_files,
+                    });
+                }
+                Err(GitServiceError::InvalidRepository(format!(
+                    "Merge failed: {}",
+                    output.lines().next().unwrap_or("")
+                )))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Merge the base branch into the work branch (the equivalent of, from the
     /// work branch, `git merge <base>`). Unlike [`Self::rebase_branch`] this
     /// preserves history, so it is the safe default for shared PR branches.
@@ -1888,7 +2005,15 @@ impl GitService {
                     PullOutcome::FastForwarded { .. } => {
                         git_cli.push(worktree_path, &remote.url, branch_name, false, no_verify)?;
                     }
-                    PullOutcome::UpToDate | PullOutcome::Diverged { .. } => return Err(e.into()),
+                    // Both sides advanced: a fast-forward is impossible and the
+                    // remote holds commits the local branch lacks. Surface this
+                    // distinctly so the caller can offer a pull-first flow instead
+                    // of a destructive force push (which would discard those
+                    // remote commits).
+                    PullOutcome::Diverged { ahead, behind } => {
+                        return Err(GitServiceError::PushDiverged { ahead, behind });
+                    }
+                    PullOutcome::UpToDate => return Err(e.into()),
                 }
             } else {
                 tracing::error!("Push to remote failed: {}", e);
@@ -1945,7 +2070,10 @@ impl GitService {
                     PullOutcome::FastForwarded { .. } => {
                         git_cli.push(repo_path, &remote_url, branch_name, false, no_verify)?;
                     }
-                    PullOutcome::UpToDate | PullOutcome::Diverged { .. } => return Err(e.into()),
+                    PullOutcome::Diverged { ahead, behind } => {
+                        return Err(GitServiceError::PushDiverged { ahead, behind });
+                    }
+                    PullOutcome::UpToDate => return Err(e.into()),
                 }
             } else {
                 tracing::error!("Push to remote '{remote_name}' failed: {}", e);

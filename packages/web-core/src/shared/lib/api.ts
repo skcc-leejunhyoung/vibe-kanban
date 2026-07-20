@@ -835,6 +835,26 @@ export const workspacesApi = {
     return handleApiResponseAsResult<void, PushError>(response);
   },
 
+  /**
+   * Safely resolve a diverged push: fetch + merge the branch's own remote into
+   * the local branch, then push. The non-destructive alternative to a force
+   * push. Merge conflicts come back as a `GitOperationError` so the existing
+   * conflict UI can take over.
+   */
+  pullAndPush: async (
+    workspaceId: string,
+    data: PushWorkspaceRequest
+  ): Promise<Result<void, GitOperationError>> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/pull-and-push`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponseAsResult<void, GitOperationError>(response);
+  },
+
   rebase: async (
     workspaceId: string,
     data: RebaseWorkspaceRequest

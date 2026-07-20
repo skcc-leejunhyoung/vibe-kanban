@@ -223,6 +223,15 @@
       "note": "Only proceed if you're certain you want to replace the remote branch history.",
       "error": "Failed to force push"
     },
+    "pullFirstDialog": {
+      "title": "Remote has changes — pull first",
+      "description": "The remote branch{{branchLabel}} has {{behind}} commit(s) that aren't in your local branch. A regular push was rejected because it would overwrite them.",
+      "note": "Pull merges those remote commits into your branch (keeping your {{ahead}} local commit(s)), then pushes — nothing on the remote is discarded.",
+      "pullAndPush": "Pull & push",
+      "pulling": "Pulling…",
+      "forceInstead": "Force push instead",
+      "error": "Failed to pull and push"
+    },
     "status": {
       "commits_one": "commit",
       "commits_other": "commits",

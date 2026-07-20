@@ -341,6 +341,72 @@ fn regular_push_fast_forwards_when_remote_is_only_ahead() {
 }
 
 #[test]
+fn merge_remote_into_workspace_branch_integrates_diverged_remote() {
+    let temp_dir = TempDir::new().unwrap();
+    let remote_path = temp_dir.path().join("remote.git");
+    Repository::init_bare(&remote_path).expect("init bare remote");
+    let remote_url = remote_path.to_str().expect("remote path str");
+
+    let seed_path = temp_dir.path().join("seed");
+    let service = GitService::new();
+    service
+        .initialize_repo_with_main_branch(&seed_path)
+        .expect("init seed repo");
+    let seed_repo = Repository::open(&seed_path).expect("open seed repo");
+    configure_user(&seed_repo);
+    write_file(&seed_path, "file.txt", "initial\n");
+    commit_all(&seed_repo, "initial commit");
+    seed_repo.remote("origin", remote_url).expect("add remote");
+    push_ref(&seed_repo, "refs/heads/main", "refs/heads/main");
+    Repository::open_bare(&remote_path)
+        .expect("open bare remote")
+        .set_head("refs/heads/main")
+        .expect("set remote HEAD");
+
+    // Local clone with its own new commit (a different file, so the merge is
+    // clean).
+    let local_path = temp_dir.path().join("local");
+    let local_repo = Repository::clone(remote_url, &local_path).expect("clone local");
+    configure_user(&local_repo);
+    write_file(&local_path, "local.txt", "local work\n");
+    commit_all(&local_repo, "local commit");
+    let local_oid = local_repo.head().unwrap().target().unwrap();
+
+    // Someone else advances the remote on the same branch.
+    let updater_path = temp_dir.path().join("updater");
+    let updater_repo = Repository::clone(remote_url, &updater_path).expect("clone updater");
+    configure_user(&updater_repo);
+    write_file(&updater_path, "upstream.txt", "upstream work\n");
+    commit_all(&updater_repo, "upstream commit");
+    let upstream_oid = updater_repo.head().unwrap().target().unwrap();
+    push_ref(&updater_repo, "refs/heads/main", "refs/heads/main");
+
+    // Local is now diverged (ahead by its commit, behind by the upstream one) and
+    // has not fetched. The safe pull merges the remote in without discarding it.
+    service
+        .merge_remote_into_workspace_branch(&local_path, "main")
+        .expect("merge-pull should integrate the diverged remote");
+
+    // The merged tip contains BOTH commits — nothing was dropped.
+    let merged = Repository::open(&local_path).unwrap();
+    let head = merged.head().unwrap().peel_to_commit().unwrap();
+    assert!(head.parent_count() >= 2, "expected a merge commit");
+    assert!(
+        merged.graph_descendant_of(head.id(), local_oid).unwrap(),
+        "local commit must survive the merge"
+    );
+    assert!(
+        merged.graph_descendant_of(head.id(), upstream_oid).unwrap(),
+        "upstream commit must be integrated by the merge"
+    );
+
+    // A regular push now fast-forwards the remote — no force required.
+    service
+        .push_to_remote(&local_path, "main", false, false)
+        .expect("push after merge-pull should fast-forward");
+}
+
+#[test]
 fn fetch_with_missing_ref_returns_error() {
     let temp_dir = TempDir::new().unwrap();
     let remote_path = temp_dir.path().join("remote.git");

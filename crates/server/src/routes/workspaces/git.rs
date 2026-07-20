@@ -124,7 +124,15 @@ pub struct UpdateFromBaseRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(tag = "type", rename_all = "snake_case")]
 pub enum PushError {
+    /// A regular push was rejected and the recovery couldn't fast-forward, but
+    /// the local branch is not behind the remote — the only case where a force
+    /// push is the appropriate remedy (e.g. after an intentional history rewrite).
     ForcePushRequired,
+    /// The branch has diverged: the remote holds `behind` commit(s) the local
+    /// branch is missing (and the local is `ahead` by its own commits). A force
+    /// push would discard the remote commits, so the UI must offer to pull/merge
+    /// them first instead.
+    Diverged { ahead: usize, behind: usize },
 }
 
 /// Which repo of the workspace a target-branch remote operation applies to.
@@ -280,6 +288,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/commit", post(commit_workspace))
         .route("/push", post(push_workspace_branch))
         .route("/push/force", post(force_push_workspace_branch))
+        .route("/pull-and-push", post(pull_and_push_workspace_branch))
         .route("/pull", post(pull_workspace_branch_from_remote))
         .route("/update-from-base", post(update_workspace_from_base))
         .route("/rebase", post(rebase_workspace))
@@ -652,6 +661,9 @@ pub async fn push_workspace_branch(
             }
             Ok(ResponseJson(ApiResponse::success(())))
         }
+        Err(GitServiceError::PushDiverged { ahead, behind }) => Ok(ResponseJson(
+            ApiResponse::error_with_data(PushError::Diverged { ahead, behind }),
+        )),
         Err(GitServiceError::GitCLI(GitCliError::PushRejected(_))) => Ok(ResponseJson(
             ApiResponse::error_with_data(PushError::ForcePushRequired),
         )),
@@ -706,6 +718,84 @@ pub async fn force_push_workspace_branch(
             remote_sync::sync_workspace_to_remote(&client, ws.id, None, None, stats.as_ref()).await;
         });
     }
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+/// Integrate the work branch's diverged remote (fetch + merge) and then push —
+/// the safe, non-destructive resolution offered when a regular push is rejected
+/// because the branch diverged. Unlike a force push it never discards the remote
+/// commits. Merge conflicts surface as a typed `GitOperationError` so the
+/// existing conflict-resolution UI lights up, identical to update-from-base.
+#[axum::debug_handler]
+pub async fn pull_and_push_workspace_branch(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<PushWorkspaceRequest>,
+) -> Result<ResponseJson<ApiResponse<(), GitOperationError>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+    // In-place ("quick chat") workspaces run in the repo root itself, so the
+    // worktree path IS `container_ref` rather than a per-repo subdir. A pull is a
+    // normal, non-destructive merge, so — unlike force-push — it is allowed here.
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        Path::new(&container_ref).join(&repo.name)
+    };
+
+    // 1. Fetch + merge the branch's own remote into the local branch. On
+    //    conflicts the worktree is left mid-merge; surface them as typed data so
+    //    the conflict UI takes over (the user resolves, commits, then pushes).
+    if let Err(e) = deployment
+        .git()
+        .merge_remote_into_workspace_branch(&worktree_path, &workspace.branch)
+    {
+        return match e {
+            GitServiceError::MergeConflicts {
+                message,
+                conflicted_files,
+            } => Ok(ResponseJson(
+                ApiResponse::<(), GitOperationError>::error_with_data(
+                    GitOperationError::MergeConflicts {
+                        message,
+                        op: ConflictOp::Merge,
+                        conflicted_files,
+                        target_branch: workspace.branch.clone(),
+                    },
+                ),
+            )),
+            GitServiceError::RebaseInProgress => Ok(ResponseJson(ApiResponse::<
+                (),
+                GitOperationError,
+            >::error_with_data(
+                GitOperationError::RebaseInProgress,
+            ))),
+            other => Err(ApiError::GitService(other)),
+        };
+    }
+
+    // 2. The local branch now contains every remote commit, so a regular push
+    //    fast-forwards the remote.
+    let no_verify = deployment.config().read().await.git_push_no_verify;
+    deployment
+        .git()
+        .push_to_remote(&worktree_path, &workspace.branch, false, no_verify)?;
+
+    spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
 
     Ok(ResponseJson(ApiResponse::success(())))
 }
@@ -1321,6 +1411,9 @@ pub async fn push_target_branch(
             )?;
             Ok(ResponseJson(ApiResponse::success(status)))
         }
+        Err(GitServiceError::PushDiverged { ahead, behind }) => Ok(ResponseJson(
+            ApiResponse::error_with_data(PushError::Diverged { ahead, behind }),
+        )),
         Err(GitServiceError::GitCLI(GitCliError::PushRejected(_))) => Ok(ResponseJson(
             ApiResponse::error_with_data(PushError::ForcePushRequired),
         )),

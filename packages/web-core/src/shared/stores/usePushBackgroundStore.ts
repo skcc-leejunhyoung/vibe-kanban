@@ -4,6 +4,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { queryClient } from '@/shared/lib/queryClient';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
+import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
 import i18n from '@/i18n/config';
 
@@ -141,6 +142,23 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
             return;
           }
 
+          // Diverged → the remote has commits we don't. Lead with the safe
+          // pull-first resolution; only fall through to a force push if the user
+          // explicitly asks (a bare force push would discard the remote commits).
+          if (result.error?.type === 'diverged') {
+            clearStatus('byWorkspace', workspaceId, repoId);
+            const choice = await PullFirstDialog.show({
+              workspaceId,
+              repoId,
+              ahead: result.error.ahead,
+              behind: result.error.behind,
+            });
+            if (choice === 'force') {
+              await ForcePushDialog.show({ workspaceId, repoId });
+            }
+            return;
+          }
+
           // Force push required → drop back to idle and prompt to confirm.
           if (result.error?.type === 'force_push_required') {
             clearStatus('byWorkspace', workspaceId, repoId);
@@ -178,7 +196,11 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
             false
           );
 
-          if (!result.success && result.error?.type === 'force_push_required') {
+          if (
+            !result.success &&
+            (result.error?.type === 'force_push_required' ||
+              result.error?.type === 'diverged')
+          ) {
             const confirm = await ConfirmDialog.show({
               title: i18n.t('tasks:git.states.forcePush'),
               message: i18n.t('tasks:git.targetPush.forceConfirm'),
