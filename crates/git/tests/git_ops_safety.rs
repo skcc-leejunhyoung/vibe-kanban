@@ -478,6 +478,63 @@ fn merge_remote_into_workspace_branch_reports_conflicts_without_losing_commits()
 }
 
 #[test]
+fn merge_remote_into_branch_checkout_aborts_hidden_target_conflicts() {
+    let temp_dir = TempDir::new().unwrap();
+    let remote_path = temp_dir.path().join("remote.git");
+    Repository::init_bare(&remote_path).expect("init bare remote");
+    let remote_url = remote_path.to_str().expect("remote path str");
+
+    let local_path = temp_dir.path().join("local");
+    let service = GitService::new();
+    service
+        .initialize_repo_with_main_branch(&local_path)
+        .expect("init local repo");
+    let local_repo = Repository::open(&local_path).expect("open local repo");
+    configure_user(&local_repo);
+    write_file(&local_path, "shared.txt", "initial\n");
+    commit_all(&local_repo, "initial commit");
+    local_repo.remote("origin", remote_url).expect("add remote");
+    push_ref(&local_repo, "refs/heads/main", "refs/heads/main");
+    Repository::open_bare(&remote_path)
+        .expect("open bare remote")
+        .set_head("refs/heads/main")
+        .expect("set remote HEAD");
+
+    let updater_path = temp_dir.path().join("updater");
+    let updater_repo = Repository::clone(remote_url, &updater_path).expect("clone updater");
+    configure_user(&updater_repo);
+    write_file(&updater_path, "shared.txt", "upstream change\n");
+    commit_all(&updater_repo, "upstream commit");
+    push_ref(&updater_repo, "refs/heads/main", "refs/heads/main");
+
+    write_file(&local_path, "shared.txt", "local change\n");
+    commit_all(&local_repo, "local commit");
+    let local_oid = local_repo.head().unwrap().target().unwrap();
+
+    let err = service
+        .merge_remote_into_branch_checkout(&local_path, "main")
+        .expect_err("target-checkout conflict must be aborted and reported");
+    assert!(
+        matches!(err, git::GitServiceError::InvalidRepository(_)),
+        "expected an ordinary actionable error, got {err:?}"
+    );
+
+    let repo_after = Repository::open(&local_path).unwrap();
+    assert_eq!(repo_after.head().unwrap().target().unwrap(), local_oid);
+    assert!(
+        !GitCli::new().is_merge_in_progress(&local_path).unwrap(),
+        "the target checkout must not be left in a hidden merge"
+    );
+    assert!(
+        GitCli::new()
+            .get_conflicted_files(&local_path)
+            .unwrap()
+            .is_empty(),
+        "aborting the hidden merge must clear its conflict index"
+    );
+}
+
+#[test]
 fn fetch_with_missing_ref_returns_error() {
     let temp_dir = TempDir::new().unwrap();
     let remote_path = temp_dir.path().join("remote.git");

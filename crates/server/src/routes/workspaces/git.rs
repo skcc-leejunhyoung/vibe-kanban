@@ -1435,8 +1435,9 @@ pub async fn push_target_branch(
 /// Integrate the target (base) branch's diverged remote (fetch + merge) and then
 /// push it — the safe, non-destructive resolution offered when a target-branch
 /// push is rejected because it diverged. Unlike a force push it never discards
-/// the remote commits. Merge conflicts surface as a typed `GitOperationError` so
-/// the existing conflict-resolution UI lights up, identical to update-from-base.
+/// the remote commits. A conflict is aborted in the target branch's checkout and
+/// returned as an ordinary error because the workspace conflict UI cannot safely
+/// operate on that separate checkout.
 #[axum::debug_handler]
 pub async fn pull_and_push_target_branch(
     Extension(workspace): Extension<Workspace>,
@@ -1461,23 +1462,10 @@ pub async fn pull_and_push_target_branch(
     };
 
     // 1. Fetch + merge origin/<target> into the local target branch (wherever
-    //    it's checked out). Conflicts are left in the worktree for the conflict
-    //    UI; surface them as typed data.
+    //    it's checked out). The git service aborts target-checkout conflicts so
+    //    they are not mistaken for conflicts in this workspace's worktree.
     if let Err(e) = git.merge_remote_into_branch_checkout(&repo.path, &target) {
         return match e {
-            GitServiceError::MergeConflicts {
-                message,
-                conflicted_files,
-            } => Ok(ResponseJson(
-                ApiResponse::<(), GitOperationError>::error_with_data(
-                    GitOperationError::MergeConflicts {
-                        message,
-                        op: ConflictOp::Merge,
-                        conflicted_files,
-                        target_branch: target,
-                    },
-                ),
-            )),
             GitServiceError::RebaseInProgress => Ok(ResponseJson(ApiResponse::<
                 (),
                 GitOperationError,

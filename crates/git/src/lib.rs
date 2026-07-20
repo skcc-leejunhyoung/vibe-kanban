@@ -1571,7 +1571,29 @@ impl GitService {
                     "'{branch}' is not checked out in any worktree; check it out before pulling."
                 ))
             })?;
-        self.merge_remote_into_workspace_branch(&checkout, branch)
+        match self.merge_remote_into_workspace_branch(&checkout, branch) {
+            Err(GitServiceError::MergeConflicts { message, .. }) => {
+                // Target-branch conflicts happen in the checkout that owns the
+                // target branch, not in the workspace worktree. The existing
+                // conflict UI only observes and operates on the workspace
+                // worktree, so leaving this merge in progress would hide the
+                // conflict and strand the target checkout. Abort it here and
+                // return a regular error so the pull-first dialog remains open
+                // with an actionable message.
+                GitCli::new()
+                    .abort_merge(&checkout)
+                    .map_err(|abort_error| {
+                        GitServiceError::InvalidRepository(format!(
+                            "Target branch merge conflicted and aborting it failed: {abort_error}"
+                        ))
+                    })?;
+
+                Err(GitServiceError::InvalidRepository(format!(
+                    "{message} The target-branch merge was aborted because conflicts in its checkout cannot be resolved from this workspace. Resolve the target branch manually, then push again."
+                )))
+            }
+            result => result,
+        }
     }
 
     /// Merge the base branch into the work branch (the equivalent of, from the
