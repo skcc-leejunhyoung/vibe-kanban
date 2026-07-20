@@ -976,6 +976,13 @@ export function PreviewBrowserContainer({
     [navigateToPreviewUrl]
   );
 
+  const handleOpenShortcutInNewTab = useCallback((url: string) => {
+    const normalizedUrl = normalizePreviewUrl(url);
+    if (normalizedUrl) {
+      window.open(normalizedUrl, '_blank');
+    }
+  }, []);
+
   const handleScreenSizeChange = useCallback(
     (size: ScreenSize) => {
       setScreenSize(size);
@@ -1048,6 +1055,7 @@ export function PreviewBrowserContainer({
       onAddShortcut={handleAddShortcut}
       onRemoveShortcut={handleRemoveShortcut}
       onOpenShortcut={handleOpenShortcut}
+      onOpenShortcutInNewTab={handleOpenShortcutInNewTab}
       onRefresh={handleRefresh}
       onStart={handleStart}
       onStop={handleStop}

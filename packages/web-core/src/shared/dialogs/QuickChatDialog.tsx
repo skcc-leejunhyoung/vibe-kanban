@@ -6,7 +6,6 @@ import {
   DesktopIcon,
   LightningIcon,
   StarIcon,
-  XIcon,
 } from '@phosphor-icons/react';
 import {
   Dialog,
@@ -340,32 +339,19 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         {visibleFavorites.map((fav) => {
           const isActive = repo?.path === fav.path;
           return (
-            <span
+            <button
+              type="button"
               key={fav.path}
+              onClick={() => selectFavorite(fav.path)}
+              title={fav.path}
               className={`inline-flex items-center gap-half rounded-full border px-base py-half text-sm ${
                 isActive
                   ? 'border-brand text-high'
                   : 'border-border text-normal'
-              }`}
+              } max-w-[200px] truncate hover:text-high`}
             >
-              <button
-                type="button"
-                onClick={() => selectFavorite(fav.path)}
-                title={fav.path}
-                className="max-w-[200px] truncate hover:text-high"
-              >
-                {fav.name}
-              </button>
-              <button
-                type="button"
-                onClick={() => removeFavorite(fav.path, selectedHostId)}
-                aria-label={`Remove ${fav.name} from favorites`}
-                title="Remove from favorites"
-                className="inline-flex items-center text-low hover:text-error transition-colors"
-              >
-                <XIcon className="size-icon-xs" weight="bold" />
-              </button>
-            </span>
+              {fav.name}
+            </button>
           );
         })}
       </div>

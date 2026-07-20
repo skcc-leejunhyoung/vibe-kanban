@@ -16,7 +16,6 @@ import {
   TerminalIcon,
   GlobeIcon,
   PlusIcon,
-  TrashIcon,
   ArrowLeftIcon,
   ArrowRightIcon,
   StarIcon,
@@ -83,6 +82,7 @@ interface PreviewBrowserProps {
   onAddShortcut?: () => void;
   onRemoveShortcut?: (id: string) => void;
   onOpenShortcut?: (url: string) => void;
+  onOpenShortcutInNewTab?: (url: string) => void;
   onRefresh: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -136,6 +136,7 @@ export function PreviewBrowser({
   onAddShortcut,
   onRemoveShortcut,
   onOpenShortcut,
+  onOpenShortcutInNewTab,
   onRefresh,
   onStart,
   onStop,
@@ -308,15 +309,18 @@ export function PreviewBrowser({
                 </select>
                 <IconButtonGroup>
                   <IconButtonGroupItem
-                    icon={TrashIcon}
+                    icon={ArrowSquareOutIcon}
                     onClick={() => {
-                      if (selectedShortcutId) {
-                        onRemoveShortcut?.(selectedShortcutId);
+                      const shortcut = shortcuts.find(
+                        (item) => item.id === selectedShortcutId
+                      );
+                      if (shortcut) {
+                        onOpenShortcutInNewTab?.(shortcut.url);
                       }
                     }}
                     disabled={!isServerRunning || !selectedShortcutId}
-                    aria-label={t('preview.toolbar.removeShortcut')}
-                    title={t('preview.toolbar.removeShortcut')}
+                    aria-label={t('preview.toolbar.openInTab')}
+                    title={t('preview.toolbar.openInTab')}
                   />
                 </IconButtonGroup>
               </div>
@@ -496,10 +500,7 @@ export function PreviewBrowser({
                             : 'text-low hover:text-normal'
                         )}
                       >
-                        <CaretDownIcon
-                          className="size-icon-sm"
-                          weight="bold"
-                        />
+                        <CaretDownIcon className="size-icon-sm" weight="bold" />
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="max-w-72">
@@ -522,23 +523,23 @@ export function PreviewBrowser({
                           <span
                             role="button"
                             tabIndex={0}
-                            aria-label={t('preview.toolbar.removeShortcut')}
-                            title={t('preview.toolbar.removeShortcut')}
+                            aria-label={t('preview.toolbar.openInTab')}
+                            title={t('preview.toolbar.openInTab')}
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              onRemoveShortcut?.(shortcut.id);
+                              onOpenShortcutInNewTab?.(shortcut.url);
                             }}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                onRemoveShortcut?.(shortcut.id);
+                                onOpenShortcutInNewTab?.(shortcut.url);
                               }
                             }}
                             className="shrink-0 text-low hover:text-normal"
                           >
-                            <TrashIcon
+                            <ArrowSquareOutIcon
                               className="size-icon-sm"
                               weight="bold"
                             />
