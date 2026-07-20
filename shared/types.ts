@@ -361,7 +361,7 @@ export type TagSearchParams = { search: string | null, };
 
 export type TokenResponse = { access_token: string, expires_at: string | null, };
 
-export type UserSystemInfo = { version: string, config: Config, machine_id: string, login_status: LoginStatus, remote_auth_degraded: string | null, environment: Environment,
+export type UserSystemInfo = { version: string, config: Config, config_revision: string, profiles_revision: string, machine_id: string, login_status: LoginStatus, remote_auth_degraded: string | null, environment: Environment,
 /**
  * Capabilities supported per executor (e.g., { "CLAUDE_CODE": ["SESSION_FORK"] })
  */

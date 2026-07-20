@@ -29,13 +29,14 @@ export function SettingsMachineUserSystemProvider({
   }, [machineClient]);
   const saveConfig = useCallback(
     (
-      config: Parameters<NonNullable<typeof machineClient>['saveConfig']>[0]
+      config: Parameters<NonNullable<typeof machineClient>['saveConfig']>[0],
+      revision: string
     ) => {
       if (!machineClient) {
         throw new Error('Machine client is required');
       }
 
-      return machineClient.saveConfig(config);
+      return machineClient.saveConfig(config, revision);
     },
     [machineClient]
   );

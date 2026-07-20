@@ -14,8 +14,8 @@ interface UserSystemProviderProps {
 export function UserSystemProvider({ children }: UserSystemProviderProps) {
   const loadConfig = useCallback(() => configApi.getConfig(null), []);
   const saveConfig = useCallback(
-    (config: Parameters<typeof configApi.saveConfig>[0]) =>
-      configApi.saveConfig(config, null),
+    (config: Parameters<typeof configApi.saveConfig>[0], revision: string) =>
+      configApi.saveConfig(config, revision, null),
     []
   );
 

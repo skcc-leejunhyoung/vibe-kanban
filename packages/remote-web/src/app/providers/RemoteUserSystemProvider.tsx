@@ -1,9 +1,9 @@
 import { ReactNode, useCallback, useMemo } from "react";
-import { useParams } from "@tanstack/react-router";
 import { configApi } from "@/shared/lib/api";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserSystemController } from "@/shared/hooks/useUserSystemController";
 import { UserSystemContext } from "@/shared/hooks/useUserSystem";
+import { useHostId } from "@/shared/providers/HostIdProvider";
 
 interface RemoteUserSystemProviderProps {
   children: ReactNode;
@@ -13,12 +13,12 @@ export function RemoteUserSystemProvider({
   children,
 }: RemoteUserSystemProviderProps) {
   const { isSignedIn, isLoaded } = useAuth();
-  const { hostId } = useParams({ strict: false });
-  const loadConfig = useCallback(() => configApi.getConfig(), []);
+  const hostId = useHostId();
+  const loadConfig = useCallback(() => configApi.getConfig(hostId), [hostId]);
   const saveConfig = useCallback(
-    (config: Parameters<typeof configApi.saveConfig>[0]) =>
-      configApi.saveConfig(config),
-    [],
+    (config: Parameters<typeof configApi.saveConfig>[0], revision: string) =>
+      configApi.saveConfig(config, revision, hostId),
+    [hostId],
   );
   const userSystemQueryKey = useMemo(
     () => ["user-system", "remote-route", hostId] as const,
@@ -26,7 +26,7 @@ export function RemoteUserSystemProvider({
   );
   const { value, isLoading } = useUserSystemController({
     queryKey: userSystemQueryKey,
-    enabled: isLoaded && isSignedIn && !!hostId,
+    enabled: isLoaded && isSignedIn,
     load: loadConfig,
     save: saveConfig,
   });

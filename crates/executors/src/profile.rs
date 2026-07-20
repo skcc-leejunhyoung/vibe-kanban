@@ -7,6 +7,7 @@ use std::{
 
 use convert_case::{Case, Casing};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as DeError};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use ts_rs::TS;
 
@@ -30,6 +31,8 @@ pub fn canonical_variant_key<S: AsRef<str>>(raw: S) -> String {
 
 #[derive(Error, Debug)]
 pub enum ProfileError {
+    #[error("Profile revision conflict (expected {expected}, current {current})")]
+    RevisionConflict { expected: String, current: String },
     #[error("Built-in executor '{executor}' cannot be deleted")]
     CannotDeleteExecutor { executor: BaseCodingAgent },
 
@@ -244,6 +247,58 @@ pub struct ExecutorConfigs {
 }
 
 impl ExecutorConfigs {
+    pub fn revision(&self) -> String {
+        let bytes = serde_json::to_vec(self).expect("executor profiles must serialize");
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// Atomically replace the cached profiles only when the caller read the
+    /// current revision. The cache write lock covers the file publication too,
+    /// preventing two in-process writers from both passing the comparison.
+    pub fn replace_if_revision(
+        next: Self,
+        expected_revision: &str,
+    ) -> Result<String, ProfileError> {
+        let mut cache = EXECUTOR_PROFILES_CACHE.write().unwrap();
+        let current_revision = cache.revision();
+        if current_revision != expected_revision {
+            return Err(ProfileError::RevisionConflict {
+                expected: expected_revision.to_string(),
+                current: current_revision,
+            });
+        }
+        next.save_overrides()?;
+        *cache = next;
+        Ok(cache.revision())
+    }
+
+    /// Merge browser-owned recent-model metadata without accepting any
+    /// executor command, MCP, or other machine-local profile fields.
+    pub fn update_recent_models_if_revision(
+        executor: BaseCodingAgent,
+        recent: ExecutorRecentModels,
+        expected_revision: &str,
+    ) -> Result<(Self, String), ProfileError> {
+        let mut cache = EXECUTOR_PROFILES_CACHE.write().unwrap();
+        let current_revision = cache.revision();
+        if current_revision != expected_revision {
+            return Err(ProfileError::RevisionConflict {
+                expected: expected_revision.to_string(),
+                current: current_revision,
+            });
+        }
+        let mut next = cache.clone();
+        let profile = next
+            .executors
+            .get_mut(&executor)
+            .ok_or_else(|| ProfileError::Validation(format!("Unknown executor '{executor}'")))?;
+        profile.recently_used_models = Some(recent);
+        next.save_overrides()?;
+        *cache = next.clone();
+        let revision = cache.revision();
+        Ok((next, revision))
+    }
+
     /// Normalise all variant keys in-place
     fn canonicalise(&mut self) {
         for profile in self.executors.values_mut() {
@@ -554,5 +609,41 @@ impl ExecutorConfigs {
         let selected = agents_with_info[0].0;
         tracing::info!("Recommended executor: {}", selected);
         Ok(ExecutorProfileId::new(selected))
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    #[test]
+    fn revision_changes_when_recent_metadata_changes_without_touching_configurations() {
+        let original = ExecutorConfigs::from_defaults();
+        let mut changed = original.clone();
+        let executor = *changed.executors.keys().next().unwrap();
+        let original_configurations = changed.executors[&executor].configurations.clone();
+
+        changed
+            .executors
+            .get_mut(&executor)
+            .unwrap()
+            .recently_used_models = Some(ExecutorRecentModels {
+            models: vec!["provider/model".to_string()],
+            reasoning_by_model: HashMap::from([("provider/model".to_string(), "high".to_string())]),
+        });
+
+        assert_ne!(original.revision(), changed.revision());
+        assert_eq!(
+            original_configurations,
+            changed.executors[&executor].configurations
+        );
+    }
+
+    #[test]
+    fn stale_revision_is_rejected_before_profiles_are_written() {
+        let current = ExecutorConfigs::get_cached();
+        let error = ExecutorConfigs::replace_if_revision(current, "stale-revision").unwrap_err();
+
+        assert!(matches!(error, ProfileError::RevisionConflict { .. }));
     }
 }

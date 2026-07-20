@@ -14,6 +14,7 @@ export interface UserSystemState {
   config: Config | null;
   environment: Environment | null;
   profiles: Record<string, ExecutorProfile> | null;
+  profilesRevision: string | null;
   capabilities: Record<string, BaseAgentCapability[]> | null;
   machineId: string | null;
   loginStatus: LoginStatus | null;
@@ -35,12 +36,16 @@ export interface UserSystemContextType {
   // System data access
   environment: Environment | null;
   profiles: Record<string, ExecutorProfile> | null;
+  profilesRevision: string | null;
   capabilities: Record<string, BaseAgentCapability[]> | null;
   machineId: string | null;
   loginStatus: LoginStatus | null;
   remoteAuthDegraded: string | null;
   setEnvironment: (env: Environment | null) => void;
-  setProfiles: (profiles: Record<string, ExecutorProfile> | null) => void;
+  setProfiles: (
+    profiles: Record<string, ExecutorProfile> | null,
+    revision?: string
+  ) => void;
   setCapabilities: (caps: Record<string, BaseAgentCapability[]> | null) => void;
 
   // Reload system data

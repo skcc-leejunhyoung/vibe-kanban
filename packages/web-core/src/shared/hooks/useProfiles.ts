@@ -35,13 +35,17 @@ export function useProfiles(hostId?: string | null): UseProfilesReturn {
   });
 
   const { mutateAsync: saveMutation, isPending: isSaving } = useMutation({
-    mutationFn: (content: string) => profilesApi.save(content, hostId),
-    onSuccess: (_, content) => {
+    mutationFn: (content: string) => {
+      if (!data?.revision) throw new Error('Profiles revision is unavailable');
+      return profilesApi.save(content, data.revision, hostId);
+    },
+    onSuccess: (revision, content) => {
       // Optimistically update cache with new content
-      queryClient.setQueryData<{ content: string; path: string }>(
-        queryKey,
-        (old) => (old ? { ...old, content } : old)
-      );
+      queryClient.setQueryData<{
+        content: string;
+        path: string;
+        revision: string;
+      }>(queryKey, (old) => (old ? { ...old, content, revision } : old));
       void queryClient.invalidateQueries({
         queryKey: presetOptionsKeys.all,
       });
@@ -107,13 +111,15 @@ export function useMachineProfiles(
         throw new Error('Machine client is required');
       }
 
-      return machineClient.saveProfiles(content);
+      if (!data?.revision) throw new Error('Profiles revision is unavailable');
+      return machineClient.saveProfiles(content, data.revision);
     },
-    onSuccess: (_, content) => {
-      queryClient.setQueryData<{ content: string; path: string }>(
-        queryKey,
-        (old) => (old ? { ...old, content } : old)
-      );
+    onSuccess: (revision, content) => {
+      queryClient.setQueryData<{
+        content: string;
+        path: string;
+        revision: string;
+      }>(queryKey, (old) => (old ? { ...old, content, revision } : old));
       void queryClient.invalidateQueries({
         queryKey: presetOptionsKeys.all,
       });

@@ -5,12 +5,12 @@ use axum::{
     BoxError, Json, Router,
     body::Body,
     extract::{Path, Query, State, ws::Message},
-    http,
+    http::{self, HeaderMap, StatusCode},
     response::{
         IntoResponse, Json as ResponseJson, Response, Sse,
         sse::{Event, KeepAlive},
     },
-    routing::{get, put},
+    routing::{get, patch, put},
 };
 use chrono::NaiveTime;
 use deployment::{Deployment, DeploymentError};
@@ -19,7 +19,7 @@ use executors::{
         AvailabilityInfo, BaseAgentCapability, BaseCodingAgent, StandardCodingAgentExecutor,
     },
     mcp_config::{McpConfig, read_agent_config, write_agent_config},
-    profile::{ExecutorConfigs, ExecutorProfileId},
+    profile::{ExecutorConfigs, ExecutorProfileId, ExecutorRecentModels, ProfileError},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,6 +32,7 @@ use services::services::{
     container::ContainerService,
     remote_client::RemoteClientError,
 };
+use sha2::{Digest, Sha256};
 use tokio::fs;
 use ts_rs::TS;
 use utils::{assets::config_path, log_msg::LogMsg, response::ApiResponse};
@@ -51,6 +52,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/sounds/{sound}", get(get_sound))
         .route("/mcp-config", get(get_mcp_servers).post(update_mcp_servers))
         .route("/profiles", get(get_profiles).put(update_profiles))
+        .route("/profiles/recent-models", patch(update_recent_models))
         .route(
             "/editors/check-availability",
             get(check_editor_availability),
@@ -97,6 +99,8 @@ impl Environment {
 pub struct UserSystemInfo {
     pub version: String,
     pub config: Config,
+    pub config_revision: String,
+    pub profiles_revision: String,
     pub machine_id: String,
     pub login_status: LoginStatus,
     pub remote_auth_degraded: Option<String>,
@@ -107,6 +111,11 @@ pub struct UserSystemInfo {
     pub capabilities: HashMap<String, Vec<BaseAgentCapability>>,
     pub shared_api_base: Option<String>,
     pub preview_proxy_port: Option<u16>,
+}
+
+fn revision<T: Serialize>(value: &T) -> String {
+    let bytes = serde_json::to_vec(value).expect("configuration must serialize");
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 // TODO: update frontend, BE schema has changed, this replaces GET /config and /config/constants
@@ -160,13 +169,16 @@ async fn get_user_system_info(
         }
     };
 
+    let cached_profiles = ExecutorConfigs::get_cached();
     let user_system_info = UserSystemInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        config_revision: revision(&config),
         config,
         machine_id: deployment.user_id().to_string(),
         login_status,
         remote_auth_degraded: deployment.auth_context().remote_auth_degraded_slug().await,
-        profiles: ExecutorConfigs::get_cached(),
+        profiles_revision: cached_profiles.revision(),
+        profiles: cached_profiles,
         environment: Environment::new(),
         capabilities: {
             let mut caps: HashMap<String, Vec<BaseAgentCapability>> = HashMap::new();
@@ -185,40 +197,105 @@ async fn get_user_system_info(
     ResponseJson(ApiResponse::success(user_system_info))
 }
 
+#[derive(Debug, Deserialize, TS)]
+pub struct UpdateConfigRequest {
+    pub config: Config,
+    pub revision: String,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct VersionedConfig {
+    pub config: Config,
+    pub revision: String,
+}
+
 async fn update_config(
     State(deployment): State<DeploymentImpl>,
-    Json(new_config): Json<Config>,
-) -> ResponseJson<ApiResponse<Config>> {
+    headers: HeaderMap,
+    Json(request): Json<UpdateConfigRequest>,
+) -> Response {
+    let new_config = request.config;
     let config_path = config_path();
 
     // Validate git branch prefix
     if !git::is_valid_branch_prefix(&new_config.git_branch_prefix) {
-        return ResponseJson(ApiResponse::error(
+        return (StatusCode::BAD_REQUEST, ResponseJson(ApiResponse::<VersionedConfig>::error(
             "Invalid git branch prefix. Must be a valid git branch name component without slashes.",
-        ));
+        ))).into_response();
     }
     if NaiveTime::parse_from_str(&new_config.agent_memory_sync.daily_local_time, "%H:%M").is_err() {
-        return ResponseJson(ApiResponse::error(
-            "Invalid agent memory sync time. Expected HH:MM in local time.",
-        ));
+        return (
+            StatusCode::BAD_REQUEST,
+            ResponseJson(ApiResponse::<VersionedConfig>::error(
+                "Invalid agent memory sync time. Expected HH:MM in local time.",
+            )),
+        )
+            .into_response();
     }
 
     // Get old config state before updating
-    let old_config = deployment.config().read().await.clone();
+    let mut config_guard = deployment.config().write().await;
+    let old_config = config_guard.clone();
+    let current_revision = revision(&old_config);
+    if request.revision != current_revision {
+        return (
+            StatusCode::CONFLICT,
+            ResponseJson(ApiResponse::<VersionedConfig>::error(&format!(
+                "Configuration changed since it was loaded (current revision {current_revision})"
+            ))),
+        )
+            .into_response();
+    }
 
     match save_config_to_file(&new_config, &config_path).await {
         Ok(_) => {
-            let mut config = deployment.config().write().await;
-            *config = new_config.clone();
-            drop(config);
+            *config_guard = new_config.clone();
+            drop(config_guard);
 
             // Track config events when fields transition from false → true and run side effects
             handle_config_events(&deployment, &old_config, &new_config).await;
 
-            ResponseJson(ApiResponse::success(new_config))
+            let new_revision = revision(&new_config);
+            tracing::info!(
+                source_host = headers.get("x-vibe-source-host").and_then(|v| v.to_str().ok()).unwrap_or("browser"),
+                target_host = %deployment.user_id(),
+                previous_revision = %current_revision,
+                revision = %new_revision,
+                changed_fields = ?changed_top_level_fields(&old_config, &new_config),
+                "host configuration updated"
+            );
+            ResponseJson(ApiResponse::<VersionedConfig>::success(VersionedConfig {
+                config: new_config,
+                revision: new_revision,
+            }))
+            .into_response()
         }
-        Err(e) => ResponseJson(ApiResponse::error(&format!("Failed to save config: {}", e))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ResponseJson(ApiResponse::<VersionedConfig>::error(&format!(
+                "Failed to save config: {}",
+                e
+            ))),
+        )
+            .into_response(),
     }
+}
+
+fn changed_top_level_fields<T: Serialize>(old: &T, new: &T) -> Vec<String> {
+    let old = serde_json::to_value(old).unwrap_or_default();
+    let new = serde_json::to_value(new).unwrap_or_default();
+    let mut keys = old
+        .as_object()
+        .into_iter()
+        .flat_map(|v| v.keys())
+        .chain(new.as_object().into_iter().flat_map(|v| v.keys()))
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .filter(|key| old.get(key) != new.get(key))
+        .collect()
 }
 
 /// Track config events when fields transition from false → true
@@ -469,6 +546,7 @@ fn set_mcp_servers_in_config_path(
 pub struct ProfilesContent {
     pub content: String,
     pub path: String,
+    pub revision: String,
 }
 
 async fn get_profiles(
@@ -486,41 +564,101 @@ async fn get_profiles(
     });
 
     ResponseJson(ApiResponse::success(ProfilesContent {
+        revision: profiles.revision(),
         content,
         path: profiles_path.display().to_string(),
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateProfilesRequest {
+    content: String,
+    revision: String,
+}
+
 async fn update_profiles(
-    State(_deployment): State<DeploymentImpl>,
-    body: String,
-) -> ResponseJson<ApiResponse<String>> {
+    State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateProfilesRequest>,
+) -> Response {
     // Try to parse as ExecutorProfileConfigs format
-    match serde_json::from_str::<ExecutorConfigs>(&body) {
+    match serde_json::from_str::<ExecutorConfigs>(&request.content) {
         Ok(executor_profiles) => {
-            // Save the profiles to file
-            match executor_profiles.save_overrides() {
-                Ok(_) => {
-                    tracing::info!("Executor profiles saved successfully");
-                    // Reload the cached profiles
-                    ExecutorConfigs::reload();
-                    ResponseJson(ApiResponse::success(
-                        "Executor profiles updated successfully".to_string(),
-                    ))
+            match ExecutorConfigs::replace_if_revision(executor_profiles, &request.revision) {
+                Ok(new_revision) => {
+                    tracing::info!(source_host = headers.get("x-vibe-source-host").and_then(|v| v.to_str().ok()).unwrap_or("browser"), target_host = %deployment.user_id(), previous_revision = %request.revision, revision = %new_revision, changed_fields = ?["executors"], "executor profiles updated");
+                    ResponseJson(ApiResponse::<String>::success(new_revision)).into_response()
                 }
+                Err(ProfileError::RevisionConflict { current, .. }) => (
+                    StatusCode::CONFLICT,
+                    ResponseJson(ApiResponse::<String>::error(&format!(
+                        "Profiles changed since they were loaded (current revision {current})"
+                    ))),
+                )
+                    .into_response(),
                 Err(e) => {
                     tracing::error!("Failed to save executor profiles: {}", e);
-                    ResponseJson(ApiResponse::error(&format!(
-                        "Failed to save executor profiles: {}",
-                        e
-                    )))
+                    (
+                        StatusCode::BAD_REQUEST,
+                        ResponseJson(ApiResponse::<String>::error(&format!(
+                            "Failed to save executor profiles: {}",
+                            e
+                        ))),
+                    )
+                        .into_response()
                 }
             }
         }
-        Err(e) => ResponseJson(ApiResponse::error(&format!(
-            "Invalid executor profiles format: {}",
-            e
-        ))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            ResponseJson(ApiResponse::<String>::error(&format!(
+                "Invalid executor profiles format: {}",
+                e
+            ))),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRecentModelsRequest {
+    executor: BaseCodingAgent,
+    recently_used_models: ExecutorRecentModels,
+    revision: String,
+}
+
+async fn update_recent_models(
+    State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateRecentModelsRequest>,
+) -> Response {
+    match ExecutorConfigs::update_recent_models_if_revision(
+        request.executor,
+        request.recently_used_models,
+        &request.revision,
+    ) {
+        Ok((profiles, new_revision)) => {
+            tracing::info!(source_host = headers.get("x-vibe-source-host").and_then(|v| v.to_str().ok()).unwrap_or("browser"), target_host = %deployment.user_id(), previous_revision = %request.revision, revision = %new_revision, changed_fields = ?["recently_used_models"], "recent model metadata updated");
+            ResponseJson(ApiResponse::<ProfilesContent>::success(ProfilesContent {
+                content: serde_json::to_string_pretty(&profiles)
+                    .unwrap_or_else(|_| "{}".to_string()),
+                path: utils::assets::profiles_path().display().to_string(),
+                revision: new_revision,
+            }))
+            .into_response()
+        }
+        Err(ProfileError::RevisionConflict { current, .. }) => (
+            StatusCode::CONFLICT,
+            ResponseJson(ApiResponse::<ProfilesContent>::error(&format!(
+                "Profiles changed since they were loaded (current revision {current})"
+            ))),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            ResponseJson(ApiResponse::<ProfilesContent>::error(&error.to_string())),
+        )
+            .into_response(),
     }
 }
 

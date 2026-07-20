@@ -36,6 +36,7 @@ import {
 } from '@/shared/lib/modelSelector';
 import { useHiddenModels } from '@/shared/stores/useUiPreferencesStore';
 import { profilesApi } from '@/shared/lib/api';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { useModelSelectorConfig } from '@/shared/hooks/useExecutorDiscovery';
@@ -95,7 +96,10 @@ export function ModelSelectorContainer({
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedProviderId, setExpandedProviderId] = useState('');
-  const { profiles, setProfiles, reloadSystem } = useUserSystem();
+  const contextHostId = useHostId();
+  const targetHostId = hostId === undefined ? contextHostId : hostId;
+  const { profiles, profilesRevision, setProfiles, reloadSystem } =
+    useUserSystem();
   const defaultLabel = t('modelSelector.default');
   const loadingLabel = t('states.loading');
 
@@ -314,7 +318,7 @@ export function ModelSelectorContainer({
 
   const persistPendingSelections = useCallback(() => {
     if (!persistRecent) return;
-    if (!profiles || !agent) return;
+    if (!profiles || !profilesRevision || !agent) return;
     if (!pendingModelRef.current && !pendingReasoningRef.current) return;
 
     let nextProfiles = profiles;
@@ -344,8 +348,16 @@ export function ModelSelectorContainer({
 
     if (nextProfiles !== profiles) {
       setProfiles(nextProfiles);
+      const recent = nextProfiles[agent]?.recently_used_models;
+      if (!recent) return;
       void profilesApi
-        .save(JSON.stringify({ executors: nextProfiles }, null, 2))
+        .updateRecentModels(agent, recent, profilesRevision, targetHostId)
+        .then((saved) => {
+          const parsed = JSON.parse(saved.content) as {
+            executors: Record<string, import('shared/types').ExecutorProfile>;
+          };
+          setProfiles(parsed.executors, saved.revision);
+        })
         .catch((error) => {
           console.error('Failed to save recent models', error);
           void reloadSystem();
@@ -356,10 +368,12 @@ export function ModelSelectorContainer({
     config,
     persistRecent,
     profiles,
+    profilesRevision,
     reloadSystem,
     selectedModelId,
     selectedProviderId,
     setProfiles,
+    targetHostId,
   ]);
 
   const handleModelSelect = (modelId: string | null, providerId?: string) => {

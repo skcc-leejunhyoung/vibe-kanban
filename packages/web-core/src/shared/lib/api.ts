@@ -44,6 +44,7 @@ import {
   AvailabilityInfo,
   BaseCodingAgent,
   ExecutorConfig,
+  ExecutorProfile,
   DraftFollowUpData,
   AgentPresetOptionsQuery,
   RunAgentSetupRequest,
@@ -1501,13 +1502,14 @@ export const configApi = {
   },
   saveConfig: async (
     config: Config,
+    revision: string,
     hostId?: string | null
-  ): Promise<Config> => {
+  ): Promise<{ config: Config; revision: string }> => {
     const response = await makeHostAwareRequest('/api/config', hostId, {
       method: 'PUT',
-      body: JSON.stringify(config),
+      body: JSON.stringify({ config, revision }),
     });
-    return handleApiResponse<Config>(response);
+    return handleApiResponse<{ config: Config; revision: string }>(response);
   },
   checkEditorAvailability: async (
     editorType: EditorType
@@ -1610,19 +1612,51 @@ export const mcpServersApi = {
 export const profilesApi = {
   load: async (
     hostId?: string | null
-  ): Promise<{ content: string; path: string }> => {
+  ): Promise<{ content: string; path: string; revision: string }> => {
     const response = await makeHostAwareRequest('/api/profiles', hostId);
-    return handleApiResponse<{ content: string; path: string }>(response);
+    return handleApiResponse<{
+      content: string;
+      path: string;
+      revision: string;
+    }>(response);
   },
-  save: async (content: string, hostId?: string | null): Promise<string> => {
+  save: async (
+    content: string,
+    revision: string,
+    hostId?: string | null
+  ): Promise<string> => {
     const response = await makeHostAwareRequest('/api/profiles', hostId, {
       method: 'PUT',
-      body: content,
+      body: JSON.stringify({ content, revision }),
       headers: {
         'Content-Type': 'application/json',
       },
     });
     return handleApiResponse<string>(response);
+  },
+  updateRecentModels: async (
+    executor: BaseCodingAgent,
+    recentlyUsedModels: ExecutorProfile['recently_used_models'],
+    revision: string,
+    hostId: string | null
+  ): Promise<{ content: string; path: string; revision: string }> => {
+    const response = await makeHostAwareRequest(
+      '/api/profiles/recent-models',
+      hostId,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          executor,
+          recently_used_models: recentlyUsedModels,
+          revision,
+        }),
+      }
+    );
+    return handleApiResponse<{
+      content: string;
+      path: string;
+      revision: string;
+    }>(response);
   },
 };
 

@@ -46,7 +46,10 @@ export interface MachineClient {
   target: MachineTarget;
   queryScopeKey: readonly ['machine', string];
   getConfig: () => Promise<UserSystemInfo>;
-  saveConfig: (config: Config) => Promise<Config>;
+  saveConfig: (
+    config: Config,
+    revision: string
+  ) => Promise<{ config: Config; revision: string }>;
   listRepos: () => Promise<Repo[]>;
   updateRepo: (repoId: string, data: UpdateRepo) => Promise<Repo>;
   deleteRepo: (repoId: string) => Promise<void>;
@@ -63,8 +66,12 @@ export interface MachineClient {
     repoId: string,
     force?: boolean
   ) => Promise<RepoRemoteStatus>;
-  loadProfiles: () => Promise<{ content: string; path: string }>;
-  saveProfiles: (content: string) => Promise<string>;
+  loadProfiles: () => Promise<{
+    content: string;
+    path: string;
+    revision: string;
+  }>;
+  saveProfiles: (content: string, revision: string) => Promise<string>;
   loadMcpServers: (query: McpServerQuery) => Promise<GetMcpServerResponse>;
   saveMcpServers: (
     query: McpServerQuery,
@@ -163,11 +170,11 @@ export function createMachineClient(
           cache: 'no-store',
         })
       ),
-    saveConfig: async (config) =>
-      handleApiResponse<Config>(
+    saveConfig: async (config, revision) =>
+      handleApiResponse<{ config: Config; revision: string }>(
         await makeMachineRequest(runtime, target, '/api/config', {
           method: 'PUT',
-          body: JSON.stringify(config),
+          body: JSON.stringify({ config, revision }),
         })
       ),
     listRepos: async () =>
@@ -250,14 +257,14 @@ export function createMachineClient(
         })
       ),
     loadProfiles: async () =>
-      handleApiResponse<{ content: string; path: string }>(
+      handleApiResponse<{ content: string; path: string; revision: string }>(
         await makeMachineRequest(runtime, target, '/api/profiles')
       ),
-    saveProfiles: async (content) =>
+    saveProfiles: async (content, revision) =>
       handleApiResponse<string>(
         await makeMachineRequest(runtime, target, '/api/profiles', {
           method: 'PUT',
-          body: content,
+          body: JSON.stringify({ content, revision }),
           headers: {
             'Content-Type': 'application/json',
           },

@@ -13,7 +13,10 @@ interface UseUserSystemControllerOptions {
   queryKey: readonly unknown[];
   enabled?: boolean;
   load: () => Promise<UserSystemInfo>;
-  save: (config: Config) => Promise<Config>;
+  save: (
+    config: Config,
+    revision: string
+  ) => Promise<{ config: Config; revision: string }>;
   loading?: boolean;
 }
 
@@ -38,6 +41,8 @@ export function useUserSystemController({
   });
 
   const config = userSystemInfo?.config || null;
+  const configRevision = userSystemInfo?.config_revision || null;
+  const profilesRevision = userSystemInfo?.profiles_revision || null;
   const appVersion = userSystemInfo?.version || null;
   const previewProxyPort = userSystemInfo?.preview_proxy_port ?? null;
   const environment = userSystemInfo?.environment || null;
@@ -68,30 +73,40 @@ export function useUserSystemController({
   );
 
   const saveConfig = useCallback(async (): Promise<boolean> => {
-    if (!config) return false;
+    if (!config || !configRevision) return false;
     try {
-      await save(config);
+      const saved = await save(config, configRevision);
+      queryClient.setQueryData<UserSystemInfo>(queryKey, (old) =>
+        old
+          ? {
+              ...old,
+              config: saved.config,
+              config_revision: saved.revision,
+            }
+          : old
+      );
       return true;
     } catch (err) {
       console.error('Error saving config:', err);
       return false;
     }
-  }, [config, save]);
+  }, [config, configRevision, queryClient, queryKey, save]);
 
   const updateAndSaveConfig = useCallback(
     async (updates: Partial<Config>): Promise<boolean> => {
-      if (!config) return false;
+      if (!config || !configRevision) return false;
 
       const newConfig = { ...config, ...updates };
       updateConfig(updates);
 
       try {
-        const saved = await save(newConfig);
+        const saved = await save(newConfig, configRevision);
         queryClient.setQueryData<UserSystemInfo>(queryKey, (old) => {
           if (!old) return old;
           return {
             ...old,
-            config: saved,
+            config: saved.config,
+            config_revision: saved.revision,
           };
         });
         return true;
@@ -101,7 +116,7 @@ export function useUserSystemController({
         return false;
       }
     },
-    [config, queryClient, queryKey, save, updateConfig]
+    [config, configRevision, queryClient, queryKey, save, updateConfig]
   );
 
   const reloadSystem = useCallback(async () => {
@@ -119,12 +134,16 @@ export function useUserSystemController({
   );
 
   const setProfiles = useCallback(
-    (newProfiles: Record<string, ExecutorProfile> | null) => {
+    (
+      newProfiles: Record<string, ExecutorProfile> | null,
+      revision?: string
+    ) => {
       queryClient.setQueryData<UserSystemInfo>(queryKey, (old) => {
         if (!old || !newProfiles) return old;
         return {
           ...old,
           executors: newProfiles as unknown as UserSystemInfo['executors'],
+          profiles_revision: revision ?? old.profiles_revision,
         };
       });
     },
@@ -149,6 +168,7 @@ export function useUserSystemController({
         config,
         environment,
         profiles,
+        profilesRevision,
         capabilities,
         machineId,
         loginStatus,
@@ -159,6 +179,7 @@ export function useUserSystemController({
       config,
       environment,
       profiles,
+      profilesRevision,
       capabilities,
       machineId,
       loginStatus,
@@ -183,6 +204,7 @@ export function useUserSystemController({
       loginStatus,
       remoteAuthDegraded,
       profiles,
+      profilesRevision,
       reloadSystem,
       saveConfig,
       setCapabilities,
