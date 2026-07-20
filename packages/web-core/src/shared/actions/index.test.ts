@@ -20,6 +20,8 @@ vi.mock('@/shared/lib/api', () => ({
     runSetupScript: vi.fn(),
     runCleanupScript: vi.fn(),
     runArchiveScript: vi.fn(),
+    push: vi.fn(),
+    pushTargetBranch: vi.fn(),
   },
   relayApi: {},
   repoApi: {},
@@ -32,10 +34,18 @@ vi.mock('@vibe/ui/components/ConfirmDialog', () => ({
     show: vi.fn(),
   },
 }));
+vi.mock('@/shared/dialogs/command-bar/PullFirstDialog', () => ({
+  PullFirstDialog: { show: vi.fn() },
+}));
+vi.mock('@/shared/dialogs/command-bar/ForcePushDialog', () => ({
+  ForcePushDialog: { show: vi.fn() },
+}));
 
 import { Actions } from './index';
 import { workspacesApi } from '@/shared/lib/api';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
+import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
@@ -47,6 +57,10 @@ const runSetupScript = vi.mocked(workspacesApi.runSetupScript);
 const runCleanupScript = vi.mocked(workspacesApi.runCleanupScript);
 const runArchiveScript = vi.mocked(workspacesApi.runArchiveScript);
 const showConfirm = vi.mocked(ConfirmDialog.show);
+const push = vi.mocked(workspacesApi.push);
+const pushTargetBranch = vi.mocked(workspacesApi.pushTargetBranch);
+const showPullFirst = vi.mocked(PullFirstDialog.show);
+const showForcePush = vi.mocked(ForcePushDialog.show);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -172,6 +186,54 @@ describe('Actions.ArchiveWorkspace', () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['workspaceRecord', 'host-2', 'remote-ws'],
     });
+  });
+});
+
+describe('diverged push recovery', () => {
+  const diverged = {
+    success: false,
+    message: null,
+    error: { type: 'diverged', ahead: 2, behind: 3 },
+  } as never;
+
+  it('routes command-bar work-branch pushes through pull-first', async () => {
+    push.mockResolvedValue(diverged);
+    showPullFirst.mockResolvedValue('canceled');
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitPush.execute(ctx, 'ws1', 'repo1');
+
+    expect(showPullFirst).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      repoId: 'repo1',
+      ahead: 2,
+      behind: 3,
+    });
+    expect(showForcePush).not.toHaveBeenCalled();
+  });
+
+  it('requires a second destructive confirmation for target force-push fallback', async () => {
+    pushTargetBranch.mockResolvedValueOnce(diverged).mockResolvedValueOnce({
+      success: true,
+      data: { target_branch: 'main', remote: 'origin' },
+    } as never);
+    showPullFirst.mockResolvedValue('force');
+    showConfirm.mockResolvedValue('confirmed');
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitPushTarget.execute(ctx, 'ws1', 'repo1');
+
+    expect(showPullFirst).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      repoId: 'repo1',
+      ahead: 2,
+      behind: 3,
+      isTarget: true,
+    });
+    expect(showConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ variant: 'destructive' })
+    );
+    expect(pushTargetBranch).toHaveBeenLastCalledWith('ws1', 'repo1', true);
   });
 });
 

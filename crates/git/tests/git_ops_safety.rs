@@ -407,6 +407,77 @@ fn merge_remote_into_workspace_branch_integrates_diverged_remote() {
 }
 
 #[test]
+fn merge_remote_into_workspace_branch_reports_conflicts_without_losing_commits() {
+    let temp_dir = TempDir::new().unwrap();
+    let remote_path = temp_dir.path().join("remote.git");
+    Repository::init_bare(&remote_path).expect("init bare remote");
+    let remote_url = remote_path.to_str().expect("remote path str");
+
+    let seed_path = temp_dir.path().join("seed");
+    let service = GitService::new();
+    service
+        .initialize_repo_with_main_branch(&seed_path)
+        .expect("init seed repo");
+    let seed_repo = Repository::open(&seed_path).expect("open seed repo");
+    configure_user(&seed_repo);
+    write_file(&seed_path, "shared.txt", "initial\n");
+    commit_all(&seed_repo, "initial commit");
+    seed_repo.remote("origin", remote_url).expect("add remote");
+    push_ref(&seed_repo, "refs/heads/main", "refs/heads/main");
+    Repository::open_bare(&remote_path)
+        .expect("open bare remote")
+        .set_head("refs/heads/main")
+        .expect("set remote HEAD");
+
+    let local_path = temp_dir.path().join("local");
+    let local_repo = Repository::clone(remote_url, &local_path).expect("clone local");
+    configure_user(&local_repo);
+    write_file(&local_path, "shared.txt", "local change\n");
+    commit_all(&local_repo, "local commit");
+    let local_oid = local_repo.head().unwrap().target().unwrap();
+
+    let updater_path = temp_dir.path().join("updater");
+    let updater_repo = Repository::clone(remote_url, &updater_path).expect("clone updater");
+    configure_user(&updater_repo);
+    write_file(&updater_path, "shared.txt", "upstream change\n");
+    commit_all(&updater_repo, "upstream commit");
+    let upstream_oid = updater_repo.head().unwrap().target().unwrap();
+    push_ref(&updater_repo, "refs/heads/main", "refs/heads/main");
+
+    let err = service
+        .merge_remote_into_workspace_branch(&local_path, "main")
+        .expect_err("conflicting merge must be reported");
+    match err {
+        git::GitServiceError::MergeConflicts {
+            conflicted_files, ..
+        } => assert!(
+            conflicted_files.iter().any(|path| path == "shared.txt"),
+            "conflicted files: {conflicted_files:?}"
+        ),
+        other => panic!("expected MergeConflicts, got {other:?}"),
+    }
+
+    let conflicted = Repository::open(&local_path).unwrap();
+    assert_eq!(
+        conflicted.head().unwrap().target().unwrap(),
+        local_oid,
+        "the local branch tip must not be rewritten"
+    );
+    assert!(
+        conflicted.find_commit(local_oid).is_ok(),
+        "the local commit must remain available"
+    );
+    assert!(
+        conflicted.find_commit(upstream_oid).is_ok(),
+        "the fetched upstream commit must remain available"
+    );
+    assert!(
+        GitCli::new().is_merge_in_progress(&local_path).unwrap(),
+        "the conflict must remain available to the resolution UI"
+    );
+}
+
+#[test]
 fn fetch_with_missing_ref_returns_error() {
     let temp_dir = TempDir::new().unwrap();
     let remote_path = temp_dir.path().join("remote.git");

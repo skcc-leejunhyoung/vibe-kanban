@@ -84,6 +84,8 @@ import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDi
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
 import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
+import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
 
@@ -1409,10 +1411,21 @@ export const Actions = {
     execute: async (ctx, workspaceId, repoId) => {
       const result = await workspacesApi.push(workspaceId, { repo_id: repoId });
       if (!result.success) {
+        if (result.error?.type === 'diverged') {
+          const choice = await PullFirstDialog.show({
+            workspaceId,
+            repoId,
+            ahead: result.error.ahead,
+            behind: result.error.behind,
+          });
+          if (choice === 'force') {
+            await ForcePushDialog.show({ workspaceId, repoId });
+          }
+          return;
+        }
         if (result.error?.type === 'force_push_required') {
-          throw new Error(
-            'Force push required. The remote branch has diverged.'
-          );
+          await ForcePushDialog.show({ workspaceId, repoId });
+          return;
         }
         throw new Error('Failed to push changes');
       }
@@ -1500,7 +1513,21 @@ export const Actions = {
         return;
       }
 
-      if (result.error?.type === 'force_push_required') {
+      if (result.error?.type === 'diverged') {
+        const choice = await PullFirstDialog.show({
+          workspaceId,
+          repoId,
+          ahead: result.error.ahead,
+          behind: result.error.behind,
+          isTarget: true,
+        });
+        if (choice !== 'force') return;
+      }
+
+      if (
+        result.error?.type === 'force_push_required' ||
+        result.error?.type === 'diverged'
+      ) {
         const confirm = await ConfirmDialog.show({
           title: 'Force push required',
           message:

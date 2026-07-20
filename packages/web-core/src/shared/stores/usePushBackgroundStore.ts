@@ -213,7 +213,17 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
               // the dialog and its hook already handled state + branchStatus.
               return;
             }
-            // User explicitly chose to force-push instead.
+            const confirm = await ConfirmDialog.show({
+              title: i18n.t('tasks:git.states.forcePush'),
+              message: i18n.t('tasks:git.targetPush.forceConfirm'),
+              confirmText: i18n.t('tasks:git.states.forcePush'),
+              variant: 'destructive',
+            });
+            if (confirm !== 'confirmed') {
+              clearStatus('targetByWorkspace', workspaceId, repoId);
+              return;
+            }
+            // User explicitly confirmed the destructive fallback.
             setStatus('targetByWorkspace', workspaceId, repoId, 'pending');
             result = await workspacesApi.pushTargetBranch(
               workspaceId,

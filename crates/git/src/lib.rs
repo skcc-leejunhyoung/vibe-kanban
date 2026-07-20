@@ -1539,6 +1539,13 @@ impl GitService {
                         conflicted_files,
                     });
                 }
+                if git.is_merge_in_progress(worktree_path).unwrap_or(false) {
+                    git.abort_merge(worktree_path).map_err(|abort_error| {
+                        GitServiceError::InvalidRepository(format!(
+                            "Merge failed and git merge --abort also failed: {abort_error}"
+                        ))
+                    })?;
+                }
                 Err(GitServiceError::InvalidRepository(format!(
                     "Merge failed: {}",
                     output.lines().next().unwrap_or("")

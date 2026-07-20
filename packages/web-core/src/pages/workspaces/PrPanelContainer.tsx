@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { workspacesApi } from '@/shared/lib/api';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
+import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { PrPanel, type PrInfo } from '@vibe/ui/components/PrPanel';
 import type { Workspace, RepoWithTargetBranch, Merge } from 'shared/types';
 
@@ -148,6 +149,29 @@ export function PrPanelContainer({
           repoId,
           false
         );
+        if (!result.success && result.error?.type === 'diverged') {
+          const choice = await PullFirstDialog.show({
+            workspaceId,
+            repoId,
+            ahead: result.error.ahead,
+            behind: result.error.behind,
+            isTarget: true,
+          });
+          if (choice !== 'force') return;
+
+          const confirm = await ConfirmDialog.show({
+            title: t('git.states.forcePush'),
+            message: t('git.targetPush.forceConfirm'),
+            confirmText: t('git.states.forcePush'),
+            variant: 'destructive',
+          });
+          if (confirm !== 'confirmed') return;
+          result = await workspacesApi.pushTargetBranch(
+            workspaceId,
+            repoId,
+            true
+          );
+        }
         if (!result.success && result.error?.type === 'force_push_required') {
           const confirm = await ConfirmDialog.show({
             title: t('git.states.forcePush'),
