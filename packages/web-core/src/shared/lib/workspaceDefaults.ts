@@ -12,20 +12,25 @@ export interface WorkspaceDefaults {
  * 2. Most recent workspace for the same project (if projectId provided)
  * 3. Globally most recent workspace
  * 4. null (no defaults)
+ *
+ * Every local API lookup is scoped to hostId so callers can resolve defaults
+ * before navigating to a host-specific workspace route.
  */
 export async function getWorkspaceDefaults(
   remoteWorkspaces: Workspace[],
   localWorkspaceIds: Set<string>,
-  projectId?: string | null
+  projectId?: string | null,
+  hostId?: string | null
 ): Promise<WorkspaceDefaults | null> {
   // Priority 1: Scratch project-repo defaults
   if (projectId) {
     try {
-      const allRepos = await repoApi.list();
+      const allRepos = await repoApi.list(hostId);
       const availableRepoIds = new Set(allRepos.map((r) => r.id));
       const scratchDefaults = await getValidProjectRepoDefaults(
         projectId,
-        availableRepoIds
+        availableRepoIds,
+        hostId
       );
       if (scratchDefaults.length > 0) {
         return {
@@ -55,8 +60,8 @@ export async function getWorkspaceDefaults(
     if (projectRecent?.local_workspace_id) {
       try {
         const [repos] = await Promise.all([
-          workspacesApi.getRepos(projectRecent.local_workspace_id),
-          workspacesApi.get(projectRecent.local_workspace_id),
+          workspacesApi.getRepos(projectRecent.local_workspace_id, hostId),
+          workspacesApi.get(projectRecent.local_workspace_id, hostId),
         ]);
         return {
           preferredRepos: repos.map((r) => ({
@@ -88,8 +93,8 @@ export async function getWorkspaceDefaults(
 
   try {
     const [repos] = await Promise.all([
-      workspacesApi.getRepos(mostRecent.local_workspace_id),
-      workspacesApi.get(mostRecent.local_workspace_id),
+      workspacesApi.getRepos(mostRecent.local_workspace_id, hostId),
+      workspacesApi.get(mostRecent.local_workspace_id, hostId),
     ]);
 
     return {

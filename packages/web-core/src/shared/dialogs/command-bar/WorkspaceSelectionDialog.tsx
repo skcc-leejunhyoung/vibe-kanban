@@ -188,9 +188,12 @@ function WorkspaceSelectionContent({
       );
 
       // Get defaults from most recent workspace
-      const defaults = hostId
-        ? null
-        : await getWorkspaceDefaults(workspaces, localWorkspaceIds, projectId);
+      const defaults = await getWorkspaceDefaults(
+        workspaces,
+        localWorkspaceIds,
+        projectId,
+        hostId
+      );
 
       const createState = buildWorkspaceCreateInitialState({
         prompt: initialPrompt,
