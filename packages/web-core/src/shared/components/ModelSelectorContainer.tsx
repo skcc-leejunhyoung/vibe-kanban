@@ -35,7 +35,7 @@ import {
   FAST_SUFFIX,
 } from '@/shared/lib/modelSelector';
 import { useHiddenModels } from '@/shared/stores/useUiPreferencesStore';
-import { profilesApi } from '@/shared/lib/api';
+import { isLegacyUnversionedRevision, profilesApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
@@ -350,8 +350,24 @@ export function ModelSelectorContainer({
       setProfiles(nextProfiles);
       const recent = nextProfiles[agent]?.recently_used_models;
       if (!recent) return;
-      void profilesApi
-        .updateRecentModels(agent, recent, profilesRevision, targetHostId)
+      const saveRecentModels = isLegacyUnversionedRevision(profilesRevision)
+        ? profilesApi
+            .save(
+              JSON.stringify({ executors: nextProfiles }, null, 2),
+              profilesRevision,
+              targetHostId
+            )
+            .then(() => ({
+              content: JSON.stringify({ executors: nextProfiles }),
+              revision: profilesRevision,
+            }))
+        : profilesApi.updateRecentModels(
+            agent,
+            recent,
+            profilesRevision,
+            targetHostId
+          );
+      void saveRecentModels
         .then((saved) => {
           const parsed = JSON.parse(saved.content) as {
             executors: Record<string, import('shared/types').ExecutorProfile>;

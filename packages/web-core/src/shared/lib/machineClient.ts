@@ -15,7 +15,15 @@ import type {
   CreateAgentMemoryMutationRequest,
 } from 'shared/types';
 import type { AppRuntime } from '@/shared/hooks/useAppRuntime';
-import { handleApiResponse } from './api';
+import {
+  handleApiResponse,
+  getCompatibleConfigSaveBody,
+  getCompatibleProfilesSaveBody,
+  isLegacyUnversionedRevision,
+  LEGACY_UNVERSIONED_REVISION,
+  withCompatibleProfilesRevision,
+  withCompatibleUserSystemRevisions,
+} from './api';
 import {
   makeLocalApiRequest,
   type LocalApiRequestOptions,
@@ -165,18 +173,32 @@ export function createMachineClient(
     target,
     queryScopeKey,
     getConfig: async () =>
-      handleApiResponse<UserSystemInfo>(
-        await makeMachineRequest(runtime, target, '/api/info', {
-          cache: 'no-store',
-        })
+      withCompatibleUserSystemRevisions(
+        await handleApiResponse<UserSystemInfo>(
+          await makeMachineRequest(runtime, target, '/api/info', {
+            cache: 'no-store',
+          })
+        )
       ),
-    saveConfig: async (config, revision) =>
-      handleApiResponse<{ config: Config; revision: string }>(
-        await makeMachineRequest(runtime, target, '/api/config', {
+    saveConfig: async (config, revision) => {
+      const legacy = isLegacyUnversionedRevision(revision);
+      const response = await makeMachineRequest(
+        runtime,
+        target,
+        '/api/config',
+        {
           method: 'PUT',
-          body: JSON.stringify({ config, revision }),
-        })
-      ),
+          body: JSON.stringify(getCompatibleConfigSaveBody(config, revision)),
+        }
+      );
+      if (legacy) {
+        return {
+          config: await handleApiResponse<Config>(response),
+          revision: LEGACY_UNVERSIONED_REVISION,
+        };
+      }
+      return handleApiResponse<{ config: Config; revision: string }>(response);
+    },
     listRepos: async () =>
       handleApiResponse<Repo[]>(
         await makeMachineRequest(runtime, target, '/api/repos')
@@ -257,14 +279,18 @@ export function createMachineClient(
         })
       ),
     loadProfiles: async () =>
-      handleApiResponse<{ content: string; path: string; revision: string }>(
-        await makeMachineRequest(runtime, target, '/api/profiles')
+      withCompatibleProfilesRevision(
+        await handleApiResponse<{
+          content: string;
+          path: string;
+          revision: string;
+        }>(await makeMachineRequest(runtime, target, '/api/profiles'))
       ),
     saveProfiles: async (content, revision) =>
       handleApiResponse<string>(
         await makeMachineRequest(runtime, target, '/api/profiles', {
           method: 'PUT',
-          body: JSON.stringify({ content, revision }),
+          body: getCompatibleProfilesSaveBody(content, revision),
           headers: {
             'Content-Type': 'application/json',
           },

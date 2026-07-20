@@ -1492,23 +1492,79 @@ export const issuePrsApi = {
   },
 };
 
-// Config APIs (backwards compatible)
+export const LEGACY_UNVERSIONED_REVISION = 'legacy-unversioned';
+
+export function withCompatibleUserSystemRevisions(
+  info: UserSystemInfo
+): UserSystemInfo {
+  return {
+    ...info,
+    config_revision: info.config_revision ?? LEGACY_UNVERSIONED_REVISION,
+    profiles_revision: info.profiles_revision ?? LEGACY_UNVERSIONED_REVISION,
+  };
+}
+
+type ProfilesContent = {
+  content: string;
+  path: string;
+  revision: string;
+};
+
+export function withCompatibleProfilesRevision(
+  profiles: Omit<ProfilesContent, 'revision'> & { revision?: string }
+): ProfilesContent {
+  return {
+    ...profiles,
+    revision: profiles.revision ?? LEGACY_UNVERSIONED_REVISION,
+  };
+}
+
+export function isLegacyUnversionedRevision(revision: string): boolean {
+  return revision === LEGACY_UNVERSIONED_REVISION;
+}
+
+export function getCompatibleConfigSaveBody(
+  config: Config,
+  revision: string
+): Config | { config: Config; revision: string } {
+  return isLegacyUnversionedRevision(revision) ? config : { config, revision };
+}
+
+export function getCompatibleProfilesSaveBody(
+  content: string,
+  revision: string
+): string {
+  return isLegacyUnversionedRevision(revision)
+    ? content
+    : JSON.stringify({ content, revision });
+}
+
+// Config APIs (backwards compatible with unversioned hosts)
 export const configApi = {
   getConfig: async (hostId: string | null): Promise<UserSystemInfo> => {
     const response = await makeHostAwareRequest('/api/info', hostId, {
       cache: 'no-store',
     });
-    return handleApiResponse<UserSystemInfo>(response);
+    return withCompatibleUserSystemRevisions(
+      await handleApiResponse<UserSystemInfo>(response)
+    );
   },
   saveConfig: async (
     config: Config,
     revision: string,
     hostId: string | null
   ): Promise<{ config: Config; revision: string }> => {
+    const legacy = isLegacyUnversionedRevision(revision);
     const response = await makeHostAwareRequest('/api/config', hostId, {
       method: 'PUT',
-      body: JSON.stringify({ config, revision }),
+      body: JSON.stringify(getCompatibleConfigSaveBody(config, revision)),
     });
+    if (legacy) {
+      return {
+        config: await handleApiResponse<Config>(response),
+        revision: LEGACY_UNVERSIONED_REVISION,
+      };
+    }
     return handleApiResponse<{ config: Config; revision: string }>(response);
   },
   checkEditorAvailability: async (
@@ -1614,15 +1670,11 @@ export const mcpServersApi = {
 
 // Profiles API
 export const profilesApi = {
-  load: async (
-    hostId: string | null
-  ): Promise<{ content: string; path: string; revision: string }> => {
+  load: async (hostId: string | null): Promise<ProfilesContent> => {
     const response = await makeHostAwareRequest('/api/profiles', hostId);
-    return handleApiResponse<{
-      content: string;
-      path: string;
-      revision: string;
-    }>(response);
+    return withCompatibleProfilesRevision(
+      await handleApiResponse<ProfilesContent>(response)
+    );
   },
   save: async (
     content: string,
@@ -1631,7 +1683,7 @@ export const profilesApi = {
   ): Promise<string> => {
     const response = await makeHostAwareRequest('/api/profiles', hostId, {
       method: 'PUT',
-      body: JSON.stringify({ content, revision }),
+      body: getCompatibleProfilesSaveBody(content, revision),
       headers: {
         'Content-Type': 'application/json',
       },

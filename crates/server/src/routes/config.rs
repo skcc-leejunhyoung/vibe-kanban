@@ -203,6 +203,13 @@ pub struct UpdateConfigRequest {
     pub revision: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CompatibleUpdateConfigRequest {
+    Versioned(UpdateConfigRequest),
+    Legacy(Config),
+}
+
 #[derive(Debug, Serialize, TS)]
 pub struct VersionedConfig {
     pub config: Config,
@@ -212,9 +219,14 @@ pub struct VersionedConfig {
 async fn update_config(
     State(deployment): State<DeploymentImpl>,
     headers: HeaderMap,
-    Json(request): Json<UpdateConfigRequest>,
+    Json(request): Json<CompatibleUpdateConfigRequest>,
 ) -> Response {
-    let new_config = request.config;
+    let (new_config, expected_revision) = match request {
+        CompatibleUpdateConfigRequest::Versioned(request) => {
+            (request.config, Some(request.revision))
+        }
+        CompatibleUpdateConfigRequest::Legacy(config) => (config, None),
+    };
     let config_path = config_path();
 
     // Validate git branch prefix
@@ -237,7 +249,9 @@ async fn update_config(
     let mut config_guard = deployment.config().write().await;
     let old_config = config_guard.clone();
     let current_revision = revision(&old_config);
-    if request.revision != current_revision {
+    if let Some(expected_revision) = &expected_revision
+        && expected_revision != &current_revision
+    {
         return (
             StatusCode::CONFLICT,
             ResponseJson(ApiResponse::<VersionedConfig>::error(&format!(
@@ -264,11 +278,17 @@ async fn update_config(
                 changed_fields = ?changed_top_level_fields(&old_config, &new_config),
                 "host configuration updated"
             );
-            ResponseJson(ApiResponse::<VersionedConfig>::success(VersionedConfig {
-                config: new_config,
-                revision: new_revision,
-            }))
-            .into_response()
+            if expected_revision.is_some() {
+                ResponseJson(ApiResponse::<VersionedConfig>::success(VersionedConfig {
+                    config: new_config,
+                    revision: new_revision,
+                }))
+                .into_response()
+            } else {
+                // Older clients send a bare Config and expect the same shape
+                // back. Keep that contract during rolling multi-host upgrades.
+                ResponseJson(ApiResponse::<Config>::success(new_config)).into_response()
+            }
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -576,17 +596,41 @@ struct UpdateProfilesRequest {
     revision: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CompatibleUpdateProfilesRequest {
+    Versioned(UpdateProfilesRequest),
+    Legacy(ExecutorConfigs),
+}
+
 async fn update_profiles(
     State(deployment): State<DeploymentImpl>,
     headers: HeaderMap,
-    Json(request): Json<UpdateProfilesRequest>,
+    Json(request): Json<CompatibleUpdateProfilesRequest>,
 ) -> Response {
-    // Try to parse as ExecutorProfileConfigs format
-    match serde_json::from_str::<ExecutorConfigs>(&request.content) {
-        Ok(executor_profiles) => {
-            match ExecutorConfigs::replace_if_revision(executor_profiles, &request.revision) {
+    let (executor_profiles, expected_revision) = match request {
+        CompatibleUpdateProfilesRequest::Versioned(request) => {
+            match serde_json::from_str::<ExecutorConfigs>(&request.content) {
+                Ok(profiles) => (profiles, Some(request.revision)),
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        ResponseJson(ApiResponse::<String>::error(&format!(
+                            "Invalid executor profiles format: {e}"
+                        ))),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        CompatibleUpdateProfilesRequest::Legacy(profiles) => (profiles, None),
+    };
+
+    match expected_revision {
+        Some(expected_revision) => {
+            match ExecutorConfigs::replace_if_revision(executor_profiles, &expected_revision) {
                 Ok(new_revision) => {
-                    tracing::info!(source_host = headers.get("x-vibe-source-host").and_then(|v| v.to_str().ok()).unwrap_or("browser"), target_host = %deployment.user_id(), previous_revision = %request.revision, revision = %new_revision, changed_fields = ?["executors"], "executor profiles updated");
+                    tracing::info!(source_host = headers.get("x-vibe-source-host").and_then(|v| v.to_str().ok()).unwrap_or("browser"), target_host = %deployment.user_id(), previous_revision = %expected_revision, revision = %new_revision, changed_fields = ?["executors"], "executor profiles updated");
                     ResponseJson(ApiResponse::<String>::success(new_revision)).into_response()
                 }
                 Err(ProfileError::RevisionConflict { current, .. }) => (
@@ -609,14 +653,22 @@ async fn update_profiles(
                 }
             }
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            ResponseJson(ApiResponse::<String>::error(&format!(
-                "Invalid executor profiles format: {}",
-                e
-            ))),
-        )
-            .into_response(),
+        None => match executor_profiles.save_overrides() {
+            Ok(()) => {
+                ExecutorConfigs::reload();
+                ResponseJson(ApiResponse::<String>::success(
+                    "Executor profiles updated successfully".to_string(),
+                ))
+                .into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                ResponseJson(ApiResponse::<String>::error(&format!(
+                    "Failed to save executor profiles: {e}"
+                ))),
+            )
+                .into_response(),
+        },
     }
 }
 
@@ -861,4 +913,48 @@ async fn handle_executor_discovered_options_ws(
         .send(LogMsg::Finished.to_ws_message_unchecked())
         .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn config_update_accepts_legacy_and_versioned_bodies() {
+        let config = Config::default();
+        let legacy = serde_json::to_value(&config).unwrap();
+        let versioned = serde_json::json!({
+            "config": config,
+            "revision": "revision-1",
+        });
+
+        assert!(matches!(
+            serde_json::from_value::<CompatibleUpdateConfigRequest>(legacy).unwrap(),
+            CompatibleUpdateConfigRequest::Legacy(_)
+        ));
+        assert!(matches!(
+            serde_json::from_value::<CompatibleUpdateConfigRequest>(versioned).unwrap(),
+            CompatibleUpdateConfigRequest::Versioned(_)
+        ));
+    }
+
+    #[test]
+    fn profiles_update_accepts_legacy_and_versioned_bodies() {
+        let profiles = ExecutorConfigs::from_defaults();
+        let content = serde_json::to_string(&profiles).unwrap();
+        let legacy = serde_json::to_value(&profiles).unwrap();
+        let versioned = serde_json::json!({
+            "content": content,
+            "revision": "revision-1",
+        });
+
+        assert!(matches!(
+            serde_json::from_value::<CompatibleUpdateProfilesRequest>(legacy).unwrap(),
+            CompatibleUpdateProfilesRequest::Legacy(_)
+        ));
+        assert!(matches!(
+            serde_json::from_value::<CompatibleUpdateProfilesRequest>(versioned).unwrap(),
+            CompatibleUpdateProfilesRequest::Versioned(_)
+        ));
+    }
 }
