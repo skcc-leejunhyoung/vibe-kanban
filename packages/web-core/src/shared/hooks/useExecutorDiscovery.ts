@@ -46,8 +46,9 @@ function useExecutorDiscovery(
       workspaceId,
       sessionId,
       repoId,
+      hostScopeKey: hostId === undefined ? 'current' : (hostId ?? 'local'),
     });
-  }, [agent, workspaceId, sessionId, repoId]);
+  }, [agent, workspaceId, sessionId, repoId, hostId]);
 
   const initialData = useCallback(
     (): ExecutorDiscoveryStreamState => ({
@@ -61,7 +62,7 @@ function useExecutorDiscovery(
       endpoint,
       !!endpoint,
       initialData,
-      hostId ? { targetHostId: hostId } : undefined
+      hostId !== undefined ? { targetHostId: hostId } : undefined
     );
 
   // Prefer the backend-reported error from the data payload. Only fall back

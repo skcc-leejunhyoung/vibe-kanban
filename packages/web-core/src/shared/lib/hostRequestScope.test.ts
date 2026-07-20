@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getHostRequestScopeQueryKey,
   resolveHostRequestScope,
+  shouldOverrideLocalUserSystem,
 } from './hostRequestScope';
 
 describe('host request scope', () => {
@@ -16,5 +17,10 @@ describe('host request scope', () => {
     expect(getHostRequestScopeQueryKey(undefined)).toBe('current');
     expect(getHostRequestScopeQueryKey(null)).toBe('local');
     expect(getHostRequestScopeQueryKey('i9-host')).toBe('i9-host');
+  });
+
+  it('inherits local config after self collapse and overrides explicit remotes', () => {
+    expect(shouldOverrideLocalUserSystem(null)).toBe(false);
+    expect(shouldOverrideLocalUserSystem('i9-host')).toBe(true);
   });
 });

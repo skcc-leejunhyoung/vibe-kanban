@@ -29,3 +29,9 @@ export function getHostRequestScopeQueryKey(hostId?: string | null): string {
       return scope.hostId;
   }
 }
+
+export function shouldOverrideLocalUserSystem(
+  hostId: string | null
+): hostId is string {
+  return hostId !== null;
+}

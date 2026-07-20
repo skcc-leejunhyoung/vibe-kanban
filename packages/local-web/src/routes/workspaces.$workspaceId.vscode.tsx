@@ -8,6 +8,7 @@ import { ActionsProvider } from '@/shared/providers/ActionsProvider';
 import { TerminalProvider } from '@/shared/providers/TerminalProvider';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { VSCodeWorkspacePage } from '@/pages/workspaces/VSCodeWorkspacePage';
+import { HostUserSystemProvider } from '@web/app/providers/HostUserSystemProvider';
 
 function ExecutionProcessesProviderWrapper({
   children,
@@ -26,17 +27,19 @@ function ExecutionProcessesProviderWrapper({
 function VSCodeWorkspaceRouteComponent() {
   return (
     <HostIdProvider>
-      <WorkspaceProvider>
-        <ExecutionProcessesProviderWrapper>
-          <ActionsProvider>
-            <NiceModalProvider>
-              <TerminalProvider>
-                <VSCodeWorkspacePage />
-              </TerminalProvider>
-            </NiceModalProvider>
-          </ActionsProvider>
-        </ExecutionProcessesProviderWrapper>
-      </WorkspaceProvider>
+      <HostUserSystemProvider>
+        <WorkspaceProvider>
+          <ExecutionProcessesProviderWrapper>
+            <ActionsProvider>
+              <NiceModalProvider>
+                <TerminalProvider>
+                  <VSCodeWorkspacePage />
+                </TerminalProvider>
+              </NiceModalProvider>
+            </ActionsProvider>
+          </ExecutionProcessesProviderWrapper>
+        </WorkspaceProvider>
+      </HostUserSystemProvider>
     </HostIdProvider>
   );
 }

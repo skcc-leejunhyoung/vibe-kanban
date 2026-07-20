@@ -38,7 +38,7 @@ interface UseJsonPatchStreamOptions<T> {
    */
   keepSnapshotForEndpoint?: boolean;
   /** Route the stream to this host explicitly instead of inheriting page context. */
-  targetHostId?: string;
+  targetHostId?: string | null;
 }
 
 interface UseJsonPatchStreamResult<T> {
@@ -189,7 +189,7 @@ export const useJsonPatchWsStream = <T extends object>(
         try {
           const ws = await openLocalApiStream(
             endpoint,
-            targetHostId
+            targetHostId !== undefined
               ? {
                   hostScope: 'explicit',
                   hostId: targetHostId,

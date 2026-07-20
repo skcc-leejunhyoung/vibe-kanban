@@ -1494,7 +1494,7 @@ export const issuePrsApi = {
 
 // Config APIs (backwards compatible)
 export const configApi = {
-  getConfig: async (hostId?: string | null): Promise<UserSystemInfo> => {
+  getConfig: async (hostId: string | null): Promise<UserSystemInfo> => {
     const response = await makeHostAwareRequest('/api/info', hostId, {
       cache: 'no-store',
     });
@@ -1503,7 +1503,7 @@ export const configApi = {
   saveConfig: async (
     config: Config,
     revision: string,
-    hostId?: string | null
+    hostId: string | null
   ): Promise<{ config: Config; revision: string }> => {
     const response = await makeHostAwareRequest('/api/config', hostId, {
       method: 'PUT',
@@ -1512,18 +1512,22 @@ export const configApi = {
     return handleApiResponse<{ config: Config; revision: string }>(response);
   },
   checkEditorAvailability: async (
-    editorType: EditorType
+    editorType: EditorType,
+    hostId: string | null
   ): Promise<CheckEditorAvailabilityResponse> => {
-    const response = await makeRequest(
-      `/api/editors/check-availability?editor_type=${encodeURIComponent(editorType)}`
+    const response = await makeHostAwareRequest(
+      `/api/editors/check-availability?editor_type=${encodeURIComponent(editorType)}`,
+      hostId
     );
     return handleApiResponse<CheckEditorAvailabilityResponse>(response);
   },
   checkAgentAvailability: async (
-    agent: BaseCodingAgent
+    agent: BaseCodingAgent,
+    hostId: string | null
   ): Promise<AvailabilityInfo> => {
-    const response = await makeRequest(
-      `/api/agents/check-availability?executor=${encodeURIComponent(agent)}`
+    const response = await makeHostAwareRequest(
+      `/api/agents/check-availability?executor=${encodeURIComponent(agent)}`,
+      hostId
     );
     return handleApiResponse<AvailabilityInfo>(response);
   },
@@ -1567,7 +1571,7 @@ export const tagsApi = {
 export const mcpServersApi = {
   load: async (
     query: McpServerQuery,
-    hostId?: string | null
+    hostId: string | null
   ): Promise<GetMcpServerResponse> => {
     const params = new URLSearchParams(query);
     const response = await makeHostAwareRequest(
@@ -1579,7 +1583,7 @@ export const mcpServersApi = {
   save: async (
     query: McpServerQuery,
     data: UpdateMcpServersBody,
-    hostId?: string | null
+    hostId: string | null
   ): Promise<void> => {
     const params = new URLSearchParams(query);
     // params.set('profile', profile);
@@ -1611,7 +1615,7 @@ export const mcpServersApi = {
 // Profiles API
 export const profilesApi = {
   load: async (
-    hostId?: string | null
+    hostId: string | null
   ): Promise<{ content: string; path: string; revision: string }> => {
     const response = await makeHostAwareRequest('/api/profiles', hostId);
     return handleApiResponse<{
@@ -1623,7 +1627,7 @@ export const profilesApi = {
   save: async (
     content: string,
     revision: string,
-    hostId?: string | null
+    hostId: string | null
   ): Promise<string> => {
     const response = await makeHostAwareRequest('/api/profiles', hostId, {
       method: 'PUT',
@@ -2119,25 +2123,36 @@ export const scratchApi = {
 export const agentsApi = {
   getDiscoveredOptionsStreamUrl: (
     agent: BaseCodingAgent,
-    opts?: { workspaceId?: string; sessionId?: string; repoId?: string }
+    opts?: {
+      workspaceId?: string;
+      sessionId?: string;
+      repoId?: string;
+      hostScopeKey?: string;
+    }
   ): string => {
     const params = new URLSearchParams();
     params.set('executor', agent);
     if (opts?.workspaceId) params.set('workspace_id', opts.workspaceId);
     if (opts?.sessionId) params.set('session_id', opts.sessionId);
     if (opts?.repoId) params.set('repo_id', opts.repoId);
+    // Client-side stream identity must include the immutable target host so a
+    // host switch cannot retain the previous host's stream state. The server
+    // safely ignores this routing-only query field.
+    if (opts?.hostScopeKey) params.set('_host_scope', opts.hostScopeKey);
 
     return `/api/agents/discovered-options/ws?${params.toString()}`;
   },
 
   getPresetOptions: async (
-    query: AgentPresetOptionsQuery
+    query: AgentPresetOptionsQuery,
+    hostId: string | null
   ): Promise<ExecutorConfig> => {
     const params = new URLSearchParams();
     params.set('executor', query.executor);
     if (query.variant) params.set('variant', query.variant);
-    const response = await makeRequest(
-      `/api/agents/preset-options?${params.toString()}`
+    const response = await makeHostAwareRequest(
+      `/api/agents/preset-options?${params.toString()}`,
+      hostId
     );
     return handleApiResponse<ExecutorConfig>(response);
   },

@@ -24,7 +24,7 @@ export type UseProfilesReturn = {
   saveParsed: (obj: unknown) => Promise<void>;
 };
 
-export function useProfiles(hostId?: string | null): UseProfilesReturn {
+export function useProfiles(hostId: string | null): UseProfilesReturn {
   const queryClient = useQueryClient();
   const queryKey = ['profiles', getHostRequestScopeQueryKey(hostId)] as const;
 

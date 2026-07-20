@@ -12,6 +12,7 @@ import {
 import { withRecentReasoning } from '@/shared/lib/recentModels';
 import { usePresetOptions } from '@/shared/hooks/usePresetOptions';
 import { useModelSelectorConfig } from '@/shared/hooks/useExecutorDiscovery';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 function getProfileKey(
   executor: BaseCodingAgent | null,
@@ -228,6 +229,8 @@ export function useExecutorConfig({
   hostId,
   onPersist,
 }: UseExecutorConfigOptions): UseExecutorConfigResult {
+  const contextHostId = useHostId();
+  const targetHostId = hostId === undefined ? contextHostId : hostId;
   const [userSelections, setUserSelections] = useState<Partial<ExecutorConfig>>(
     {}
   );
@@ -268,11 +271,16 @@ export function useExecutorConfig({
 
   const { data: presetOptions } = usePresetOptions(
     executor.effective,
-    variant.resolved
+    variant.resolved,
+    targetHostId
   );
   const { config: modelSelectorConfig } = useModelSelectorConfig(
     executor.effective,
-    { workspaceId: sessionId ? workspaceId : undefined, sessionId, hostId }
+    {
+      workspaceId: sessionId ? workspaceId : undefined,
+      sessionId,
+      hostId: targetHostId,
+    }
   );
 
   const resolvedExecutorConfig = useEffectiveOverrides(

@@ -50,6 +50,7 @@ export function AgentsSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
   const { setDirty: setContextDirty } = useSettingsDirty();
   const machineClient = useSettingsMachineClient();
+  const targetHostId = machineClient?.target.apiHostId ?? null;
 
   // Profiles hook for server state
   const {
@@ -565,6 +566,7 @@ export function AgentsSettingsSection() {
                         key={`${executorType}-${configuration}`}
                         agent={executorType}
                         workspaceId={undefined}
+                        hostId={targetHostId}
                         executorConfig={profileToExecutorConfig(
                           executorType,
                           configuration,
@@ -610,6 +612,7 @@ export function AgentsSettingsSection() {
                     <ModelVisibilitySettings
                       key={executorType}
                       agent={executorType}
+                      hostId={targetHostId}
                     />
                   </div>
                 </div>
@@ -632,9 +635,15 @@ export function AgentsSettingsSection() {
 
 // Per-agent model visibility toggles. Reads the agent's discovered models and
 // lets the user hide any of them from the model picker (stored client-side).
-function ModelVisibilitySettings({ agent }: { agent: BaseCodingAgent }) {
+function ModelVisibilitySettings({
+  agent,
+  hostId,
+}: {
+  agent: BaseCodingAgent;
+  hostId: string | null;
+}) {
   const { t } = useTranslation(['settings']);
-  const { config, loadingModels } = useModelSelectorConfig(agent);
+  const { config, loadingModels } = useModelSelectorConfig(agent, { hostId });
   const { isHidden, setHidden } = useHiddenModels(agent);
   const models = config?.models ?? [];
 
