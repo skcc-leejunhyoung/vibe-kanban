@@ -4,6 +4,7 @@ import {
   combineRemoteWorkspaceStreams,
   getHostWorkspaceKey,
   materializeHostWorkspaceStream,
+  resolveSnapshotHostIds,
   type SidebarWorkspace,
   type UseWorkspacesResult,
 } from './useWorkspaces';
@@ -119,6 +120,29 @@ describe('combineRemoteWorkspaceStreams', () => {
     );
 
     expect(result.isLoading).toBe(true);
+  });
+});
+
+describe('resolveSnapshotHostIds', () => {
+  it('snapshots every online remote host when the route is on the local machine', () => {
+    // /workspaces route: local machine owns the live `current` stream.
+    expect(resolveSnapshotHostIds(['i9', 'other'], null)).toEqual([
+      'i9',
+      'other',
+    ]);
+  });
+
+  it('adds the local machine as a snapshot when the route is on a remote host', () => {
+    // /hosts/i9/... route: i9 owns `current`, so it is excluded and the local
+    // machine (null) must be pulled in so its workspaces stay visible.
+    expect(resolveSnapshotHostIds(['i9'], 'i9')).toEqual([null]);
+  });
+
+  it('excludes the route host but keeps other remote hosts and the local machine', () => {
+    expect(resolveSnapshotHostIds(['i9', 'other'], 'i9')).toEqual([
+      'other',
+      null,
+    ]);
   });
 });
 

@@ -145,7 +145,7 @@ function toSidebarWorkspace(
 function toSnapshotSidebarWorkspace(
   ws: WorkspaceRecord,
   summary: WorkspaceSummary | undefined,
-  hostId: string
+  hostId: string | null
 ): SidebarWorkspace {
   const latestStatus = summary?.latest_process_status?.toLowerCase();
   return toSidebarWorkspace(
@@ -547,8 +547,28 @@ export function UnifiedWorkspaceStreamsProvider({
   );
 }
 
+/**
+ * Host ids to hydrate as lightweight snapshots alongside the route host's live
+ * `current` stream. The route host is excluded because it already owns
+ * `current`. When the route points at a remote host, the local machine
+ * (`null`) is added so its workspaces stay visible in the unified "All hosts"
+ * list instead of vanishing behind the remote host's stream.
+ */
+export function resolveSnapshotHostIds(
+  onlineRemoteHostIds: readonly string[],
+  currentHostId: string | null
+): (string | null)[] {
+  const ids: (string | null)[] = onlineRemoteHostIds.filter(
+    (hostId) => hostId !== currentHostId
+  );
+  if (currentHostId !== null) {
+    ids.push(null);
+  }
+  return ids;
+}
+
 async function fetchHostWorkspaceSnapshot(
-  hostId: string
+  hostId: string | null
 ): Promise<HostWorkspaceSnapshot> {
   const [records, activeSummaries, archivedSummaries] = await Promise.all([
     workspacesApi.getAllWorkspaces(hostId),
@@ -582,19 +602,17 @@ export function useUnifiedWorkspaces(): UseWorkspacesResult {
   const current = useWorkspaces(runtime !== 'remote');
   const currentHostId = useHostId();
   const { hosts } = useWorkspaceHostOptions();
-  const otherOnlineHosts = useMemo(
-    () =>
-      runtime === 'local'
-        ? hosts.filter(
-            (host) => host.status === 'online' && host.id !== currentHostId
-          )
-        : [],
-    [hosts, currentHostId, runtime]
-  );
+  const snapshotHostIds = useMemo<(string | null)[]>(() => {
+    if (runtime !== 'local') return [];
+    const onlineRemoteHostIds = hosts
+      .filter((host) => host.status === 'online')
+      .map((host) => host.id);
+    return resolveSnapshotHostIds(onlineRemoteHostIds, currentHostId);
+  }, [hosts, currentHostId, runtime]);
   const snapshots = useQueries({
-    queries: otherOnlineHosts.map((host) => ({
-      queryKey: ['unified-workspaces', host.id],
-      queryFn: () => fetchHostWorkspaceSnapshot(host.id),
+    queries: snapshotHostIds.map((hostId) => ({
+      queryKey: ['unified-workspaces', hostId],
+      queryFn: () => fetchHostWorkspaceSnapshot(hostId),
       staleTime: 15_000,
       refetchInterval: 15_000,
     })),
