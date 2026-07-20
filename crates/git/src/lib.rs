@@ -1548,6 +1548,25 @@ impl GitService {
         }
     }
 
+    /// Like [`Self::merge_remote_into_workspace_branch`] but for a branch given
+    /// only by name (e.g. the target/base branch): locate the worktree where
+    /// `branch` is checked out and run the merge-pull there. Errors when the
+    /// branch is not checked out anywhere (a merge needs a working tree).
+    pub fn merge_remote_into_branch_checkout(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+    ) -> Result<(), GitServiceError> {
+        let checkout = self
+            .find_checkout_path_for_branch(repo_path, branch)?
+            .ok_or_else(|| {
+                GitServiceError::BranchNotFound(format!(
+                    "'{branch}' is not checked out in any worktree; check it out before pulling."
+                ))
+            })?;
+        self.merge_remote_into_workspace_branch(&checkout, branch)
+    }
+
     /// Merge the base branch into the work branch (the equivalent of, from the
     /// work branch, `git merge <base>`). Unlike [`Self::rebase_branch`] this
     /// preserves history, so it is the safe default for shared PR branches.

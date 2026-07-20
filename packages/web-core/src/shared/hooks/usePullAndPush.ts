@@ -22,14 +22,22 @@ class PullAndPushErrorWithData extends Error {
 export function usePullAndPush(
   workspaceId?: string,
   onSuccess?: () => void,
-  onError?: (err: unknown, errorData?: GitOperationError) => void
+  onError?: (err: unknown, errorData?: GitOperationError) => void,
+  // When true, resolve the divergence on the target (base) branch instead of the
+  // workspace's work branch.
+  isTarget = false
 ) {
   const queryClient = useQueryClient();
 
   return useMutation<void, unknown, PushWorkspaceRequest>({
     mutationFn: async (params: PushWorkspaceRequest) => {
       if (!workspaceId) return;
-      const result = await workspacesApi.pullAndPush(workspaceId, params);
+      const result = isTarget
+        ? await workspacesApi.pullAndPushTargetBranch(
+            workspaceId,
+            params.repo_id
+          )
+        : await workspacesApi.pullAndPush(workspaceId, params);
       if (!result.success) {
         throw new PullAndPushErrorWithData(
           result.message || 'Pull and push failed',

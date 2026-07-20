@@ -196,10 +196,33 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
             false
           );
 
-          if (
+          // Diverged → lead with the safe pull-first flow (merge origin into the
+          // target branch, then push). Force push stays available but only as an
+          // explicit opt-in in the dialog — never the default.
+          if (!result.success && result.error?.type === 'diverged') {
+            clearStatus('targetByWorkspace', workspaceId, repoId);
+            const choice = await PullFirstDialog.show({
+              workspaceId,
+              repoId,
+              ahead: result.error.ahead,
+              behind: result.error.behind,
+              isTarget: true,
+            });
+            if (choice !== 'force') {
+              // 'success' (dialog pulled & pushed), 'conflicts', or 'canceled':
+              // the dialog and its hook already handled state + branchStatus.
+              return;
+            }
+            // User explicitly chose to force-push instead.
+            setStatus('targetByWorkspace', workspaceId, repoId, 'pending');
+            result = await workspacesApi.pushTargetBranch(
+              workspaceId,
+              repoId,
+              true
+            );
+          } else if (
             !result.success &&
-            (result.error?.type === 'force_push_required' ||
-              result.error?.type === 'diverged')
+            result.error?.type === 'force_push_required'
           ) {
             const confirm = await ConfirmDialog.show({
               title: i18n.t('tasks:git.states.forcePush'),

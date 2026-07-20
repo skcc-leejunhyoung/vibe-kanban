@@ -855,6 +855,25 @@ export const workspacesApi = {
     return handleApiResponseAsResult<void, GitOperationError>(response);
   },
 
+  /**
+   * Target (base) branch counterpart of `pullAndPush`: fetch + merge the target
+   * branch's own remote into it, then push. Non-destructive resolution for a
+   * diverged target-branch push.
+   */
+  pullAndPushTargetBranch: async (
+    workspaceId: string,
+    repoId: string
+  ): Promise<Result<void, GitOperationError>> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/pull-and-push`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ repo_id: repoId }),
+      }
+    );
+    return handleApiResponseAsResult<void, GitOperationError>(response);
+  },
+
   rebase: async (
     workspaceId: string,
     data: RebaseWorkspaceRequest

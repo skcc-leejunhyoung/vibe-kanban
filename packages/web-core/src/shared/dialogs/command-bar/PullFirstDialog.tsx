@@ -23,6 +23,8 @@ export interface PullFirstDialogProps {
   ahead: number;
   /** Commits the remote has that the local branch lacks (would be overwritten). */
   behind: number;
+  /** Resolve the divergence on the target (base) branch instead of the work branch. */
+  isTarget?: boolean;
 }
 
 /**
@@ -37,7 +39,7 @@ export interface PullFirstDialogProps {
  */
 const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
   const modal = useModal();
-  const { workspaceId, repoId, branchName, ahead, behind } = props;
+  const { workspaceId, repoId, branchName, ahead, behind, isTarget } = props;
   const [error, setError] = useState<string | null>(null);
   const { t } = useTranslation(['tasks', 'common']);
   const branchLabel = branchName ? ` "${branchName}"` : '';
@@ -61,7 +63,8 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
           ? String(err.message)
           : t('tasks:git.pullFirstDialog.error');
       setError(message);
-    }
+    },
+    isTarget ?? false
   );
 
   const handlePullAndPush = async () => {
