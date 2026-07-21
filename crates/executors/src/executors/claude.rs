@@ -1136,6 +1136,7 @@ impl ClaudeLogProcessor {
                 // TODO: Add proper ToolResult support to NormalizedEntry when the type system supports it
                 None
             }
+            ClaudeContentItem::Unknown => None,
         }
     }
 
@@ -1570,7 +1571,7 @@ impl ClaudeLogProcessor {
                                 patches.push(patch);
                             }
                         }
-                        ClaudeContentItem::ToolResult { .. } => {}
+                        ClaudeContentItem::ToolResult { .. } | ClaudeContentItem::Unknown => {}
                     }
                 }
             }
@@ -2643,6 +2644,10 @@ pub enum ClaudeContentItem {
         content: serde_json::Value,
         is_error: Option<bool>,
     },
+    // Claude Code may add content block types independently of vibe-kanban.
+    // Ignore blocks we do not render instead of rejecting the entire assistant message.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -3052,6 +3057,20 @@ mod tests {
             NormalizedEntryType::AssistantMessage
         ));
         assert_eq!(entries[0].content, "Hello world");
+    }
+
+    #[test]
+    fn test_unknown_content_block_does_not_drop_assistant_message() {
+        let assistant_json = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"future_block","data":"ignored"},{"type":"text","text":"Still visible"}]},"session_id":"abc123"}"#;
+        let parsed: ClaudeJson = serde_json::from_str(assistant_json).unwrap();
+
+        let entries = normalize(&parsed, "");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            entries[0].entry_type,
+            NormalizedEntryType::AssistantMessage
+        ));
+        assert_eq!(entries[0].content, "Still visible");
     }
 
     #[test]
