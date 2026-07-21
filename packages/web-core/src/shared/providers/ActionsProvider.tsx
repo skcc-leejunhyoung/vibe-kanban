@@ -64,10 +64,19 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
   // Project mutations state (registered by components inside ProjectProvider)
   const [projectMutations, setProjectMutations] =
     useState<ProjectMutations | null>(null);
+  const [navigationProjects, setNavigationProjects] = useState<
+    ActionExecutorContext['navigationProjects']
+  >([]);
 
   const registerProjectMutations = useCallback(
     (mutations: ProjectMutations | null) => {
       setProjectMutations(mutations);
+    },
+    []
+  );
+  const registerNavigationProjects = useCallback(
+    (projects: ActionExecutorContext['navigationProjects']) => {
+      setNavigationProjects(projects);
     },
     []
   );
@@ -207,6 +216,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       queryClient,
       selectWorkspace,
       activeWorkspaces,
+      navigationProjects,
       currentWorkspaceId: workspaceId ?? null,
       containerRef: workspace?.container_ref ?? null,
       runningDevServers,
@@ -240,6 +250,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
     queryClient,
     selectWorkspace,
     activeWorkspaces,
+    navigationProjects,
     workspaceId,
     workspace?.container_ref,
     runningDevServers,
@@ -349,6 +360,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       openRelationshipSelection,
       setDefaultCreateStatusId,
       registerProjectMutations,
+      registerNavigationProjects,
       executorContext,
     }),
     [
@@ -361,6 +373,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       openWorkspaceSelection,
       openRelationshipSelection,
       registerProjectMutations,
+      registerNavigationProjects,
       executorContext,
     ]
   );

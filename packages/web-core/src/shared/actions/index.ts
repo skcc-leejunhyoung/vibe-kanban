@@ -54,6 +54,8 @@ import {
   ArrowBendUpRightIcon,
   ProhibitIcon,
   LightningIcon,
+  LayoutIcon,
+  KanbanIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -581,6 +583,28 @@ export const Actions = {
         '@/shared/dialogs/global/OAuthDialog'
       );
       await OAuthDialog.show({});
+    },
+  } satisfies GlobalActionDefinition,
+
+  GotoWorkspaces: {
+    id: 'goto-workspaces',
+    label: 'Goto: Workspace',
+    icon: LayoutIcon,
+    keywords: ['workspace', 'workspaces', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    execute: (ctx) => ctx.appNavigation.goToWorkspaces(),
+  } satisfies GlobalActionDefinition,
+
+  GotoProjects: {
+    id: 'goto-projects',
+    label: 'Goto: Projects',
+    icon: KanbanIcon,
+    keywords: ['project', 'projects', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    isEnabled: (ctx) => ctx.isSignedIn,
+    execute: (ctx) => {
+      const firstProject = ctx.navigationProjects[0];
+      if (firstProject) ctx.appNavigation.goToProject(firstProject.id);
     },
   } satisfies GlobalActionDefinition,
 

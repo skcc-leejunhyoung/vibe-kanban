@@ -10,6 +10,14 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
     items: [
       {
         type: 'group',
+        label: 'Navigation',
+        items: [
+          { type: 'action', action: Actions.GotoWorkspaces },
+          { type: 'action', action: Actions.GotoProjects },
+        ],
+      },
+      {
+        type: 'group',
         label: 'Actions',
         items: [
           { type: 'action', action: Actions.NewWorkspace },

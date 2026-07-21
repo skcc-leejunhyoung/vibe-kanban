@@ -107,6 +107,7 @@ export function RemoteActionsProvider({
         noOpSelection("Workspace actions");
       },
       activeWorkspaces: [],
+      navigationProjects: [],
       currentWorkspaceId: null,
       containerRef: null,
       runningDevServers: [],
@@ -203,6 +204,7 @@ export function RemoteActionsProvider({
       openRelationshipSelection,
       setDefaultCreateStatusId,
       registerProjectMutations,
+      registerNavigationProjects: () => {},
       executorContext,
     }),
     [

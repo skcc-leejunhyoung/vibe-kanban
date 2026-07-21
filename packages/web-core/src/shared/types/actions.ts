@@ -48,7 +48,14 @@ export interface ProjectMutations {
 // Workspace type for sidebar (minimal subset needed for workspace selection)
 interface SidebarWorkspace {
   id: string;
+  name?: string | null;
+  hostId?: string | null;
   isRunning?: boolean;
+}
+
+export interface NavigationProject {
+  id: string;
+  name: string;
 }
 
 // Context provided to action executors (from React hooks)
@@ -59,6 +66,7 @@ export interface ActionExecutorContext {
   queryClient: QueryClient;
   selectWorkspace: (workspaceId: string) => void;
   activeWorkspaces: SidebarWorkspace[];
+  navigationProjects: NavigationProject[];
   currentWorkspaceId: string | null;
   containerRef: string | null;
   runningDevServers: ExecutionProcess[];
