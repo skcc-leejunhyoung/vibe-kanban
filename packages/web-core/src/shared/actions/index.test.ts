@@ -40,12 +40,16 @@ vi.mock('@/shared/dialogs/command-bar/PullFirstDialog', () => ({
 vi.mock('@/shared/dialogs/command-bar/ForcePushDialog', () => ({
   ForcePushDialog: { show: vi.fn() },
 }));
+vi.mock('@vibe/ui/lib/open-url', () => ({
+  openExternalUrl: vi.fn(),
+}));
 
 import { Actions } from './index';
 import { workspacesApi } from '@/shared/lib/api';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
@@ -61,6 +65,7 @@ const push = vi.mocked(workspacesApi.push);
 const pushTargetBranch = vi.mocked(workspacesApi.pushTargetBranch);
 const showPullFirst = vi.mocked(PullFirstDialog.show);
 const showForcePush = vi.mocked(ForcePushDialog.show);
+const openPrUrl = vi.mocked(openExternalUrl);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -313,6 +318,47 @@ describe('Actions.GitMerge', () => {
     );
     expect(merge).toHaveBeenCalledWith('ws1', { repo_id: 'repo1' });
     expect(invalidateQueries).toHaveBeenCalled();
+  });
+});
+
+describe('Actions.GitOpenPR', () => {
+  it('is visible only when an open PR is connected', () => {
+    expect(
+      Actions.GitOpenPR.isVisible?.({
+        hasWorkspace: true,
+        hasGitRepos: true,
+        hasOpenPR: true,
+      } as ActionExecutorContext)
+    ).toBe(true);
+    expect(
+      Actions.GitOpenPR.isVisible?.({
+        hasWorkspace: true,
+        hasGitRepos: true,
+        hasOpenPR: false,
+      } as ActionExecutorContext)
+    ).toBe(false);
+  });
+
+  it('opens the connected PR for the selected repository', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              status: 'open',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitOpenPR.execute(ctx, 'ws1', 'repo1');
+
+    expect(openPrUrl).toHaveBeenCalledWith('https://example.com/pull/42');
   });
 });
 

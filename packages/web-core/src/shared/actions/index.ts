@@ -88,6 +88,7 @@ import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -1042,6 +1043,28 @@ export const Actions = {
 
       if (!result.success && result.error) {
         throw new Error(result.error);
+      }
+    },
+  },
+
+  GitOpenPR: {
+    id: 'git-open-pr',
+    label: 'Open PR',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'browser'],
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasOpenPR,
+    execute: async (_ctx, workspaceId, repoId) => {
+      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const repoStatus = branchStatus.find(
+        (status) => status.repo_id === repoId
+      );
+      const openPr = repoStatus?.merges?.find(
+        (merge: Merge) => merge.type === 'pr' && merge.pr_info.status === 'open'
+      );
+
+      if (openPr?.type === 'pr') {
+        openExternalUrl(openPr.pr_info.url);
       }
     },
   },

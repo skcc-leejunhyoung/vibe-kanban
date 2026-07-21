@@ -88,6 +88,8 @@ function ChatBoxWithDiffStats({
 
 export interface WorkspacesMainContainerHandle {
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
+  scrollConversationBy: (delta: number) => boolean;
+  focusComposer: () => boolean;
 }
 
 interface WorkspacesMainContainerProps {
@@ -251,6 +253,20 @@ export const WorkspacesMainContainer = forwardRef<
     () => ({
       scrollToBottom: (behavior = 'smooth') => {
         conversationListRef.current?.scrollToBottom(behavior);
+      },
+      scrollConversationBy: (delta) => {
+        const scrollElement = conversationListRef.current?.getScrollElement();
+        if (!scrollElement) return false;
+        scrollElement.scrollTop += delta;
+        return true;
+      },
+      focusComposer: () => {
+        const editor = containerRef.current?.querySelector<HTMLElement>(
+          '[data-chatbox-container="true"] [contenteditable="true"]'
+        );
+        if (!editor) return false;
+        editor.focus();
+        return true;
       },
     }),
     []
