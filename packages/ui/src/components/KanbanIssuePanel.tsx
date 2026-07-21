@@ -13,6 +13,7 @@ import {
   XIcon,
   LinkIcon,
   DotsThreeIcon,
+  ArrowSquareOutIcon,
   PaperclipIcon,
   ImageIcon,
 } from '@phosphor-icons/react';
@@ -152,6 +153,7 @@ export interface KanbanIssuePanelProps {
 
   // Copy link callback (edit mode only)
   onCopyLink?: () => void;
+  onOpenInNewTab?: () => void;
 
   // More actions callback (edit mode only) - opens command bar with issue actions
   onMoreActions?: () => void;
@@ -204,6 +206,7 @@ export function KanbanIssuePanel({
   descriptionSaveStatus,
   titleInputRef,
   onCopyLink,
+  onOpenInNewTab,
   onMoreActions,
   onPasteFiles,
   localAttachments,
@@ -330,6 +333,16 @@ export function KanbanIssuePanel({
           )}
         </div>
         <div className="flex items-center gap-half">
+          {!isCreateMode && onOpenInNewTab && (
+            <button
+              type="button"
+              onClick={onOpenInNewTab}
+              className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
+              aria-label={t('kanban.openInNewTab', 'Open in new tab')}
+            >
+              <ArrowSquareOutIcon className="size-icon-sm" weight="bold" />
+            </button>
+          )}
           {!isCreateMode && onMoreActions && (
             <button
               type="button"

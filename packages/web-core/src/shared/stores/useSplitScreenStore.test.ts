@@ -12,6 +12,7 @@ const {
   getAdjacentSplitPaneId,
   getSplitScreenUserId,
   shouldRenderSplitScreenFrames,
+  SPLIT_PRESETS,
   useSplitScreenStore,
 } = await import('./useSplitScreenStore');
 
@@ -29,12 +30,10 @@ describe('split screen presets', () => {
     useSplitScreenStore.setState({
       activeUserId: null,
       preset: 1,
-      presets: {
-        1: makePreset(1),
-        2: makePreset(2),
-        3: makePreset(3),
-        4: makePreset(4),
-      },
+      maxPanes: 4,
+      presets: Object.fromEntries(
+        SPLIT_PRESETS.map((preset) => [preset, makePreset(preset)])
+      ) as ReturnType<typeof useSplitScreenStore.getState>['presets'],
     });
   });
 
@@ -43,6 +42,7 @@ describe('split screen presets', () => {
     expect(shouldRenderSplitScreenFrames(2)).toBe(true);
     expect(shouldRenderSplitScreenFrames(3)).toBe(true);
     expect(shouldRenderSplitScreenFrames(4)).toBe(true);
+    expect(shouldRenderSplitScreenFrames(9)).toBe(true);
   });
 
   it('waits for authentication before selecting the persisted user scope', () => {
@@ -158,5 +158,26 @@ describe('split screen presets', () => {
     expect(useSplitScreenStore.getState().presets[4].verticalSizes).toEqual([
       45, 55,
     ]);
+  });
+
+  it('opens the next pane until the configured maximum', () => {
+    expect(
+      useSplitScreenStore.getState().openPane('/workspaces/b', '/workspaces/a')
+    ).toBe('pane');
+    expect(useSplitScreenStore.getState().preset).toBe(2);
+    expect(
+      useSplitScreenStore.getState().presets[2].panes.map((pane) => pane.url)
+    ).toEqual(['/workspaces/a', '/workspaces/b']);
+
+    useSplitScreenStore.getState().setMaxPanes(2);
+    expect(
+      useSplitScreenStore.getState().openPane('/workspaces/c', '/workspaces/a')
+    ).toBe('overflow');
+  });
+
+  it('supports presets up to nine panes', () => {
+    useSplitScreenStore.getState().setMaxPanes(9);
+    useSplitScreenStore.getState().setPreset(9, '/workspaces/a');
+    expect(useSplitScreenStore.getState().presets[9].panes).toHaveLength(9);
   });
 });

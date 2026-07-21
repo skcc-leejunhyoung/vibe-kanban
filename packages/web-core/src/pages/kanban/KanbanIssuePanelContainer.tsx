@@ -58,6 +58,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
@@ -1111,6 +1112,13 @@ export function KanbanIssuePanelContainer({
     navigator.clipboard.writeText(url);
   }, [projectId, selectedKanbanIssueId]);
 
+  const handleOpenInNewTab = useCallback(() => {
+    if (!selectedKanbanIssueId || !projectId) return;
+    openInSplitPane(
+      `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(selectedKanbanIssueId)}`
+    );
+  }, [projectId, selectedKanbanIssueId]);
+
   // More actions callback - opens command bar with issue actions
   const handleMoreActions = useCallback(async () => {
     if (!selectedKanbanIssueId || !projectId) return;
@@ -1223,6 +1231,7 @@ export function KanbanIssuePanelContainer({
       }
       titleInputRef={titleInputRef}
       onCopyLink={mode === 'edit' ? handleCopyLink : undefined}
+      onOpenInNewTab={mode === 'edit' ? handleOpenInNewTab : undefined}
       onMoreActions={mode === 'edit' ? handleMoreActions : undefined}
       onPasteFiles={onPasteFiles}
       localAttachments={localAttachments}

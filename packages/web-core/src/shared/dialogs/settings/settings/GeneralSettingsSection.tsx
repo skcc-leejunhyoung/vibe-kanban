@@ -73,6 +73,12 @@ import {
 } from './SettingsComponents';
 import { useSettingsDirty } from './SettingsDirtyContext';
 import { WorkspaceStatusListEditor } from './WorkspaceStatusListEditor';
+import {
+  SPLIT_PRESETS,
+  type SplitPreset,
+  useSplitScreenStore,
+} from '@/shared/stores/useSplitScreenStore';
+import { updateMaxSplitPanes } from '@/shared/lib/openInSplitPane';
 
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
@@ -87,6 +93,7 @@ export function GeneralSettingsSection() {
   const [themeVariant, setThemeVariant] = useThemeVariant();
   const themePresets = useThemePresets();
   const [issueStatuses, setIssueStatuses] = useWorkspaceIssueStatuses();
+  const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
       ns: 'common',
@@ -1087,6 +1094,33 @@ export function GeneralSettingsSection() {
             statuses={issueStatuses}
             onChange={setIssueStatuses}
             defaultStatuses={DEFAULT_WORKSPACE_ISSUE_STATUSES}
+          />
+        </SettingsField>
+      </SettingsCard>
+
+      <SettingsCard
+        title={t('settings.general.splitScreen.title', {
+          defaultValue: 'Split screen',
+        })}
+        description={t('settings.general.splitScreen.description', {
+          defaultValue:
+            'Choose how many pages can open together before links fall back to a new window.',
+        })}
+      >
+        <SettingsField
+          label={t('settings.general.splitScreen.maxPanes', {
+            defaultValue: 'Maximum panes',
+          })}
+        >
+          <SettingsSelect
+            value={String(maxSplitPanes)}
+            options={SPLIT_PRESETS.map((value) => ({
+              value: String(value),
+              label: String(value),
+            }))}
+            onChange={(value) =>
+              updateMaxSplitPanes(Number(value) as SplitPreset)
+            }
           />
         </SettingsField>
       </SettingsCard>

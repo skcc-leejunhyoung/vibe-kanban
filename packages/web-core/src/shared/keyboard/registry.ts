@@ -556,6 +556,11 @@ export const SPLIT_PRESET_BINDING_IDS = {
   2: 'split-preset-2',
   3: 'split-preset-3',
   4: 'split-preset-4',
+  5: 'split-preset-5',
+  6: 'split-preset-6',
+  7: 'split-preset-7',
+  8: 'split-preset-8',
+  9: 'split-preset-9',
 } as const;
 
 export interface ModifierBinding {
@@ -598,7 +603,7 @@ export const modifierBindings: ModifierBinding[] = [
     actionId: 'previousSplitPane',
     group: 'Modifiers',
   },
-  ...([1, 2, 3, 4] as const).map((preset) => ({
+  ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((preset) => ({
     id: SPLIT_PRESET_BINDING_IDS[preset],
     keys: `mod+alt+shift+${preset}`,
     actionId: `splitPreset${preset}`,
@@ -804,10 +809,14 @@ export function effectiveActionShortcut(
     );
   }
   const modifierId = MODIFIER_BINDING_BY_ACTION_ID[actionId];
-  if (modifierId) {
+  const resolvedModifierId =
+    modifierId ??
+    modifierBindings.find((binding) => binding.actionId === actionId)?.id;
+  if (resolvedModifierId) {
     return (
-      displayKeyParts(resolveModifier(modifierId, overrides)).join(' ') ||
-      undefined
+      displayKeyParts(resolveModifier(resolvedModifierId, overrides)).join(
+        ' '
+      ) || undefined
     );
   }
   return staticShortcut;

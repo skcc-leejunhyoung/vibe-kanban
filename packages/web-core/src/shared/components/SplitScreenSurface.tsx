@@ -22,6 +22,7 @@ import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsS
 import {
   type SplitPaneState,
   type SplitPreset,
+  SPLIT_PRESETS,
   getAdjacentSplitPaneId,
   getSplitScreenUserId,
   shouldRenderSplitScreenFrames,
@@ -58,9 +59,17 @@ function getEmbeddedPaneId(): string | null {
 
 type PaneMessage = {
   type: typeof MESSAGE_TYPE;
-  event: 'activate' | 'navigate' | 'preset' | 'focus-pane' | 'move-pane';
+  event:
+    | 'activate'
+    | 'navigate'
+    | 'preset'
+    | 'focus-pane'
+    | 'move-pane'
+    | 'open-pane'
+    | 'max-panes';
   paneId?: string;
   sourcePaneId?: string;
+  maxPanes?: SplitPreset;
   url?: string;
   preset?: SplitPreset;
   direction?: 'next' | 'previous';
@@ -88,13 +97,16 @@ function postToParent(message: PaneMessage) {
 }
 
 function isSplitPreset(value: unknown): value is SplitPreset {
-  return value === 1 || value === 2 || value === 3 || value === 4;
+  return SPLIT_PRESETS.includes(value as SplitPreset);
 }
 
 function usePresetHotkeys(onPreset: (preset: SplitPreset) => void) {
   const overrides = useKeyboardShortcutsStore((state) => state.overrides);
+  const maxPanes = useSplitScreenStore((state) => state.maxPanes);
   const bind = (preset: SplitPreset) =>
-    resolveModifier(SPLIT_PRESET_BINDING_IDS[preset], overrides);
+    preset <= maxPanes
+      ? resolveModifier(SPLIT_PRESET_BINDING_IDS[preset], overrides)
+      : '';
   const options = (keys: string) => ({
     enabled: !!keys,
     enableOnContentEditable: false,
@@ -110,6 +122,11 @@ function usePresetHotkeys(onPreset: (preset: SplitPreset) => void) {
   const two = bind(2);
   const three = bind(3);
   const four = bind(4);
+  const five = bind(5);
+  const six = bind(6);
+  const seven = bind(7);
+  const eight = bind(8);
+  const nine = bind(9);
   useHotkeys(one || 'unidentified', handler(1), options(one), [one, onPreset]);
   useHotkeys(two || 'unidentified', handler(2), options(two), [two, onPreset]);
   useHotkeys(three || 'unidentified', handler(3), options(three), [
@@ -118,6 +135,23 @@ function usePresetHotkeys(onPreset: (preset: SplitPreset) => void) {
   ]);
   useHotkeys(four || 'unidentified', handler(4), options(four), [
     four,
+    onPreset,
+  ]);
+  useHotkeys(five || 'unidentified', handler(5), options(five), [
+    five,
+    onPreset,
+  ]);
+  useHotkeys(six || 'unidentified', handler(6), options(six), [six, onPreset]);
+  useHotkeys(seven || 'unidentified', handler(7), options(seven), [
+    seven,
+    onPreset,
+  ]);
+  useHotkeys(eight || 'unidentified', handler(8), options(eight), [
+    eight,
+    onPreset,
+  ]);
+  useHotkeys(nine || 'unidentified', handler(9), options(nine), [
+    nine,
     onPreset,
   ]);
 }
@@ -162,6 +196,7 @@ function usePaneFocusHotkeys(
 function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
   const paneId = getEmbeddedPaneId();
   const location = useLocation();
+  const setMaxPanes = useSplitScreenStore((state) => state.setMaxPanes);
 
   const requestPreset = useCallback((preset: SplitPreset) => {
     postToParent({ type: MESSAGE_TYPE, event: 'preset', preset });
@@ -173,11 +208,26 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
   usePaneFocusHotkeys(requestPaneFocus);
 
   useEffect(() => {
+    const handleMessage = (event: MessageEvent<PaneMessage>) => {
+      if (
+        event.source === window.parent &&
+        event.origin === window.location.origin &&
+        event.data?.type === MESSAGE_TYPE &&
+        event.data.event === 'max-panes' &&
+        isSplitPreset(event.data.maxPanes)
+      ) {
+        setMaxPanes(event.data.maxPanes);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [setMaxPanes]);
+
+  useEffect(() => {
     if (!paneId) return;
 
-    const dragHandle = document.querySelector<HTMLElement>(
-      DRAG_HANDLE_SELECTOR
-    );
+    const dragHandle =
+      document.querySelector<HTMLElement>(DRAG_HANDLE_SELECTOR);
     if (!dragHandle) return;
 
     const handleDragStart = (event: DragEvent) => {
@@ -321,6 +371,9 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   const preset = useSplitScreenStore((state) => state.preset);
   const presetState = useSplitScreenStore((state) => state.presets[preset]);
   const setPreset = useSplitScreenStore((state) => state.setPreset);
+  const setMaxPanes = useSplitScreenStore((state) => state.setMaxPanes);
+  const maxPanes = useSplitScreenStore((state) => state.maxPanes);
+  const openPane = useSplitScreenStore((state) => state.openPane);
   const setActivePane = useSplitScreenStore((state) => state.setActivePane);
   const setPaneUrl = useSplitScreenStore((state) => state.setPaneUrl);
   const movePane = useSplitScreenStore((state) => state.movePane);
@@ -392,6 +445,15 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   usePaneFocusHotkeys(focusAdjacentPane);
 
   useEffect(() => {
+    for (const frame of paneFramesRef.current.values()) {
+      frame.contentWindow?.postMessage(
+        { type: MESSAGE_TYPE, event: 'max-panes', maxPanes },
+        window.location.origin
+      );
+    }
+  }, [maxPanes]);
+
+  useEffect(() => {
     const handleMessage = (event: MessageEvent<PaneMessage>) => {
       if (event.origin !== window.location.origin) return;
       const message = event.data;
@@ -418,6 +480,15 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
         message.sourcePaneId
       ) {
         movePane(message.sourcePaneId, senderPaneId);
+      } else if (message.event === 'open-pane' && message.url) {
+        if (openPane(message.url, initialUrlRef.current) === 'overflow') {
+          window.open(message.url, '_blank', 'noopener,noreferrer');
+        }
+      } else if (
+        message.event === 'max-panes' &&
+        isSplitPreset(message.maxPanes)
+      ) {
+        setMaxPanes(message.maxPanes);
       } else if (
         message.event === 'navigate' &&
         message.paneId === senderPaneId &&
@@ -428,7 +499,15 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [activatePane, activatePreset, focusAdjacentPane, movePane, setPaneUrl]);
+  }, [
+    activatePane,
+    activatePreset,
+    focusAdjacentPane,
+    movePane,
+    openPane,
+    setMaxPanes,
+    setPaneUrl,
+  ]);
 
   const renderPane = (pane: SplitPaneState) => (
     <PaneFrame
@@ -447,7 +526,8 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
 
   const horizontalLayout = (
     panes: SplitPaneState[],
-    sizeOffset = 0
+    sizeOffset = 0,
+    viewportHeight = false
   ) => {
     const slotIds = panes.map(
       (_, index) => `split-preset-${preset}-slot-${sizeOffset + index + 1}`
@@ -468,7 +548,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
             sizeOffset
           )
         }
-        className="h-full min-h-0"
+        className={viewportHeight ? 'h-dvh min-h-0' : 'h-full min-h-0'}
       >
         {panes.map((pane, index) => (
           <Fragment key={slotIds[index]}>
@@ -493,30 +573,51 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     return <>{children}</>;
   }
 
-  if (preset < 4) {
-    return horizontalLayout(presetState.panes);
+  const rowCount = preset <= 3 ? 1 : preset <= 6 ? 2 : 3;
+  if (rowCount === 1) {
+    return horizontalLayout(presetState.panes, 0, true);
   }
 
-  const rows = [presetState.panes.slice(0, 2), presetState.panes.slice(2, 4)];
+  const baseRowSize = Math.floor(preset / rowCount);
+  const largerRows = preset % rowCount;
+  const rows: SplitPaneState[][] = [];
+  let paneOffset = 0;
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const rowSize = baseRowSize + (rowIndex < largerRows ? 1 : 0);
+    rows.push(presetState.panes.slice(paneOffset, paneOffset + rowSize));
+    paneOffset += rowSize;
+  }
   return (
     <Group
       orientation="vertical"
-      defaultLayout={{
-        'split-row-1': presetState.verticalSizes?.[0] ?? 50,
-        'split-row-2': presetState.verticalSizes?.[1] ?? 50,
-      }}
+      defaultLayout={Object.fromEntries(
+        rows.map((_, index) => [
+          `split-row-${index + 1}`,
+          presetState.verticalSizes?.[index] ?? 100 / rows.length,
+        ])
+      )}
       onLayoutChange={(layout: Layout) =>
-        setVerticalSizes([layout['split-row-1'], layout['split-row-2']])
+        setVerticalSizes(
+          rows.map((_, index) => layout[`split-row-${index + 1}`])
+        )
       }
-      className="h-full min-h-0"
+      className="h-dvh min-h-0"
     >
-      <Panel id="split-row-1" minSize={20}>
-        {horizontalLayout(rows[0], 0)}
-      </Panel>
-      <Separator className="relative z-10 h-1 shrink-0 bg-border/60 transition-colors hover:bg-brand data-[resize-handle-active]:bg-brand" />
-      <Panel id="split-row-2" minSize={20}>
-        {horizontalLayout(rows[1], 2)}
-      </Panel>
+      {rows.map((row, index) => {
+        const offset = rows
+          .slice(0, index)
+          .reduce((total, current) => total + current.length, 0);
+        return (
+          <Fragment key={`split-row-${index + 1}`}>
+            {index > 0 && (
+              <Separator className="relative z-10 h-1 shrink-0 bg-border/60 transition-colors hover:bg-brand data-[resize-handle-active]:bg-brand" />
+            )}
+            <Panel id={`split-row-${index + 1}`} minSize={10}>
+              {horizontalLayout(row, offset)}
+            </Panel>
+          </Fragment>
+        );
+      })}
     </Group>
   );
 }

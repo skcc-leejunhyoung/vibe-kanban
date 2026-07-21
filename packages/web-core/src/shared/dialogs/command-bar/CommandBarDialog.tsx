@@ -26,6 +26,8 @@ import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsS
 import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 import { KanbanIcon, StackIcon } from '@phosphor-icons/react';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
+import { splitPresetActions } from '@/shared/actions/splitPresetActions';
+import { useSplitScreenStore } from '@/shared/stores/useSplitScreenStore';
 
 export interface CommandBarDialogProps {
   page?: PageId;
@@ -59,6 +61,7 @@ function CommandBarContent({
   const { workspaceId: contextWorkspaceId, repos } = useWorkspaceContext();
   // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
 
   // Get issue context from props, multi-selection store, or route params
   const { projectId: routeProjectId, issueId: routeIssueId } = useParams({
@@ -193,6 +196,28 @@ function CommandBarContent({
     };
   }, [currentPage, executorContext, resolvedPage, state.search]);
 
+  const pageWithSplitPresets = useMemo(() => {
+    if (currentPage !== 'root') return pageWithNavigationMatches;
+    const query = state.search.trim().toLowerCase();
+    const items = splitPresetActions
+      .slice(0, maxSplitPanes)
+      .filter(
+        (action) =>
+          !query ||
+          fuzzySearchMatch(String(action.label), query) ||
+          action.keywords?.some((keyword) => fuzzySearchMatch(keyword, query))
+      )
+      .map((action) => ({ type: 'action' as const, action }));
+    if (items.length === 0) return pageWithNavigationMatches;
+    return {
+      ...pageWithNavigationMatches,
+      groups: [
+        ...pageWithNavigationMatches.groups,
+        { label: 'Split screen', items },
+      ],
+    };
+  }, [currentPage, maxSplitPanes, pageWithNavigationMatches, state.search]);
+
   // Handle item selection with side effects
   const handleSelect = useCallback(
     async (item: CommandBarGroupItem<ActionDefinition, PageId>) => {
@@ -276,7 +301,7 @@ function CommandBarContent({
       onCloseAutoFocus={handleCloseAutoFocus}
     >
       <CommandBar
-        page={pageWithNavigationMatches}
+        page={pageWithSplitPresets}
         canGoBack={canGoBack}
         onGoBack={() => dispatch({ type: 'GO_BACK' })}
         onSelect={handleSelect}

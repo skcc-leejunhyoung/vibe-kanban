@@ -64,6 +64,7 @@ import {
 } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { getCycledWorkspaceKey } from './workspaceCycle';
+import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import {
   ALL_WORKSPACE_HOSTS_ID,
   useWorkspaceHostSelectionStore,
@@ -363,7 +364,7 @@ export function WorkspacesSidebarContainer({
         const path = workspaceHostId
           ? `/hosts/${encodeURIComponent(workspaceHostId)}/workspaces/${encodeURIComponent(id)}`
           : `/workspaces/${encodeURIComponent(id)}`;
-        window.open(path, '_blank', 'noopener,noreferrer');
+        openInSplitPane(path);
         return;
       }
       // The host selector is a user-controlled list filter, not a mirror of the

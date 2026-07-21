@@ -99,6 +99,9 @@ describe('resolveModifier', () => {
     expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe(
       'mod+alt+shift+4'
     );
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[9], {})).toBe(
+      'mod+alt+shift+9'
+    );
   });
 });
 

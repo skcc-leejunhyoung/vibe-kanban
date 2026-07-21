@@ -21,6 +21,10 @@ import {
 } from '@/shared/keyboard/registry';
 import { isMac, getModifierKey } from '@/shared/lib/platform';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import {
+  SPLIT_PRESETS,
+  useSplitScreenStore,
+} from '@/shared/stores/useSplitScreenStore';
 import { Tooltip } from '@vibe/ui/components/Tooltip';
 
 interface ShortcutItem {
@@ -40,6 +44,7 @@ function useShortcutGroups(): ShortcutGroup[] {
   const { t } = useTranslation('common');
   const sendShortcut = config?.send_message_shortcut ?? 'ModifierEnter';
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
 
   return useMemo(() => {
     const mod = getModifierKey();
@@ -101,11 +106,13 @@ function useShortcutGroups(): ShortcutGroup[] {
           ),
           description: t('shortcuts.actions.previousSplitPane'),
         },
-        ...([1, 2, 3, 4] as const).map((preset) => ({
+        ...SPLIT_PRESETS.slice(0, maxSplitPanes).map((preset) => ({
           keys: chips(
             resolveModifier(SPLIT_PRESET_BINDING_IDS[preset], overrides)
           ),
-          description: t(`shortcuts.actions.splitPreset${preset}`),
+          description: t(`shortcuts.actions.splitPreset${preset}`, {
+            defaultValue: `${preset}-pane layout`,
+          }),
         })),
         {
           keys: [mod, 'E'],
@@ -184,7 +191,7 @@ function useShortcutGroups(): ShortcutGroup[] {
     ].filter((g) => g.shortcuts.length > 0);
 
     return [quickActions, navigation, modifiers, ...sequentialGroups];
-  }, [sendShortcut, t, overrides]);
+  }, [maxSplitPanes, sendShortcut, t, overrides]);
 }
 
 function ShortcutRow({ item }: { item: ShortcutItem }) {
