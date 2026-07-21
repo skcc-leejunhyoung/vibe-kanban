@@ -24,6 +24,7 @@ import {
   type SplitPaneState,
   type SplitPreset,
   getAdjacentSplitPaneId,
+  getSplitScreenUserId,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
 
@@ -282,7 +283,7 @@ export function SplitScreenSurface({ children }: { children: ReactNode }) {
 }
 
 function SplitScreenManager() {
-  const { isSignedIn, userId } = useAuth();
+  const { isLoaded, isSignedIn, userId } = useAuth();
   const activeUserId = useSplitScreenStore((state) => state.activeUserId);
   const preset = useSplitScreenStore((state) => state.preset);
   const presetState = useSplitScreenStore((state) => state.presets[preset]);
@@ -303,9 +304,14 @@ function SplitScreenManager() {
   const [highlightedPaneId, setHighlightedPaneId] = useState<string | null>(
     null
   );
-  const expectedUserId = isSignedIn ? userId : null;
+  const expectedUserId = getSplitScreenUserId({
+    isLoaded,
+    isSignedIn,
+    userId,
+  });
 
   useEffect(() => {
+    if (expectedUserId === undefined) return;
     syncUser(expectedUserId);
   }, [expectedUserId, syncUser]);
 

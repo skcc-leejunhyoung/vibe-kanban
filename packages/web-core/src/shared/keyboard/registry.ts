@@ -588,19 +588,19 @@ export const modifierBindings: ModifierBinding[] = [
   },
   {
     id: NEXT_SPLIT_PANE_BINDING_ID,
-    keys: 'alt+tab',
+    keys: 'mod+alt+right',
     actionId: 'nextSplitPane',
     group: 'Modifiers',
   },
   {
     id: PREVIOUS_SPLIT_PANE_BINDING_ID,
-    keys: 'shift+alt+tab',
+    keys: 'mod+alt+left',
     actionId: 'previousSplitPane',
     group: 'Modifiers',
   },
   ...([1, 2, 3, 4] as const).map((preset) => ({
     id: SPLIT_PRESET_BINDING_IDS[preset],
-    keys: `mod+${preset}`,
+    keys: `mod+alt+${preset}`,
     actionId: `splitPreset${preset}`,
     group: 'Modifiers',
   })),

@@ -15,6 +15,19 @@ export interface SplitPresetState {
   verticalSizes?: number[];
 }
 
+export function getSplitScreenUserId({
+  isLoaded,
+  isSignedIn,
+  userId,
+}: {
+  isLoaded: boolean;
+  isSignedIn: boolean;
+  userId: string | null;
+}): string | null | undefined {
+  if (!isLoaded) return undefined;
+  return isSignedIn ? userId : null;
+}
+
 export function getAdjacentSplitPaneId(
   panes: SplitPaneState[],
   currentPaneId: string,

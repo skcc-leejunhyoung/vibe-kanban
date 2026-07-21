@@ -8,9 +8,8 @@ vi.stubGlobal('localStorage', {
   removeItem: (key: string) => storedValues.delete(key),
 });
 
-const { getAdjacentSplitPaneId, useSplitScreenStore } = await import(
-  './useSplitScreenStore'
-);
+const { getAdjacentSplitPaneId, getSplitScreenUserId, useSplitScreenStore } =
+  await import('./useSplitScreenStore');
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: preset }, (_, index) => ({
@@ -33,6 +32,30 @@ describe('split screen presets', () => {
         4: makePreset(4),
       },
     });
+  });
+
+  it('waits for authentication before selecting the persisted user scope', () => {
+    expect(
+      getSplitScreenUserId({
+        isLoaded: false,
+        isSignedIn: false,
+        userId: null,
+      })
+    ).toBeUndefined();
+    expect(
+      getSplitScreenUserId({
+        isLoaded: true,
+        isSignedIn: true,
+        userId: 'user-a',
+      })
+    ).toBe('user-a');
+    expect(
+      getSplitScreenUserId({
+        isLoaded: true,
+        isSignedIn: false,
+        userId: null,
+      })
+    ).toBeNull();
   });
 
   it('isolates saved layouts when the authenticated user changes', () => {
