@@ -147,31 +147,37 @@ function CommandBarContent({
         }));
 
     const seenWorkspaceIds = new Set<string>();
-    const workspaceActions: ActionDefinition[] =
-      executorContext.activeWorkspaces
-        .map((workspace) => ({
-          id: `${workspace.hostId ?? 'local'}:${workspace.id}`,
-          localWorkspaceId: workspace.id,
-          hostId: workspace.hostId ?? null,
-          name: workspace.name,
-        }))
-        .filter((workspace) => {
-          if (seenWorkspaceIds.has(workspace.id)) return false;
-          seenWorkspaceIds.add(workspace.id);
-          return (
-            workspace.name != null && fuzzySearchMatch(workspace.name, query)
-          );
-        })
-        .map((workspace) => ({
-          id: `goto-workspace-${workspace.id}`,
-          label: `Workspace: ${workspace.name ?? workspace.localWorkspaceId}`,
-          icon: StackIcon,
-          requiresTarget: ActionTargetType.NONE,
-          execute: (ctx) =>
-            ctx.appNavigation.goToWorkspace(workspace.localWorkspaceId, {
-              hostId: workspace.hostId,
-            }),
-        }));
+    const workspaceActions: ActionDefinition[] = [
+      ...executorContext.activeWorkspaces.map((workspace) => ({
+        id: `${workspace.hostId ?? 'local'}:${workspace.id}`,
+        localWorkspaceId: workspace.id,
+        hostId: workspace.hostId ?? null,
+        name: workspace.name,
+      })),
+      ...executorContext.remoteWorkspaces.map((workspace) => ({
+        id: `${workspace.host_id ?? 'local'}:${workspace.local_workspace_id ?? workspace.id}`,
+        localWorkspaceId: workspace.local_workspace_id ?? workspace.id,
+        hostId: workspace.host_id,
+        name: workspace.name,
+      })),
+    ]
+      .filter((workspace) => {
+        if (seenWorkspaceIds.has(workspace.id)) return false;
+        seenWorkspaceIds.add(workspace.id);
+        return (
+          workspace.name != null && fuzzySearchMatch(workspace.name, query)
+        );
+      })
+      .map((workspace) => ({
+        id: `goto-workspace-${workspace.id}`,
+        label: `Workspace: ${workspace.name ?? workspace.localWorkspaceId}`,
+        icon: StackIcon,
+        requiresTarget: ActionTargetType.NONE,
+        execute: (ctx) =>
+          ctx.appNavigation.goToWorkspace(workspace.localWorkspaceId, {
+            hostId: workspace.hostId,
+          }),
+      }));
 
     const navigationItems = [...projectActions, ...workspaceActions].map(
       (action) => ({ type: 'action' as const, action })
