@@ -88,19 +88,15 @@ describe('resolveModifier', () => {
     ).toBe('');
   });
 
-  it('uses browser-safe default split screen shortcuts', () => {
+  it('uses the configured default split screen shortcuts', () => {
     expect(resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, {})).toBe(
       'mod+shift+alt+right'
     );
     expect(resolveModifier(PREVIOUS_SPLIT_PANE_BINDING_ID, {})).toBe(
       'mod+shift+alt+left'
     );
-    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe(
-      'mod+shift+alt+1'
-    );
-    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe(
-      'mod+shift+alt+4'
-    );
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe('mod+1');
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe('mod+4');
   });
 });
 

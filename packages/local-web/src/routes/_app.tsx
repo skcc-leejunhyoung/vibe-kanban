@@ -18,6 +18,11 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { SharedAppLayout } from '@/shared/components/ui-new/containers/SharedAppLayout';
 import { HostUserSystemProvider } from '@web/app/providers/HostUserSystemProvider';
+import { useIsMobile } from '@/shared/hooks/useIsMobile';
+import {
+  isSplitScreenEmbed,
+  SplitScreenSurface,
+} from '@/shared/components/SplitScreenSurface';
 
 function KeyboardShortcutsHandler() {
   useKeyShowHelp(
@@ -101,15 +106,22 @@ function AppRouteProviders({ children }: { children: ReactNode }) {
 }
 
 function AppLayoutRouteComponent() {
+  const isMobile = useIsMobile();
+  const appShell = <SharedAppLayout />;
+  const content =
+    isMobile && !isSplitScreenEmbed() ? (
+      appShell
+    ) : (
+      <SplitScreenSurface>{appShell}</SplitScreenSurface>
+    );
+
   return (
     <AppRouteProviders>
       <ReleaseNotesHandler />
       <SequenceTrackerProvider>
         <SequenceIndicator />
         <KeyboardShortcutsHandler />
-        <TerminalProvider>
-          <SharedAppLayout />
-        </TerminalProvider>
+        <TerminalProvider>{content}</TerminalProvider>
       </SequenceTrackerProvider>
     </AppRouteProviders>
   );

@@ -41,6 +41,11 @@ import {
   isWorkspacesDestination,
 } from "@/shared/lib/routes/appNavigation";
 import NotFoundPage from "../pages/NotFoundPage";
+import { useIsMobile } from "@/shared/hooks/useIsMobile";
+import {
+  isSplitScreenEmbed,
+  SplitScreenSurface,
+} from "@/shared/components/SplitScreenSurface";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -109,6 +114,7 @@ function RootLayout() {
   // Inject the selected theme variant ("skin") CSS. The selection + presets
   // come from config (synced via useConfigPreferenceSync), matching local web.
   useApplyThemeVariant();
+  const isMobile = useIsMobile();
   const location = useLocation();
   const { hostId } = useParams({ strict: false });
   const routeHostId = hostId ?? null;
@@ -131,15 +137,24 @@ function RootLayout() {
   const isWorkspaceProviderRoute =
     isProjectDestination(destination) || isWorkspacesDestination(destination);
 
+  const appShell = (
+    <RemoteAppShell>
+      <Outlet />
+    </RemoteAppShell>
+  );
+  const splitAppShell =
+    isMobile && !isSplitScreenEmbed() ? (
+      appShell
+    ) : (
+      <SplitScreenSurface>{appShell}</SplitScreenSurface>
+    );
   const pageContent = isStandaloneRoute ? (
     <Outlet />
   ) : (
     <SequenceTrackerProvider>
       <SequenceIndicator />
       <GlobalKeyboardShortcuts />
-      <RemoteAppShell>
-        <Outlet />
-      </RemoteAppShell>
+      {splitAppShell}
     </SequenceTrackerProvider>
   );
 

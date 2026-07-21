@@ -47,10 +47,6 @@ import {
   ALL_WORKSPACE_HOSTS_ID,
   useWorkspaceHostSelectionStore,
 } from "@/shared/stores/useWorkspaceHostSelectionStore";
-import {
-  isSplitScreenEmbed,
-  SplitScreenSurface,
-} from "@/shared/components/SplitScreenSurface";
 import { useActions } from "@/shared/hooks/useActions";
 
 interface RemoteAppShellProps {
@@ -268,14 +264,6 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       />
     );
   }, [isMobile, organizations, selectedOrgId, setSelectedOrgId]);
-
-  if (isSplitScreenEmbed()) {
-    return (
-      <div className="h-dvh overflow-hidden bg-primary">
-        <SplitScreenSurface>{children}</SplitScreenSurface>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -570,11 +558,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               enabled={isWorkspaceSidebarPreviewEnabled}
               isAppBarHovered={isAppBarHovered}
             />
-            {isMobile ? (
-              children
-            ) : (
-              <SplitScreenSurface>{children}</SplitScreenSurface>
-            )}
+            {children}
           </div>
         </div>
       </div>
