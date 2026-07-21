@@ -29,6 +29,7 @@ import {
   TagSearchParams,
   UpdateTag,
   UserSystemInfo,
+  HostAppearance,
   McpServerQuery,
   UpdateMcpServersBody,
   GetMcpServerResponse,
@@ -1548,8 +1549,31 @@ export function getCompatibleProfilesSaveRevision(
     : savedRevision;
 }
 
+export async function getCompatibleHostAppearance(
+  response: Response,
+  loadLegacyUserSystem: () => Promise<UserSystemInfo>
+): Promise<HostAppearance> {
+  if (response.status === 404) {
+    const userSystem = await loadLegacyUserSystem();
+    return { primary_color: userSystem.config.primary_color };
+  }
+  return handleApiResponse<HostAppearance>(response);
+}
+
 // Config APIs (backwards compatible with unversioned hosts)
 export const configApi = {
+  getHostAppearance: async (hostId: string | null): Promise<HostAppearance> => {
+    const response = await makeHostAwareRequest(
+      '/api/host-appearance',
+      hostId,
+      {
+        cache: 'no-store',
+      }
+    );
+    return getCompatibleHostAppearance(response, () =>
+      configApi.getConfig(hostId)
+    );
+  },
   getConfig: async (hostId: string | null): Promise<UserSystemInfo> => {
     const response = await makeHostAwareRequest('/api/info', hostId, {
       cache: 'no-store',

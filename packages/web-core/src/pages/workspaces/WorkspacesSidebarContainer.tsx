@@ -68,6 +68,10 @@ import {
   ALL_WORKSPACE_HOSTS_ID,
   useWorkspaceHostSelectionStore,
 } from '@/shared/stores/useWorkspaceHostSelectionStore';
+import {
+  getHostPrimaryColorKey,
+  useHostPrimaryColors,
+} from '@/shared/hooks/useHostPrimaryColors';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
@@ -113,6 +117,17 @@ export function WorkspacesSidebarContainer({
   const isMobile = useIsMobile();
   const runtime = useAppRuntime();
   const { hosts: workspaceHosts } = useWorkspaceHostOptions();
+  const workspaceHostIds = useMemo(
+    () => [
+      ...new Set(
+        [...activeWorkspaces, ...archivedWorkspaces].map(
+          (workspace) => workspace.hostId ?? null
+        )
+      ),
+    ],
+    [activeWorkspaces, archivedWorkspaces]
+  );
+  const hostPrimaryColors = useHostPrimaryColors(workspaceHostIds);
   const { hostId: routeHostId } = useParams({ strict: false });
   const queryClient = useQueryClient();
 
@@ -223,22 +238,48 @@ export function WorkspacesSidebarContainer({
 
   // Apply sidebar filters (project + PR) + search, then sort.
   const sortedActiveWorkspaces = useMemo(() => {
-    const filtered = filterAndSort(activeWorkspaces, searchQuery);
+    const filtered = filterAndSort(
+      activeWorkspaces.map((workspace) => ({
+        ...workspace,
+        hostPrimaryColor:
+          hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
+      })),
+      searchQuery
+    );
     if (selectedHostView === 'all') return filtered;
     return filtered.filter(
       (workspace) =>
         (workspace.hostId ?? LOCAL_HOST_FILTER_ID) === selectedHostView
     );
-  }, [filterAndSort, activeWorkspaces, searchQuery, selectedHostView]);
+  }, [
+    filterAndSort,
+    activeWorkspaces,
+    searchQuery,
+    selectedHostView,
+    hostPrimaryColors,
+  ]);
 
   const sortedArchivedWorkspaces = useMemo(() => {
-    const filtered = filterAndSort(archivedWorkspaces, searchQuery);
+    const filtered = filterAndSort(
+      archivedWorkspaces.map((workspace) => ({
+        ...workspace,
+        hostPrimaryColor:
+          hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
+      })),
+      searchQuery
+    );
     if (selectedHostView === 'all') return filtered;
     return filtered.filter(
       (workspace) =>
         (workspace.hostId ?? LOCAL_HOST_FILTER_ID) === selectedHostView
     );
-  }, [filterAndSort, archivedWorkspaces, searchQuery, selectedHostView]);
+  }, [
+    filterAndSort,
+    archivedWorkspaces,
+    searchQuery,
+    selectedHostView,
+    hostPrimaryColors,
+  ]);
 
   // Apply pagination (only when not searching)
   const paginatedActiveWorkspaces = useMemo(

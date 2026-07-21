@@ -10,6 +10,14 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
     items: [
       {
         type: 'group',
+        label: 'Navigation',
+        items: [
+          { type: 'action', action: Actions.GotoWorkspaces },
+          { type: 'action', action: Actions.GotoProjects },
+        ],
+      },
+      {
+        type: 'group',
         label: 'Actions',
         items: [
           { type: 'action', action: Actions.NewWorkspace },
@@ -140,6 +148,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.RepoSettings },
           { type: 'action', action: Actions.GitCommit },
           { type: 'action', action: Actions.GitCreatePR },
+          { type: 'action', action: Actions.GitOpenPR },
           { type: 'action', action: Actions.GitLinkPR },
           { type: 'action', action: Actions.GitMerge },
           { type: 'action', action: Actions.GitPull },

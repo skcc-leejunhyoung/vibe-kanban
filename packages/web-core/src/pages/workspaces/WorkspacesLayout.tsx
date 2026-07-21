@@ -42,6 +42,7 @@ import {
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { resolveUnfocusedChatKeyAction } from './workspaceChatKeyboard';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
@@ -147,6 +148,52 @@ export function WorkspacesLayout({
     rightMainPanelMode,
     setLeftMainPanelVisible,
   } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
+
+  useEffect(() => {
+    const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
+      if (
+        isCreateMode ||
+        !selectedWorkspace ||
+        !isLeftMainPanelVisible ||
+        (isMobile && mobileTab !== 'chat')
+      ) {
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      const hasNoFocusedControl =
+        activeElement === null ||
+        activeElement === document.body ||
+        activeElement === document.documentElement;
+      if (!hasNoFocusedControl) return;
+
+      const action = resolveUnfocusedChatKeyAction(event);
+      if (action?.type === 'scroll') {
+        if (mainContainerRef.current?.scrollConversationBy(action.delta)) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (
+        action?.type === 'focus-composer' &&
+        mainContainerRef.current?.focusComposer()
+      ) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleUnfocusedChatKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleUnfocusedChatKeyDown);
+    };
+  }, [
+    isCreateMode,
+    isLeftMainPanelVisible,
+    isMobile,
+    mobileTab,
+    selectedWorkspace,
+  ]);
 
   const {
     config,

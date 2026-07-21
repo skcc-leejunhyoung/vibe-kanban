@@ -6,6 +6,7 @@ import type {
   ActionExecutorContext,
   ActionVisibilityContext,
   ProjectMutations,
+  NavigationProject,
 } from '@/shared/types/actions';
 
 export interface ActionsContextValue {
@@ -66,6 +67,8 @@ export interface ActionsContextValue {
 
   // Register project mutations (called by components inside ProjectProvider)
   registerProjectMutations: (mutations: ProjectMutations | null) => void;
+
+  registerNavigationProjects: (projects: NavigationProject[]) => void;
 
   // The executor context (for components that need direct access)
   executorContext: ActionExecutorContext;

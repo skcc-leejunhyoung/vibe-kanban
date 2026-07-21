@@ -40,12 +40,17 @@ vi.mock('@/shared/dialogs/command-bar/PullFirstDialog', () => ({
 vi.mock('@/shared/dialogs/command-bar/ForcePushDialog', () => ({
   ForcePushDialog: { show: vi.fn() },
 }));
+vi.mock('@vibe/ui/lib/open-url', () => ({
+  openExternalUrl: vi.fn(),
+  reserveExternalWindow: vi.fn(),
+}));
 
 import { Actions } from './index';
 import { workspacesApi } from '@/shared/lib/api';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
+import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
@@ -61,6 +66,8 @@ const push = vi.mocked(workspacesApi.push);
 const pushTargetBranch = vi.mocked(workspacesApi.pushTargetBranch);
 const showPullFirst = vi.mocked(PullFirstDialog.show);
 const showForcePush = vi.mocked(ForcePushDialog.show);
+const openPrUrl = vi.mocked(openExternalUrl);
+const reservePrWindow = vi.mocked(reserveExternalWindow);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -313,6 +320,98 @@ describe('Actions.GitMerge', () => {
     );
     expect(merge).toHaveBeenCalledWith('ws1', { repo_id: 'repo1' });
     expect(invalidateQueries).toHaveBeenCalled();
+  });
+});
+
+describe('Actions.GitOpenPR', () => {
+  it('is visible only when an open PR is connected', () => {
+    expect(
+      Actions.GitOpenPR.isVisible?.({
+        hasWorkspace: true,
+        hasGitRepos: true,
+        hasOpenPR: true,
+      } as ActionExecutorContext)
+    ).toBe(true);
+    expect(
+      Actions.GitOpenPR.isVisible?.({
+        hasWorkspace: true,
+        hasGitRepos: true,
+        hasOpenPR: false,
+      } as ActionExecutorContext)
+    ).toBe(false);
+  });
+
+  it('opens the connected PR for the selected repository', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    openPrUrl.mockReturnValue(true);
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              status: 'open',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitOpenPR.execute(ctx, 'ws1', 'repo1');
+
+    expect(reservePrWindow).toHaveBeenCalledOnce();
+    expect(openPrUrl).toHaveBeenCalledWith(
+      'https://example.com/pull/42',
+      reservedWindow
+    );
+    expect(reservedWindow.close).not.toHaveBeenCalled();
+  });
+
+  it('closes the reserved window and explains when the selected repository has no open PR', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    getBranchStatus.mockResolvedValue([
+      { repo_id: 'repo1', merges: [] },
+      {
+        repo_id: 'repo2',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              status: 'open',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitOpenPR.execute(ctx, 'ws1', 'repo1');
+
+    expect(reservedWindow.close).toHaveBeenCalledOnce();
+    expect(openPrUrl).not.toHaveBeenCalled();
+    expect(showConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'No Open Pull Request' })
+    );
+  });
+
+  it('closes the reserved window when branch status loading fails', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    getBranchStatus.mockRejectedValue(new Error('status failed'));
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await expect(
+      Actions.GitOpenPR.execute(ctx, 'ws1', 'repo1')
+    ).rejects.toThrow('status failed');
+
+    expect(reservedWindow.close).toHaveBeenCalledOnce();
+    expect(openPrUrl).not.toHaveBeenCalled();
   });
 });
 

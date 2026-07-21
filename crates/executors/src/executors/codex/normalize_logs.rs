@@ -1502,6 +1502,10 @@ const SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
     // exists on disk but isn't indexed in the state DB — even when the Sqlite feature flag is
     // disabled (which is the default). See: https://github.com/openai/codex/commit/c38a5958
     "state db missing rollout path for",
+    // A Codex upgrade can leave models_cache.json in the previous schema. The CLI logs this
+    // while discarding the stale cache and refreshing the model catalog, so it is not an agent
+    // response parsing failure and should not be surfaced as a failed turn.
+    "failed to load models cache: missing field `supports_reasoning_summaries`",
 ];
 
 /// Codex-specific stderr normalizer that filters noisy internal messages.

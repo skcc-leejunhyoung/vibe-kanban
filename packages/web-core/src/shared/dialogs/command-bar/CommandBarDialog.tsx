@@ -24,6 +24,7 @@ import { useResolvedPage } from './commandBar/useResolvedPage';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { effectiveActionShortcut } from '@/shared/keyboard/registry';
+import { KanbanIcon, StackIcon } from '@phosphor-icons/react';
 
 export interface CommandBarDialogProps {
   page?: PageId;
@@ -53,7 +54,7 @@ function CommandBarContent({
 }) {
   const modal = useModal();
   const previousFocusRef = useRef<HTMLElement | null>(null);
-  const { executeAction, getLabel } = useActions();
+  const { executeAction, getLabel, executorContext } = useActions();
   const { workspaceId: contextWorkspaceId, repos } = useWorkspaceContext();
   // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
@@ -129,6 +130,65 @@ function CommandBarContent({
     effectiveVisibilityContext,
     workspace
   );
+  const pageWithNavigationMatches = useMemo(() => {
+    const query = state.search.trim().toLowerCase();
+    if (currentPage !== 'root' || !query) return resolvedPage;
+
+    const projectActions: ActionDefinition[] =
+      executorContext.navigationProjects
+        .filter((project) => project.name.toLowerCase().includes(query))
+        .map((project) => ({
+          id: `goto-project-${project.id}`,
+          label: `Project: ${project.name}`,
+          icon: KanbanIcon,
+          requiresTarget: ActionTargetType.NONE,
+          execute: (ctx) => ctx.appNavigation.goToProject(project.id),
+        }));
+
+    const seenWorkspaceIds = new Set<string>();
+    const workspaceActions: ActionDefinition[] = [
+      ...executorContext.activeWorkspaces.map((workspace) => ({
+        id: `${workspace.hostId ?? 'local'}:${workspace.id}`,
+        localWorkspaceId: workspace.id,
+        hostId: workspace.hostId ?? null,
+        name: workspace.name,
+      })),
+      ...executorContext.remoteWorkspaces.map((workspace) => ({
+        id: `${workspace.host_id ?? 'local'}:${workspace.local_workspace_id ?? workspace.id}`,
+        localWorkspaceId: workspace.local_workspace_id ?? workspace.id,
+        hostId: workspace.host_id,
+        name: workspace.name,
+      })),
+    ]
+      .filter((workspace) => {
+        if (seenWorkspaceIds.has(workspace.id)) return false;
+        seenWorkspaceIds.add(workspace.id);
+        return workspace.name?.toLowerCase().includes(query);
+      })
+      .map((workspace) => ({
+        id: `goto-workspace-${workspace.id}`,
+        label: `Workspace: ${workspace.name ?? workspace.localWorkspaceId}`,
+        icon: StackIcon,
+        requiresTarget: ActionTargetType.NONE,
+        execute: (ctx) =>
+          ctx.appNavigation.goToWorkspace(workspace.localWorkspaceId, {
+            hostId: workspace.hostId,
+          }),
+      }));
+
+    const navigationItems = [...projectActions, ...workspaceActions].map(
+      (action) => ({ type: 'action' as const, action })
+    );
+    if (navigationItems.length === 0) return resolvedPage;
+
+    return {
+      ...resolvedPage,
+      groups: [
+        ...resolvedPage.groups,
+        { label: 'Go directly to', items: navigationItems },
+      ],
+    };
+  }, [currentPage, executorContext, resolvedPage, state.search]);
 
   // Handle item selection with side effects
   const handleSelect = useCallback(
@@ -213,7 +273,7 @@ function CommandBarContent({
       onCloseAutoFocus={handleCloseAutoFocus}
     >
       <CommandBar
-        page={resolvedPage}
+        page={pageWithNavigationMatches}
         canGoBack={canGoBack}
         onGoBack={() => dispatch({ type: 'GO_BACK' })}
         onSelect={handleSelect}

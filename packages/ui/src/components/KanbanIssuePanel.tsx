@@ -260,6 +260,17 @@ export function KanbanIssuePanel({
   // editable is focused, let Escape bubble straight through so the container
   // closes the panel.
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && e.target === e.currentTarget) {
+      e.preventDefault();
+      if (e.metaKey || e.ctrlKey) {
+        onCmdEnterSubmit?.();
+        return;
+      }
+
+      titleInputRef.current?.focus();
+      return;
+    }
+
     if (e.key !== 'Escape') return;
     const target = e.target as HTMLElement;
     const isEditable =

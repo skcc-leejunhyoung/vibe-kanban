@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Config, UserSystemInfo } from 'shared/types';
 import {
   getCompatibleConfigSaveBody,
+  getCompatibleHostAppearance,
   getCompatibleProfilesSaveBody,
   getCompatibleProfilesSaveRevision,
   LEGACY_UNVERSIONED_REVISION,
@@ -52,5 +53,34 @@ describe('settings API rolling-upgrade compatibility', () => {
       )
     ).toBe(LEGACY_UNVERSIONED_REVISION);
     expect(getCompatibleProfilesSaveRevision('next', 'current')).toBe('next');
+  });
+
+  it('uses the lightweight host appearance response when available', async () => {
+    const loadLegacy = vi.fn();
+    const response = new Response(
+      JSON.stringify({
+        success: true,
+        data: { primary_color: '#123456' },
+      }),
+      { status: 200 }
+    );
+
+    await expect(
+      getCompatibleHostAppearance(response, loadLegacy)
+    ).resolves.toEqual({ primary_color: '#123456' });
+    expect(loadLegacy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to legacy user-system info for older hosts', async () => {
+    const legacyInfo = {
+      config: { ...config, primary_color: '#654321' },
+    } as UserSystemInfo;
+
+    await expect(
+      getCompatibleHostAppearance(
+        new Response(null, { status: 404 }),
+        async () => legacyInfo
+      )
+    ).resolves.toEqual({ primary_color: '#654321' });
   });
 });

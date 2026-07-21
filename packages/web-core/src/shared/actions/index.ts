@@ -54,6 +54,8 @@ import {
   ArrowBendUpRightIcon,
   ProhibitIcon,
   LightningIcon,
+  LayoutIcon,
+  KanbanIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -88,6 +90,7 @@ import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
+import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -583,6 +586,28 @@ export const Actions = {
     },
   } satisfies GlobalActionDefinition,
 
+  GotoWorkspaces: {
+    id: 'goto-workspaces',
+    label: 'Goto: Workspace',
+    icon: LayoutIcon,
+    keywords: ['workspace', 'workspaces', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    execute: (ctx) => ctx.appNavigation.goToWorkspaces(),
+  } satisfies GlobalActionDefinition,
+
+  GotoProjects: {
+    id: 'goto-projects',
+    label: 'Goto: Projects',
+    icon: KanbanIcon,
+    keywords: ['project', 'projects', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    isEnabled: (ctx) => ctx.isSignedIn,
+    execute: (ctx) => {
+      const firstProject = ctx.navigationProjects[0];
+      if (firstProject) ctx.appNavigation.goToProject(firstProject.id);
+    },
+  } satisfies GlobalActionDefinition,
+
   SignOut: {
     id: 'sign-out',
     label: 'Sign Out',
@@ -1042,6 +1067,48 @@ export const Actions = {
 
       if (!result.success && result.error) {
         throw new Error(result.error);
+      }
+    },
+  },
+
+  GitOpenPR: {
+    id: 'git-open-pr',
+    label: 'Open PR',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'browser'],
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasOpenPR,
+    execute: async (_ctx, workspaceId, repoId) => {
+      const reservedWindow = reserveExternalWindow();
+      try {
+        const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+        const repoStatus = branchStatus.find(
+          (status) => status.repo_id === repoId
+        );
+        const openPr = repoStatus?.merges?.find(
+          (merge: Merge) =>
+            merge.type === 'pr' && merge.pr_info.status === 'open'
+        );
+
+        if (openPr?.type !== 'pr') {
+          reservedWindow?.close();
+          await ConfirmDialog.show({
+            title: 'No Open Pull Request',
+            message:
+              'The selected repository does not have a connected open pull request.',
+            confirmText: 'OK',
+            showCancelButton: false,
+            variant: 'info',
+          });
+          return;
+        }
+
+        if (!openExternalUrl(openPr.pr_info.url, reservedWindow)) {
+          reservedWindow?.close();
+        }
+      } catch (error) {
+        reservedWindow?.close();
+        throw error;
       }
     },
   },

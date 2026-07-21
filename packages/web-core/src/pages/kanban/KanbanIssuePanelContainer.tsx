@@ -35,6 +35,7 @@ import {
   buildWorkspaceCreateInitialState,
   buildWorkspaceCreatePrompt,
 } from '@/shared/lib/workspaceCreateState';
+import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import {
   createBlankCreateFormData,
   createInitialKanbanIssuePanelFormState,
@@ -1009,10 +1010,86 @@ export function KanbanIssuePanelContainer({
     t,
   ]);
 
+  const handleCreateWorkspace = useCallback(async () => {
+    if (!selectedIssue) return;
+
+    // Cmd/Ctrl+Enter can run before the debounced text saves have fired.
+    // Persist safe editor values before navigating so the issue and workspace
+    // prompt cannot lose or use stale edits. Attachment-backed descriptions
+    // remain on the existing upload-completion save path.
+    cancelDebouncedTitle();
+    cancelDebouncedDescription();
+    const issuePatch: { title?: string; description?: string | null } = {};
+    if (displayData.title !== selectedIssue.title) {
+      issuePatch.title = displayData.title;
+    }
+    if (
+      !hasPendingAttachments &&
+      displayData.description !== selectedIssue.description
+    ) {
+      issuePatch.description = displayData.description;
+    }
+    if (Object.keys(issuePatch).length > 0) {
+      updateIssue(selectedIssue.id, issuePatch);
+    }
+
+    const hostId = await selectWorkspaceHost();
+    if (hostId === undefined) return;
+
+    const defaults = await getWorkspaceDefaults(
+      workspaces,
+      localWorkspaceIds,
+      projectId,
+      hostId
+    );
+    const createState = buildWorkspaceCreateInitialState({
+      prompt: buildWorkspaceCreatePrompt(
+        displayData.title,
+        hasPendingAttachments
+          ? selectedIssue.description
+          : displayData.description
+      ),
+      defaults,
+      linkedIssue: buildLinkedIssueCreateState(selectedIssue, projectId),
+    });
+    const draftId = await openWorkspaceCreateFromState(createState, {
+      issueId: selectedIssue.id,
+      hostId,
+    });
+    if (!draftId) {
+      await ConfirmDialog.show({
+        title: t('common:error'),
+        message: t(
+          'workspaces.createDraftError',
+          'Failed to prepare workspace draft. Please try again.'
+        ),
+        confirmText: t('common:ok'),
+        showCancelButton: false,
+      });
+    }
+  }, [
+    selectedIssue,
+    displayData.title,
+    displayData.description,
+    hasPendingAttachments,
+    cancelDebouncedTitle,
+    cancelDebouncedDescription,
+    updateIssue,
+    workspaces,
+    localWorkspaceIds,
+    projectId,
+    openWorkspaceCreateFromState,
+    t,
+  ]);
+
   const handleCmdEnterSubmit = useCallback(() => {
-    if (mode !== 'create') return;
-    void handleSubmit();
-  }, [mode, handleSubmit]);
+    if (mode === 'create') {
+      void handleSubmit();
+      return;
+    }
+
+    void handleCreateWorkspace();
+  }, [mode, handleSubmit, handleCreateWorkspace]);
 
   // Tag create callback - returns the new tag ID so it can be auto-selected
   const handleCreateTag = useCallback(

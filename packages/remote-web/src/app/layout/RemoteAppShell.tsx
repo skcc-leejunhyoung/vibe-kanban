@@ -47,6 +47,11 @@ import {
   ALL_WORKSPACE_HOSTS_ID,
   useWorkspaceHostSelectionStore,
 } from "@/shared/stores/useWorkspaceHostSelectionStore";
+import {
+  isSplitScreenEmbed,
+  SplitScreenSurface,
+} from "@/shared/components/SplitScreenSurface";
+import { useActions } from "@/shared/hooks/useActions";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -71,6 +76,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     (state) => state.syncUser,
   );
   const location = useLocation();
+  const { registerNavigationProjects } = useActions();
   const { isSignedIn, userId } = useAuth();
   const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
   const isProjectRoute = /^\/projects\/[^/]+/.test(location.pathname);
@@ -143,7 +149,14 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     staleTime: 30_000,
   });
 
-  const projects = projectsQuery.data ?? [];
+  const projects = useMemo(
+    () => projectsQuery.data ?? [],
+    [projectsQuery.data],
+  );
+  useEffect(() => {
+    registerNavigationProjects(projects.map(({ id, name }) => ({ id, name })));
+    return () => registerNavigationProjects([]);
+  }, [projects, registerNavigationProjects]);
   const isLoadingProjects =
     isSignedIn && !!activeOrganizationId && projectsQuery.isLoading;
 
@@ -255,6 +268,15 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       />
     );
   }, [isMobile, organizations, selectedOrgId, setSelectedOrgId]);
+
+  if (isSplitScreenEmbed()) {
+    return (
+      <div className="h-dvh overflow-hidden bg-primary">
+        <SplitScreenSurface>{children}</SplitScreenSurface>
+      </div>
+    );
+  }
+
   return (
     <div
       className={cn(
@@ -548,7 +570,11 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               enabled={isWorkspaceSidebarPreviewEnabled}
               isAppBarHovered={isAppBarHovered}
             />
-            {children}
+            {isMobile ? (
+              children
+            ) : (
+              <SplitScreenSurface>{children}</SplitScreenSurface>
+            )}
           </div>
         </div>
       </div>

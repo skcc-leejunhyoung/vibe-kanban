@@ -49,6 +49,19 @@ import {
 } from 'shared/remote-types';
 import { AppBarNotificationBellContainer } from '@/pages/workspaces/AppBarNotificationBellContainer';
 import { WorkspaceSidebarHoverPreview } from './WorkspaceSidebarHoverPreview';
+import {
+  isSplitScreenEmbed,
+  SplitScreenSurface,
+} from '@/shared/components/SplitScreenSurface';
+import { useActions } from '@/shared/hooks/useActions';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
+import {
+  NEXT_WORKSPACE_BINDING_ID,
+  PREVIOUS_WORKSPACE_BINDING_ID,
+  resolveModifier,
+} from '@/shared/keyboard/registry';
+import { getCycledProjectId } from '@/shared/lib/projectCycle';
 
 export function SharedAppLayout() {
   const appNavigation = useAppNavigation();
@@ -65,6 +78,8 @@ export function SharedAppLayout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAppBarHovered, setIsAppBarHovered] = useState(false);
   const navigate = useNavigate();
+  const { registerNavigationProjects } = useActions();
+  const shortcutOverrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   // Register CMD+K shortcut globally for all routes under SharedAppLayout
   useCommandBarShortcut(() => CommandBarDialog.show());
@@ -132,6 +147,13 @@ export function SharedAppLayout() {
   const [isSavingProjectOrder, setIsSavingProjectOrder] = useState(false);
 
   useEffect(() => {
+    registerNavigationProjects(
+      orderedProjects.map(({ id, name }) => ({ id, name }))
+    );
+    return () => registerNavigationProjects([]);
+  }, [orderedProjects, registerNavigationProjects]);
+
+  useEffect(() => {
     if (isSavingProjectOrder) {
       return;
     }
@@ -161,6 +183,30 @@ export function SharedAppLayout() {
   const projectDestination = useMemo(
     () => getProjectDestination(currentDestination),
     [currentDestination]
+  );
+  const cycleProject = useCallback(
+    (direction: 1 | -1) => {
+      if (!projectDestination) return;
+      const nextProjectId = getCycledProjectId(
+        orderedProjects.map((project) => project.id),
+        projectDestination.projectId,
+        direction
+      );
+      if (nextProjectId) appNavigation.goToProject(nextProjectId);
+    },
+    [appNavigation, orderedProjects, projectDestination]
+  );
+  useReboundHotkey(
+    resolveModifier(NEXT_WORKSPACE_BINDING_ID, shortcutOverrides),
+    () => cycleProject(1),
+    { enabled: !!projectDestination },
+    [cycleProject, projectDestination, shortcutOverrides]
+  );
+  useReboundHotkey(
+    resolveModifier(PREVIOUS_WORKSPACE_BINDING_ID, shortcutOverrides),
+    () => cycleProject(-1),
+    { enabled: !!projectDestination },
+    [cycleProject, projectDestination, shortcutOverrides]
   );
   const isWorkspacesActive = isLocalWorkspacesDestination(currentDestination);
   const isWorkspaceSidebarPreviewEnabled =
@@ -256,6 +302,18 @@ export function SharedAppLayout() {
     }
   }, []);
 
+  if (isSplitScreenEmbed()) {
+    return (
+      <SyncErrorProvider>
+        <div className="h-dvh overflow-hidden bg-primary">
+          <SplitScreenSurface>
+            <Outlet />
+          </SplitScreenSurface>
+        </div>
+      </SyncErrorProvider>
+    );
+  }
+
   return (
     <SyncErrorProvider>
       <div
@@ -317,7 +375,9 @@ export function SharedAppLayout() {
               />
 
               <div className="min-h-0 flex-1 overflow-hidden">
-                <Outlet />
+                <SplitScreenSurface>
+                  <Outlet />
+                </SplitScreenSurface>
               </div>
             </div>
           </>

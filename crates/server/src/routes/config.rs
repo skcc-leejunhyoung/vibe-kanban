@@ -48,6 +48,7 @@ use crate::{
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/info", get(get_user_system_info))
+        .route("/host-appearance", get(get_host_appearance))
         .route("/config", put(update_config))
         .route("/sounds/{sound}", get(get_sound))
         .route("/mcp-config", get(get_mcp_servers).post(update_mcp_servers))
@@ -111,6 +112,20 @@ pub struct UserSystemInfo {
     pub capabilities: HashMap<String, Vec<BaseAgentCapability>>,
     pub shared_api_base: Option<String>,
     pub preview_proxy_port: Option<u16>,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct HostAppearance {
+    pub primary_color: String,
+}
+
+async fn get_host_appearance(
+    State(deployment): State<DeploymentImpl>,
+) -> ResponseJson<ApiResponse<HostAppearance>> {
+    let config = deployment.config().read().await;
+    ResponseJson(ApiResponse::success(HostAppearance {
+        primary_color: config.primary_color.clone(),
+    }))
 }
 
 fn revision<T: Serialize>(value: &T) -> String {

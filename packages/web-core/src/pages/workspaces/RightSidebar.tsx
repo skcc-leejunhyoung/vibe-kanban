@@ -9,7 +9,7 @@ import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { TerminalPanelContainer } from '@/shared/components/TerminalPanelContainer';
 import { WorkspaceNotesContainer } from './WorkspaceNotesContainer';
 import { useDiffs } from '@/shared/stores/useWorkspaceDiffStore';
-import { ArrowsOutSimpleIcon } from '@phosphor-icons/react';
+import { ArrowsOutSimpleIcon, DesktopTowerIcon } from '@phosphor-icons/react';
 import { useLogsPanel } from '@/shared/hooks/useLogsPanel';
 import type { RepoWithTargetBranch, Workspace } from 'shared/types';
 import {
@@ -24,6 +24,11 @@ import {
   CollapsibleSectionHeader,
   type SectionAction,
 } from '@vibe/ui/components/CollapsibleSectionHeader';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { resolveWorkspaceHostPresentation } from '@/shared/lib/workspaceHostPresentation';
+import { cn } from '@/shared/lib/utils';
 
 type SectionDef = {
   title: string;
@@ -46,11 +51,21 @@ export const RightSidebar = memo(function RightSidebar({
   repos,
 }: RightSidebarProps) {
   const { t } = useTranslation(['tasks', 'common']);
+  const { config } = useUserSystem();
+  const hostId = useHostId();
+  const { hosts } = useWorkspaceHostOptions();
   const diffs = useDiffs();
   const { data: branchStatus } = useBranchStatus(selectedWorkspace?.id);
   const hasPrs = hasLinkedPr(branchStatus);
   const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
   const { expandTerminal, isTerminalExpanded } = useLogsPanel();
+  const { name: hostName, status: hostStatus } =
+    resolveWorkspaceHostPresentation(
+      hostId,
+      config?.host_nickname,
+      hosts,
+      t('common:workspaces.thisMachine', { defaultValue: 'This machine' })
+    );
 
   const [changesExpanded] = usePersistedExpanded(
     PERSIST_KEYS.changesSection,
@@ -217,6 +232,46 @@ export const RightSidebar = memo(function RightSidebar({
 
   return (
     <div className="h-full border-l bg-secondary overflow-y-auto">
+      {selectedWorkspace && (
+        <div className="border-b bg-panel/60 px-base py-base">
+          <p className="mb-half text-xs font-medium uppercase tracking-wide text-low">
+            {t('common:sections.host')}
+          </p>
+          <div className="flex items-center gap-base">
+            <span
+              className="flex size-8 shrink-0 items-center justify-center rounded-sm"
+              style={{
+                color: config?.primary_color,
+                backgroundColor: config?.primary_color
+                  ? `${config.primary_color}20`
+                  : undefined,
+              }}
+            >
+              <DesktopTowerIcon className="size-icon-base" weight="fill" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium text-high">
+                {hostName}
+              </p>
+              <p className="flex items-center gap-half text-xs text-low">
+                <span
+                  className={cn(
+                    'size-2 rounded-full',
+                    hostStatus === 'online'
+                      ? 'bg-success'
+                      : hostStatus === 'offline'
+                        ? 'bg-low'
+                        : 'bg-warning'
+                  )}
+                />
+                {t(`common:workspaces.hostStatus.${hostStatus}`, {
+                  defaultValue: hostStatus,
+                })}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="divide-y border-b">
         {sections
           .filter((section) => section.visible)

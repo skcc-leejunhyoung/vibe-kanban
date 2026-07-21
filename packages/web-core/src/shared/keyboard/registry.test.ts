@@ -19,6 +19,9 @@ import {
   buildCombo,
   reservedBindings,
   COMMAND_BAR_BINDING_ID,
+  NEXT_SPLIT_PANE_BINDING_ID,
+  PREVIOUS_SPLIT_PANE_BINDING_ID,
+  SPLIT_PRESET_BINDING_IDS,
 } from './registry';
 
 // The node test env has no KeyboardEvent constructor; buildCombo only reads the
@@ -83,6 +86,21 @@ describe('resolveModifier', () => {
     expect(
       resolveModifier(COMMAND_BAR_BINDING_ID, { [COMMAND_BAR_BINDING_ID]: '' })
     ).toBe('');
+  });
+
+  it('uses browser-safe default split screen shortcuts', () => {
+    expect(resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, {})).toBe(
+      'mod+shift+alt+right'
+    );
+    expect(resolveModifier(PREVIOUS_SPLIT_PANE_BINDING_ID, {})).toBe(
+      'mod+shift+alt+left'
+    );
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe(
+      'mod+shift+alt+1'
+    );
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe(
+      'mod+shift+alt+4'
+    );
   });
 });
 

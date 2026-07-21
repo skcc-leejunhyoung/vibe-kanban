@@ -17,6 +17,7 @@ import {
   type ActionDefinition,
   type ActionExecutorContext,
   type ActionVisibilityContext,
+  ActionTargetType,
   getActionLabel,
   resolveLabel,
   type ProjectMutations,
@@ -53,6 +54,9 @@ export function RemoteActionsProvider({
   >();
   const [projectMutations, setProjectMutations] =
     useState<ProjectMutations | null>(null);
+  const [navigationProjects, setNavigationProjects] = useState<
+    ActionExecutorContext["navigationProjects"]
+  >([]);
 
   const registerProjectMutations = useCallback(
     (mutations: ProjectMutations | null) => {
@@ -107,6 +111,7 @@ export function RemoteActionsProvider({
         noOpSelection("Workspace actions");
       },
       activeWorkspaces: [],
+      navigationProjects,
       currentWorkspaceId: null,
       containerRef: null,
       runningDevServers: [],
@@ -147,6 +152,7 @@ export function RemoteActionsProvider({
       projectId,
       projectMutations,
       userCtx?.workspaces,
+      navigationProjects,
     ],
   );
 
@@ -170,11 +176,22 @@ export function RemoteActionsProvider({
         return;
       }
 
+      if (
+        action.requiresTarget === ActionTargetType.NONE &&
+        (action.id === "goto-workspaces" ||
+          action.id === "goto-projects" ||
+          action.id.startsWith("goto-project-") ||
+          action.id.startsWith("goto-workspace-"))
+      ) {
+        await action.execute(executorContext);
+        return;
+      }
+
       console.warn(
         `[RemoteActionsProvider] Action "${action.id}" is unavailable in remote web.`,
       );
     },
-    [projectId, selectedOrgId],
+    [executorContext, projectId, selectedOrgId],
   );
 
   const getLabel = useCallback(
@@ -203,6 +220,7 @@ export function RemoteActionsProvider({
       openRelationshipSelection,
       setDefaultCreateStatusId,
       registerProjectMutations,
+      registerNavigationProjects: setNavigationProjects,
       executorContext,
     }),
     [

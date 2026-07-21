@@ -138,6 +138,12 @@
     "noArchived": "No archived workspaces",
     "noWorkspaces": "No workspaces",
     "newWorkspace": "New workspace",
+    "thisMachine": "This machine",
+    "hostStatus": {
+      "online": "Online",
+      "offline": "Offline",
+      "unpaired": "Unpaired"
+    },
     "needsAttention": "Needs Attention",
     "idle": "Idle",
     "running": "Running",
@@ -186,6 +192,7 @@
     "nextGitHubComment": "Next file with comments"
   },
   "sections": {
+    "host": "Host",
     "changes": "Changes",
     "repositories": "Repositories",
     "addRepositories": "Add Repositories",
@@ -322,6 +329,12 @@
       "openCommandBar": "Open command bar",
       "nextWorkspace": "Next workspace",
       "previousWorkspace": "Previous workspace",
+      "nextSplitPane": "Focus next split pane",
+      "previousSplitPane": "Focus previous split pane",
+      "splitPreset1": "Single-pane layout",
+      "splitPreset2": "Two-pane layout",
+      "splitPreset3": "Three-pane layout",
+      "splitPreset4": "Four-pane layout",
       "formatInlineCode": "Format inline code",
       "sendMessage": "Send message",
       "settings": "Go to Settings",

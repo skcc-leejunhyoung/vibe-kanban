@@ -124,6 +124,12 @@
     "noArchived": "보관된 워크스페이스 없음",
     "noWorkspaces": "워크스페이스 없음",
     "newWorkspace": "새 워크스페이스",
+    "thisMachine": "이 머신",
+    "hostStatus": {
+      "online": "온라인",
+      "offline": "오프라인",
+      "unpaired": "페어링 안 됨"
+    },
     "needsAttention": "주의 필요",
     "idle": "대기 중",
     "running": "실행 중",
@@ -172,6 +178,7 @@
     "nextGitHubComment": "다음 댓글 파일"
   },
   "sections": {
+    "host": "호스트",
     "changes": "변경사항",
     "repositories": "저장소",
     "addRepositories": "저장소 추가",
@@ -308,6 +315,12 @@
       "openCommandBar": "명령 바 열기",
       "nextWorkspace": "다음 워크스페이스",
       "previousWorkspace": "이전 워크스페이스",
+      "nextSplitPane": "다음 분할 패널 포커스",
+      "previousSplitPane": "이전 분할 패널 포커스",
+      "splitPreset1": "단일 화면 레이아웃",
+      "splitPreset2": "2분할 화면 레이아웃",
+      "splitPreset3": "3분할 화면 레이아웃",
+      "splitPreset4": "4분할 화면 레이아웃",
       "formatInlineCode": "Format inline code",
       "sendMessage": "메시지 보내기",
       "settings": "설정으로 이동",

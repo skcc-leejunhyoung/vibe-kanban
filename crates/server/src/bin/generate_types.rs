@@ -96,6 +96,7 @@ fn generate_types_content() -> String {
         server::routes::tags::TagSearchParams::decl(),
         server::routes::oauth::TokenResponse::decl(),
         server::routes::config::UserSystemInfo::decl(),
+        server::routes::config::HostAppearance::decl(),
         server::routes::config::Environment::decl(),
         server::routes::config::McpServerQuery::decl(),
         server::routes::config::UpdateMcpServersBody::decl(),
