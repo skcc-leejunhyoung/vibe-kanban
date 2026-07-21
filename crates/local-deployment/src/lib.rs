@@ -16,7 +16,6 @@ use relay_hosts::RelayHosts;
 use relay_webrtc::WebRtcHost;
 use remote_info::RemoteInfo;
 use services::services::{
-    analytics::generate_user_id,
     approvals::Approvals,
     auth::AuthContext,
     config::{Config, load_config_from_file, save_config_to_file},
@@ -25,6 +24,7 @@ use services::services::{
     file::FileService,
     file_search::FileSearchCache,
     filesystem::FilesystemService,
+    machine_id::generate_user_id,
     oauth_credentials::OAuthCredentials,
     pr_monitor::PrMonitorService,
     queued_message::QueuedMessageService,

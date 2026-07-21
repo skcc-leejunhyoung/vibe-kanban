@@ -63,12 +63,6 @@
     "action": "Iniciar sesión"
   },
   "confirmRemoveMember": "Are you sure you want to remove this member from the organization?",
-  "billing": {
-    "title": "Facturación y suscripción",
-    "description": "Administra la suscripción y configuración de facturación de tu organización",
-    "manageButton": "Administrar facturación",
-    "openInBrowser": "Se abre en una nueva pestaña del navegador"
-  },
   "personalOrg": {
     "cannotInvite": "Las organizaciones personales no pueden tener miembros adicionales.",
     "createOrgPrompt": "Create an organization to collaborate with others.",

@@ -63,12 +63,6 @@
     "action": "Sign in"
   },
   "confirmRemoveMember": "Are you sure you want to remove this member from the organization?",
-  "billing": {
-    "title": "Billing & Subscription",
-    "description": "Manage your organization's subscription and billing settings",
-    "manageButton": "Manage Billing",
-    "openInBrowser": "Opens in a new browser tab"
-  },
   "personalOrg": {
     "cannotInvite": "Personal organizations cannot have additional members.",
     "createOrgPrompt": "Create an organization to collaborate with others.",

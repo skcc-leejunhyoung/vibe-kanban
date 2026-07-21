@@ -63,12 +63,6 @@
     "action": "ログイン"
   },
   "confirmRemoveMember": "Are you sure you want to remove this member from the organization?",
-  "billing": {
-    "title": "請求とサブスクリプション",
-    "description": "組織のサブスクリプションと請求設定を管理",
-    "manageButton": "請求を管理",
-    "openInBrowser": "新しいブラウザタブで開きます"
-  },
   "personalOrg": {
     "cannotInvite": "個人組織には追加のメンバーを含めることができません。",
     "createOrgPrompt": "Create an organization to collaborate with others.",

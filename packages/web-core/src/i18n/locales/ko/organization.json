@@ -63,12 +63,6 @@
     "action": "로그인"
   },
   "confirmRemoveMember": "Are you sure you want to remove this member from the organization?",
-  "billing": {
-    "title": "결제 및 구독",
-    "description": "조직의 구독 및 결제 설정 관리",
-    "manageButton": "결제 관리",
-    "openInBrowser": "새 브라우저 탭에서 열림"
-  },
   "personalOrg": {
     "cannotInvite": "개인 조직에는 추가 멤버를 포함할 수 없습니다.",
     "createOrgPrompt": "Create an organization to collaborate with others.",

@@ -1,4 +1,3 @@
-pub mod analytics;
 pub mod approvals;
 pub mod auth;
 pub mod config;
@@ -12,6 +11,7 @@ pub mod file_search;
 pub mod filesystem;
 pub mod filesystem_watcher;
 pub mod issue_gating;
+pub mod machine_id;
 pub mod normalized_replay_cache;
 pub mod notification;
 pub mod oauth_credentials;

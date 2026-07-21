@@ -63,12 +63,6 @@
     "action": "登入"
   },
   "confirmRemoveMember": "您確定要從組織中移除此成員嗎？",
-  "billing": {
-    "title": "帳單與訂閱",
-    "description": "管理您組織的訂閱與帳單設定",
-    "manageButton": "管理帳單",
-    "openInBrowser": "在新瀏覽器分頁中開啟"
-  },
   "personalOrg": {
     "cannotInvite": "個人組織不能新增其他成員。",
     "createOrgPrompt": "Create an organization to collaborate with others.",

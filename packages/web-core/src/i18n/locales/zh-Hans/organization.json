@@ -63,12 +63,6 @@
     "action": "登录"
   },
   "confirmRemoveMember": "您确定要从组织中移除此成员吗？",
-  "billing": {
-    "title": "账单与订阅",
-    "description": "管理您组织的订阅和账单设置",
-    "manageButton": "管理账单",
-    "openInBrowser": "在新浏览器标签页中打开"
-  },
   "personalOrg": {
     "cannotInvite": "个人组织不能添加其他成员。",
     "createOrgPrompt": "Create an organization to collaborate with others.",

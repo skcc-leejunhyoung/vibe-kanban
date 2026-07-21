@@ -63,12 +63,6 @@
     "action": "Connexion"
   },
   "confirmRemoveMember": "Êtes-vous sûr de vouloir retirer ce membre de l'organisation ?",
-  "billing": {
-    "title": "Facturation et abonnement",
-    "description": "Gérez l'abonnement et les paramètres de facturation de votre organisation",
-    "manageButton": "Gérer la facturation",
-    "openInBrowser": "S'ouvre dans un nouvel onglet du navigateur"
-  },
   "personalOrg": {
     "cannotInvite": "Les organisations personnelles ne peuvent pas avoir de membres supplémentaires.",
     "createOrgPrompt": "Create an organization to collaborate with others.",
