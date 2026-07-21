@@ -93,8 +93,12 @@ describe('resolveModifier', () => {
     expect(resolveModifier(PREVIOUS_SPLIT_PANE_BINDING_ID, {})).toBe(
       'shift+alt+tab'
     );
-    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe('mod+1');
-    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe('mod+4');
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe(
+      'mod+alt+shift+1'
+    );
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe(
+      'mod+alt+shift+4'
+    );
   });
 });
 

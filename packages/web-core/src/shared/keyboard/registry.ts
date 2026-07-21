@@ -600,7 +600,7 @@ export const modifierBindings: ModifierBinding[] = [
   },
   ...([1, 2, 3, 4] as const).map((preset) => ({
     id: SPLIT_PRESET_BINDING_IDS[preset],
-    keys: `mod+${preset}`,
+    keys: `mod+alt+shift+${preset}`,
     actionId: `splitPreset${preset}`,
     group: 'Modifiers',
   })),
