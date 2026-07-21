@@ -51,6 +51,7 @@ import {
   isSplitScreenEmbed,
   SplitScreenSurface,
 } from "@/shared/components/SplitScreenSurface";
+import { useActions } from "@/shared/hooks/useActions";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -75,6 +76,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     (state) => state.syncUser,
   );
   const location = useLocation();
+  const { registerNavigationProjects } = useActions();
   const { isSignedIn, userId } = useAuth();
   const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
   const isProjectRoute = /^\/projects\/[^/]+/.test(location.pathname);
@@ -147,7 +149,14 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     staleTime: 30_000,
   });
 
-  const projects = projectsQuery.data ?? [];
+  const projects = useMemo(
+    () => projectsQuery.data ?? [],
+    [projectsQuery.data],
+  );
+  useEffect(() => {
+    registerNavigationProjects(projects.map(({ id, name }) => ({ id, name })));
+    return () => registerNavigationProjects([]);
+  }, [projects, registerNavigationProjects]);
   const isLoadingProjects =
     isSignedIn && !!activeOrganizationId && projectsQuery.isLoading;
 
