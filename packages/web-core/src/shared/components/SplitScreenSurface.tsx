@@ -401,14 +401,6 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     syncUser(expectedUserId);
   }, [expectedUserId, syncUser]);
 
-  const activatePreset = useCallback(
-    (nextPreset: SplitPreset) => {
-      setPreset(nextPreset, initialUrlRef.current);
-    },
-    [setPreset]
-  );
-  usePresetHotkeys(activatePreset);
-
   const activatePane = useCallback(
     (paneId: string, moveDomFocus = false) => {
       setActivePane(paneId);
@@ -424,6 +416,19 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     },
     [setActivePane]
   );
+
+  const activatePreset = useCallback(
+    (nextPreset: SplitPreset) => {
+      setPreset(nextPreset, initialUrlRef.current);
+      requestAnimationFrame(() => {
+        const firstPane =
+          useSplitScreenStore.getState().presets[nextPreset].panes[0];
+        if (firstPane) activatePane(firstPane.id, nextPreset > 1);
+      });
+    },
+    [activatePane, setPreset]
+  );
+  usePresetHotkeys(activatePreset);
 
   useEffect(() => {
     return () => {

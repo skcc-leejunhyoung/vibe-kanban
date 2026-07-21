@@ -181,15 +181,18 @@ export const useSplitScreenStore = create<SplitScreenState>()(
             preset,
             presets: {
               ...state.presets,
-              [preset]: hasSavedPage
-                ? destination
-                : {
-                    ...destination,
-                    panes: destination.panes.map((pane, index) => ({
-                      ...pane,
-                      url: index === 0 ? activeSourceUrl : currentUrl,
-                    })),
-                  },
+              [preset]: {
+                ...destination,
+                activePaneId: destination.panes[0].id,
+                ...(hasSavedPage
+                  ? {}
+                  : {
+                      panes: destination.panes.map((pane, index) => ({
+                        ...pane,
+                        url: index === 0 ? activeSourceUrl : currentUrl,
+                      })),
+                    }),
+              },
             },
           };
         }),

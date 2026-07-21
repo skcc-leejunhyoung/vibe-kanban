@@ -122,6 +122,16 @@ describe('split screen presets', () => {
     ).toEqual(['/workspaces/a', '/workspaces/b']);
   });
 
+  it('focuses the first pane whenever a preset is selected', () => {
+    useSplitScreenStore.getState().setPreset(2, '/workspaces/a');
+    useSplitScreenStore.getState().setActivePane('preset-2-pane-2');
+    useSplitScreenStore.getState().setPreset(1, '/workspaces/a');
+    useSplitScreenStore.getState().setPreset(2, '/workspaces/a');
+
+    const preset = useSplitScreenStore.getState().presets[2];
+    expect(preset.activePaneId).toBe(preset.panes[0].id);
+  });
+
   it('moves panes without losing their page state', () => {
     useSplitScreenStore.getState().setPreset(2, '/workspaces/a');
     useSplitScreenStore

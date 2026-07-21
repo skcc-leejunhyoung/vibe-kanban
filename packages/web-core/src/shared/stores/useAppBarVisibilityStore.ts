@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 
 interface AppBarVisibilityState {
   isVisible: boolean;
@@ -12,6 +12,9 @@ export const useAppBarVisibilityStore = create<AppBarVisibilityState>()(
       isVisible: true,
       toggle: () => set((state) => ({ isVisible: !state.isVisible })),
     }),
-    { name: 'vk-app-bar-visibility-v1' }
+    {
+      name: 'vk-app-bar-visibility-v1',
+      storage: createJSONStorage(() => window.sessionStorage),
+    }
   )
 );
