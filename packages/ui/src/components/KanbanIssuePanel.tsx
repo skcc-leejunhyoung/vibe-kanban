@@ -90,6 +90,7 @@ export interface KanbanIssueDescriptionEditorProps {
   staticToolbarActions?: ReactNode;
   onRequestEdit?: () => void;
   hideActions?: boolean;
+  editorRef?: RefObject<{ focus: () => void }>;
 }
 
 export interface KanbanIssuePanelProps {
@@ -228,6 +229,7 @@ export function KanbanIssuePanel({
   const [isDescriptionEditing, setIsDescriptionEditing] =
     useState(isCreateMode);
   const descriptionContainerRef = useRef<HTMLDivElement>(null);
+  const descriptionEditorRef = useRef<{ focus: () => void }>(null);
   const panelRootRef = useRef<HTMLDivElement>(null);
 
   // Reset description editing state when switching between create/edit mode or when issue changes
@@ -295,6 +297,13 @@ export function KanbanIssuePanel({
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       onCmdEnterSubmit?.();
+      return;
+    }
+
+    if (!isCreateMode && !e.shiftKey && e.key === 'Tab') {
+      e.preventDefault();
+      setIsDescriptionEditing(true);
+      requestAnimationFrame(() => descriptionEditorRef.current?.focus());
     }
   };
 
@@ -470,6 +479,7 @@ export function KanbanIssuePanel({
               onRequestEdit: !isCreateMode
                 ? () => setIsDescriptionEditing(true)
                 : undefined,
+              editorRef: descriptionEditorRef,
               staticToolbarActions: (
                 <>
                   {isDescriptionEditing && onBrowseAttachment && (

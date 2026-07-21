@@ -1231,9 +1231,10 @@ export function KanbanIssuePanelContainer({
       isUploading={isUploading}
       attachmentError={uploadError}
       onDismissAttachmentError={clearUploadError}
-      renderDescriptionEditor={(props) => (
+      renderDescriptionEditor={({ editorRef, ...props }) => (
         <WYSIWYGEditor
           {...props}
+          ref={editorRef}
           hostId={displayData.workspaceHostId}
           localAttachments={localAttachments}
         />
