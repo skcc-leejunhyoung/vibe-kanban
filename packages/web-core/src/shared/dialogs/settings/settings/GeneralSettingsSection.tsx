@@ -40,6 +40,7 @@ import { useTheme } from '@/shared/hooks/useTheme';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { persistLanguage, updateLanguageFromConfig } from '@/i18n/config';
 import { TagManager } from '@/shared/components/TagManager';
+import { useSettingsMachineClient } from './SettingsHostContext';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
   DEFAULT_THEME_VARIANT,
@@ -110,6 +111,8 @@ export function GeneralSettingsSection() {
   );
   const { setTheme } = useTheme();
   const runtime = useAppRuntime();
+  const machineClient = useSettingsMachineClient();
+  const machineHostId = machineClient?.target.apiHostId;
 
   // Executor options for the default coding agent dropdown. Hidden agents are
   // filtered out, but the current default stays visible so the selection holds.
@@ -161,6 +164,7 @@ export function GeneralSettingsSection() {
       value: draft?.workspace_dir ?? '',
       title: t('settings.general.git.workspaceDir.dialogTitle'),
       description: t('settings.general.git.workspaceDir.dialogDescription'),
+      hostId: machineHostId,
     });
     if (result) {
       updateDraft({ workspace_dir: result });
@@ -1106,7 +1110,7 @@ export function GeneralSettingsSection() {
         title={t('settings.general.taskTemplates.title')}
         description={t('settings.general.taskTemplates.description')}
       >
-        <TagManager />
+        <TagManager hostId={machineHostId} />
       </SettingsCard>
 
       {/* Safety */}

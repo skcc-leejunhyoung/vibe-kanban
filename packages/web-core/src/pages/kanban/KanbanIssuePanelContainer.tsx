@@ -1155,7 +1155,11 @@ export function KanbanIssuePanelContainer({
       attachmentError={uploadError}
       onDismissAttachmentError={clearUploadError}
       renderDescriptionEditor={(props) => (
-        <WYSIWYGEditor {...props} localAttachments={localAttachments} />
+        <WYSIWYGEditor
+          {...props}
+          hostId={displayData.workspaceHostId}
+          localAttachments={localAttachments}
+        />
       )}
       renderIntake={() => (
         <IssueIntakeSection

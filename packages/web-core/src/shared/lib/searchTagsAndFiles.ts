@@ -14,6 +14,7 @@ export interface SearchResultItem {
 export interface SearchOptions {
   repoIds?: string[];
   projectId?: string;
+  hostId?: string | null;
 }
 
 export async function searchTagsAndFiles(
@@ -23,7 +24,7 @@ export async function searchTagsAndFiles(
   const results: SearchResultItem[] = [];
 
   // Fetch all tags and filter client-side
-  const tags = await tagsApi.list();
+  const tags = await tagsApi.list(undefined, options?.hostId);
   const filteredTags = tags.filter((tag) =>
     tag.tag_name.toLowerCase().includes(query.toLowerCase())
   );
@@ -33,7 +34,13 @@ export async function searchTagsAndFiles(
   if (query.length > 0) {
     let fileResults: SearchResult[] = [];
     if (options?.repoIds && options.repoIds.length > 0) {
-      fileResults = await searchApi.searchFiles(options.repoIds, query);
+      fileResults = await searchApi.searchFiles(
+        options.repoIds,
+        query,
+        undefined,
+        undefined,
+        options.hostId
+      );
     }
 
     if (fileResults.length > 0) {

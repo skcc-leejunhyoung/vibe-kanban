@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PlusIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react';
 import { SpinnerGap } from '@phosphor-icons/react';
@@ -8,22 +8,36 @@ import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { IconButton } from '@vibe/ui/components/IconButton';
 import type { Tag } from 'shared/types';
 
-export function TagManager() {
+export function TagManager({ hostId }: { hostId?: string | null }) {
   const { t } = useTranslation('settings');
   const [tags, setTags] = useState<Tag[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
   const fetchTags = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
+    setLoadError(null);
     try {
-      const data = await tagsApi.list();
-      setTags(data);
+      const data = await tagsApi.list(undefined, hostId);
+      if (requestId === requestIdRef.current) {
+        setTags(data);
+      }
     } catch (err) {
       console.error('Failed to fetch tags:', err);
+      if (requestId === requestIdRef.current) {
+        setTags([]);
+        setLoadError(
+          err instanceof Error ? err.message : 'Failed to load tags'
+        );
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [hostId]);
 
   useEffect(() => {
     fetchTags();
@@ -34,6 +48,7 @@ export function TagManager() {
       try {
         const result = await TagEditDialog.show({
           tag: tag || null,
+          hostId,
         });
 
         if (result === 'saved') {
@@ -43,7 +58,7 @@ export function TagManager() {
         // User cancelled - do nothing
       }
     },
-    [fetchTags]
+    [fetchTags, hostId]
   );
 
   const handleDelete = useCallback(
@@ -59,13 +74,13 @@ export function TagManager() {
       }
 
       try {
-        await tagsApi.delete(tag.id);
+        await tagsApi.delete(tag.id, hostId);
         await fetchTags();
       } catch (err) {
         console.error('Failed to delete tag:', err);
       }
     },
-    [fetchTags, t]
+    [fetchTags, hostId, t]
   );
 
   if (loading) {
@@ -74,6 +89,10 @@ export function TagManager() {
         <SpinnerGap className="h-8 w-8 animate-spin" />
       </div>
     );
+  }
+
+  if (loadError) {
+    return <div className="py-8 text-sm text-error">{loadError}</div>;
   }
 
   return (

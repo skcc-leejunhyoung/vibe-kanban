@@ -325,14 +325,20 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       repoId,
       hostId,
     });
-    const listRecentRepos = useCallback(async () => repoApi.listRecent(), []);
-    const getRepoById = useCallback(async (targetRepoId: string) => {
-      try {
-        return await repoApi.getById(targetRepoId);
-      } catch {
-        return null;
-      }
-    }, []);
+    const listRecentRepos = useCallback(
+      async () => repoApi.listRecent(hostId),
+      [hostId]
+    );
+    const getRepoById = useCallback(
+      async (targetRepoId: string) => {
+        try {
+          return await repoApi.getById(targetRepoId, hostId);
+        } catch {
+          return null;
+        }
+      },
+      [hostId]
+    );
     const chooseRepo = useCallback(async (repos: RepoLike[]) => {
       const repoResult = (await SelectionDialog.show({
         initialPageId: 'selectRepo',
@@ -347,18 +353,22 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       try {
         const result = await TagEditDialog.show({
           tag: null,
+          hostId,
         });
         return result === 'saved';
       } catch {
         return false;
       }
-    }, []);
+    }, [hostId]);
     const searchFileTags = useCallback(
       async (
         query: string,
         options: { repoIds?: string[] }
       ): Promise<SearchResultItemLike[]> => {
-        const results = await searchTagsAndFiles(query, options);
+        const results = await searchTagsAndFiles(query, {
+          ...options,
+          hostId,
+        });
         const mappedResults: SearchResultItemLike[] = [];
         for (const result of results) {
           if (result.type === 'tag' && result.tag) {
@@ -370,7 +380,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
         }
         return mappedResults;
       },
-      []
+      [hostId]
     );
     const handleCopy = useCallback(async () => {
       if (!value) return;

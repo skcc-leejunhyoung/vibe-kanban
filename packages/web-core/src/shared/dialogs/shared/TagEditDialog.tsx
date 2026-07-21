@@ -20,11 +20,12 @@ import { defineModal, getErrorMessage } from '@/shared/lib/modals';
 
 export interface TagEditDialogProps {
   tag?: Tag | null; // null for create mode
+  hostId?: string | null;
 }
 
 export type TagEditResult = 'saved' | 'canceled';
 
-const TagEditDialogImpl = create<TagEditDialogProps>(({ tag }) => {
+const TagEditDialogImpl = create<TagEditDialogProps>(({ tag, hostId }) => {
   const modal = useModal();
   const { t } = useTranslation('settings');
   const [formData, setFormData] = useState({
@@ -68,13 +69,13 @@ const TagEditDialogImpl = create<TagEditDialogProps>(({ tag }) => {
           tag_name: formData.tag_name,
           content: formData.content || null, // null means "don't update"
         };
-        await tagsApi.update(tag.id, updateData);
+        await tagsApi.update(tag.id, updateData, hostId);
       } else {
         const createData: CreateTag = {
           tag_name: formData.tag_name,
           content: formData.content,
         };
-        await tagsApi.create(createData);
+        await tagsApi.create(createData, hostId);
       }
 
       modal.resolve('saved' as TagEditResult);

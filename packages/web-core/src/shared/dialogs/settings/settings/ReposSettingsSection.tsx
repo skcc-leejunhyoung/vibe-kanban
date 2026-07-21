@@ -421,15 +421,16 @@ export function ReposSettingsSection({
   // Handle adding a new repo via folder picker
   const handleAddRepo = useCallback(async () => {
     try {
-      const selectedPath = await FolderPickerDialog.show({
-        title: t('settings.repos.addRepo.dialogTitle'),
-        description: t('settings.repos.addRepo.dialogDescription'),
-      });
-      if (!selectedPath) return;
-
       if (!machineClient) {
         return;
       }
+
+      const selectedPath = await FolderPickerDialog.show({
+        title: t('settings.repos.addRepo.dialogTitle'),
+        description: t('settings.repos.addRepo.dialogDescription'),
+        hostId: machineClient.target.apiHostId,
+      });
+      if (!selectedPath) return;
 
       const repo = await machineClient.registerRepo({ path: selectedPath });
       await queryClient.invalidateQueries({ queryKey: reposQueryKey });

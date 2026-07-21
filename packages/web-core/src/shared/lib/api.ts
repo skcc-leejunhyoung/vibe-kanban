@@ -1600,32 +1600,42 @@ export const configApi = {
 
 // Task Tags APIs (all tags are global)
 export const tagsApi = {
-  list: async (params?: TagSearchParams): Promise<Tag[]> => {
+  list: async (
+    params?: TagSearchParams,
+    hostId?: string | null
+  ): Promise<Tag[]> => {
     const queryParam = params?.search
       ? `?search=${encodeURIComponent(params.search)}`
       : '';
-    const response = await makeRequest(`/api/tags${queryParam}`);
+    const response = await makeHostAwareRequest(
+      `/api/tags${queryParam}`,
+      hostId
+    );
     return handleApiResponse<Tag[]>(response);
   },
 
-  create: async (data: CreateTag): Promise<Tag> => {
-    const response = await makeRequest('/api/tags', {
+  create: async (data: CreateTag, hostId?: string | null): Promise<Tag> => {
+    const response = await makeHostAwareRequest('/api/tags', hostId, {
       method: 'POST',
       body: JSON.stringify(data),
     });
     return handleApiResponse<Tag>(response);
   },
 
-  update: async (tagId: string, data: UpdateTag): Promise<Tag> => {
-    const response = await makeRequest(`/api/tags/${tagId}`, {
+  update: async (
+    tagId: string,
+    data: UpdateTag,
+    hostId?: string | null
+  ): Promise<Tag> => {
+    const response = await makeHostAwareRequest(`/api/tags/${tagId}`, hostId, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
     return handleApiResponse<Tag>(response);
   },
 
-  delete: async (tagId: string): Promise<void> => {
-    const response = await makeRequest(`/api/tags/${tagId}`, {
+  delete: async (tagId: string, hostId?: string | null): Promise<void> => {
+    const response = await makeHostAwareRequest(`/api/tags/${tagId}`, hostId, {
       method: 'DELETE',
     });
     return handleApiResponse<void>(response);
@@ -2429,12 +2439,14 @@ export const searchApi = {
     repoIds: string[],
     query: string,
     mode?: SearchMode,
-    options?: RequestInit
+    options?: RequestInit,
+    hostId?: string | null
   ): Promise<SearchResult[]> => {
     const repoIdsParam = repoIds.join(',');
     const modeParam = mode ? `&mode=${encodeURIComponent(mode)}` : '';
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/search?q=${encodeURIComponent(query)}&repo_ids=${encodeURIComponent(repoIdsParam)}${modeParam}`,
+      hostId,
       options
     );
     return handleApiResponse<SearchResult[]>(response);
