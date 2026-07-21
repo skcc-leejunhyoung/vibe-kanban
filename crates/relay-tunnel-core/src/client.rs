@@ -67,7 +67,11 @@ pub async fn start_relay_client(config: RelayClientConfig) -> anyhow::Result<()>
 
                 tokio::spawn(async move {
                     if let Err(error) = handle_inbound_stream(stream, local_addr).await {
-                        tracing::warn!(?error, "Relay stream handling failed");
+                        if is_expected_stream_close(&error) {
+                            tracing::debug!(?error, "Relay stream closed by requester");
+                        } else {
+                            tracing::warn!(?error, "Relay stream handling failed");
+                        }
                     }
                 });
             }
@@ -82,6 +86,10 @@ async fn handle_inbound_stream(
     let io = TokioIo::new(stream);
 
     server_http1::Builder::new()
+        // A yamux stream carries exactly one HTTP exchange. Explicitly close
+        // it after the response so Hyper does not wait for a second request
+        // and report the peer's normal stream teardown as an incomplete one.
+        .keep_alive(false)
         .serve_connection(
             io,
             service_fn(move |request: Request<Incoming>| proxy_to_local(request, local_addr)),
@@ -89,6 +97,13 @@ async fn handle_inbound_stream(
         .with_upgrades()
         .await
         .context("Yamux stream server connection failed")
+}
+
+fn is_expected_stream_close(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<hyper::Error>())
+        .any(hyper::Error::is_incomplete_message)
 }
 
 async fn proxy_to_local(

@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::{self, Write},
     sync::{Arc, RwLock},
 };
@@ -49,6 +49,39 @@ struct StoredMsg {
 struct Inner {
     history: VecDeque<StoredMsg>,
     total_bytes: usize,
+    replay_patches: Option<ReplayPatches>,
+}
+
+#[derive(Default)]
+struct ReplayPatches {
+    order: Vec<String>,
+    by_path: HashMap<String, json_patch::Patch>,
+}
+
+impl ReplayPatches {
+    fn apply(&mut self, patch: &json_patch::Patch) {
+        for operation in &patch.0 {
+            let path = operation.path().to_string();
+            if matches!(operation, json_patch::PatchOperation::Remove(_)) {
+                self.by_path.remove(&path);
+                self.order.retain(|candidate| candidate != &path);
+                continue;
+            }
+
+            if !self.by_path.contains_key(&path) {
+                self.order.push(path.clone());
+            }
+            self.by_path
+                .insert(path, json_patch::Patch(vec![operation.clone()]));
+        }
+    }
+
+    fn snapshot(&self) -> Vec<json_patch::Patch> {
+        self.order
+            .iter()
+            .filter_map(|path| self.by_path.get(path).cloned())
+            .collect()
+    }
 }
 
 pub struct MsgStore {
@@ -64,22 +97,23 @@ impl Default for MsgStore {
 
 impl MsgStore {
     pub fn new() -> Self {
-        Self::with_broadcast_capacity(BROADCAST_CAPACITY)
+        Self::with_broadcast_capacity(BROADCAST_CAPACITY, false)
     }
 
     /// Historical normalization can produce thousands of cumulative replacement
     /// patches before a remote client can drain them. A small replay queue keeps
     /// those snapshots from retaining gigabytes while preserving recent state.
     pub fn new_for_replay() -> Self {
-        Self::with_broadcast_capacity(REPLAY_BROADCAST_CAPACITY)
+        Self::with_broadcast_capacity(REPLAY_BROADCAST_CAPACITY, true)
     }
 
-    fn with_broadcast_capacity(capacity: usize) -> Self {
+    fn with_broadcast_capacity(capacity: usize, collect_replay_patches: bool) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         Self {
             inner: RwLock::new(Inner {
                 history: VecDeque::with_capacity(32),
                 total_bytes: 0,
+                replay_patches: collect_replay_patches.then(ReplayPatches::default),
             }),
             sender,
         }
@@ -90,6 +124,10 @@ impl MsgStore {
         let bytes = msg.approx_bytes();
 
         let mut inner = self.inner.write().unwrap();
+        if let (Some(replay_patches), LogMsg::JsonPatch(patch)) = (&mut inner.replay_patches, &msg)
+        {
+            replay_patches.apply(patch);
+        }
         while inner.total_bytes.saturating_add(bytes) > HISTORY_BYTES {
             if let Some(front) = inner.history.pop_front() {
                 inner.total_bytes = inner.total_bytes.saturating_sub(front.bytes);
@@ -138,6 +176,19 @@ impl MsgStore {
             .iter()
             .map(|s| s.msg.clone())
             .collect()
+    }
+
+    /// Return the losslessly coalesced final patch for every path produced by
+    /// a historical replay. Intermediate replacements are discarded at push
+    /// time, so memory is bounded by final conversation size rather than log
+    /// volume and cannot lag behind a broadcast receiver.
+    pub fn get_replay_patches(&self) -> Option<Vec<json_patch::Patch>> {
+        self.inner
+            .read()
+            .unwrap()
+            .replay_patches
+            .as_ref()
+            .map(ReplayPatches::snapshot)
     }
 
     /// History then live, as `LogMsg`.
@@ -231,5 +282,57 @@ impl MsgStore {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use json_patch::{AddOperation, Patch, PatchOperation, ReplaceOperation};
+    use serde_json::json;
+
+    use super::MsgStore;
+    use crate::log_msg::LogMsg;
+
+    fn add(path: &str, value: usize) -> Patch {
+        Patch(vec![PatchOperation::Add(AddOperation {
+            path: path.parse().unwrap(),
+            value: json!(value),
+        })])
+    }
+
+    fn replace(path: &str, value: usize) -> Patch {
+        Patch(vec![PatchOperation::Replace(ReplaceOperation {
+            path: path.parse().unwrap(),
+            value: json!(value),
+        })])
+    }
+
+    #[test]
+    fn replay_patch_collection_is_lossless_beyond_broadcast_capacity() {
+        let store = MsgStore::new_for_replay();
+
+        for index in 0..1_000 {
+            store.push(LogMsg::JsonPatch(add(&format!("/entries/{index}"), index)));
+        }
+
+        let patches = store.get_replay_patches().unwrap();
+        assert_eq!(patches.len(), 1_000);
+        assert_eq!(patches.first(), Some(&add("/entries/0", 0)));
+        assert_eq!(patches.last(), Some(&add("/entries/999", 999)));
+    }
+
+    #[test]
+    fn replay_patch_collection_keeps_only_latest_value_per_path() {
+        let store = MsgStore::new_for_replay();
+        store.push(LogMsg::JsonPatch(add("/entries/7", 1)));
+
+        for value in 2..1_000 {
+            store.push(LogMsg::JsonPatch(replace("/entries/7", value)));
+        }
+
+        assert_eq!(
+            store.get_replay_patches().unwrap(),
+            vec![replace("/entries/7", 999)]
+        );
     }
 }

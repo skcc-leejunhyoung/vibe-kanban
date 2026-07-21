@@ -21,7 +21,7 @@ export function workspaceSessionsQuery(
 ) {
   return {
     queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
-    queryFn: () => sessionsApi.getByWorkspace(workspaceId!),
+    queryFn: () => sessionsApi.getByWorkspace(workspaceId!, hostId),
   };
 }
 

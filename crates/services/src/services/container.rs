@@ -41,10 +41,7 @@ use executors::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
             ConversationPatch,
-            patch::{
-                extract_normalized_entry_from_patch, fix_patch_ops, is_add_or_replace,
-                patch_entry_path,
-            },
+            patch::{extract_normalized_entry_from_patch, fix_patch_ops},
         },
     },
     profile::{ExecutorConfig, ExecutorProfileId},
@@ -1029,10 +1026,6 @@ pub trait ContainerService {
                 return None;
             };
 
-            // Subscribe before spawning normalizers so historical patches are
-            // drained locally instead of accumulating behind a slow client.
-            let normalized_replay = temp_store.history_plus_stream();
-
             // Spawn normalizer on populated store and collect JoinHandles
             let handles = match executor_action.typ() {
                 ExecutorActionType::CodingAgentInitialRequest(request) => {
@@ -1093,86 +1086,27 @@ pub trait ContainerService {
                 }
             };
 
-            // Await all normalizer tasks, then push Ready so the dedup
-            // stream knows when to flush its buffer and terminate.
-            {
-                let store = temp_store.clone();
-                let execution_id = *id;
-                tokio::spawn(async move {
-                    for handle in handles {
-                        let _ = handle.await;
-                    }
-                    tracing::info!(
-                        %execution_id,
-                        elapsed_ms = replay_started_at.elapsed().as_millis(),
-                        "Historical log normalization completed"
-                    );
-                    store.push(LogMsg::Ready);
-                });
+            for handle in handles {
+                let _ = handle.await;
             }
+            tracing::info!(
+                execution_id = %id,
+                elapsed_ms = replay_started_at.elapsed().as_millis(),
+                "Historical log normalization completed"
+            );
 
-            // Stream normalized patches, deduplicating consecutive patches
-            // that target the same path (only the final state matters for
-            // historical replay). The Ready sentinel flushes the buffer.
-            enum PatchOrDone {
-                Patch(Patch),
-                Done,
-            }
-
-            let stream = normalized_replay.filter_map(|msg| async move {
-                match msg {
-                    Ok(LogMsg::JsonPatch(patch)) => Some(PatchOrDone::Patch(patch)),
-                    Ok(LogMsg::Ready) => Some(PatchOrDone::Done),
-                    _ => None,
-                }
-            });
-
-            let deduped = futures::stream::unfold(
-                (
-                    stream.boxed(),
-                    None::<Patch>,
-                    HashSet::<String>::new(),
-                    false,
-                ),
-                |(mut stream, buffered, mut sent_paths, done)| async move {
-                    if done {
-                        return None;
-                    }
-
-                    match stream.next().await {
-                        Some(PatchOrDone::Patch(patch)) => {
-                            let Some(prev) = buffered else {
-                                // First patch: just buffer it
-                                return Some((None, (stream, Some(patch), sent_paths, false)));
-                            };
-                            if patch_entry_path(&patch) == patch_entry_path(&prev)
-                                && is_add_or_replace(&patch)
-                                && is_add_or_replace(&prev)
-                            {
-                                // Same path, both add/replace: replace buffer
-                                Some((None, (stream, Some(patch), sent_paths, false)))
-                            } else {
-                                // Different path: emit prev, buffer new
-                                let prev = fix_patch_ops(prev, &mut sent_paths);
-                                Some((Some(prev), (stream, Some(patch), sent_paths, false)))
-                            }
-                        }
-                        Some(PatchOrDone::Done) | None => {
-                            // Sentinel or stream end: flush buffer and terminate
-                            if let Some(prev) = buffered {
-                                let prev = fix_patch_ops(prev, &mut sent_paths);
-                                return Some((Some(prev), (stream, None, sent_paths, true)));
-                            }
-                            None
-                        }
-                    }
-                },
-            )
-            .filter_map(|opt| async move { opt })
-            .collect::<Vec<_>>()
-            .await;
-
-            let deduped = Arc::new(deduped);
+            // Replay stores coalesce each path synchronously as patches are
+            // pushed. This avoids both the old unbounded-memory failure and
+            // broadcast lag silently dropping distinct conversation entries.
+            let mut sent_paths = HashSet::new();
+            let deduped = Arc::new(
+                temp_store
+                    .get_replay_patches()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|patch| fix_patch_ops(patch, &mut sent_paths))
+                    .collect::<Vec<_>>(),
+            );
             // Cache only settled processes: a `running` row with no live msg
             // store is an orphan whose log may still grow (server restart),
             // and a just-finished process may still be draining its JSONL
