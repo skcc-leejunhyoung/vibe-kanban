@@ -3,35 +3,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use serde_json::Value;
-
-#[derive(Debug, Clone)]
-pub struct AnalyticsContext {
-    pub user_id: String,
-    pub analytics_service: AnalyticsService,
-}
-
-#[derive(Debug, Clone)]
-pub struct AnalyticsConfig;
-
-impl AnalyticsConfig {
-    pub fn new() -> Option<Self> {
-        None
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AnalyticsService;
-
-impl AnalyticsService {
-    pub fn new(_config: AnalyticsConfig) -> Self {
-        Self
-    }
-
-    pub fn track_event(&self, _user_id: &str, _event_name: &str, _properties: Option<Value>) {}
-}
-
-/// Generates a consistent, anonymous user ID for npm package telemetry.
+/// Generates a consistent machine-scoped user ID.
 /// Returns a hex string prefixed with "npm_user_"
 pub fn generate_user_id() -> String {
     let mut hasher = DefaultHasher::new();

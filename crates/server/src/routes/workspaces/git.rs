@@ -508,15 +508,6 @@ pub async fn merge_workspace(
         });
     }
 
-    deployment
-        .track_if_analytics_allowed(
-            "task_attempt_merged",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
@@ -594,16 +585,6 @@ pub async fn commit_workspace(
                     .await;
             });
         }
-
-        deployment
-            .track_if_analytics_allowed(
-                "task_attempt_committed",
-                serde_json::json!({
-                    "workspace_id": workspace.id.to_string(),
-                    "repo_id": request.repo_id.to_string(),
-                }),
-            )
-            .await;
     }
 
     Ok(ResponseJson(ApiResponse::success(
@@ -865,16 +846,6 @@ pub async fn pull_workspace_branch_from_remote(
         PullOutcome::UpToDate => PullWorkspaceResponse::UpToDate,
         PullOutcome::FastForwarded { commits, .. } => {
             spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
-            deployment
-                .track_if_analytics_allowed(
-                    "task_attempt_pulled",
-                    serde_json::json!({
-                        "workspace_id": workspace.id.to_string(),
-                        "repo_id": request.repo_id.to_string(),
-                        "commits": commits,
-                    }),
-                )
-                .await;
             PullWorkspaceResponse::FastForwarded { commits }
         }
         PullOutcome::Diverged { ahead, behind } => {
@@ -974,20 +945,6 @@ pub async fn update_workspace_from_base(
     }
 
     spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
-
-    deployment
-        .track_if_analytics_allowed(
-            "task_attempt_updated_from_base",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-                "repo_id": payload.repo_id.to_string(),
-                "strategy": match payload.strategy {
-                    UpdateFromBaseStrategy::Merge => "merge",
-                    UpdateFromBaseStrategy::Rebase => "rebase",
-                },
-            }),
-        )
-        .await;
 
     Ok(ResponseJson(ApiResponse::success(())))
 }
@@ -1611,16 +1568,6 @@ pub async fn change_target_branch(
             .git()
             .get_branch_status(&repo.path, &workspace.branch, &new_target_branch)?;
 
-    deployment
-        .track_if_analytics_allowed(
-            "task_attempt_target_branch_changed",
-            serde_json::json!({
-                "repo_id": repo_id.to_string(),
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(
         ChangeTargetBranchResponse {
             repo_id,
@@ -1769,15 +1716,6 @@ pub async fn rename_branch(
         );
     }
 
-    deployment
-        .track_if_analytics_allowed(
-            "task_attempt_branch_renamed",
-            serde_json::json!({
-                "updated_children": updated_children_count,
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(RenameBranchResponse {
         branch: new_branch_name.to_string(),
     })))
@@ -1869,16 +1807,6 @@ pub async fn rebase_workspace(
             other => Err(ApiError::GitService(other)),
         };
     }
-
-    deployment
-        .track_if_analytics_allowed(
-            "task_attempt_rebased",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-                "repo_id": payload.repo_id.to_string(),
-            }),
-        )
-        .await;
 
     Ok(ResponseJson(ApiResponse::success(())))
 }

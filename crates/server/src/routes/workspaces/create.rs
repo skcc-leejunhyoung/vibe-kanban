@@ -69,15 +69,6 @@ pub async fn create_workspace(
 ) -> Result<ResponseJson<ApiResponse<Workspace>>, ApiError> {
     let workspace = create_workspace_record(&deployment, payload.name, None).await?;
 
-    deployment
-        .track_if_analytics_allowed(
-            "workspace_created",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(workspace)))
 }
 
@@ -533,15 +524,6 @@ pub async fn create_workspace_without_starting(
     .await?;
     let workspace = managed_workspace.workspace;
 
-    deployment
-        .track_if_analytics_allowed(
-            "workspace_created_without_starting",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(
         CreateWorkspaceWithoutStartingResponse { workspace },
     )))
@@ -760,17 +742,6 @@ pub async fn create_and_start_workspace(
             .await?
     };
 
-    deployment
-        .track_if_analytics_allowed(
-            "workspace_created_and_started",
-            serde_json::json!({
-                "executor": &executor_config.executor,
-                "variant": &executor_config.variant,
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(
         CreateAndStartWorkspaceResponse {
             workspace,
@@ -855,16 +826,6 @@ pub async fn create_and_start_quick_chat(
         .container()
         .start_workspace(&workspace, executor_config.clone(), prompt)
         .await?;
-
-    deployment
-        .track_if_analytics_allowed(
-            "quick_chat_started",
-            serde_json::json!({
-                "executor": &executor_config.executor,
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
 
     Ok(ResponseJson(ApiResponse::success(
         CreateAndStartWorkspaceResponse {

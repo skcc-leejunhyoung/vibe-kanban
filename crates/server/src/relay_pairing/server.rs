@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use http::HeaderMap;
@@ -8,8 +8,6 @@ use relay_types::{
     RefreshRelaySigningSessionRequest, RefreshRelaySigningSessionResponse, RelayPairedClient,
     StartSpake2EnrollmentRequest, StartSpake2EnrollmentResponse,
 };
-use services::services::{analytics::AnalyticsService, config::Config};
-use tokio::sync::RwLock;
 use trusted_key_auth::{
     key_confirmation::{build_server_proof, verify_client_proof},
     refresh::{build_refresh_message, validate_refresh_timestamp, verify_refresh_signature},
@@ -30,62 +28,16 @@ pub const SIGNING_SESSION_REFRESH_GLOBAL_LIMIT: usize = 30;
 pub struct RelayPairingServer {
     trusted_key_auth: TrustedKeyAuthRuntime,
     relay_signing: RelaySigningService,
-    events: RelayPairingEvents,
-}
-
-#[derive(Clone)]
-pub struct RelayPairingEvents {
-    user_id: String,
-    config: Arc<RwLock<Config>>,
-    analytics: Option<AnalyticsService>,
-}
-
-impl RelayPairingEvents {
-    pub fn new(
-        user_id: String,
-        config: Arc<RwLock<Config>>,
-        analytics: Option<AnalyticsService>,
-    ) -> Self {
-        Self {
-            user_id,
-            config,
-            analytics,
-        }
-    }
-
-    pub async fn track_host_paired(
-        &self,
-        client_id: Uuid,
-        client_browser: &str,
-        client_os: &str,
-        client_device: &str,
-    ) {
-        let analytics_enabled = self.config.read().await.analytics_enabled;
-        if analytics_enabled && let Some(analytics) = &self.analytics {
-            analytics.track_event(
-                &self.user_id,
-                "relay_host_paired",
-                Some(serde_json::json!({
-                    "client_id": client_id,
-                    "client_browser": client_browser,
-                    "client_os": client_os,
-                    "client_device": client_device,
-                })),
-            );
-        }
-    }
 }
 
 impl RelayPairingServer {
     pub fn new(
         trusted_key_auth: TrustedKeyAuthRuntime,
         relay_signing: RelaySigningService,
-        events: RelayPairingEvents,
     ) -> Self {
         Self {
             trusted_key_auth,
             relay_signing,
-            events,
         }
     }
 
@@ -215,15 +167,6 @@ impl RelayPairingServer {
             public_key_b64 = %BASE64_STANDARD.encode(client_public_key.as_bytes()),
             "completed relay PAKE enrollment"
         );
-
-        self.events
-            .track_host_paired(
-                payload.client_id,
-                &payload.client_browser,
-                &payload.client_os,
-                &payload.client_device,
-            )
-            .await;
 
         Ok(FinishSpake2EnrollmentResponse {
             signing_session_id,

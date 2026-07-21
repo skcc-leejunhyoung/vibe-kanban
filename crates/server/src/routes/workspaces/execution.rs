@@ -153,15 +153,6 @@ pub async fn start_dev_server(
         execution_processes.push(execution_process);
     }
 
-    deployment
-        .track_if_analytics_allowed(
-            "dev_server_started",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(execution_processes)))
 }
 
@@ -177,15 +168,6 @@ pub async fn stop_workspace_execution(
     if let Some(task_id) = workspace.task_id {
         cascade_stop_blocked_dependents(&deployment, task_id).await;
     }
-
-    deployment
-        .track_if_analytics_allowed(
-            "task_attempt_stopped",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
 
     Ok(ResponseJson(ApiResponse::success(())))
 }
@@ -381,15 +363,6 @@ pub async fn run_cleanup_script(
         )
         .await?;
 
-    deployment
-        .track_if_analytics_allowed(
-            "cleanup_script_executed",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }
 
@@ -445,15 +418,6 @@ pub async fn run_archive_script(
             &ExecutionProcessRunReason::ArchiveScript,
         )
         .await?;
-
-    deployment
-        .track_if_analytics_allowed(
-            "archive_script_executed",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
 
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }

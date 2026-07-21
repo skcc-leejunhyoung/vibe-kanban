@@ -169,9 +169,6 @@ pub async fn initialize_deployment(
         .backfill_repo_names()
         .await
         .map_err(DeploymentError::from)?;
-    deployment
-        .track_if_analytics_allowed("session_start", serde_json::json!({}))
-        .await;
 
     // Preload global executor options cache for all executors with DEFAULT presets
     tokio::spawn(async move {

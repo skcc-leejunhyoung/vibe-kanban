@@ -1063,16 +1063,6 @@ pub async fn create_pr(
                 });
             }
 
-            deployment
-                .track_if_analytics_allowed(
-                    "pr_created",
-                    serde_json::json!({
-                        "workspace_id": workspace.id.to_string(),
-                        "provider": format!("{:?}", provider),
-                    }),
-                )
-                .await;
-
             // A successfully opened PR consumes this dialog draft. Do this on
             // the server so cleanup is reliable even if the client navigated
             // away before receiving the create response.
@@ -1623,17 +1613,6 @@ pub async fn create_workspace_from_pr(
             }
         }
     }
-
-    deployment
-        .track_if_analytics_allowed(
-            "workspace_created_from_pr",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-                "pr_number": payload.pr_number,
-                "run_setup": payload.run_setup,
-            }),
-        )
-        .await;
 
     tracing::info!(
         "Created workspace {} from PR #{}",

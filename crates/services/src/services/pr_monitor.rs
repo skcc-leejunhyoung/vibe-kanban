@@ -11,14 +11,12 @@ use db::{
     },
 };
 use git_host::{GitHostError, GitHostProvider, GitHostService};
-use serde_json::json;
 use sqlx::error::Error as SqlxError;
 use thiserror::Error;
 use tokio::{sync::Notify, time::interval};
 use tracing::{debug, error, info, warn};
 
 use crate::services::{
-    analytics::AnalyticsContext,
     container::ContainerService,
     remote_client::{RemoteClient, RemoteClientError},
     remote_sync,
@@ -49,7 +47,6 @@ impl PrMonitorError {
 pub struct PrMonitorService<C: ContainerService> {
     db: DBService,
     poll_interval: Duration,
-    analytics: Option<AnalyticsContext>,
     container: C,
     remote_client: Option<RemoteClient>,
     sync_notify: Arc<Notify>,
@@ -58,7 +55,6 @@ pub struct PrMonitorService<C: ContainerService> {
 impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
     pub async fn spawn(
         db: DBService,
-        analytics: Option<AnalyticsContext>,
         container: C,
         remote_client: Option<RemoteClient>,
         sync_notify: Arc<Notify>,
@@ -66,7 +62,6 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
         let service = Self {
             db,
             poll_interval: Duration::from_secs(60),
-            analytics,
             container,
             remote_client,
             sync_notify,
@@ -196,16 +191,6 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
                 && let Err(e) = self.container.archive_workspace(workspace.id).await
             {
                 error!("Failed to archive workspace {}: {}", workspace.id, e);
-            }
-
-            if let Some(analytics) = &self.analytics {
-                analytics.analytics_service.track_event(
-                    &analytics.user_id,
-                    "pr_merged",
-                    Some(json!({
-                        "workspace_id": workspace.id.to_string(),
-                    })),
-                );
             }
         } else {
             info!(

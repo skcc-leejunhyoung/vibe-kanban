@@ -278,16 +278,6 @@ pub async fn delete_session(
         );
     }
 
-    deployment
-        .track_if_analytics_allowed(
-            "session_deleted",
-            serde_json::json!({
-                "session_id": session_id.to_string(),
-                "workspace_id": session.workspace_id.to_string(),
-            }),
-        )
-        .await;
-
     Ok((StatusCode::OK, ResponseJson(ApiResponse::success(()))))
 }
 
@@ -698,15 +688,6 @@ pub async fn run_setup_script(
             &ExecutionProcessRunReason::SetupScript,
         )
         .await?;
-
-    deployment
-        .track_if_analytics_allowed(
-            "setup_script_executed",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
 
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }

@@ -162,15 +162,6 @@ async fn get_user_system_info(
                             .await;
                     }
 
-                    deployment
-                        .track_if_analytics_allowed(
-                            "login_status_timeout",
-                            serde_json::json!({
-                                "has_cached_profile": cached_profile.is_some(),
-                            }),
-                        )
-                        .await;
-
                     LoginStatus::LoggedIn {
                         profile: cached_profile,
                     }
@@ -281,7 +272,7 @@ async fn update_config(
             *config_guard = new_config.clone();
             drop(config_guard);
 
-            // Track config events when fields transition from false → true and run side effects
+            // Run relay side effects for relevant configuration changes.
             handle_config_events(&deployment, &old_config, &new_config).await;
 
             let new_revision = revision(&new_config);
@@ -333,41 +324,7 @@ fn changed_top_level_fields<T: Serialize>(old: &T, new: &T) -> Vec<String> {
         .collect()
 }
 
-/// Track config events when fields transition from false → true
-async fn track_config_events(deployment: &DeploymentImpl, old: &Config, new: &Config) {
-    let events = [
-        (
-            !old.disclaimer_acknowledged && new.disclaimer_acknowledged,
-            "onboarding_disclaimer_accepted",
-            serde_json::json!({}),
-        ),
-        (
-            !old.onboarding_acknowledged && new.onboarding_acknowledged,
-            "onboarding_completed",
-            serde_json::json!({
-                "profile": new.executor_profile,
-                "editor": new.editor
-            }),
-        ),
-        (
-            !old.analytics_enabled && new.analytics_enabled,
-            "analytics_session_start",
-            serde_json::json!({}),
-        ),
-    ];
-
-    for (should_track, event_name, properties) in events {
-        if should_track {
-            deployment
-                .track_if_analytics_allowed(event_name, properties)
-                .await;
-        }
-    }
-}
-
 async fn handle_config_events(deployment: &DeploymentImpl, old: &Config, new: &Config) {
-    track_config_events(deployment, old, new).await;
-
     let old_host_nickname = relay_registration::clean_host_nickname(old, deployment.user_id());
     let new_host_nickname = relay_registration::clean_host_nickname(new, deployment.user_id());
 

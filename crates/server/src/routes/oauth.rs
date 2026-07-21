@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use deployment::Deployment;
 use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
-use services::services::{config::Config, oauth_credentials::Credentials, remote_sync};
+use services::services::{oauth_credentials::Credentials, remote_sync};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 use utils::{jwt::extract_expiration, response::ApiResponse};
@@ -365,37 +365,12 @@ async fn finalize_login(
 
     deployment.trigger_pr_sync();
 
-    let config = deployment.config().read().await;
-    let should_track_login_identity = should_track_login_identity(&config);
-    drop(config);
-
-    if should_track_login_identity && let Some(analytics) = deployment.analytics() {
-        analytics.track_event(
-            deployment.user_id(),
-            "$identify",
-            Some(serde_json::json!({
-                "email": profile.email,
-            })),
-        );
-        analytics.track_event(
-            &profile.user_id.to_string(),
-            "$merge_dangerously",
-            Some(serde_json::json!({
-                "alias": deployment.user_id(),
-            })),
-        );
-    }
-
     let relay_deployment = deployment.clone();
     tokio::spawn(async move {
         relay_registration::spawn_relay(&relay_deployment).await;
     });
 
     Ok(profile)
-}
-
-fn should_track_login_identity(config: &Config) -> bool {
-    config.analytics_enabled
 }
 
 fn hash_sha256_hex(input: &str) -> String {
@@ -474,31 +449,4 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
         .header("content-type", "text/html; charset=utf-8")
         .body(body)
         .unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-    use services::services::config::Config;
-
-    use super::should_track_login_identity;
-
-    #[test]
-    fn login_identity_analytics_is_skipped_when_analytics_is_disabled() {
-        let config = Config {
-            analytics_enabled: false,
-            ..Config::default()
-        };
-
-        assert!(!should_track_login_identity(&config));
-    }
-
-    #[test]
-    fn login_identity_analytics_is_allowed_after_explicit_opt_in() {
-        let config = Config {
-            analytics_enabled: true,
-            ..Config::default()
-        };
-
-        assert!(should_track_login_identity(&config));
-    }
 }
