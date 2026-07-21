@@ -26,6 +26,9 @@ import {
 } from '@vibe/ui/components/CollapsibleSectionHeader';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { resolveWorkspaceHostPresentation } from '@/shared/lib/workspaceHostPresentation';
+import { cn } from '@/shared/lib/utils';
 
 type SectionDef = {
   title: string;
@@ -50,16 +53,19 @@ export const RightSidebar = memo(function RightSidebar({
   const { t } = useTranslation(['tasks', 'common']);
   const { config } = useUserSystem();
   const hostId = useHostId();
+  const { hosts } = useWorkspaceHostOptions();
   const diffs = useDiffs();
   const { data: branchStatus } = useBranchStatus(selectedWorkspace?.id);
   const hasPrs = hasLinkedPr(branchStatus);
   const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
   const { expandTerminal, isTerminalExpanded } = useLogsPanel();
-  const hostName =
-    config?.host_nickname ||
-    hostId ||
-    t('common:workspaces.thisMachine', { defaultValue: 'This machine' });
-  const hostStatus = 'online';
+  const { name: hostName, status: hostStatus } =
+    resolveWorkspaceHostPresentation(
+      hostId,
+      config?.host_nickname,
+      hosts,
+      t('common:workspaces.thisMachine', { defaultValue: 'This machine' })
+    );
 
   const [changesExpanded] = usePersistedExpanded(
     PERSIST_KEYS.changesSection,
@@ -249,11 +255,14 @@ export const RightSidebar = memo(function RightSidebar({
               </p>
               <p className="flex items-center gap-half text-xs text-low">
                 <span
-                  className={
+                  className={cn(
+                    'size-2 rounded-full',
                     hostStatus === 'online'
-                      ? 'size-2 rounded-full bg-success'
-                      : 'size-2 rounded-full bg-low'
-                  }
+                      ? 'bg-success'
+                      : hostStatus === 'offline'
+                        ? 'bg-low'
+                        : 'bg-warning'
+                  )}
                 />
                 {t(`common:workspaces.hostStatus.${hostStatus}`, {
                   defaultValue: hostStatus,
