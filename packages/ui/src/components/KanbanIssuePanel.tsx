@@ -232,9 +232,9 @@ export function KanbanIssuePanel({
   // Description edit state: in edit mode, show preview by default; in create mode, always editable
   const [isDescriptionEditing, setIsDescriptionEditing] =
     useState(isCreateMode);
+  const [descriptionFocusRequest, setDescriptionFocusRequest] = useState(0);
   const descriptionContainerRef = useRef<HTMLDivElement>(null);
   const descriptionEditorRef = useRef<{ focus: () => void }>(null);
-  const shouldFocusDescriptionRef = useRef(false);
   const panelRootRef = useRef<HTMLDivElement>(null);
 
   // Reset description editing state when switching between create/edit mode or when issue changes
@@ -242,18 +242,17 @@ export function KanbanIssuePanel({
     setIsDescriptionEditing(isCreateMode);
   }, [isCreateMode, issueId]);
 
-  // Focus only after edit mode has committed. Calling focus from the title's
-  // keydown frame can race Lexical's editable-state update, especially when
-  // the document is empty and it still needs to create a root selection.
+  // Focus only after the Tab event and any editable-state update have
+  // committed. The request counter also retriggers this effect when the
+  // description was already editable, so both paths follow the same timing.
   useEffect(() => {
-    if (!isDescriptionEditing || !shouldFocusDescriptionRef.current) return;
+    if (!isDescriptionEditing || descriptionFocusRequest === 0) return;
 
-    shouldFocusDescriptionRef.current = false;
     const frame = requestAnimationFrame(() =>
       descriptionEditorRef.current?.focus()
     );
     return () => cancelAnimationFrame(frame);
-  }, [isDescriptionEditing]);
+  }, [descriptionFocusRequest, isDescriptionEditing]);
 
   // Edit mode: move focus into the panel when it opens (or when switching
   // issues) so keyboard focus starts inside the panel rather than on the board
@@ -320,14 +319,8 @@ export function KanbanIssuePanel({
 
     if (!e.shiftKey && e.key === 'Tab') {
       e.preventDefault();
-
-      if (isDescriptionEditing) {
-        descriptionEditorRef.current?.focus();
-        return;
-      }
-
-      shouldFocusDescriptionRef.current = true;
       setIsDescriptionEditing(true);
+      setDescriptionFocusRequest((request) => request + 1);
     }
   };
 
