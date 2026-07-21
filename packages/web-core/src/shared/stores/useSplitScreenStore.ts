@@ -145,7 +145,11 @@ export const useSplitScreenStore = create<SplitScreenState>()(
           if (!isSplitPreset(nextPresetValue)) return state;
 
           const source = state.presets[state.preset];
-          const sourceUrls = source.panes.map((pane) => pane.url ?? currentUrl);
+          const sourceUrls = source.panes.map((pane) =>
+            pane.id === source.activePaneId
+              ? currentUrl
+              : (pane.url ?? currentUrl)
+          );
           const destination = state.presets[nextPresetValue];
           result = 'pane';
           return {

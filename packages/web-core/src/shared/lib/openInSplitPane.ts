@@ -21,7 +21,12 @@ function currentRelativeUrl(): string {
 export function openInSplitPane(url: string): void {
   if (isEmbeddedPane()) {
     window.parent.postMessage(
-      { type: MESSAGE_TYPE, event: 'open-pane', url },
+      {
+        type: MESSAGE_TYPE,
+        event: 'open-pane',
+        url,
+        sourceUrl: currentRelativeUrl(),
+      },
       window.location.origin
     );
     return;

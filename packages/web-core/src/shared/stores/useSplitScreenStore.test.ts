@@ -171,6 +171,9 @@ describe('split screen presets', () => {
   });
 
   it('opens the next pane until the configured maximum', () => {
+    useSplitScreenStore
+      .getState()
+      .setPaneUrl('preset-1-pane-1', '/workspaces/stale');
     expect(
       useSplitScreenStore.getState().openPane('/workspaces/b', '/workspaces/a')
     ).toBe('pane');

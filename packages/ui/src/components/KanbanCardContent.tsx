@@ -235,6 +235,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
                   onOpenInNewTabClick();
                 }}
                 onMouseDown={(e) => e.stopPropagation()}
+                onMouseUp={(e) => e.stopPropagation()}
                 className="p-half -m-half rounded-sm text-low hover:text-normal hover:bg-secondary"
                 aria-label="Open in new tab"
                 title="Open in new tab"

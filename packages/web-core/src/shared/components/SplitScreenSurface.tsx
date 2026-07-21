@@ -71,6 +71,7 @@ type PaneMessage = {
   sourcePaneId?: string;
   maxPanes?: SplitPreset;
   url?: string;
+  sourceUrl?: string;
   preset?: SplitPreset;
   direction?: 'next' | 'previous';
 };
@@ -487,7 +488,10 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       ) {
         movePane(message.sourcePaneId, senderPaneId);
       } else if (message.event === 'open-pane' && message.url) {
-        if (openPane(message.url, initialUrlRef.current) === 'overflow') {
+        if (
+          openPane(message.url, message.sourceUrl ?? initialUrlRef.current) ===
+          'overflow'
+        ) {
           window.open(message.url, '_blank', 'noopener,noreferrer');
         }
       } else if (
