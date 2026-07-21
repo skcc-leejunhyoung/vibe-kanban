@@ -25,6 +25,7 @@ import {
   type SplitPreset,
   getAdjacentSplitPaneId,
   getSplitScreenUserId,
+  shouldRenderSplitScreenFrames,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
 
@@ -279,10 +280,10 @@ export function SplitScreenSurface({ children }: { children: ReactNode }) {
     return <EmbeddedPaneBridge>{children}</EmbeddedPaneBridge>;
   }
 
-  return <SplitScreenManager />;
+  return <SplitScreenManager>{children}</SplitScreenManager>;
 }
 
-function SplitScreenManager() {
+function SplitScreenManager({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn, userId } = useAuth();
   const activeUserId = useSplitScreenStore((state) => state.activeUserId);
   const preset = useSplitScreenStore((state) => state.preset);
@@ -434,6 +435,13 @@ function SplitScreenManager() {
 
   if (activeUserId !== expectedUserId) {
     return null;
+  }
+
+  // Keep the normal single-pane application in the parent document. Rendering
+  // it through an iframe disconnects parent-owned navigation (App Bar, sidebar,
+  // command palette) from the visible router, so those controls appear inert.
+  if (!shouldRenderSplitScreenFrames(preset)) {
+    return <>{children}</>;
   }
 
   if (preset < 4) {

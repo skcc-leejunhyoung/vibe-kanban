@@ -3,6 +3,10 @@ import { persist } from 'zustand/middleware';
 
 export type SplitPreset = 1 | 2 | 3 | 4;
 
+export function shouldRenderSplitScreenFrames(preset: SplitPreset): boolean {
+  return preset > 1;
+}
+
 export interface SplitPaneState {
   id: string;
   url: string | null;

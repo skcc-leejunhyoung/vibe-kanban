@@ -8,8 +8,12 @@ vi.stubGlobal('localStorage', {
   removeItem: (key: string) => storedValues.delete(key),
 });
 
-const { getAdjacentSplitPaneId, getSplitScreenUserId, useSplitScreenStore } =
-  await import('./useSplitScreenStore');
+const {
+  getAdjacentSplitPaneId,
+  getSplitScreenUserId,
+  shouldRenderSplitScreenFrames,
+  useSplitScreenStore,
+} = await import('./useSplitScreenStore');
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: preset }, (_, index) => ({
@@ -32,6 +36,13 @@ describe('split screen presets', () => {
         4: makePreset(4),
       },
     });
+  });
+
+  it('keeps the normal single-pane app in the parent document', () => {
+    expect(shouldRenderSplitScreenFrames(1)).toBe(false);
+    expect(shouldRenderSplitScreenFrames(2)).toBe(true);
+    expect(shouldRenderSplitScreenFrames(3)).toBe(true);
+    expect(shouldRenderSplitScreenFrames(4)).toBe(true);
   });
 
   it('waits for authentication before selecting the persisted user scope', () => {
