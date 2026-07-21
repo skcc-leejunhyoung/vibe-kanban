@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   Fragment,
   type ReactNode,
 } from 'react';
@@ -13,6 +14,8 @@ import { useLocation } from '@tanstack/react-router';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { cn } from '@/shared/lib/utils';
 import {
+  NEXT_SPLIT_PANE_BINDING_ID,
+  PREVIOUS_SPLIT_PANE_BINDING_ID,
   SPLIT_PRESET_BINDING_IDS,
   resolveModifier,
 } from '@/shared/keyboard/registry';
@@ -20,6 +23,7 @@ import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsS
 import {
   type SplitPaneState,
   type SplitPreset,
+  getAdjacentSplitPaneId,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
 
@@ -49,10 +53,11 @@ function getEmbeddedPaneId(): string | null {
 
 type PaneMessage = {
   type: typeof MESSAGE_TYPE;
-  event: 'activate' | 'navigate' | 'preset';
+  event: 'activate' | 'navigate' | 'preset' | 'focus-pane';
   paneId?: string;
   url?: string;
   preset?: SplitPreset;
+  direction?: 'next' | 'previous';
 };
 
 function currentRelativeUrl(): string {
@@ -111,6 +116,43 @@ function usePresetHotkeys(onPreset: (preset: SplitPreset) => void) {
   ]);
 }
 
+function usePaneFocusHotkeys(
+  onFocusPane: (direction: 'next' | 'previous') => void
+) {
+  const overrides = useKeyboardShortcutsStore((state) => state.overrides);
+  const nextKeys = resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, overrides);
+  const previousKeys = resolveModifier(
+    PREVIOUS_SPLIT_PANE_BINDING_ID,
+    overrides
+  );
+  const options = (keys: string) => ({
+    enabled: !!keys,
+    enableOnContentEditable: true,
+    enableOnFormTags: true,
+    preventDefault: true,
+    scopes: ['global'],
+  });
+
+  useHotkeys(
+    nextKeys || 'unidentified',
+    (event) => {
+      event.preventDefault();
+      onFocusPane('next');
+    },
+    options(nextKeys),
+    [nextKeys, onFocusPane]
+  );
+  useHotkeys(
+    previousKeys || 'unidentified',
+    (event) => {
+      event.preventDefault();
+      onFocusPane('previous');
+    },
+    options(previousKeys),
+    [previousKeys, onFocusPane]
+  );
+}
+
 function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
   const paneId = getEmbeddedPaneId();
   const location = useLocation();
@@ -119,6 +161,10 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
     postToParent({ type: MESSAGE_TYPE, event: 'preset', preset });
   }, []);
   usePresetHotkeys(requestPreset);
+  const requestPaneFocus = useCallback((direction: 'next' | 'previous') => {
+    postToParent({ type: MESSAGE_TYPE, event: 'focus-pane', direction });
+  }, []);
+  usePaneFocusHotkeys(requestPaneFocus);
 
   useEffect(() => {
     if (!paneId) return;
@@ -144,14 +190,16 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
 function PaneFrame({
   pane,
   fallbackUrl,
-  active,
+  highlighted,
+  frameRef,
   showHeader,
   onActivate,
   onDropPane,
 }: {
   pane: SplitPaneState;
   fallbackUrl: string;
-  active: boolean;
+  highlighted: boolean;
+  frameRef: (frame: HTMLIFrameElement | null) => void;
   showHeader: boolean;
   onActivate: () => void;
   onDropPane: (sourceId: string) => void;
@@ -166,8 +214,7 @@ function PaneFrame({
   return (
     <div
       className={cn(
-        'flex h-full min-h-0 flex-col overflow-hidden bg-primary',
-        active && 'ring-2 ring-inset ring-brand'
+        'relative flex h-full min-h-0 flex-col overflow-hidden bg-primary'
       )}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -176,6 +223,13 @@ function PaneFrame({
         if (sourceId) onDropPane(sourceId);
       }}
     >
+      <div
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-0 z-20 border border-brand transition-opacity duration-500',
+          highlighted ? 'opacity-100' : 'opacity-0'
+        )}
+      />
       {showHeader && (
         <div
           className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-secondary px-1.5 text-xs text-low"
@@ -205,6 +259,7 @@ function PaneFrame({
         </div>
       )}
       <iframe
+        ref={frameRef}
         title={`Split pane ${pane.id}`}
         src={src}
         className="min-h-0 flex-1 border-0 bg-primary"
@@ -243,6 +298,11 @@ function SplitScreenManager() {
   );
   const syncUser = useSplitScreenStore((state) => state.syncUser);
   const initialUrlRef = useRef(withoutEmbedParam(currentRelativeUrl()));
+  const paneFramesRef = useRef(new Map<string, HTMLIFrameElement>());
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [highlightedPaneId, setHighlightedPaneId] = useState<string | null>(
+    null
+  );
   const expectedUserId = isSignedIn ? userId : null;
 
   useEffect(() => {
@@ -257,6 +317,41 @@ function SplitScreenManager() {
   );
   usePresetHotkeys(activatePreset);
 
+  const activatePane = useCallback(
+    (paneId: string, moveDomFocus = false) => {
+      setActivePane(paneId);
+      setHighlightedPaneId(paneId);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => {
+        setHighlightedPaneId(null);
+        highlightTimerRef.current = null;
+      }, 700);
+      if (moveDomFocus) {
+        paneFramesRef.current.get(paneId)?.focus();
+      }
+    },
+    [setActivePane]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
+
+  const focusAdjacentPane = useCallback(
+    (direction: 'next' | 'previous') => {
+      const paneId = getAdjacentSplitPaneId(
+        presetState.panes,
+        presetState.activePaneId,
+        direction
+      );
+      if (paneId) activatePane(paneId, true);
+    },
+    [activatePane, presetState.activePaneId, presetState.panes]
+  );
+  usePaneFocusHotkeys(focusAdjacentPane);
+
   useEffect(() => {
     const handleMessage = (event: MessageEvent<PaneMessage>) => {
       if (event.origin !== window.location.origin) return;
@@ -265,7 +360,12 @@ function SplitScreenManager() {
       if (message.event === 'preset' && isSplitPreset(message.preset)) {
         activatePreset(message.preset);
       } else if (message.event === 'activate' && message.paneId) {
-        setActivePane(message.paneId);
+        activatePane(message.paneId);
+      } else if (
+        message.event === 'focus-pane' &&
+        (message.direction === 'next' || message.direction === 'previous')
+      ) {
+        focusAdjacentPane(message.direction);
       } else if (
         message.event === 'navigate' &&
         message.paneId &&
@@ -276,16 +376,20 @@ function SplitScreenManager() {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [activatePreset, setActivePane, setPaneUrl]);
+  }, [activatePane, activatePreset, focusAdjacentPane, setPaneUrl]);
 
   const renderPane = (pane: SplitPaneState) => (
     <PaneFrame
       key={pane.id}
       pane={pane}
       fallbackUrl={initialUrlRef.current}
-      active={presetState.activePaneId === pane.id}
+      highlighted={highlightedPaneId === pane.id}
+      frameRef={(frame) => {
+        if (frame) paneFramesRef.current.set(pane.id, frame);
+        else paneFramesRef.current.delete(pane.id);
+      }}
       showHeader={preset > 1}
-      onActivate={() => setActivePane(pane.id)}
+      onActivate={() => activatePane(pane.id)}
       onDropPane={(sourceId) => movePane(sourceId, pane.id)}
     />
   );

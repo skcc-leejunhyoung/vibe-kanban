@@ -15,6 +15,19 @@ export interface SplitPresetState {
   verticalSizes?: number[];
 }
 
+export function getAdjacentSplitPaneId(
+  panes: SplitPaneState[],
+  currentPaneId: string,
+  direction: 'next' | 'previous'
+): string | null {
+  if (panes.length === 0) return null;
+  const currentIndex = panes.findIndex((pane) => pane.id === currentPaneId);
+  const startIndex = currentIndex < 0 ? 0 : currentIndex;
+  const offset = direction === 'next' ? 1 : -1;
+  const nextIndex = (startIndex + offset + panes.length) % panes.length;
+  return panes[nextIndex]?.id ?? null;
+}
+
 type PresetStates = Record<SplitPreset, SplitPresetState>;
 
 interface SplitScreenState {

@@ -549,6 +549,8 @@ export const keyBindings: KeyBinding[] = [
 export const COMMAND_BAR_BINDING_ID = 'command-bar';
 export const NEXT_WORKSPACE_BINDING_ID = 'next-workspace';
 export const PREVIOUS_WORKSPACE_BINDING_ID = 'previous-workspace';
+export const NEXT_SPLIT_PANE_BINDING_ID = 'next-split-pane';
+export const PREVIOUS_SPLIT_PANE_BINDING_ID = 'previous-split-pane';
 export const SPLIT_PRESET_BINDING_IDS = {
   1: 'split-preset-1',
   2: 'split-preset-2',
@@ -582,6 +584,18 @@ export const modifierBindings: ModifierBinding[] = [
     id: PREVIOUS_WORKSPACE_BINDING_ID,
     keys: 'ctrl+shift+tab',
     actionId: 'previousWorkspace',
+    group: 'Modifiers',
+  },
+  {
+    id: NEXT_SPLIT_PANE_BINDING_ID,
+    keys: 'alt+tab',
+    actionId: 'nextSplitPane',
+    group: 'Modifiers',
+  },
+  {
+    id: PREVIOUS_SPLIT_PANE_BINDING_ID,
+    keys: 'shift+alt+tab',
+    actionId: 'previousSplitPane',
     group: 'Modifiers',
   },
   ...([1, 2, 3, 4] as const).map((preset) => ({

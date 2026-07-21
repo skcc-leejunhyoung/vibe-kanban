@@ -315,6 +315,8 @@
       "openCommandBar": "명령 바 열기",
       "nextWorkspace": "다음 워크스페이스",
       "previousWorkspace": "이전 워크스페이스",
+      "nextSplitPane": "다음 분할 패널 포커스",
+      "previousSplitPane": "이전 분할 패널 포커스",
       "splitPreset1": "단일 화면 레이아웃",
       "splitPreset2": "2분할 화면 레이아웃",
       "splitPreset3": "3분할 화면 레이아웃",

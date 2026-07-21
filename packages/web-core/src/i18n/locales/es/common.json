@@ -299,6 +299,8 @@
       "moveLeft": "Mover a la izquierda",
       "moveRight": "Mover a la derecha",
       "openCommandBar": "Abrir barra de comandos",
+      "nextSplitPane": "Enfocar el siguiente panel dividido",
+      "previousSplitPane": "Enfocar el panel dividido anterior",
       "splitPreset1": "Diseño de un panel",
       "splitPreset2": "Diseño de dos paneles",
       "splitPreset3": "Diseño de tres paneles",

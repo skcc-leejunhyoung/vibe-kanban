@@ -14,6 +14,8 @@ import {
   COMMAND_BAR_BINDING_ID,
   NEXT_WORKSPACE_BINDING_ID,
   PREVIOUS_WORKSPACE_BINDING_ID,
+  NEXT_SPLIT_PANE_BINDING_ID,
+  PREVIOUS_SPLIT_PANE_BINDING_ID,
   SPLIT_PRESET_BINDING_IDS,
   Scope,
 } from '@/shared/keyboard/registry';
@@ -88,6 +90,16 @@ function useShortcutGroups(): ShortcutGroup[] {
             'shortcuts.actions.previousWorkspace',
             'Previous workspace'
           ),
+        },
+        {
+          keys: chips(resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, overrides)),
+          description: t('shortcuts.actions.nextSplitPane'),
+        },
+        {
+          keys: chips(
+            resolveModifier(PREVIOUS_SPLIT_PANE_BINDING_ID, overrides)
+          ),
+          description: t('shortcuts.actions.previousSplitPane'),
         },
         ...([1, 2, 3, 4] as const).map((preset) => ({
           keys: chips(

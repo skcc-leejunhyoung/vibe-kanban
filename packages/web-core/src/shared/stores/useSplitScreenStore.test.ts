@@ -8,7 +8,9 @@ vi.stubGlobal('localStorage', {
   removeItem: (key: string) => storedValues.delete(key),
 });
 
-const { useSplitScreenStore } = await import('./useSplitScreenStore');
+const { getAdjacentSplitPaneId, useSplitScreenStore } = await import(
+  './useSplitScreenStore'
+);
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: preset }, (_, index) => ({
@@ -43,6 +45,20 @@ describe('split screen presets', () => {
     expect(state.preset).toBe(1);
     expect(state.presets[2].panes.every((pane) => pane.url === null)).toBe(
       true
+    );
+  });
+
+  it('cycles pane focus forward and backward with wrapping', () => {
+    const panes = makePreset(3).panes;
+
+    expect(getAdjacentSplitPaneId(panes, panes[0].id, 'next')).toBe(
+      panes[1].id
+    );
+    expect(getAdjacentSplitPaneId(panes, panes[0].id, 'previous')).toBe(
+      panes[2].id
+    );
+    expect(getAdjacentSplitPaneId(panes, panes[2].id, 'next')).toBe(
+      panes[0].id
     );
   });
 

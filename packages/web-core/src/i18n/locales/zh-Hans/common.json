@@ -299,6 +299,8 @@
       "moveLeft": "向左移动",
       "moveRight": "向右移动",
       "openCommandBar": "打开命令栏",
+      "nextSplitPane": "聚焦下一个分屏面板",
+      "previousSplitPane": "聚焦上一个分屏面板",
       "splitPreset1": "单面板布局",
       "splitPreset2": "双面板布局",
       "splitPreset3": "三面板布局",

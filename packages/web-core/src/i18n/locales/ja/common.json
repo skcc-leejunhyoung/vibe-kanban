@@ -299,6 +299,8 @@
       "moveLeft": "左に移動",
       "moveRight": "右に移動",
       "openCommandBar": "コマンドバーを開く",
+      "nextSplitPane": "次の分割パネルにフォーカス",
+      "previousSplitPane": "前の分割パネルにフォーカス",
       "splitPreset1": "1画面レイアウト",
       "splitPreset2": "2分割レイアウト",
       "splitPreset3": "3分割レイアウト",

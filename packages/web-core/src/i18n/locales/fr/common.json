@@ -299,6 +299,8 @@
       "moveLeft": "Déplacer vers la gauche",
       "moveRight": "Déplacer vers la droite",
       "openCommandBar": "Ouvrir la barre de commandes",
+      "nextSplitPane": "Activer le panneau divisé suivant",
+      "previousSplitPane": "Activer le panneau divisé précédent",
       "splitPreset1": "Disposition à un panneau",
       "splitPreset2": "Disposition à deux panneaux",
       "splitPreset3": "Disposition à trois panneaux",

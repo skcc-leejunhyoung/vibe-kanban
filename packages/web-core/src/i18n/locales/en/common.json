@@ -329,6 +329,8 @@
       "openCommandBar": "Open command bar",
       "nextWorkspace": "Next workspace",
       "previousWorkspace": "Previous workspace",
+      "nextSplitPane": "Focus next split pane",
+      "previousSplitPane": "Focus previous split pane",
       "splitPreset1": "Single-pane layout",
       "splitPreset2": "Two-pane layout",
       "splitPreset3": "Three-pane layout",
