@@ -36,6 +36,7 @@ import {
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
 import { useMobileActiveTab } from '@/shared/stores/useUiPreferencesStore';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
 import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
@@ -168,6 +169,7 @@ export function NavbarContainer({
 
   // Subscribe to keyboard overrides so tooltip shortcut hints reflect rebinds.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
 
   // Action handler - all actions go through the standard executeAction
   const handleExecuteAction = useCallback(
@@ -200,7 +202,7 @@ export function NavbarContainer({
         overrides,
         handleExecuteAction
       ),
-    [actionCtx, overrides, handleExecuteAction]
+    [actionCtx, overrides, handleExecuteAction, isAppBarVisible]
   );
 
   const navbarTitle = isCreateMode

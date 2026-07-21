@@ -22,6 +22,7 @@ import type { Project } from "shared/remote-types";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
 import { cn } from "@/shared/lib/utils";
 import { useUiPreferencesStore } from "@/shared/stores/useUiPreferencesStore";
+import { useAppBarVisibilityStore } from "@/shared/stores/useAppBarVisibilityStore";
 import { WorkspaceSidebarHoverPreview } from "@/shared/components/ui-new/containers/WorkspaceSidebarHoverPreview";
 import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
@@ -92,6 +93,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const isLeftSidebarVisible = useUiPreferencesStore(
     (s) => s.isLeftSidebarVisible,
   );
+  const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
 
   const { data: organizationsData } = useUserOrganizations();
   const organizations = organizationsData?.organizations ?? [];
@@ -273,7 +275,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       )}
     >
       <div className="flex min-h-0 flex-1">
-        {!isMobile && (
+        {!isMobile && isAppBarVisible && (
           <AppBar
             projects={projects}
             onCreateProject={handleCreateProject}

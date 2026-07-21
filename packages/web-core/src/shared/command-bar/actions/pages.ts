@@ -37,6 +37,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
         type: 'group',
         label: 'View',
         items: [
+          { type: 'action', action: Actions.ToggleAppBar },
           { type: 'childPages', id: 'viewOptions' },
           { type: 'childPages', id: 'diffOptions' },
         ],

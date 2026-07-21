@@ -58,6 +58,7 @@ import {
   resolveModifier,
 } from '@/shared/keyboard/registry';
 import { getCycledProjectId } from '@/shared/lib/projectCycle';
+import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
 
 export function SharedAppLayout() {
   const appNavigation = useAppNavigation();
@@ -76,6 +77,7 @@ export function SharedAppLayout() {
   const navigate = useNavigate();
   const { registerNavigationProjects } = useActions();
   const shortcutOverrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
 
   // Register CMD+K shortcut globally for all routes under SharedAppLayout
   useCommandBarShortcut(() => CommandBarDialog.show());
@@ -305,52 +307,61 @@ export function SharedAppLayout() {
           'bg-primary',
           isMobile
             ? 'flex fixed inset-0 pb-[env(safe-area-inset-bottom)]'
-            : 'grid grid-cols-[auto_minmax(0,1fr)] grid-rows-[auto_1fr] h-dvh'
+            : cn(
+                'grid grid-rows-[auto_1fr] h-dvh',
+                isAppBarVisible
+                  ? 'grid-cols-[auto_minmax(0,1fr)]'
+                  : 'grid-cols-[minmax(0,1fr)]'
+              )
         )}
       >
         {!isMobile && (
           <>
             {/* Desktop corner spacer. */}
-            <div
-              data-tauri-drag-region
-              className="bg-secondary"
-              style={isTauriMac() ? { minWidth: 56 } : undefined}
-            />
+            {isAppBarVisible && (
+              <div
+                data-tauri-drag-region
+                className="bg-secondary"
+                style={isTauriMac() ? { minWidth: 56 } : undefined}
+              />
+            )}
             {/* Desktop navbar. */}
             <NavbarContainer
               onOrgSelect={setSelectedOrgId}
               onOpenDrawer={() => setIsDrawerOpen(true)}
             />
             {/* Desktop AppBar sidebar. */}
-            <AppBar
-              projects={orderedProjects}
-              onCreateProject={handleCreateProject}
-              onWorkspacesClick={handleWorkspacesClick}
-              onQuickChatClick={() => void QuickChatDialog.show()}
-              onProjectClick={handleProjectClick}
-              onProjectsDragEnd={handleProjectsDragEnd}
-              isSavingProjectOrder={isSavingProjectOrder}
-              isWorkspacesActive={isWorkspacesActive}
-              activeProjectId={activeProjectId}
-              isSignedIn={isSignedIn}
-              isLoadingProjects={isLoading}
-              onSignIn={handleSignIn}
-              onHoverStart={() => setIsAppBarHovered(true)}
-              onHoverEnd={() => setIsAppBarHovered(false)}
-              notificationBell={
-                isSignedIn ? <AppBarNotificationBellContainer /> : undefined
-              }
-              userPopover={
-                <AppBarUserPopoverContainer
-                  organizations={organizations}
-                  selectedOrgId={selectedOrgId ?? ''}
-                  onOrgSelect={setSelectedOrgId}
-                />
-              }
-              appVersion={appVersion}
-              updateVersion={updateVersion}
-              onUpdateClick={restartForUpdate ?? undefined}
-            />
+            {isAppBarVisible && (
+              <AppBar
+                projects={orderedProjects}
+                onCreateProject={handleCreateProject}
+                onWorkspacesClick={handleWorkspacesClick}
+                onQuickChatClick={() => void QuickChatDialog.show()}
+                onProjectClick={handleProjectClick}
+                onProjectsDragEnd={handleProjectsDragEnd}
+                isSavingProjectOrder={isSavingProjectOrder}
+                isWorkspacesActive={isWorkspacesActive}
+                activeProjectId={activeProjectId}
+                isSignedIn={isSignedIn}
+                isLoadingProjects={isLoading}
+                onSignIn={handleSignIn}
+                onHoverStart={() => setIsAppBarHovered(true)}
+                onHoverEnd={() => setIsAppBarHovered(false)}
+                notificationBell={
+                  isSignedIn ? <AppBarNotificationBellContainer /> : undefined
+                }
+                userPopover={
+                  <AppBarUserPopoverContainer
+                    organizations={organizations}
+                    selectedOrgId={selectedOrgId ?? ''}
+                    onOrgSelect={setSelectedOrgId}
+                  />
+                }
+                appVersion={appVersion}
+                updateVersion={updateVersion}
+                onUpdateClick={restartForUpdate ?? undefined}
+              />
+            )}
             {/* Desktop content. */}
             <div className="relative flex min-h-0 min-w-0 flex-col overflow-hidden pb-base">
               <WorkspaceSidebarHoverPreview

@@ -8,6 +8,7 @@ import {
 } from "@vibe/ui/components/Navbar";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog";
+import { useAppBarVisibilityStore } from "@/shared/stores/useAppBarVisibilityStore";
 import { useMobileActiveTab } from "@/shared/stores/useUiPreferencesStore";
 import { useMobileWorkspaceTitle } from "@remote/shared/stores/useMobileWorkspaceTitle";
 import { useActions } from "@/shared/hooks/useActions";
@@ -114,6 +115,7 @@ export function RemoteNavbarContainer({
   const { executeAction } = useActions();
   const { workspace: selectedWorkspace } = useWorkspaceContext();
   const actionCtx = useActionVisibilityContext();
+  const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
 
   const [mobileActiveTab, setMobileActiveTab] = useMobileActiveTab();
 
@@ -166,7 +168,7 @@ export function RemoteNavbarContainer({
         actionCtx,
         handleExecuteAction,
       ),
-    [actionCtx, handleExecuteAction],
+    [actionCtx, handleExecuteAction, isAppBarVisible],
   );
 
   // Left actions (Archive/Unarchive) — surfaced on mobile so remote workspaces

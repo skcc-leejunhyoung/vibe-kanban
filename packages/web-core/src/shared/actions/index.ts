@@ -89,6 +89,7 @@ import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
+import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -724,6 +725,19 @@ export const Actions = {
   },
 
   // === Layout Panel Actions ===
+  ToggleAppBar: {
+    id: 'toggle-app-bar',
+    label: () =>
+      useAppBarVisibilityStore.getState().isVisible
+        ? 'Hide App Bar'
+        : 'Show App Bar',
+    icon: SidebarSimpleIcon,
+    requiresTarget: ActionTargetType.NONE,
+    execute: () => {
+      useAppBarVisibilityStore.getState().toggle();
+    },
+  },
+
   ToggleLeftSidebar: {
     id: 'toggle-left-sidebar',
     label: () =>
@@ -2064,6 +2078,7 @@ export const Actions = {
 export const NavbarActionGroups = {
   left: [Actions.ArchiveWorkspace] as NavbarItem[],
   right: [
+    Actions.ToggleAppBar,
     Actions.ToggleDiffViewMode,
     Actions.ToggleAllDiffs,
     NavbarDivider,

@@ -22,6 +22,7 @@ import {
 import { useActionVisibilityContext } from "@/shared/hooks/useActionVisibilityContext";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog";
+import { useAppBarVisibilityStore } from "@/shared/stores/useAppBarVisibilityStore";
 
 /**
  * Check if a NavbarItem is a divider
@@ -116,6 +117,7 @@ export function RemoteDesktopNavbar() {
     orgsData?.organizations.find((o) => o.id === selectedOrgId)?.name ?? "";
 
   const actionCtx = useActionVisibilityContext();
+  const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
 
   const handleExecuteAction = useCallback(
     (action: ActionDefinition) => {
@@ -145,7 +147,7 @@ export function RemoteDesktopNavbar() {
         actionCtx,
         handleExecuteAction,
       ),
-    [actionCtx, handleExecuteAction],
+    [actionCtx, handleExecuteAction, isAppBarVisible],
   );
 
   const handleOpenSettings = useCallback(() => {
