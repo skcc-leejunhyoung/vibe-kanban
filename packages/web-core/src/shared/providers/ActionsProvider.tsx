@@ -48,8 +48,14 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
   // Get selected organization ID from store (for kanban context)
   const selectedOrgId = useOrganizationStore((s) => s.selectedOrgId);
   // Get workspace context (ActionsProvider is nested inside WorkspaceProvider)
-  const { selectWorkspace, activeWorkspaces, workspaceId, workspace } =
-    useWorkspaceContext();
+  const {
+    selectWorkspace,
+    activeWorkspaces,
+    workspaceId,
+    workspace,
+    selectedSessionId,
+    selectSession,
+  } = useWorkspaceContext();
   // Get remote workspaces (optional — not available on all routes)
   const userCtx = useContext(UserContext);
   const projectCtx = useContext(ProjectContext);
@@ -218,6 +224,8 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       activeWorkspaces,
       navigationProjects,
       currentWorkspaceId: workspaceId ?? null,
+      currentSessionId: selectedSessionId ?? null,
+      selectSession,
       containerRef: workspace?.container_ref ?? null,
       runningDevServers,
       startDevServer: start,
@@ -252,6 +260,8 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
     activeWorkspaces,
     navigationProjects,
     workspaceId,
+    selectedSessionId,
+    selectSession,
     workspace?.container_ref,
     runningDevServers,
     start,

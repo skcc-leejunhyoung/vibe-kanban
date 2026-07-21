@@ -63,7 +63,12 @@ import {
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 
-import { workspacesApi, relayApi, repoApi } from '@/shared/lib/api';
+import {
+  workspacesApi,
+  relayApi,
+  repoApi,
+  sessionsApi,
+} from '@/shared/lib/api';
 import { bulkUpdateIssues } from '@/shared/lib/remoteApi';
 import { workspaceRecordKeys } from '@/shared/hooks/useWorkspaceRecord';
 import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
@@ -450,6 +455,22 @@ export const Actions = {
   StartReview: {
     id: 'start-review',
     label: 'Start Review',
+    icon: GitPullRequestIcon,
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.hasWorkspace,
+    getTooltip: () => 'Start an automated review',
+    execute: async (ctx, _workspaceId, _hostId) => {
+      if (!ctx.currentSessionId) {
+        throw new Error('Select a chat session before starting a review');
+      }
+      const reviewSession = await sessionsApi.vibeReview(ctx.currentSessionId);
+      ctx.selectSession(reviewSession.id);
+    },
+  },
+
+  AddReviewComments: {
+    id: 'add-review-comments',
+    label: 'Add Review Comments',
     icon: HighlighterIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
@@ -750,7 +771,14 @@ export const Actions = {
     isVisible: (ctx) => ctx.layoutMode === 'workspaces',
     isActive: (ctx) => ctx.isLeftSidebarVisible,
     execute: () => {
-      useUiPreferencesStore.getState().toggleLeftSidebar();
+      const store = useUiPreferencesStore.getState();
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        store.setMobileActiveTab(
+          store.mobileActiveTab === 'workspaces' ? 'chat' : 'workspaces'
+        );
+        return;
+      }
+      store.toggleLeftSidebar();
     },
   },
 
@@ -767,6 +795,10 @@ export const Actions = {
     getLabel: (ctx) =>
       ctx.isLeftMainPanelVisible ? 'Hide Chat Panel' : 'Show Chat Panel',
     execute: (ctx) => {
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        useUiPreferencesStore.getState().setMobileActiveTab('chat');
+        return;
+      }
       useUiPreferencesStore
         .getState()
         .toggleLeftMainPanel(ctx.currentWorkspaceId ?? undefined);
@@ -785,7 +817,14 @@ export const Actions = {
     isVisible: (ctx) => ctx.layoutMode === 'workspaces',
     isActive: (ctx) => ctx.isRightSidebarVisible,
     execute: () => {
-      useUiPreferencesStore.getState().toggleRightSidebar();
+      const store = useUiPreferencesStore.getState();
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        store.setMobileActiveTab(
+          store.mobileActiveTab === 'git' ? 'chat' : 'git'
+        );
+        return;
+      }
+      store.toggleRightSidebar();
     },
   },
 
@@ -851,6 +890,13 @@ export const Actions = {
         ? 'Hide Preview Panel'
         : 'Show Preview Panel',
     execute: (ctx) => {
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        const store = useUiPreferencesStore.getState();
+        store.setMobileActiveTab(
+          store.mobileActiveTab === 'preview' ? 'chat' : 'preview'
+        );
+        return;
+      }
       useUiPreferencesStore
         .getState()
         .toggleRightMainPanelMode(

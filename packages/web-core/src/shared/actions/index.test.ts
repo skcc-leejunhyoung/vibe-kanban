@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Workspace } from 'shared/types';
 import type { ActionExecutorContext } from '@/shared/types/actions';
 
@@ -25,6 +25,9 @@ vi.mock('@/shared/lib/api', () => ({
   },
   relayApi: {},
   repoApi: {},
+  sessionsApi: {
+    vibeReview: vi.fn(),
+  },
 }));
 vi.mock('@/shared/lib/remoteApi', () => ({
   bulkUpdateIssues: vi.fn(),
@@ -46,7 +49,8 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
 }));
 
 import { Actions } from './index';
-import { workspacesApi } from '@/shared/lib/api';
+import { sessionsApi, workspacesApi } from '@/shared/lib/api';
+import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
@@ -68,6 +72,7 @@ const showPullFirst = vi.mocked(PullFirstDialog.show);
 const showForcePush = vi.mocked(ForcePushDialog.show);
 const openPrUrl = vi.mocked(openExternalUrl);
 const reservePrWindow = vi.mocked(reserveExternalWindow);
+const vibeReview = vi.mocked(sessionsApi.vibeReview);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -98,6 +103,55 @@ function makeCtx(
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('mobile workspace view actions', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', {
+      matchMedia: vi.fn(() => ({ matches: true })),
+    });
+    useUiPreferencesStore.setState({ mobileActiveTab: 'chat' });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    [Actions.ToggleLeftSidebar, 'workspaces'],
+    [Actions.ToggleRightSidebar, 'git'],
+    [Actions.TogglePreviewMode, 'preview'],
+  ] as const)('$id switches its mobile tab back to chat', (action, tab) => {
+    action.execute({} as ActionExecutorContext);
+    expect(useUiPreferencesStore.getState().mobileActiveTab).toBe(tab);
+
+    action.execute({} as ActionExecutorContext);
+    expect(useUiPreferencesStore.getState().mobileActiveTab).toBe('chat');
+  });
+
+  it('always switches the chat panel action to chat', () => {
+    useUiPreferencesStore.setState({ mobileActiveTab: 'preview' });
+
+    Actions.ToggleLeftMainPanel.execute({} as ActionExecutorContext);
+
+    expect(useUiPreferencesStore.getState().mobileActiveTab).toBe('chat');
+  });
+});
+
+describe('Actions.StartReview', () => {
+  it('starts the same automated review flow as the composer review button', async () => {
+    vibeReview.mockResolvedValue({ id: 'review-session' } as never);
+    const selectSession = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      { currentSessionId: 'session-1', selectSession }
+    );
+
+    await Actions.StartReview.execute(ctx, 'ws1');
+
+    expect(vibeReview).toHaveBeenCalledWith('session-1');
+    expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
 });
 
 describe('remote workspace action scoping', () => {

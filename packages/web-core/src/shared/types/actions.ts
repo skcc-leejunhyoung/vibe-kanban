@@ -68,6 +68,8 @@ export interface ActionExecutorContext {
   activeWorkspaces: SidebarWorkspace[];
   navigationProjects: NavigationProject[];
   currentWorkspaceId: string | null;
+  currentSessionId: string | null;
+  selectSession: (sessionId: string) => void;
   containerRef: string | null;
   runningDevServers: ExecutionProcess[];
   startDevServer: () => void;
