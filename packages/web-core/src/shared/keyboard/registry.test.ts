@@ -90,13 +90,17 @@ describe('resolveModifier', () => {
 
   it('uses browser-safe default split screen shortcuts', () => {
     expect(resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, {})).toBe(
-      'mod+alt+right'
+      'mod+shift+alt+right'
     );
     expect(resolveModifier(PREVIOUS_SPLIT_PANE_BINDING_ID, {})).toBe(
-      'mod+alt+left'
+      'mod+shift+alt+left'
     );
-    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe('mod+alt+1');
-    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe('mod+alt+4');
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe(
+      'mod+shift+alt+1'
+    );
+    expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[4], {})).toBe(
+      'mod+shift+alt+4'
+    );
   });
 });
 
