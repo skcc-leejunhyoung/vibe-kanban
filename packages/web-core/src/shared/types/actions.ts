@@ -64,7 +64,7 @@ export interface ActionExecutorContext {
   currentHostId: string | null;
   appNavigation: AppNavigation;
   queryClient: QueryClient;
-  selectWorkspace: (workspaceId: string) => void;
+  selectWorkspace: (workspaceId: string, hostId?: string | null) => void;
   activeWorkspaces: SidebarWorkspace[];
   navigationProjects: NavigationProject[];
   currentWorkspaceId: string | null;

@@ -852,7 +852,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!sessionId || isReviewing) return;
     setIsReviewing(true);
     try {
-      const reviewSession = await sessionsApi.vibeReview(sessionId);
+      const reviewSession = await sessionsApi.vibeReview(sessionId, hostId);
       await queryClient.invalidateQueries({
         queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
       });

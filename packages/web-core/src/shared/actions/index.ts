@@ -74,6 +74,7 @@ import { workspaceRecordKeys } from '@/shared/hooks/useWorkspaceRecord';
 import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
+import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
 import { DeleteWorkspaceDialog } from '@vibe/ui/components/DeleteWorkspaceDialog';
@@ -459,11 +460,30 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     getTooltip: () => 'Start an automated review',
-    execute: async (ctx, _workspaceId, _hostId) => {
-      if (!ctx.currentSessionId) {
+    execute: async (ctx, workspaceId, hostId) => {
+      const isCurrentWorkspace = ctx.currentWorkspaceId === workspaceId;
+      const targetHostId =
+        hostId === undefined
+          ? isCurrentWorkspace
+            ? ctx.currentHostId
+            : null
+          : hostId;
+      const targetSessionId = isCurrentWorkspace
+        ? ctx.currentSessionId
+        : (await sessionsApi.getByWorkspace(workspaceId, targetHostId))[0]?.id;
+      if (!targetSessionId) {
         throw new Error('Select a chat session before starting a review');
       }
-      const reviewSession = await sessionsApi.vibeReview(ctx.currentSessionId);
+      const reviewSession = await sessionsApi.vibeReview(
+        targetSessionId,
+        targetHostId
+      );
+      await ctx.queryClient.invalidateQueries({
+        queryKey: workspaceSessionKeys.byWorkspace(workspaceId, targetHostId),
+      });
+      if (!isCurrentWorkspace) {
+        ctx.selectWorkspace(workspaceId, targetHostId);
+      }
       ctx.selectSession(reviewSession.id);
     },
   },
@@ -843,6 +863,13 @@ export const Actions = {
         ? 'Hide Changes Panel'
         : 'Show Changes Panel',
     execute: (ctx) => {
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        const store = useUiPreferencesStore.getState();
+        store.setMobileActiveTab(
+          store.mobileActiveTab === 'changes' ? 'chat' : 'changes'
+        );
+        return;
+      }
       useUiPreferencesStore
         .getState()
         .toggleRightMainPanelMode(
@@ -866,6 +893,13 @@ export const Actions = {
         ? 'Hide Logs Panel'
         : 'Show Logs Panel',
     execute: (ctx) => {
+      if (window.matchMedia('(max-width: 767px)').matches) {
+        const store = useUiPreferencesStore.getState();
+        store.setMobileActiveTab(
+          store.mobileActiveTab === 'logs' ? 'chat' : 'logs'
+        );
+        return;
+      }
       useUiPreferencesStore
         .getState()
         .toggleRightMainPanelMode(

@@ -402,9 +402,13 @@ export const sessionsApi = {
 
   /** Manually start an automated `vibe` review session for the workspace, as if
    * the coding agent had reported `VIBE_RESULT: done`. Returns the new session. */
-  vibeReview: async (sessionId: string): Promise<Session> => {
-    const response = await makeRequest(
+  vibeReview: async (
+    sessionId: string,
+    hostId?: string | null
+  ): Promise<Session> => {
+    const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/vibe-review`,
+      hostId,
       {
         method: 'POST',
       }

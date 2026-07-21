@@ -26,6 +26,7 @@ vi.mock('@/shared/lib/api', () => ({
   relayApi: {},
   repoApi: {},
   sessionsApi: {
+    getByWorkspace: vi.fn(),
     vibeReview: vi.fn(),
   },
 }));
@@ -72,6 +73,7 @@ const showPullFirst = vi.mocked(PullFirstDialog.show);
 const showForcePush = vi.mocked(ForcePushDialog.show);
 const openPrUrl = vi.mocked(openExternalUrl);
 const reservePrWindow = vi.mocked(reserveExternalWindow);
+const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
 
 // Build a minimal action context. Seeding the query cache with the workspace
@@ -120,6 +122,8 @@ describe('mobile workspace view actions', () => {
   it.each([
     [Actions.ToggleLeftSidebar, 'workspaces'],
     [Actions.ToggleRightSidebar, 'git'],
+    [Actions.ToggleChangesMode, 'changes'],
+    [Actions.ToggleLogsMode, 'logs'],
     [Actions.TogglePreviewMode, 'preview'],
   ] as const)('$id switches its mobile tab back to chat', (action, tab) => {
     action.execute({} as ActionExecutorContext);
@@ -144,12 +148,47 @@ describe('Actions.StartReview', () => {
     const selectSession = vi.fn();
     const { ctx } = makeCtx(
       { id: 'ws1' },
-      { currentSessionId: 'session-1', selectSession }
+      {
+        currentHostId: 'current-host',
+        currentSessionId: 'session-1',
+        selectSession,
+      }
     );
 
     await Actions.StartReview.execute(ctx, 'ws1');
 
-    expect(vibeReview).toHaveBeenCalledWith('session-1');
+    expect(vibeReview).toHaveBeenCalledWith('session-1', 'current-host');
+    expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
+
+  it('starts review from the target workspace when its row menu is used', async () => {
+    getSessionsByWorkspace.mockResolvedValue([
+      { id: 'target-session' },
+    ] as never);
+    vibeReview.mockResolvedValue({ id: 'review-session' } as never);
+    const selectWorkspace = vi.fn();
+    const selectSession = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'current-workspace' },
+      {
+        currentWorkspaceId: 'current-workspace',
+        currentSessionId: 'current-session',
+        selectWorkspace,
+        selectSession,
+      }
+    );
+
+    await Actions.StartReview.execute(ctx, 'target-workspace', 'remote-host');
+
+    expect(getSessionsByWorkspace).toHaveBeenCalledWith(
+      'target-workspace',
+      'remote-host'
+    );
+    expect(vibeReview).toHaveBeenCalledWith('target-session', 'remote-host');
+    expect(selectWorkspace).toHaveBeenCalledWith(
+      'target-workspace',
+      'remote-host'
+    );
     expect(selectSession).toHaveBeenCalledWith('review-session');
   });
 });
