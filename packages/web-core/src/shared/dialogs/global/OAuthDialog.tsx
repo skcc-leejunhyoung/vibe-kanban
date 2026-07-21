@@ -20,6 +20,7 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { organizationKeys } from '@/shared/hooks/organizationKeys';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';
 import { oauthApi, type AuthMethodsResponse } from '@/shared/lib/api';
+import { REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
 import { useTranslation } from 'react-i18next';
 import { defineModal } from '@/shared/lib/modals';
 
@@ -130,6 +131,9 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
       void (async () => {
         await reloadSystem();
         await tokenManager.triggerRefresh();
+        await queryClient.invalidateQueries({
+          queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
+        });
       })();
 
       // Invalidate organization caches to force fresh fetch after login
@@ -193,6 +197,9 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
       );
       await reloadSystem();
       await tokenManager.triggerRefresh();
+      await queryClient.invalidateQueries({
+        queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
+      });
       queryClient.invalidateQueries({ queryKey: organizationKeys.all });
 
       setState({

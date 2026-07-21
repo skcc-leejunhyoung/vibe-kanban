@@ -21,6 +21,11 @@ interface RemoteCloudHostsState {
   hosts: RemoteCloudHost[];
 }
 
+interface RemoteCloudHostDataSources {
+  listPairedHosts: () => Promise<RelayPairedHost[]>;
+  listCloudHosts: () => Promise<RelayHost[]>;
+}
+
 function normalizeRemoteCloudHostStatus(
   status: RelayHost['status'] | undefined
 ): RemoteCloudHostStatus {
@@ -31,20 +36,19 @@ function normalizeRemoteCloudHostStatus(
   return 'offline';
 }
 
-async function fetchRemoteCloudHostsState(): Promise<RemoteCloudHostsState> {
-  let pairedHosts: RelayPairedHost[] = [];
-  try {
-    pairedHosts = await relayApi.listPairedRelayHosts();
-  } catch {
-    return { hosts: [] };
+export async function fetchRemoteCloudHostsState(
+  sources: RemoteCloudHostDataSources = {
+    listPairedHosts: relayApi.listPairedRelayHosts,
+    listCloudHosts: listRelayHosts,
   }
-
-  let remoteHosts: RelayHost[] = [];
-  try {
-    remoteHosts = await listRelayHosts();
-  } catch {
-    remoteHosts = [];
-  }
+): Promise<RemoteCloudHostsState> {
+  // A failed cloud lookup is not evidence that every paired host is offline.
+  // Let React Query retain the last successful state and expose the request
+  // error instead of replacing real host statuses with a fabricated fallback.
+  const [pairedHosts, remoteHosts] = await Promise.all([
+    sources.listPairedHosts(),
+    sources.listCloudHosts(),
+  ]);
 
   const remoteHostsById = new Map(remoteHosts.map((host) => [host.id, host]));
 
@@ -70,8 +74,9 @@ async function fetchRemoteCloudHostsState(): Promise<RemoteCloudHostsState> {
 export function useRemoteCloudHostsState(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
-    queryFn: fetchRemoteCloudHostsState,
-    staleTime: 0,
+    queryFn: () => fetchRemoteCloudHostsState(),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
     enabled: options?.enabled ?? true,
   });
 }
