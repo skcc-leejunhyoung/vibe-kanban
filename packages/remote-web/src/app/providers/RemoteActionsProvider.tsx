@@ -113,6 +113,10 @@ export function RemoteActionsProvider({
       activeWorkspaces: [],
       navigationProjects,
       currentWorkspaceId: null,
+      currentSessionId: null,
+      selectSession: () => {
+        noOpSelection("Session actions");
+      },
       containerRef: null,
       runningDevServers: [],
       startDevServer: () => {
