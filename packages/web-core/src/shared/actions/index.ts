@@ -88,7 +88,7 @@ import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
-import { openExternalUrl } from '@vibe/ui/lib/open-url';
+import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -1055,16 +1055,36 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasOpenPR,
     execute: async (_ctx, workspaceId, repoId) => {
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
-      const repoStatus = branchStatus.find(
-        (status) => status.repo_id === repoId
-      );
-      const openPr = repoStatus?.merges?.find(
-        (merge: Merge) => merge.type === 'pr' && merge.pr_info.status === 'open'
-      );
+      const reservedWindow = reserveExternalWindow();
+      try {
+        const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+        const repoStatus = branchStatus.find(
+          (status) => status.repo_id === repoId
+        );
+        const openPr = repoStatus?.merges?.find(
+          (merge: Merge) =>
+            merge.type === 'pr' && merge.pr_info.status === 'open'
+        );
 
-      if (openPr?.type === 'pr') {
-        openExternalUrl(openPr.pr_info.url);
+        if (openPr?.type !== 'pr') {
+          reservedWindow?.close();
+          await ConfirmDialog.show({
+            title: 'No Open Pull Request',
+            message:
+              'The selected repository does not have a connected open pull request.',
+            confirmText: 'OK',
+            showCancelButton: false,
+            variant: 'info',
+          });
+          return;
+        }
+
+        if (!openExternalUrl(openPr.pr_info.url, reservedWindow)) {
+          reservedWindow?.close();
+        }
+      } catch (error) {
+        reservedWindow?.close();
+        throw error;
       }
     },
   },
