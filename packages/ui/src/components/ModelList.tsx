@@ -2,6 +2,7 @@ import type { Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BrainIcon, CaretDownIcon, CheckIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { fuzzySearchMatchAny } from '../lib/search';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -138,9 +139,7 @@ export function ModelList({
 
   const filteredModels = normalizedSearch
     ? models.filter((model) => {
-        const name = model.name?.toLowerCase() ?? '';
-        const id = model.id?.toLowerCase() ?? '';
-        return name.includes(normalizedSearch) || id.includes(normalizedSearch);
+        return fuzzySearchMatchAny([model.name, model.id], normalizedSearch);
       })
     : models;
 

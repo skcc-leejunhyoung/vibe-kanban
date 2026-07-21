@@ -13,6 +13,7 @@ import type { Icon } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import { useDeferredValue, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { fuzzySearchMatch } from '../lib/search';
 import {
   Command,
   CommandEmpty,
@@ -217,7 +218,7 @@ export function CommandBar<
       for (const item of group.items) {
         const label = getItemSearchLabel(item, getLabel);
         if (!label) continue;
-        if (!label.toLowerCase().includes(normalizedSearch)) continue;
+        if (!fuzzySearchMatch(label, normalizedSearch)) continue;
 
         if (isBranchSelectionPage && item.type === 'branch') {
           if (remainingBranchResults <= 0) {

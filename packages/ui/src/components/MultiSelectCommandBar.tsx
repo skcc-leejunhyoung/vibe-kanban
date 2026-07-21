@@ -10,6 +10,7 @@ import {
   CommandItem,
 } from './Command';
 import { PrimaryButton } from './PrimaryButton';
+import { fuzzySearchMatch } from '../lib/search';
 
 export interface MultiSelectOption<T extends string = string> {
   value: T;
@@ -44,7 +45,7 @@ export function MultiSelectCommandBar<T extends string = string>({
       className="rounded-sm border border-border [&_[cmdk-group-heading]]:px-base [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-low [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-half [&_[cmdk-input-wrapper]_svg]:h-4 [&_[cmdk-input-wrapper]_svg]:w-4 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-base [&_[cmdk-item]]:py-half"
       loop
       filter={(value, search) => {
-        if (value.toLowerCase().includes(search.toLowerCase())) return 1;
+        if (fuzzySearchMatch(value, search)) return 1;
         return 0;
       }}
       onKeyDown={(e) => {

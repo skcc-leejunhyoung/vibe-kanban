@@ -6,6 +6,7 @@ import {
   isActionVisible,
   type ActionVisibilityContext,
 } from '@/shared/types/actions';
+import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 
 // Derive injectable pages from Pages - all child pages of root
 const INJECTABLE_PAGE_IDS = (Object.keys(Pages) as StaticPageId[]).filter(
@@ -17,8 +18,6 @@ export function injectSearchMatches(
   ctx: ActionVisibilityContext,
   workspace: Workspace | undefined
 ): ResolvedGroup[] {
-  const searchLower = searchQuery.toLowerCase();
-
   return INJECTABLE_PAGE_IDS.reduce<ResolvedGroup[]>((groups, id) => {
     const page = Pages[id];
 
@@ -30,10 +29,9 @@ export function injectSearchMatches(
       .filter((a) => {
         const label = resolveLabel(a, workspace);
         return (
-          label.toLowerCase().includes(searchLower) ||
-          a.id.toLowerCase().includes(searchLower) ||
-          (a.keywords?.some((kw) => kw.toLowerCase().includes(searchLower)) ??
-            false)
+          fuzzySearchMatch(label, searchQuery) ||
+          fuzzySearchMatch(a.id, searchQuery) ||
+          (a.keywords?.some((kw) => fuzzySearchMatch(kw, searchQuery)) ?? false)
         );
       })
       .map((action) => ({ type: 'action' as const, action }));

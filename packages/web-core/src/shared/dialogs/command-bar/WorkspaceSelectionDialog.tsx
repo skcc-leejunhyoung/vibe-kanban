@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { GitBranchIcon, PlusIcon } from '@phosphor-icons/react';
 import { defineModal } from '@/shared/lib/modals';
 import { ApiError, workspacesApi } from '@/shared/lib/api';
+import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import { getWorkspaceDefaults } from '@/shared/lib/workspaceDefaults';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { useProjectWorkspaceCreateDraft } from '@/shared/hooks/useProjectWorkspaceCreateDraft';
@@ -110,7 +111,6 @@ function WorkspaceSelectionContent({
   }, [activeWorkspaces, archivedWorkspaces]);
 
   // Filter and paginate workspaces
-  const searchLower = search.toLowerCase();
   const isSearching = search.length > 0;
 
   const filteredWorkspaces = useMemo(() => {
@@ -119,14 +119,11 @@ function WorkspaceSelectionContent({
       if (linkedLocalWorkspaceIds.has(ws.id)) return false;
       // Filter by search if searching
       if (isSearching) {
-        return (
-          ws.name.toLowerCase().includes(searchLower) ||
-          ws.branch.toLowerCase().includes(searchLower)
-        );
+        return fuzzySearchMatchAny([ws.name, ws.branch], search);
       }
       return true;
     });
-  }, [allWorkspaces, linkedLocalWorkspaceIds, isSearching, searchLower]);
+  }, [allWorkspaces, linkedLocalWorkspaceIds, isSearching, search]);
 
   // Apply pagination when not searching
   const displayedWorkspaces = useMemo(() => {
@@ -254,7 +251,7 @@ function WorkspaceSelectionContent({
         className="rounded-sm border border-border [&_[cmdk-group-heading]]:px-base [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-low [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-half [&_[cmdk-input-wrapper]_svg]:h-4 [&_[cmdk-input-wrapper]_svg]:w-4 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-base [&_[cmdk-item]]:py-half"
         loop
         filter={(value, search) => {
-          if (value.toLowerCase().includes(search.toLowerCase())) return 1;
+          if (fuzzySearchMatchAny([value], search)) return 1;
           return 0;
         }}
       >

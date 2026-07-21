@@ -26,6 +26,7 @@ import { defineModal } from '@/shared/lib/modals';
 import { workspacesApi, repoApi } from '@/shared/lib/api';
 import { WorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { SearchableDropdownContainer } from '@/shared/components/ui-new/containers/SearchableDropdownContainer';
+import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import type { PullRequestDetail, GitRemote } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 
@@ -317,8 +318,7 @@ const CreateWorkspaceFromPrDialogImpl =
                     getItemKey={(pr) => String(pr.number)}
                     getItemLabel={(pr) => `#${pr.number}: ${pr.title}`}
                     filterItem={(pr, query) =>
-                      String(pr.number).includes(query) ||
-                      pr.title.toLowerCase().includes(query)
+                      fuzzySearchMatchAny([String(pr.number), pr.title], query)
                     }
                     onSelect={(pr) => setSelectedPrNumber(Number(pr.number))}
                     trigger={

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { Project } from 'shared/remote-types';
 import type { MultiSelectDropdownOption } from '@vibe/ui/components/MultiSelectDropdown';
 import { getWorkspaceActivityStatus } from '@vibe/ui/components/WorkspacesSidebar';
+import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useAllOrganizationProjects } from '@/shared/hooks/useAllOrganizationProjects';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
@@ -265,12 +266,9 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
       }
 
       // Search filter (name or branch)
-      const searchLower = searchQuery.toLowerCase();
-      if (searchLower) {
-        result = result.filter(
-          (ws) =>
-            ws.name.toLowerCase().includes(searchLower) ||
-            ws.branch.toLowerCase().includes(searchLower)
+      if (searchQuery.trim()) {
+        result = result.filter((ws) =>
+          fuzzySearchMatchAny([ws.name, ws.branch], searchQuery)
         );
       }
 

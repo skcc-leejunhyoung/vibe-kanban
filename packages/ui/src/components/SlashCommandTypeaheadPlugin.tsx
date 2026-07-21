@@ -14,6 +14,7 @@ import { TerminalIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { useTypeaheadOpen } from './TypeaheadOpenContext';
 import { TypeaheadMenu } from './TypeaheadMenu';
+import { fuzzySearchMatch } from '../lib/search';
 
 export type SlashCommandDescriptionLike = {
   name: string;
@@ -37,10 +38,10 @@ function filterSlashCommands(
   if (!q) return all;
 
   const startsWith = all.filter((c) => c.name.toLowerCase().startsWith(q));
-  const includes = all.filter(
-    (c) => !startsWith.includes(c) && c.name.toLowerCase().includes(q)
+  const fuzzy = all.filter(
+    (c) => !startsWith.includes(c) && fuzzySearchMatch(c.name, q)
   );
-  return [...startsWith, ...includes];
+  return [...startsWith, ...fuzzy];
 }
 
 export function SlashCommandTypeaheadPlugin({

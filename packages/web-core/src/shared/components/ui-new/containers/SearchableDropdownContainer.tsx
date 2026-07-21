@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useState, useMemo, useCallback, useRef } from 'react';
 import { VirtuosoHandle } from 'react-virtuoso';
 import { SearchableDropdown } from '@vibe/ui/components/SearchableDropdown';
+import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 
 interface SearchableDropdownContainerProps<T> {
   /** Array of items to display */
@@ -13,7 +14,7 @@ interface SearchableDropdownContainerProps<T> {
   getItemKey: (item: T) => string;
   /** Extract display label from item */
   getItemLabel: (item: T) => string;
-  /** Custom filter function (null = default label.includes(query)) */
+  /** Custom filter function (null = default fuzzy label matching) */
   filterItem: ((item: T, query: string) => boolean) | null;
 
   /** Called when an item is selected */
@@ -57,13 +58,11 @@ export function SearchableDropdownContainer<T>({
 
   const filteredItems = useMemo(() => {
     if (!searchTerm.trim()) return items;
-    const query = searchTerm.toLowerCase();
+    const query = searchTerm.trim();
     if (filterItem !== null) {
       return items.filter((item) => filterItem(item, query));
     }
-    return items.filter((item) =>
-      getItemLabel(item).toLowerCase().includes(query)
-    );
+    return items.filter((item) => fuzzySearchMatch(getItemLabel(item), query));
   }, [items, searchTerm, filterItem, getItemLabel]);
 
   // Derive safe highlight index (clamp to valid range)

@@ -2,6 +2,7 @@ import type { ReactElement, Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CaretDownIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { fuzzySearchMatchAny } from '../lib/search';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -106,9 +107,7 @@ function getPopoverWidth(hasProviders: boolean, hasReasoning: boolean): string {
 }
 
 function matchesSearch(model: ModelListModel, query: string): boolean {
-  const name = model.name?.toLowerCase() ?? '';
-  const id = model.id?.toLowerCase() ?? '';
-  return name.includes(query) || id.includes(query);
+  return fuzzySearchMatchAny([model.name, model.id], query);
 }
 
 interface ProviderAccordionProps {

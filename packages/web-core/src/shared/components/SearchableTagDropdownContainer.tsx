@@ -5,6 +5,7 @@ import {
   SearchableTagDropdown,
   TAG_COLORS,
 } from '@vibe/ui/components/SearchableTagDropdown';
+import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 
 interface SearchableTagDropdownContainerProps {
   tags: Tag[];
@@ -46,8 +47,7 @@ export function SearchableTagDropdownContainer({
   // Filter tags based on search term
   const filteredTags = useMemo(() => {
     if (!searchTerm.trim()) return tags;
-    const query = searchTerm.toLowerCase();
-    return tags.filter((tag) => tag.name.toLowerCase().includes(query));
+    return tags.filter((tag) => fuzzySearchMatch(tag.name, searchTerm));
   }, [tags, searchTerm]);
 
   // Check if search term matches any existing tag exactly

@@ -10,6 +10,7 @@ import type {
   IssueTag,
   IssuePriority,
 } from 'shared/remote-types';
+import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 
 type UseKanbanFiltersParams = {
   issues: Issue[];
@@ -34,6 +35,21 @@ export const PRIORITY_ORDER: Record<IssuePriority, number> = {
   medium: 2,
   low: 3,
 };
+
+export function matchesIssueSearch(
+  issue: Pick<Issue, 'title' | 'description' | 'simple_id' | 'issue_number'>,
+  query: string
+): boolean {
+  return fuzzySearchMatchAny(
+    [
+      issue.title,
+      issue.description,
+      issue.simple_id,
+      String(issue.issue_number),
+    ],
+    query
+  );
+}
 
 export function useKanbanFilters({
   issues,
@@ -79,22 +95,10 @@ export function useKanbanFilters({
       result = result.filter((issue) => issue.parent_issue_id === null);
     }
 
-    // Text search (title + short ID)
-    const query = filters.searchQuery.trim().toLowerCase();
+    // Text search (title + body + short ID)
+    const query = filters.searchQuery.trim();
     if (query) {
-      result = result.filter((issue) => {
-        if (issue.title.toLowerCase().includes(query)) {
-          return true;
-        }
-
-        const simpleId = issue.simple_id.toLowerCase();
-        if (simpleId.includes(query)) {
-          return true;
-        }
-
-        const issueNumber = String(issue.issue_number);
-        return issueNumber.includes(query);
-      });
+      result = result.filter((issue) => matchesIssueSearch(issue, query));
     }
 
     // Priority filter (OR within)

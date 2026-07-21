@@ -18,6 +18,7 @@ import {
 } from '@vibe/ui/components/RadixTooltip';
 import { Input } from '@vibe/ui/components/Input';
 import type { GitBranch } from 'shared/types';
+import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 
 type Props = {
   branches: GitBranch[];
@@ -124,7 +125,7 @@ function BranchSelector({
 
     if (branchSearchTerm.trim()) {
       const q = branchSearchTerm.toLowerCase();
-      filtered = filtered.filter((b) => b.name.toLowerCase().includes(q));
+      filtered = filtered.filter((b) => fuzzySearchMatch(b.name, q));
     }
     return filtered;
   }, [branches, branchSearchTerm]);

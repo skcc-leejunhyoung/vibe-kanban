@@ -24,6 +24,7 @@ import { fileSystemApi } from '@/shared/lib/api';
 import { DirectoryEntry, DirectoryListResponse } from 'shared/types';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
+import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 
 export interface FolderPickerDialogProps {
   value?: string;
@@ -51,7 +52,7 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
     const filteredEntries = useMemo(() => {
       if (!searchTerm.trim()) return entries;
       return entries.filter((entry) =>
-        entry.name.toLowerCase().includes(searchTerm.toLowerCase())
+        fuzzySearchMatch(entry.name, searchTerm)
       );
     }, [entries, searchTerm]);
 

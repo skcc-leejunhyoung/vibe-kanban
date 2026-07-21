@@ -27,6 +27,7 @@ import { repoApi, issuePrsApi } from '@/shared/lib/api';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { SearchableDropdownContainer } from '@/shared/components/ui-new/containers/SearchableDropdownContainer';
+import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import type { GitRemote, PullRequestDetail } from 'shared/types';
 import type { PullRequestStatus } from 'shared/remote-types';
 
@@ -502,8 +503,10 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
                       getItemKey={(pr) => String(pr.number)}
                       getItemLabel={(pr) => `#${pr.number}: ${pr.title}`}
                       filterItem={(pr, query) =>
-                        String(pr.number).includes(query) ||
-                        pr.title.toLowerCase().includes(query)
+                        fuzzySearchMatchAny(
+                          [String(pr.number), pr.title],
+                          query
+                        )
                       }
                       onSelect={(pr) => setSelectedPrNumber(Number(pr.number))}
                       trigger={

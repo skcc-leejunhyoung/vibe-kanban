@@ -13,6 +13,7 @@ import { ApiError } from '@/shared/lib/api';
 import { defineModal } from '@/shared/lib/modals';
 import type { Repo, UpdateRepo } from 'shared/types';
 import { SearchableDropdownContainer } from '@/shared/components/ui-new/containers/SearchableDropdownContainer';
+import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 import { Button } from '@vibe/ui/components/Button';
 import {
@@ -664,8 +665,7 @@ export function ReposSettingsSection({
                   t('settings.repos.general.defaultTargetBranch.useCurrent')
                 }
                 filterItem={(b, query) =>
-                  b.name === '' ||
-                  b.name.toLowerCase().includes(query.toLowerCase())
+                  b.name === '' || fuzzySearchMatch(b.name, query)
                 }
                 getItemBadge={(b) => (b.is_current ? 'Current' : undefined)}
                 getItemIcon={null}
