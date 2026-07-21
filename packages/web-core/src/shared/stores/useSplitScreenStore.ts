@@ -53,6 +53,7 @@ interface SplitScreenState {
   presets: PresetStates;
   syncUser: (userId: string | null) => void;
   setPreset: (preset: SplitPreset, currentUrl: string) => void;
+  openPaneInWindow: (url: string) => void;
   setActivePane: (paneId: string) => void;
   setPaneUrl: (paneId: string, url: string) => void;
   movePane: (sourceId: string, targetId: string) => void;
@@ -129,6 +130,21 @@ export const useSplitScreenStore = create<SplitScreenState>()(
             },
           };
         }),
+      openPaneInWindow: (url) =>
+        set((state) => ({
+          preset: 1,
+          presets: {
+            ...state.presets,
+            1: {
+              ...state.presets[1],
+              activePaneId: state.presets[1].panes[0].id,
+              panes: state.presets[1].panes.map((pane, index) => ({
+                ...pane,
+                url: index === 0 ? url : pane.url,
+              })),
+            },
+          },
+        })),
       setActivePane: (paneId) =>
         set((state) =>
           updateCurrentPreset(state, (preset) => ({

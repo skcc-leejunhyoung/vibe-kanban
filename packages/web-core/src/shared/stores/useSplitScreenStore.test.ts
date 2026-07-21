@@ -136,6 +136,16 @@ describe('split screen presets', () => {
     ).toEqual(['/workspaces/b', '/workspaces/a']);
   });
 
+  it('collapses to the selected pane before opening it in the window', () => {
+    useSplitScreenStore.getState().setPreset(2, '/workspaces/a');
+    useSplitScreenStore.getState().openPaneInWindow('/workspaces/b');
+
+    const state = useSplitScreenStore.getState();
+    expect(state.preset).toBe(1);
+    expect(state.presets[1].panes[0].url).toBe('/workspaces/b');
+    expect(state.presets[1].activePaneId).toBe(state.presets[1].panes[0].id);
+  });
+
   it('stores both rows of the four-pane layout independently', () => {
     useSplitScreenStore.getState().setPreset(4, '/workspaces/a');
     useSplitScreenStore.getState().setHorizontalSizes([40, 60], 0);

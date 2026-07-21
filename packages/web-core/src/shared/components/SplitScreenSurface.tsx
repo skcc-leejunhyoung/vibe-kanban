@@ -197,6 +197,7 @@ function PaneFrame({
   showHeader,
   onActivate,
   onDropPane,
+  onOpenInWindow,
 }: {
   pane: SplitPaneState;
   fallbackUrl: string;
@@ -205,6 +206,7 @@ function PaneFrame({
   showHeader: boolean;
   onActivate: () => void;
   onDropPane: (sourceId: string) => void;
+  onOpenInWindow: (url: string) => void;
 }) {
   const sourceUrl = pane.url ?? fallbackUrl;
   const src = useMemo(() => {
@@ -254,7 +256,7 @@ function PaneFrame({
             type="button"
             aria-label="Open pane in this window"
             className="p-0.5 hover:text-normal"
-            onClick={() => window.location.assign(sourceUrl)}
+            onClick={() => onOpenInWindow(sourceUrl)}
           >
             <ArrowsOutIcon className="size-3.5" />
           </button>
@@ -289,6 +291,9 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   const preset = useSplitScreenStore((state) => state.preset);
   const presetState = useSplitScreenStore((state) => state.presets[preset]);
   const setPreset = useSplitScreenStore((state) => state.setPreset);
+  const openPaneInWindow = useSplitScreenStore(
+    (state) => state.openPaneInWindow
+  );
   const setActivePane = useSplitScreenStore((state) => state.setActivePane);
   const setPaneUrl = useSplitScreenStore((state) => state.setPaneUrl);
   const movePane = useSplitScreenStore((state) => state.movePane);
@@ -364,9 +369,16 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       if (event.origin !== window.location.origin) return;
       const message = event.data;
       if (!message || message.type !== MESSAGE_TYPE) return;
+      const senderPaneId = Array.from(paneFramesRef.current.entries()).find(
+        ([, frame]) => frame.contentWindow === event.source
+      )?.[0];
+      if (!senderPaneId) return;
       if (message.event === 'preset' && isSplitPreset(message.preset)) {
         activatePreset(message.preset);
-      } else if (message.event === 'activate' && message.paneId) {
+      } else if (
+        message.event === 'activate' &&
+        message.paneId === senderPaneId
+      ) {
         activatePane(message.paneId);
       } else if (
         message.event === 'focus-pane' &&
@@ -375,7 +387,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
         focusAdjacentPane(message.direction);
       } else if (
         message.event === 'navigate' &&
-        message.paneId &&
+        message.paneId === senderPaneId &&
         message.url
       ) {
         setPaneUrl(message.paneId, message.url);
@@ -398,6 +410,10 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       showHeader={preset > 1}
       onActivate={() => activatePane(pane.id)}
       onDropPane={(sourceId) => movePane(sourceId, pane.id)}
+      onOpenInWindow={(url) => {
+        openPaneInWindow(url);
+        window.location.assign(url);
+      }}
     />
   );
 
