@@ -24,7 +24,6 @@ import {
   CollapsibleSectionHeader,
   type SectionAction,
 } from '@vibe/ui/components/CollapsibleSectionHeader';
-import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 
@@ -51,20 +50,16 @@ export const RightSidebar = memo(function RightSidebar({
   const { t } = useTranslation(['tasks', 'common']);
   const { config } = useUserSystem();
   const hostId = useHostId();
-  const { hosts } = useWorkspaceHostOptions();
   const diffs = useDiffs();
   const { data: branchStatus } = useBranchStatus(selectedWorkspace?.id);
   const hasPrs = hasLinkedPr(branchStatus);
   const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
   const { expandTerminal, isTerminalExpanded } = useLogsPanel();
-  const workspaceHost = hostId
-    ? hosts.find((host) => host.id === hostId)
-    : null;
   const hostName =
     config?.host_nickname ||
-    workspaceHost?.name ||
+    hostId ||
     t('common:workspaces.thisMachine', { defaultValue: 'This machine' });
-  const hostStatus = workspaceHost?.status ?? 'online';
+  const hostStatus = 'online';
 
   const [changesExpanded] = usePersistedExpanded(
     PERSIST_KEYS.changesSection,

@@ -68,7 +68,10 @@ import {
   ALL_WORKSPACE_HOSTS_ID,
   useWorkspaceHostSelectionStore,
 } from '@/shared/stores/useWorkspaceHostSelectionStore';
-import { useHostPrimaryColors } from '@/shared/hooks/useHostPrimaryColors';
+import {
+  getHostPrimaryColorKey,
+  useHostPrimaryColors,
+} from '@/shared/hooks/useHostPrimaryColors';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
 
@@ -239,7 +242,7 @@ export function WorkspacesSidebarContainer({
       activeWorkspaces.map((workspace) => ({
         ...workspace,
         hostPrimaryColor:
-          hostPrimaryColors.get(workspace.hostId ?? null) ?? undefined,
+          hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
       })),
       searchQuery
     );
@@ -261,7 +264,7 @@ export function WorkspacesSidebarContainer({
       archivedWorkspaces.map((workspace) => ({
         ...workspace,
         hostPrimaryColor:
-          hostPrimaryColors.get(workspace.hostId ?? null) ?? undefined,
+          hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
       })),
       searchQuery
     );

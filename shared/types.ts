@@ -367,6 +367,8 @@ export type UserSystemInfo = { version: string, config: Config, config_revision:
  */
 capabilities: { [key in string]?: Array<BaseAgentCapability> }, shared_api_base: string | null, preview_proxy_port: number | null, executors: { [key in BaseCodingAgent]?: ExecutorProfile }, };
 
+export type HostAppearance = { primary_color: string, };
+
 export type Environment = { os_type: string, os_version: string, os_architecture: string, bitness: string, };
 
 export type McpServerQuery = { executor: BaseCodingAgent, };
