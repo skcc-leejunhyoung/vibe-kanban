@@ -7,7 +7,6 @@ import {
   Fragment,
   type ReactNode,
 } from 'react';
-import { ArrowsOutIcon, DotsSixVerticalIcon } from '@phosphor-icons/react';
 import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useLocation } from '@tanstack/react-router';
@@ -32,6 +31,10 @@ import {
 const EMBED_PARAM = 'vk_split_embed';
 const MESSAGE_TYPE = 'vk-split-pane';
 const WINDOW_NAME_PREFIX = 'vk-split-pane:';
+const DRAG_DATA_TYPE = 'text/x-vk-split-pane';
+const DRAG_HANDLE_SELECTOR = '[data-split-pane-drag-handle]';
+const INTERACTIVE_SELECTOR =
+  'button, a, input, textarea, select, [contenteditable="true"], [role="button"]';
 
 export function isSplitScreenEmbed(): boolean {
   const params = new URLSearchParams(window.location.search);
@@ -55,8 +58,9 @@ function getEmbeddedPaneId(): string | null {
 
 type PaneMessage = {
   type: typeof MESSAGE_TYPE;
-  event: 'activate' | 'navigate' | 'preset' | 'focus-pane';
+  event: 'activate' | 'navigate' | 'preset' | 'focus-pane' | 'move-pane';
   paneId?: string;
+  sourcePaneId?: string;
   url?: string;
   preset?: SplitPreset;
   direction?: 'next' | 'previous';
@@ -170,6 +174,64 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!paneId) return;
+
+    const dragHandle = document.querySelector<HTMLElement>(
+      DRAG_HANDLE_SELECTOR
+    );
+    if (!dragHandle) return;
+
+    const handleDragStart = (event: DragEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(INTERACTIVE_SELECTOR)) {
+        event.preventDefault();
+        return;
+      }
+      event.dataTransfer?.setData(DRAG_DATA_TYPE, paneId);
+      event.dataTransfer?.setData('text/plain', paneId);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    };
+
+    dragHandle.draggable = true;
+    dragHandle.classList.add('cursor-grab', 'active:cursor-grabbing');
+    dragHandle.addEventListener('dragstart', handleDragStart);
+    return () => {
+      dragHandle.draggable = false;
+      dragHandle.classList.remove('cursor-grab', 'active:cursor-grabbing');
+      dragHandle.removeEventListener('dragstart', handleDragStart);
+    };
+  }, [paneId]);
+
+  useEffect(() => {
+    if (!paneId) return;
+
+    const handleDragOver = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes(DRAG_DATA_TYPE)) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }
+    };
+    const handleDrop = (event: DragEvent) => {
+      const sourcePaneId = event.dataTransfer?.getData(DRAG_DATA_TYPE);
+      if (!sourcePaneId) return;
+      event.preventDefault();
+      postToParent({
+        type: MESSAGE_TYPE,
+        event: 'move-pane',
+        paneId,
+        sourcePaneId,
+      });
+    };
+
+    document.addEventListener('dragover', handleDragOver);
+    document.addEventListener('drop', handleDrop);
+    return () => {
+      document.removeEventListener('dragover', handleDragOver);
+      document.removeEventListener('drop', handleDrop);
+    };
+  }, [paneId]);
+
+  useEffect(() => {
+    if (!paneId) return;
     const activate = () =>
       postToParent({ type: MESSAGE_TYPE, event: 'activate', paneId });
     window.addEventListener('pointerdown', activate, true);
@@ -194,19 +256,15 @@ function PaneFrame({
   fallbackUrl,
   highlighted,
   frameRef,
-  showHeader,
   onActivate,
   onDropPane,
-  onOpenInWindow,
 }: {
   pane: SplitPaneState;
   fallbackUrl: string;
   highlighted: boolean;
   frameRef: (frame: HTMLIFrameElement | null) => void;
-  showHeader: boolean;
   onActivate: () => void;
   onDropPane: (sourceId: string) => void;
-  onOpenInWindow: (url: string) => void;
 }) {
   const sourceUrl = pane.url ?? fallbackUrl;
   const src = useMemo(() => {
@@ -223,7 +281,7 @@ function PaneFrame({
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault();
-        const sourceId = event.dataTransfer.getData('text/x-vk-split-pane');
+        const sourceId = event.dataTransfer.getData(DRAG_DATA_TYPE);
         if (sourceId) onDropPane(sourceId);
       }}
     >
@@ -234,34 +292,6 @@ function PaneFrame({
           highlighted ? 'opacity-100' : 'opacity-0'
         )}
       />
-      {showHeader && (
-        <div
-          className="flex h-7 shrink-0 items-center gap-1 border-b border-border bg-secondary px-1.5 text-xs text-low"
-          onPointerDown={onActivate}
-        >
-          <button
-            type="button"
-            draggable
-            aria-label="Move split pane"
-            className="cursor-grab p-0.5 active:cursor-grabbing"
-            onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = 'move';
-              event.dataTransfer.setData('text/x-vk-split-pane', pane.id);
-            }}
-          >
-            <DotsSixVerticalIcon className="size-3.5" weight="bold" />
-          </button>
-          <span className="min-w-0 flex-1 truncate">{sourceUrl}</span>
-          <button
-            type="button"
-            aria-label="Open pane in this window"
-            className="p-0.5 hover:text-normal"
-            onClick={() => onOpenInWindow(sourceUrl)}
-          >
-            <ArrowsOutIcon className="size-3.5" />
-          </button>
-        </div>
-      )}
       <iframe
         ref={frameRef}
         title={`Split pane ${pane.id}`}
@@ -291,9 +321,6 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   const preset = useSplitScreenStore((state) => state.preset);
   const presetState = useSplitScreenStore((state) => state.presets[preset]);
   const setPreset = useSplitScreenStore((state) => state.setPreset);
-  const openPaneInWindow = useSplitScreenStore(
-    (state) => state.openPaneInWindow
-  );
   const setActivePane = useSplitScreenStore((state) => state.setActivePane);
   const setPaneUrl = useSplitScreenStore((state) => state.setPaneUrl);
   const movePane = useSplitScreenStore((state) => state.movePane);
@@ -386,6 +413,12 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       ) {
         focusAdjacentPane(message.direction);
       } else if (
+        message.event === 'move-pane' &&
+        message.paneId === senderPaneId &&
+        message.sourcePaneId
+      ) {
+        movePane(message.sourcePaneId, senderPaneId);
+      } else if (
         message.event === 'navigate' &&
         message.paneId === senderPaneId &&
         message.url
@@ -395,7 +428,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [activatePane, activatePreset, focusAdjacentPane, setPaneUrl]);
+  }, [activatePane, activatePreset, focusAdjacentPane, movePane, setPaneUrl]);
 
   const renderPane = (pane: SplitPaneState) => (
     <PaneFrame
@@ -407,47 +440,47 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
         if (frame) paneFramesRef.current.set(pane.id, frame);
         else paneFramesRef.current.delete(pane.id);
       }}
-      showHeader={preset > 1}
       onActivate={() => activatePane(pane.id)}
       onDropPane={(sourceId) => movePane(sourceId, pane.id)}
-      onOpenInWindow={(url) => {
-        openPaneInWindow(url);
-        window.location.assign(url);
-      }}
     />
   );
 
   const horizontalLayout = (
     panes: SplitPaneState[],
-    ids: string[],
     sizeOffset = 0
-  ) => (
-    <Group
-      orientation="horizontal"
-      defaultLayout={Object.fromEntries(
-        ids.map((id, index) => [
-          id,
-          presetState.horizontalSizes?.[sizeOffset + index] ?? 100 / ids.length,
-        ])
-      )}
-      onLayoutChange={(layout: Layout) =>
-        setHorizontalSizes(
-          ids.map((id) => layout[id]),
-          sizeOffset
-        )
-      }
-      className="h-full min-h-0"
-    >
-      {panes.map((pane, index) => (
-        <Fragment key={pane.id}>
-          {index > 0 && resizeHandle}
-          <Panel id={ids[index]} minSize={15}>
-            {renderPane(pane)}
-          </Panel>
-        </Fragment>
-      ))}
-    </Group>
-  );
+  ) => {
+    const slotIds = panes.map(
+      (_, index) => `split-preset-${preset}-slot-${sizeOffset + index + 1}`
+    );
+    return (
+      <Group
+        orientation="horizontal"
+        defaultLayout={Object.fromEntries(
+          slotIds.map((id, index) => [
+            id,
+            presetState.horizontalSizes?.[sizeOffset + index] ??
+              100 / panes.length,
+          ])
+        )}
+        onLayoutChange={(layout: Layout) =>
+          setHorizontalSizes(
+            slotIds.map((id) => layout[id]),
+            sizeOffset
+          )
+        }
+        className="h-full min-h-0"
+      >
+        {panes.map((pane, index) => (
+          <Fragment key={slotIds[index]}>
+            {index > 0 && resizeHandle}
+            <Panel id={slotIds[index]} minSize={15}>
+              {renderPane(pane)}
+            </Panel>
+          </Fragment>
+        ))}
+      </Group>
+    );
+  };
 
   if (activeUserId !== expectedUserId) {
     return null;
@@ -461,8 +494,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   }
 
   if (preset < 4) {
-    const ids = presetState.panes.map((pane) => pane.id);
-    return horizontalLayout(presetState.panes, ids);
+    return horizontalLayout(presetState.panes);
   }
 
   const rows = [presetState.panes.slice(0, 2), presetState.panes.slice(2, 4)];
@@ -479,19 +511,11 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       className="h-full min-h-0"
     >
       <Panel id="split-row-1" minSize={20}>
-        {horizontalLayout(
-          rows[0],
-          rows[0].map((pane) => pane.id),
-          0
-        )}
+        {horizontalLayout(rows[0], 0)}
       </Panel>
       <Separator className="relative z-10 h-1 shrink-0 bg-border/60 transition-colors hover:bg-brand data-[resize-handle-active]:bg-brand" />
       <Panel id="split-row-2" minSize={20}>
-        {horizontalLayout(
-          rows[1],
-          rows[1].map((pane) => pane.id),
-          2
-        )}
+        {horizontalLayout(rows[1], 2)}
       </Panel>
     </Group>
   );

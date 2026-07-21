@@ -233,6 +233,7 @@ export function Navbar({
   if (mobileMode) {
     return (
       <nav
+        data-split-pane-drag-handle
         className={cn(
           'flex flex-col bg-secondary border-b shrink-0',
           className
@@ -441,6 +442,7 @@ export function Navbar({
   return (
     <nav
       data-tauri-drag-region
+      data-split-pane-drag-handle
       className={cn(
         'flex items-center justify-between px-base py-half bg-secondary border-b shrink-0',
         className
