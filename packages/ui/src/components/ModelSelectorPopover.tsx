@@ -1,4 +1,4 @@
-import type { ReactElement, Ref } from 'react';
+import { useEffect, useRef, type ReactElement, type Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CaretDownIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -303,6 +303,7 @@ export function ModelSelectorPopover({
   onSelectionComplete,
 }: ModelSelectorPopoverProps) {
   const { t } = useTranslation('common');
+  const popoverRef = useRef<HTMLDivElement>(null);
   const models = config.models;
   const hasProviders = config.providers.length > 1;
   const hasReasoning = models.some(
@@ -310,6 +311,23 @@ export function ModelSelectorPopover({
   );
   const popoverWidth = getPopoverWidth(hasProviders, hasReasoning);
   const popoverHeightClass = hasProviders ? 'h-[280px]' : '';
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const frame = requestAnimationFrame(() => {
+      const popover = popoverRef.current;
+      const selected = popover?.querySelector<HTMLButtonElement>(
+        '[data-model-selector-option][data-selected="true"]'
+      );
+      const first = popover?.querySelector<HTMLButtonElement>(
+        '[data-model-selector-option]:not([disabled])'
+      );
+      (selected ?? first)?.focus();
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [isOpen]);
 
   let showSearch = true;
   let content: ReactElement;
@@ -365,6 +383,7 @@ export function ModelSelectorPopover({
     <DropdownMenu open={isOpen} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent
+        ref={popoverRef}
         align="start"
         sideOffset={8}
         data-model-selector-popover

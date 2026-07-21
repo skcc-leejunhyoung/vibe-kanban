@@ -174,6 +174,7 @@ export function ModelList({
     if (currentIndex === -1 || options.length === 0) return;
 
     event.preventDefault();
+    event.stopPropagation();
     const offset = event.key === 'ArrowDown' ? 1 : -1;
     options[(currentIndex + offset + options.length) % options.length]?.focus();
   };
@@ -193,11 +194,13 @@ export function ModelList({
       <button
         type="button"
         data-model-selector-option
+        data-selected={isDefaultSelected || undefined}
         onClick={() => onSelectDefault?.()}
         onKeyDown={(event) => {
           focusAdjacentModel(event);
           if (event.key !== 'Enter') return;
           event.preventDefault();
+          event.stopPropagation();
           onSelectDefault?.();
           onSelectionComplete?.();
         }}
@@ -266,6 +269,7 @@ export function ModelList({
                 <button
                   type="button"
                   data-model-selector-option
+                  data-selected={isSelected || undefined}
                   onClick={() =>
                     onSelect(model.id, model.provider_id ?? undefined)
                   }
@@ -274,6 +278,7 @@ export function ModelList({
                     if (event.key !== 'Enter') return;
 
                     event.preventDefault();
+                    event.stopPropagation();
                     onSelect(model.id, model.provider_id ?? undefined);
                     if (!isReasoningConfigurable) {
                       onSelectionComplete?.();
