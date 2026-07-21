@@ -1013,6 +1013,26 @@ export function KanbanIssuePanelContainer({
   const handleCreateWorkspace = useCallback(async () => {
     if (!selectedIssue) return;
 
+    // Cmd/Ctrl+Enter can run before the debounced text saves have fired.
+    // Persist safe editor values before navigating so the issue and workspace
+    // prompt cannot lose or use stale edits. Attachment-backed descriptions
+    // remain on the existing upload-completion save path.
+    cancelDebouncedTitle();
+    cancelDebouncedDescription();
+    const issuePatch: { title?: string; description?: string | null } = {};
+    if (displayData.title !== selectedIssue.title) {
+      issuePatch.title = displayData.title;
+    }
+    if (
+      !hasPendingAttachments &&
+      displayData.description !== selectedIssue.description
+    ) {
+      issuePatch.description = displayData.description;
+    }
+    if (Object.keys(issuePatch).length > 0) {
+      updateIssue(selectedIssue.id, issuePatch);
+    }
+
     const hostId = await selectWorkspaceHost();
     if (hostId === undefined) return;
 
@@ -1024,8 +1044,10 @@ export function KanbanIssuePanelContainer({
     );
     const createState = buildWorkspaceCreateInitialState({
       prompt: buildWorkspaceCreatePrompt(
-        selectedIssue.title,
-        selectedIssue.description
+        displayData.title,
+        hasPendingAttachments
+          ? selectedIssue.description
+          : displayData.description
       ),
       defaults,
       linkedIssue: buildLinkedIssueCreateState(selectedIssue, projectId),
@@ -1047,6 +1069,12 @@ export function KanbanIssuePanelContainer({
     }
   }, [
     selectedIssue,
+    displayData.title,
+    displayData.description,
+    hasPendingAttachments,
+    cancelDebouncedTitle,
+    cancelDebouncedDescription,
+    updateIssue,
     workspaces,
     localWorkspaceIds,
     projectId,
