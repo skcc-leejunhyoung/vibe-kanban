@@ -233,12 +233,26 @@ export function KanbanIssuePanel({
     useState(isCreateMode);
   const descriptionContainerRef = useRef<HTMLDivElement>(null);
   const descriptionEditorRef = useRef<{ focus: () => void }>(null);
+  const shouldFocusDescriptionRef = useRef(false);
   const panelRootRef = useRef<HTMLDivElement>(null);
 
   // Reset description editing state when switching between create/edit mode or when issue changes
   useEffect(() => {
     setIsDescriptionEditing(isCreateMode);
   }, [isCreateMode, issueId]);
+
+  // Focus only after edit mode has committed. Calling focus from the title's
+  // keydown frame can race Lexical's editable-state update, especially when
+  // the document is empty and it still needs to create a root selection.
+  useEffect(() => {
+    if (!isDescriptionEditing || !shouldFocusDescriptionRef.current) return;
+
+    shouldFocusDescriptionRef.current = false;
+    const frame = requestAnimationFrame(() =>
+      descriptionEditorRef.current?.focus()
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [isDescriptionEditing]);
 
   // Edit mode: move focus into the panel when it opens (or when switching
   // issues) so keyboard focus starts inside the panel rather than on the board
@@ -305,8 +319,8 @@ export function KanbanIssuePanel({
 
     if (!isCreateMode && !e.shiftKey && e.key === 'Tab') {
       e.preventDefault();
+      shouldFocusDescriptionRef.current = true;
       setIsDescriptionEditing(true);
-      requestAnimationFrame(() => descriptionEditorRef.current?.focus());
     }
   };
 

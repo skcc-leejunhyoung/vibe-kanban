@@ -65,7 +65,12 @@ import { CODE_HIGHLIGHT_CLASSES } from '@vibe/ui/lib/code-highlight-theme';
 import { LinkNode } from '@lexical/link';
 import { TableNode, TableRowNode, TableCellNode } from '@lexical/table';
 import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
-import { type EditorState, type LexicalEditor } from 'lexical';
+import {
+  $createParagraphNode,
+  $getRoot,
+  type EditorState,
+  type LexicalEditor,
+} from 'lexical';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
 import { useSlashCommands } from '@/shared/hooks/useExecutorDiscovery';
@@ -303,7 +308,26 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       typeof ref === 'function' || (ref && 'current' in ref) ? ref : null;
     useImperativeHandle(safeRef, () => ({
       focus: () => {
-        editorInstanceRef.current?.focus();
+        const editor = editorInstanceRef.current;
+        if (!editor) return;
+
+        const isEmpty = editor
+          .getEditorState()
+          .read(() => $getRoot().getChildrenSize() === 0);
+        if (!isEmpty) {
+          editor.focus();
+          return;
+        }
+
+        editor.update(
+          () => {
+            const root = $getRoot();
+            const paragraph = $createParagraphNode();
+            root.append(paragraph);
+            paragraph.selectStart();
+          },
+          { onUpdate: () => editor.focus() }
+        );
       },
     }));
 
