@@ -549,6 +549,12 @@ export const keyBindings: KeyBinding[] = [
 export const COMMAND_BAR_BINDING_ID = 'command-bar';
 export const NEXT_WORKSPACE_BINDING_ID = 'next-workspace';
 export const PREVIOUS_WORKSPACE_BINDING_ID = 'previous-workspace';
+export const SPLIT_PRESET_BINDING_IDS = {
+  1: 'split-preset-1',
+  2: 'split-preset-2',
+  3: 'split-preset-3',
+  4: 'split-preset-4',
+} as const;
 
 export interface ModifierBinding {
   id: string;
@@ -578,6 +584,12 @@ export const modifierBindings: ModifierBinding[] = [
     actionId: 'previousWorkspace',
     group: 'Modifiers',
   },
+  ...([1, 2, 3, 4] as const).map((preset) => ({
+    id: SPLIT_PRESET_BINDING_IDS[preset],
+    keys: `mod+${preset}`,
+    actionId: `splitPreset${preset}`,
+    group: 'Modifiers',
+  })),
 ];
 
 /**

@@ -49,6 +49,10 @@ import {
 } from 'shared/remote-types';
 import { AppBarNotificationBellContainer } from '@/pages/workspaces/AppBarNotificationBellContainer';
 import { WorkspaceSidebarHoverPreview } from './WorkspaceSidebarHoverPreview';
+import {
+  isSplitScreenEmbed,
+  SplitScreenSurface,
+} from '@/shared/components/SplitScreenSurface';
 
 export function SharedAppLayout() {
   const appNavigation = useAppNavigation();
@@ -256,6 +260,18 @@ export function SharedAppLayout() {
     }
   }, []);
 
+  if (isSplitScreenEmbed()) {
+    return (
+      <SyncErrorProvider>
+        <div className="h-dvh overflow-hidden bg-primary">
+          <SplitScreenSurface>
+            <Outlet />
+          </SplitScreenSurface>
+        </div>
+      </SyncErrorProvider>
+    );
+  }
+
   return (
     <SyncErrorProvider>
       <div
@@ -317,7 +333,9 @@ export function SharedAppLayout() {
               />
 
               <div className="min-h-0 flex-1 overflow-hidden">
-                <Outlet />
+                <SplitScreenSurface>
+                  <Outlet />
+                </SplitScreenSurface>
               </div>
             </div>
           </>

@@ -14,6 +14,7 @@ import {
   COMMAND_BAR_BINDING_ID,
   NEXT_WORKSPACE_BINDING_ID,
   PREVIOUS_WORKSPACE_BINDING_ID,
+  SPLIT_PRESET_BINDING_IDS,
   Scope,
 } from '@/shared/keyboard/registry';
 import { isMac, getModifierKey } from '@/shared/lib/platform';
@@ -88,6 +89,12 @@ function useShortcutGroups(): ShortcutGroup[] {
             'Previous workspace'
           ),
         },
+        ...([1, 2, 3, 4] as const).map((preset) => ({
+          keys: chips(
+            resolveModifier(SPLIT_PRESET_BINDING_IDS[preset], overrides)
+          ),
+          description: t(`shortcuts.actions.splitPreset${preset}`),
+        })),
         {
           keys: [mod, 'E'],
           description: t('shortcuts.actions.formatInlineCode'),
