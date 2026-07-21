@@ -82,14 +82,6 @@ async fn web_redeem(
         .await
     {
         Ok(result) => {
-            if let Some(analytics) = state.analytics() {
-                analytics.track(
-                    result.user_id,
-                    "$identify",
-                    serde_json::json!({ "email": result.email }),
-                );
-            }
-
             audit::emit(
                 AuditEvent::system(AuditAction::AuthLogin)
                     .user(result.user_id, None)

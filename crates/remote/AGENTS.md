@@ -39,7 +39,6 @@ pnpm run remote:dev:clean
 
 Multi-stage Docker build: Node (frontend) → Rust (server) → Debian slim runtime.
 
-The billing crate (`vk-billing` feature) is a private dependency stripped at build time when `FEATURES` is empty. Do not add imports from the `billing` crate without gating them behind `#[cfg(feature = "vk-billing")]`.
 
 ## Key Modules
 
@@ -47,7 +46,7 @@ The billing crate (`vk-billing` feature) is a private dependency stripped at bui
 |--------|---------|
 | `app.rs` | Server bootstrap: pool → migrations → electric role → JWT → OAuth → services → listen |
 | `config.rs` | `RemoteServerConfig` parsed from env vars. Empty strings treated as unset. |
-| `state.rs` | `AppState` shared across all routes (pool, JWT, OAuth, billing, R2, etc.) |
+| `state.rs` | `AppState` shared across all routes (pool, JWT, OAuth, notifications, etc.) |
 | `shapes.rs` | 16 const `ShapeDefinition<T>` instances for ElectricSQL sync |
 | `shape_definition.rs` | `ShapeDefinition` struct, `ShapeExport` trait, `define_shape!` macro |
 | `mutation_definition.rs` | `MutationBuilder` for type-safe CRUD routes + TS type generation |
@@ -173,6 +172,5 @@ When adding a new type to `api-types` that the remote frontend needs, add its `:
 
 - **Empty string vs unset**: Docker Compose `${VAR:-}` produces `""`, which `std::env::var()` returns as `Ok("")`. Always check `!v.is_empty()` for optional config.
 - **ElectricSQL startup order**: Remote server must start first to create the `electric_sync` role. ElectricSQL will fail to connect if it starts before the server runs migrations.
-- **Billing feature gate**: All billing code must be behind `#[cfg(feature = "vk-billing")]`. The `billing` crate is stripped from Cargo.toml during self-hosted Docker builds.
 - **Frontend URL vars are build-time**: `VITE_*` variables are baked into the JS bundle. Changing them requires a rebuild.
 - **SPA fallback path**: The frontend is served from `/srv/static` (hardcoded). This path only exists inside the Docker container.

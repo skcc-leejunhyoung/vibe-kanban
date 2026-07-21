@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1.6
 
 ARG APP_NAME=remote
-ARG FEATURES=""
 ARG VITE_RELAY_API_BASE_URL=""
 ARG VITE_RELAY_PREVIEW_HOST_SUFFIX=""
 ARG VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY=""
@@ -41,24 +40,14 @@ RUN echo "cachebust=${CACHEBUST}" >/dev/null && pnpm -C packages/remote-web buil
 
 FROM rust:1.93-slim-bookworm AS builder
 ARG APP_NAME
-ARG FEATURES
-ARG POSTHOG_API_KEY=""
-ARG POSTHOG_API_ENDPOINT=""
-ARG SENTRY_DSN_REMOTE=""
 
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 ENV CARGO_TARGET_DIR=/app/target
-ENV POSTHOG_API_KEY=${POSTHOG_API_KEY}
-ENV POSTHOG_API_ENDPOINT=${POSTHOG_API_ENDPOINT}
-ENV SENTRY_DSN_REMOTE=${SENTRY_DSN_REMOTE}
 
-# Install build dependencies, plus git and openssh-client for private repo access
+# Install build dependencies.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates git openssh-client \
-  && mkdir -p -m 0700 /root/.ssh \
-  && ssh-keyscan github.com >> /root/.ssh/known_hosts \
-  && chmod 600 /root/.ssh/known_hosts \
+  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
 
 # Optional extra trusted CA: if a cert is dropped into crates/remote/local-ca/
@@ -102,21 +91,10 @@ COPY assets assets
 
 RUN mkdir -p /app/bin
 
-# When building without FEATURES (self-hosted), strip the private billing dependency
-# and its feature flag from Cargo.toml so cargo doesn't try to fetch the private git repo.
-# Also remove the Cargo.lock which references the private repo.
-RUN if [ -z "${FEATURES}" ]; then \
-      sed -i '/^billing = {.*vibe-kanban-private.*/d' crates/remote/Cargo.toml; \
-      sed -i '/^# private crate for billing/d' crates/remote/Cargo.toml; \
-      sed -i 's/^vk-billing = \["dep:billing"\]/vk-billing = []/' crates/remote/Cargo.toml; \
-      rm -f crates/remote/Cargo.lock; \
-    fi
-
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=remote-target,target=/app/target \
-    --mount=type=ssh \
-    cargo build ${FEATURES:+--locked} --release --manifest-path crates/remote/Cargo.toml ${FEATURES:+--features ${FEATURES}} \
+    cargo build --locked --release --manifest-path crates/remote/Cargo.toml \
  && cp /app/target/release/${APP_NAME} /app/bin/${APP_NAME}
 
 FROM debian:bookworm-slim AS runtime

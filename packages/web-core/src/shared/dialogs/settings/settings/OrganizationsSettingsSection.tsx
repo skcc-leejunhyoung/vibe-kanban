@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   SpinnerIcon,
@@ -7,7 +6,6 @@ import {
   UserPlusIcon,
   TrashIcon,
   SignInIcon,
-  ArrowSquareOutIcon,
   InfoIcon,
 } from '@phosphor-icons/react';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
@@ -29,9 +27,7 @@ import { MemberListItem } from '@/shared/components/org/MemberListItem';
 import { PendingInvitationItem } from '@/shared/components/org/PendingInvitationItem';
 import type { MemberRole } from 'shared/types';
 import { MemberRole as MemberRoleEnum } from 'shared/types';
-import { organizationsApi } from '@/shared/lib/api';
 import { cn } from '@/shared/lib/utils';
-import { getRemoteApiUrl } from '@/shared/lib/remoteApi';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import {
   DropdownMenu,
@@ -47,7 +43,6 @@ export function OrganizationsSettingsSection() {
   const { isSignedIn, isLoaded, userId } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [isOpeningBilling, setIsOpeningBilling] = useState(false);
 
   // Fetch all organizations
   const {
@@ -72,11 +67,6 @@ export function OrganizationsSettingsSection() {
   const isAdmin = currentUserRole === MemberRoleEnum.ADMIN;
   const isPersonalOrg = selectedOrg?.is_personal ?? false;
   const currentUserId = userId;
-  const showBillingStatus =
-    Boolean(selectedOrgId) &&
-    isAdmin &&
-    !isPersonalOrg &&
-    Boolean(getRemoteApiUrl());
 
   // Fetch members
   const { data: members = [], isLoading: loadingMembers } =
@@ -89,14 +79,6 @@ export function OrganizationsSettingsSection() {
       isAdmin,
       isPersonal: isPersonalOrg,
     });
-
-  const { data: billingStatus } = useQuery({
-    queryKey: ['organization-billing-status', selectedOrgId],
-    queryFn: () => organizationsApi.getBillingStatus(selectedOrgId!),
-    enabled: showBillingStatus,
-    staleTime: 60_000,
-    retry: false,
-  });
 
   // Organization mutations
   const {
@@ -213,37 +195,6 @@ export function OrganizationsSettingsSection() {
 
     setError(null);
     deleteOrganization.mutate(selectedOrgId);
-  };
-
-  const handleManageBilling = async () => {
-    if (!selectedOrgId || isOpeningBilling) {
-      return;
-    }
-
-    // Open tab immediately so browsers treat it as user-initiated.
-    const stripeTab = window.open('', '_blank');
-    setError(null);
-    setIsOpeningBilling(true);
-
-    try {
-      const returnUrl = window.location.href;
-      const { url } = await organizationsApi.createPortalSession(
-        selectedOrgId,
-        returnUrl
-      );
-
-      if (stripeTab) {
-        stripeTab.opener = null;
-        stripeTab.location.href = url;
-      } else {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      }
-    } catch (err) {
-      stripeTab?.close();
-      setError(err instanceof Error ? err.message : 'Failed to open billing');
-    } finally {
-      setIsOpeningBilling(false);
-    }
   };
 
   if (!isLoaded || orgsLoading) {
@@ -470,35 +421,6 @@ export function OrganizationsSettingsSection() {
               ))}
             </div>
           )}
-        </SettingsCard>
-      )}
-
-      {/* Billing CTA (admin only, non-personal orgs, when remote URL is configured) */}
-      {selectedOrg && billingStatus?.can_manage_billing && (
-        <SettingsCard
-          title={t('billing.title')}
-          description={t('billing.description')}
-        >
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-low">{t('billing.openInBrowser')}</p>
-            <button
-              type="button"
-              onClick={() => void handleManageBilling()}
-              disabled={isOpeningBilling}
-              className={cn(
-                'flex items-center gap-2 px-base py-half rounded-sm text-sm font-medium whitespace-nowrap shrink-0',
-                'bg-brand/10 text-brand hover:bg-brand/20 border border-brand/50',
-                'transition-colors disabled:cursor-not-allowed disabled:opacity-50'
-              )}
-            >
-              {isOpeningBilling ? (
-                <SpinnerIcon className="size-icon-xs animate-spin" />
-              ) : (
-                <ArrowSquareOutIcon className="size-icon-xs" weight="bold" />
-              )}
-              {t('billing.manageButton')}
-            </button>
-          </div>
         </SettingsCard>
       )}
 

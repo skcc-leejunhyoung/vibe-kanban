@@ -121,14 +121,6 @@ pub(crate) async fn login(
             LocalAuthError::Internal
         })?;
 
-    if let Some(analytics) = state.analytics() {
-        analytics.track(
-            user.id,
-            "$identify",
-            serde_json::json!({ "email": user.email }),
-        );
-    }
-
     Ok(LocalLoginResponse {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,

@@ -1,11 +1,9 @@
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    time::Duration,
 };
 
-use os_info;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct AnalyticsContext {
@@ -14,104 +12,23 @@ pub struct AnalyticsContext {
 }
 
 #[derive(Debug, Clone)]
-pub struct AnalyticsConfig {
-    pub posthog_api_key: String,
-    pub posthog_api_endpoint: String,
-}
+pub struct AnalyticsConfig;
 
 impl AnalyticsConfig {
     pub fn new() -> Option<Self> {
-        let api_key = option_env!("POSTHOG_API_KEY")
-            .map(|s| s.to_string())
-            .or_else(|| std::env::var("POSTHOG_API_KEY").ok())?;
-        let api_endpoint = option_env!("POSTHOG_API_ENDPOINT")
-            .map(|s| s.to_string())
-            .or_else(|| std::env::var("POSTHOG_API_ENDPOINT").ok())?;
-
-        Some(Self {
-            posthog_api_key: api_key,
-            posthog_api_endpoint: api_endpoint,
-        })
+        None
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct AnalyticsService {
-    config: AnalyticsConfig,
-    client: reqwest::Client,
-}
+pub struct AnalyticsService;
 
 impl AnalyticsService {
-    pub fn new(config: AnalyticsConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap();
-
-        Self { config, client }
+    pub fn new(_config: AnalyticsConfig) -> Self {
+        Self
     }
 
-    pub fn track_event(&self, user_id: &str, event_name: &str, properties: Option<Value>) {
-        let endpoint = format!(
-            "{}/capture/",
-            self.config.posthog_api_endpoint.trim_end_matches('/')
-        );
-
-        let mut payload = json!({
-            "api_key": self.config.posthog_api_key,
-            "event": event_name,
-            "distinct_id": user_id,
-        });
-        if event_name == "$identify" {
-            // For $identify, set person properties in $set
-            if let Some(props) = properties {
-                payload["$set"] = props;
-            }
-        } else {
-            // For other events, use properties as before
-            let mut event_properties = properties.unwrap_or_else(|| json!({}));
-            if let Some(props) = event_properties.as_object_mut() {
-                props.insert(
-                    "timestamp".to_string(),
-                    json!(chrono::Utc::now().to_rfc3339()),
-                );
-                props.insert("version".to_string(), json!(env!("CARGO_PKG_VERSION")));
-                props.insert("device".to_string(), get_device_info());
-                props.insert("source".to_string(), json!("backend"));
-            }
-            payload["properties"] = event_properties;
-        }
-
-        let client = self.client.clone();
-        let event_name = event_name.to_string();
-
-        tokio::spawn(async move {
-            match client
-                .post(&endpoint)
-                .header("Content-Type", "application/json")
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        tracing::debug!("Event '{}' sent successfully", event_name);
-                    } else {
-                        let status = response.status();
-                        let response_text = response.text().await.unwrap_or_default();
-                        tracing::error!(
-                            "Failed to send event. Status: {}. Response: {}",
-                            status,
-                            response_text
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Error sending event '{}': {}", event_name, e);
-                }
-            }
-        });
-    }
+    pub fn track_event(&self, _user_id: &str, _event_name: &str, _properties: Option<Value>) {}
 }
 
 /// Generates a consistent, anonymous user ID for npm package telemetry.
@@ -170,17 +87,6 @@ pub fn generate_user_id() -> String {
     }
 
     format!("npm_user_{:016x}", hasher.finish())
-}
-
-fn get_device_info() -> Value {
-    let info = os_info::get();
-
-    json!({
-        "os_type": info.os_type().to_string(),
-        "os_version": info.version().to_string(),
-        "architecture": info.architecture().unwrap_or("unknown").to_string(),
-        "bitness": info.bitness().to_string(),
-    })
 }
 
 #[cfg(test)]

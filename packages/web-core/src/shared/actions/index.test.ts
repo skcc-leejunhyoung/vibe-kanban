@@ -3,7 +3,7 @@ import type { Workspace } from 'shared/types';
 import type { ActionExecutorContext } from '@/shared/types/actions';
 
 // `actions/index.ts` is a heavy barrel: its action `execute` bodies reference
-// dialog components, icons, posthog and stores, so importing it transitively
+// dialog components, icons, and stores, so importing it transitively
 // pulls in the whole UI graph. Shim the pieces that can't load in the `node`
 // test environment (the executor-schemas Vite virtual module) and stub the API
 // layer so no network call can fire.

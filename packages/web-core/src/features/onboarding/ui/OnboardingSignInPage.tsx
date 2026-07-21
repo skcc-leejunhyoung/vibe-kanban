@@ -7,7 +7,6 @@ import {
   OAuthDialog,
   type OAuthProvider,
 } from '@/shared/dialogs/global/OAuthDialog';
-import { usePostHog } from 'posthog-js/react';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useTheme } from '@/shared/hooks/useTheme';
 import { OAuthSignInButton } from '@vibe/ui/components/OAuthButtons';
@@ -75,7 +74,6 @@ export function OnboardingSignInPage() {
   const appNavigation = useAppNavigation();
   const { t } = useTranslation('common');
   const { theme } = useTheme();
-  const posthog = usePostHog();
   const { config, loginStatus, loading, updateAndSaveConfig } = useUserSystem();
   const setSelectedOrgId = useOrganizationStore((s) => s.setSelectedOrgId);
 
@@ -103,13 +101,10 @@ export function OnboardingSignInPage() {
 
   const trackRemoteOnboardingEvent = useCallback(
     (eventName: string, properties: Record<string, unknown> = {}) => {
-      posthog?.capture(eventName, {
-        ...properties,
-        flow: 'remote_onboarding_ui',
-        source: 'frontend',
-      });
+      void eventName;
+      void properties;
     },
-    [posthog]
+    []
   );
 
   const logoSrc =

@@ -6,31 +6,21 @@ use tracing::instrument;
 
 use crate::{
     AppState,
-    analytics::{AnalyticsConfig, AnalyticsService},
     attachments::cleanup::spawn_cleanup_task,
     auth::{
         GitHubOAuthProvider, GoogleOAuthProvider, JwtService, OAuthHandoffService,
         OAuthTokenValidator, ProviderRegistry,
     },
     azure_blob::AzureBlobService,
-    billing::BillingService,
     config::RemoteServerConfig,
-    db, digest,
-    github_app::GitHubAppService,
-    mail::{LoopsMailer, Mailer, NoopMailer},
-    r2::R2Service,
-    routes,
+    db, routes,
 };
 
 pub struct Server;
 
 impl Server {
-    #[instrument(
-        name = "remote_server",
-        skip(config, billing),
-        fields(listen_addr = %config.listen_addr)
-    )]
-    pub async fn run(config: RemoteServerConfig, billing: BillingService) -> anyhow::Result<()> {
+    #[instrument(name = "remote_server", skip(config), fields(listen_addr = %config.listen_addr))]
+    pub async fn run(config: RemoteServerConfig) -> anyhow::Result<()> {
         let pool = db::create_pool(&config.database_url)
             .await
             .context("failed to create postgres pool")?;
@@ -109,37 +99,11 @@ impl Server {
             jwt.clone(),
         ));
 
-        let loops_email_api_key = std::env::var("LOOPS_EMAIL_API_KEY")
-            .ok()
-            .filter(|api_key| !api_key.is_empty());
-
-        let mailer: Arc<dyn Mailer> = match loops_email_api_key.clone() {
-            Some(api_key) => {
-                tracing::info!("Email service (Loops) configured");
-                Arc::new(LoopsMailer::new(api_key))
-            }
-            _ => {
-                tracing::info!(
-                    "LOOPS_EMAIL_API_KEY not set. Email notifications (invitations, review updates) will be disabled."
-                );
-                Arc::new(NoopMailer)
-            }
-        };
-
         let server_public_base_url = config.server_public_base_url.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "SERVER_PUBLIC_BASE_URL is not set. Please set it in your .env.remote file."
             )
         })?;
-
-        let r2 = config.r2.as_ref().map(R2Service::new);
-        if r2.is_some() {
-            tracing::info!("R2 storage service initialized");
-        } else {
-            tracing::warn!(
-                "R2 storage service not configured. Set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_REVIEW_ENDPOINT, and R2_REVIEW_BUCKET to enable."
-            );
-        }
 
         let azure_blob = config.azure_blob.as_ref().map(AzureBlobService::new);
         if azure_blob.is_some() {
@@ -155,67 +119,8 @@ impl Server {
             .build()
             .context("failed to create HTTP client")?;
 
-        let github_app = match &config.github_app {
-            Some(github_config) => {
-                match GitHubAppService::new(github_config, http_client.clone()) {
-                    Ok(service) => {
-                        tracing::info!(
-                            app_slug = %github_config.app_slug,
-                            "GitHub App service initialized"
-                        );
-                        Some(Arc::new(service))
-                    }
-                    Err(e) => {
-                        tracing::error!(?e, "Failed to initialize GitHub App service");
-                        None
-                    }
-                }
-            }
-            None => {
-                tracing::info!(
-                    "GitHub App not configured. Set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_WEBHOOK_SECRET, and GITHUB_APP_SLUG to enable."
-                );
-                None
-            }
-        };
-
-        if billing.is_configured() {
-            tracing::info!("Billing provider configured");
-        } else {
-            tracing::info!("Billing provider not configured");
-        }
-
-        let analytics = match AnalyticsConfig::from_env() {
-            Some(analytics_config) => {
-                tracing::info!("PostHog analytics configured");
-                Some(AnalyticsService::new(analytics_config))
-            }
-            None => {
-                tracing::info!(
-                    "PostHog analytics not configured (POSTHOG_API_KEY and/or POSTHOG_API_ENDPOINT not set)"
-                );
-                None
-            }
-        };
-
         if let Some(ref azure_blob_service) = azure_blob {
             spawn_cleanup_task(pool.clone(), azure_blob_service.clone());
-        }
-
-        let digest_enabled = std::env::var("DIGEST_ENABLED")
-            .map(|v| matches!(v.as_str(), "true" | "1"))
-            .unwrap_or(false);
-
-        if loops_email_api_key.is_some() && digest_enabled {
-            digest::task::spawn_digest_task(
-                pool.clone(),
-                mailer.clone(),
-                server_public_base_url.clone(),
-            );
-        } else if !digest_enabled {
-            tracing::info!("Notification digest disabled (feature flag)");
-        } else {
-            tracing::info!("Notification digest disabled (no email provider configured)");
         }
 
         let state = AppState::new(
@@ -224,14 +129,9 @@ impl Server {
             jwt,
             handoff_service,
             oauth_token_validator,
-            mailer,
             server_public_base_url,
             http_client,
-            r2,
             azure_blob,
-            github_app,
-            billing,
-            analytics,
         );
 
         let router = routes::router(state);

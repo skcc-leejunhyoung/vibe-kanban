@@ -15,7 +15,6 @@ use uuid::Uuid;
 use crate::{
     AppState, audit,
     audit::{AuditAction, AuditEvent},
-    configure_user_scope,
     db::{
         self,
         auth::{AuthSessionError, AuthSessionRepository, MAX_SESSION_INACTIVITY_DURATION},
@@ -154,8 +153,6 @@ pub(super) async fn request_context_from_auth_session_id(
             return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
     };
-
-    configure_user_scope(user.id, user.username.as_deref(), Some(user.email.as_str()));
 
     let ctx = RequestContext {
         user,

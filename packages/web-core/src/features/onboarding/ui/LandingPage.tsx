@@ -22,7 +22,6 @@ import {
   type Icon,
 } from '@phosphor-icons/react';
 import type { IconProps } from '@phosphor-icons/react';
-import { usePostHog } from 'posthog-js/react';
 import { siDiscord } from 'simple-icons';
 import {
   BaseCodingAgent,
@@ -151,7 +150,6 @@ export function LandingPage() {
   const appNavigation = useAppNavigation();
   const { theme } = useTheme();
   const { config, profiles, updateAndSaveConfig, loading } = useUserSystem();
-  const posthog = usePostHog();
 
   const [initialized, setInitialized] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -167,13 +165,10 @@ export function LandingPage() {
 
   const trackRemoteOnboardingEvent = useCallback(
     (eventName: string, properties: Record<string, unknown> = {}) => {
-      posthog?.capture(eventName, {
-        ...properties,
-        flow: 'remote_onboarding_ui',
-        source: 'frontend',
-      });
+      void eventName;
+      void properties;
     },
-    [posthog]
+    []
   );
 
   const logoSrc =

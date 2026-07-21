@@ -18,7 +18,6 @@ use tauri_plugin_updater::UpdaterExt;
 use tokio::{sync::Mutex as AsyncMutex, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, prelude::*};
-use utils::sentry::{self as sentry_utils, SentrySource, sentry_layer};
 use uuid::Uuid;
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -124,11 +123,8 @@ fn main() {
     );
     let env_filter = EnvFilter::try_new(filter_string).expect("Failed to create tracing filter");
 
-    sentry_utils::init_once(SentrySource::Desktop);
-
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
-        .with(sentry_layer())
         .init();
 
     // Shared token so we can tell the server to shut down when the app quits.

@@ -99,7 +99,6 @@ async fn create_invitation(
     let session_id = ctx.session_id;
 
     let user = ctx.user;
-    let org_repo = OrganizationRepository::new(&state.pool);
     let invitation_repo = InvitationRepository::new(&state.pool);
 
     ensure_admin_access(&state.pool, org_id, user.id).await?;
@@ -125,28 +124,6 @@ async fn create_invitation(
             _ => ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
         })?;
 
-    let organization = org_repo.fetch_organization(org_id).await.map_err(|_| {
-        ErrorResponse::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to fetch organization",
-        )
-    })?;
-
-    let accept_url = format!(
-        "{}/invitations/{}/accept",
-        state.server_public_base_url, token
-    );
-    state
-        .mailer
-        .send_org_invitation(
-            &organization.name,
-            &payload.email,
-            &accept_url,
-            payload.role,
-            user.username.as_deref(),
-        )
-        .await;
-
     audit::emit(
         AuditEvent::system(AuditAction::MemberInvite)
             .user(user.id, Some(session_id))
@@ -159,18 +136,6 @@ async fn create_invitation(
             )
             .description(format!("Invited member with role {:?}", payload.role)),
     );
-
-    if let Some(analytics) = state.analytics() {
-        analytics.track(
-            user.id,
-            "invitation_created",
-            serde_json::json!({
-                "invitation_id": invitation.id,
-                "organization_id": org_id,
-                "role": format!("{:?}", payload.role),
-            }),
-        );
-    }
 
     Ok((
         StatusCode::CREATED,
@@ -300,17 +265,6 @@ async fn accept_invitation(
             .http("POST", format!("/v1/invitations/{token}/accept"), 200)
             .description(format!("Accepted invitation with role {role:?}")),
     );
-
-    if let Some(analytics) = state.analytics() {
-        analytics.track(
-            user.id,
-            "invitation_accepted",
-            serde_json::json!({
-                "organization_id": org.id,
-                "role": format!("{:?}", role),
-            }),
-        );
-    }
 
     Ok(Json(AcceptInvitationResponse {
         organization_id: org.id.to_string(),

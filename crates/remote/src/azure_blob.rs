@@ -4,7 +4,6 @@ use azure_core::{
     credentials::Secret,
     http::{ClientOptions, RequestContent},
 };
-use azure_identity::{ManagedIdentityCredential, ManagedIdentityCredentialOptions, UserAssignedId};
 use azure_storage_blob::{
     BlobClient, BlobContainerClient, BlobServiceClient, BlobServiceClientOptions,
     models::{BlobClientGetPropertiesResultHeaders, BlockBlobClientUploadOptions},
@@ -70,19 +69,6 @@ impl AzureBlobService {
         };
 
         let service_client = match &config.auth_mode {
-            AzureAuthMode::EntraId { client_id } => {
-                let credential =
-                    ManagedIdentityCredential::new(Some(ManagedIdentityCredentialOptions {
-                        user_assigned_id: Some(UserAssignedId::ClientId(client_id.clone())),
-                        ..Default::default()
-                    }))
-                    .expect("failed to create ManagedIdentityCredential");
-
-                Arc::new(
-                    BlobServiceClient::new(&endpoint, Some(credential), None)
-                        .expect("failed to create BlobServiceClient with managed identity"),
-                )
-            }
             AzureAuthMode::SharedKey => {
                 let policy = Arc::new(SharedKeyAuthorizationPolicy {
                     account: account_name.clone(),

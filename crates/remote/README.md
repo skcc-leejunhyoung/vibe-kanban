@@ -26,14 +26,6 @@ PUBLIC_BASE_URL=http://localhost:3000
 VITE_RELAY_API_BASE_URL=http://localhost:8082
 RELAY_SERVER_PORTS=127.0.0.1:8082:8082
 VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY=
-LOOPS_EMAIL_API_KEY=
-
-# Loops transactional email template IDs (optional — defaults are the upstream templates).
-# Override these with your own Loops account template IDs if using a custom Loops account.
-LOOPS_INVITE_TEMPLATE_ID=cmhvy2wgs3s13z70i1pxakij9
-LOOPS_REVIEW_READY_TEMPLATE_ID=cmj47k5ge16990iylued9by17
-LOOPS_REVIEW_FAILED_TEMPLATE_ID=cmj49ougk1c8s0iznavijdqpo
-
 # Web Push notifications (optional)
 WEB_PUSH_VAPID_PUBLIC_KEY=
 WEB_PUSH_VAPID_PRIVATE_KEY=

@@ -11,26 +11,11 @@ use tracing::{Level, Span, field};
 
 use crate::{AppState, auth::require_session};
 
-#[cfg(feature = "vk-billing")]
-mod billing;
-#[cfg(not(feature = "vk-billing"))]
-mod billing {
-    use axum::Router;
-
-    use crate::AppState;
-    pub(super) fn public_router() -> Router<AppState> {
-        Router::new()
-    }
-    pub(super) fn protected_router() -> Router<AppState> {
-        Router::new()
-    }
-}
 mod agent_memory;
 pub mod attachments;
 pub(crate) mod electric_proxy;
 pub(crate) mod error;
 mod export;
-mod github_app;
 pub mod hosts;
 mod identity;
 pub mod issue_assignees;
@@ -48,7 +33,6 @@ pub mod project_statuses;
 pub mod projects;
 pub mod pull_request_issues;
 mod pull_requests;
-mod review;
 pub mod tags;
 mod tokens;
 mod user_notification_preferences;
@@ -107,10 +91,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .merge(oauth::public_router())
         .merge(organization_members::public_router())
-        .merge(tokens::public_router())
-        .merge(review::public_router())
-        .merge(github_app::public_router())
-        .merge(billing::public_router());
+        .merge(tokens::public_router());
 
     let v1_protected = Router::<AppState>::new()
         .merge(agent_memory::router())
@@ -121,7 +102,6 @@ pub fn router(state: AppState) -> Router {
         .merge(organization_members::protected_router())
         .merge(oauth::protected_router())
         .merge(electric_proxy::router())
-        .merge(github_app::protected_router())
         .merge(project_statuses::router())
         .merge(tags::router())
         .merge(issue_comments::router())
@@ -138,7 +118,6 @@ pub fn router(state: AppState) -> Router {
         .merge(user_notification_preferences::router())
         .merge(web_push::router())
         .merge(workspaces::router())
-        .merge(billing::protected_router())
         .merge(export::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),

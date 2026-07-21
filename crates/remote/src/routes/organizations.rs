@@ -62,16 +62,6 @@ async fn create_organization(
             _ => ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
         })?;
 
-    if let Some(analytics) = state.analytics() {
-        analytics.track(
-            ctx.user.id,
-            "organization_created",
-            serde_json::json!({
-                "organization_id": organization.id,
-            }),
-        );
-    }
-
     Ok((
         StatusCode::CREATED,
         Json(CreateOrganizationResponse { organization }),
