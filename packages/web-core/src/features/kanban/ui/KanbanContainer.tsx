@@ -83,6 +83,7 @@ import {
   useKeyNavRight,
 } from '@/shared/keyboard';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
+import { shouldStartBoardNavigation } from '../model/shouldStartBoardNavigation';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -963,17 +964,36 @@ export function KanbanContainer() {
   const navOptions = useMemo(
     () => ({
       scope: Scope.KANBAN,
-      // Scoped to board focus so arrow keys don't hijack scrolling while the
-      // user works in the open issue panel or elsewhere on the page.
-      enabled: isKanbanView && isBoardFocused,
-      preventDefault: true,
+      // Keep the listeners available so an otherwise-unfocused project page
+      // can enter the board on its first arrow key. The callback decides
+      // whether the board owns that key before preventing the browser default.
+      enabled: isKanbanView,
     }),
-    [isKanbanView, isBoardFocused]
+    [isKanbanView]
   );
-  useKeyNavUp(() => moveFocus('up'), navOptions);
-  useKeyNavDown(() => moveFocus('down'), navOptions);
-  useKeyNavLeft(() => moveFocus('left'), navOptions);
-  useKeyNavRight(() => moveFocus('right'), navOptions);
+  const moveFocusFromKeyboard = useCallback(
+    (direction: 'up' | 'down' | 'left' | 'right', event?: KeyboardEvent) => {
+      const shouldNavigate = shouldStartBoardNavigation({
+        isBoardFocused,
+        hasCursor: !!cursorIssueId,
+        hasOpenedIssue: !!selectedKanbanIssueId,
+        activeElementTagName:
+          typeof document === 'undefined'
+            ? null
+            : (document.activeElement?.tagName ?? null),
+      });
+      if (!shouldNavigate) return;
+
+      event?.preventDefault();
+      if (!isBoardFocused) setIsBoardFocused(true);
+      moveFocus(direction);
+    },
+    [isBoardFocused, cursorIssueId, selectedKanbanIssueId, moveFocus]
+  );
+  useKeyNavUp((event) => moveFocusFromKeyboard('up', event), navOptions);
+  useKeyNavDown((event) => moveFocusFromKeyboard('down', event), navOptions);
+  useKeyNavLeft((event) => moveFocusFromKeyboard('left', event), navOptions);
+  useKeyNavRight((event) => moveFocusFromKeyboard('right', event), navOptions);
 
   // Enter opens the focused card (same behavior as a plain click). When the
   // focused card is already open, let Enter behave normally so it doesn't
