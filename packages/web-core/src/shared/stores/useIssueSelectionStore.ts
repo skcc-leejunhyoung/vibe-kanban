@@ -35,7 +35,7 @@ interface IssueSelectionState {
    * the range from this position.
    */
   focusCursor: (issueId: string) => void;
-  setOrderedIssueIds: (ids: string[]) => void;
+  setOrderedIssueIds: (ids: string[], openedIssueId?: string | null) => void;
 }
 
 export const useIssueSelectionStore = create<IssueSelectionState>(
@@ -190,9 +190,13 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
       });
     },
 
-    setOrderedIssueIds: (ids: string[]) => {
+    setOrderedIssueIds: (ids: string[], openedIssueId) => {
       set((state) => {
         const visibleIssueIds = new Set(ids);
+        const visibleOpenedIssueId =
+          openedIssueId && visibleIssueIds.has(openedIssueId)
+            ? openedIssueId
+            : null;
         return {
           orderedIssueIds: ids,
           cursorIssueId:
@@ -202,7 +206,7 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
           anchorIssueId:
             state.anchorIssueId && visibleIssueIds.has(state.anchorIssueId)
               ? state.anchorIssueId
-              : null,
+              : visibleOpenedIssueId,
         };
       });
     },

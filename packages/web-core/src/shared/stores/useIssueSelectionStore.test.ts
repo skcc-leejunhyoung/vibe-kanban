@@ -33,4 +33,20 @@ describe('useIssueSelectionStore', () => {
       anchorIssueId: 'focused-issue',
     });
   });
+
+  it('restores the opened issue as anchor when it becomes visible again', () => {
+    const store = useIssueSelectionStore.getState();
+    store.setOrderedIssueIds(['opened-issue', 'another-issue']);
+    store.setAnchor('opened-issue');
+
+    store.setOrderedIssueIds(['another-issue'], 'opened-issue');
+    expect(useIssueSelectionStore.getState().anchorIssueId).toBeNull();
+
+    store.setOrderedIssueIds(['opened-issue', 'another-issue'], 'opened-issue');
+
+    expect(useIssueSelectionStore.getState()).toMatchObject({
+      cursorIssueId: null,
+      anchorIssueId: 'opened-issue',
+    });
+  });
 });

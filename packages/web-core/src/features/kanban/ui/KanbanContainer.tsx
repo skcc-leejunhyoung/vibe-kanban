@@ -826,8 +826,8 @@ export function KanbanContainer() {
 
   // Keep the store's ordered IDs in sync
   useEffect(() => {
-    setOrderedIssueIds(orderedIssueIds);
-  }, [orderedIssueIds, setOrderedIssueIds]);
+    setOrderedIssueIds(orderedIssueIds, selectedKanbanIssueId);
+  }, [orderedIssueIds, selectedKanbanIssueId, setOrderedIssueIds]);
 
   // Clear multi-selection and keyboard cursor when project or view mode changes
   // (clearSelection resets cursorIssueId too).
