@@ -115,6 +115,8 @@ type WysiwygProps = {
   executor?: BaseCodingAgent | null;
   onCmdEnter?: () => void;
   onShiftCmdEnter?: () => void;
+  /** Move focus to the field before the editor instead of handling Shift+Tab as rich-text indentation. */
+  onShiftTab?: () => void;
   /** Keyboard shortcut mode for sending messages */
   sendShortcut?: SendMessageShortcut;
   /** Task attempt ID for resolving .vibe-attachments paths */
@@ -276,6 +278,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       executor = null,
       onCmdEnter,
       onShiftCmdEnter,
+      onShiftTab,
       sendShortcut,
       workspaceId,
       sessionId,
@@ -550,6 +553,20 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       [onPasteFiles, disabled]
     );
 
+    const handleKeyDownCapture = useCallback(
+      (event: React.KeyboardEvent) => {
+        if (event.key !== 'Tab' || !event.shiftKey || !onShiftTab) return;
+
+        // Lexical consumes Shift+Tab for list outdent during bubbling. This
+        // editor is part of a two-field form, so capture it first to keep
+        // keyboard navigation between description and title deterministic.
+        event.preventDefault();
+        event.stopPropagation();
+        onShiftTab();
+      },
+      [onShiftTab]
+    );
+
     // Memoized placeholder element
     const placeholderElement = useMemo(
       () => (
@@ -608,6 +625,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                         spellCheck={false}
                         autoCorrect="off"
                         autoCapitalize="off"
+                        onKeyDownCapture={handleKeyDownCapture}
                         onPasteCapture={handlePaste}
                       />
                     }

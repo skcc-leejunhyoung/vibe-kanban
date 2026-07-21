@@ -81,6 +81,7 @@ export interface KanbanIssueDescriptionEditorProps {
   value: string;
   onChange: (value: string) => void;
   onCmdEnter?: () => void;
+  onShiftTab?: () => void;
   onPasteFiles?: (files: File[]) => void;
   disabled?: boolean;
   autoFocus?: boolean;
@@ -317,8 +318,14 @@ export function KanbanIssuePanel({
       return;
     }
 
-    if (!isCreateMode && !e.shiftKey && e.key === 'Tab') {
+    if (!e.shiftKey && e.key === 'Tab') {
       e.preventDefault();
+
+      if (isDescriptionEditing) {
+        descriptionEditorRef.current?.focus();
+        return;
+      }
+
       shouldFocusDescriptionRef.current = true;
       setIsDescriptionEditing(true);
     }
@@ -491,6 +498,7 @@ export function KanbanIssuePanel({
               value: formData.description ?? '',
               onChange: (value) => onFormChange('description', value || null),
               onCmdEnter: onCmdEnterSubmit,
+              onShiftTab: () => titleInputRef.current?.focus(),
               onPasteFiles: isDescriptionEditing ? onPasteFiles : undefined,
               disabled: !isDescriptionEditing || isSubmitting,
               autoFocus: false,
