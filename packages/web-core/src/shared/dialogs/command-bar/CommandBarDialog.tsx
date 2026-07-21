@@ -28,6 +28,7 @@ import { KanbanIcon, StackIcon } from '@phosphor-icons/react';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 import { splitPresetActions } from '@/shared/actions/splitPresetActions';
 import { useSplitScreenStore } from '@/shared/stores/useSplitScreenStore';
+import { resolveCommandBarIssueIds } from './commandBar/resolveCommandBarIssueIds';
 
 export interface CommandBarDialogProps {
   page?: PageId;
@@ -70,14 +71,20 @@ function CommandBarContent({
   const multiSelectedIssueIds = useIssueSelectionStore(
     (s) => s.selectedIssueIds
   );
+  const cursorIssueId = useIssueSelectionStore((s) => s.cursorIssueId);
 
-  // Effective issue context: props > multi-selection > route param
+  // Effective issue context: props > multi-selection > opened issue > focused card
   const effectiveProjectId = propProjectId ?? routeProjectId;
-  const effectiveIssueIds = useMemo(() => {
-    if (propIssueIds) return propIssueIds;
-    if (multiSelectedIssueIds.size > 0) return [...multiSelectedIssueIds];
-    return routeIssueId ? [routeIssueId] : [];
-  }, [propIssueIds, multiSelectedIssueIds, routeIssueId]);
+  const effectiveIssueIds = useMemo(
+    () =>
+      resolveCommandBarIssueIds({
+        explicitIssueIds: propIssueIds,
+        selectedIssueIds: multiSelectedIssueIds,
+        routeIssueId,
+        cursorIssueId,
+      }),
+    [propIssueIds, multiSelectedIssueIds, routeIssueId, cursorIssueId]
+  );
   const visibilityContext = useActionVisibilityContext({
     projectId: effectiveProjectId,
     issueIds: effectiveIssueIds,
