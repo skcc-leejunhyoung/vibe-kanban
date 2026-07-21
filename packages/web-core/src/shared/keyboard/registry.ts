@@ -588,13 +588,13 @@ export const modifierBindings: ModifierBinding[] = [
   },
   {
     id: NEXT_SPLIT_PANE_BINDING_ID,
-    keys: 'mod+shift+alt+right',
+    keys: 'alt+tab',
     actionId: 'nextSplitPane',
     group: 'Modifiers',
   },
   {
     id: PREVIOUS_SPLIT_PANE_BINDING_ID,
-    keys: 'mod+shift+alt+left',
+    keys: 'shift+alt+tab',
     actionId: 'previousSplitPane',
     group: 'Modifiers',
   },
