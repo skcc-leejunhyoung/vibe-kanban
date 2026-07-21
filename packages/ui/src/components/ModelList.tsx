@@ -1,4 +1,4 @@
-import type { Ref } from 'react';
+import type { KeyboardEvent, Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BrainIcon, CaretDownIcon, CheckIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -49,12 +49,14 @@ interface ReasoningDropdownProps {
   options: ModelReasoningOption[];
   selectedId: string | null;
   onSelect: (reasoningId: string | null) => void;
+  onSelectionComplete?: () => void;
 }
 
 function ReasoningDropdown({
   options,
   selectedId,
   onSelect,
+  onSelectionComplete,
 }: ReasoningDropdownProps) {
   const { t } = useTranslation('common');
   if (!options.length) return null;
@@ -68,6 +70,7 @@ function ReasoningDropdown({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          data-model-selector-reasoning-trigger
           className={cn(
             'inline-flex items-center gap-1 rounded-sm border border-border',
             'bg-secondary/60 px-1.5 py-0.5 text-[10px] font-semibold text-low',
@@ -87,7 +90,10 @@ function ReasoningDropdown({
       >
         <DropdownMenuItem
           icon={isDefaultSelected ? CheckIcon : undefined}
-          onClick={() => onSelect(null)}
+          onClick={() => {
+            onSelect(null);
+            onSelectionComplete?.();
+          }}
         >
           {t('modelSelector.default')}
         </DropdownMenuItem>
@@ -95,7 +101,10 @@ function ReasoningDropdown({
           <DropdownMenuItem
             key={option.id}
             icon={option.id === selectedId ? CheckIcon : undefined}
-            onClick={() => onSelect(option.id)}
+            onClick={() => {
+              onSelect(option.id);
+              onSelectionComplete?.();
+            }}
           >
             {option.label}
           </DropdownMenuItem>
@@ -118,6 +127,7 @@ export interface ModelListProps {
   showDefaultOption?: boolean;
   onSelectDefault?: () => void;
   scrollRef?: Ref<HTMLDivElement>;
+  onSelectionComplete?: () => void;
 }
 
 export function ModelList({
@@ -133,6 +143,7 @@ export function ModelList({
   showDefaultOption = false,
   onSelectDefault,
   scrollRef,
+  onSelectionComplete,
 }: ModelListProps) {
   const { t } = useTranslation('common');
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -146,6 +157,26 @@ export function ModelList({
   const showEmptyState = filteredModels.length === 0 && !showDefaultOption;
   const isDefaultSelected = selectedModelId === null;
   const normalizedSelectedId = selectedModelId?.toLowerCase() ?? null;
+
+  const focusAdjacentModel = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+
+    const popover = event.currentTarget.closest(
+      '[data-model-selector-popover]'
+    );
+    if (!popover) return;
+    const options = Array.from(
+      popover.querySelectorAll<HTMLButtonElement>(
+        '[data-model-selector-option]:not([disabled])'
+      )
+    );
+    const currentIndex = options.indexOf(event.currentTarget);
+    if (currentIndex === -1 || options.length === 0) return;
+
+    event.preventDefault();
+    const offset = event.key === 'ArrowDown' ? 1 : -1;
+    options[(currentIndex + offset + options.length) % options.length]?.focus();
+  };
 
   const defaultRow = showDefaultOption ? (
     <div
@@ -161,7 +192,15 @@ export function ModelList({
     >
       <button
         type="button"
+        data-model-selector-option
         onClick={() => onSelectDefault?.()}
+        onKeyDown={(event) => {
+          focusAdjacentModel(event);
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          onSelectDefault?.();
+          onSelectionComplete?.();
+        }}
         className={cn(
           'flex-1 min-w-0 py-half pl-base pr-half text-left',
           'focus:outline-none focus-visible:ring-1 focus-visible:ring-brand'
@@ -226,9 +265,34 @@ export function ModelList({
               >
                 <button
                   type="button"
+                  data-model-selector-option
                   onClick={() =>
                     onSelect(model.id, model.provider_id ?? undefined)
                   }
+                  onKeyDown={(event) => {
+                    focusAdjacentModel(event);
+                    if (event.key !== 'Enter') return;
+
+                    event.preventDefault();
+                    onSelect(model.id, model.provider_id ?? undefined);
+                    if (!isReasoningConfigurable) {
+                      onSelectionComplete?.();
+                      return;
+                    }
+
+                    const popover = event.currentTarget.closest(
+                      '[data-model-selector-popover]'
+                    );
+                    requestAnimationFrame(() => {
+                      const modelKeySelector = CSS.escape(modelKey);
+                      popover
+                        ?.querySelector<HTMLButtonElement>(
+                          `[data-model-key="${modelKeySelector}"] ` +
+                            '[data-model-selector-reasoning-trigger]'
+                        )
+                        ?.click();
+                    });
+                  }}
                   className={cn(
                     'flex-1 min-w-0 py-half pl-base pr-half text-left',
                     'focus:outline-none focus-visible:ring-1 focus-visible:ring-brand'
@@ -250,6 +314,7 @@ export function ModelList({
                       options={reasoningOptions}
                       selectedId={selectedReasoningId}
                       onSelect={onReasoningSelect}
+                      onSelectionComplete={onSelectionComplete}
                     />
                   )}
                   {!showReasoningSelector && isReasoningConfigurable ? (

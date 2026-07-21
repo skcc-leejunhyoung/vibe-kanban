@@ -642,6 +642,7 @@ export function ModelSelectorContainer({
           expandedProviderId={expandedProviderId}
           onExpandedProviderIdChange={setExpandedProviderId}
           resolvedTheme={resolvedTheme}
+          onSelectionComplete={() => handleOpenChange(false)}
         />
       )}
 

@@ -49,6 +49,7 @@ export interface ModelSelectorPopoverProps {
   expandedProviderId?: string;
   onExpandedProviderIdChange?: (id: string) => void;
   resolvedTheme?: 'light' | 'dark';
+  onSelectionComplete?: () => void;
 }
 
 const MODEL_LIST_PAGE_SIZE = 8;
@@ -124,6 +125,7 @@ interface ProviderAccordionProps {
   expandedProviderId: string;
   onExpandedProviderIdChange: (id: string) => void;
   resolvedTheme: 'light' | 'dark';
+  onSelectionComplete?: () => void;
 }
 
 function ProviderAccordion({
@@ -140,6 +142,7 @@ function ProviderAccordion({
   expandedProviderId,
   onExpandedProviderIdChange,
   resolvedTheme,
+  onSelectionComplete,
 }: ProviderAccordionProps) {
   const { t } = useTranslation('common');
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -234,6 +237,7 @@ function ProviderAccordion({
                         isSelectedProvider ? selectedReasoningId : null
                       }
                       onReasoningSelect={onReasoningSelect}
+                      onSelectionComplete={onSelectionComplete}
                       justifyEnd={false}
                     />
                   </div>
@@ -296,6 +300,7 @@ export function ModelSelectorPopover({
   expandedProviderId = '',
   onExpandedProviderIdChange,
   resolvedTheme = 'light',
+  onSelectionComplete,
 }: ModelSelectorPopoverProps) {
   const { t } = useTranslation('common');
   const models = config.models;
@@ -325,6 +330,7 @@ export function ModelSelectorPopover({
         expandedProviderId={expandedProviderId}
         onExpandedProviderIdChange={onExpandedProviderIdChange ?? (() => {})}
         resolvedTheme={resolvedTheme}
+        onSelectionComplete={onSelectionComplete}
       />
     );
   } else {
@@ -350,6 +356,7 @@ export function ModelSelectorPopover({
         showDefaultOption={showDefaultOption}
         onSelectDefault={onSelectDefault}
         scrollRef={scrollRef}
+        onSelectionComplete={onSelectionComplete}
       />
     );
   }
