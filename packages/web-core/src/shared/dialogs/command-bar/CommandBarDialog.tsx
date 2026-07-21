@@ -29,6 +29,7 @@ import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 import { splitPresetActions } from '@/shared/actions/splitPresetActions';
 import { useSplitScreenStore } from '@/shared/stores/useSplitScreenStore';
 import { resolveCommandBarIssueIds } from './commandBar/resolveCommandBarIssueIds';
+import { resolveWorkspaceNavigationTargets } from './commandBar/workspaceNavigationTargets';
 
 export interface CommandBarDialogProps {
   page?: PageId;
@@ -156,38 +157,25 @@ function CommandBarContent({
           execute: (ctx) => ctx.appNavigation.goToProject(project.id),
         }));
 
-    const seenWorkspaceIds = new Set<string>();
-    const workspaceActions: ActionDefinition[] = [
-      ...executorContext.activeWorkspaces.map((workspace) => ({
-        id: `${workspace.hostId ?? 'local'}:${workspace.id}`,
-        localWorkspaceId: workspace.id,
-        hostId: workspace.hostId ?? null,
-        name: workspace.name,
-      })),
-      ...executorContext.remoteWorkspaces.map((workspace) => ({
-        id: `${workspace.host_id ?? 'local'}:${workspace.local_workspace_id ?? workspace.id}`,
-        localWorkspaceId: workspace.local_workspace_id ?? workspace.id,
-        hostId: workspace.host_id,
-        name: workspace.name,
-      })),
-    ]
-      .filter((workspace) => {
-        if (seenWorkspaceIds.has(workspace.id)) return false;
-        seenWorkspaceIds.add(workspace.id);
-        return (
-          workspace.name != null && fuzzySearchMatch(workspace.name, query)
-        );
-      })
-      .map((workspace) => ({
-        id: `goto-workspace-${workspace.id}`,
-        label: `Workspace: ${workspace.name ?? workspace.localWorkspaceId}`,
-        icon: StackIcon,
-        requiresTarget: ActionTargetType.NONE,
-        execute: (ctx) =>
-          ctx.appNavigation.goToWorkspace(workspace.localWorkspaceId, {
-            hostId: workspace.hostId,
-          }),
-      }));
+    const workspaceActions: ActionDefinition[] =
+      resolveWorkspaceNavigationTargets(
+        executorContext.activeWorkspaces,
+        executorContext.remoteWorkspaces
+      )
+        .filter(
+          (workspace) =>
+            workspace.name != null && fuzzySearchMatch(workspace.name, query)
+        )
+        .map((workspace) => ({
+          id: `goto-workspace-${workspace.id}`,
+          label: `Workspace: ${workspace.name ?? workspace.localWorkspaceId}`,
+          icon: StackIcon,
+          requiresTarget: ActionTargetType.NONE,
+          execute: (ctx) =>
+            ctx.appNavigation.goToWorkspace(workspace.localWorkspaceId, {
+              hostId: workspace.hostId,
+            }),
+        }));
 
     const navigationItems = [...projectActions, ...workspaceActions].map(
       (action) => ({ type: 'action' as const, action })
