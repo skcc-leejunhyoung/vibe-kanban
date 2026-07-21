@@ -191,7 +191,20 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
     },
 
     setOrderedIssueIds: (ids: string[]) => {
-      set({ orderedIssueIds: ids });
+      set((state) => {
+        const visibleIssueIds = new Set(ids);
+        return {
+          orderedIssueIds: ids,
+          cursorIssueId:
+            state.cursorIssueId && visibleIssueIds.has(state.cursorIssueId)
+              ? state.cursorIssueId
+              : null,
+          anchorIssueId:
+            state.anchorIssueId && visibleIssueIds.has(state.anchorIssueId)
+              ? state.anchorIssueId
+              : null,
+        };
+      });
     },
   })
 );
