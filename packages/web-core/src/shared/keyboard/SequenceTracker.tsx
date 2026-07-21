@@ -110,6 +110,10 @@ export function SequenceTrackerProvider({
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
       const target = event.target as HTMLElement;
       if (
         target.tagName === 'INPUT' ||

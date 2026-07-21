@@ -84,6 +84,7 @@ import {
 } from '@/shared/keyboard';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 import { shouldStartBoardNavigation } from '../model/shouldStartBoardNavigation';
+import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -1330,6 +1331,11 @@ export function KanbanContainer() {
                                 e.stopPropagation();
                                 handleCardAssigneeClick(issue.id);
                               }}
+                              onOpenInNewTabClick={() =>
+                                openInSplitPane(
+                                  `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(issue.id)}`
+                                )
+                              }
                               onMoreActionsClick={() =>
                                 handleCardMoreActionsClick(issue.id)
                               }

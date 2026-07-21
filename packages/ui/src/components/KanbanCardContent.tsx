@@ -4,6 +4,7 @@ import type { MouseEvent, ReactNode } from 'react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  ArrowSquareOutIcon,
   CircleDashedIcon,
   DotsThreeIcon,
   PlusIcon,
@@ -135,6 +136,7 @@ export type KanbanCardContentProps<TTag extends KanbanTag = KanbanTag> = {
   className?: string;
   onPriorityClick?: (e: MouseEvent) => void;
   onAssigneeClick?: (e: MouseEvent) => void;
+  onOpenInNewTabClick?: () => void;
   onMoreActionsClick?: () => void;
   tagEditProps?: TagEditProps<TTag>;
   isMobile?: boolean;
@@ -154,6 +156,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
   className,
   onPriorityClick,
   onAssigneeClick,
+  onOpenInNewTabClick,
   onMoreActionsClick,
   tagEditProps,
   isMobile,
@@ -214,26 +217,47 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
           </span>
           {isLoading && <RunningDots />}
         </div>
-        {onMoreActionsClick && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onMoreActionsClick();
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
+        {(onOpenInNewTabClick || onMoreActionsClick) && (
+          <div
             className={cn(
-              'p-half -m-half rounded-sm text-low hover:text-normal hover:bg-secondary shrink-0',
+              'flex items-center gap-half shrink-0',
               isMobile
                 ? ''
                 : 'invisible opacity-0 group-hover:visible group-hover:opacity-100',
-              'transition-[opacity,color,background-color]'
+              'transition-opacity'
             )}
-            aria-label="More actions"
-            title="More actions"
           >
-            <DotsThreeIcon className="size-icon-xs" weight="bold" />
-          </button>
+            {onOpenInNewTabClick && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenInNewTabClick();
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="p-half -m-half rounded-sm text-low hover:text-normal hover:bg-secondary"
+                aria-label="Open in new tab"
+                title="Open in new tab"
+              >
+                <ArrowSquareOutIcon className="size-icon-xs" weight="bold" />
+              </button>
+            )}
+            {onMoreActionsClick && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMoreActionsClick();
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="p-half -m-half rounded-sm text-low hover:text-normal hover:bg-secondary"
+                aria-label="More actions"
+                title="More actions"
+              >
+                <DotsThreeIcon className="size-icon-xs" weight="bold" />
+              </button>
+            )}
+          </div>
         )}
       </div>
 

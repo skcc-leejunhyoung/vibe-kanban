@@ -346,6 +346,7 @@ function PaneFrame({
         ref={frameRef}
         title={`Split pane ${pane.id}`}
         src={src}
+        allow="clipboard-read; clipboard-write"
         className="min-h-0 flex-1 border-0 bg-primary"
         onFocus={onActivate}
       />
