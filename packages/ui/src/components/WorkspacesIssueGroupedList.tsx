@@ -100,6 +100,7 @@ function WorkspaceRows({
         <WorkspaceSummary
           key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
           name={workspace.name}
+          hostPrimaryColor={workspace.hostPrimaryColor}
           workspaceId={workspace.id}
           filesChanged={workspace.filesChanged}
           linesAdded={workspace.linesAdded}

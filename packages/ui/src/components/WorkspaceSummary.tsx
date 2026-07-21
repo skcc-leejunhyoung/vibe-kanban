@@ -73,6 +73,8 @@ export interface WorkspaceSummaryProps {
    * card already shows the issue title, which the name usually duplicates.
    */
   latestPrompt?: string;
+  /** Primary color of the host that owns this workspace. */
+  hostPrimaryColor?: string;
 }
 
 export function WorkspaceSummary({
@@ -102,6 +104,7 @@ export function WorkspaceSummary({
   isFocused = false,
   forwardedRef,
   latestPrompt,
+  hostPrimaryColor,
 }: WorkspaceSummaryProps) {
   const { t } = useTranslation('common');
   const hasChanges = filesChanged !== undefined && filesChanged > 0;
@@ -144,8 +147,13 @@ export function WorkspaceSummary({
       <div
         className={cn(
           'absolute left-0 top-1 bottom-1 w-0.5 rounded-full transition-colors duration-100',
-          isActive ? 'bg-brand' : 'bg-transparent'
+          isActive && !hostPrimaryColor ? 'bg-brand' : 'bg-transparent'
         )}
+        style={
+          isActive && hostPrimaryColor
+            ? { backgroundColor: hostPrimaryColor }
+            : undefined
+        }
       />
       <button
         onClick={onClick}

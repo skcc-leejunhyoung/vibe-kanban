@@ -35,6 +35,7 @@ export type WorkspaceLayoutMode = 'flat' | 'accordion';
 export interface WorkspacesSidebarWorkspace {
   id: string;
   hostId?: string | null;
+  hostPrimaryColor?: string;
   name: string;
   filesChanged?: number;
   linesAdded?: number;
@@ -216,6 +217,7 @@ function WorkspaceList({
         <WorkspaceSummary
           key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
           name={workspace.name}
+          hostPrimaryColor={workspace.hostPrimaryColor}
           workspaceId={workspace.id}
           filesChanged={workspace.filesChanged}
           linesAdded={workspace.linesAdded}
@@ -476,6 +478,7 @@ export function WorkspacesSidebar({
                   summary
                   key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
                   name={workspace.name}
+                  hostPrimaryColor={workspace.hostPrimaryColor}
                   workspaceId={workspace.id}
                   filesChanged={workspace.filesChanged}
                   linesAdded={workspace.linesAdded}
@@ -639,6 +642,7 @@ export function WorkspacesSidebar({
               <WorkspaceSummary
                 key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
                 name={workspace.name}
+                hostPrimaryColor={workspace.hostPrimaryColor}
                 workspaceId={workspace.id}
                 filesChanged={workspace.filesChanged}
                 linesAdded={workspace.linesAdded}

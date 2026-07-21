@@ -138,6 +138,12 @@
     "noArchived": "No archived workspaces",
     "noWorkspaces": "No workspaces",
     "newWorkspace": "New workspace",
+    "thisMachine": "This machine",
+    "hostStatus": {
+      "online": "Online",
+      "offline": "Offline",
+      "unpaired": "Unpaired"
+    },
     "needsAttention": "Needs Attention",
     "idle": "Idle",
     "running": "Running",
@@ -186,6 +192,7 @@
     "nextGitHubComment": "Next file with comments"
   },
   "sections": {
+    "host": "Host",
     "changes": "Changes",
     "repositories": "Repositories",
     "addRepositories": "Add Repositories",
