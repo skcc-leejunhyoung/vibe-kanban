@@ -1181,7 +1181,10 @@ export function KanbanIssuePanelContainer({
         <IssueSubIssuesSectionContainer issueId={issueId} />
       )}
       renderCommentsSection={(issueId) => (
-        <IssueCommentsSectionContainer issueId={issueId} />
+        <IssueCommentsSectionContainer
+          issueId={issueId}
+          hostId={displayData.workspaceHostId}
+        />
       )}
     />
   );

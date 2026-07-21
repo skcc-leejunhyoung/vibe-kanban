@@ -39,6 +39,7 @@ import { ScratchType } from 'shared/types';
 
 interface IssueCommentsSectionContainerProps {
   issueId: string;
+  hostId?: string | null;
 }
 
 /**
@@ -47,15 +48,18 @@ interface IssueCommentsSectionContainerProps {
  */
 export function IssueCommentsSectionContainer({
   issueId,
+  hostId,
 }: IssueCommentsSectionContainerProps) {
   return (
     <IssueProvider issueId={issueId}>
-      <IssueCommentsSectionContent />
+      <IssueCommentsSectionContent hostId={hostId} />
     </IssueProvider>
   );
 }
 
-function IssueCommentsSectionContent() {
+function IssueCommentsSectionContent({
+  hostId,
+}: Pick<IssueCommentsSectionContainerProps, 'hostId'>) {
   const { t } = useTranslation('common');
   const { membersWithProfilesById } = useOrgContext();
   const { projectId } = useProjectContext();
@@ -457,10 +461,11 @@ function IssueCommentsSectionContent() {
         autoFocus={autoFocus}
         onCmdEnter={onCmdEnter}
         onPasteFiles={onPasteFiles}
+        hostId={hostId}
         localAttachments={localAttachments}
       />
     ),
-    []
+    [hostId]
   );
 
   return (
