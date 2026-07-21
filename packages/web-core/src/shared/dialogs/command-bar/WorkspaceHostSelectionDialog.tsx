@@ -5,6 +5,7 @@ import {
   Command,
   CommandDialog,
   CommandGroup,
+  CommandInput,
   CommandItem,
   CommandList,
 } from '@vibe/ui/components/Command';
@@ -37,6 +38,9 @@ const WorkspaceHostSelectionDialogImpl = create<NoProps>(() => {
       }}
     >
       <Command>
+        <CommandInput
+          placeholder={t('workspaces.searchHosts', 'Search hosts...')}
+        />
         <CommandList>
           <CommandGroup
             heading={t('workspaces.selectHost', 'Create workspace on')}
