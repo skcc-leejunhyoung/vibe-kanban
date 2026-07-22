@@ -653,21 +653,24 @@ impl LocalContainerService {
                 Err(_) => (None, ExecutionProcessStatus::Failed),
             };
 
-            // Drain the (otherwise detached) stdout/stderr forwarder into the
-            // MsgStore before any post-completion step reads this process's logs
-            // (turn summary, rate-limit detection, vibe cleanup-failure log).
-            // The forwarder is fire-and-forget, so right after exit its final
-            // chunks may not be in get_history() yet; await it (bounded) so the
-            // reads below observe the complete output.
-            if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
-                let _ = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
-            }
-
+            // Publish terminal status as soon as the executor exits. The UI
+            // must not keep showing a running turn while the detached output
+            // forwarder drains its final chunks (which can take up to five
+            // seconds even when no cleanup action is configured).
             if !ExecutionProcess::was_stopped(&db.pool, exec_id).await
                 && let Err(e) =
                     ExecutionProcess::update_completion(&db.pool, exec_id, status, exit_code).await
             {
                 tracing::error!("Failed to update execution process completion: {}", e);
+            }
+
+            // Drain the (otherwise detached) stdout/stderr forwarder into the
+            // MsgStore before any post-completion step reads this process's logs
+            // (turn summary, rate-limit detection, vibe cleanup-failure log).
+            // Completion is already visible above; this wait only protects the
+            // correctness of the background post-completion work.
+            if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
+                let _ = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
             }
 
             // Ephemeral workspaces (spec-intake) are throwaway: skip ALL normal

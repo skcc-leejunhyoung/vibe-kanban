@@ -254,9 +254,13 @@ export const useConversationHistory = ({
             const patchesWithKey = entries.map((entry, index) =>
               patchWithKey(entry, executionProcess.id, index)
             );
+            const latestExecutionProcess =
+              executionProcesses.current.find(
+                (process) => process.id === executionProcess.id
+              ) ?? executionProcess;
             mergeIntoDisplayed((state) => {
               state[executionProcess.id] = {
-                executionProcess,
+                executionProcess: latestExecutionProcess,
                 entries: patchesWithKey,
               };
             });
@@ -661,7 +665,7 @@ export const useConversationHistory = ({
   useEffect(() => {
     if (!executionProcessesRaw) return;
 
-    const processesToReload: ExecutionProcess[] = [];
+    let statusChanged = false;
 
     for (const process of executionProcessesRaw) {
       const previousStatus = previousStatusMapRef.current.get(process.id);
@@ -672,38 +676,22 @@ export const useConversationHistory = ({
         currentStatus !== ExecutionProcessStatus.running &&
         displayedExecutionProcesses.current[process.id]
       ) {
-        processesToReload.push(process);
+        // The live log stream already owns the authoritative entry list. Keep
+        // those entries mounted and only replace the process metadata so the
+        // loading row disappears without replaying/replacing every action in
+        // the completed turn. The stream may still deliver its final buffered
+        // chunk; loadRunningAndEmit reads the latest metadata on every update.
+        displayedExecutionProcesses.current[process.id].executionProcess =
+          process;
+        statusChanged = true;
       }
 
       previousStatusMapRef.current.set(process.id, currentStatus);
     }
 
-    if (processesToReload.length === 0) return;
-
-    (async () => {
-      let anyUpdated = false;
-
-      for (const process of processesToReload) {
-        const entries = await loadEntriesForHistoricExecutionProcess(process);
-        if (entries.length === 0) continue;
-
-        const entriesWithKey = entries.map((e, idx) =>
-          patchWithKey(e, process.id, idx)
-        );
-
-        mergeIntoDisplayed((state) => {
-          state[process.id] = {
-            executionProcess: process,
-            entries: entriesWithKey,
-          };
-        });
-        anyUpdated = true;
-      }
-
-      if (anyUpdated) {
-        emitEntries(displayedExecutionProcesses.current, 'running', false);
-      }
-    })();
+    if (statusChanged) {
+      emitEntries(displayedExecutionProcesses.current, 'running', false);
+    }
   }, [idStatusKey, executionProcessesRaw, emitEntries]);
 
   // If an execution process is removed, remove it from the state
