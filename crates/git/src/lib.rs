@@ -117,6 +117,7 @@ pub struct CommitInfo {
     pub sha: String,
     pub short_sha: String,
     pub subject: String,
+    pub description: String,
     pub author: String,
     /// Commit time as an RFC 3339 string (UTC).
     pub committed_at: String,
@@ -464,6 +465,7 @@ impl GitService {
         let sha = commit.id().to_string();
         let short_sha = sha.chars().take(8).collect::<String>();
         let subject = commit.summary().unwrap_or("").to_string();
+        let description = commit.body().unwrap_or("").trim().to_string();
         let author = commit
             .author()
             .name()
@@ -476,6 +478,7 @@ impl GitService {
             sha,
             short_sha,
             subject,
+            description,
             author,
             committed_at,
         }

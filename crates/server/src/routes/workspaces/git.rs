@@ -231,6 +231,7 @@ pub struct WorkspaceCommit {
     pub sha: String,
     pub short_sha: String,
     pub subject: String,
+    pub description: String,
     pub author: String,
     /// RFC 3339 timestamp (UTC).
     pub committed_at: String,
@@ -371,6 +372,7 @@ pub async fn list_workspace_commits(
                         sha: c.sha,
                         short_sha: c.short_sha,
                         subject: c.subject,
+                        description: c.description,
                         author: c.author,
                         committed_at: c.committed_at,
                     });
@@ -407,6 +409,20 @@ pub async fn get_workspace_commit_diff(
     let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
         .await?
         .ok_or(RepoError::NotFound)?;
+
+    let is_workspace_commit = deployment
+        .git()
+        .list_commits(
+            &repo.path,
+            &workspace.branch,
+            &workspace_repo.target_branch,
+            COMMIT_LIST_LIMIT,
+        )?
+        .iter()
+        .any(|commit| commit.sha == query.sha);
+    if !is_workspace_commit {
+        return Err(RepoError::NotFound.into());
+    }
 
     let mut diffs = deployment.git().get_commit_diffs(&repo.path, &query.sha)?;
     for diff in &mut diffs {

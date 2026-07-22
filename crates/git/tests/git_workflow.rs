@@ -439,13 +439,16 @@ fn list_commits_and_get_commit_diffs() {
 
     write_file(&repo_path, "a.txt", "one\ntwo\n");
     add_path(&repo_path, "a.txt");
-    s.commit(&repo_path, "extend a").unwrap();
+    s.commit(&repo_path, "extend a\n\nExplain the second change.")
+        .unwrap();
 
     // list_commits returns only the two commits the branch added, newest first.
     let commits = s.list_commits(&repo_path, "feature", "main", 50).unwrap();
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].subject, "extend a");
+    assert_eq!(commits[0].description, "Explain the second change.");
     assert_eq!(commits[1].subject, "add b");
+    assert!(commits[1].description.is_empty());
     assert_eq!(commits[0].short_sha.len(), 8);
     assert!(commits[0].sha.starts_with(&commits[0].short_sha));
     assert!(!commits[0].committed_at.is_empty());

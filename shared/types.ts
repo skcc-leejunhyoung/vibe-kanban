@@ -764,7 +764,7 @@ target_remote_commits_behind: number | null,
  */
 work_branch_has_remote: boolean, merges: Array<Merge>, is_rebase_in_progress: boolean, conflict_op: ConflictOp | null, conflicted_files: Array<string>, is_target_remote: boolean, };
 
-export type WorkspaceCommit = { repo_id: string, repo_name: string, sha: string, short_sha: string, subject: string, author: string,
+export type WorkspaceCommit = { repo_id: string, repo_name: string, sha: string, short_sha: string, subject: string, description: string, author: string,
 /**
  * RFC 3339 timestamp (UTC).
  */

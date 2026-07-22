@@ -123,7 +123,7 @@ export function WorkspacesLayout({
       : 'create-mode-seed-default';
 
   const isMobile = useIsMobile();
-  const [mobileTab] = useMobileActiveTab();
+  const [mobileTab, setMobileTab] = useMobileActiveTab();
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
 
   const handleScrollToBottom = useCallback(
@@ -147,7 +147,16 @@ export function WorkspacesLayout({
     isRightSidebarVisible,
     rightMainPanelMode,
     setLeftMainPanelVisible,
+    setRightMainPanelMode,
   } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
+
+  const handleOpenCommit = useCallback(() => {
+    if (isMobile) {
+      setMobileTab('changes');
+    } else {
+      setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
+    }
+  }, [isMobile, setMobileTab, setRightMainPanelMode]);
 
   useEffect(() => {
     const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
@@ -362,6 +371,7 @@ export function WorkspacesLayout({
                   rightMainPanelMode={rightMainPanelMode}
                   selectedWorkspace={selectedWorkspace}
                   repos={repos}
+                  onOpenCommit={handleOpenCommit}
                 />
               )}
             </div>
@@ -468,6 +478,7 @@ export function WorkspacesLayout({
                 rightMainPanelMode={rightMainPanelMode}
                 selectedWorkspace={selectedWorkspace}
                 repos={repos}
+                onOpenCommit={handleOpenCommit}
               />
             </div>
           )}

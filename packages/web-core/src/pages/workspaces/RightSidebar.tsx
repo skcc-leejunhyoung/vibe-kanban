@@ -8,6 +8,7 @@ import { PrPanelContainer, hasLinkedPr } from './PrPanelContainer';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { TerminalPanelContainer } from '@/shared/components/TerminalPanelContainer';
 import { WorkspaceNotesContainer } from './WorkspaceNotesContainer';
+import { CommitsPanelContainer } from './CommitsPanelContainer';
 import { useDiffs } from '@/shared/stores/useWorkspaceDiffStore';
 import { ArrowsOutSimpleIcon, DesktopTowerIcon } from '@phosphor-icons/react';
 import { useLogsPanel } from '@/shared/hooks/useLogsPanel';
@@ -43,12 +44,14 @@ export interface RightSidebarProps {
   rightMainPanelMode: RightMainPanelMode | null;
   selectedWorkspace: Workspace | undefined;
   repos: RepoWithTargetBranch[];
+  onOpenCommit: () => void;
 }
 
 export const RightSidebar = memo(function RightSidebar({
   rightMainPanelMode,
   selectedWorkspace,
   repos,
+  onOpenCommit,
 }: RightSidebarProps) {
   const { t } = useTranslation(['tasks', 'common']);
   const { config } = useUserSystem();
@@ -81,6 +84,10 @@ export const RightSidebar = memo(function RightSidebar({
   );
   const [gitExpanded] = usePersistedExpanded(
     PERSIST_KEYS.gitPanelRepositories,
+    true
+  );
+  const [commitsExpanded] = usePersistedExpanded(
+    PERSIST_KEYS.commitsSection,
     true
   );
   const [prExpanded] = usePersistedExpanded(
@@ -124,6 +131,19 @@ export const RightSidebar = memo(function RightSidebar({
             repos={repos}
           />
         ),
+        actions: [],
+      },
+      {
+        title: 'Commits',
+        persistKey: PERSIST_KEYS.commitsSection,
+        visible: !!selectedWorkspace,
+        expanded: commitsExpanded,
+        content: selectedWorkspace ? (
+          <CommitsPanelContainer
+            workspaceId={selectedWorkspace.id}
+            onOpenCommit={onOpenCommit}
+          />
+        ) : null,
         actions: [],
       },
       {
@@ -215,6 +235,7 @@ export const RightSidebar = memo(function RightSidebar({
     repos,
     diffs,
     gitExpanded,
+    commitsExpanded,
     prExpanded,
     hasPrs,
     terminalExpanded,
@@ -227,6 +248,7 @@ export const RightSidebar = memo(function RightSidebar({
     hasUpperContent,
     upperExpanded,
     expandTerminal,
+    onOpenCommit,
     t,
   ]);
 

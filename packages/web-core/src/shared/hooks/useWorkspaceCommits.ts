@@ -20,5 +20,7 @@ export function useWorkspaceCommits(
     // Commits change as the agent works; keep it reasonably fresh but avoid
     // hammering on every focus.
     staleTime: 10_000,
+    // Reconcile commits created, amended, rebased, or removed outside the UI.
+    refetchInterval: enabled && workspaceId ? 5_000 : false,
   });
 }

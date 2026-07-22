@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import type { CommitWorkspaceResponse } from 'shared/types';
+import { workspaceCommitsKey } from './useWorkspaceCommits';
 
 type CommitParams = {
   repoId: string;
@@ -29,6 +30,9 @@ export function useCommit(
         queryKey: ['branchStatus', workspaceId],
       });
       queryClient.invalidateQueries({ queryKey: repoBranchKeys.all });
+      queryClient.invalidateQueries({
+        queryKey: workspaceCommitsKey(workspaceId),
+      });
 
       onSuccess?.(result);
     },
