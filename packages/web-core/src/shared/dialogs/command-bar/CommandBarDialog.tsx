@@ -112,6 +112,10 @@ function CommandBarContent({
         ? {
             ...visibilityContext,
             hasWorkspace: true,
+            isCurrentWorkspaceTarget:
+              effectiveWorkspaceId === contextWorkspaceId &&
+              (hostId === undefined ||
+                hostId === executorContext.currentHostId),
             workspaceArchived:
               workspace?.archived ?? visibilityContext.workspaceArchived,
             isInPlace: workspace?.in_place ?? visibilityContext.isInPlace,
@@ -119,6 +123,9 @@ function CommandBarContent({
         : visibilityContext,
     [
       effectiveWorkspaceId,
+      contextWorkspaceId,
+      executorContext.currentHostId,
+      hostId,
       visibilityContext,
       workspace?.archived,
       workspace?.in_place,

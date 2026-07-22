@@ -190,6 +190,20 @@ function getNextWorkspaceId(
   return null;
 }
 
+function assertCurrentWorkspaceSessionTarget(
+  ctx: ActionExecutorContext,
+  workspaceId: string,
+  hostId?: string | null
+) {
+  const targetsCurrentHost =
+    hostId === undefined || hostId === ctx.currentHostId;
+  if (workspaceId === ctx.currentWorkspaceId && targetsCurrentHost) return;
+
+  throw new Error(
+    'Session actions are only available for the currently open workspace.'
+  );
+}
+
 // Helper to navigate to create-issue form for a sub-issue, carrying over parent assignees
 function navigateToCreateSubIssue(
   ctx: ActionExecutorContext,
@@ -465,8 +479,10 @@ export const Actions = {
     label: 'View sessions',
     icon: ChatsTeardropIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
+    isVisible: (ctx) =>
+      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
     execute: async (ctx, workspaceId, hostId) => {
+      assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
       const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
       const { SelectionDialog } = await import(
         '@/shared/dialogs/command-bar/SelectionDialog'
@@ -511,8 +527,12 @@ export const Actions = {
     label: 'New session',
     icon: PlusIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
-    execute: (ctx) => ctx.startNewSession(),
+    isVisible: (ctx) =>
+      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
+    execute: (ctx, workspaceId, hostId) => {
+      assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
+      ctx.startNewSession();
+    },
   },
 
   RenameSession: {
@@ -520,8 +540,10 @@ export const Actions = {
     label: 'Rename session',
     icon: PencilSimpleIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
+    isVisible: (ctx) =>
+      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
     execute: async (ctx, workspaceId, hostId) => {
+      assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
       if (!ctx.currentSessionId) return;
       const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
       const session = sessions.find((item) => item.id === ctx.currentSessionId);
@@ -544,8 +566,10 @@ export const Actions = {
     icon: TrashIcon,
     variant: 'destructive',
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
+    isVisible: (ctx) =>
+      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
     execute: async (ctx, workspaceId, hostId) => {
+      assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
       if (!ctx.currentSessionId) return;
       const result = await ConfirmDialog.show({
         title: 'Delete session',

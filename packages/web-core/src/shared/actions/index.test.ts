@@ -164,6 +164,7 @@ describe('command palette navigation actions', () => {
     const base = {
       appRuntime: 'remote',
       hasWorkspace: true,
+      isCurrentWorkspaceTarget: true,
       hasSelectedKanbanIssue: true,
       isInPlace: false,
     } as ActionVisibilityContext;
@@ -172,6 +173,54 @@ describe('command palette navigation actions', () => {
     expect(isActionVisible(action, { ...base, appRuntime: 'local' })).toBe(
       true
     );
+  });
+
+  it.each([
+    Actions.ViewWorkspaceSessions,
+    Actions.NewSession,
+    Actions.RenameSession,
+    Actions.DeleteSession,
+  ])('$id is hidden for another workspace row', (action) => {
+    const ctx = {
+      appRuntime: 'local',
+      hasWorkspace: true,
+      isCurrentWorkspaceTarget: false,
+      isInPlace: false,
+    } as ActionVisibilityContext;
+
+    expect(isActionVisible(action, ctx)).toBe(false);
+  });
+
+  it('does not start a new session for a different workspace target', () => {
+    const startNewSession = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host-1',
+        currentWorkspaceId: 'ws1',
+        startNewSession,
+      }
+    );
+
+    expect(() => Actions.NewSession.execute(ctx, 'ws2', 'host-1')).toThrow(
+      'currently open workspace'
+    );
+    expect(startNewSession).not.toHaveBeenCalled();
+  });
+
+  it('does not load sessions from a different host target', async () => {
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host-1',
+        currentWorkspaceId: 'ws1',
+      }
+    );
+
+    await expect(
+      Actions.ViewWorkspaceSessions.execute(ctx, 'ws1', 'host-2')
+    ).rejects.toThrow('currently open workspace');
+    expect(getSessionsByWorkspace).not.toHaveBeenCalled();
   });
 });
 

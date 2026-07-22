@@ -137,6 +137,7 @@ export function useActionVisibilityContext(
       isRightSidebarVisible: panelState.isRightSidebarVisible,
       isCreateMode,
       hasWorkspace: !!workspace,
+      isCurrentWorkspaceTarget: !!workspace,
       workspaceArchived: workspace?.archived ?? false,
       isInPlace: workspace?.in_place ?? false,
       hasDiffs: diffPathsSet.size > 0,

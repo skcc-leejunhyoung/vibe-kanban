@@ -129,6 +129,8 @@ export interface ActionVisibilityContext {
 
   // Workspace state
   hasWorkspace: boolean;
+  /** Whether a command's target is the workspace currently bound to session state. */
+  isCurrentWorkspaceTarget: boolean;
   workspaceArchived: boolean;
   /** Quick-chat ("in-place") workspace — runs on the user's existing branch. */
   isInPlace: boolean;
