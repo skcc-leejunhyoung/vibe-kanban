@@ -19,6 +19,7 @@ import {
   resolveModifier,
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { useEscapeToBlur } from '@/shared/keyboard/useEscapeToBlur';
 import {
   type SplitPaneState,
   type SplitPreset,
@@ -360,6 +361,8 @@ const resizeHandle = (
 );
 
 export function SplitScreenSurface({ children }: { children: ReactNode }) {
+  useEscapeToBlur();
+
   if (isSplitScreenEmbed()) {
     return <EmbeddedPaneBridge>{children}</EmbeddedPaneBridge>;
   }
