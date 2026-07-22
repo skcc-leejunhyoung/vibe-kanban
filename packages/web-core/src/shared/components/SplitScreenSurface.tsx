@@ -497,8 +497,9 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
         ) {
           window.open(message.url, '_blank', 'noopener,noreferrer');
         } else {
+          const currentState = useSplitScreenStore.getState();
           const targetPaneId =
-            useSplitScreenStore.getState().presets[preset].activePaneId;
+            currentState.presets[currentState.preset].activePaneId;
           requestAnimationFrame(() => activatePane(targetPaneId, true));
         }
       } else if (
