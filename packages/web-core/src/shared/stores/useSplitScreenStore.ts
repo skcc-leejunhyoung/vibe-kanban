@@ -19,6 +19,7 @@ export interface SplitPaneState {
 export interface SplitPresetState {
   panes: SplitPaneState[];
   activePaneId: string;
+  focusHistory?: string[];
   horizontalSizes?: number[];
   verticalSizes?: number[];
 }
@@ -59,7 +60,11 @@ interface SplitScreenState {
   syncUser: (userId: string | null) => void;
   setPreset: (preset: SplitPreset, currentUrl: string) => void;
   setMaxPanes: (maxPanes: SplitPreset) => void;
-  openPane: (url: string, currentUrl: string) => 'pane' | 'overflow';
+  openPane: (
+    url: string,
+    currentUrl: string,
+    sourcePaneId?: string
+  ) => 'pane' | 'overflow';
   openPaneInWindow: (url: string) => void;
   setActivePane: (paneId: string) => void;
   setPaneUrl: (paneId: string, url: string) => void;
@@ -76,16 +81,28 @@ const makePreset = (preset: SplitPreset): SplitPresetState => ({
     url: null,
   })),
   activePaneId: `preset-${preset}-pane-1`,
+  focusHistory: [`preset-${preset}-pane-1`],
 });
+
+function withFocusedPane(
+  preset: SplitPresetState,
+  paneId: string
+): SplitPresetState {
+  const paneIds = new Set(preset.panes.map((pane) => pane.id));
+  const history = (preset.focusHistory ?? [preset.activePaneId]).filter(
+    (id) => paneIds.has(id) && id !== paneId
+  );
+  return {
+    ...preset,
+    activePaneId: paneId,
+    focusHistory: [...history, paneId],
+  };
+}
 
 const initialPresets = (): PresetStates =>
   Object.fromEntries(
     SPLIT_PRESETS.map((preset) => [preset, makePreset(preset)])
   ) as unknown as PresetStates;
-
-function isSplitPreset(value: number): value is SplitPreset {
-  return value >= MIN_SPLIT_PANES && value <= MAX_SPLIT_PANES;
-}
 
 function updateCurrentPreset(
   state: SplitScreenState,
@@ -129,6 +146,7 @@ export const useSplitScreenStore = create<SplitScreenState>()(
               [maxPanes]: {
                 ...destination,
                 activePaneId: destination.panes[0].id,
+                focusHistory: [destination.panes[0].id],
                 panes: destination.panes.map((pane, index) => ({
                   ...pane,
                   url: source.panes[index]?.url ?? pane.url,
@@ -137,34 +155,47 @@ export const useSplitScreenStore = create<SplitScreenState>()(
             },
           };
         }),
-      openPane: (url, currentUrl) => {
+      openPane: (url, currentUrl, sourcePaneId) => {
         let result: 'pane' | 'overflow' = 'overflow';
         set((state) => {
-          if (state.preset >= state.maxPanes) return state;
-          const nextPresetValue = state.preset + 1;
-          if (!isSplitPreset(nextPresetValue)) return state;
+          const preset = state.presets[state.preset];
+          if (preset.panes.length <= 1) return state;
 
-          const source = state.presets[state.preset];
-          const sourceUrls = source.panes.map((pane) =>
-            pane.id === source.activePaneId
-              ? currentUrl
-              : (pane.url ?? currentUrl)
+          const currentPaneId = preset.panes.some(
+            (pane) => pane.id === sourcePaneId
+          )
+            ? sourcePaneId!
+            : preset.activePaneId;
+          const targetPaneId = [
+            ...(preset.focusHistory ?? [preset.activePaneId]),
+          ]
+            .reverse()
+            .find(
+              (paneId) =>
+                paneId !== currentPaneId &&
+                preset.panes.some((pane) => pane.id === paneId)
+            );
+          const fallbackTarget = preset.panes.find(
+            (pane) => pane.id !== currentPaneId
           );
-          const destination = state.presets[nextPresetValue];
+          const resolvedTargetPaneId = targetPaneId ?? fallbackTarget?.id;
+          if (!resolvedTargetPaneId) return state;
+
           result = 'pane';
           return {
-            preset: nextPresetValue,
             presets: {
               ...state.presets,
-              [nextPresetValue]: {
-                ...destination,
-                activePaneId:
-                  destination.panes[sourceUrls.length]?.id ??
-                  destination.activePaneId,
-                panes: destination.panes.map((pane, index) => ({
-                  ...pane,
-                  url: index < sourceUrls.length ? sourceUrls[index] : url,
-                })),
+              [state.preset]: {
+                ...withFocusedPane(preset, resolvedTargetPaneId),
+                panes: preset.panes.map((pane) => {
+                  if (pane.id === currentPaneId) {
+                    return { ...pane, url: currentUrl };
+                  }
+                  if (pane.id === resolvedTargetPaneId) {
+                    return { ...pane, url };
+                  }
+                  return pane;
+                }),
               },
             },
           };
@@ -186,8 +217,7 @@ export const useSplitScreenStore = create<SplitScreenState>()(
             presets: {
               ...state.presets,
               [preset]: {
-                ...destination,
-                activePaneId: destination.panes[0].id,
+                ...withFocusedPane(destination, destination.panes[0].id),
                 ...(hasSavedPage
                   ? {}
                   : {
@@ -208,6 +238,7 @@ export const useSplitScreenStore = create<SplitScreenState>()(
             1: {
               ...state.presets[1],
               activePaneId: state.presets[1].panes[0].id,
+              focusHistory: [state.presets[1].panes[0].id],
               panes: state.presets[1].panes.map((pane, index) => ({
                 ...pane,
                 url: index === 0 ? url : pane.url,
@@ -217,10 +248,9 @@ export const useSplitScreenStore = create<SplitScreenState>()(
         })),
       setActivePane: (paneId) =>
         set((state) =>
-          updateCurrentPreset(state, (preset) => ({
-            ...preset,
-            activePaneId: paneId,
-          }))
+          updateCurrentPreset(state, (preset) =>
+            withFocusedPane(preset, paneId)
+          )
         ),
       setPaneUrl: (paneId, url) =>
         set((state) =>

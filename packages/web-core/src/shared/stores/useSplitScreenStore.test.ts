@@ -22,6 +22,7 @@ const makePreset = (preset: SplitPreset): SplitPresetState => ({
     url: null,
   })),
   activePaneId: `preset-${preset}-pane-1`,
+  focusHistory: [`preset-${preset}-pane-1`],
 });
 
 describe('split screen presets', () => {
@@ -170,22 +171,34 @@ describe('split screen presets', () => {
     ]);
   });
 
-  it('opens the next pane until the configured maximum', () => {
-    useSplitScreenStore
-      .getState()
-      .setPaneUrl('preset-1-pane-1', '/workspaces/stale');
+  it('opens a new window instead of adding a pane from a single-pane layout', () => {
     expect(
       useSplitScreenStore.getState().openPane('/workspaces/b', '/workspaces/a')
-    ).toBe('pane');
-    expect(useSplitScreenStore.getState().preset).toBe(2);
-    expect(
-      useSplitScreenStore.getState().presets[2].panes.map((pane) => pane.url)
-    ).toEqual(['/workspaces/a', '/workspaces/b']);
-
-    useSplitScreenStore.getState().setMaxPanes(2);
-    expect(
-      useSplitScreenStore.getState().openPane('/workspaces/c', '/workspaces/a')
     ).toBe('overflow');
+    expect(useSplitScreenStore.getState().preset).toBe(1);
+  });
+
+  it('reuses the most recently focused pane other than the source pane', () => {
+    const store = useSplitScreenStore.getState();
+    store.setPreset(3, '/workspaces/a');
+    useSplitScreenStore.getState().setActivePane('preset-3-pane-3');
+    useSplitScreenStore.getState().setActivePane('preset-3-pane-2');
+    useSplitScreenStore.getState().setActivePane('preset-3-pane-1');
+
+    expect(
+      useSplitScreenStore
+        .getState()
+        .openPane('/issues/new', '/workspaces/a', 'preset-3-pane-1')
+    ).toBe('pane');
+
+    const state = useSplitScreenStore.getState();
+    expect(state.preset).toBe(3);
+    expect(state.presets[3].activePaneId).toBe('preset-3-pane-2');
+    expect(state.presets[3].panes.map((pane) => pane.url)).toEqual([
+      '/workspaces/a',
+      '/issues/new',
+      '/workspaces/a',
+    ]);
   });
 
   it('supports presets up to nine panes', () => {

@@ -489,10 +489,17 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
         movePane(message.sourcePaneId, senderPaneId);
       } else if (message.event === 'open-pane' && message.url) {
         if (
-          openPane(message.url, message.sourceUrl ?? initialUrlRef.current) ===
-          'overflow'
+          openPane(
+            message.url,
+            message.sourceUrl ?? initialUrlRef.current,
+            senderPaneId
+          ) === 'overflow'
         ) {
           window.open(message.url, '_blank', 'noopener,noreferrer');
+        } else {
+          const targetPaneId =
+            useSplitScreenStore.getState().presets[preset].activePaneId;
+          requestAnimationFrame(() => activatePane(targetPaneId, true));
         }
       } else if (
         message.event === 'max-panes' &&
