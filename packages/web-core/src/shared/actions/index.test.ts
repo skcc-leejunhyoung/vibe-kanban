@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Workspace } from 'shared/types';
-import type { ActionExecutorContext } from '@/shared/types/actions';
+import {
+  isActionVisible,
+  type ActionExecutorContext,
+  type ActionVisibilityContext,
+} from '@/shared/types/actions';
 
 // `actions/index.ts` is a heavy barrel: its action `execute` bodies reference
 // dialog components, icons, and stores, so importing it transitively
@@ -139,6 +143,35 @@ describe('mobile workspace view actions', () => {
     Actions.ToggleLeftMainPanel.execute({} as ActionExecutorContext);
 
     expect(useUiPreferencesStore.getState().mobileActiveTab).toBe('chat');
+  });
+});
+
+describe('command palette navigation actions', () => {
+  it.each([Actions.SearchWorkspaceList, Actions.SearchProjectIssues])(
+    '$id keeps the focus it assigns after the command bar closes',
+    (action) => {
+      expect(action.restoreFocusOnClose).toBe(false);
+    }
+  );
+
+  it.each([
+    Actions.ViewWorkspaceSessions,
+    Actions.NewSession,
+    Actions.RenameSession,
+    Actions.DeleteSession,
+    Actions.ViewIssueWorkspaces,
+  ])('$id is hidden when its remote executor cannot run it', (action) => {
+    const base = {
+      appRuntime: 'remote',
+      hasWorkspace: true,
+      hasSelectedKanbanIssue: true,
+      isInPlace: false,
+    } as ActionVisibilityContext;
+
+    expect(isActionVisible(action, base)).toBe(false);
+    expect(isActionVisible(action, { ...base, appRuntime: 'local' })).toBe(
+      true
+    );
   });
 });
 

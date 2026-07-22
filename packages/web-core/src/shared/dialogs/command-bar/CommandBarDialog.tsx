@@ -59,6 +59,7 @@ function CommandBarContent({
 }) {
   const modal = useModal();
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const restoreFocusOnCloseRef = useRef(true);
   const { executeAction, getLabel, executorContext } = useActions();
   const { workspaceId: contextWorkspaceId, repos } = useWorkspaceContext();
   // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
@@ -130,6 +131,7 @@ function CommandBarContent({
   // Reset state and capture focus when dialog opens
   useEffect(() => {
     if (modal.visible) {
+      restoreFocusOnCloseRef.current = true;
       dispatch({ type: 'RESET', page });
       previousFocusRef.current = document.activeElement as HTMLElement;
     }
@@ -222,6 +224,8 @@ function CommandBarContent({
       });
       if (effect.type !== 'execute') return;
 
+      restoreFocusOnCloseRef.current =
+        effect.action.restoreFocusOnClose !== false;
       modal.hide();
 
       if (effect.action.requiresTarget === ActionTargetType.ISSUE) {
@@ -281,6 +285,7 @@ function CommandBarContent({
   // Restore focus when dialog closes (unless another dialog has taken focus)
   const handleCloseAutoFocus = useCallback((event: Event) => {
     event.preventDefault();
+    if (!restoreFocusOnCloseRef.current) return;
     // Don't restore focus if another dialog has taken over (e.g., action opened a new dialog)
     const activeElement = document.activeElement;
     const isInDialog = activeElement?.closest('[role="dialog"]');

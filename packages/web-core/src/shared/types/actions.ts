@@ -116,6 +116,7 @@ export interface ActionExecutorContext {
 
 // Context for evaluating action visibility and state conditions
 export interface ActionVisibilityContext {
+  appRuntime: AppRuntime;
   // Layout state
   layoutMode: LayoutMode;
   rightMainPanelMode:
@@ -179,6 +180,8 @@ interface ActionBase {
   icon: ActionIcon;
   shortcut?: string;
   variant?: 'default' | 'destructive';
+  /** Skip restoring the element focused before the command bar opened. */
+  restoreFocusOnClose?: boolean;
   keywords?: string[];
   isVisible?: (ctx: ActionVisibilityContext) => boolean;
   isActive?: (ctx: ActionVisibilityContext) => boolean;

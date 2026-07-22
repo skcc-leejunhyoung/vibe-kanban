@@ -465,6 +465,7 @@ export const Actions = {
     label: 'View sessions',
     icon: ChatsTeardropIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
     execute: async (ctx, workspaceId, hostId) => {
       const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
       const { SelectionDialog } = await import(
@@ -510,6 +511,7 @@ export const Actions = {
     label: 'New session',
     icon: PlusIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
     execute: (ctx) => ctx.startNewSession(),
   },
 
@@ -518,7 +520,7 @@ export const Actions = {
     label: 'Rename session',
     icon: PencilSimpleIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.hasWorkspace,
+    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
     execute: async (ctx, workspaceId, hostId) => {
       if (!ctx.currentSessionId) return;
       const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
@@ -542,6 +544,7 @@ export const Actions = {
     icon: TrashIcon,
     variant: 'destructive',
     requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
     execute: async (ctx, workspaceId, hostId) => {
       if (!ctx.currentSessionId) return;
       const result = await ConfirmDialog.show({
@@ -680,6 +683,7 @@ export const Actions = {
     label: 'Search workspaces',
     icon: MagnifyingGlassIcon,
     requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
     isVisible: (ctx) => ctx.layoutMode === 'workspaces',
     execute: () =>
       dispatchCommandPaletteEvent(COMMAND_PALETTE_EVENT.focusWorkspaceSearch),
@@ -690,6 +694,7 @@ export const Actions = {
     label: 'Search project issues',
     icon: MagnifyingGlassIcon,
     requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
     isVisible: (ctx) => ctx.layoutMode === 'kanban',
     execute: () =>
       dispatchCommandPaletteEvent(COMMAND_PALETTE_EVENT.focusIssueSearch),
@@ -700,7 +705,8 @@ export const Actions = {
     label: 'View linked workspaces',
     icon: StackIcon,
     requiresTarget: ActionTargetType.ISSUE,
-    isVisible: (ctx) => ctx.hasSelectedKanbanIssue,
+    isVisible: (ctx) =>
+      ctx.appRuntime === 'local' && ctx.hasSelectedKanbanIssue,
     execute: async (ctx, projectId, issueIds) => {
       const issueId = issueIds[0];
       if (!issueId) return;

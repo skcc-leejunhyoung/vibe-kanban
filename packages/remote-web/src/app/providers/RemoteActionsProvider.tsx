@@ -17,7 +17,6 @@ import {
   type ActionDefinition,
   type ActionExecutorContext,
   type ActionVisibilityContext,
-  ActionTargetType,
   getActionLabel,
   resolveLabel,
   type ProjectMutations,
@@ -31,6 +30,7 @@ import {
   openKanbanIssueComposer,
   type ProjectIssueCreateOptions,
 } from "@/shared/stores/useKanbanIssueComposerStore";
+import { isRemoteExecutableAction } from "./remoteExecutableActions";
 
 interface RemoteActionsProviderProps {
   children: ReactNode;
@@ -183,13 +183,7 @@ export function RemoteActionsProvider({
         return;
       }
 
-      if (
-        action.requiresTarget === ActionTargetType.NONE &&
-        (action.id === "goto-workspaces" ||
-          action.id === "goto-projects" ||
-          action.id.startsWith("goto-project-") ||
-          action.id.startsWith("goto-workspace-"))
-      ) {
+      if (isRemoteExecutableAction(action)) {
         await action.execute(executorContext);
         return;
       }

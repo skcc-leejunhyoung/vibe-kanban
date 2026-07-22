@@ -24,6 +24,7 @@ import type {
   ActionVisibilityContext,
   DevServerState,
 } from '@/shared/types/actions';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 
 interface ActionVisibilityOptions {
   projectId?: string;
@@ -38,6 +39,7 @@ interface ActionVisibilityOptions {
 export function useActionVisibilityContext(
   options?: ActionVisibilityOptions
 ): ActionVisibilityContext {
+  const appRuntime = useAppRuntime();
   const { workspace, workspaceId, isCreateMode, repos } = useWorkspaceContext();
   // Use workspace-specific panel state (pass undefined when in create mode)
   const panelState = useWorkspacePanelState(
@@ -127,6 +129,7 @@ export function useActionVisibilityContext(
       branchStatus?.some((repo) => repo.has_uncommitted_changes) ?? false;
 
     return {
+      appRuntime,
       layoutMode,
       rightMainPanelMode: panelState.rightMainPanelMode,
       isLeftSidebarVisible: panelState.isLeftSidebarVisible,
@@ -155,6 +158,7 @@ export function useActionVisibilityContext(
       isSignedIn,
     };
   }, [
+    appRuntime,
     layoutMode,
     panelState.rightMainPanelMode,
     panelState.isLeftSidebarVisible,
