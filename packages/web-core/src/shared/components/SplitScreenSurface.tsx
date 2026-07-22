@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   Fragment,
@@ -9,7 +8,7 @@ import {
 } from 'react';
 import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { useLocation } from '@tanstack/react-router';
+import { useLocation, useRouter } from '@tanstack/react-router';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { cn } from '@/shared/lib/utils';
 import {
@@ -67,6 +66,7 @@ type PaneMessage = {
     | 'focus-pane'
     | 'move-pane'
     | 'open-pane'
+    | 'navigate-to'
     | 'max-panes';
   paneId?: string;
   sourcePaneId?: string;
@@ -91,6 +91,17 @@ function withoutEmbedParam(value: string): string {
 function embeddedUrl(value: string): string {
   const url = new URL(value, window.location.origin);
   url.searchParams.set(EMBED_PARAM, '1');
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function sameOriginRelativeUrl(
+  value: string,
+  origin: string
+): string | null {
+  const url = new URL(value, origin);
+  if (url.origin !== origin) return null;
+  url.searchParams.delete(EMBED_PARAM);
+  url.searchParams.delete('vk_split_pane');
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
@@ -198,6 +209,7 @@ function usePaneFocusHotkeys(
 function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
   const paneId = getEmbeddedPaneId();
   const location = useLocation();
+  const router = useRouter();
   const setMaxPanes = useSplitScreenStore((state) => state.setMaxPanes);
 
   const requestPreset = useCallback((preset: SplitPreset) => {
@@ -211,19 +223,36 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent<PaneMessage>) => {
+      if (event.source !== window.parent) return;
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== MESSAGE_TYPE) return;
+
       if (
-        event.source === window.parent &&
-        event.origin === window.location.origin &&
-        event.data?.type === MESSAGE_TYPE &&
         event.data.event === 'max-panes' &&
         isSplitPreset(event.data.maxPanes)
       ) {
         setMaxPanes(event.data.maxPanes);
+        return;
+      }
+
+      if (
+        event.data.event === 'navigate-to' &&
+        event.data.paneId === paneId &&
+        event.data.url
+      ) {
+        const target = sameOriginRelativeUrl(
+          event.data.url,
+          window.location.origin
+        );
+        if (!target || target === withoutEmbedParam(currentRelativeUrl())) {
+          return;
+        }
+        void router.navigate({ href: target });
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [setMaxPanes]);
+  }, [paneId, router, setMaxPanes]);
 
   useEffect(() => {
     if (!paneId) return;
@@ -319,11 +348,14 @@ function PaneFrame({
   onDropPane: (sourceId: string) => void;
 }) {
   const sourceUrl = pane.url ?? fallbackUrl;
-  const src = useMemo(() => {
+  // `pane.url` is the last URL reported by this iframe and is persisted for
+  // layout restoration. Keep the mounted iframe's src fixed: feeding a SPA
+  // navigation report back into src reloads the whole iframe document.
+  const [src] = useState(() => {
     const url = new URL(embeddedUrl(sourceUrl), window.location.origin);
     url.searchParams.set('vk_split_pane', pane.id);
     return `${url.pathname}${url.search}${url.hash}`;
-  }, [pane.id, sourceUrl]);
+  });
 
   return (
     <div
@@ -503,7 +535,19 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
           const currentState = useSplitScreenStore.getState();
           const targetPaneId =
             currentState.presets[currentState.preset].activePaneId;
-          requestAnimationFrame(() => activatePane(targetPaneId, true));
+          requestAnimationFrame(() => {
+            const targetFrame = paneFramesRef.current.get(targetPaneId);
+            targetFrame?.contentWindow?.postMessage(
+              {
+                type: MESSAGE_TYPE,
+                event: 'navigate-to',
+                paneId: targetPaneId,
+                url: message.url,
+              } satisfies PaneMessage,
+              window.location.origin
+            );
+            activatePane(targetPaneId, true);
+          });
         }
       } else if (
         message.event === 'max-panes' &&

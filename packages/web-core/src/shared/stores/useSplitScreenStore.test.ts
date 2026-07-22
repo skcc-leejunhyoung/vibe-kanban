@@ -15,6 +15,9 @@ const {
   SPLIT_PRESETS,
   useSplitScreenStore,
 } = await import('./useSplitScreenStore');
+const { sameOriginRelativeUrl } = await import(
+  '@/shared/components/SplitScreenSurface'
+);
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: preset }, (_, index) => ({
@@ -205,5 +208,25 @@ describe('split screen presets', () => {
     useSplitScreenStore.getState().setMaxPanes(9);
     useSplitScreenStore.getState().setPreset(9, '/workspaces/a');
     expect(useSplitScreenStore.getState().presets[9].panes).toHaveLength(9);
+  });
+});
+
+describe('split pane navigation', () => {
+  it('accepts same-origin navigation commands and strips embed metadata', () => {
+    expect(
+      sameOriginRelativeUrl(
+        'https://vibe.local/workspaces/a?vk_split_embed=1&x=1#logs',
+        'https://vibe.local'
+      )
+    ).toBe('/workspaces/a?x=1#logs');
+  });
+
+  it('rejects cross-origin navigation commands', () => {
+    expect(
+      sameOriginRelativeUrl(
+        'https://malicious.example/workspaces/a',
+        'https://vibe.local'
+      )
+    ).toBeNull();
   });
 });
