@@ -18,6 +18,7 @@ import {
   useChangesCommitStore,
 } from '@/shared/stores/useChangesCommitStore';
 import { formatRelativeTime } from '@/shared/lib/date';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface CommitSelectorProps {
   workspaceId: string;
@@ -33,6 +34,7 @@ export const CommitSelector = memo(function CommitSelector({
 }: CommitSelectorProps) {
   const { data: commits } = useWorkspaceCommits(workspaceId);
   const selected = useSelectedCommit(workspaceId);
+  const hostId = useHostId();
   const select = useChangesCommitStore((s) => s.select);
 
   const selectedCommit = useMemo(
@@ -49,9 +51,9 @@ export const CommitSelector = memo(function CommitSelector({
   // fall back to All changes so we don't keep requesting a missing diff.
   useEffect(() => {
     if (selected && commits && !selectedCommit) {
-      select(workspaceId, null);
+      select(workspaceId, hostId, null);
     }
-  }, [selected, commits, selectedCommit, select, workspaceId]);
+  }, [selected, commits, selectedCommit, select, workspaceId, hostId]);
 
   const multiRepo = useMemo(
     () => new Set((commits ?? []).map((c) => c.repo_id)).size > 1,
@@ -91,7 +93,7 @@ export const CommitSelector = memo(function CommitSelector({
         <DropdownMenuContent align="start" className="max-w-[440px]">
           <DropdownMenuItem
             className="flex items-center gap-2"
-            onSelect={() => select(workspaceId, null)}
+            onSelect={() => select(workspaceId, hostId, null)}
           >
             <GitBranchIcon className="size-icon-base shrink-0 text-low" />
             <span className="flex-1">All changes</span>
@@ -106,7 +108,10 @@ export const CommitSelector = memo(function CommitSelector({
                 key={`${c.repo_id}:${c.sha}`}
                 className="flex items-start gap-2"
                 onSelect={() =>
-                  select(workspaceId, { repoId: c.repo_id, sha: c.sha })
+                  select(workspaceId, hostId, {
+                    repoId: c.repo_id,
+                    sha: c.sha,
+                  })
                 }
               >
                 <GitCommitIcon className="size-icon-base shrink-0 text-low mt-0.5" />

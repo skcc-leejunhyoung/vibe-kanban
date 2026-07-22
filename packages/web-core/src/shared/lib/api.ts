@@ -728,9 +728,13 @@ export const workspacesApi = {
     return handleApiResponse<RepoBranchStatus[]>(response);
   },
 
-  getCommits: async (workspaceId: string): Promise<WorkspaceCommit[]> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/git/commits`
+  getCommits: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<WorkspaceCommit[]> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/git/commits`,
+      hostId
     );
     return handleApiResponse<WorkspaceCommit[]>(response);
   },
@@ -738,11 +742,13 @@ export const workspacesApi = {
   getCommitDiff: async (
     workspaceId: string,
     repoId: string,
-    sha: string
+    sha: string,
+    hostId?: string | null
   ): Promise<Diff[]> => {
     const params = new URLSearchParams({ repo_id: repoId, sha });
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/git/commit-diff?${params.toString()}`
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/git/commit-diff?${params.toString()}`,
+      hostId
     );
     return handleApiResponse<Diff[]>(response);
   },

@@ -3,6 +3,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import type { CommitWorkspaceResponse } from 'shared/types';
 import { workspaceCommitsKey } from './useWorkspaceCommits';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 type CommitParams = {
   repoId: string;
@@ -14,6 +15,7 @@ export function useCommit(
   onError?: (err: unknown) => void
 ) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
 
   return useMutation<CommitWorkspaceResponse, unknown, CommitParams>({
     mutationFn: (params: CommitParams) => {
@@ -31,7 +33,7 @@ export function useCommit(
       });
       queryClient.invalidateQueries({ queryKey: repoBranchKeys.all });
       queryClient.invalidateQueries({
-        queryKey: workspaceCommitsKey(workspaceId),
+        queryKey: workspaceCommitsKey(workspaceId, hostId),
       });
 
       onSuccess?.(result);

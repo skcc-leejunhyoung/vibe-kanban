@@ -7,6 +7,7 @@ import {
 } from '@/shared/stores/useChangesCommitStore';
 import { formatRelativeTime } from '@/shared/lib/date';
 import { cn } from '@/shared/lib/utils';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface CommitsPanelContainerProps {
   workspaceId: string;
@@ -19,6 +20,7 @@ export const CommitsPanelContainer = memo(function CommitsPanelContainer({
 }: CommitsPanelContainerProps) {
   const { data: commits, isLoading } = useWorkspaceCommits(workspaceId);
   const selected = useSelectedCommit(workspaceId);
+  const hostId = useHostId();
   const select = useChangesCommitStore((state) => state.select);
   const multiRepo = useMemo(
     () => new Set((commits ?? []).map((commit) => commit.repo_id)).size > 1,
@@ -52,7 +54,7 @@ export const CommitsPanelContainer = memo(function CommitsPanelContainer({
               isSelected && 'bg-primary'
             )}
             onClick={() => {
-              select(workspaceId, {
+              select(workspaceId, hostId, {
                 repoId: commit.repo_id,
                 sha: commit.sha,
               });
