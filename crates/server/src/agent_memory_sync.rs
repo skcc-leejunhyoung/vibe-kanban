@@ -1436,10 +1436,24 @@ fn validate_mutation_result(
                     .replacement_text
                     .as_deref()
                     .is_some_and(|replacement| {
+                        // The generation is authoritative server metadata. Older
+                        // callers could accidentally carry the previous marker
+                        // forward inside replacement_text, making an otherwise
+                        // valid update impossible to acknowledge: the validator
+                        // required both that stale replacement verbatim and the
+                        // new generation marker. Normalize only that one marker;
+                        // every other byte of the replacement remains guarded.
+                        let Some(replacement) = normalize_replacement_marker(
+                            replacement,
+                            &marker_prefix,
+                            &expected_marker,
+                        ) else {
+                            return false;
+                        };
                         let expected_old_occurrences =
                             replacement.matches(&mutation.match_text).count();
                         let repository_replacement_is_valid =
-                            result.snapshot.matches(replacement).count() == 1
+                            result.snapshot.matches(&replacement).count() == 1
                                 && result.snapshot.matches(&mutation.match_text).count()
                                     == expected_old_occurrences
                                 && result.snapshot.contains(&expected_marker)
@@ -1478,6 +1492,22 @@ fn validate_mutation_result(
             }
         })
         .collect()
+}
+
+fn normalize_replacement_marker(
+    replacement: &str,
+    marker_prefix: &str,
+    expected_marker: &str,
+) -> Option<String> {
+    let markers = replacement
+        .lines()
+        .filter(|line| line.starts_with(marker_prefix) && line.ends_with(']'))
+        .collect::<Vec<_>>();
+    match markers.as_slice() {
+        [marker] => Some(replacement.replacen(marker, expected_marker, 1)),
+        [] if !replacement.contains(marker_prefix) => Some(replacement.to_string()),
+        _ => None,
+    }
 }
 
 fn mutation_scope(
@@ -1635,9 +1665,9 @@ fn validate_snapshot_scope(
 ///   - Codex writes a synthetic `{"LimitReached":{...}}` line when, and only
 ///     when, `account/rateLimits/read` reports the window is exhausted.
 ///   - Claude's terminal `{"type":"result","is_error":true,...}` event whose
-///     error text names a usage/rate limit (mirrors the Claude executor's own
-///     rate-limit normalization). A routine `rate_limit_event` is ignored: it is
-///     a periodic usage update, not a stop.
+///     error text names a usage/rate limit, or its synthetic assistant API-error
+///     event with `error=rate_limit`/HTTP 429. A routine `rate_limit_event` is
+///     ignored: it is a periodic usage update, not a stop.
 ///
 /// Returns `None` when no structured limit is present. `Some(reset_hint)` marks
 /// a confirmed limit, carrying the agent-reported reset time when one was found.
@@ -1672,10 +1702,24 @@ fn detect_rate_limit(stdout: &[u8], stderr: &[u8]) -> Option<Option<DateTime<Utc
             {
                 // Claude terminal error result that stopped on a usage limit.
                 confirmed = true;
+            } else if claude_api_error_names_rate_limit(&object) {
+                // Current Claude CLI releases surface exhausted weekly limits
+                // as a synthetic assistant API-error message rather than a
+                // terminal `result` event.
+                confirmed = true;
             }
         }
     }
     confirmed.then_some(reset_hint)
+}
+
+fn claude_api_error_names_rate_limit(object: &serde_json::Map<String, serde_json::Value>) -> bool {
+    object.get("type").and_then(serde_json::Value::as_str) == Some("assistant")
+        && (object.get("error").and_then(serde_json::Value::as_str) == Some("rate_limit")
+            || object
+                .get("apiErrorStatus")
+                .and_then(serde_json::Value::as_i64)
+                == Some(429))
 }
 
 /// True when a Claude `result` error names a usage/rate limit. Checks the
@@ -1811,6 +1855,18 @@ mod tests {
         // Claude reports the limit through its terminal error result event.
         let stdout = br#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached. Your limit will reset soon."}"#;
         let reset_hint = detect_rate_limit(stdout, &[]).expect("claude limit should be detected");
+        assert!(reset_hint.is_none());
+        let now = Utc::now();
+        let retry_at = rate_limit_retry_at(reset_hint, 1);
+        assert!(retry_at > now);
+        assert!(retry_at <= now + chrono::Duration::minutes(RATE_LIMIT_BACKOFF_BASE_MINUTES + 1));
+    }
+
+    #[test]
+    fn claude_synthetic_api_error_backs_off_without_a_reset_hint() {
+        let stdout = br#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"You've hit your weekly limit \u00b7 resets 10am (Asia/Seoul)"}]},"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429}"#;
+        let reset_hint =
+            detect_rate_limit(stdout, &[]).expect("Claude synthetic limit should be detected");
         assert!(reset_hint.is_none());
         let now = Utc::now();
         let retry_at = rate_limit_retry_at(reset_hint, 1);
@@ -2047,6 +2103,40 @@ mod tests {
         assert_eq!(
             validate_mutation_result(&[mutation], &result)[0].status,
             AgentMemoryReceiptStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn mutation_validation_normalizes_a_stale_replacement_generation_marker() {
+        let mutation_id = Uuid::new_v4();
+        let memory_id = Uuid::new_v4();
+        let mutation = AgentMemoryMutation {
+            id: mutation_id,
+            memory_id,
+            generation: 2,
+            operation: AgentMemoryMutationOperation::Update,
+            scope: AgentMemoryScope::Repository,
+            scope_key: Some("repo".to_string()),
+            match_text: "old value".to_string(),
+            replacement_text: Some(format!(
+                "new value\n[vibe-memory-id:{memory_id} generation:1]"
+            )),
+            created_at: Utc::now(),
+            receipt_count: 0,
+        };
+        let result = SyncResult {
+            snapshot: format!("new value\n[vibe-memory-id:{memory_id} generation:2]"),
+            receipts: Vec::new(),
+            mutation_receipts: vec![SyncMutationReceipt {
+                mutation_id,
+                status: AgentMemoryReceiptStatus::Ignored,
+                reason: Some("desired state was already present".to_string()),
+            }],
+        };
+
+        assert_eq!(
+            validate_mutation_result(&[mutation], &result)[0].status,
+            AgentMemoryReceiptStatus::Ignored
         );
     }
 
