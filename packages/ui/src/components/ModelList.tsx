@@ -288,15 +288,21 @@ export function ModelList({
                     const popover = event.currentTarget.closest(
                       '[data-model-selector-popover]'
                     );
-                    requestAnimationFrame(() => {
+                    const focusReasoningTrigger = (attempt = 0) => {
                       const modelKeySelector = CSS.escape(modelKey);
-                      popover
-                        ?.querySelector<HTMLButtonElement>(
-                          `[data-model-key="${modelKeySelector}"] ` +
-                            '[data-model-selector-reasoning-trigger]'
-                        )
-                        ?.click();
-                    });
+                      const trigger = popover?.querySelector<HTMLButtonElement>(
+                        `[data-model-key="${modelKeySelector}"] ` +
+                          '[data-model-selector-reasoning-trigger]'
+                      );
+                      if (trigger) {
+                        trigger.focus();
+                      } else if (attempt < 2) {
+                        requestAnimationFrame(() =>
+                          focusReasoningTrigger(attempt + 1)
+                        );
+                      }
+                    };
+                    requestAnimationFrame(() => focusReasoningTrigger());
                   }}
                   className={cn(
                     'flex-1 min-w-0 py-half pl-base pr-half text-left',
