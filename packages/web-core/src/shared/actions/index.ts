@@ -55,6 +55,8 @@ import {
   LightningIcon,
   LayoutIcon,
   KanbanIcon,
+  MagnifyingGlassIcon,
+  StackIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -96,6 +98,11 @@ import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateSt
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
+import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
+import {
+  COMMAND_PALETTE_EVENT,
+  dispatchCommandPaletteEvent,
+} from '@/shared/lib/commandPaletteEvents';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -453,6 +460,104 @@ export const Actions = {
     },
   },
 
+  ViewWorkspaceSessions: {
+    id: 'view-workspace-sessions',
+    label: 'View sessions',
+    icon: ChatsTeardropIcon,
+    requiresTarget: ActionTargetType.WORKSPACE,
+    execute: async (ctx, workspaceId, hostId) => {
+      const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
+      const { SelectionDialog } = await import(
+        '@/shared/dialogs/command-bar/SelectionDialog'
+      );
+      const result = (await SelectionDialog.show({
+        initialPageId: 'sessions',
+        pages: {
+          sessions: {
+            id: 'sessions',
+            title: 'Sessions',
+            buildGroups: () => [
+              {
+                label: 'Sessions',
+                items: sessions.map((session) => ({
+                  type: 'action' as const,
+                  action: {
+                    id: `select-session-${session.id}`,
+                    label: session.name || 'Untitled session',
+                    icon: ChatsTeardropIcon,
+                    requiresTarget: ActionTargetType.NONE,
+                    execute: () => {},
+                  },
+                })),
+              },
+            ],
+            onSelect: (item) => ({
+              type: 'complete' as const,
+              data:
+                item.type === 'action'
+                  ? item.action.id.replace('select-session-', '')
+                  : undefined,
+            }),
+          },
+        },
+      })) as string | undefined;
+      if (result) ctx.selectSession(result);
+    },
+  },
+
+  NewSession: {
+    id: 'new-session',
+    label: 'New session',
+    icon: PlusIcon,
+    requiresTarget: ActionTargetType.WORKSPACE,
+    execute: (ctx) => ctx.startNewSession(),
+  },
+
+  RenameSession: {
+    id: 'rename-session',
+    label: 'Rename session',
+    icon: PencilSimpleIcon,
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.hasWorkspace,
+    execute: async (ctx, workspaceId, hostId) => {
+      if (!ctx.currentSessionId) return;
+      const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
+      const session = sessions.find((item) => item.id === ctx.currentSessionId);
+      if (!session) return;
+      await RenameSessionDialog.show({
+        currentName: session.name || 'Untitled session',
+        onRename: async (name) => {
+          await sessionsApi.update(session.id, { name }, hostId);
+          await ctx.queryClient.invalidateQueries({
+            queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+          });
+        },
+      });
+    },
+  },
+
+  DeleteSession: {
+    id: 'delete-session',
+    label: 'Delete session',
+    icon: TrashIcon,
+    variant: 'destructive',
+    requiresTarget: ActionTargetType.WORKSPACE,
+    execute: async (ctx, workspaceId, hostId) => {
+      if (!ctx.currentSessionId) return;
+      const result = await ConfirmDialog.show({
+        title: 'Delete session',
+        message: 'Delete this session and its conversation history?',
+        confirmText: 'Delete',
+        variant: 'destructive',
+      });
+      if (result !== 'confirmed') return;
+      await sessionsApi.delete(ctx.currentSessionId, hostId);
+      await ctx.queryClient.invalidateQueries({
+        queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+      });
+    },
+  },
+
   StartReview: {
     id: 'start-review',
     label: 'Start Review',
@@ -557,6 +662,94 @@ export const Actions = {
         return;
       }
       ctx.appNavigation.goToWorkspacesCreate();
+    },
+  },
+
+  ToggleWorkspaceArchiveView: {
+    id: 'toggle-workspace-archive-view',
+    label: 'Toggle active / archived workspaces',
+    icon: ArchiveIcon,
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.layoutMode === 'workspaces',
+    execute: () =>
+      dispatchCommandPaletteEvent(COMMAND_PALETTE_EVENT.toggleWorkspaceArchive),
+  },
+
+  SearchWorkspaceList: {
+    id: 'search-workspace-list',
+    label: 'Search workspaces',
+    icon: MagnifyingGlassIcon,
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.layoutMode === 'workspaces',
+    execute: () =>
+      dispatchCommandPaletteEvent(COMMAND_PALETTE_EVENT.focusWorkspaceSearch),
+  },
+
+  SearchProjectIssues: {
+    id: 'search-project-issues',
+    label: 'Search project issues',
+    icon: MagnifyingGlassIcon,
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.layoutMode === 'kanban',
+    execute: () =>
+      dispatchCommandPaletteEvent(COMMAND_PALETTE_EVENT.focusIssueSearch),
+  },
+
+  ViewIssueWorkspaces: {
+    id: 'view-issue-workspaces',
+    label: 'View linked workspaces',
+    icon: StackIcon,
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) => ctx.hasSelectedKanbanIssue,
+    execute: async (ctx, projectId, issueIds) => {
+      const issueId = issueIds[0];
+      if (!issueId) return;
+      const workspaces = ctx.remoteWorkspaces.filter(
+        (workspace) =>
+          workspace.project_id === projectId &&
+          workspace.issue_id === issueId &&
+          workspace.local_workspace_id
+      );
+      const { SelectionDialog } = await import(
+        '@/shared/dialogs/command-bar/SelectionDialog'
+      );
+      const selectedId = (await SelectionDialog.show({
+        initialPageId: 'workspaces',
+        pages: {
+          workspaces: {
+            id: 'workspaces',
+            title: 'Linked workspaces',
+            buildGroups: () => [
+              {
+                label: 'Workspaces',
+                items: workspaces.map((workspace) => ({
+                  type: 'action' as const,
+                  action: {
+                    id: workspace.id,
+                    label: workspace.name || 'Untitled workspace',
+                    icon: StackIcon,
+                    requiresTarget: ActionTargetType.NONE,
+                    execute: () => {},
+                  },
+                })),
+              },
+            ],
+            onSelect: (item) => ({
+              type: 'complete' as const,
+              data: item.type === 'action' ? item.action.id : undefined,
+            }),
+          },
+        },
+      })) as string | undefined;
+      const workspace = workspaces.find((item) => item.id === selectedId);
+      if (workspace?.local_workspace_id) {
+        ctx.appNavigation.goToProjectIssueWorkspace(
+          projectId,
+          issueId,
+          workspace.local_workspace_id,
+          { hostId: workspace.host_id }
+        );
+      }
     },
   },
 

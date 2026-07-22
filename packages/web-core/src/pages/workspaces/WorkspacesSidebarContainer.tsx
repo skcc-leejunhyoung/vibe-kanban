@@ -6,6 +6,7 @@ import {
   useRef,
   type RefObject,
   type MouseEvent,
+  type KeyboardEvent,
 } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
@@ -42,6 +43,7 @@ import {
 } from './WorkspacesSortFilterDialogs';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
+import { COMMAND_PALETTE_EVENT } from '@/shared/lib/commandPaletteEvents';
 import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import {
   WorkspacesSidebar,
@@ -179,10 +181,33 @@ export function WorkspacesSidebarContainer({
   const setMobileActiveTab = useUiPreferencesStore((s) => s.setMobileActiveTab);
   const mobileActiveTab = useUiPreferencesStore((s) => s.mobileActiveTab);
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [showArchive, setShowArchive] = usePersistedExpanded(
     PERSIST_KEYS.workspacesSidebarArchived,
     false
   );
+  useEffect(() => {
+    const toggleArchive = () => setShowArchive();
+    const focusSearch = () => searchInputRef.current?.focus();
+    window.addEventListener(
+      COMMAND_PALETTE_EVENT.toggleWorkspaceArchive,
+      toggleArchive
+    );
+    window.addEventListener(
+      COMMAND_PALETTE_EVENT.focusWorkspaceSearch,
+      focusSearch
+    );
+    return () => {
+      window.removeEventListener(
+        COMMAND_PALETTE_EVENT.toggleWorkspaceArchive,
+        toggleArchive
+      );
+      window.removeEventListener(
+        COMMAND_PALETTE_EVENT.focusWorkspaceSearch,
+        focusSearch
+      );
+    };
+  }, [setShowArchive]);
   const [isAccordionLayout, setAccordionLayout] = usePersistedExpanded(
     PERSIST_KEYS.workspacesSidebarAccordionLayout,
     true
@@ -457,6 +482,18 @@ export function WorkspacesSidebarContainer({
     paginatedActiveWorkspaces,
     paginatedArchivedWorkspaces,
   ]);
+  const handleSearchKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== 'Enter') return;
+      const firstRenderedId = displayedWorkspaceIds.find((id) =>
+        workspaceRefs.current.has(id)
+      );
+      if (!firstRenderedId) return;
+      event.preventDefault();
+      setFocusedWorkspaceId(firstRenderedId);
+    },
+    [displayedWorkspaceIds]
+  );
 
   // Treat the visible workspace list like a tab strip. This mirrors native
   // macOS tab switching and wraps at both ends.
@@ -767,6 +804,8 @@ export function WorkspacesSidebarContainer({
       onSelectWorkspace={handleSelectWorkspace}
       searchQuery={searchQuery}
       onSearchChange={setSearchQuery}
+      searchInputRef={searchInputRef}
+      onSearchKeyDown={handleSearchKeyDown}
       onAddWorkspace={handleAddWorkspace}
       isCreateMode={isCreateMode}
       draftTitle={persistedDraftTitle}

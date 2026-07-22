@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type ReactNode, type Ref, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeftIcon,
@@ -90,6 +90,8 @@ interface KanbanFilterBarProps<
   showWorkspaces: boolean;
   hasActiveFilters: boolean;
   onSearchQueryChange: (searchQuery: string) => void;
+  searchInputRef?: Ref<HTMLInputElement>;
+  onSearchKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
   onPrioritiesChange: (priorities: PriorityLevel[]) => void;
   onAssigneesChange: (assigneeIds: string[]) => void;
   onTagsChange: (tagIds: string[]) => void;
@@ -133,6 +135,8 @@ export function KanbanFilterBar<
   showWorkspaces,
   hasActiveFilters,
   onSearchQueryChange,
+  searchInputRef,
+  onSearchKeyDown,
   onPrioritiesChange,
   onAssigneesChange,
   onTagsChange,
@@ -177,6 +181,8 @@ export function KanbanFilterBar<
             placeholder={t('kanban.searchPlaceholder', 'Search issues...')}
             variant="search"
             className="min-w-0 flex-1"
+            inputRef={searchInputRef}
+            onKeyDown={onSearchKeyDown}
           />
         </div>
       ) : (
@@ -224,6 +230,8 @@ export function KanbanFilterBar<
               actionIcon={filters.searchQuery ? XIcon : undefined}
               onAction={handleClearSearch}
               className="min-w-[160px] w-[220px] max-w-full"
+              inputRef={searchInputRef}
+              onKeyDown={onSearchKeyDown}
             />
           )}
 

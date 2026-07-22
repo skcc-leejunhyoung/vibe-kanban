@@ -17,6 +17,8 @@ interface InputFieldProps {
   onAction?: () => void;
   disabled?: boolean;
   onFocusChange?: (focused: boolean) => void;
+  inputRef?: React.Ref<HTMLInputElement>;
+  onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
 }
 
 export function InputField({
@@ -29,12 +31,14 @@ export function InputField({
   onAction,
   disabled,
   onFocusChange,
+  inputRef: externalInputRef,
+  onKeyDown,
 }: InputFieldProps) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [editValue, setEditValue] = React.useState(value);
   const [justSaved, setJustSaved] = React.useState(false);
   const [isFocused, setIsFocused] = React.useState(false);
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Sync editValue when value prop changes (and not editing)
   React.useEffect(() => {
@@ -75,6 +79,8 @@ export function InputField({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
     if (variant === 'editable') {
       if (e.key === 'Enter') {
         handleSave();
@@ -108,7 +114,14 @@ export function InputField({
     >
       {showInput ? (
         <input
-          ref={inputRef}
+          ref={(node) => {
+            inputRef.current = node;
+            if (typeof externalInputRef === 'function') externalInputRef(node);
+            else if (externalInputRef)
+              (
+                externalInputRef as React.MutableRefObject<HTMLInputElement | null>
+              ).current = node;
+          }}
           type="text"
           value={variant === 'editable' ? editValue : value}
           onChange={(e) =>

@@ -445,19 +445,28 @@ export const sessionsApi = {
 
   update: async (
     sessionId: string,
-    data: { name?: string }
+    data: { name?: string },
+    hostId?: string | null
   ): Promise<Session> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}`,
+      hostId,
+      {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<Session>(response);
   },
 
-  delete: async (sessionId: string): Promise<void> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}`, {
-      method: 'DELETE',
-    });
+  delete: async (sessionId: string, hostId?: string | null): Promise<void> => {
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}`,
+      hostId,
+      {
+        method: 'DELETE',
+      }
+    );
     return handleApiResponse<void>(response);
   },
 

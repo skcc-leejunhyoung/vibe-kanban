@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   type MouseEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
@@ -85,6 +86,7 @@ import {
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 import { shouldStartBoardNavigation } from '../model/shouldStartBoardNavigation';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { COMMAND_PALETTE_EVENT } from '@/shared/lib/commandPaletteEvents';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -811,12 +813,26 @@ export function KanbanContainer() {
   const cursorIssueId = useIssueSelectionStore((s) => s.cursorIssueId);
   const focusCursor = useIssueSelectionStore((s) => s.focusCursor);
   const cardRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const issueListRef = useRef<HTMLDivElement>(null);
 
   // Whether keyboard focus is currently inside the board. Arrow/Enter
   // navigation is scoped to this so it doesn't hijack arrow-key scrolling or
   // Enter while the user works in the open issue panel — mirroring the
   // focus-scoped workspace sidebar list.
   const [isBoardFocused, setIsBoardFocused] = useState(false);
+  useEffect(() => {
+    const focusSearch = () => searchInputRef.current?.focus();
+    window.addEventListener(
+      COMMAND_PALETTE_EVENT.focusIssueSearch,
+      focusSearch
+    );
+    return () =>
+      window.removeEventListener(
+        COMMAND_PALETTE_EVENT.focusIssueSearch,
+        focusSearch
+      );
+  }, []);
 
   // Compute ordered issue IDs for range selection
   const orderedIssueIds = useMemo(() => {
@@ -824,6 +840,21 @@ export function KanbanContainer() {
       kanbanViewMode === 'kanban' ? visibleStatuses : listViewStatuses;
     return statusOrder.flatMap((status) => items[status.id] ?? []);
   }, [kanbanViewMode, visibleStatuses, listViewStatuses, items]);
+  const handleSearchKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== 'Enter' || orderedIssueIds.length === 0) return;
+      event.preventDefault();
+      if (kanbanViewMode !== 'kanban') {
+        issueListRef.current
+          ?.querySelector<HTMLElement>('[role="button"]')
+          ?.focus();
+        return;
+      }
+      setIsBoardFocused(true);
+      focusCursor(orderedIssueIds[0]);
+    },
+    [focusCursor, kanbanViewMode, orderedIssueIds]
+  );
 
   // Keep the store's ordered IDs in sync
   useEffect(() => {
@@ -1199,6 +1230,8 @@ export function KanbanContainer() {
             showWorkspaces={showWorkspaces}
             hasActiveFilters={hasActiveFilters}
             onSearchQueryChange={setKanbanSearchQuery}
+            searchInputRef={searchInputRef}
+            onSearchKeyDown={handleSearchKeyDown}
             onPrioritiesChange={setKanbanPriorities}
             onAssigneesChange={setKanbanAssignees}
             onTagsChange={setKanbanTags}
@@ -1400,7 +1433,7 @@ export function KanbanContainer() {
           </div>
         )
       ) : (
-        <div className="flex-1 overflow-y-auto px-double">
+        <div ref={issueListRef} className="flex-1 overflow-y-auto px-double">
           <KanbanProvider onDragEnd={handleDragEnd} className="!block !w-full">
             <IssueListView
               statuses={listViewStatuses}

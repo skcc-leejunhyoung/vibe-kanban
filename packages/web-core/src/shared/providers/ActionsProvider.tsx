@@ -55,6 +55,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
     workspace,
     selectedSessionId,
     selectSession,
+    startNewSession,
   } = useWorkspaceContext();
   // Get remote workspaces (optional — not available on all routes)
   const userCtx = useContext(UserContext);
@@ -226,6 +227,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       currentWorkspaceId: workspaceId ?? null,
       currentSessionId: selectedSessionId ?? null,
       selectSession,
+      startNewSession,
       containerRef: workspace?.container_ref ?? null,
       runningDevServers,
       startDevServer: start,
@@ -262,6 +264,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
     workspaceId,
     selectedSessionId,
     selectSession,
+    startNewSession,
     workspace?.container_ref,
     runningDevServers,
     start,

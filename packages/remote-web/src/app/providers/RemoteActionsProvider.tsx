@@ -117,6 +117,9 @@ export function RemoteActionsProvider({
       selectSession: () => {
         noOpSelection("Session actions");
       },
+      startNewSession: () => {
+        noOpSelection("Session actions");
+      },
       containerRef: null,
       runningDevServers: [],
       startDevServer: () => {

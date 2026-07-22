@@ -70,6 +70,7 @@ export interface ActionExecutorContext {
   currentWorkspaceId: string | null;
   currentSessionId: string | null;
   selectSession: (sessionId: string) => void;
+  startNewSession: () => void;
   containerRef: string | null;
   runningDevServers: ExecutionProcess[];
   startDevServer: () => void;

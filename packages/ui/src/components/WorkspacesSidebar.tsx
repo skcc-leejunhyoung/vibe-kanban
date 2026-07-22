@@ -1,4 +1,4 @@
-import type { MouseEvent, ReactNode, Ref } from 'react';
+import type { KeyboardEvent, MouseEvent, ReactNode, Ref } from 'react';
 import { useCallback, useMemo, useRef } from 'react';
 import {
   PlusIcon,
@@ -90,6 +90,8 @@ export interface WorkspacesSidebarProps {
   onAddWorkspace?: () => void;
   searchQuery: string;
   onSearchChange: (value: string) => void;
+  searchInputRef?: Ref<HTMLInputElement>;
+  onSearchKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
   /** Whether we're in create mode */
   isCreateMode?: boolean;
   /** Title extracted from draft message (only shown when isCreateMode and non-empty) */
@@ -272,6 +274,8 @@ export function WorkspacesSidebar({
   onAddWorkspace,
   searchQuery,
   onSearchChange,
+  searchInputRef,
+  onSearchKeyDown,
   isCreateMode = false,
   draftTitle,
   onSelectCreate,
@@ -381,6 +385,8 @@ export function WorkspacesSidebar({
                 value={searchQuery}
                 onChange={onSearchChange}
                 placeholder={t('common:workspaces.searchPlaceholder')}
+                inputRef={searchInputRef}
+                onKeyDown={onSearchKeyDown}
               />
             </div>
             {searchControls}

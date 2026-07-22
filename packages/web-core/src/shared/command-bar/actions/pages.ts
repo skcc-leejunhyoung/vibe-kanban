@@ -14,6 +14,8 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
         items: [
           { type: 'action', action: Actions.GotoWorkspaces },
           { type: 'action', action: Actions.GotoProjects },
+          { type: 'action', action: Actions.SearchWorkspaceList },
+          { type: 'action', action: Actions.SearchProjectIssues },
         ],
       },
       {
@@ -38,6 +40,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
         label: 'View',
         items: [
           { type: 'action', action: Actions.ToggleAppBar },
+          { type: 'action', action: Actions.ToggleWorkspaceArchiveView },
           { type: 'childPages', id: 'viewOptions' },
           { type: 'childPages', id: 'diffOptions' },
         ],
@@ -69,6 +72,10 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
         label: 'Workspace',
         items: [
           { type: 'action', action: Actions.StartReview },
+          { type: 'action', action: Actions.ViewWorkspaceSessions },
+          { type: 'action', action: Actions.NewSession },
+          { type: 'action', action: Actions.RenameSession },
+          { type: 'action', action: Actions.DeleteSession },
           { type: 'action', action: Actions.RenameWorkspace },
           { type: 'action', action: Actions.DuplicateWorkspace },
           { type: 'action', action: Actions.SpinOffWorkspace },
@@ -185,6 +192,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.AddSubIssue },
           { type: 'action', action: Actions.RemoveParentIssue },
           { type: 'action', action: Actions.LinkWorkspace },
+          { type: 'action', action: Actions.ViewIssueWorkspaces },
           { type: 'action', action: Actions.MarkBlocking },
           { type: 'action', action: Actions.MarkBlockedBy },
           { type: 'action', action: Actions.MarkRelated },
