@@ -12,6 +12,22 @@ export interface StreamSilenceDecisionInput {
   readyState: number;
 }
 
+export interface RunningStreamWatchdogInput {
+  hasRunningProcess: boolean;
+  receivedHeartbeat: boolean;
+}
+
+/**
+ * A heartbeat only proves the transport is alive. It must not postpone the
+ * next snapshot reconciliation for a process that still appears to be running:
+ * the terminal patch itself may have been lost while heartbeats keep flowing.
+ */
+export function shouldResetRunningStreamWatchdog(
+  input: RunningStreamWatchdogInput
+): boolean {
+  return input.hasRunningProcess && !input.receivedHeartbeat;
+}
+
 export function shouldReconnectForStreamSilence(
   input: StreamSilenceDecisionInput
 ): boolean {

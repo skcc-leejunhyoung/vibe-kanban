@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   shouldReconnectForStreamSilence,
+  shouldResetRunningStreamWatchdog,
   type StreamSilenceDecisionInput,
 } from './wsStreamHeartbeat';
 
@@ -29,5 +30,34 @@ describe('shouldReconnectForStreamSilence', () => {
     ['the socket is no longer open', { readyState: 3 }],
   ] as const)('does not reconnect when %s', (_reason, overrides) => {
     expect(shouldReconnectForStreamSilence(input(overrides))).toBe(false);
+  });
+});
+
+describe('shouldResetRunningStreamWatchdog', () => {
+  it('arms reconciliation when a running process receives a state update', () => {
+    expect(
+      shouldResetRunningStreamWatchdog({
+        hasRunningProcess: true,
+        receivedHeartbeat: false,
+      })
+    ).toBe(true);
+  });
+
+  it('does not let heartbeats postpone stale running-process reconciliation', () => {
+    expect(
+      shouldResetRunningStreamWatchdog({
+        hasRunningProcess: true,
+        receivedHeartbeat: true,
+      })
+    ).toBe(false);
+  });
+
+  it('does not arm reconciliation for an already completed snapshot', () => {
+    expect(
+      shouldResetRunningStreamWatchdog({
+        hasRunningProcess: false,
+        receivedHeartbeat: false,
+      })
+    ).toBe(false);
   });
 });

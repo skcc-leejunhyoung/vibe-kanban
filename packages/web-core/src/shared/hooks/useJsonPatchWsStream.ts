@@ -5,7 +5,10 @@ import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 import { getWsSnapshot, saveWsSnapshot } from '@/shared/lib/wsSnapshotCache';
 import { WsConnectionHealth } from '@/shared/lib/wsConnectionHealth';
-import { shouldReconnectForStreamSilence } from '@/shared/lib/wsStreamHeartbeat';
+import {
+  shouldReconnectForStreamSilence,
+  shouldResetRunningStreamWatchdog,
+} from '@/shared/lib/wsStreamHeartbeat';
 import {
   shouldReconnectOnResume,
   FREEZE_SUSPECT_MS,
@@ -41,8 +44,10 @@ interface UseJsonPatchStreamOptions<T> {
   keepSnapshotForEndpoint?: boolean;
   /** Route the stream to this host explicitly instead of inheriting page context. */
   targetHostId?: string | null;
-  /** Reconnect when this stream receives no data or heartbeat for this long. */
+  /** Reconcile a running snapshot when no authoritative state update arrives. */
   silenceTimeoutMs?: number;
+  /** Whether the current snapshot still needs terminal-state reconciliation. */
+  shouldReconcileAfterSilence?: (data: T) => boolean;
 }
 
 interface UseJsonPatchStreamResult<T> {
@@ -100,6 +105,7 @@ export const useJsonPatchWsStream = <T extends object>(
   const keepSnapshotForEndpoint = options?.keepSnapshotForEndpoint ?? false;
   const targetHostId = options?.targetHostId;
   const silenceTimeoutMs = options?.silenceTimeoutMs;
+  const shouldReconcileAfterSilence = options?.shouldReconcileAfterSilence;
 
   useEffect(() => {
     isConnectedRef.current = isConnected;
@@ -217,8 +223,25 @@ export const useJsonPatchWsStream = <T extends object>(
             return;
           }
 
-          const resetSilenceWatchdog = () => {
-            if (!silenceTimeoutMs) return;
+          const resetSilenceWatchdog = (receivedHeartbeat: boolean) => {
+            const current = dataRef.current;
+            const hasRunningProcess =
+              !!current && !!shouldReconcileAfterSilence?.(current);
+            if (!silenceTimeoutMs || !hasRunningProcess) {
+              clearSilenceWatchdog();
+              return;
+            }
+            if (
+              !shouldResetRunningStreamWatchdog({
+                hasRunningProcess,
+                receivedHeartbeat,
+              })
+            ) {
+              // The existing reconciliation deadline remains active. A
+              // heartbeat cannot prove the preceding terminal state patch was
+              // delivered, so it must not postpone this snapshot refresh.
+              return;
+            }
             clearSilenceWatchdog();
             silenceWatchdogRef.current = window.setTimeout(() => {
               silenceWatchdogRef.current = null;
@@ -258,7 +281,9 @@ export const useJsonPatchWsStream = <T extends object>(
             // the cold-connect watchdog again until the next resume.
             resumeReconnectRef.current = false;
             setIsConnected(true);
-            resetSilenceWatchdog();
+            // A cached snapshot can already contain a running process before
+            // the fresh stream replay arrives.
+            resetSilenceWatchdog(false);
             if (retryTimerRef.current) {
               window.clearTimeout(retryTimerRef.current);
               retryTimerRef.current = null;
@@ -268,9 +293,16 @@ export const useJsonPatchWsStream = <T extends object>(
           ws.onmessage = (event) => {
             try {
               const msg: WsMsg = JSON.parse(event.data);
-              resetSilenceWatchdog();
               connectionHealthRef.current.markLive(connectionGeneration);
               setError(null);
+
+              if ('heartbeat' in msg) {
+                // Keep the transport health record live, but do not extend the
+                // reconciliation deadline: a terminal JsonPatch can be lost
+                // while heartbeats still arrive.
+                resetSilenceWatchdog(true);
+                return;
+              }
 
               // Handle JsonPatch messages (same as SSE json_patch event)
               if ('JsonPatch' in msg) {
@@ -290,6 +322,7 @@ export const useJsonPatchWsStream = <T extends object>(
                 dataRef.current = next;
                 dataPatchedRef.current = true;
                 setData(next);
+                resetSilenceWatchdog(false);
               }
 
               // Handle Ready messages (initial data has been sent)
@@ -297,6 +330,7 @@ export const useJsonPatchWsStream = <T extends object>(
                 initializedForEndpointRef.current = endpoint;
                 setIsInitialized(true);
                 setError(null);
+                resetSilenceWatchdog(false);
               }
 
               // Handle finished messages ({finished: true})
@@ -427,6 +461,8 @@ export const useJsonPatchWsStream = <T extends object>(
     deduplicatePatches,
     keepSnapshotForEndpoint,
     targetHostId,
+    silenceTimeoutMs,
+    shouldReconcileAfterSilence,
     retryNonce,
   ]);
 

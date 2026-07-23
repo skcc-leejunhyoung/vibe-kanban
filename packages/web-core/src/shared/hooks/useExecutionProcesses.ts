@@ -43,6 +43,13 @@ export const useExecutionProcesses = (
     (): ExecutionProcessState => ({ execution_processes: {} }),
     []
   );
+  const shouldReconcileAfterSilence = useCallback(
+    (state: ExecutionProcessState) =>
+      Object.values(state.execution_processes).some(
+        (process) => process.status === 'running'
+      ),
+    []
+  );
 
   const { data, isConnected, isInitialized, error } =
     useJsonPatchWsStream<ExecutionProcessState>(
@@ -54,6 +61,7 @@ export const useExecutionProcesses = (
       {
         keepSnapshotForEndpoint: true,
         silenceTimeoutMs: EXECUTION_PROCESS_STREAM_SILENCE_TIMEOUT_MS,
+        shouldReconcileAfterSilence,
       }
     );
 
