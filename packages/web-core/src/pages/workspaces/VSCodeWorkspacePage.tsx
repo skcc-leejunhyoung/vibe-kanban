@@ -1,5 +1,4 @@
-// VS Code webview integration - install keyboard/clipboard bridge
-import '@/integrations/vscode/bridge';
+import { installVSCodeIframeKeyboardBridge } from '@/integrations/vscode/bridge';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from 'shared/types';
@@ -87,6 +86,8 @@ export function VSCodeWorkspacePage() {
   const conversationListRef = useRef<ConversationListHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(isAtBottom);
+
+  useEffect(() => installVSCodeIframeKeyboardBridge(), []);
 
   const {
     workspace,

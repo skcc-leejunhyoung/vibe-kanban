@@ -52,7 +52,10 @@ import {
   DiffViewBody,
   useDiffData,
 } from '@vibe/ui/components/PierreConversationDiff';
-import { inIframe, openFileInVSCode } from '@/integrations/vscode/bridge';
+import {
+  isVSCodeWebview,
+  openFileInVSCode,
+} from '@/integrations/vscode/runtime';
 import { useDiffViewMode } from '@/shared/stores/useDiffViewStore';
 import type {
   AggregatedPatchGroup,
@@ -538,7 +541,7 @@ function FileEditEntry({
     () => getFileIcon(path, actualTheme),
     [path, actualTheme]
   );
-  const isVSCode = inIframe();
+  const isVSCode = isVSCodeWebview();
 
   // Calculate diff stats for edit changes
   const { additions, deletions } = useMemo(() => {
@@ -1356,7 +1359,7 @@ function AggregatedDiffGroupEntry({ group }: { group: AggregatedDiffGroup }) {
     () => getFileIcon(group.filePath, actualTheme),
     [group.filePath, actualTheme]
   );
-  const isVSCode = inIframe();
+  const isVSCode = isVSCodeWebview();
 
   // Extract change data and status from each entry
   const aggregatedDiffEntries = useMemo(() => {

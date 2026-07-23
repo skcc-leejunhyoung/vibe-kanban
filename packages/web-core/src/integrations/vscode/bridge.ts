@@ -7,14 +7,8 @@
 //   editing keys to the parent webview.
 // - Bridge clipboard reads/writes when navigator.clipboard is restricted.
 
-/** Returns true when running inside an iframe (vs top-level window). */
-export function inIframe(): boolean {
-  try {
-    return window.self !== window.top;
-  } catch {
-    return true;
-  }
-}
+import { isVSCodeWebview } from './runtime';
+export { isVSCodeWebview, openFileInVSCode } from './runtime';
 
 /** Minimal serializable keyboard event shape used across the bridge. */
 type KeyPayload = {
@@ -285,27 +279,6 @@ export function parentClipboardRead(): Promise<string> {
   });
 }
 
-/** Ask the extension to open a file in VS Code at an optional line. */
-export function openFileInVSCode(
-  filePath: string,
-  options?: { lineNumber?: number; openAsDiff?: boolean }
-) {
-  if (!inIframe()) return;
-  try {
-    window.parent.postMessage(
-      {
-        type: 'VIBE_OPEN_FILE',
-        filePath,
-        lineNumber: options?.lineNumber,
-        openAsDiff: options?.openAsDiff ?? true,
-      },
-      '*'
-    );
-  } catch (_err) {
-    void 0;
-  }
-}
-
 /** Message union used for iframe <-> extension communications. */
 type IframeMessage = {
   type: string;
@@ -314,8 +287,8 @@ type IframeMessage = {
   requestId?: string;
 };
 
-// Handle messages from the parent webview (clipboard, add-to input)
-window.addEventListener('message', (e: MessageEvent) => {
+// Handle messages from the parent webview (clipboard, add-to input).
+function handleParentMessage(e: MessageEvent) {
   const data: unknown = e?.data;
   if (!data || typeof data !== 'object') return;
   const msg = data as IframeMessage;
@@ -336,11 +309,11 @@ window.addEventListener('message', (e: MessageEvent) => {
     if (el) insertTextAtCaretGeneric(msg.text);
     else enqueueInsert(msg.text);
   }
-});
+}
 
 /** Install keyboard + clipboard handlers when running inside an iframe. */
-export function installVSCodeIframeKeyboardBridge() {
-  if (!inIframe()) return;
+export function installVSCodeIframeKeyboardBridge(): () => void {
+  if (!isVSCodeWebview()) return () => {};
 
   const forward = (type: string, e: KeyboardEvent) => {
     try {
@@ -419,6 +392,17 @@ export function installVSCodeIframeKeyboardBridge() {
   document.addEventListener('keydown', onKeyDown, true);
   document.addEventListener('keyup', onKeyUp, true);
   document.addEventListener('keypress', onKeyPress, true);
+  window.addEventListener('message', handleParentMessage);
+
+  return () => {
+    window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('keyup', onKeyUp, true);
+    window.removeEventListener('keypress', onKeyPress, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    document.removeEventListener('keyup', onKeyUp, true);
+    document.removeEventListener('keypress', onKeyPress, true);
+    window.removeEventListener('message', handleParentMessage);
+  };
 }
 
 /** Paste helper that prefers navigator.clipboard and falls back to the bridge. */
@@ -429,6 +413,3 @@ export async function readClipboardViaBridge(): Promise<string> {
     return await parentClipboardRead();
   }
 }
-
-// Auto-install on import to make it robust
-installVSCodeIframeKeyboardBridge();
