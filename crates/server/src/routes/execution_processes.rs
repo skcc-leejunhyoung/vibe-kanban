@@ -21,6 +21,7 @@ use deployment::Deployment;
 use futures_util::{StreamExt, TryStreamExt};
 use serde::Deserialize;
 use services::services::container::ContainerService;
+use tokio::time::{Duration, MissedTickBehavior};
 use utils::{log_msg::LogMsg, response::ApiResponse};
 use uuid::Uuid;
 
@@ -335,6 +336,11 @@ async fn handle_execution_processes_by_session_ws(
         .stream_execution_processes_for_session_raw(session_id, show_soft_deleted)
         .await?
         .map_ok(|msg| msg.to_ws_message_unchecked());
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // `interval` ticks immediately by default; the initial snapshot already
+    // proves liveness, so wait for the first regular heartbeat instead.
+    heartbeat.tick().await;
 
     loop {
         tokio::select! {
@@ -356,6 +362,15 @@ async fn handle_execution_processes_by_session_ws(
                         break;
                     }
                     None => break,
+                }
+            }
+            _ = heartbeat.tick() => {
+                if socket
+                    .send(Message::Text(r#"{"heartbeat":true}"#.into()))
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             }
             inbound = socket.recv() => {

@@ -44,6 +44,10 @@ describe('sseEventToWsPayload', () => {
     expect(sseEventToWsPayload('finished', '')).toBe('{"finished":true}');
   });
 
+  it('maps a transport heartbeat to the WS heartbeat envelope', () => {
+    expect(sseEventToWsPayload('heartbeat', 'true')).toBe('{"heartbeat":true}');
+  });
+
   it('maps stdout/stderr to externally-tagged enum envelopes', () => {
     expect(sseEventToWsPayload('stdout', 'hello')).toBe('{"Stdout":"hello"}');
     expect(sseEventToWsPayload('stderr', 'oops')).toBe('{"Stderr":"oops"}');
@@ -95,9 +99,10 @@ describe('SseParser', () => {
     expect(p.feed('ta: x\n\n')).toEqual([{ event: 'ready', data: 'x' }]);
   });
 
-  it('ignores comment (keep-alive) lines', () => {
+  it('converts comment (keep-alive) lines to heartbeats', () => {
     const p = new SseParser();
     expect(p.feed(': keep-alive\n\nevent: ready\ndata: \n\n')).toEqual([
+      { event: 'heartbeat', data: 'true' },
       { event: 'ready', data: '' },
     ]);
   });

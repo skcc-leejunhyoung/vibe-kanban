@@ -5,6 +5,7 @@ import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 import { getWsSnapshot, saveWsSnapshot } from '@/shared/lib/wsSnapshotCache';
 import { WsConnectionHealth } from '@/shared/lib/wsConnectionHealth';
+import { shouldReconnectForStreamSilence } from '@/shared/lib/wsStreamHeartbeat';
 import {
   shouldReconnectOnResume,
   FREEZE_SUSPECT_MS,
@@ -14,7 +15,8 @@ import {
 type WsJsonPatchMsg = { JsonPatch: Operation[] };
 type WsReadyMsg = { Ready: true };
 type WsFinishedMsg = { finished: boolean };
-type WsMsg = WsJsonPatchMsg | WsReadyMsg | WsFinishedMsg;
+type WsHeartbeatMsg = { heartbeat: boolean };
+type WsMsg = WsJsonPatchMsg | WsReadyMsg | WsFinishedMsg | WsHeartbeatMsg;
 
 // Abandon a socket stuck in CONNECTING after this long and reconnect. WebKit
 // standalone PWAs that are suspended/resumed can leave a WebSocket that never
@@ -39,6 +41,8 @@ interface UseJsonPatchStreamOptions<T> {
   keepSnapshotForEndpoint?: boolean;
   /** Route the stream to this host explicitly instead of inheriting page context. */
   targetHostId?: string | null;
+  /** Reconnect when this stream receives no data or heartbeat for this long. */
+  silenceTimeoutMs?: number;
 }
 
 interface UseJsonPatchStreamResult<T> {
@@ -79,6 +83,7 @@ export const useJsonPatchWsStream = <T extends object>(
   const [retryNonce, setRetryNonce] = useState(0);
   const finishedRef = useRef<boolean>(false);
   const connectWatchdogRef = useRef<number | null>(null);
+  const silenceWatchdogRef = useRef<number | null>(null);
   // Timestamp (ms) the document last became hidden, used by the resume handler
   // to tell a brief tab switch apart from a (possibly freezing) long background.
   const hiddenSinceRef = useRef<number | null>(null);
@@ -94,6 +99,7 @@ export const useJsonPatchWsStream = <T extends object>(
   const deduplicatePatches = options?.deduplicatePatches;
   const keepSnapshotForEndpoint = options?.keepSnapshotForEndpoint ?? false;
   const targetHostId = options?.targetHostId;
+  const silenceTimeoutMs = options?.silenceTimeoutMs;
 
   useEffect(() => {
     isConnectedRef.current = isConnected;
@@ -106,6 +112,13 @@ export const useJsonPatchWsStream = <T extends object>(
     if (connectWatchdogRef.current) {
       window.clearTimeout(connectWatchdogRef.current);
       connectWatchdogRef.current = null;
+    }
+  }
+
+  function clearSilenceWatchdog() {
+    if (silenceWatchdogRef.current) {
+      window.clearTimeout(silenceWatchdogRef.current);
+      silenceWatchdogRef.current = null;
     }
   }
 
@@ -128,6 +141,7 @@ export const useJsonPatchWsStream = <T extends object>(
         wsRef.current = null;
       }
       clearConnectWatchdog();
+      clearSilenceWatchdog();
       if (retryTimerRef.current) {
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
@@ -203,12 +217,48 @@ export const useJsonPatchWsStream = <T extends object>(
             return;
           }
 
+          const resetSilenceWatchdog = () => {
+            if (!silenceTimeoutMs) return;
+            clearSilenceWatchdog();
+            silenceWatchdogRef.current = window.setTimeout(() => {
+              silenceWatchdogRef.current = null;
+              if (
+                !shouldReconnectForStreamSilence({
+                  enabled,
+                  hasEndpoint: !!endpoint,
+                  finished: finishedRef.current,
+                  isCurrentSocket: wsRef.current === ws,
+                  readyState: ws.readyState,
+                })
+              ) {
+                return;
+              }
+
+              // A WebSocket can remain OPEN after its receive path wedges.
+              // Detach handlers before closing so its late close event cannot
+              // race the reconnect scheduled below.
+              ws.onopen = null;
+              ws.onmessage = null;
+              ws.onerror = null;
+              ws.onclose = null;
+              try {
+                ws.close();
+              } catch {
+                /* ignore */
+              }
+              wsRef.current = null;
+              setIsConnected(false);
+              recordConnectionFailure();
+            }, silenceTimeoutMs);
+          };
+
           ws.onopen = () => {
             clearConnectWatchdog();
             // Back to a normal connection: subsequent reconnects (if any) use
             // the cold-connect watchdog again until the next resume.
             resumeReconnectRef.current = false;
             setIsConnected(true);
+            resetSilenceWatchdog();
             if (retryTimerRef.current) {
               window.clearTimeout(retryTimerRef.current);
               retryTimerRef.current = null;
@@ -218,6 +268,7 @@ export const useJsonPatchWsStream = <T extends object>(
           ws.onmessage = (event) => {
             try {
               const msg: WsMsg = JSON.parse(event.data);
+              resetSilenceWatchdog();
               connectionHealthRef.current.markLive(connectionGeneration);
               setError(null);
 
@@ -253,6 +304,7 @@ export const useJsonPatchWsStream = <T extends object>(
               if ('finished' in msg) {
                 finishedRef.current = true;
                 clearConnectWatchdog();
+                clearSilenceWatchdog();
                 ws.close(1000, 'finished');
                 wsRef.current = null;
                 setIsConnected(false);
@@ -271,6 +323,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
           ws.onclose = (evt) => {
             clearConnectWatchdog();
+            clearSilenceWatchdog();
             setIsConnected(false);
             wsRef.current = null;
 
@@ -333,6 +386,7 @@ export const useJsonPatchWsStream = <T extends object>(
     return () => {
       cancelled = true;
       clearConnectWatchdog();
+      clearSilenceWatchdog();
       // Preserve the materialized state for this endpoint (closure-captured,
       // so an endpoint switch stores it under the OLD endpoint) before the
       // reset below discards it.
@@ -428,6 +482,7 @@ export const useJsonPatchWsStream = <T extends object>(
       }
       // Drop any stalled socket so the main effect opens a fresh one.
       clearConnectWatchdog();
+      clearSilenceWatchdog();
       if (wsRef.current) {
         const ws = wsRef.current;
         ws.onopen = null;

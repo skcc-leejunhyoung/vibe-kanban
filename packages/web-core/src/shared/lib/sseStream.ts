@@ -53,8 +53,12 @@ export class SseParser {
         continue;
       }
 
-      // Comment / keep-alive line.
-      if (line.startsWith(':')) continue;
+      // Surface keep-alive comments as heartbeats so consumers can distinguish
+      // a quiet stream from a receive path that has silently wedged.
+      if (line.startsWith(':')) {
+        out.push({ event: 'heartbeat', data: 'true' });
+        continue;
+      }
 
       const colonIdx = line.indexOf(':');
       let field: string;
@@ -88,8 +92,7 @@ export class SseParser {
  * string the WS path produced via LogMsg::to_ws_message_unchecked, so the
  * downstream message handlers need no changes.
  *
- * Returns null for events with no WS equivalent (e.g. stray keep-alive names),
- * which the adapter then drops.
+ * Returns null for events with no WS equivalent, which the adapter then drops.
  */
 export function sseEventToWsPayload(
   event: string,
@@ -103,6 +106,8 @@ export function sseEventToWsPayload(
       return '{"Ready":true}';
     case 'finished':
       return '{"finished":true}';
+    case 'heartbeat':
+      return '{"heartbeat":true}';
     case 'stdout':
       return JSON.stringify({ Stdout: data });
     case 'stderr':

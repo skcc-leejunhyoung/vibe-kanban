@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
+import { EXECUTION_PROCESS_STREAM_SILENCE_TIMEOUT_MS } from '@/shared/lib/wsStreamHeartbeat';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { ExecutionProcess } from 'shared/types';
 
@@ -50,7 +51,10 @@ export const useExecutionProcesses = (
       initialData,
       // Re-serve the last snapshot instantly when returning to a session, so
       // the conversation can render from cache while the stream re-syncs.
-      { keepSnapshotForEndpoint: true }
+      {
+        keepSnapshotForEndpoint: true,
+        silenceTimeoutMs: EXECUTION_PROCESS_STREAM_SILENCE_TIMEOUT_MS,
+      }
     );
 
   const streamedExecutionProcesses = Object.values(
