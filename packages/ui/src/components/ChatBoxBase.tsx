@@ -12,9 +12,7 @@ export enum VisualVariant {
 }
 
 export interface DropzoneProps {
-  getRootProps: (
-    props?: Record<string, unknown>
-  ) => Record<string, unknown>;
+  getRootProps: (props?: Record<string, unknown>) => Record<string, unknown>;
   getInputProps: () => Record<string, unknown>;
   isDragActive: boolean;
 }
