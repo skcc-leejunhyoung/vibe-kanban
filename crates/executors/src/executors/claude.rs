@@ -832,7 +832,7 @@ impl ClaudeLogProcessor {
                     | LogMsg::ScheduledResume(_)
                     | LogMsg::Stderr(_)
                     | LogMsg::Ready => continue,
-                    LogMsg::Finished => break,
+                    LogMsg::Finished | LogMsg::StorageFinished => break,
                 };
 
                 buffer.push_str(&chunk);

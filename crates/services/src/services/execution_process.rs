@@ -358,10 +358,10 @@ pub fn spawn_stream_raw_logs_to_storage(
                     LogMsg::ScheduledResume(crons_json) => {
                         persist_scheduled_resumes(&db.pool, session_id, crons_json).await;
                     }
-                    LogMsg::Finished => {
+                    LogMsg::StorageFinished => {
                         break;
                     }
-                    LogMsg::JsonPatch(_) | LogMsg::Ready => continue,
+                    LogMsg::JsonPatch(_) | LogMsg::Ready | LogMsg::Finished => continue,
                 }
             }
         }

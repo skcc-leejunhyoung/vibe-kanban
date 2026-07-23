@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -85,6 +85,33 @@ struct SessionFinalizationBarrier {
     changed: Notify,
 }
 
+#[derive(Default)]
+struct OutputPipelineBarrier {
+    ready: RwLock<HashSet<Uuid>>,
+    changed: Notify,
+}
+
+impl OutputPipelineBarrier {
+    async fn mark_ready(&self, execution_id: Uuid) {
+        self.ready.write().await.insert(execution_id);
+        self.changed.notify_waiters();
+    }
+
+    async fn wait_until_ready(&self, execution_id: Uuid) {
+        loop {
+            let changed = self.changed.notified();
+            if self.ready.read().await.contains(&execution_id) {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    async fn remove(&self, execution_id: Uuid) {
+        self.ready.write().await.remove(&execution_id);
+    }
+}
+
 impl SessionFinalizationBarrier {
     async fn mark_active(&self, session_id: Uuid) {
         *self.active.write().await.entry(session_id).or_default() += 1;
@@ -129,7 +156,9 @@ pub struct LocalContainerService {
     /// Tracks the fire-and-forget task forwarding child stdout/stderr into the
     /// MsgStore. Awaited at exit so post-completion log reads see all output.
     forwarder_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
+    normalizer_handles: Arc<RwLock<HashMap<Uuid, Vec<JoinHandle<()>>>>>,
     exit_monitor_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
+    output_pipeline: Arc<OutputPipelineBarrier>,
     session_finalization: Arc<SessionFinalizationBarrier>,
     workspace_touch_times: Arc<RwLock<HashMap<Uuid, Instant>>>,
     config: Arc<RwLock<Config>>,
@@ -173,7 +202,9 @@ impl LocalContainerService {
         let cancellation_tokens = Arc::new(RwLock::new(HashMap::new()));
         let db_stream_handles = Arc::new(RwLock::new(HashMap::new()));
         let forwarder_handles = Arc::new(RwLock::new(HashMap::new()));
+        let normalizer_handles = Arc::new(RwLock::new(HashMap::new()));
         let exit_monitor_handles = Arc::new(RwLock::new(HashMap::new()));
+        let output_pipeline = Arc::new(OutputPipelineBarrier::default());
         let session_finalization = Arc::new(SessionFinalizationBarrier::default());
         let workspace_touch_times = Arc::new(RwLock::new(HashMap::new()));
         let notification_service =
@@ -187,7 +218,9 @@ impl LocalContainerService {
             msg_stores,
             db_stream_handles,
             forwarder_handles,
+            normalizer_handles,
             exit_monitor_handles,
+            output_pipeline,
             session_finalization,
             workspace_touch_times,
             config,
@@ -719,9 +752,27 @@ impl LocalContainerService {
             // Drain the (otherwise detached) stdout/stderr forwarder into the
             // MsgStore before any post-completion step reads this process's logs
             // (turn summary, rate-limit detection, vibe cleanup-failure log).
+            container.output_pipeline.wait_until_ready(exec_id).await;
             if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
-                let _ = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
+                let _ = forwarder.await;
             }
+            if let Some(msg_store) = msg_stores.read().await.get(&exec_id).cloned() {
+                msg_store.push_finished();
+            }
+            for handle in container.take_normalizer_handles(&exec_id).await {
+                let _ = handle.await;
+            }
+
+            // All derived metadata is now in MsgStore. Terminate and join the
+            // independent storage consumer before opening the follow-up barrier.
+            let db_stream_handle = container.take_db_stream_handle(&exec_id).await;
+            if let Some(msg_store) = msg_stores.read().await.get(&exec_id).cloned() {
+                msg_store.push(LogMsg::StorageFinished);
+            }
+            if let Some(handle) = db_stream_handle {
+                let _ = handle.await;
+            }
+            container.output_pipeline.remove(exec_id).await;
             container.session_finalization.mark_ready(session_id).await;
 
             // Ephemeral workspaces (spec-intake) are throwaway: skip ALL normal
@@ -853,13 +904,8 @@ impl LocalContainerService {
             // capture the HEAD OID as the definitive "after" state (best-effort).
             container.update_after_head_commits(exec_id).await;
 
-            // Wait for DB persistence to complete before cleaning up MsgStore
-            let db_stream_handle = container.take_db_stream_handle(&exec_id).await;
             if let Some(msg_arc) = msg_stores.write().await.remove(&exec_id) {
                 msg_arc.push_finished();
-            }
-            if let Some(handle) = db_stream_handle {
-                let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
             }
 
             // SIGKILL any orphaned children (e.g. MCP servers) still in the
@@ -2269,6 +2315,22 @@ impl ContainerService for LocalContainerService {
         LocalContainerService::take_db_stream_handle(self, id).await
     }
 
+    async fn store_normalizer_handles(&self, id: Uuid, handles: Vec<JoinHandle<()>>) {
+        self.normalizer_handles.write().await.insert(id, handles);
+    }
+
+    async fn take_normalizer_handles(&self, id: &Uuid) -> Vec<JoinHandle<()>> {
+        self.normalizer_handles
+            .write()
+            .await
+            .remove(id)
+            .unwrap_or_default()
+    }
+
+    async fn mark_output_pipeline_ready(&self, id: Uuid) {
+        self.output_pipeline.mark_ready(id).await;
+    }
+
     async fn finalize_cancelled_rate_limit_resume(
         &self,
         execution_process_id: Uuid,
@@ -2573,6 +2635,7 @@ impl ContainerService for LocalContainerService {
                 .await?;
             if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
                 msg.push_finished();
+                msg.push(LogMsg::StorageFinished);
             }
             tracing::info!(
                 "Cancelled deferred (blocker-gated) execution {}",
@@ -2634,6 +2697,7 @@ impl ContainerService for LocalContainerService {
         let db_stream_handle = self.take_db_stream_handle(&execution_process.id).await;
         if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
             msg.push_finished();
+            msg.push(LogMsg::StorageFinished);
         }
         if let Some(handle) = db_stream_handle {
             let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
@@ -2958,6 +3022,30 @@ mod tests {
         )
         .await
         .expect("barrier should open after every process is ready");
+    }
+
+    #[tokio::test]
+    async fn output_pipeline_barrier_handles_ready_before_and_after_wait() {
+        let barrier = Arc::new(OutputPipelineBarrier::default());
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        barrier.mark_ready(first).await;
+        tokio::time::timeout(Duration::from_millis(10), barrier.wait_until_ready(first))
+            .await
+            .expect("an already-ready pipeline should not block");
+
+        let waiting = tokio::spawn({
+            let barrier = barrier.clone();
+            async move { barrier.wait_until_ready(second).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        barrier.mark_ready(second).await;
+        tokio::time::timeout(Duration::from_millis(10), waiting)
+            .await
+            .expect("pipeline waiter should be notified")
+            .expect("pipeline waiter should not panic");
     }
 
     /// Regression for the "no changes made" early-finalize path (scenario A).

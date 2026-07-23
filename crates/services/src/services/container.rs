@@ -256,6 +256,12 @@ pub trait ContainerService {
 
     async fn take_db_stream_handle(&self, id: &Uuid) -> Option<JoinHandle<()>>;
 
+    async fn store_normalizer_handles(&self, id: Uuid, handles: Vec<JoinHandle<()>>);
+
+    async fn take_normalizer_handles(&self, id: &Uuid) -> Vec<JoinHandle<()>>;
+
+    async fn mark_output_pipeline_ready(&self, id: Uuid);
+
     async fn finalize_cancelled_rate_limit_resume(
         &self,
         execution_process_id: Uuid,
@@ -1739,24 +1745,26 @@ pub trait ContainerService {
         // Start processing normalised logs for executor requests and follow ups
         let workspace_root = self.workspace_to_current_dir(workspace);
         #[cfg_attr(feature = "qa-mode", allow(unused_variables))]
-        if let Some((executor_profile_id, working_dir)) = match executor_action.typ() {
-            ExecutorActionType::CodingAgentInitialRequest(request) => Some((
-                request.executor_config.profile_id(),
-                request.effective_dir(&workspace_root),
-            )),
-            ExecutorActionType::CodingAgentFollowUpRequest(request) => Some((
-                request.executor_config.profile_id(),
-                request.effective_dir(&workspace_root),
-            )),
-            ExecutorActionType::ReviewRequest(request) => Some((
-                request.executor_config.profile_id(),
-                request.effective_dir(&workspace_root),
-            )),
-            _ => None,
-        } {
+        let normalizer_handles = if let Some((executor_profile_id, working_dir)) =
+            match executor_action.typ() {
+                ExecutorActionType::CodingAgentInitialRequest(request) => Some((
+                    request.executor_config.profile_id(),
+                    request.effective_dir(&workspace_root),
+                )),
+                ExecutorActionType::CodingAgentFollowUpRequest(request) => Some((
+                    request.executor_config.profile_id(),
+                    request.effective_dir(&workspace_root),
+                )),
+                ExecutorActionType::ReviewRequest(request) => Some((
+                    request.executor_config.profile_id(),
+                    request.effective_dir(&workspace_root),
+                )),
+                _ => None,
+            } {
             let msg_store = match self.get_msg_store_by_id(&execution_process.id).await {
                 Some(store) => store,
                 None => {
+                    self.mark_output_pipeline_ready(execution_process.id).await;
                     self.msg_stores()
                         .write()
                         .await
@@ -1770,29 +1778,37 @@ pub trait ContainerService {
             #[cfg(feature = "qa-mode")]
             {
                 let executor = QaMockExecutor;
-                let _ = executor.normalize_logs(msg_store, &working_dir);
+                executor.normalize_logs(msg_store, &working_dir)
             }
             #[cfg(not(feature = "qa-mode"))]
             {
                 if let Some(executor) =
                     ExecutorConfigs::get_cached().get_coding_agent(&executor_profile_id)
                 {
-                    let _ = executor.normalize_logs(msg_store, &working_dir);
+                    executor.normalize_logs(msg_store, &working_dir)
                 } else {
                     tracing::error!(
                         "Failed to resolve profile '{:?}' for normalization",
                         executor_profile_id
                     );
+                    Vec::new()
                 }
             }
-        }
+        } else {
+            Vec::new()
+        };
+        self.store_normalizer_handles(execution_process.id, normalizer_handles)
+            .await;
 
-        execution_process::spawn_stream_raw_logs_to_storage(
+        let db_stream_handle = execution_process::spawn_stream_raw_logs_to_storage(
             self.msg_stores().clone(),
             self.db().clone(),
             execution_process.id,
             session.id,
         );
+        self.store_db_stream_handle(execution_process.id, db_stream_handle)
+            .await;
+        self.mark_output_pipeline_ready(execution_process.id).await;
         Ok(())
     }
 

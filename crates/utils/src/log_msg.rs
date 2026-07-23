@@ -25,6 +25,9 @@ pub enum LogMsg {
     ScheduledResume(String),
     Ready,
     Finished,
+    /// Internal marker: all normalizers have finished producing derived events,
+    /// so the raw-log storage consumer can terminate after this point.
+    StorageFinished,
 }
 
 impl LogMsg {
@@ -37,7 +40,7 @@ impl LogMsg {
             LogMsg::MessageId(_) => EV_MESSAGE_ID,
             LogMsg::ScheduledResume(_) => EV_SCHEDULED_RESUME,
             LogMsg::Ready => EV_READY,
-            LogMsg::Finished => EV_FINISHED,
+            LogMsg::Finished | LogMsg::StorageFinished => EV_FINISHED,
         }
     }
 
@@ -55,7 +58,9 @@ impl LogMsg {
                 Event::default().event(EV_SCHEDULED_RESUME).data(s.clone())
             }
             LogMsg::Ready => Event::default().event(EV_READY).data(""),
-            LogMsg::Finished => Event::default().event(EV_FINISHED).data(""),
+            LogMsg::Finished | LogMsg::StorageFinished => {
+                Event::default().event(EV_FINISHED).data("")
+            }
         }
     }
 
@@ -67,7 +72,7 @@ impl LogMsg {
         // Finished and Ready use special JSON formats for frontend compatibility
         let json = match self {
             LogMsg::Ready => r#"{"Ready":true}"#.to_string(),
-            LogMsg::Finished => r#"{"finished":true}"#.to_string(),
+            LogMsg::Finished | LogMsg::StorageFinished => r#"{"finished":true}"#.to_string(),
             _ => serde_json::to_string(self)
                 .unwrap_or_else(|_| r#"{"error":"serialization_failed"}"#.to_string()),
         };
@@ -95,7 +100,7 @@ impl LogMsg {
             LogMsg::MessageId(s) => EV_MESSAGE_ID.len() + s.len() + OVERHEAD,
             LogMsg::ScheduledResume(s) => EV_SCHEDULED_RESUME.len() + s.len() + OVERHEAD,
             LogMsg::Ready => EV_READY.len() + OVERHEAD,
-            LogMsg::Finished => EV_FINISHED.len() + OVERHEAD,
+            LogMsg::Finished | LogMsg::StorageFinished => EV_FINISHED.len() + OVERHEAD,
         }
     }
 }
