@@ -142,6 +142,10 @@ is_right_sidebar_visible: boolean | null,
  */
 is_terminal_visible: boolean | null,
 /**
+ * Display order for the workspace right-sidebar sections.
+ */
+right_sidebar_section_order: Array<string>,
+/**
  * Workspace-specific panel states
  */
 workspace_panel_states: { [key in string]?: WorkspacePanelStateData },

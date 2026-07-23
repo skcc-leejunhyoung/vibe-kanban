@@ -25,6 +25,10 @@ import {
   type KanbanProjectViewSelection,
   type KanbanProjectViewPreferences,
 } from '@/shared/stores/useUiPreferencesStore';
+import {
+  normalizeRightSidebarSectionOrder,
+  type RightSidebarSectionId,
+} from '@/shared/lib/rightSidebarSections';
 import type { RepoAction } from '@vibe/ui/components/RepoCard';
 
 // Stable UUID for global UI preferences (not tied to a workspace/user)
@@ -45,6 +49,7 @@ function storeToScratchData(state: {
   isLeftSidebarVisible: boolean;
   isRightSidebarVisible: boolean;
   isTerminalVisible: boolean;
+  rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
   workspaceSort: WorkspaceSortState;
@@ -76,6 +81,7 @@ function storeToScratchData(state: {
     is_left_sidebar_visible: state.isLeftSidebarVisible,
     is_right_sidebar_visible: state.isRightSidebarVisible,
     is_terminal_visible: state.isTerminalVisible,
+    right_sidebar_section_order: state.rightSidebarSectionOrder,
     workspace_panel_states: workspacePanelStates,
     workspace_filters: {
       project_ids: state.workspaceFilters.projectIds,
@@ -116,6 +122,7 @@ function scratchDataToStore(data: UiPreferencesData): {
   isLeftSidebarVisible: boolean;
   isRightSidebarVisible: boolean;
   isTerminalVisible: boolean;
+  rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
   workspaceSort: WorkspaceSortState;
@@ -191,6 +198,9 @@ function scratchDataToStore(data: UiPreferencesData): {
     isLeftSidebarVisible: data.is_left_sidebar_visible ?? true,
     isRightSidebarVisible: data.is_right_sidebar_visible ?? true,
     isTerminalVisible: data.is_terminal_visible ?? true,
+    rightSidebarSectionOrder: normalizeRightSidebarSectionOrder(
+      data.right_sidebar_section_order
+    ),
     workspacePanelStates,
     workspaceFilters: {
       projectIds: data.workspace_filters?.project_ids ?? [],
@@ -245,6 +255,7 @@ export function useUiPreferencesScratch() {
     isLeftSidebarVisible: state.isLeftSidebarVisible,
     isRightSidebarVisible: state.isRightSidebarVisible,
     isTerminalVisible: state.isTerminalVisible,
+    rightSidebarSectionOrder: state.rightSidebarSectionOrder,
     workspacePanelStates: state.workspacePanelStates,
     workspaceFilters: state.workspaceFilters,
     workspaceSort: state.workspaceSort,
@@ -278,6 +289,7 @@ export function useUiPreferencesScratch() {
       isLeftSidebarVisible: currentState.isLeftSidebarVisible,
       isRightSidebarVisible: currentState.isRightSidebarVisible,
       isTerminalVisible: currentState.isTerminalVisible,
+      rightSidebarSectionOrder: currentState.rightSidebarSectionOrder,
       workspacePanelStates: currentState.workspacePanelStates,
       workspaceFilters: currentState.workspaceFilters,
       workspaceSort: currentState.workspaceSort,
@@ -327,6 +339,7 @@ export function useUiPreferencesScratch() {
         isLeftSidebarVisible: serverState.isLeftSidebarVisible,
         isRightSidebarVisible: serverState.isRightSidebarVisible,
         isTerminalVisible: serverState.isTerminalVisible,
+        rightSidebarSectionOrder: serverState.rightSidebarSectionOrder,
         workspacePanelStates: serverState.workspacePanelStates,
         workspaceFilters: serverState.workspaceFilters,
         workspaceSort: serverState.workspaceSort,

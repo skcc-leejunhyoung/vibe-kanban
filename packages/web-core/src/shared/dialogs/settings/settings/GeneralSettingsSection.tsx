@@ -50,6 +50,7 @@ import {
   useThemePresets,
   useThemeVariant,
   useWorkspaceIssueStatuses,
+  useUiPreferencesStore,
 } from '@/shared/stores/useUiPreferencesStore';
 import { ThemeVariantEditorDialog } from '@/shared/dialogs/settings/ThemeVariantEditorDialog';
 import { cn, playSound } from '@/shared/lib/utils';
@@ -79,6 +80,7 @@ import {
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
 import { updateMaxSplitPanes } from '@/shared/lib/openInSplitPane';
+import { RightSidebarSectionOrderEditor } from './RightSidebarSectionOrderEditor';
 
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
@@ -93,6 +95,12 @@ export function GeneralSettingsSection() {
   const [themeVariant, setThemeVariant] = useThemeVariant();
   const themePresets = useThemePresets();
   const [issueStatuses, setIssueStatuses] = useWorkspaceIssueStatuses();
+  const rightSidebarSectionOrder = useUiPreferencesStore(
+    (state) => state.rightSidebarSectionOrder
+  );
+  const setRightSidebarSectionOrder = useUiPreferencesStore(
+    (state) => state.setRightSidebarSectionOrder
+  );
   const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
@@ -1094,6 +1102,21 @@ export function GeneralSettingsSection() {
             statuses={issueStatuses}
             onChange={setIssueStatuses}
             defaultStatuses={DEFAULT_WORKSPACE_ISSUE_STATUSES}
+          />
+        </SettingsField>
+      </SettingsCard>
+
+      <SettingsCard
+        title={t('settings.general.rightSidebar.title')}
+        description={t('settings.general.rightSidebar.description')}
+      >
+        <SettingsField
+          label={t('settings.general.rightSidebar.orderLabel')}
+          description={t('settings.general.rightSidebar.orderHelper')}
+        >
+          <RightSidebarSectionOrderEditor
+            order={rightSidebarSectionOrder}
+            onChange={setRightSidebarSectionOrder}
           />
         </SettingsField>
       </SettingsCard>

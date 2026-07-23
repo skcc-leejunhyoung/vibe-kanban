@@ -343,6 +343,22 @@
         "moveDown": "Move down",
         "remove": "Remove"
       },
+      "rightSidebar": {
+        "title": "Right Sidebar",
+        "description": "Customize the workspace right sidebar.",
+        "orderLabel": "Section order",
+        "orderHelper": "Use the arrow buttons to choose the order of sections in the right sidebar.",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "reset": "Reset to default",
+        "sections": {
+          "pullRequests": "Pull Requests",
+          "git": "Git",
+          "commits": "Commits",
+          "terminal": "Terminal",
+          "notes": "Notes"
+        }
+      },
       "privacy": {
         "title": "Privacy",
         "description": "Help improve Vibe-Kanban by sharing anonymous usage data.",

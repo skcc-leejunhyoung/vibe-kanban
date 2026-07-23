@@ -30,8 +30,10 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { resolveWorkspaceHostPresentation } from '@/shared/lib/workspaceHostPresentation';
 import { cn } from '@/shared/lib/utils';
+import type { RightSidebarSectionId } from '@/shared/lib/rightSidebarSections';
 
 type SectionDef = {
+  id: RightSidebarSectionId | 'active';
   title: string;
   persistKey: PersistKey;
   visible: boolean;
@@ -61,6 +63,7 @@ export const RightSidebar = memo(function RightSidebar({
   const { data: branchStatus } = useBranchStatus(selectedWorkspace?.id);
   const hasPrs = hasLinkedPr(branchStatus);
   const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
+  const sectionOrder = useUiPreferencesStore((s) => s.rightSidebarSectionOrder);
   const { expandTerminal, isTerminalExpanded } = useLogsPanel();
   const { name: hostName, status: hostStatus } =
     resolveWorkspaceHostPresentation(
@@ -121,6 +124,7 @@ export const RightSidebar = memo(function RightSidebar({
   const sections: SectionDef[] = useMemo(() => {
     const result: SectionDef[] = [
       {
+        id: 'pullRequests',
         title: 'Pull Requests',
         persistKey: PERSIST_KEYS.pullRequestsSection,
         visible: hasPrs,
@@ -134,19 +138,7 @@ export const RightSidebar = memo(function RightSidebar({
         actions: [],
       },
       {
-        title: 'Commits',
-        persistKey: PERSIST_KEYS.commitsSection,
-        visible: !!selectedWorkspace,
-        expanded: commitsExpanded,
-        content: selectedWorkspace ? (
-          <CommitsPanelContainer
-            workspaceId={selectedWorkspace.id}
-            onOpenCommit={onOpenCommit}
-          />
-        ) : null,
-        actions: [],
-      },
-      {
+        id: 'git',
         title: 'Git',
         persistKey: PERSIST_KEYS.gitPanelRepositories,
         visible: true,
@@ -160,6 +152,21 @@ export const RightSidebar = memo(function RightSidebar({
         actions: [],
       },
       {
+        id: 'commits',
+        title: 'Commits',
+        persistKey: PERSIST_KEYS.commitsSection,
+        visible: !!selectedWorkspace,
+        expanded: commitsExpanded,
+        content: selectedWorkspace ? (
+          <CommitsPanelContainer
+            workspaceId={selectedWorkspace.id}
+            onOpenCommit={onOpenCommit}
+          />
+        ) : null,
+        actions: [],
+      },
+      {
+        id: 'terminal',
         title: 'Terminal',
         persistKey: PERSIST_KEYS.terminalSection,
         visible: isTerminalVisible && !isTerminalExpanded,
@@ -168,6 +175,7 @@ export const RightSidebar = memo(function RightSidebar({
         actions: [{ icon: ArrowsOutSimpleIcon, onClick: expandTerminal }],
       },
       {
+        id: 'notes',
         title: t('common:sections.notes'),
         persistKey: PERSIST_KEYS.notesSection,
         visible: true,
@@ -181,6 +189,7 @@ export const RightSidebar = memo(function RightSidebar({
       case RIGHT_MAIN_PANEL_MODES.CHANGES:
         if (selectedWorkspace) {
           result.unshift({
+            id: 'active',
             title: 'Changes',
             persistKey: PERSIST_KEYS.changesSection,
             visible: hasUpperContent,
@@ -199,6 +208,7 @@ export const RightSidebar = memo(function RightSidebar({
         break;
       case RIGHT_MAIN_PANEL_MODES.LOGS:
         result.unshift({
+          id: 'active',
           title: 'Logs',
           persistKey: PERSIST_KEYS.rightPanelprocesses,
           visible: hasUpperContent,
@@ -210,6 +220,7 @@ export const RightSidebar = memo(function RightSidebar({
       case RIGHT_MAIN_PANEL_MODES.PREVIEW:
         if (selectedWorkspace) {
           result.unshift({
+            id: 'active',
             title: 'Preview',
             persistKey: PERSIST_KEYS.rightPanelPreview,
             visible: hasUpperContent,
@@ -228,7 +239,14 @@ export const RightSidebar = memo(function RightSidebar({
         break;
     }
 
-    return result;
+    const orderById = new Map(
+      sectionOrder.map((section, index) => [section, index])
+    );
+    return result.sort((a, b) => {
+      if (a.id === 'active') return -1;
+      if (b.id === 'active') return 1;
+      return (orderById.get(a.id) ?? 0) - (orderById.get(b.id) ?? 0);
+    });
   }, [
     rightMainPanelMode,
     selectedWorkspace,
@@ -249,6 +267,7 @@ export const RightSidebar = memo(function RightSidebar({
     upperExpanded,
     expandTerminal,
     onOpenCommit,
+    sectionOrder,
     t,
   ]);
 

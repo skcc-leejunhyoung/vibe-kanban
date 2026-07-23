@@ -13,6 +13,11 @@ import {
   type ThemePreset,
   type ThemeVariant,
 } from '@/shared/lib/themePresets';
+import {
+  DEFAULT_RIGHT_SIDEBAR_SECTION_ORDER,
+  normalizeRightSidebarSectionOrder,
+  type RightSidebarSectionId,
+} from '@/shared/lib/rightSidebarSections';
 
 /**
  * Bucket key used to store preview shortcuts for workspaces that aren't
@@ -466,6 +471,7 @@ type State = {
   isLeftSidebarVisible: boolean;
   isRightSidebarVisible: boolean;
   isTerminalVisible: boolean;
+  rightSidebarSectionOrder: RightSidebarSectionId[];
   previewRefreshKey: number;
   // Note: Kanban issue panel state (selectedKanbanIssueId, createMode, etc.)
   // is derived from URL via app navigation route state
@@ -539,6 +545,7 @@ type State = {
   toggleRightSidebar: () => void;
   toggleTerminal: () => void;
   setTerminalVisible: (value: boolean) => void;
+  setRightSidebarSectionOrder: (order: RightSidebarSectionId[]) => void;
   // Note: Kanban panel actions (openKanbanIssuePanel, closeKanbanIssuePanel, etc.)
   // are handled by app navigation
   toggleRightMainPanelMode: (
@@ -646,6 +653,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   isLeftSidebarVisible: true,
   isRightSidebarVisible: true,
   isTerminalVisible: true,
+  rightSidebarSectionOrder: DEFAULT_RIGHT_SIDEBAR_SECTION_ORDER,
   previewRefreshKey: 0,
 
   // Workspace-specific panel state
@@ -746,6 +754,10 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     set((s) => ({ isTerminalVisible: !s.isTerminalVisible })),
 
   setTerminalVisible: (value) => set({ isTerminalVisible: value }),
+  setRightSidebarSectionOrder: (order) =>
+    set({
+      rightSidebarSectionOrder: normalizeRightSidebarSectionOrder(order),
+    }),
 
   toggleRightMainPanelMode: (mode, workspaceId) => {
     if (!workspaceId) return;

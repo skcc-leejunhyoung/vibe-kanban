@@ -161,6 +161,9 @@ pub struct UiPreferencesData {
     /// Global terminal visibility
     #[serde(default)]
     pub is_terminal_visible: Option<bool>,
+    /// Display order for the workspace right-sidebar sections.
+    #[serde(default)]
+    pub right_sidebar_section_order: Vec<String>,
     /// Workspace-specific panel states
     #[serde(default)]
     pub workspace_panel_states: std::collections::HashMap<String, WorkspacePanelStateData>,
@@ -558,5 +561,6 @@ mod tests {
         .unwrap();
         let entry = data.workspace_panel_states.get("ws1").unwrap();
         assert!(entry.is_left_main_panel_visible);
+        assert!(data.right_sidebar_section_order.is_empty());
     }
 }
