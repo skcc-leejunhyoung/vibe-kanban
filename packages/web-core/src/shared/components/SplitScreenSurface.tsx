@@ -61,6 +61,7 @@ type PaneMessage = {
   type: typeof MESSAGE_TYPE;
   event:
     | 'activate'
+    | 'ready'
     | 'navigate'
     | 'preset'
     | 'focus-pane'
@@ -111,6 +112,18 @@ function postToParent(message: PaneMessage) {
 
 function isSplitPreset(value: unknown): value is SplitPreset {
   return SPLIT_PRESETS.includes(value as SplitPreset);
+}
+
+export function shouldFocusReadyPane(
+  pendingPaneId: string | null,
+  senderPaneId: string,
+  reportedPaneId: string | undefined
+): boolean {
+  return (
+    pendingPaneId !== null &&
+    pendingPaneId === senderPaneId &&
+    reportedPaneId === senderPaneId
+  );
 }
 
 function usePresetHotkeys(onPreset: (preset: SplitPreset) => void) {
@@ -220,6 +233,11 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
     postToParent({ type: MESSAGE_TYPE, event: 'focus-pane', direction });
   }, []);
   usePaneFocusHotkeys(requestPaneFocus);
+
+  useEffect(() => {
+    if (!paneId) return;
+    postToParent({ type: MESSAGE_TYPE, event: 'ready', paneId });
+  }, [paneId]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent<PaneMessage>) => {
@@ -423,6 +441,8 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   const syncUser = useSplitScreenStore((state) => state.syncUser);
   const initialUrlRef = useRef(withoutEmbedParam(currentRelativeUrl()));
   const paneFramesRef = useRef(new Map<string, HTMLIFrameElement>());
+  const readyPaneIdsRef = useRef(new Set<string>());
+  const pendingFocusPaneIdRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [highlightedPaneId, setHighlightedPaneId] = useState<string | null>(
     null
@@ -456,11 +476,19 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
 
   const activatePreset = useCallback(
     (nextPreset: SplitPreset) => {
+      const firstPane =
+        useSplitScreenStore.getState().presets[nextPreset].panes[0];
+      pendingFocusPaneIdRef.current =
+        nextPreset > 1 && firstPane ? firstPane.id : null;
       setPreset(nextPreset, initialUrlRef.current);
+      if (!firstPane) return;
+      activatePane(firstPane.id);
+
+      if (nextPreset <= 1) return;
       requestAnimationFrame(() => {
-        const firstPane =
-          useSplitScreenStore.getState().presets[nextPreset].panes[0];
-        if (firstPane) activatePane(firstPane.id, nextPreset > 1);
+        if (!readyPaneIdsRef.current.has(firstPane.id)) return;
+        pendingFocusPaneIdRef.current = null;
+        activatePane(firstPane.id, true);
       });
     },
     [activatePane, setPreset]
@@ -504,7 +532,19 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
         ([, frame]) => frame.contentWindow === event.source
       )?.[0];
       if (!senderPaneId) return;
-      if (message.event === 'preset' && isSplitPreset(message.preset)) {
+      if (message.event === 'ready') {
+        readyPaneIdsRef.current.add(senderPaneId);
+        if (
+          shouldFocusReadyPane(
+            pendingFocusPaneIdRef.current,
+            senderPaneId,
+            message.paneId
+          )
+        ) {
+          pendingFocusPaneIdRef.current = null;
+          activatePane(senderPaneId, true);
+        }
+      } else if (message.event === 'preset' && isSplitPreset(message.preset)) {
         activatePreset(message.preset);
       } else if (
         message.event === 'activate' &&
@@ -582,7 +622,10 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       highlighted={highlightedPaneId === pane.id}
       frameRef={(frame) => {
         if (frame) paneFramesRef.current.set(pane.id, frame);
-        else paneFramesRef.current.delete(pane.id);
+        else {
+          paneFramesRef.current.delete(pane.id);
+          readyPaneIdsRef.current.delete(pane.id);
+        }
       }}
       onActivate={() => activatePane(pane.id)}
       onDropPane={(sourceId) => movePane(sourceId, pane.id)}

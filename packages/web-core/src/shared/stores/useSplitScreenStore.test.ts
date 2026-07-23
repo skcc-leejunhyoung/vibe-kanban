@@ -15,7 +15,7 @@ const {
   SPLIT_PRESETS,
   useSplitScreenStore,
 } = await import('./useSplitScreenStore');
-const { sameOriginRelativeUrl } = await import(
+const { sameOriginRelativeUrl, shouldFocusReadyPane } = await import(
   '@/shared/components/SplitScreenSurface'
 );
 
@@ -212,6 +212,30 @@ describe('split screen presets', () => {
 });
 
 describe('split pane navigation', () => {
+  it('focuses a pane only after the requested iframe reports ready', () => {
+    expect(
+      shouldFocusReadyPane(
+        'preset-2-pane-1',
+        'preset-2-pane-1',
+        'preset-2-pane-1'
+      )
+    ).toBe(true);
+    expect(
+      shouldFocusReadyPane(
+        'preset-3-pane-1',
+        'preset-2-pane-1',
+        'preset-2-pane-1'
+      )
+    ).toBe(false);
+    expect(
+      shouldFocusReadyPane(
+        'preset-2-pane-1',
+        'preset-2-pane-1',
+        'preset-2-pane-2'
+      )
+    ).toBe(false);
+  });
+
   it('accepts same-origin navigation commands and strips embed metadata', () => {
     expect(
       sameOriginRelativeUrl(
