@@ -148,8 +148,14 @@ export function CreateChatBox<TExecutor extends string = string>({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+  const handleKeyDownCapture = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    const isEditor =
+      target.isContentEditable ||
+      target.closest('[contenteditable="true"]') !== null;
+
     if (
+      isEditor ||
       e.key !== 'Enter' ||
       !(e.metaKey || e.ctrlKey) ||
       e.shiftKey ||
@@ -159,7 +165,16 @@ export function CreateChatBox<TExecutor extends string = string>({
     }
 
     e.preventDefault();
+    e.stopPropagation();
     handleCmdEnter();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    (e.target as HTMLElement).blur?.();
   };
 
   const handleAttachClick = () => {
@@ -182,6 +197,7 @@ export function CreateChatBox<TExecutor extends string = string>({
     <ChatBoxBase
       fillHeight={fillHeight}
       onKeyDown={handleKeyDown}
+      onKeyDownCapture={handleKeyDownCapture}
       editor={renderEditor({
         value: editor.value,
         onChange: editor.onChange,

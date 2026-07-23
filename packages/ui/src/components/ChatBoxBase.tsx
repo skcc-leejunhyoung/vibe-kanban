@@ -59,6 +59,7 @@ interface ChatBoxBaseProps {
 
   // Keyboard handling shared by the editor and surrounding controls.
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
+  onKeyDownCapture?: KeyboardEventHandler<HTMLDivElement>;
 }
 
 /**
@@ -79,11 +80,15 @@ export function ChatBoxBase({
   dropzone,
   fillHeight = false,
   onKeyDown,
+  onKeyDownCapture,
 }: ChatBoxBaseProps) {
   const { t } = useTranslation(['common', 'tasks']);
 
   const isDragActive = dropzone?.isDragActive ?? false;
-  const rootProps = dropzone?.getRootProps({ onKeyDown }) ?? { onKeyDown };
+  const rootProps = dropzone?.getRootProps({
+    onKeyDown,
+    onKeyDownCapture,
+  }) ?? { onKeyDown, onKeyDownCapture };
 
   return (
     <div
