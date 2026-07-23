@@ -8,28 +8,62 @@ function focusableElement(tagName = 'INPUT') {
   } as unknown as Element & { blur: ReturnType<typeof vi.fn> };
 }
 
-describe('blurFocusedElementOnEscape', () => {
-  it('blurs the focused element on Escape', () => {
-    const element = focusableElement();
+function keyEvent(key: string) {
+  return {
+    key,
+    preventDefault: vi.fn(),
+  };
+}
 
-    blurFocusedElementOnEscape({ key: 'Escape' }, element);
+describe('blurFocusedElementOnEscape', () => {
+  it('blurs the focused element and consumes Escape', () => {
+    const element = focusableElement();
+    const event = keyEvent('Escape');
+
+    blurFocusedElementOnEscape(event, element);
 
     expect(element.blur).toHaveBeenCalledTimes(1);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
   });
 
   it('does not blur for another key', () => {
     const element = focusableElement();
+    const event = keyEvent('Enter');
 
-    blurFocusedElementOnEscape({ key: 'Enter' }, element);
+    blurFocusedElementOnEscape(event, element);
 
     expect(element.blur).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it.each(['BODY', 'HTML'])(
+    'leaves Escape available when %s represents the unfocused document',
+    (tagName) => {
+      const documentRoot = focusableElement(tagName);
+      const event = keyEvent('Escape');
+
+      blurFocusedElementOnEscape(event, documentRoot);
+
+      expect(documentRoot.blur).not.toHaveBeenCalled();
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    }
+  );
+
+  it('leaves Escape available when there is no active element', () => {
+    const event = keyEvent('Escape');
+
+    blurFocusedElementOnEscape(event, null);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
   });
 
   it('keeps the split pane iframe focused', () => {
     const iframe = focusableElement('IFRAME');
+    const event = keyEvent('Escape');
 
-    blurFocusedElementOnEscape({ key: 'Escape' }, iframe);
+    blurFocusedElementOnEscape(event, iframe);
 
     expect(iframe.blur).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
   });
 });
