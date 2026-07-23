@@ -21,7 +21,6 @@ import { ApprovalFeedbackProvider } from '@/features/workspace-chat/model/contex
 import { EntriesProvider } from '@/features/workspace-chat/model/contexts/EntriesContext';
 import { MessageEditProvider } from '@/features/workspace-chat/model/contexts/MessageEditContext';
 import { CreateModeProvider } from '@/features/create-mode/model/CreateModeProvider';
-import { useWorkspaceSessions } from '@/shared/hooks/useWorkspaceSessions';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { SessionChatBoxContainer } from '@/features/workspace-chat/ui/SessionChatBoxContainer';
 import { CreateChatBoxContainer } from '@/shared/components/CreateChatBoxContainer';
@@ -153,23 +152,23 @@ function WorkspaceSessionPanel({
   const { projectId, getIssue } = useProjectContext();
   const routeState = useCurrentKanbanRouteState();
   const { workspaces: remoteWorkspaces } = useUserContext();
-  const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
+  const {
+    activeWorkspaces,
+    archivedWorkspaces,
+    sessions,
+    selectedSession,
+    selectedSessionId,
+    selectSession,
+    isSessionsLoading,
+    isNewSessionMode,
+    startNewSession,
+  } = useWorkspaceContext();
   const conversationListRef = useRef<ConversationListHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const { data: workspace, isLoading: isWorkspaceLoading } = useWorkspaceRecord(
     workspaceId,
     { enabled: !!workspaceId }
   );
-  const {
-    sessions,
-    selectedSession,
-    selectedSessionId,
-    selectSession,
-    isLoading: isSessionsLoading,
-    isNewSessionMode,
-    startNewSession,
-  } = useWorkspaceSessions(workspaceId, { enabled: !!workspaceId });
-
   const workspaceSummary = useMemo(
     () =>
       [...activeWorkspaces, ...archivedWorkspaces].find(
