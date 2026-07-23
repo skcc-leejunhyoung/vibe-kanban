@@ -396,7 +396,10 @@ function WorkspaceSessionPanel({
                 </div>
               )}
 
-              <div className="flex min-h-0 max-h-[50%] justify-center @container pl-px">
+              <div
+                className="flex min-h-0 max-h-[50%] justify-center @container pl-px"
+                data-chatbox-container="true"
+              >
                 <SessionChatBoxContainer
                   {...(isSessionsLoading || isWorkspaceLoading
                     ? {
