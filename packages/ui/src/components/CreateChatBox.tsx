@@ -148,6 +148,20 @@ export function CreateChatBox<TExecutor extends string = string>({
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (
+      e.key !== 'Enter' ||
+      !(e.metaKey || e.ctrlKey) ||
+      e.shiftKey ||
+      e.defaultPrevented
+    ) {
+      return;
+    }
+
+    e.preventDefault();
+    handleCmdEnter();
+  };
+
   const handleAttachClick = () => {
     fileInputRef.current?.click();
   };
@@ -167,6 +181,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   return (
     <ChatBoxBase
       fillHeight={fillHeight}
+      onKeyDown={handleKeyDown}
       editor={renderEditor({
         value: editor.value,
         onChange: editor.onChange,

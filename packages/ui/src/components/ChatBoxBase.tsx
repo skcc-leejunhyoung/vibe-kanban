@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { type KeyboardEventHandler, type ReactNode } from 'react';
 import { ImageIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
@@ -12,7 +12,9 @@ export enum VisualVariant {
 }
 
 export interface DropzoneProps {
-  getRootProps: () => Record<string, unknown>;
+  getRootProps: (
+    props?: Record<string, unknown>
+  ) => Record<string, unknown>;
   getInputProps: () => Record<string, unknown>;
   isDragActive: boolean;
 }
@@ -56,6 +58,9 @@ interface ChatBoxBaseProps {
   // must be `flex-1 min-h-0` for this to take effect. Requires a
   // height-bounded parent.
   fillHeight?: boolean;
+
+  // Keyboard handling shared by the editor and surrounding controls.
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
 }
 
 /**
@@ -75,14 +80,16 @@ export function ChatBoxBase({
   isRunning,
   dropzone,
   fillHeight = false,
+  onKeyDown,
 }: ChatBoxBaseProps) {
   const { t } = useTranslation(['common', 'tasks']);
 
   const isDragActive = dropzone?.isDragActive ?? false;
+  const rootProps = dropzone?.getRootProps({ onKeyDown }) ?? { onKeyDown };
 
   return (
     <div
-      {...(dropzone?.getRootProps() ?? {})}
+      {...rootProps}
       className={cn(
         'relative flex w-chat max-w-full flex-col rounded-sm border border-border bg-secondary',
         (visualVariant === VisualVariant.FEEDBACK ||
