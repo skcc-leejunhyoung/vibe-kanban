@@ -52,6 +52,9 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
   openExternalUrl: vi.fn(),
   reserveExternalWindow: vi.fn(),
 }));
+vi.mock('@/shared/lib/openInSplitPane', () => ({
+  openInSplitPane: vi.fn(),
+}));
 
 import { Actions, getSessionCommandLabel } from './index';
 import { formatDateShortWithTime } from '@/shared/lib/date';
@@ -61,6 +64,7 @@ import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
+import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
@@ -78,6 +82,7 @@ const showPullFirst = vi.mocked(PullFirstDialog.show);
 const showForcePush = vi.mocked(ForcePushDialog.show);
 const openPrUrl = vi.mocked(openExternalUrl);
 const reservePrWindow = vi.mocked(reserveExternalWindow);
+const openWorkspaceInSplitPane = vi.mocked(openInSplitPane);
 const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
 
@@ -148,6 +153,55 @@ describe('mobile workspace view actions', () => {
 });
 
 describe('command palette navigation actions', () => {
+  it.each([Actions.OpenWorkspace, Actions.OpenWorkspaceInNewTab])(
+    '$id is only visible for an open workspace on a project',
+    (action) => {
+      const base = {
+        layoutMode: 'kanban',
+        hasWorkspace: true,
+        isInPlace: false,
+      } as ActionVisibilityContext;
+
+      expect(isActionVisible(action, base)).toBe(true);
+      expect(
+        isActionVisible(action, { ...base, layoutMode: 'workspaces' })
+      ).toBe(false);
+      expect(isActionVisible(action, { ...base, hasWorkspace: false })).toBe(
+        false
+      );
+    }
+  );
+
+  it('opens the project workspace in the workspace view', () => {
+    const goToWorkspace = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host-1',
+        appNavigation: { goToWorkspace } as never,
+      }
+    );
+
+    Actions.OpenWorkspace.execute(ctx, 'ws1');
+
+    expect(goToWorkspace).toHaveBeenCalledWith('ws1', { hostId: 'host-1' });
+  });
+
+  it('opens the project workspace in a new split pane', () => {
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host/id',
+      }
+    );
+
+    Actions.OpenWorkspaceInNewTab.execute(ctx, 'workspace/id');
+
+    expect(openWorkspaceInSplitPane).toHaveBeenCalledWith(
+      '/hosts/host%2Fid/workspaces/workspace%2Fid'
+    );
+  });
+
   it.each([Actions.SearchWorkspaceList, Actions.SearchProjectIssues])(
     '$id waits for the command bar focus trap to close and keeps assigned focus',
     (action) => {

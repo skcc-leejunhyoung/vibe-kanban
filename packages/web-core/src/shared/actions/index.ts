@@ -58,6 +58,8 @@ import {
   KanbanIcon,
   MagnifyingGlassIcon,
   StackIcon,
+  ArrowSquareOutIcon,
+  ArrowsOutIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -105,6 +107,8 @@ import {
   COMMAND_PALETTE_EVENT,
   dispatchCommandPaletteEvent,
 } from '@/shared/lib/commandPaletteEvents';
+import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -867,6 +871,37 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     execute: (ctx) => ctx.appNavigation.goToWorkspaces(),
   } satisfies GlobalActionDefinition,
+
+  OpenWorkspace: {
+    id: 'open-workspace',
+    label: 'Open Workspace',
+    icon: ArrowsOutIcon,
+    keywords: ['workspace', 'open', 'navigate'],
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.layoutMode === 'kanban' && ctx.hasWorkspace,
+    execute: (ctx, workspaceId, hostId) => {
+      ctx.appNavigation.goToWorkspace(workspaceId, {
+        hostId: hostId === undefined ? ctx.currentHostId : hostId,
+      });
+    },
+  } satisfies WorkspaceActionDefinition,
+
+  OpenWorkspaceInNewTab: {
+    id: 'open-workspace-in-new-tab',
+    label: 'Open Workspace in New Tab',
+    icon: ArrowSquareOutIcon,
+    keywords: ['workspace', 'open', 'new tab'],
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.layoutMode === 'kanban' && ctx.hasWorkspace,
+    execute: (ctx, workspaceId, hostId) => {
+      openInSplitPane(
+        buildWorkspacePath(
+          workspaceId,
+          hostId === undefined ? ctx.currentHostId : hostId
+        )
+      );
+    },
+  } satisfies WorkspaceActionDefinition,
 
   GotoProjects: {
     id: 'goto-projects',

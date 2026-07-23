@@ -40,6 +40,16 @@ export type NavigationTransition = {
   hostId?: string | null;
 };
 
+export function buildWorkspacePath(
+  workspaceId: string,
+  hostId?: string | null
+): string {
+  const encodedWorkspaceId = encodeURIComponent(workspaceId);
+  return hostId
+    ? `/hosts/${encodeURIComponent(hostId)}/workspaces/${encodedWorkspaceId}`
+    : `/workspaces/${encodedWorkspaceId}`;
+}
+
 export function applyNavigationTransition(
   destination: AppDestination,
   transition?: NavigationTransition

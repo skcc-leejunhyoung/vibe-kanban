@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyNavigationTransition,
+  buildWorkspacePath,
   collapseSelfHostId,
   resolveDestinationHostId,
 } from './appNavigation';
+
+describe('buildWorkspacePath', () => {
+  it('builds a local workspace path', () => {
+    expect(buildWorkspacePath('workspace/id')).toBe(
+      '/workspaces/workspace%2Fid'
+    );
+  });
+
+  it('builds a host-scoped workspace path', () => {
+    expect(buildWorkspacePath('workspace/id', 'host/id')).toBe(
+      '/hosts/host%2Fid/workspaces/workspace%2Fid'
+    );
+  });
+});
 
 describe('applyNavigationTransition', () => {
   it('keeps the destination host when no host override is provided', () => {

@@ -25,6 +25,8 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.NewWorkspace },
           { type: 'action', action: Actions.QuickChat },
           { type: 'action', action: Actions.CreateWorkspaceFromPR },
+          { type: 'action', action: Actions.OpenWorkspace },
+          { type: 'action', action: Actions.OpenWorkspaceInNewTab },
           { type: 'action', action: Actions.OpenInIDE },
           { type: 'action', action: Actions.CopyWorkspacePath },
           { type: 'action', action: Actions.CopyRawLogs },

@@ -35,6 +35,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostIdentity';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import {
   buildKanbanIssueComposerKey,
@@ -209,11 +210,7 @@ function WorkspaceSessionPanel({
   }, [appNavigation, workspaceId]);
 
   const handleOpenWorkspaceInNewTab = useCallback(() => {
-    const encodedWorkspaceId = encodeURIComponent(workspaceId);
-    const path = routeState.hostId
-      ? `/hosts/${encodeURIComponent(routeState.hostId)}/workspaces/${encodedWorkspaceId}`
-      : `/workspaces/${encodedWorkspaceId}`;
-    openInSplitPane(path);
+    openInSplitPane(buildWorkspacePath(workspaceId, routeState.hostId));
   }, [routeState.hostId, workspaceId]);
 
   const breadcrumbButtonClass =
