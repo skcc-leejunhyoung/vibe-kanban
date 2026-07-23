@@ -114,6 +114,16 @@ function isSplitPreset(value: unknown): value is SplitPreset {
   return SPLIT_PRESETS.includes(value as SplitPreset);
 }
 
+export function getSplitPresetHotkeyOptions(keys: string) {
+  return {
+    enabled: !!keys,
+    enableOnContentEditable: true,
+    enableOnFormTags: true,
+    preventDefault: true,
+    scopes: ['global'],
+  };
+}
+
 export function shouldFocusReadyPane(
   pendingPaneId: string | null,
   senderPaneId: string,
@@ -133,13 +143,6 @@ function usePresetHotkeys(onPreset: (preset: SplitPreset) => void) {
     preset <= maxPanes
       ? resolveModifier(SPLIT_PRESET_BINDING_IDS[preset], overrides)
       : '';
-  const options = (keys: string) => ({
-    enabled: !!keys,
-    enableOnContentEditable: false,
-    enableOnFormTags: false,
-    preventDefault: true,
-    scopes: ['global'],
-  });
   const handler = (preset: SplitPreset) => (event: KeyboardEvent) => {
     event.preventDefault();
     onPreset(preset);
@@ -153,33 +156,60 @@ function usePresetHotkeys(onPreset: (preset: SplitPreset) => void) {
   const seven = bind(7);
   const eight = bind(8);
   const nine = bind(9);
-  useHotkeys(one || 'unidentified', handler(1), options(one), [one, onPreset]);
-  useHotkeys(two || 'unidentified', handler(2), options(two), [two, onPreset]);
-  useHotkeys(three || 'unidentified', handler(3), options(three), [
-    three,
-    onPreset,
-  ]);
-  useHotkeys(four || 'unidentified', handler(4), options(four), [
-    four,
-    onPreset,
-  ]);
-  useHotkeys(five || 'unidentified', handler(5), options(five), [
-    five,
-    onPreset,
-  ]);
-  useHotkeys(six || 'unidentified', handler(6), options(six), [six, onPreset]);
-  useHotkeys(seven || 'unidentified', handler(7), options(seven), [
-    seven,
-    onPreset,
-  ]);
-  useHotkeys(eight || 'unidentified', handler(8), options(eight), [
-    eight,
-    onPreset,
-  ]);
-  useHotkeys(nine || 'unidentified', handler(9), options(nine), [
-    nine,
-    onPreset,
-  ]);
+  useHotkeys(
+    one || 'unidentified',
+    handler(1),
+    getSplitPresetHotkeyOptions(one),
+    [one, onPreset]
+  );
+  useHotkeys(
+    two || 'unidentified',
+    handler(2),
+    getSplitPresetHotkeyOptions(two),
+    [two, onPreset]
+  );
+  useHotkeys(
+    three || 'unidentified',
+    handler(3),
+    getSplitPresetHotkeyOptions(three),
+    [three, onPreset]
+  );
+  useHotkeys(
+    four || 'unidentified',
+    handler(4),
+    getSplitPresetHotkeyOptions(four),
+    [four, onPreset]
+  );
+  useHotkeys(
+    five || 'unidentified',
+    handler(5),
+    getSplitPresetHotkeyOptions(five),
+    [five, onPreset]
+  );
+  useHotkeys(
+    six || 'unidentified',
+    handler(6),
+    getSplitPresetHotkeyOptions(six),
+    [six, onPreset]
+  );
+  useHotkeys(
+    seven || 'unidentified',
+    handler(7),
+    getSplitPresetHotkeyOptions(seven),
+    [seven, onPreset]
+  );
+  useHotkeys(
+    eight || 'unidentified',
+    handler(8),
+    getSplitPresetHotkeyOptions(eight),
+    [eight, onPreset]
+  );
+  useHotkeys(
+    nine || 'unidentified',
+    handler(9),
+    getSplitPresetHotkeyOptions(nine),
+    [nine, onPreset]
+  );
 }
 
 function usePaneFocusHotkeys(

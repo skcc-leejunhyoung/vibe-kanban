@@ -15,9 +15,11 @@ const {
   SPLIT_PRESETS,
   useSplitScreenStore,
 } = await import('./useSplitScreenStore');
-const { sameOriginRelativeUrl, shouldFocusReadyPane } = await import(
-  '@/shared/components/SplitScreenSurface'
-);
+const {
+  getSplitPresetHotkeyOptions,
+  sameOriginRelativeUrl,
+  shouldFocusReadyPane,
+} = await import('@/shared/components/SplitScreenSurface');
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: preset }, (_, index) => ({
@@ -212,6 +214,15 @@ describe('split screen presets', () => {
 });
 
 describe('split pane navigation', () => {
+  it('keeps preset shortcuts active while editing form fields', () => {
+    expect(getSplitPresetHotkeyOptions('mod+alt+shift+2')).toMatchObject({
+      enabled: true,
+      enableOnContentEditable: true,
+      enableOnFormTags: true,
+      preventDefault: true,
+    });
+  });
+
   it('focuses a pane only after the requested iframe reports ready', () => {
     expect(
       shouldFocusReadyPane(
