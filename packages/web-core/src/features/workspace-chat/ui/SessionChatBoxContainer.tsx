@@ -779,6 +779,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         });
         setHandoffTarget(null);
         addOptimisticProcess(process);
+        await queryClient.invalidateQueries({
+          queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+        });
         onScrollToBottom('auto');
         return true;
       } catch (error) {
@@ -800,6 +803,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       executorConfig,
       profiles,
       addOptimisticProcess,
+      queryClient,
+      workspaceId,
+      hostId,
       onScrollToBottom,
       t,
     ]

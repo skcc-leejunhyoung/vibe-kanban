@@ -169,9 +169,9 @@ async function getWorkspace(
 }
 
 export function getSessionCommandLabel(
-  session: Pick<Session, 'name' | 'created_at'>
+  session: Pick<Session, 'name' | 'updated_at'>
 ): string {
-  return session.name || formatDateShortWithTime(session.created_at);
+  return session.name || formatDateShortWithTime(session.updated_at);
 }
 
 // Helper to invalidate workspace-related queries

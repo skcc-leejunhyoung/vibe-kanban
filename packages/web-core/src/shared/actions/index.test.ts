@@ -285,15 +285,15 @@ describe('session command labels', () => {
     expect(
       getSessionCommandLabel({
         name: 'Review follow-up',
-        created_at: '2026-07-23T01:23:00Z',
+        updated_at: '2026-07-23T01:23:00Z',
       })
     ).toBe('Review follow-up');
   });
 
   it('formats the session date and time when the name is missing', () => {
-    const createdAt = '2026-07-23T01:23:00Z';
-    expect(getSessionCommandLabel({ name: null, created_at: createdAt })).toBe(
-      formatDateShortWithTime(createdAt)
+    const updatedAt = '2026-07-23T01:23:00Z';
+    expect(getSessionCommandLabel({ name: null, updated_at: updatedAt })).toBe(
+      formatDateShortWithTime(updatedAt)
     );
   });
 });

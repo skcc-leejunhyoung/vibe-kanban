@@ -75,7 +75,7 @@ impl Session {
                       s.executor,
                       s.agent_working_dir,
                       s.created_at AS "created_at!: DateTime<Utc>",
-                      s.updated_at AS "updated_at!: DateTime<Utc>",
+                      COALESCE(latest_ep.last_used, s.created_at) AS "updated_at!: DateTime<Utc>",
                       s.auto_resume_enabled AS "auto_resume_enabled!: bool"
                FROM sessions s
                LEFT JOIN (

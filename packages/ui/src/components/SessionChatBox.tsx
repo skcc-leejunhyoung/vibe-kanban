@@ -95,6 +95,7 @@ export interface SessionOption<TExecutor extends string = string> {
   id: string;
   name?: string | null;
   created_at: string | Date;
+  updated_at?: string | Date;
   executor?: TExecutor | string | null;
 }
 
@@ -1073,7 +1074,7 @@ export function SessionChatBox<TExecutor extends string = string>({
                           ? s.name
                           : index === 0
                             ? t('conversation.sessions.latest')
-                            : formatSessionDate(s.created_at)}
+                            : formatSessionDate(s.updated_at ?? s.created_at)}
                       </span>
                     </span>
                   </DropdownMenuItem>
