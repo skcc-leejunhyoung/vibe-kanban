@@ -58,6 +58,7 @@ import {
   KanbanIcon,
   MagnifyingGlassIcon,
   StackIcon,
+  BellIcon,
   ArrowSquareOutIcon,
   ArrowsOutIcon,
 } from '@phosphor-icons/react';
@@ -914,6 +915,16 @@ export const Actions = {
       const firstProject = ctx.navigationProjects[0];
       if (firstProject) ctx.appNavigation.goToProject(firstProject.id);
     },
+  } satisfies GlobalActionDefinition,
+
+  GotoNotifications: {
+    id: 'goto-notifications',
+    label: 'Goto: Notifications',
+    icon: BellIcon,
+    keywords: ['notification', 'notifications', 'alerts', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    isEnabled: (ctx) => ctx.isSignedIn,
+    execute: (ctx) => ctx.appNavigation.goToNotifications(),
   } satisfies GlobalActionDefinition,
 
   SignOut: {

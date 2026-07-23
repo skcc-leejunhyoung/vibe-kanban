@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
 import {
   ArrowLeftIcon,
@@ -27,6 +27,11 @@ import {
   reconcileWebPushRegistration,
   type WebPushStatus,
 } from '@/shared/lib/webPush';
+import {
+  getNextNotificationIndex,
+  isNotificationActivationKey,
+  isNotificationKeyboardControl,
+} from './notificationKeyboardNavigation';
 
 function NotificationMessage({
   segments,
@@ -150,6 +155,7 @@ function WebPushToggle() {
 
 export function NotificationsPage() {
   const router = useRouter();
+  const notificationListRef = useRef<HTMLDivElement>(null);
   const {
     data,
     activeNotifications,
@@ -198,6 +204,44 @@ export function NotificationsPage() {
   useEffect(() => {
     setSelectedGroupIds(new Set());
   }, [view]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        isNotificationKeyboardControl(event.target)
+      ) {
+        return;
+      }
+
+      const items = Array.from(
+        notificationListRef.current?.querySelectorAll<HTMLElement>(
+          '[data-notification-item]'
+        ) ?? []
+      );
+      const currentIndex = items.findIndex(
+        (item) => item === document.activeElement
+      );
+      const nextIndex = getNextNotificationIndex(
+        items.length,
+        currentIndex,
+        event.key === 'ArrowDown' ? 'next' : 'previous'
+      );
+      if (nextIndex === null) return;
+
+      event.preventDefault();
+      const nextItem = items[nextIndex];
+      nextItem.focus();
+      nextItem.scrollIntoView({ block: 'nearest' });
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const toggleGroupSelected = useCallback(
     (groupId: string, selected: boolean) => {
@@ -370,15 +414,16 @@ export function NotificationsPage() {
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-border">
+          <div ref={notificationListRef} className="divide-y divide-border">
             {visibleGroups.map((group) => (
               <div
                 key={group.id}
+                data-notification-item
                 role="button"
                 tabIndex={0}
                 onClick={() => handleClick(group)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
+                  if (isNotificationActivationKey(e.key)) {
                     e.preventDefault();
                     handleClick(group);
                   }

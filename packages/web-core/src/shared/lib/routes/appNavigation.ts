@@ -7,6 +7,7 @@ export type AppDestination =
   | { kind: 'workspace'; workspaceId: string; hostId?: string | null }
   | { kind: 'workspace-vscode'; workspaceId: string; hostId?: string | null }
   | { kind: 'export' }
+  | { kind: 'notifications' }
   | { kind: 'project'; projectId: string }
   | {
       kind: 'project-issue';
@@ -85,6 +86,7 @@ export interface AppNavigation {
     transition?: NavigationTransition
   ): void;
   goToExport(transition?: NavigationTransition): void;
+  goToNotifications(transition?: NavigationTransition): void;
   goToProject(projectId: string, transition?: NavigationTransition): void;
   goToProjectIssue(
     projectId: string,

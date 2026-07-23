@@ -33,6 +33,8 @@ export function resolveRemoteDestinationFromPath(
       return { kind: "root" };
     case "/export":
       return { kind: "export" };
+    case "/notifications":
+      return { kind: "notifications" };
     case "/hosts/$hostId/workspaces": {
       const hostId = getPathParam(routeParams, "hostId");
       return hostId ? { kind: "workspaces", hostId } : null;
@@ -166,6 +168,8 @@ function destinationToRemoteTarget(
       throw new Error("A host is required to open a workspace in VS Code");
     case "export":
       return { to: "/export" } as const;
+    case "notifications":
+      return { to: "/notifications" } as const;
     case "project":
       return {
         to: "/projects/$projectId",
@@ -245,6 +249,8 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     goToWorkspaceVsCode: (workspaceId, transition) =>
       navigateTo({ kind: "workspace-vscode", hostId, workspaceId }, transition),
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
+    goToNotifications: (transition) =>
+      navigateTo({ kind: "notifications" }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>
@@ -325,6 +331,8 @@ function createRemoteAppNavigation(): AppNavigation {
     goToWorkspaceVsCode: (workspaceId, transition) =>
       navigateTo({ kind: "workspace-vscode", workspaceId }, transition),
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
+    goToNotifications: (transition) =>
+      navigateTo({ kind: "notifications" }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>
