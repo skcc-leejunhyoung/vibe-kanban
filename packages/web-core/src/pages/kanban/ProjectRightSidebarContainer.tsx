@@ -268,7 +268,12 @@ function WorkspaceSessionPanel({
         if (!scrollElement) return;
 
         scrollElement.scrollTop += action.delta;
+        // Take precedence over kanban board arrow navigation while the workspace
+        // panel is open: capture the event and stop it before the board's
+        // document-level hotkey listener can also act on the same key.
         event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
         return;
       }
 
@@ -280,12 +285,16 @@ function WorkspaceSessionPanel({
 
         editor.focus();
         event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
       }
     };
 
-    window.addEventListener('keydown', handleUnfocusedChatKeyDown);
+    // Capture phase so this runs before the board's document-level navigation
+    // listener, letting the open workspace panel win the arrow keys.
+    window.addEventListener('keydown', handleUnfocusedChatKeyDown, true);
     return () => {
-      window.removeEventListener('keydown', handleUnfocusedChatKeyDown);
+      window.removeEventListener('keydown', handleUnfocusedChatKeyDown, true);
     };
   }, []);
 
