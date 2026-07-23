@@ -282,7 +282,11 @@ export function KanbanIssuePanel({
       const hasNoFocusedControl =
         activeElement === null ||
         activeElement === document.body ||
-        activeElement === document.documentElement;
+        activeElement === document.documentElement ||
+        // The panel root receives focus when an issue opens so Enter can
+        // focus the title. It is not an editable control, so arrow keys still
+        // belong to the panel rather than the board behind it.
+        activeElement === panelRootRef.current;
       if (!hasNoFocusedControl) return;
 
       const delta =
