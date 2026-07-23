@@ -30,7 +30,10 @@ import {
   openKanbanIssueComposer,
   type ProjectIssueCreateOptions,
 } from "@/shared/stores/useKanbanIssueComposerStore";
-import { isRemoteExecutableAction } from "./remoteExecutableActions";
+import {
+  isRemoteExecutableAction,
+  isRemoteExecutableWorkspaceAction,
+} from "./remoteExecutableActions";
 
 interface RemoteActionsProviderProps {
   children: ReactNode;
@@ -164,7 +167,13 @@ export function RemoteActionsProvider({
   );
 
   const executeAction = useCallback(
-    async (action: ActionDefinition): Promise<void> => {
+    async (
+      action: ActionDefinition,
+      workspaceId?: string,
+      _repoIdOrProjectId?: string,
+      _issueIds?: string[],
+      workspaceHostId?: string | null,
+    ): Promise<void> => {
       if (action.id === "settings") {
         await SettingsDialog.show({
           initialSection: "organizations",
@@ -185,6 +194,11 @@ export function RemoteActionsProvider({
 
       if (isRemoteExecutableAction(action)) {
         await action.execute(executorContext);
+        return;
+      }
+
+      if (isRemoteExecutableWorkspaceAction(action) && workspaceId) {
+        await action.execute(executorContext, workspaceId, workspaceHostId);
         return;
       }
 

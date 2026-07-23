@@ -3,7 +3,10 @@ import {
   ActionTargetType,
   type ActionDefinition,
 } from "@/shared/types/actions";
-import { isRemoteExecutableAction } from "./remoteExecutableActions";
+import {
+  isRemoteExecutableAction,
+  isRemoteExecutableWorkspaceAction,
+} from "./remoteExecutableActions";
 
 const action = (
   id: string,
@@ -27,5 +30,22 @@ describe("isRemoteExecutableAction", () => {
     action("view-issue-workspaces", ActionTargetType.ISSUE),
   ])("rejects unsupported targeted action $id", (action) => {
     expect(isRemoteExecutableAction(action)).toBe(false);
+  });
+});
+
+describe("isRemoteExecutableWorkspaceAction", () => {
+  it.each([
+    action("open-workspace", ActionTargetType.WORKSPACE),
+    action("open-workspace-in-new-tab", ActionTargetType.WORKSPACE),
+  ])("allows $id", (action) => {
+    expect(isRemoteExecutableWorkspaceAction(action)).toBe(true);
+  });
+
+  it.each([
+    action("open-workspace", ActionTargetType.NONE),
+    action("view-workspace-sessions", ActionTargetType.WORKSPACE),
+    action("new-session", ActionTargetType.WORKSPACE),
+  ])("rejects unsupported or incorrectly targeted action $id", (action) => {
+    expect(isRemoteExecutableWorkspaceAction(action)).toBe(false);
   });
 });

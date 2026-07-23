@@ -2,6 +2,7 @@ import {
   ActionTargetType,
   type ActionDefinition,
   type GlobalActionDefinition,
+  type WorkspaceActionDefinition,
 } from "@/shared/types/actions";
 
 const REMOTE_GLOBAL_ACTION_IDS = new Set([
@@ -12,6 +13,11 @@ const REMOTE_GLOBAL_ACTION_IDS = new Set([
   "toggle-workspace-archive-view",
 ]);
 
+const REMOTE_WORKSPACE_ACTION_IDS = new Set([
+  "open-workspace",
+  "open-workspace-in-new-tab",
+]);
+
 export function isRemoteExecutableAction(
   action: ActionDefinition,
 ): action is GlobalActionDefinition {
@@ -20,5 +26,14 @@ export function isRemoteExecutableAction(
     (REMOTE_GLOBAL_ACTION_IDS.has(action.id) ||
       action.id.startsWith("goto-project-") ||
       action.id.startsWith("goto-workspace-"))
+  );
+}
+
+export function isRemoteExecutableWorkspaceAction(
+  action: ActionDefinition,
+): action is WorkspaceActionDefinition {
+  return (
+    action.requiresTarget === ActionTargetType.WORKSPACE &&
+    REMOTE_WORKSPACE_ACTION_IDS.has(action.id)
   );
 }
