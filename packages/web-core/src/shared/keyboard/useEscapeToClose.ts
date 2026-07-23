@@ -5,18 +5,20 @@ import { Scope } from './registry';
 interface UseEscapeToCloseOptions {
   /** Disable the handler (e.g. while the panel is closed). Defaults to true. */
   enabled?: boolean;
+  /** Keyboard scope that owns the closeable surface. Defaults to Kanban. */
+  scope?: Scope;
 }
 
 /**
- * Close a kanban right-sidebar panel on Escape, mirroring its X button. Shared
- * by every right-panel variant (issue, create-issue, workspace session,
- * workspace create) so Escape behaves identically across all of them.
+ * Close a closeable surface on Escape, mirroring its close button. Shared by
+ * Kanban right-panel variants and the workspace secondary panel so Escape
+ * behaves consistently across both layouts.
  *
- * Scoped to KANBAN so an open KeyboardDialog — which disables the kanban scope
- * while open — keeps first claim on Escape and this never closes the panel out
- * from under a dialog. `enableOnFormTags` / `enableOnContentEditable` are set
- * because these panels autofocus a chat editor, so Escape must fire while it
- * holds focus.
+ * The owning keyboard scope keeps an open KeyboardDialog — which disables the
+ * underlying page scope — first claim on Escape, so this never closes a panel
+ * out from under a dialog. `enableOnFormTags` / `enableOnContentEditable` are
+ * set because these panels autofocus a chat editor, so Escape must fire while
+ * it holds focus.
  *
  * The `defaultPrevented` guard yields to anything that already handled Escape:
  * an in-editor handler (dismissing a mention/slash popup, exiting a code
@@ -35,7 +37,7 @@ export function useEscapeToClose(
       onClose();
     },
     {
-      scopes: [Scope.KANBAN],
+      scopes: [options?.scope ?? Scope.KANBAN],
       enabled: options?.enabled ?? true,
       enableOnFormTags: true,
       enableOnContentEditable: true,

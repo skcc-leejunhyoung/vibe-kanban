@@ -42,6 +42,8 @@ import {
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
+import { Scope } from '@/shared/keyboard/registry';
 import { resolveUnfocusedChatKeyAction } from './workspaceChatKeyboard';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
@@ -157,6 +159,17 @@ export function WorkspacesLayout({
       setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
     }
   }, [isMobile, setMobileTab, setRightMainPanelMode]);
+
+  // Keep the chat pane open while closing the desktop's secondary panel.
+  // Mobile uses tabs rather than a second pane, so Escape must not switch it.
+  const closeRightMainPanel = useCallback(() => {
+    setRightMainPanelMode(null);
+  }, [setRightMainPanelMode]);
+
+  useEscapeToClose(closeRightMainPanel, {
+    enabled: !isMobile && rightMainPanelMode !== null,
+    scope: Scope.WORKSPACE,
+  });
 
   useEffect(() => {
     const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {

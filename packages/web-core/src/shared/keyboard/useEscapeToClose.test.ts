@@ -62,6 +62,12 @@ describe('useEscapeToClose', () => {
     expect(options?.scopes).toEqual([Scope.KANBAN]);
   });
 
+  it('uses an explicitly supplied scope', () => {
+    useEscapeToClose(() => {}, { scope: Scope.WORKSPACE });
+
+    expect(lastBinding().options?.scopes).toEqual([Scope.WORKSPACE]);
+  });
+
   it('stays active over form tags and contentEditable (panels autofocus a chat editor)', () => {
     useEscapeToClose(() => {});
 
