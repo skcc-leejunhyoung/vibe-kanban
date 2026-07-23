@@ -1,12 +1,15 @@
 interface BoardNavigationStartState {
+  isBoardFocused: boolean;
+  isDocumentUnfocused: boolean;
   isTextEditing: boolean;
 }
 
 export function shouldStartBoardNavigation({
+  isBoardFocused,
+  isDocumentUnfocused,
   isTextEditing,
 }: BoardNavigationStartState): boolean {
-  // The board must reclaim arrow-key navigation even after focus moves to a
-  // non-editable control elsewhere on the project page. Only text editing
-  // keeps ownership of the arrow keys for caret movement.
-  return !isTextEditing;
+  // Reclaim navigation when the browser loses its concrete focus target, but
+  // never steal arrow keys from controls elsewhere on the project page.
+  return !isTextEditing && (isBoardFocused || isDocumentUnfocused);
 }
