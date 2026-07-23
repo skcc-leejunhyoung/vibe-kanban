@@ -62,7 +62,10 @@ use services::services::{
     },
     vibe_tags,
 };
-use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::{
+    sync::{Notify, RwLock},
+    task::JoinHandle,
+};
 use tokio_util::io::ReaderStream;
 use utils::{
     log_msg::LogMsg,
@@ -75,6 +78,43 @@ use workspace_manager::{RepoWorkspaceInput, WorkspaceError, WorkspaceManager};
 use crate::{command, copy};
 
 const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
+
+#[derive(Default)]
+struct SessionFinalizationBarrier {
+    active: RwLock<HashMap<Uuid, usize>>,
+    changed: Notify,
+}
+
+impl SessionFinalizationBarrier {
+    async fn mark_active(&self, session_id: Uuid) {
+        *self.active.write().await.entry(session_id).or_default() += 1;
+    }
+
+    async fn mark_ready(&self, session_id: Uuid) {
+        let mut active = self.active.write().await;
+        match active.get_mut(&session_id) {
+            Some(count) if *count > 1 => *count -= 1,
+            Some(_) => {
+                active.remove(&session_id);
+            }
+            None => return,
+        }
+        drop(active);
+        self.changed.notify_waiters();
+    }
+
+    async fn wait_until_ready(&self, session_id: Uuid) {
+        loop {
+            // Register before checking the map so a transition between the
+            // check and await cannot be missed.
+            let changed = self.changed.notified();
+            if !self.active.read().await.contains_key(&session_id) {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct LocalContainerService {
@@ -90,6 +130,7 @@ pub struct LocalContainerService {
     /// MsgStore. Awaited at exit so post-completion log reads see all output.
     forwarder_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
     exit_monitor_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
+    session_finalization: Arc<SessionFinalizationBarrier>,
     workspace_touch_times: Arc<RwLock<HashMap<Uuid, Instant>>>,
     config: Arc<RwLock<Config>>,
     git: GitService,
@@ -133,6 +174,7 @@ impl LocalContainerService {
         let db_stream_handles = Arc::new(RwLock::new(HashMap::new()));
         let forwarder_handles = Arc::new(RwLock::new(HashMap::new()));
         let exit_monitor_handles = Arc::new(RwLock::new(HashMap::new()));
+        let session_finalization = Arc::new(SessionFinalizationBarrier::default());
         let workspace_touch_times = Arc::new(RwLock::new(HashMap::new()));
         let notification_service =
             NotificationService::new(config.clone(), db.pool.clone(), remote_client.clone());
@@ -146,6 +188,7 @@ impl LocalContainerService {
             db_stream_handles,
             forwarder_handles,
             exit_monitor_handles,
+            session_finalization,
             workspace_touch_times,
             config,
             git,
@@ -596,6 +639,7 @@ impl LocalContainerService {
     fn spawn_exit_monitor(
         &self,
         exec_id: &Uuid,
+        session_id: Uuid,
         exit_signal: Option<ExecutorExitSignal>,
     ) -> JoinHandle<()> {
         let exec_id = *exec_id;
@@ -612,6 +656,7 @@ impl LocalContainerService {
                 .unwrap_or_else(|| std::future::pending().boxed()); // no signal, stall forever
 
             let status_result: std::io::Result<std::process::ExitStatus>;
+            let should_kill_process_group;
 
             // Wait for process to exit, or exit signal from executor
             tokio::select! {
@@ -619,24 +664,18 @@ impl LocalContainerService {
                 // Some coding agent processes do not automatically exit after processing the user request; instead the executor
                 // signals when processing has finished to gracefully kill the process.
                 exit_result = &mut exit_signal_future => {
-                    // Executor signaled completion: kill group and use the provided result
-                    if let Some(child_lock) = child_store.read().await.get(&exec_id).cloned() {
-                        let mut child = child_lock.write().await ;
-                        if let Err(err) = command::kill_process_group(&mut child).await {
-                            tracing::error!("Failed to kill process group after exit signal: {} {}", exec_id, err);
-                        }
-                    }
-
                     // Map the exit result to appropriate exit status
                     status_result = match exit_result {
                         Ok(ExecutorExitResult::Success) => Ok(success_exit_status()),
                         Ok(ExecutorExitResult::Failure) => Ok(failure_exit_status()),
                         Err(_) => Ok(success_exit_status()), // Channel closed, assume success
                     };
+                    should_kill_process_group = true;
                 }
                 // Process exit
                 exit_status_result = &mut process_exit_rx => {
                     status_result = exit_status_result.unwrap_or_else(|e| Err(std::io::Error::other(e)));
+                    should_kill_process_group = false;
                 }
             }
 
@@ -653,22 +692,37 @@ impl LocalContainerService {
                 Err(_) => (None, ExecutionProcessStatus::Failed),
             };
 
-            // Drain the (otherwise detached) stdout/stderr forwarder into the
-            // MsgStore before any post-completion step reads this process's logs
-            // (turn summary, rate-limit detection, vibe cleanup-failure log).
-            // Keep the process running until this completes: follow-up creation
-            // also uses the terminal status as its readiness boundary and must
-            // not observe incomplete session metadata from the final chunks.
-            if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
-                let _ = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
-            }
-
+            // Terminal status is the UI boundary; session finalization is the
+            // follow-up readiness boundary. Publish completion first so process
+            // shutdown and final log draining do not keep the visible turn live.
+            container.session_finalization.mark_active(session_id).await;
             if !ExecutionProcess::was_stopped(&db.pool, exec_id).await
                 && let Err(e) =
                     ExecutionProcess::update_completion(&db.pool, exec_id, status, exit_code).await
             {
                 tracing::error!("Failed to update execution process completion: {}", e);
             }
+
+            if should_kill_process_group
+                && let Some(child_lock) = child_store.read().await.get(&exec_id).cloned()
+            {
+                let mut child = child_lock.write().await;
+                if let Err(err) = command::kill_process_group(&mut child).await {
+                    tracing::error!(
+                        "Failed to kill process group after exit signal: {} {}",
+                        exec_id,
+                        err
+                    );
+                }
+            }
+
+            // Drain the (otherwise detached) stdout/stderr forwarder into the
+            // MsgStore before any post-completion step reads this process's logs
+            // (turn summary, rate-limit detection, vibe cleanup-failure log).
+            if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
+                let _ = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
+            }
+            container.session_finalization.mark_ready(session_id).await;
 
             // Ephemeral workspaces (spec-intake) are throwaway: skip ALL normal
             // finalize side effects — session summary, rate-limit auto-resume,
@@ -2170,6 +2224,10 @@ impl ContainerService for LocalContainerService {
         &self.queued_message_service
     }
 
+    async fn wait_for_session_ready(&self, session_id: Uuid) {
+        self.session_finalization.wait_until_ready(session_id).await;
+    }
+
     async fn touch(&self, workspace: &Workspace) -> Result<(), ContainerError> {
         let now = Instant::now();
 
@@ -2482,7 +2540,11 @@ impl ContainerService for LocalContainerService {
         }
 
         // Spawn unified exit monitor: watches OS exit and optional executor signal
-        let hn = self.spawn_exit_monitor(&execution_process.id, spawned.exit_signal);
+        let hn = self.spawn_exit_monitor(
+            &execution_process.id,
+            execution_process.session_id,
+            spawned.exit_signal,
+        );
         self.add_exit_monitor_handle(execution_process.id, hn).await;
 
         Ok(())
@@ -2861,6 +2923,41 @@ mod tests {
             LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn session_finalization_barrier_waits_for_every_active_process() {
+        let barrier = SessionFinalizationBarrier::default();
+        let session_id = Uuid::new_v4();
+
+        barrier.mark_active(session_id).await;
+        barrier.mark_active(session_id).await;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                barrier.wait_until_ready(session_id)
+            )
+            .await
+            .is_err()
+        );
+
+        barrier.mark_ready(session_id).await;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                barrier.wait_until_ready(session_id)
+            )
+            .await
+            .is_err()
+        );
+
+        barrier.mark_ready(session_id).await;
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            barrier.wait_until_ready(session_id),
+        )
+        .await
+        .expect("barrier should open after every process is ready");
     }
 
     /// Regression for the "no changes made" early-finalize path (scenario A).

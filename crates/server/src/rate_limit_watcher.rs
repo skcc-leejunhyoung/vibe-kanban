@@ -96,6 +96,10 @@ async fn process_one(
     {
         return Ok(());
     }
+    deployment
+        .container()
+        .wait_for_session_ready(row.session_id)
+        .await;
 
     // Respect the per-session toggle: if auto-resume was turned off after the
     // schedule was created, drop the pending row and run the deferred

@@ -66,6 +66,10 @@ pub async fn start_review(
         .container()
         .ensure_container_exists(&workspace)
         .await?;
+    deployment
+        .container()
+        .wait_for_session_ready(session.id)
+        .await;
 
     let agent_session_id = CodingAgentTurn::find_latest_session_info(pool, session.id)
         .await?

@@ -83,6 +83,10 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
         );
         return Ok(());
     }
+    deployment
+        .container()
+        .wait_for_session_ready(row.session_id)
+        .await;
 
     let Some(session) = Session::find_by_id(pool, row.session_id).await? else {
         ScheduledResume::mark_fired(pool, row.id).await?;

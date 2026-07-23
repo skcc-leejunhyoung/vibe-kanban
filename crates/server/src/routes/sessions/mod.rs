@@ -350,6 +350,14 @@ pub async fn follow_up(
         .ensure_container_exists(&workspace)
         .await?;
 
+    // A completed process becomes visible to the UI before its final output is
+    // fully drained. Wait for that drain before resolving the native session
+    // metadata used to resume the agent.
+    deployment
+        .container()
+        .wait_for_session_ready(session.id)
+        .await;
+
     // Full config from the session's most recent coding-agent execution, which
     // carries the user's model / variant / reasoning / agent overrides.
     let latest_executor_config =
@@ -551,6 +559,10 @@ pub async fn handoff(
         .container()
         .ensure_container_exists(&workspace)
         .await?;
+    deployment
+        .container()
+        .wait_for_session_ready(session.id)
+        .await;
 
     let latest_executor_config =
         ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?;

@@ -156,6 +156,10 @@ pub trait ContainerService {
 
     fn queued_message_service(&self) -> &QueuedMessageService;
 
+    /// Wait until the previous execution has flushed the session metadata
+    /// needed to safely construct a follow-up request.
+    async fn wait_for_session_ready(&self, session_id: Uuid);
+
     async fn touch(&self, workspace: &Workspace) -> Result<(), ContainerError>;
 
     fn workspace_to_current_dir(&self, workspace: &Workspace) -> PathBuf;
@@ -1447,6 +1451,8 @@ pub trait ContainerService {
         workspace: &Workspace,
         data: &DraftFollowUpData,
     ) -> Result<ExecutionProcess, ContainerError> {
+        self.wait_for_session_ready(session.id).await;
+
         // Concurrency guard: never start a second coding-agent turn for a session
         // that already has one running. A steer kill's fallback path (when
         // `stop_execution` returns child-not-found) and the natural-completion
