@@ -37,6 +37,7 @@ import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostId
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
+import { resolveUnfocusedChatKeyAction } from '@/pages/workspaces/workspaceChatKeyboard';
 import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
@@ -165,6 +166,7 @@ function WorkspaceSessionPanel({
     startNewSession,
   } = useWorkspaceContext();
   const conversationListRef = useRef<ConversationListHandle>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const { data: workspace, isLoading: isWorkspaceLoading } = useWorkspaceRecord(
     workspaceId,
@@ -251,6 +253,42 @@ function WorkspaceSessionPanel({
     setIsAtBottom(atBottom);
   }, []);
 
+  useEffect(() => {
+    const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
+      const activeElement = document.activeElement;
+      const hasNoFocusedControl =
+        activeElement === null ||
+        activeElement === document.body ||
+        activeElement === document.documentElement;
+      if (!hasNoFocusedControl) return;
+
+      const action = resolveUnfocusedChatKeyAction(event);
+      if (action?.type === 'scroll') {
+        const scrollElement = conversationListRef.current?.getScrollElement();
+        if (!scrollElement) return;
+
+        scrollElement.scrollTop += action.delta;
+        event.preventDefault();
+        return;
+      }
+
+      if (action?.type === 'focus-composer') {
+        const editor = panelRef.current?.querySelector<HTMLElement>(
+          '[data-chatbox-container="true"] [contenteditable="true"]'
+        );
+        if (!editor) return;
+
+        editor.focus();
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleUnfocusedChatKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleUnfocusedChatKeyDown);
+    };
+  }, []);
+
   return (
     <ExecutionProcessesProvider
       key={`${workspaceId}-${selectedSessionId ?? 'new'}`}
@@ -259,7 +297,10 @@ function WorkspaceSessionPanel({
       <ApprovalFeedbackProvider>
         <EntriesProvider key={`${workspaceId}-${selectedSessionId ?? 'new'}`}>
           <MessageEditProvider>
-            <div className="relative flex h-full flex-1 flex-col bg-primary">
+            <div
+              ref={panelRef}
+              className="relative flex h-full flex-1 flex-col bg-primary"
+            >
               <div className="flex items-center justify-between px-base py-half border-b shrink-0">
                 <div className="flex items-center gap-half min-w-0 font-ibm-plex-mono">
                   <button
