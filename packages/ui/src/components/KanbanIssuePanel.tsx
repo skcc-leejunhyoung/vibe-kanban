@@ -279,11 +279,7 @@ export function KanbanIssuePanel({
   // editable is focused, let Escape bubble straight through so the container
   // closes the panel.
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (
-      e.key === 'Enter' &&
-      (e.metaKey || e.ctrlKey) &&
-      !e.defaultPrevented
-    ) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.defaultPrevented) {
       e.preventDefault();
       onCmdEnterSubmit?.();
       return;
