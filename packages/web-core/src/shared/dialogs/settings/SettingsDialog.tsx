@@ -23,7 +23,10 @@ import {
   SETTINGS_SECTION_DEFINITIONS,
   isHostSpecificSettingsSection,
 } from './settings/settingsRegistry';
-import { nextSettingsSection } from './settings/settingsNavigation';
+import {
+  focusIfVisible,
+  nextSettingsSection,
+} from './settings/settingsNavigation';
 import {
   SettingsDirtyProvider,
   useSettingsDirty,
@@ -97,7 +100,7 @@ function SettingsDialogNavigation({
   // keys move both the selection and focus through the sidebar.
   useEffect(() => {
     if (isSectionDisabled(activeSection)) return;
-    sectionButtonRefs.current.get(activeSection)?.focus();
+    focusIfVisible(sectionButtonRefs.current.get(activeSection));
   }, [activeSection, isSectionDisabled]);
 
   const handleSectionKeyDown = (

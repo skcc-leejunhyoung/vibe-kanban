@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { nextSettingsSection } from './settingsNavigation';
+import { describe, expect, it, vi } from 'vitest';
+import { focusIfVisible, nextSettingsSection } from './settingsNavigation';
 
 describe('nextSettingsSection', () => {
   it('moves through enabled sections and wraps at either end', () => {
@@ -30,5 +30,19 @@ describe('nextSettingsSection', () => {
     expect(
       nextSettingsSection(sections, 'general', 'previous', isDisabled)
     ).toBe('organizations');
+  });
+
+  it('does not focus a sidebar element hidden by the mobile layout', () => {
+    const focus = vi.fn();
+
+    expect(focusIfVisible({ offsetParent: null, focus })).toBe(false);
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it('focuses a visible sidebar element', () => {
+    const focus = vi.fn();
+
+    expect(focusIfVisible({ offsetParent: {} as Element, focus })).toBe(true);
+    expect(focus).toHaveBeenCalledOnce();
   });
 });

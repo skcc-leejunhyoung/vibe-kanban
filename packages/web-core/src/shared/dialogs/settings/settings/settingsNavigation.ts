@@ -23,3 +23,18 @@ export function nextSettingsSection<T>(
 
   return enabledSections[nextIndex];
 }
+
+/** Focuses an element only while it participates in the rendered layout. */
+export function focusIfVisible(
+  element:
+    | {
+        offsetParent: Element | null;
+        focus: () => void;
+      }
+    | undefined
+): boolean {
+  if (!element || element.offsetParent === null) return false;
+
+  element.focus();
+  return true;
+}
