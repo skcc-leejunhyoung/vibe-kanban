@@ -1,4 +1,11 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { CaretLeftIcon, PlusIcon, XIcon } from '@phosphor-icons/react';
@@ -16,6 +23,7 @@ import {
   SETTINGS_SECTION_DEFINITIONS,
   isHostSpecificSettingsSection,
 } from './settings/settingsRegistry';
+import { nextSettingsSection } from './settings/settingsNavigation';
 import {
   SettingsDirtyProvider,
   useSettingsDirty,
@@ -65,6 +73,9 @@ function SettingsDialogNavigation({
     label: host.status != null ? `${host.label} (${host.status})` : host.label,
   }));
   const hostSettingsDisabled = !hostsResolved || !selectedHost;
+  const sectionButtonRefs = useRef<Map<SettingsSectionType, HTMLButtonElement>>(
+    new Map()
+  );
   const hostHint = !hostsResolved
     ? t('settings.general.loading')
     : availableHosts.length === 0
@@ -75,6 +86,61 @@ function SettingsDialogNavigation({
     onSectionSelect('relay');
   };
 
+  const isSectionDisabled = useCallback(
+    (sectionId: SettingsSectionType) =>
+      isHostSpecificSettingsSection(sectionId) && hostSettingsDisabled,
+    [hostSettingsDisabled]
+  );
+
+  // Give the settings dialog an initial keyboard target when it was opened by
+  // a shortcut. After that, the active section is the sole tab stop and arrow
+  // keys move both the selection and focus through the sidebar.
+  useEffect(() => {
+    if (isSectionDisabled(activeSection)) return;
+    sectionButtonRefs.current.get(activeSection)?.focus();
+  }, [activeSection, isSectionDisabled]);
+
+  const handleSectionKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    sectionId: SettingsSectionType
+  ) => {
+    let nextSection: SettingsSectionType | undefined;
+
+    switch (event.key) {
+      case 'ArrowDown':
+        nextSection = nextSettingsSection(
+          SETTINGS_SECTION_DEFINITIONS.map((section) => section.id),
+          sectionId,
+          'next',
+          isSectionDisabled
+        );
+        break;
+      case 'ArrowUp':
+        nextSection = nextSettingsSection(
+          SETTINGS_SECTION_DEFINITIONS.map((section) => section.id),
+          sectionId,
+          'previous',
+          isSectionDisabled
+        );
+        break;
+      case 'Home':
+        nextSection = SETTINGS_SECTION_DEFINITIONS.find(
+          (section) => !isSectionDisabled(section.id)
+        )?.id;
+        break;
+      case 'End':
+        nextSection = [...SETTINGS_SECTION_DEFINITIONS]
+          .reverse()
+          .find((section) => !isSectionDisabled(section.id))?.id;
+        break;
+      default:
+        return;
+    }
+
+    event.preventDefault();
+    if (nextSection) onSectionSelect(nextSection);
+  };
+
   const renderSectionButton = (sectionId: SettingsSectionType) => {
     const section = SETTINGS_SECTION_DEFINITIONS.find(
       (item) => item.id === sectionId
@@ -82,17 +148,25 @@ function SettingsDialogNavigation({
     if (!section) return null;
     const Icon = section.icon;
     const isActive = activeSection === section.id;
-    const isDisabled =
-      isHostSpecificSettingsSection(section.id) && hostSettingsDisabled;
+    const isDisabled = isSectionDisabled(section.id);
     return (
       <button
         key={section.id}
         type="button"
         onClick={() => onSectionSelect(section.id)}
+        onKeyDown={(event) => handleSectionKeyDown(event, section.id)}
+        ref={(element) => {
+          if (element) {
+            sectionButtonRefs.current.set(section.id, element);
+          } else {
+            sectionButtonRefs.current.delete(section.id);
+          }
+        }}
+        tabIndex={isActive && !isDisabled ? 0 : -1}
         disabled={isDisabled}
         aria-disabled={isDisabled}
         className={cn(
-          'flex items-center gap-3 text-left px-3 py-2 rounded-sm text-sm transition-colors',
+          'flex items-center gap-3 text-left px-3 py-2 rounded-sm text-sm transition-colors focus:outline-none focus:ring-1 focus:ring-brand',
           isDisabled
             ? 'text-low opacity-50 cursor-not-allowed'
             : isActive
@@ -109,7 +183,10 @@ function SettingsDialogNavigation({
   };
 
   return (
-    <nav className="flex-1 p-2 flex flex-col gap-4 overflow-y-auto">
+    <nav
+      aria-label={t('settings.layout.nav.title')}
+      className="flex-1 p-2 flex flex-col gap-4 overflow-y-auto"
+    >
       <div className="space-y-2">
         <div className="px-3 pt-1">
           <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-low">
