@@ -236,6 +236,7 @@ export function KanbanIssuePanel({
   const descriptionContainerRef = useRef<HTMLDivElement>(null);
   const descriptionEditorRef = useRef<{ focus: () => void }>(null);
   const panelRootRef = useRef<HTMLDivElement>(null);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
 
   // Reset description editing state when switching between create/edit mode or when issue changes
   useEffect(() => {
@@ -263,6 +264,44 @@ export function KanbanIssuePanel({
     if (isCreateMode) return;
     panelRootRef.current?.focus({ preventScroll: true });
   }, [isCreateMode, issueId]);
+
+  useEffect(() => {
+    const handleUnfocusedPanelKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+
+      const activeElement = document.activeElement;
+      const hasNoFocusedControl =
+        activeElement === null ||
+        activeElement === document.body ||
+        activeElement === document.documentElement;
+      if (!hasNoFocusedControl) return;
+
+      const delta =
+        event.key === 'ArrowUp' ? -80 : event.key === 'ArrowDown' ? 80 : null;
+      if (delta === null) return;
+
+      contentScrollRef.current?.scrollBy({ top: delta });
+      // The open issue panel owns unfocused arrow keys before the project
+      // board's document-level navigation listener can move its card cursor.
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    };
+
+    window.addEventListener('keydown', handleUnfocusedPanelKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', handleUnfocusedPanelKeyDown, true);
+    };
+  }, []);
 
   // Click outside the description area to exit editing
   const handleDescriptionBlur = useCallback(() => {
@@ -380,7 +419,7 @@ export function KanbanIssuePanel({
       </div>
 
       {/* Scrollable Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={contentScrollRef} className="flex-1 overflow-y-auto">
         {/* Property Row */}
         <div className="px-base py-base border-b">
           <IssuePropertyRow
