@@ -88,7 +88,7 @@ const FORWARDER_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct SessionFinalizationBarrier {
-    active: RwLock<HashMap<Uuid, usize>>,
+    active: RwLock<HashMap<Uuid, HashSet<Uuid>>>,
     changed: Notify,
 }
 
@@ -120,18 +120,22 @@ impl OutputPipelineBarrier {
 }
 
 impl SessionFinalizationBarrier {
-    async fn mark_active(&self, session_id: Uuid) {
-        *self.active.write().await.entry(session_id).or_default() += 1;
+    async fn mark_active(&self, session_id: Uuid, execution_id: Uuid) {
+        self.active
+            .write()
+            .await
+            .entry(session_id)
+            .or_default()
+            .insert(execution_id);
     }
 
-    async fn mark_ready(&self, session_id: Uuid) {
+    async fn mark_ready(&self, session_id: Uuid, execution_id: Uuid) {
         let mut active = self.active.write().await;
-        match active.get_mut(&session_id) {
-            Some(count) if *count > 1 => *count -= 1,
-            Some(_) => {
+        if let Some(executions) = active.get_mut(&session_id) {
+            executions.remove(&execution_id);
+            if executions.is_empty() {
                 active.remove(&session_id);
             }
-            None => return,
         }
         drop(active);
         self.changed.notify_waiters();
@@ -735,7 +739,10 @@ impl LocalContainerService {
             // Terminal status is the UI boundary; session finalization is the
             // follow-up readiness boundary. Publish completion first so process
             // shutdown and final log draining do not keep the visible turn live.
-            container.session_finalization.mark_active(session_id).await;
+            container
+                .session_finalization
+                .mark_active(session_id, exec_id)
+                .await;
             if !ExecutionProcess::was_stopped(&db.pool, exec_id).await
                 && let Err(e) =
                     ExecutionProcess::update_completion(&db.pool, exec_id, status, exit_code).await
@@ -780,7 +787,10 @@ impl LocalContainerService {
                 let _ = handle.await;
             }
             container.output_pipeline.remove(exec_id).await;
-            container.session_finalization.mark_ready(session_id).await;
+            container
+                .session_finalization
+                .mark_ready(session_id, exec_id)
+                .await;
 
             // Ephemeral workspaces (spec-intake) are throwaway: skip ALL normal
             // finalize side effects — session summary, rate-limit auto-resume,
@@ -2663,6 +2673,13 @@ impl ContainerService for LocalContainerService {
             None
         };
 
+        // The stopped status becomes visible before the exit monitor finishes
+        // draining logs. Register first so an immediate follow-up cannot slip
+        // through the finalization barrier. The exit monitor registers the same
+        // execution idempotently when it observes process exit.
+        self.session_finalization
+            .mark_active(execution_process.session_id, execution_process.id)
+            .await;
         ExecutionProcess::update_completion(&self.db.pool, execution_process.id, status, exit_code)
             .await?;
 
@@ -2700,15 +2717,10 @@ impl ContainerService for LocalContainerService {
         }
         self.remove_child_from_store(&execution_process.id).await;
 
-        // Mark the process finished in the MsgStore and wait for DB persistence
-        let db_stream_handle = self.take_db_stream_handle(&execution_process.id).await;
-        if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
-            msg.push_finished();
-            msg.push(LogMsg::StorageFinished);
-        }
-        if let Some(handle) = db_stream_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
-        }
+        // The exit monitor owns output drain, normalizer shutdown, storage
+        // shutdown, and MsgStore removal. Do not race that pipeline here:
+        // terminating storage early can discard normalized metadata produced
+        // after a slow forwarder finishes.
 
         tracing::debug!(
             "Execution process {} stopped successfully",
@@ -3000,9 +3012,11 @@ mod tests {
     async fn session_finalization_barrier_waits_for_every_active_process() {
         let barrier = SessionFinalizationBarrier::default();
         let session_id = Uuid::new_v4();
+        let first_execution_id = Uuid::new_v4();
+        let second_execution_id = Uuid::new_v4();
 
-        barrier.mark_active(session_id).await;
-        barrier.mark_active(session_id).await;
+        barrier.mark_active(session_id, first_execution_id).await;
+        barrier.mark_active(session_id, second_execution_id).await;
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(10),
@@ -3012,7 +3026,7 @@ mod tests {
             .is_err()
         );
 
-        barrier.mark_ready(session_id).await;
+        barrier.mark_ready(session_id, first_execution_id).await;
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(10),
@@ -3022,13 +3036,31 @@ mod tests {
             .is_err()
         );
 
-        barrier.mark_ready(session_id).await;
+        barrier.mark_ready(session_id, second_execution_id).await;
         tokio::time::timeout(
             Duration::from_millis(10),
             barrier.wait_until_ready(session_id),
         )
         .await
         .expect("barrier should open after every process is ready");
+    }
+
+    #[tokio::test]
+    async fn session_finalization_barrier_registers_an_execution_idempotently() {
+        let barrier = SessionFinalizationBarrier::default();
+        let session_id = Uuid::new_v4();
+        let execution_id = Uuid::new_v4();
+
+        barrier.mark_active(session_id, execution_id).await;
+        barrier.mark_active(session_id, execution_id).await;
+        barrier.mark_ready(session_id, execution_id).await;
+
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            barrier.wait_until_ready(session_id),
+        )
+        .await
+        .expect("one ready transition should clear duplicate registrations");
     }
 
     #[tokio::test]

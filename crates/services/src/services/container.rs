@@ -98,6 +98,10 @@ fn replay_patch_stream(
     .boxed()
 }
 
+fn normalized_stream_is_open(msg: &Result<LogMsg, std::io::Error>) -> bool {
+    !matches!(msg, Ok(LogMsg::StorageFinished))
+}
+
 #[derive(Debug, Error)]
 pub enum ContainerError {
     #[error(transparent)]
@@ -928,7 +932,7 @@ pub trait ContainerService {
             Some(
                 store
                     .history_plus_stream()
-                    .take_while(|msg| future::ready(!matches!(msg, Ok(LogMsg::Finished))))
+                    .take_while(|msg| future::ready(normalized_stream_is_open(msg)))
                     .filter(|msg| future::ready(matches!(msg, Ok(LogMsg::JsonPatch(..)))))
                     .chain(futures::stream::once(async {
                         Ok::<_, std::io::Error>(LogMsg::Finished)
@@ -1845,5 +1849,18 @@ pub trait ContainerService {
 
         tracing::debug!("Started next action: {:?}", next_action);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use utils::log_msg::LogMsg;
+
+    use super::normalized_stream_is_open;
+
+    #[test]
+    fn normalized_stream_stays_open_until_storage_finishes() {
+        assert!(normalized_stream_is_open(&Ok(LogMsg::Finished)));
+        assert!(!normalized_stream_is_open(&Ok(LogMsg::StorageFinished)));
     }
 }
