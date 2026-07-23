@@ -7,7 +7,12 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon, ArrowsOutIcon, XIcon } from '@phosphor-icons/react';
+import {
+  ArrowDownIcon,
+  ArrowSquareOutIcon,
+  ArrowsOutIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -30,6 +35,7 @@ import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostIdentity';
+import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import {
   buildKanbanIssueComposerKey,
@@ -203,6 +209,14 @@ function WorkspaceSessionPanel({
     appNavigation.goToWorkspace(workspaceId);
   }, [appNavigation, workspaceId]);
 
+  const handleOpenWorkspaceInNewTab = useCallback(() => {
+    const encodedWorkspaceId = encodeURIComponent(workspaceId);
+    const path = routeState.hostId
+      ? `/hosts/${encodeURIComponent(routeState.hostId)}/workspaces/${encodedWorkspaceId}`
+      : `/workspaces/${encodedWorkspaceId}`;
+    openInSplitPane(path);
+  }, [routeState.hostId, workspaceId]);
+
   const breadcrumbButtonClass =
     'min-w-0 text-sm text-normal truncate rounded-sm px-1 py-0.5 hover:bg-panel hover:text-high transition-colors';
 
@@ -279,6 +293,17 @@ function WorkspaceSessionPanel({
                     aria-label="Open in workspace view"
                   >
                     <ArrowsOutIcon className="size-icon-sm" weight="bold" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenWorkspaceInNewTab}
+                    className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
+                    aria-label="Open workspace in new tab"
+                  >
+                    <ArrowSquareOutIcon
+                      className="size-icon-sm"
+                      weight="bold"
+                    />
                   </button>
                   <button
                     type="button"
