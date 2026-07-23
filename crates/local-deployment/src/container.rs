@@ -79,6 +79,13 @@ use crate::{command, copy};
 
 const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
 
+// Safety net for draining the stdout/stderr forwarder: normally the pipes EOF
+// promptly once the child (and its process group) exit, but an orphaned child
+// that inherited the pipe (e.g. an MCP server) can hold it open. Since the
+// orphan SIGKILL only runs after this drain, cap the wait so a stuck pipe can
+// never deadlock session finalization (and every follow-up gated behind it).
+const FORWARDER_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+
 #[derive(Default)]
 struct SessionFinalizationBarrier {
     active: RwLock<HashMap<Uuid, usize>>,
@@ -754,7 +761,7 @@ impl LocalContainerService {
             // (turn summary, rate-limit detection, vibe cleanup-failure log).
             container.output_pipeline.wait_until_ready(exec_id).await;
             if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
-                let _ = forwarder.await;
+                let _ = tokio::time::timeout(FORWARDER_DRAIN_TIMEOUT, forwarder).await;
             }
             if let Some(msg_store) = msg_stores.read().await.get(&exec_id).cloned() {
                 msg_store.push_finished();
