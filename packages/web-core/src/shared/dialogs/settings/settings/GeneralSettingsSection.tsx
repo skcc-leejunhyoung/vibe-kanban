@@ -75,11 +75,15 @@ import {
 import { useSettingsDirty } from './SettingsDirtyContext';
 import { WorkspaceStatusListEditor } from './WorkspaceStatusListEditor';
 import {
+  getSplitPresetLayoutOptions,
   SPLIT_PRESETS,
   type SplitPreset,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
-import { updateMaxSplitPanes } from '@/shared/lib/openInSplitPane';
+import {
+  updateMaxSplitPanes,
+  updateSplitPresetLayout,
+} from '@/shared/lib/openInSplitPane';
 import { RightSidebarSectionOrderEditor } from './RightSidebarSectionOrderEditor';
 
 export function GeneralSettingsSection() {
@@ -102,6 +106,7 @@ export function GeneralSettingsSection() {
     (state) => state.setRightSidebarSectionOrder
   );
   const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
+  const splitPresetStates = useSplitScreenStore((state) => state.presets);
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
       ns: 'common',
@@ -1146,6 +1151,41 @@ export function GeneralSettingsSection() {
             }
           />
         </SettingsField>
+        {SPLIT_PRESETS.filter(
+          (preset) => preset > 1 && preset <= maxSplitPanes
+        ).map((preset) => {
+          const options = getSplitPresetLayoutOptions(preset);
+          const layout = splitPresetStates[preset].layout;
+          return (
+            <SettingsField
+              key={preset}
+              label={t('settings.general.splitScreen.presetLayout', {
+                defaultValue: '{{count}} pane layout',
+                count: preset,
+              })}
+            >
+              <SettingsSelect
+                value={`${layout.rows}x${layout.columns}`}
+                options={options.map((option) => ({
+                  value: `${option.rows}x${option.columns}`,
+                  label: t('settings.general.splitScreen.rowsColumns', {
+                    defaultValue: '{{rows}} rows × {{columns}} columns',
+                    rows: option.rows,
+                    columns: option.columns,
+                  }),
+                }))}
+                onChange={(value) => {
+                  const nextLayout = options.find(
+                    (option) => `${option.rows}x${option.columns}` === value
+                  );
+                  if (nextLayout) {
+                    updateSplitPresetLayout(preset, nextLayout);
+                  }
+                }}
+              />
+            </SettingsField>
+          );
+        })}
       </SettingsCard>
 
       {/* Task Templates */}

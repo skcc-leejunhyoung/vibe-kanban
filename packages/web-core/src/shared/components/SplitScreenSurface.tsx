@@ -22,9 +22,11 @@ import { useEscapeToBlur } from '@/shared/keyboard/useEscapeToBlur';
 import {
   type SplitPaneState,
   type SplitPreset,
+  type SplitPresetLayout,
   SPLIT_PRESETS,
   getAdjacentSplitPaneId,
   getSplitScreenUserId,
+  isValidSplitPresetLayout,
   shouldRenderSplitScreenFrames,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
@@ -68,13 +70,15 @@ type PaneMessage = {
     | 'move-pane'
     | 'open-pane'
     | 'navigate-to'
-    | 'max-panes';
+    | 'max-panes'
+    | 'preset-layout';
   paneId?: string;
   sourcePaneId?: string;
   maxPanes?: SplitPreset;
   url?: string;
   sourceUrl?: string;
   preset?: SplitPreset;
+  layout?: SplitPresetLayout;
   direction?: 'next' | 'previous';
 };
 
@@ -254,6 +258,7 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
   const location = useLocation();
   const router = useRouter();
   const setMaxPanes = useSplitScreenStore((state) => state.setMaxPanes);
+  const setPresetLayout = useSplitScreenStore((state) => state.setPresetLayout);
 
   const requestPreset = useCallback((preset: SplitPreset) => {
     postToParent({ type: MESSAGE_TYPE, event: 'preset', preset });
@@ -284,6 +289,16 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
       }
 
       if (
+        event.data.event === 'preset-layout' &&
+        isSplitPreset(event.data.preset) &&
+        event.data.layout &&
+        isValidSplitPresetLayout(event.data.preset, event.data.layout)
+      ) {
+        setPresetLayout(event.data.preset, event.data.layout);
+        return;
+      }
+
+      if (
         event.data.event === 'navigate-to' &&
         event.data.paneId === paneId &&
         event.data.url
@@ -300,7 +315,7 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [paneId, router, setMaxPanes]);
+  }, [paneId, router, setMaxPanes, setPresetLayout]);
 
   useEffect(() => {
     if (!paneId) return;
@@ -457,6 +472,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   const presetState = useSplitScreenStore((state) => state.presets[preset]);
   const setPreset = useSplitScreenStore((state) => state.setPreset);
   const setMaxPanes = useSplitScreenStore((state) => state.setMaxPanes);
+  const setPresetLayout = useSplitScreenStore((state) => state.setPresetLayout);
   const maxPanes = useSplitScreenStore((state) => state.maxPanes);
   const openPane = useSplitScreenStore((state) => state.openPane);
   const setActivePane = useSplitScreenStore((state) => state.setActivePane);
@@ -625,6 +641,13 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       ) {
         setMaxPanes(message.maxPanes);
       } else if (
+        message.event === 'preset-layout' &&
+        isSplitPreset(message.preset) &&
+        message.layout &&
+        isValidSplitPresetLayout(message.preset, message.layout)
+      ) {
+        setPresetLayout(message.preset, message.layout);
+      } else if (
         message.event === 'navigate' &&
         message.paneId === senderPaneId &&
         message.url
@@ -641,6 +664,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     movePane,
     openPane,
     setMaxPanes,
+    setPresetLayout,
     setPaneUrl,
   ]);
 
@@ -711,7 +735,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     return <>{children}</>;
   }
 
-  const rowCount = preset <= 3 ? 1 : preset <= 6 ? 2 : 3;
+  const rowCount = presetState.layout.rows;
   if (rowCount === 1) {
     return horizontalLayout(presetState.panes, 0, true);
   }

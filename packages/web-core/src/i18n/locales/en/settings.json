@@ -359,6 +359,13 @@
           "notes": "Notes"
         }
       },
+      "splitScreen": {
+        "title": "Split screen",
+        "description": "Choose how many pages can open together and how each preset is arranged.",
+        "maxPanes": "Maximum panes",
+        "presetLayout": "{{count}} pane layout",
+        "rowsColumns": "{{rows}} rows × {{columns}} columns"
+      },
       "privacy": {
         "title": "Privacy",
         "description": "Help improve Vibe-Kanban by sharing anonymous usage data.",

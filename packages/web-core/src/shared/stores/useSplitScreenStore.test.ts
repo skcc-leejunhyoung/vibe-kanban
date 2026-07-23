@@ -10,6 +10,8 @@ vi.stubGlobal('localStorage', {
 
 const {
   getAdjacentSplitPaneId,
+  getDefaultSplitPresetLayout,
+  getSplitPresetLayoutOptions,
   getSplitScreenUserId,
   shouldRenderSplitScreenFrames,
   SPLIT_PRESETS,
@@ -27,6 +29,7 @@ const makePreset = (preset: SplitPreset): SplitPresetState => ({
     url: null,
   })),
   activePaneId: `preset-${preset}-pane-1`,
+  layout: getDefaultSplitPresetLayout(preset),
   focusHistory: [`preset-${preset}-pane-1`],
 });
 
@@ -232,6 +235,38 @@ describe('split screen presets', () => {
     useSplitScreenStore.getState().setMaxPanes(9);
     useSplitScreenStore.getState().setPreset(9, '/workspaces/a');
     expect(useSplitScreenStore.getState().presets[9].panes).toHaveLength(9);
+  });
+
+  it('offers row and column layouts that include every pane', () => {
+    expect(getSplitPresetLayoutOptions(5)).toEqual([
+      { rows: 1, columns: 5 },
+      { rows: 2, columns: 3 },
+      { rows: 3, columns: 2 },
+      { rows: 4, columns: 2 },
+      { rows: 5, columns: 1 },
+    ]);
+  });
+
+  it('stores a layout independently for each preset and resets its sizes', () => {
+    useSplitScreenStore.getState().setPreset(4, '/workspaces/a');
+    useSplitScreenStore.getState().setHorizontalSizes([40, 60], 0);
+    useSplitScreenStore.getState().setVerticalSizes([45, 55]);
+    useSplitScreenStore.getState().setPresetLayout(4, { rows: 1, columns: 4 });
+
+    const state = useSplitScreenStore.getState();
+    expect(state.presets[4].layout).toEqual({ rows: 1, columns: 4 });
+    expect(state.presets[4].horizontalSizes).toBeUndefined();
+    expect(state.presets[4].verticalSizes).toBeUndefined();
+    expect(state.presets[3].layout).toEqual({ rows: 1, columns: 3 });
+  });
+
+  it('ignores layouts that cannot describe the selected preset', () => {
+    useSplitScreenStore.getState().setPresetLayout(4, { rows: 2, columns: 3 });
+
+    expect(useSplitScreenStore.getState().presets[4].layout).toEqual({
+      rows: 2,
+      columns: 2,
+    });
   });
 });
 

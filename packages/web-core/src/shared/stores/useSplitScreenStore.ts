@@ -16,9 +16,15 @@ export interface SplitPaneState {
   url: string | null;
 }
 
+export interface SplitPresetLayout {
+  rows: number;
+  columns: number;
+}
+
 export interface SplitPresetState {
   panes: SplitPaneState[];
   activePaneId: string;
+  layout: SplitPresetLayout;
   focusHistory?: string[];
   horizontalSizes?: number[];
   verticalSizes?: number[];
@@ -60,6 +66,7 @@ interface SplitScreenState {
   syncUser: (userId: string | null) => void;
   setPreset: (preset: SplitPreset, currentUrl: string) => void;
   setMaxPanes: (maxPanes: SplitPreset) => void;
+  setPresetLayout: (preset: SplitPreset, layout: SplitPresetLayout) => void;
   openPane: (
     url: string,
     currentUrl: string,
@@ -75,12 +82,38 @@ interface SplitScreenState {
 
 const paneCount = (preset: SplitPreset) => preset;
 
+export function getDefaultSplitPresetLayout(
+  preset: SplitPreset
+): SplitPresetLayout {
+  const rows = preset <= 3 ? 1 : preset <= 6 ? 2 : 3;
+  return { rows, columns: Math.ceil(preset / rows) };
+}
+
+export function getSplitPresetLayoutOptions(
+  preset: SplitPreset
+): SplitPresetLayout[] {
+  return Array.from({ length: preset }, (_, index) => {
+    const rows = index + 1;
+    return { rows, columns: Math.ceil(preset / rows) };
+  });
+}
+
+export function isValidSplitPresetLayout(
+  preset: SplitPreset,
+  layout: SplitPresetLayout
+): boolean {
+  return getSplitPresetLayoutOptions(preset).some(
+    (option) => option.rows === layout.rows && option.columns === layout.columns
+  );
+}
+
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: paneCount(preset) }, (_, index) => ({
     id: `preset-${preset}-pane-${index + 1}`,
     url: null,
   })),
   activePaneId: `preset-${preset}-pane-1`,
+  layout: getDefaultSplitPresetLayout(preset),
   focusHistory: [`preset-${preset}-pane-1`],
 });
 
@@ -151,6 +184,21 @@ export const useSplitScreenStore = create<SplitScreenState>()(
                   ...pane,
                   url: source.panes[index]?.url ?? pane.url,
                 })),
+              },
+            },
+          };
+        }),
+      setPresetLayout: (preset, layout) =>
+        set((state) => {
+          if (!isValidSplitPresetLayout(preset, layout)) return state;
+          return {
+            presets: {
+              ...state.presets,
+              [preset]: {
+                ...state.presets[preset],
+                layout,
+                horizontalSizes: undefined,
+                verticalSizes: undefined,
               },
             },
           };
@@ -291,13 +339,24 @@ export const useSplitScreenStore = create<SplitScreenState>()(
     }),
     {
       name: 'vk-split-screen-v1',
-      version: 2,
+      version: 3,
       migrate: (persisted) => {
         const state = persisted as Partial<SplitScreenState>;
+        const defaults = initialPresets();
         return {
           ...state,
           maxPanes: state.maxPanes ?? DEFAULT_MAX_SPLIT_PANES,
-          presets: { ...initialPresets(), ...state.presets },
+          presets: Object.fromEntries(
+            SPLIT_PRESETS.map((preset) => [
+              preset,
+              {
+                ...defaults[preset],
+                ...state.presets?.[preset],
+                layout:
+                  state.presets?.[preset]?.layout ?? defaults[preset].layout,
+              },
+            ])
+          ) as unknown as PresetStates,
         } as SplitScreenState;
       },
       partialize: ({ activeUserId, preset, maxPanes, presets }) => ({

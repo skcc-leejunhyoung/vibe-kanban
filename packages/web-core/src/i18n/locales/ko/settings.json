@@ -351,6 +351,13 @@
           "notes": "Notes"
         }
       },
+      "splitScreen": {
+        "title": "분할 화면",
+        "description": "동시에 열 수 있는 페이지 수와 각 프리셋의 배치를 설정합니다.",
+        "maxPanes": "최대 패널 수",
+        "presetLayout": "{{count}}개 패널 배치",
+        "rowsColumns": "{{rows}}행 × {{columns}}열"
+      },
       "privacy": {
         "title": "개인정보 보호",
         "description": "익명 사용 데이터를 공유하여 Vibe-Kanban 개선에 도움을 주세요.",

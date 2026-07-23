@@ -1,4 +1,5 @@
 import {
+  type SplitPresetLayout,
   type SplitPreset,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
@@ -56,6 +57,19 @@ export function updateMaxSplitPanes(maxPanes: SplitPreset): void {
   if (isEmbeddedPane()) {
     window.parent.postMessage(
       { type: MESSAGE_TYPE, event: 'max-panes', maxPanes },
+      window.location.origin
+    );
+  }
+}
+
+export function updateSplitPresetLayout(
+  preset: SplitPreset,
+  layout: SplitPresetLayout
+): void {
+  useSplitScreenStore.getState().setPresetLayout(preset, layout);
+  if (isEmbeddedPane()) {
+    window.parent.postMessage(
+      { type: MESSAGE_TYPE, event: 'preset-layout', preset, layout },
       window.location.origin
     );
   }
