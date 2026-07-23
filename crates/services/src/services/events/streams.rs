@@ -55,10 +55,8 @@ impl EventService {
             .await?;
 
         // Get filtered event stream
-        let db = self.db.clone();
         let filtered_stream =
             BroadcastStream::new(self.msg_store.get_receiver()).filter_map(move |msg_result| {
-                let db = db.clone();
                 async move {
                     match msg_result {
                         Ok(LogMsg::JsonPatch(patch)) => {
@@ -147,33 +145,20 @@ impl EventService {
                         Err(BroadcastStreamRecvError::Lagged(skipped)) => {
                             // A slow/background tab can overflow its broadcast
                             // receiver and lose the one completion patch that
-                            // changes a process from running to completed. Heal
-                            // from authoritative DB state instead of leaving the
-                            // cached running snapshot stuck forever.
+                            // changes a process from running to completed. Do not
+                            // replay a DB snapshot on this receiver: retained
+                            // patches older than that snapshot would be delivered
+                            // afterwards and could regress the client back to
+                            // stale state. Terminate with an error so WS/SSE
+                            // reconnects and obtains a fresh initial snapshot.
                             tracing::warn!(
                                 session_id = %session_id,
                                 skipped,
-                                "Execution-process stream lagged; replaying session snapshot"
+                                "Execution-process stream lagged; reconnecting for a fresh snapshot"
                             );
-                            match ExecutionProcess::find_by_session_id(
-                                &db.pool,
-                                session_id,
-                                show_soft_deleted,
-                            )
-                            .await
-                            {
-                                Ok(processes) => Some(Ok(
-                                    EventService::execution_processes_snapshot_msg(processes),
-                                )),
-                                Err(error) => {
-                                    tracing::error!(
-                                        session_id = %session_id,
-                                        %error,
-                                        "Failed to replay lagged execution-process stream"
-                                    );
-                                    None
-                                }
-                            }
+                            Some(Err(std::io::Error::other(format!(
+                                "execution-process stream lagged by {skipped} messages"
+                            ))))
                         }
                     }
                 }

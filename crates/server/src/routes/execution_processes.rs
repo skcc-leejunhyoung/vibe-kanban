@@ -1,7 +1,10 @@
 use anyhow;
 use axum::{
     BoxError, Extension, Router,
-    extract::{Path, Query, State, ws::Message},
+    extract::{
+        Path, Query, State,
+        ws::{CloseFrame, Message, close_code},
+    },
     http::StatusCode,
     middleware::from_fn_with_state,
     response::{
@@ -344,6 +347,12 @@ async fn handle_execution_processes_by_session_ws(
                     }
                     Some(Err(e)) => {
                         tracing::error!("stream error: {}", e);
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: close_code::ERROR,
+                                reason: "execution-process stream error".into(),
+                            })))
+                            .await;
                         break;
                     }
                     None => break,
