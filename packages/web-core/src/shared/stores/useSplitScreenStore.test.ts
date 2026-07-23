@@ -114,18 +114,40 @@ describe('split screen presets', () => {
     ]);
   });
 
-  it('keeps each preset page assignment independent', () => {
+  it('keeps the currently open panes on the left when expanding', () => {
     const store = useSplitScreenStore.getState();
     store.setPreset(2, '/workspaces/a');
     useSplitScreenStore
       .getState()
       .setPaneUrl('preset-2-pane-2', '/workspaces/b');
-    useSplitScreenStore.getState().setPreset(1, '/workspaces/a');
-    useSplitScreenStore.getState().setPreset(2, '/workspaces/other');
+    useSplitScreenStore.getState().setPreset(4, '/workspaces/current');
 
     expect(
-      useSplitScreenStore.getState().presets[2].panes.map((pane) => pane.url)
-    ).toEqual(['/workspaces/a', '/workspaces/b']);
+      useSplitScreenStore.getState().presets[4].panes.map((pane) => pane.url)
+    ).toEqual([
+      '/workspaces/a',
+      '/workspaces/b',
+      '/workspaces/current',
+      '/workspaces/current',
+    ]);
+  });
+
+  it('keeps the leftmost panes when shrinking', () => {
+    useSplitScreenStore.getState().setPreset(4, '/workspaces/a');
+    useSplitScreenStore
+      .getState()
+      .setPaneUrl('preset-4-pane-2', '/workspaces/b');
+    useSplitScreenStore
+      .getState()
+      .setPaneUrl('preset-4-pane-3', '/workspaces/c');
+    useSplitScreenStore.getState().setPreset(2, '/workspaces/current');
+
+    const preset = useSplitScreenStore.getState().presets[2];
+    expect(preset.panes.map((pane) => pane.url)).toEqual([
+      '/workspaces/a',
+      '/workspaces/b',
+    ]);
+    expect(preset.activePaneId).toBe(preset.panes[0].id);
   });
 
   it('focuses the first pane whenever a preset is selected', () => {

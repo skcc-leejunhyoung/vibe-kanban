@@ -207,10 +207,6 @@ export const useSplitScreenStore = create<SplitScreenState>()(
           if (preset > state.maxPanes) return state;
           const destination = state.presets[preset];
           const source = state.presets[state.preset];
-          const activeSourceUrl =
-            source.panes.find((pane) => pane.id === source.activePaneId)?.url ??
-            currentUrl;
-          const hasSavedPage = destination.panes.some((pane) => pane.url);
 
           return {
             preset,
@@ -218,14 +214,10 @@ export const useSplitScreenStore = create<SplitScreenState>()(
               ...state.presets,
               [preset]: {
                 ...withFocusedPane(destination, destination.panes[0].id),
-                ...(hasSavedPage
-                  ? {}
-                  : {
-                      panes: destination.panes.map((pane, index) => ({
-                        ...pane,
-                        url: index === 0 ? activeSourceUrl : currentUrl,
-                      })),
-                    }),
+                panes: destination.panes.map((pane, index) => ({
+                  ...pane,
+                  url: source.panes[index]?.url ?? currentUrl,
+                })),
               },
             },
           };
