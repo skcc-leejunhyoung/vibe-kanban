@@ -184,6 +184,8 @@ interface ActionBase {
   variant?: 'default' | 'destructive';
   /** Skip restoring the element focused before the command bar opened. */
   restoreFocusOnClose?: boolean;
+  /** Execute after the command bar's focus trap has fully closed. */
+  executeAfterClose?: boolean;
   keywords?: string[];
   isVisible?: (ctx: ActionVisibilityContext) => boolean;
   isActive?: (ctx: ActionVisibilityContext) => boolean;

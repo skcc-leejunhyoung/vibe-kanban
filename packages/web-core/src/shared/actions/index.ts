@@ -4,6 +4,7 @@ import type {
   ExecutorConfig,
   Merge,
   RepoBranchStatus,
+  Session,
   Workspace,
 } from 'shared/types';
 import type { QueryClient } from '@tanstack/react-query';
@@ -99,6 +100,7 @@ import { setCreateModeSeedState } from '@/features/create-mode/model/createModeS
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
+import { formatDateShortWithTime } from '@/shared/lib/date';
 import {
   COMMAND_PALETTE_EVENT,
   dispatchCommandPaletteEvent,
@@ -160,6 +162,12 @@ async function getWorkspace(
   }
   // Fetch from API if not in cache
   return workspacesApi.get(workspaceId, hostId);
+}
+
+export function getSessionCommandLabel(
+  session: Pick<Session, 'name' | 'created_at'>
+): string {
+  return session.name || formatDateShortWithTime(session.created_at);
 }
 
 // Helper to invalidate workspace-related queries
@@ -500,7 +508,7 @@ export const Actions = {
                   type: 'action' as const,
                   action: {
                     id: `select-session-${session.id}`,
-                    label: session.name || 'Untitled session',
+                    label: getSessionCommandLabel(session),
                     icon: ChatsTeardropIcon,
                     requiresTarget: ActionTargetType.NONE,
                     execute: () => {},
@@ -708,6 +716,7 @@ export const Actions = {
     icon: MagnifyingGlassIcon,
     requiresTarget: ActionTargetType.NONE,
     restoreFocusOnClose: false,
+    executeAfterClose: true,
     isVisible: (ctx) => ctx.layoutMode === 'workspaces',
     execute: () =>
       dispatchCommandPaletteEvent(COMMAND_PALETTE_EVENT.focusWorkspaceSearch),
@@ -719,6 +728,7 @@ export const Actions = {
     icon: MagnifyingGlassIcon,
     requiresTarget: ActionTargetType.NONE,
     restoreFocusOnClose: false,
+    executeAfterClose: true,
     isVisible: (ctx) => ctx.layoutMode === 'kanban',
     execute: () =>
       dispatchCommandPaletteEvent(COMMAND_PALETTE_EVENT.focusIssueSearch),

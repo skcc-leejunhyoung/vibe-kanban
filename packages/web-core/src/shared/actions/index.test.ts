@@ -53,7 +53,8 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
   reserveExternalWindow: vi.fn(),
 }));
 
-import { Actions } from './index';
+import { Actions, getSessionCommandLabel } from './index';
+import { formatDateShortWithTime } from '@/shared/lib/date';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
@@ -148,9 +149,10 @@ describe('mobile workspace view actions', () => {
 
 describe('command palette navigation actions', () => {
   it.each([Actions.SearchWorkspaceList, Actions.SearchProjectIssues])(
-    '$id keeps the focus it assigns after the command bar closes',
+    '$id waits for the command bar focus trap to close and keeps assigned focus',
     (action) => {
       expect(action.restoreFocusOnClose).toBe(false);
+      expect(action.executeAfterClose).toBe(true);
     }
   );
 
@@ -221,6 +223,24 @@ describe('command palette navigation actions', () => {
       Actions.ViewWorkspaceSessions.execute(ctx, 'ws1', 'host-2')
     ).rejects.toThrow('currently open workspace');
     expect(getSessionsByWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe('session command labels', () => {
+  it('keeps an explicitly assigned session name', () => {
+    expect(
+      getSessionCommandLabel({
+        name: 'Review follow-up',
+        created_at: '2026-07-23T01:23:00Z',
+      })
+    ).toBe('Review follow-up');
+  });
+
+  it('formats the session date and time when the name is missing', () => {
+    const createdAt = '2026-07-23T01:23:00Z';
+    expect(getSessionCommandLabel({ name: null, created_at: createdAt })).toBe(
+      formatDateShortWithTime(createdAt)
+    );
   });
 });
 
