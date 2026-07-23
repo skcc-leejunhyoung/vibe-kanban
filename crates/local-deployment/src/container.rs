@@ -86,6 +86,14 @@ const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
 // never deadlock session finalization (and every follow-up gated behind it).
 const FORWARDER_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
+// Defensive upper bound on how long a follow-up will wait for the previous
+// execution's session finalization to drain. The barrier normally opens within
+// the drain window, but a narrow stop/exit-monitor interleaving could leave an
+// execution registered without a matching ready. Cap the wait so a leaked
+// registration degrades to a slightly stale follow-up instead of a permanent
+// per-session hang.
+const SESSION_READY_WAIT_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[derive(Default)]
 struct SessionFinalizationBarrier {
     active: RwLock<HashMap<Uuid, HashSet<Uuid>>>,
@@ -2288,7 +2296,18 @@ impl ContainerService for LocalContainerService {
     }
 
     async fn wait_for_session_ready(&self, session_id: Uuid) {
-        self.session_finalization.wait_until_ready(session_id).await;
+        if tokio::time::timeout(
+            SESSION_READY_WAIT_TIMEOUT,
+            self.session_finalization.wait_until_ready(session_id),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                session_id = %session_id,
+                "Timed out waiting for session finalization; proceeding with possibly stale metadata"
+            );
+        }
     }
 
     async fn touch(&self, workspace: &Workspace) -> Result<(), ContainerError> {
