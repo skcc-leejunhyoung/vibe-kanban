@@ -1006,13 +1006,13 @@ export function KanbanContainer() {
   const moveFocusFromKeyboard = useCallback(
     (direction: 'up' | 'down' | 'left' | 'right', event?: KeyboardEvent) => {
       const shouldNavigate = shouldStartBoardNavigation({
-        isBoardFocused,
-        hasCursor: !!cursorIssueId,
-        hasOpenedIssue: !!selectedKanbanIssueId,
-        activeElementTagName:
-          typeof document === 'undefined'
-            ? null
-            : (document.activeElement?.tagName ?? null),
+        isTextEditing:
+          typeof document !== 'undefined' &&
+          document.activeElement instanceof HTMLElement &&
+          (document.activeElement.isContentEditable ||
+            ['INPUT', 'TEXTAREA', 'SELECT'].includes(
+              document.activeElement.tagName
+            )),
       });
       if (!shouldNavigate) return;
 

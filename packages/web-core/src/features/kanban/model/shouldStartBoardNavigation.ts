@@ -1,22 +1,12 @@
 interface BoardNavigationStartState {
-  isBoardFocused: boolean;
-  hasCursor: boolean;
-  hasOpenedIssue: boolean;
-  activeElementTagName: string | null;
+  isTextEditing: boolean;
 }
 
 export function shouldStartBoardNavigation({
-  isBoardFocused,
-  hasCursor,
-  hasOpenedIssue,
-  activeElementTagName,
+  isTextEditing,
 }: BoardNavigationStartState): boolean {
-  if (isBoardFocused) return true;
-  if (hasCursor || hasOpenedIssue) return false;
-
-  return (
-    activeElementTagName === null ||
-    activeElementTagName === 'BODY' ||
-    activeElementTagName === 'HTML'
-  );
+  // The board must reclaim arrow-key navigation even after focus moves to a
+  // non-editable control elsewhere on the project page. Only text editing
+  // keeps ownership of the arrow keys for caret movement.
+  return !isTextEditing;
 }

@@ -2,45 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { shouldStartBoardNavigation } from './shouldStartBoardNavigation';
 
 describe('shouldStartBoardNavigation', () => {
-  it('lets an already-focused board keep navigating', () => {
+  it('keeps arrow navigation available outside text editing', () => {
     expect(
       shouldStartBoardNavigation({
-        isBoardFocused: true,
-        hasCursor: true,
-        hasOpenedIssue: true,
-        activeElementTagName: 'DIV',
+        isTextEditing: false,
       })
     ).toBe(true);
   });
 
-  it('starts from an unfocused page when no issue context exists', () => {
-    for (const activeElementTagName of [null, 'BODY', 'HTML']) {
-      expect(
-        shouldStartBoardNavigation({
-          isBoardFocused: false,
-          hasCursor: false,
-          hasOpenedIssue: false,
-          activeElementTagName,
-        })
-      ).toBe(true);
-    }
-  });
-
-  it('does not steal arrows from controls or an opened issue', () => {
+  it('does not steal arrows while editing text', () => {
     expect(
       shouldStartBoardNavigation({
-        isBoardFocused: false,
-        hasCursor: false,
-        hasOpenedIssue: false,
-        activeElementTagName: 'BUTTON',
-      })
-    ).toBe(false);
-    expect(
-      shouldStartBoardNavigation({
-        isBoardFocused: false,
-        hasCursor: false,
-        hasOpenedIssue: true,
-        activeElementTagName: 'BODY',
+        isTextEditing: true,
       })
     ).toBe(false);
   });
