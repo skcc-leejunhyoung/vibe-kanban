@@ -1,7 +1,7 @@
 use db::models::{execution_process::ExecutionProcess, scratch::Scratch, workspace::Workspace};
 use futures::StreamExt;
 use serde_json::json;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use utils::log_msg::LogMsg;
 use uuid::Uuid;
 
@@ -12,21 +12,7 @@ use super::{
 };
 
 impl EventService {
-    /// Stream execution processes for a specific session with initial snapshot (raw LogMsg format for WebSocket)
-    pub async fn stream_execution_processes_for_session_raw(
-        &self,
-        session_id: Uuid,
-        show_soft_deleted: bool,
-    ) -> Result<
-        futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>,
-        super::types::EventError,
-    > {
-        // Get execution processes for this session
-        let processes =
-            ExecutionProcess::find_by_session_id(&self.db.pool, session_id, show_soft_deleted)
-                .await?;
-
-        // Convert processes array to object keyed by process ID
+    fn execution_processes_snapshot_msg(processes: Vec<ExecutionProcess>) -> LogMsg {
         let processes_map: serde_json::Map<String, serde_json::Value> = processes
             .into_iter()
             .map(|process| {
@@ -36,17 +22,43 @@ impl EventService {
                 )
             })
             .collect();
-
-        let initial_patch = json!([{
+        let patch = json!([{
             "op": "replace",
             "path": "/execution_processes",
             "value": processes_map
         }]);
-        let initial_msg = LogMsg::JsonPatch(serde_json::from_value(initial_patch).unwrap());
+        LogMsg::JsonPatch(serde_json::from_value(patch).unwrap())
+    }
+
+    async fn execution_processes_snapshot(
+        &self,
+        session_id: Uuid,
+        show_soft_deleted: bool,
+    ) -> Result<LogMsg, super::types::EventError> {
+        let processes =
+            ExecutionProcess::find_by_session_id(&self.db.pool, session_id, show_soft_deleted)
+                .await?;
+        Ok(Self::execution_processes_snapshot_msg(processes))
+    }
+
+    /// Stream execution processes for a specific session with initial snapshot (raw LogMsg format for WebSocket)
+    pub async fn stream_execution_processes_for_session_raw(
+        &self,
+        session_id: Uuid,
+        show_soft_deleted: bool,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>,
+        super::types::EventError,
+    > {
+        let initial_msg = self
+            .execution_processes_snapshot(session_id, show_soft_deleted)
+            .await?;
 
         // Get filtered event stream
+        let db = self.db.clone();
         let filtered_stream =
             BroadcastStream::new(self.msg_store.get_receiver()).filter_map(move |msg_result| {
+                let db = db.clone();
                 async move {
                     match msg_result {
                         Ok(LogMsg::JsonPatch(patch)) => {
@@ -132,7 +144,37 @@ impl EventService {
                             None
                         }
                         Ok(other) => Some(Ok(other)), // Pass through non-patch messages
-                        Err(_) => None,               // Filter out broadcast errors
+                        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                            // A slow/background tab can overflow its broadcast
+                            // receiver and lose the one completion patch that
+                            // changes a process from running to completed. Heal
+                            // from authoritative DB state instead of leaving the
+                            // cached running snapshot stuck forever.
+                            tracing::warn!(
+                                session_id = %session_id,
+                                skipped,
+                                "Execution-process stream lagged; replaying session snapshot"
+                            );
+                            match ExecutionProcess::find_by_session_id(
+                                &db.pool,
+                                session_id,
+                                show_soft_deleted,
+                            )
+                            .await
+                            {
+                                Ok(processes) => Some(Ok(
+                                    EventService::execution_processes_snapshot_msg(processes),
+                                )),
+                                Err(error) => {
+                                    tracing::error!(
+                                        session_id = %session_id,
+                                        %error,
+                                        "Failed to replay lagged execution-process stream"
+                                    );
+                                    None
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -313,5 +355,27 @@ impl EventService {
 
         let initial_stream = futures::stream::iter(vec![Ok(initial_msg), Ok(LogMsg::Ready)]);
         Ok(initial_stream.chain(filtered_stream).boxed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_execution_process_snapshot_replaces_stale_client_state() {
+        let LogMsg::JsonPatch(patch) = EventService::execution_processes_snapshot_msg(Vec::new())
+        else {
+            panic!("snapshot must be a JSON patch");
+        };
+
+        assert_eq!(
+            serde_json::to_value(patch).unwrap(),
+            json!([{
+                "op": "replace",
+                "path": "/execution_processes",
+                "value": {}
+            }])
+        );
     }
 }
