@@ -892,7 +892,7 @@ export const Actions = {
     icon: ArrowSquareOutIcon,
     keywords: ['workspace', 'open', 'new tab'],
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.layoutMode === 'kanban' && ctx.hasWorkspace,
+    isVisible: (ctx) => ctx.hasWorkspace,
     execute: (ctx, workspaceId, hostId) => {
       openInSplitPane(
         buildWorkspacePath(

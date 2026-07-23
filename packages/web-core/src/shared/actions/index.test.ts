@@ -153,24 +153,41 @@ describe('mobile workspace view actions', () => {
 });
 
 describe('command palette navigation actions', () => {
-  it.each([Actions.OpenWorkspace, Actions.OpenWorkspaceInNewTab])(
-    '$id is only visible for an open workspace on a project',
-    (action) => {
-      const base = {
-        layoutMode: 'kanban',
-        hasWorkspace: true,
-        isInPlace: false,
-      } as ActionVisibilityContext;
+  const openWorkspaceContext = {
+    layoutMode: 'kanban',
+    hasWorkspace: true,
+    isInPlace: false,
+  } as ActionVisibilityContext;
 
-      expect(isActionVisible(action, base)).toBe(true);
-      expect(
-        isActionVisible(action, { ...base, layoutMode: 'workspaces' })
-      ).toBe(false);
-      expect(isActionVisible(action, { ...base, hasWorkspace: false })).toBe(
-        false
-      );
-    }
-  );
+  it('only shows open workspace for an open workspace on a project', () => {
+    expect(isActionVisible(Actions.OpenWorkspace, openWorkspaceContext)).toBe(
+      true
+    );
+    expect(
+      isActionVisible(Actions.OpenWorkspace, {
+        ...openWorkspaceContext,
+        layoutMode: 'workspaces',
+      })
+    ).toBe(false);
+  });
+
+  it('shows open workspace in new tab on project and workspace screens', () => {
+    expect(
+      isActionVisible(Actions.OpenWorkspaceInNewTab, openWorkspaceContext)
+    ).toBe(true);
+    expect(
+      isActionVisible(Actions.OpenWorkspaceInNewTab, {
+        ...openWorkspaceContext,
+        layoutMode: 'workspaces',
+      })
+    ).toBe(true);
+    expect(
+      isActionVisible(Actions.OpenWorkspaceInNewTab, {
+        ...openWorkspaceContext,
+        hasWorkspace: false,
+      })
+    ).toBe(false);
+  });
 
   it('opens the project workspace in the workspace view', () => {
     const goToWorkspace = vi.fn();
