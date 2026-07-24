@@ -44,7 +44,7 @@ pids
 *.pid
 *.seed
 *.pid.lock
-.vibe-memory-sync-*.json
+.vibe-memory-sync-*
 
 # Coverage directory used by tools like istanbul
 coverage/
