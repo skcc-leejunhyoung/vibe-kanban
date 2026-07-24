@@ -119,7 +119,14 @@ function $getChecklistAwareTextContent(selection: RangeSelection): string {
   return textContent;
 }
 
-function $handleChecklistCopyOrCut(event: ClipboardEvent): boolean {
+/**
+ * Writes checklist-aware clipboard data for the current selection, mirroring
+ * @lexical/clipboard's own $copyToClipboardEvent (preventDefault + populate
+ * text/html, application/x-lexical-editor, and text/plain). Returns false
+ * (leaving the event untouched) when the selection doesn't touch a checklist
+ * item, so Lexical's default COPY_COMMAND/CUT_COMMAND handling takes over.
+ */
+function $writeChecklistAwareClipboardData(event: ClipboardEvent): boolean {
   const selection = $getSelection();
   if (!$isRangeSelection(selection) || selection.isCollapsed()) return false;
 
@@ -141,18 +148,32 @@ function $handleChecklistCopyOrCut(event: ClipboardEvent): boolean {
   return true;
 }
 
+function $handleChecklistCut(event: ClipboardEvent): boolean {
+  const handled = $writeChecklistAwareClipboardData(event);
+  if (!handled) return false;
+
+  // Default CUT_COMMAND handling (onCutForRichText) also removes the
+  // selected content after copying it - replicate that here, since taking
+  // over the command (returning true) skips Lexical's own cut handler.
+  const selection = $getSelection();
+  if ($isRangeSelection(selection)) {
+    selection.removeText();
+  }
+  return true;
+}
+
 export function ChecklistClipboardPlugin() {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
     const unregisterCopy = editor.registerCommand(
       COPY_COMMAND,
-      $handleChecklistCopyOrCut,
+      $writeChecklistAwareClipboardData,
       COMMAND_PRIORITY_NORMAL
     );
     const unregisterCut = editor.registerCommand(
       CUT_COMMAND,
-      $handleChecklistCopyOrCut,
+      $handleChecklistCut,
       COMMAND_PRIORITY_NORMAL
     );
 
