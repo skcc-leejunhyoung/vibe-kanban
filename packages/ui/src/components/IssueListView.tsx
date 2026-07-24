@@ -12,6 +12,7 @@ import type {
   IssueListRowRelationship,
   IssueListRowTag,
 } from './IssueListRow';
+import type { WorkspaceWithStats } from './IssueWorkspaceCard';
 
 export interface IssueListViewProps {
   statuses: IssueListSectionStatus[];
@@ -31,6 +32,9 @@ export interface IssueListViewProps {
   onRowRef?: (issueId: string, node: HTMLDivElement | null) => void;
   isMultiSelectActive?: boolean;
   onIssueCheckboxChange?: (issueId: string, checked: boolean) => void;
+  /** Active workspaces linked to each issue, keyed by issue id. */
+  workspacesByIssueId?: Map<string, WorkspaceWithStats[]>;
+  onWorkspaceClick?: (issueId: string, workspace: WorkspaceWithStats) => void;
   /** Status IDs that are currently collapsed (default: expanded). */
   collapsedStatusIds?: Set<string>;
   onToggleStatusCollapsed?: (statusId: string) => void;
@@ -53,6 +57,8 @@ export function IssueListView({
   onRowRef,
   isMultiSelectActive,
   onIssueCheckboxChange,
+  workspacesByIssueId,
+  onWorkspaceClick,
   collapsedStatusIds,
   onToggleStatusCollapsed,
   onAddIssue,
@@ -76,6 +82,8 @@ export function IssueListView({
           onRowRef={onRowRef}
           isMultiSelectActive={isMultiSelectActive}
           onIssueCheckboxChange={onIssueCheckboxChange}
+          workspacesByIssueId={workspacesByIssueId}
+          onWorkspaceClick={onWorkspaceClick}
           isExpanded={!collapsedStatusIds?.has(status.id)}
           onToggleExpanded={() => onToggleStatusCollapsed?.(status.id)}
           onAddIssue={

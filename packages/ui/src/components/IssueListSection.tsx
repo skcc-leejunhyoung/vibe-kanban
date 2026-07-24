@@ -20,6 +20,7 @@ import {
   type IssueListRowRelationship,
 } from './IssueListRow';
 import type { KanbanAssigneeUser } from './KanbanAssignee';
+import type { WorkspaceWithStats } from './IssueWorkspaceCard';
 
 export interface IssueListSectionStatus {
   id: string;
@@ -45,6 +46,9 @@ export interface IssueListSectionProps {
   onRowRef?: (issueId: string, node: HTMLDivElement | null) => void;
   isMultiSelectActive?: boolean;
   onIssueCheckboxChange?: (issueId: string, checked: boolean) => void;
+  /** Active workspaces linked to each issue, keyed by issue id. */
+  workspacesByIssueId?: Map<string, WorkspaceWithStats[]>;
+  onWorkspaceClick?: (issueId: string, workspace: WorkspaceWithStats) => void;
   /** Controlled expand/collapse. */
   isExpanded: boolean;
   onToggleExpanded: () => void;
@@ -70,6 +74,8 @@ export function IssueListSection({
   onRowRef,
   isMultiSelectActive,
   onIssueCheckboxChange,
+  workspacesByIssueId,
+  onWorkspaceClick,
   isExpanded,
   onToggleExpanded,
   onAddIssue,
@@ -134,6 +140,8 @@ export function IssueListSection({
                       onIssueCheckboxChange?.(issue.id, checked)
                     }
                     forwardedRef={(node) => onRowRef?.(issue.id, node)}
+                    workspaces={workspacesByIssueId?.get(issue.id)}
+                    onWorkspaceClick={onWorkspaceClick}
                   />
                 );
               })}

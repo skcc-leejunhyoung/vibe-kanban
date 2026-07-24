@@ -12,6 +12,10 @@ import {
   type RelationshipDisplayType,
 } from './RelationshipBadge';
 import { Checkbox } from './Checkbox';
+import {
+  IssueWorkspaceCard,
+  type WorkspaceWithStats,
+} from './IssueWorkspaceCard';
 
 /**
  * Formats a date as a relative time string (e.g., "1d", "2h", "3m")
@@ -74,6 +78,9 @@ export interface IssueListRowProps {
   onCheckboxChange?: (checked: boolean) => void;
   /** Reports the row DOM node so the container can scroll it into view. */
   forwardedRef?: (node: HTMLDivElement | null) => void;
+  /** Active workspaces linked to this issue, shown indented under the row. */
+  workspaces?: WorkspaceWithStats[];
+  onWorkspaceClick?: (issueId: string, workspace: WorkspaceWithStats) => void;
   className?: string;
 }
 
@@ -91,6 +98,8 @@ export function IssueListRow({
   isChecked = false,
   onCheckboxChange,
   forwardedRef,
+  workspaces = [],
+  onWorkspaceClick,
   className,
 }: IssueListRowProps) {
   const showCheckbox = isMultiSelectActive || isChecked;
@@ -119,78 +128,118 @@ export function IssueListRow({
             }
           }}
           className={cn(
-            'group/row flex items-center justify-between gap-double px-double py-half',
+            'group/row flex flex-col',
             'transition-colors cursor-pointer outline-none',
-            'hover:bg-secondary',
-            (isSelected || isChecked) && 'bg-secondary',
             isCursor && 'ring-1 ring-inset ring-brand',
             snapshot.isDragging && 'bg-secondary shadow-lg cursor-grabbing',
             className
           )}
         >
-          {/* Left side: Checkbox, Priority, ID, Status, Title */}
-          <div className="flex items-center gap-double flex-1 min-w-0">
-            {/* Multi-select checkbox — shown on hover or when selection is
+          <div
+            className={cn(
+              'flex items-center justify-between gap-double px-double py-half',
+              'transition-colors',
+              !snapshot.isDragging && 'hover:bg-secondary',
+              (isSelected || isChecked) && 'bg-secondary'
+            )}
+          >
+            {/* Left side: Checkbox, Priority, ID, Status, Title */}
+            <div className="flex items-center gap-double flex-1 min-w-0">
+              {/* Multi-select checkbox — shown on hover or when selection is
                 active. Pointer/touch starts are swallowed so grabbing the
                 checkbox never begins a row drag. */}
-            <div className="relative shrink-0 w-4 flex items-center justify-center">
-              <div
-                className={cn(
-                  'items-center justify-center',
-                  showCheckbox ? 'flex' : 'hidden group-hover/row:flex'
-                )}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
-                onPointerDown={(e) => e.stopPropagation()}
-              >
-                <Checkbox
-                  checked={isChecked}
-                  onCheckedChange={(checked) => {
-                    onCheckboxChange?.(checked);
-                  }}
-                />
+              <div className="relative shrink-0 w-4 flex items-center justify-center">
+                <div
+                  className={cn(
+                    'items-center justify-center',
+                    showCheckbox ? 'flex' : 'hidden group-hover/row:flex'
+                  )}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  <Checkbox
+                    checked={isChecked}
+                    onCheckedChange={(checked) => {
+                      onCheckboxChange?.(checked);
+                    }}
+                  />
+                </div>
               </div>
+              <PriorityIcon priority={issue.priority} />
+              <span className="font-ibm-plex-mono text-sm text-normal shrink-0">
+                {issue.simple_id}
+              </span>
+              <StatusDot color={statusColor} />
+              <span className="text-base text-high truncate">
+                {issue.title}
+              </span>
             </div>
-            <PriorityIcon priority={issue.priority} />
-            <span className="font-ibm-plex-mono text-sm text-normal shrink-0">
-              {issue.simple_id}
-            </span>
-            <StatusDot color={statusColor} />
-            <span className="text-base text-high truncate">{issue.title}</span>
+
+            {/* Right side: Tags, Assignee, Age */}
+            <div className="flex items-center gap-base shrink-0">
+              {visibleTags.length > 0 && (
+                <div className="flex items-center gap-half">
+                  {visibleTags.map((tag) => (
+                    <KanbanBadge
+                      key={tag.id}
+                      name={tag.name}
+                      color={tag.color}
+                    />
+                  ))}
+                </div>
+              )}
+              {relationships.length > 0 && (
+                <div className="flex items-center gap-half">
+                  {relationships.slice(0, 2).map((rel) => (
+                    <RelationshipBadge
+                      key={rel.relationshipId}
+                      displayType={rel.displayType}
+                      relatedIssueDisplayId={rel.relatedIssueDisplayId}
+                      compact
+                    />
+                  ))}
+                  {relationships.length > 2 && (
+                    <span className="text-sm text-low">
+                      +{relationships.length - 2}
+                    </span>
+                  )}
+                </div>
+              )}
+              <KanbanAssignee assignees={assignees} />
+              <span className="text-sm text-low w-5 text-right">
+                {formatRelativeTime(issue.created_at)}
+              </span>
+            </div>
           </div>
 
-          {/* Right side: Tags, Assignee, Age */}
-          <div className="flex items-center gap-base shrink-0">
-            {visibleTags.length > 0 && (
-              <div className="flex items-center gap-half">
-                {visibleTags.map((tag) => (
-                  <KanbanBadge key={tag.id} name={tag.name} color={tag.color} />
-                ))}
-              </div>
-            )}
-            {relationships.length > 0 && (
-              <div className="flex items-center gap-half">
-                {relationships.slice(0, 2).map((rel) => (
-                  <RelationshipBadge
-                    key={rel.relationshipId}
-                    displayType={rel.displayType}
-                    relatedIssueDisplayId={rel.relatedIssueDisplayId}
-                    compact
-                  />
-                ))}
-                {relationships.length > 2 && (
-                  <span className="text-sm text-low">
-                    +{relationships.length - 2}
-                  </span>
-                )}
-              </div>
-            )}
-            <KanbanAssignee assignees={assignees} />
-            <span className="text-sm text-low w-5 text-right">
-              {formatRelativeTime(issue.created_at)}
-            </span>
-          </div>
+          {/* Active workspaces linked to this issue. Pointer starts are
+              swallowed so grabbing a workspace never begins a row drag; the
+              card's own click opens the workspace (stops propagation). */}
+          {workspaces.length > 0 && (
+            <div
+              className="flex flex-col gap-half pr-double pb-half pl-[3.25rem]"
+              onMouseDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              {workspaces.map((workspace) => (
+                <IssueWorkspaceCard
+                  key={workspace.id}
+                  workspace={workspace}
+                  onClick={
+                    workspace.localWorkspaceId
+                      ? () => onWorkspaceClick?.(issue.id, workspace)
+                      : undefined
+                  }
+                  showOwner={false}
+                  showStatusBadge={false}
+                  showNoPrText={false}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </Draggable>

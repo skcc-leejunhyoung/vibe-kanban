@@ -688,6 +688,19 @@ export function KanbanContainer() {
     [appNavigation, projectId, workspaceHostMap, localWorkspacesById, t]
   );
 
+  // Open a workspace from a table-row workspace card (mirrors the kanban card).
+  const handleListWorkspaceClick = useCallback(
+    (issueId: string, workspace: WorkspaceWithStats) => {
+      if (!workspace.localWorkspaceId) return;
+      void openIssueWorkspace(
+        issueId,
+        workspace.localWorkspaceId,
+        workspace.hostId
+      );
+    },
+    [openIssueWorkspace]
+  );
+
   const prsByWorkspaceId = useMemo(() => {
     const map = new Map<string, WorkspacePr[]>();
 
@@ -1604,6 +1617,8 @@ export function KanbanContainer() {
               onRowRef={registerRowRef}
               isMultiSelectActive={isMultiSelectActive}
               onIssueCheckboxChange={handleCheckboxChange}
+              workspacesByIssueId={workspacesByIssueId}
+              onWorkspaceClick={handleListWorkspaceClick}
               collapsedStatusIds={collapsedStatusIds}
               onToggleStatusCollapsed={toggleStatusCollapsed}
               onAddIssue={handleInlineAddIssue}
