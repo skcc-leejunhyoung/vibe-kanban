@@ -104,9 +104,18 @@ export function MarkdownPreview({
           {children}
         </ul>
       ),
-      ol: ({ children, ...props }: ComponentPropsWithoutRef<'ol'>) => (
+      ol: ({
+        children,
+        className,
+        ...props
+      }: ComponentPropsWithoutRef<'ol'>) => (
         <ol
-          className="list-decimal pl-6 mb-3 text-sm text-normal space-y-1"
+          className={cn(
+            'pl-6 mb-3 text-sm text-normal space-y-1',
+            // GFM task lists (`1. [ ] foo`) get a checkbox instead of a number.
+            !className?.includes('contains-task-list') && 'list-decimal',
+            className
+          )}
           {...props}
         >
           {children}
