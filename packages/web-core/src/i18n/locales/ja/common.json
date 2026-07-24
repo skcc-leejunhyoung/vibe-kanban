@@ -413,8 +413,6 @@
       "description": "このプロジェクトを表示するにはサインインしてください。",
       "action": "サインイン"
     },
-    "team": "Team",
-    "personal": "Personal",
     "searchPlaceholder": "Search issues...",
     "filters": "Filters",
     "clearFilters": "Clear filters",

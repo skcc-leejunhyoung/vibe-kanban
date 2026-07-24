@@ -413,8 +413,6 @@
       "description": "Veuillez vous connecter pour voir ce projet.",
       "action": "Se connecter"
     },
-    "team": "Team",
-    "personal": "Personal",
     "searchPlaceholder": "Search issues...",
     "filters": "Filters",
     "clearFilters": "Clear filters",

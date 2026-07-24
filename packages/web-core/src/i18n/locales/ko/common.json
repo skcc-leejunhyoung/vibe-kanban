@@ -429,13 +429,40 @@
       "active": "활성",
       "all": "전체"
     },
+    "viewsEditor": {
+      "label": "프로젝트 뷰",
+      "description": "프로젝트 페이지에 표시되는 뷰를 추가, 편집, 재정렬합니다.",
+      "moveUp": "위로 이동",
+      "moveDown": "아래로 이동",
+      "edit": "뷰 편집",
+      "delete": "뷰 삭제",
+      "addView": "뷰 추가",
+      "newView": "새 뷰",
+      "name": "이름",
+      "layout": "레이아웃",
+      "layoutKanban": "보드",
+      "layoutTable": "표",
+      "groups": "그룹(표시 및 순서)",
+      "sort": "기본 정렬",
+      "ascending": "오름차순",
+      "descending": "내림차순",
+      "priorityFilter": "기본 우선순위 필터",
+      "showSubIssues": "하위 이슈 표시",
+      "showWorkspaces": "워크스페이스 표시",
+      "hideBlocked": "차단된 이슈 숨기기",
+      "sortField": {
+        "sort_order": "수동",
+        "priority": "우선순위",
+        "created_at": "생성일",
+        "updated_at": "수정일",
+        "title": "제목"
+      }
+    },
     "loginRequired": {
       "title": "로그인 필요",
       "description": "이 프로젝트를 보려면 로그인하세요.",
       "action": "로그인"
     },
-    "team": "Team",
-    "personal": "Personal",
     "searchPlaceholder": "Search issues...",
     "filters": "Filters",
     "clearFilters": "Clear filters",

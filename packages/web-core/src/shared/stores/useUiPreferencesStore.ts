@@ -134,44 +134,11 @@ export const KANBAN_ASSIGNEE_FILTER_VALUES = {
   SELF: '__self__',
 } as const;
 
-export const KANBAN_PROJECT_VIEW_IDS = {
-  TEAM: 'team',
-  PERSONAL: 'personal',
-} as const;
-
-export const DEFAULT_KANBAN_PROJECT_VIEW_ID = KANBAN_PROJECT_VIEW_IDS.TEAM;
 export const DEFAULT_KANBAN_SHOW_WORKSPACES = true;
 export const DEFAULT_KANBAN_HIDE_BLOCKED = false;
 
-export const getDefaultShowSubIssuesForView = (_viewId: string): boolean =>
-  true;
-
-export type KanbanProjectView = {
-  id: string;
-  name: string;
-  filters: KanbanFilterState;
-  showSubIssues: boolean;
-  showWorkspaces: boolean;
-  hideBlocked: boolean;
-};
-
 export type KanbanProjectViewSelection = {
   activeViewId: string;
-};
-
-export type KanbanProjectViewPreferences = {
-  filters: KanbanFilterState;
-  showSubIssues: boolean;
-  showWorkspaces: boolean;
-  hideBlocked: boolean;
-};
-
-export type ResolvedKanbanProjectState = {
-  activeViewId: string;
-  filters: KanbanFilterState;
-  showSubIssues: boolean;
-  showWorkspaces: boolean;
-  hideBlocked: boolean;
 };
 
 const cloneKanbanFilters = (filters: KanbanFilterState): KanbanFilterState => ({
@@ -182,71 +149,6 @@ const cloneKanbanFilters = (filters: KanbanFilterState): KanbanFilterState => ({
   sortField: filters.sortField,
   sortDirection: filters.sortDirection,
 });
-
-const isKanbanProjectViewId = (
-  viewId: string
-): viewId is (typeof KANBAN_PROJECT_VIEW_IDS)[keyof typeof KANBAN_PROJECT_VIEW_IDS] =>
-  viewId === KANBAN_PROJECT_VIEW_IDS.TEAM ||
-  viewId === KANBAN_PROJECT_VIEW_IDS.PERSONAL;
-
-const getKanbanDefaultView = (viewId: string): KanbanProjectView => {
-  if (viewId === KANBAN_PROJECT_VIEW_IDS.PERSONAL) {
-    return {
-      id: KANBAN_PROJECT_VIEW_IDS.PERSONAL,
-      name: 'Personal',
-      filters: {
-        ...cloneKanbanFilters(DEFAULT_KANBAN_FILTER_STATE),
-        assigneeIds: [KANBAN_ASSIGNEE_FILTER_VALUES.SELF],
-        sortField: 'priority',
-        sortDirection: 'asc',
-      },
-      showSubIssues: getDefaultShowSubIssuesForView(
-        KANBAN_PROJECT_VIEW_IDS.PERSONAL
-      ),
-      showWorkspaces: DEFAULT_KANBAN_SHOW_WORKSPACES,
-      hideBlocked: DEFAULT_KANBAN_HIDE_BLOCKED,
-    };
-  }
-
-  return {
-    id: KANBAN_PROJECT_VIEW_IDS.TEAM,
-    name: 'Team',
-    filters: cloneKanbanFilters(DEFAULT_KANBAN_FILTER_STATE),
-    showSubIssues: getDefaultShowSubIssuesForView(KANBAN_PROJECT_VIEW_IDS.TEAM),
-    showWorkspaces: DEFAULT_KANBAN_SHOW_WORKSPACES,
-    hideBlocked: DEFAULT_KANBAN_HIDE_BLOCKED,
-  };
-};
-
-const createDefaultKanbanProjectViewPreferences = (
-  viewId: string
-): KanbanProjectViewPreferences => {
-  const view = getKanbanDefaultView(viewId);
-  return {
-    filters: cloneKanbanFilters(view.filters),
-    showSubIssues: view.showSubIssues,
-    showWorkspaces: view.showWorkspaces,
-    hideBlocked: view.hideBlocked,
-  };
-};
-
-export const resolveKanbanProjectState = (
-  projectSelection: KanbanProjectViewSelection | undefined
-): ResolvedKanbanProjectState => {
-  const requestedViewId = projectSelection?.activeViewId;
-  const activeViewId = isKanbanProjectViewId(requestedViewId ?? '')
-    ? (requestedViewId ?? DEFAULT_KANBAN_PROJECT_VIEW_ID)
-    : DEFAULT_KANBAN_PROJECT_VIEW_ID;
-  const activeView = getKanbanDefaultView(activeViewId);
-
-  return {
-    activeViewId,
-    filters: cloneKanbanFilters(activeView.filters),
-    showSubIssues: activeView.showSubIssues,
-    showWorkspaces: activeView.showWorkspaces,
-    hideBlocked: activeView.hideBlocked,
-  };
-};
 
 // --- User-defined project views -------------------------------------------
 // A project view unifies the old Active/All/hidden-status tabs and the
@@ -568,12 +470,6 @@ type State = {
   // Selected kanban view per project (built-in or user-defined view id)
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
 
-  // In-memory kanban runtime preferences per project and view
-  kanbanProjectViewPreferences: Record<
-    string,
-    Record<string, KanbanProjectViewPreferences>
-  >;
-
   // User-defined view definitions per project. Empty/absent => derived defaults.
   projectViewsById: Record<string, ProjectViewDefinition[]>;
 
@@ -592,10 +488,6 @@ type State = {
 
   // Per-agent hidden model keys (model selector visibility preference)
   hiddenModelsByAgent: Record<string, string[]>;
-
-  // Kanban view mode state
-  kanbanViewMode: KanbanViewMode;
-  listViewStatusFilter: string | null;
 
   // Mobile tab state
   mobileActiveTab: MobileTab;
@@ -660,30 +552,6 @@ type State = {
   setKanbanProjectView: (projectId: string, viewId: string) => void;
   // Replace the full ordered view list for a project (CRUD + reorder + materialize)
   setProjectViews: (projectId: string, views: ProjectViewDefinition[]) => void;
-  setKanbanProjectViewFilters: (
-    projectId: string,
-    viewId: string,
-    filters: KanbanFilterState
-  ) => void;
-  setKanbanProjectViewShowSubIssues: (
-    projectId: string,
-    viewId: string,
-    show: boolean
-  ) => void;
-  setKanbanProjectViewShowWorkspaces: (
-    projectId: string,
-    viewId: string,
-    show: boolean
-  ) => void;
-  setKanbanProjectViewHideBlocked: (
-    projectId: string,
-    viewId: string,
-    hide: boolean
-  ) => void;
-  clearKanbanProjectViewPreferences: (
-    projectId: string,
-    viewId: string
-  ) => void;
   setPreviewShortcuts: (
     projectKey: string,
     shortcuts: PreviewShortcutData[]
@@ -705,10 +573,6 @@ type State = {
 
   // Model visibility actions
   setModelHidden: (agent: string, modelKey: string, hidden: boolean) => void;
-
-  // Kanban view mode actions
-  setKanbanViewMode: (mode: KanbanViewMode) => void;
-  setListViewStatusFilter: (statusId: string | null) => void;
 
   // Mobile tab actions
   setMobileActiveTab: (tab: MobileTab) => void;
@@ -752,7 +616,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
 
   // Kanban per-project view selection
   kanbanProjectViewSelections: {},
-  kanbanProjectViewPreferences: {},
   projectViewsById: {},
   previewShortcutsByProject: {},
 
@@ -766,10 +629,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
 
   // Model visibility
   hiddenModelsByAgent: loadHiddenModels(),
-
-  // Kanban view mode state
-  kanbanViewMode: 'kanban' as KanbanViewMode,
-  listViewStatusFilter: null,
 
   // Mobile tab state
   mobileActiveTab: 'chat' as MobileTab,
@@ -963,141 +822,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       },
     })),
 
-  setKanbanProjectViewFilters: (projectId, viewId, filters) => {
-    if (!isKanbanProjectViewId(viewId)) {
-      return;
-    }
-
-    set((s) => {
-      const projectPreferences =
-        s.kanbanProjectViewPreferences[projectId] ?? {};
-      const existingPreferences =
-        projectPreferences[viewId] ??
-        createDefaultKanbanProjectViewPreferences(viewId);
-
-      return {
-        kanbanProjectViewPreferences: {
-          ...s.kanbanProjectViewPreferences,
-          [projectId]: {
-            ...projectPreferences,
-            [viewId]: {
-              ...existingPreferences,
-              filters: cloneKanbanFilters(filters),
-            },
-          },
-        },
-      };
-    });
-  },
-
-  setKanbanProjectViewShowSubIssues: (projectId, viewId, show) => {
-    if (!isKanbanProjectViewId(viewId)) {
-      return;
-    }
-
-    set((s) => {
-      const projectPreferences =
-        s.kanbanProjectViewPreferences[projectId] ?? {};
-      const existingPreferences =
-        projectPreferences[viewId] ??
-        createDefaultKanbanProjectViewPreferences(viewId);
-
-      return {
-        kanbanProjectViewPreferences: {
-          ...s.kanbanProjectViewPreferences,
-          [projectId]: {
-            ...projectPreferences,
-            [viewId]: {
-              ...existingPreferences,
-              showSubIssues: show,
-            },
-          },
-        },
-      };
-    });
-  },
-
-  setKanbanProjectViewShowWorkspaces: (projectId, viewId, show) => {
-    if (!isKanbanProjectViewId(viewId)) {
-      return;
-    }
-
-    set((s) => {
-      const projectPreferences =
-        s.kanbanProjectViewPreferences[projectId] ?? {};
-      const existingPreferences =
-        projectPreferences[viewId] ??
-        createDefaultKanbanProjectViewPreferences(viewId);
-
-      return {
-        kanbanProjectViewPreferences: {
-          ...s.kanbanProjectViewPreferences,
-          [projectId]: {
-            ...projectPreferences,
-            [viewId]: {
-              ...existingPreferences,
-              showWorkspaces: show,
-            },
-          },
-        },
-      };
-    });
-  },
-
-  setKanbanProjectViewHideBlocked: (projectId, viewId, hide) => {
-    if (!isKanbanProjectViewId(viewId)) {
-      return;
-    }
-
-    set((s) => {
-      const projectPreferences =
-        s.kanbanProjectViewPreferences[projectId] ?? {};
-      const existingPreferences =
-        projectPreferences[viewId] ??
-        createDefaultKanbanProjectViewPreferences(viewId);
-
-      return {
-        kanbanProjectViewPreferences: {
-          ...s.kanbanProjectViewPreferences,
-          [projectId]: {
-            ...projectPreferences,
-            [viewId]: {
-              ...existingPreferences,
-              hideBlocked: hide,
-            },
-          },
-        },
-      };
-    });
-  },
-
-  clearKanbanProjectViewPreferences: (projectId, viewId) => {
-    if (!isKanbanProjectViewId(viewId)) {
-      return;
-    }
-
-    set((s) => {
-      const projectPreferences = s.kanbanProjectViewPreferences[projectId];
-      if (!projectPreferences || !projectPreferences[viewId]) {
-        return {};
-      }
-
-      const nextProjectPreferences = { ...projectPreferences };
-      delete nextProjectPreferences[viewId];
-
-      const nextAllPreferences = { ...s.kanbanProjectViewPreferences };
-      if (Object.keys(nextProjectPreferences).length === 0) {
-        delete nextAllPreferences[projectId];
-      } else {
-        nextAllPreferences[projectId] = nextProjectPreferences;
-      }
-
-      return {
-        kanbanProjectViewPreferences: nextAllPreferences,
-      };
-    });
-  },
-
   setPreviewShortcuts: (projectKey, shortcuts) =>
     set((s) => ({
       previewShortcutsByProject: {
@@ -1197,12 +921,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       persistHiddenModels(next);
       return { hiddenModelsByAgent: next };
     }),
-
-  // Kanban view mode actions
-  setKanbanViewMode: (mode) => set({ kanbanViewMode: mode }),
-
-  setListViewStatusFilter: (statusId) =>
-    set({ listViewStatusFilter: statusId }),
 
   // Mobile tab actions
   setMobileActiveTab: (tab) => set({ mobileActiveTab: tab }),

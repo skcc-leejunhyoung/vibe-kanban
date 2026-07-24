@@ -443,13 +443,40 @@
       "active": "Active",
       "all": "All"
     },
+    "viewsEditor": {
+      "label": "Project Views",
+      "description": "Add, edit and reorder the views shown on the project page.",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "edit": "Edit view",
+      "delete": "Delete view",
+      "addView": "Add view",
+      "newView": "New view",
+      "name": "Name",
+      "layout": "Layout",
+      "layoutKanban": "Board",
+      "layoutTable": "Table",
+      "groups": "Groups (visibility & order)",
+      "sort": "Default sort",
+      "ascending": "Ascending",
+      "descending": "Descending",
+      "priorityFilter": "Default priority filter",
+      "showSubIssues": "Show sub-issues",
+      "showWorkspaces": "Show workspaces",
+      "hideBlocked": "Hide blocked issues",
+      "sortField": {
+        "sort_order": "Manual",
+        "priority": "Priority",
+        "created_at": "Created",
+        "updated_at": "Updated",
+        "title": "Title"
+      }
+    },
     "loginRequired": {
       "title": "Sign in required",
       "description": "Please sign in to view this project.",
       "action": "Sign in"
     },
-    "team": "Team",
-    "personal": "Personal",
     "searchPlaceholder": "Search issues...",
     "filters": "Filters",
     "clearFilters": "Clear filters",

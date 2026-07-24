@@ -413,8 +413,6 @@
       "description": "請登入以查看此專案。",
       "action": "登入"
     },
-    "team": "Team",
-    "personal": "Personal",
     "searchPlaceholder": "Search issues...",
     "filters": "Filters",
     "clearFilters": "Clear filters",

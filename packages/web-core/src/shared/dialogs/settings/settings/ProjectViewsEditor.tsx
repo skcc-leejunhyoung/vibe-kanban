@@ -46,6 +46,16 @@ const SORT_FIELDS: KanbanSortField[] = [
 
 const PRIORITIES: IssuePriority[] = ['urgent', 'high', 'medium', 'low'];
 
+// Matches the label set used by PriorityFilterDropdown. Not routed through
+// i18n: `kanban.priority` is already a translated string key ("Priority")
+// elsewhere, so nesting per-level keys under it would collide.
+const PRIORITY_LABELS: Record<IssuePriority, string> = {
+  urgent: 'Urgent',
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+};
+
 /**
  * Per-project editor for user-defined views: add / rename / delete / reorder,
  * and per-view layout, group visibility+order, and default filters/sort.
@@ -470,7 +480,7 @@ function ViewEditorPanel({ view, statuses, onChange }: ViewEditorPanelProps) {
                   : 'border-border text-low hover:text-normal'
               )}
             >
-              {t(`kanban.priority.${priority}`, priority)}
+              {PRIORITY_LABELS[priority]}
             </button>
           ))}
         </div>

@@ -413,8 +413,6 @@
       "description": "Por favor inicia sesión para ver este proyecto.",
       "action": "Iniciar sesión"
     },
-    "team": "Team",
-    "personal": "Personal",
     "searchPlaceholder": "Search issues...",
     "filters": "Filters",
     "clearFilters": "Clear filters",

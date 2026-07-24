@@ -413,8 +413,6 @@
       "description": "请登录以查看此项目。",
       "action": "登录"
     },
-    "team": "Team",
-    "personal": "Personal",
     "searchPlaceholder": "Search issues...",
     "filters": "Filters",
     "clearFilters": "Clear filters",
