@@ -57,6 +57,24 @@ impl EventService {
         Ok(())
     }
 
+    /// Publish an execution-process update after its database statement has
+    /// completed. SQLite's update hook fires before the statement commits, so
+    /// a re-read through another pooled connection can observe the previous
+    /// `running` value and leave clients waiting for reconciliation.
+    pub async fn publish_execution_process_update(
+        &self,
+        process: &ExecutionProcess,
+    ) -> Result<(), SqlxError> {
+        self.msg_store
+            .push_patch(execution_process_patch::replace(process));
+        Self::push_workspace_update_for_session(
+            &self.db.pool,
+            self.msg_store.clone(),
+            process.session_id,
+        )
+        .await
+    }
+
     /// Creates the hook function that should be used with DBService::new_with_after_connect
     pub fn create_hook(
         msg_store: Arc<MsgStore>,

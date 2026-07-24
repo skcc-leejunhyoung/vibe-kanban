@@ -555,7 +555,7 @@ impl ExecutionProcess {
         id: Uuid,
         status: ExecutionProcessStatus,
         exit_code: Option<i64>,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<Self, sqlx::Error> {
         let completed_at = if matches!(status, ExecutionProcessStatus::Running) {
             None
         } else {
@@ -574,7 +574,9 @@ impl ExecutionProcess {
         .execute(pool)
         .await?;
 
-        Ok(())
+        Self::find_by_id(pool, id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
     }
 
     pub fn executor_action(&self) -> Result<&ExecutorAction, anyhow::Error> {

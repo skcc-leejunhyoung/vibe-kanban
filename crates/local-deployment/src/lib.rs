@@ -211,9 +211,11 @@ impl Deployment for LocalDeployment {
 
         let ssh_config = embedded_ssh::config::build_config(relay_signing.signing_key());
 
+        let events = EventService::new(db.clone(), events_msg_store, events_entry_count);
         let workspace_manager = WorkspaceManager::new(db.clone());
         let container = LocalContainerService::new(
             db.clone(),
+            events.clone(),
             workspace_manager.clone(),
             msg_stores.clone(),
             config.clone(),
@@ -224,8 +226,6 @@ impl Deployment for LocalDeployment {
             remote_client.clone().ok(),
         )
         .await;
-
-        let events = EventService::new(db.clone(), events_msg_store, events_entry_count);
 
         let file_search_cache = Arc::new(FileSearchCache::new());
 

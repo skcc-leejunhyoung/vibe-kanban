@@ -64,8 +64,8 @@ use uuid::Uuid;
 use worktree_manager::WorktreeError;
 
 use crate::services::{
-    execution_process, normalized_replay_cache, notification::NotificationService,
-    queued_message::QueuedMessageService,
+    events::EventService, execution_process, normalized_replay_cache,
+    notification::NotificationService, queued_message::QueuedMessageService,
 };
 pub type ContainerRef = String;
 
@@ -153,6 +153,8 @@ pub trait ContainerService {
     fn msg_stores(&self) -> &Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>;
 
     fn db(&self) -> &DBService;
+
+    fn events(&self) -> &EventService;
 
     fn git(&self) -> &GitService;
 
@@ -360,7 +362,7 @@ pub trait ContainerService {
                 process.session_id
             );
             // Update the execution process status first
-            if let Err(e) = ExecutionProcess::update_completion(
+            let completed_process = match ExecutionProcess::update_completion(
                 &self.db().pool,
                 process.id,
                 ExecutionProcessStatus::Failed,
@@ -368,12 +370,26 @@ pub trait ContainerService {
             )
             .await
             {
+                Ok(process) => process,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to update orphaned execution process {} status: {}",
+                        process.id,
+                        e
+                    );
+                    continue;
+                }
+            };
+            if let Err(e) = self
+                .events()
+                .publish_execution_process_update(&completed_process)
+                .await
+            {
                 tracing::error!(
-                    "Failed to update orphaned execution process {} status: {}",
+                    "Failed to publish orphaned execution process {} completion: {}",
                     process.id,
                     e
                 );
-                continue;
             }
             // Capture after-head commit OID per repository
             if let Ok(ctx) = ExecutionProcess::load_context(&self.db().pool, process.id).await
@@ -1685,7 +1701,7 @@ pub trait ContainerService {
                 .await
                 .remove(&execution_process.id);
             // Mark process as failed
-            if let Err(update_error) = ExecutionProcess::update_completion(
+            match ExecutionProcess::update_completion(
                 &self.db().pool,
                 execution_process.id,
                 ExecutionProcessStatus::Failed,
@@ -1693,11 +1709,26 @@ pub trait ContainerService {
             )
             .await
             {
-                tracing::error!(
-                    "Failed to mark execution process {} as failed after start error: {}",
-                    execution_process.id,
-                    update_error
-                );
+                Ok(completed_process) => {
+                    if let Err(publish_error) = self
+                        .events()
+                        .publish_execution_process_update(&completed_process)
+                        .await
+                    {
+                        tracing::error!(
+                            "Failed to publish execution process {} start failure: {}",
+                            execution_process.id,
+                            publish_error
+                        );
+                    }
+                }
+                Err(update_error) => {
+                    tracing::error!(
+                        "Failed to mark execution process {} as failed after start error: {}",
+                        execution_process.id,
+                        update_error
+                    );
+                }
             }
             // Emit stderr error message
             let log_message = LogMsg::Stderr(format!("Failed to start execution: {start_error}"));

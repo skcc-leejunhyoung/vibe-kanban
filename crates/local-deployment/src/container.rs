@@ -51,6 +51,7 @@ use services::services::{
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
     container::{ContainerError, ContainerRef, ContainerService},
     diff_stream::{self, DiffStreamHandle},
+    events::EventService,
     file::FileService,
     notification::NotificationService,
     queued_message::QueuedMessageService,
@@ -165,6 +166,7 @@ impl SessionFinalizationBarrier {
 #[derive(Clone)]
 pub struct LocalContainerService {
     db: DBService,
+    events: EventService,
     workspace_manager: WorkspaceManager,
     child_store: Arc<RwLock<HashMap<Uuid, Arc<RwLock<AsyncGroupChild>>>>>,
     cancellation_tokens: Arc<RwLock<HashMap<Uuid, CancellationToken>>>,
@@ -208,6 +210,7 @@ impl LocalContainerService {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         db: DBService,
+        events: EventService,
         workspace_manager: WorkspaceManager,
         msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
         config: Arc<RwLock<Config>>,
@@ -231,6 +234,7 @@ impl LocalContainerService {
 
         let container = LocalContainerService {
             db,
+            events,
             workspace_manager,
             child_store,
             cancellation_tokens,
@@ -751,11 +755,26 @@ impl LocalContainerService {
                 .session_finalization
                 .mark_active(session_id, exec_id)
                 .await;
-            if !ExecutionProcess::was_stopped(&db.pool, exec_id).await
-                && let Err(e) =
-                    ExecutionProcess::update_completion(&db.pool, exec_id, status, exit_code).await
-            {
-                tracing::error!("Failed to update execution process completion: {}", e);
+            if !ExecutionProcess::was_stopped(&db.pool, exec_id).await {
+                match ExecutionProcess::update_completion(&db.pool, exec_id, status, exit_code)
+                    .await
+                {
+                    Ok(process) => {
+                        if let Err(e) = container
+                            .events
+                            .publish_execution_process_update(&process)
+                            .await
+                        {
+                            tracing::error!(
+                                "Failed to publish execution process completion: {}",
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to update execution process completion: {}", e);
+                    }
+                }
             }
 
             if should_kill_process_group
@@ -2283,6 +2302,10 @@ impl ContainerService for LocalContainerService {
         &self.db
     }
 
+    fn events(&self) -> &EventService {
+        &self.events
+    }
+
     fn git(&self) -> &GitService {
         &self.git
     }
@@ -2667,7 +2690,15 @@ impl ContainerService for LocalContainerService {
             PendingExecutionStart::delete_by_process_id(&self.db.pool, execution_process.id)
                 .await
                 .map_err(|e| ContainerError::Other(anyhow!(e)))?;
-            ExecutionProcess::update_completion(&self.db.pool, execution_process.id, status, None)
+            let completed_process = ExecutionProcess::update_completion(
+                &self.db.pool,
+                execution_process.id,
+                status,
+                None,
+            )
+            .await?;
+            self.events
+                .publish_execution_process_update(&completed_process)
                 .await?;
             if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
                 msg.push_finished();
@@ -2699,7 +2730,15 @@ impl ContainerService for LocalContainerService {
         self.session_finalization
             .mark_active(execution_process.session_id, execution_process.id)
             .await;
-        ExecutionProcess::update_completion(&self.db.pool, execution_process.id, status, exit_code)
+        let completed_process = ExecutionProcess::update_completion(
+            &self.db.pool,
+            execution_process.id,
+            status,
+            exit_code,
+        )
+        .await?;
+        self.events
+            .publish_execution_process_update(&completed_process)
             .await?;
 
         // Try graceful cancellation first, then force kill
