@@ -107,6 +107,21 @@ export function isValidSplitPresetLayout(
   );
 }
 
+export function resizeSplitPaneUrls(
+  source: SplitPaneState[],
+  destination: SplitPaneState[],
+  newPaneUrl: string,
+  sourceFallbackUrl?: string
+): SplitPaneState[] {
+  return destination.map((pane, index) => ({
+    ...pane,
+    url:
+      index < source.length
+        ? (source[index].url ?? sourceFallbackUrl ?? null)
+        : newPaneUrl,
+  }));
+}
+
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: paneCount(preset) }, (_, index) => ({
     id: `preset-${preset}-pane-${index + 1}`,
@@ -180,10 +195,7 @@ export const useSplitScreenStore = create<SplitScreenState>()(
                 ...destination,
                 activePaneId: destination.panes[0].id,
                 focusHistory: [destination.panes[0].id],
-                panes: destination.panes.map((pane, index) => ({
-                  ...pane,
-                  url: source.panes[index]?.url ?? pane.url,
-                })),
+                panes: resizeSplitPaneUrls(source.panes, destination.panes, ''),
               },
             },
           };
@@ -262,10 +274,12 @@ export const useSplitScreenStore = create<SplitScreenState>()(
               ...state.presets,
               [preset]: {
                 ...withFocusedPane(destination, destination.panes[0].id),
-                panes: destination.panes.map((pane, index) => ({
-                  ...pane,
-                  url: source.panes[index]?.url ?? currentUrl,
-                })),
+                panes: resizeSplitPaneUrls(
+                  source.panes,
+                  destination.panes,
+                  currentUrl,
+                  currentUrl
+                ),
               },
             },
           };

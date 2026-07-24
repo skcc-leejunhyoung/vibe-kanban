@@ -13,6 +13,7 @@ const {
   getDefaultSplitPresetLayout,
   getSplitPresetLayoutOptions,
   getSplitScreenUserId,
+  resizeSplitPaneUrls,
   shouldRenderSplitScreenFrames,
   SPLIT_PRESETS,
   useSplitScreenStore,
@@ -151,6 +152,71 @@ describe('split screen presets', () => {
       '/workspaces/b',
     ]);
     expect(preset.activePaneId).toBe(preset.panes[0].id);
+  });
+
+  it('removes panes from the bottom right and appends new panes there', () => {
+    const sixPanes = makePreset(6).panes.map((pane, index) => ({
+      ...pane,
+      url: `/workspaces/${index + 1}`,
+    }));
+    const fourPanes = resizeSplitPaneUrls(
+      sixPanes,
+      makePreset(4).panes,
+      '/workspaces/new'
+    );
+
+    expect(fourPanes.map((pane) => pane.url)).toEqual([
+      '/workspaces/1',
+      '/workspaces/2',
+      '/workspaces/3',
+      '/workspaces/4',
+    ]);
+
+    const expandedPanes = resizeSplitPaneUrls(
+      fourPanes,
+      makePreset(6).panes,
+      '/workspaces/new'
+    );
+    expect(expandedPanes.map((pane) => pane.url)).toEqual([
+      '/workspaces/1',
+      '/workspaces/2',
+      '/workspaces/3',
+      '/workspaces/4',
+      '/workspaces/new',
+      '/workspaces/new',
+    ]);
+  });
+
+  it('keeps top-left pane order across a shrink and re-expansion', () => {
+    useSplitScreenStore.getState().setMaxPanes(9);
+    useSplitScreenStore.getState().setPreset(6, '/workspaces/1');
+    for (let index = 0; index < 6; index += 1) {
+      useSplitScreenStore
+        .getState()
+        .setPaneUrl(`preset-6-pane-${index + 1}`, `/workspaces/${index + 1}`);
+    }
+
+    useSplitScreenStore.getState().setPreset(4, '/workspaces/current');
+    expect(
+      useSplitScreenStore.getState().presets[4].panes.map((pane) => pane.url)
+    ).toEqual([
+      '/workspaces/1',
+      '/workspaces/2',
+      '/workspaces/3',
+      '/workspaces/4',
+    ]);
+
+    useSplitScreenStore.getState().setPreset(6, '/workspaces/new');
+    expect(
+      useSplitScreenStore.getState().presets[6].panes.map((pane) => pane.url)
+    ).toEqual([
+      '/workspaces/1',
+      '/workspaces/2',
+      '/workspaces/3',
+      '/workspaces/4',
+      '/workspaces/new',
+      '/workspaces/new',
+    ]);
   });
 
   it('focuses the first pane whenever a preset is selected', () => {
