@@ -2697,9 +2697,17 @@ impl ContainerService for LocalContainerService {
                 None,
             )
             .await?;
-            self.events
+            if let Err(error) = self
+                .events
                 .publish_execution_process_update(&completed_process)
-                .await?;
+                .await
+            {
+                tracing::error!(
+                    execution_process_id = %execution_process.id,
+                    %error,
+                    "Failed to publish deferred execution cancellation"
+                );
+            }
             if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
                 msg.push_finished();
                 msg.push(LogMsg::StorageFinished);
@@ -2737,9 +2745,17 @@ impl ContainerService for LocalContainerService {
             exit_code,
         )
         .await?;
-        self.events
+        if let Err(error) = self
+            .events
             .publish_execution_process_update(&completed_process)
-            .await?;
+            .await
+        {
+            tracing::error!(
+                execution_process_id = %execution_process.id,
+                %error,
+                "Failed to publish execution stop"
+            );
+        }
 
         // Try graceful cancellation first, then force kill
         if let Some(cancel) = self.take_cancellation_token(&execution_process.id).await {

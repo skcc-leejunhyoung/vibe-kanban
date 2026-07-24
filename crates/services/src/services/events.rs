@@ -145,6 +145,12 @@ impl EventService {
                     if let Ok(table) = HookTables::from_str(hook.table) {
                         let rowid = hook.rowid;
                         runtime_handle.spawn(async move {
+                            // SQLite invokes update hooks before the statement commits.
+                            // Let the issuing query finish first so this pooled re-read
+                            // cannot publish the previous row value after an explicit
+                            // post-commit lifecycle update.
+                            tokio::task::yield_now().await;
+
                             let record_type: RecordTypes = match (table, hook.operation.clone()) {
                                 (HookTables::Workspaces, SqliteOperation::Delete)
                                 | (HookTables::ExecutionProcesses, SqliteOperation::Delete)
