@@ -141,6 +141,18 @@ export type KanbanProjectViewSelection = {
   activeViewId: string;
 };
 
+// Transient per-view runtime override, layered on top of a view's configured
+// default (the ProjectViewDefinition edited in settings). The project-page
+// toolbar writes a full snapshot here so a view's saved default is never
+// mutated by ad-hoc filtering; "Clear filters" deletes the override to reveal
+// the view's configured default again. Keyed by project id then view id.
+export type KanbanProjectViewPreferences = {
+  filters: KanbanFilterState;
+  showSubIssues: boolean;
+  showWorkspaces: boolean;
+  hideBlocked: boolean;
+};
+
 const cloneKanbanFilters = (filters: KanbanFilterState): KanbanFilterState => ({
   searchQuery: filters.searchQuery,
   priorities: [...filters.priorities],
@@ -473,6 +485,13 @@ type State = {
   // User-defined view definitions per project. Empty/absent => derived defaults.
   projectViewsById: Record<string, ProjectViewDefinition[]>;
 
+  // Transient per-view toolbar overrides layered over the view's configured
+  // default, per project then view id. Absent => the view's default is in use.
+  kanbanProjectViewPreferences: Record<
+    string,
+    Record<string, KanbanProjectViewPreferences>
+  >;
+
   // Preview browser shortcuts keyed by project id. Workspaces with no
   // associated project use PREVIEW_SHORTCUTS_GLOBAL_KEY.
   previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
@@ -552,6 +571,16 @@ type State = {
   setKanbanProjectView: (projectId: string, viewId: string) => void;
   // Replace the full ordered view list for a project (CRUD + reorder + materialize)
   setProjectViews: (projectId: string, views: ProjectViewDefinition[]) => void;
+  // Toolbar override actions: set/clear the transient per-view runtime override.
+  setKanbanProjectViewPreferences: (
+    projectId: string,
+    viewId: string,
+    preferences: KanbanProjectViewPreferences
+  ) => void;
+  clearKanbanProjectViewPreferences: (
+    projectId: string,
+    viewId: string
+  ) => void;
   setPreviewShortcuts: (
     projectKey: string,
     shortcuts: PreviewShortcutData[]
@@ -617,6 +646,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Kanban per-project view selection
   kanbanProjectViewSelections: {},
   projectViewsById: {},
+  kanbanProjectViewPreferences: {},
   previewShortcutsByProject: {},
 
   // Workspace sidebar filter state
@@ -821,6 +851,39 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
         [projectId]: views,
       },
     })),
+
+  setKanbanProjectViewPreferences: (projectId, viewId, preferences) =>
+    set((s) => ({
+      kanbanProjectViewPreferences: {
+        ...s.kanbanProjectViewPreferences,
+        [projectId]: {
+          ...s.kanbanProjectViewPreferences[projectId],
+          [viewId]: {
+            filters: cloneKanbanFilters(preferences.filters),
+            showSubIssues: preferences.showSubIssues,
+            showWorkspaces: preferences.showWorkspaces,
+            hideBlocked: preferences.hideBlocked,
+          },
+        },
+      },
+    })),
+
+  clearKanbanProjectViewPreferences: (projectId, viewId) =>
+    set((s) => {
+      const projectPreferences = s.kanbanProjectViewPreferences[projectId];
+      if (!projectPreferences || !(viewId in projectPreferences)) {
+        return {};
+      }
+      const nextProjectPreferences = { ...projectPreferences };
+      delete nextProjectPreferences[viewId];
+      const next = { ...s.kanbanProjectViewPreferences };
+      if (Object.keys(nextProjectPreferences).length === 0) {
+        delete next[projectId];
+      } else {
+        next[projectId] = nextProjectPreferences;
+      }
+      return { kanbanProjectViewPreferences: next };
+    }),
 
   setPreviewShortcuts: (projectKey, shortcuts) =>
     set((s) => ({

@@ -23,6 +23,7 @@ import {
   type WorkspaceSortBy,
   type WorkspaceSortOrder,
   type KanbanProjectViewSelection,
+  type KanbanProjectViewPreferences,
   type ProjectViewDefinition,
 } from '@/shared/stores/useUiPreferencesStore';
 import {
@@ -58,6 +59,10 @@ function storeToScratchData(state: {
   createDraftWorkspaceByDefault: boolean;
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
   projectViewsById: Record<string, ProjectViewDefinition[]>;
+  kanbanProjectViewPreferences: Record<
+    string,
+    Record<string, KanbanProjectViewPreferences>
+  >;
   previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
 }): UiPreferencesData {
   const workspacePanelStates: { [key: string]: WorkspacePanelStateData } = {};
@@ -97,10 +102,11 @@ function storeToScratchData(state: {
       string,
       JsonValue
     >,
-    // Legacy per-view runtime-override preferences, superseded by
-    // kanban_project_views. No longer read into the store; kept empty going
-    // forward for wire-format compatibility with older payloads.
-    kanban_project_view_preferences: {},
+    // Transient per-view toolbar overrides layered over each view's configured
+    // default. Persisted so ad-hoc filtering survives reloads; "Clear filters"
+    // removes the entry to reveal the view default again.
+    kanban_project_view_preferences:
+      state.kanbanProjectViewPreferences as Record<string, JsonValue>,
     kanban_project_views: state.projectViewsById as unknown as Record<
       string,
       JsonValue
@@ -134,6 +140,10 @@ function scratchDataToStore(data: UiPreferencesData): {
   createDraftWorkspaceByDefault: boolean;
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
   projectViewsById: Record<string, ProjectViewDefinition[]>;
+  kanbanProjectViewPreferences: Record<
+    string,
+    Record<string, KanbanProjectViewPreferences>
+  >;
   previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
 } {
   const workspacePanelStates: Record<string, WorkspacePanelState> = {};
@@ -227,6 +237,11 @@ function scratchDataToStore(data: UiPreferencesData): {
       string,
       ProjectViewDefinition[]
     >,
+    kanbanProjectViewPreferences: (data.kanban_project_view_preferences ??
+      {}) as unknown as Record<
+      string,
+      Record<string, KanbanProjectViewPreferences>
+    >,
     previewShortcutsByProject,
   };
 }
@@ -266,6 +281,7 @@ export function useUiPreferencesScratch() {
     createDraftWorkspaceByDefault: state.createDraftWorkspaceByDefault,
     kanbanProjectViewSelections: state.kanbanProjectViewSelections,
     projectViewsById: state.projectViewsById,
+    kanbanProjectViewPreferences: state.kanbanProjectViewPreferences,
     previewShortcutsByProject: state.previewShortcutsByProject,
   }));
 
@@ -300,6 +316,7 @@ export function useUiPreferencesScratch() {
       createDraftWorkspaceByDefault: currentState.createDraftWorkspaceByDefault,
       kanbanProjectViewSelections: currentState.kanbanProjectViewSelections,
       projectViewsById: currentState.projectViewsById,
+      kanbanProjectViewPreferences: currentState.kanbanProjectViewPreferences,
       previewShortcutsByProject: currentState.previewShortcutsByProject,
     });
 
@@ -351,6 +368,7 @@ export function useUiPreferencesScratch() {
           serverState.createDraftWorkspaceByDefault,
         kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
         projectViewsById: serverState.projectViewsById,
+        kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
         previewShortcutsByProject: serverState.previewShortcutsByProject,
       });
 

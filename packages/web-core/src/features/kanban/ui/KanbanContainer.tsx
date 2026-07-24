@@ -29,7 +29,7 @@ import {
   type KanbanFilterState,
   type KanbanSortField,
   type KanbanViewMode,
-  type ProjectViewDefinition,
+  type KanbanProjectViewPreferences,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useProjectViewSwitcherStore } from '@/shared/stores/useProjectViewSwitcherStore';
 import {
@@ -232,7 +232,15 @@ export function KanbanContainer() {
   const setKanbanProjectView = useUiPreferencesStore(
     (s) => s.setKanbanProjectView
   );
-  const setProjectViews = useUiPreferencesStore((s) => s.setProjectViews);
+  const projectViewPreferencesById = useUiPreferencesStore(
+    (s) => s.kanbanProjectViewPreferences[projectId]
+  );
+  const setKanbanProjectViewPreferences = useUiPreferencesStore(
+    (s) => s.setKanbanProjectViewPreferences
+  );
+  const clearKanbanProjectViewPreferences = useUiPreferencesStore(
+    (s) => s.clearKanbanProjectViewPreferences
+  );
 
   // Sort all statuses for grouping and default-view derivation.
   const sortedStatuses = useMemo(
@@ -265,40 +273,74 @@ export function KanbanContainer() {
     [projectViews, activeViewId]
   );
 
-  const kanbanFilters = activeView?.filters ?? DEFAULT_KANBAN_FILTER_STATE;
-  const showSubIssues = activeView?.showSubIssues ?? true;
-  const showWorkspaces =
+  // The view's configured default (edited in project settings) and the
+  // transient toolbar override layered on top of it. The toolbar never mutates
+  // the saved view default; "Clear filters" drops the override to reveal it.
+  const viewDefaultFilters = activeView?.filters ?? DEFAULT_KANBAN_FILTER_STATE;
+  const viewDefaultShowSubIssues = activeView?.showSubIssues ?? true;
+  const viewDefaultShowWorkspaces =
     activeView?.showWorkspaces ?? DEFAULT_KANBAN_SHOW_WORKSPACES;
-  const hideBlocked = activeView?.hideBlocked ?? DEFAULT_KANBAN_HIDE_BLOCKED;
+  const viewDefaultHideBlocked =
+    activeView?.hideBlocked ?? DEFAULT_KANBAN_HIDE_BLOCKED;
+
+  const viewOverride = projectViewPreferencesById?.[activeViewId];
+  const kanbanFilters = viewOverride?.filters ?? viewDefaultFilters;
+  const showSubIssues = viewOverride?.showSubIssues ?? viewDefaultShowSubIssues;
+  const showWorkspaces =
+    viewOverride?.showWorkspaces ?? viewDefaultShowWorkspaces;
+  const hideBlocked = viewOverride?.hideBlocked ?? viewDefaultHideBlocked;
   const kanbanViewMode: KanbanViewMode =
     activeView?.layout === 'table' ? 'list' : 'kanban';
 
+  // Active filters == the current state diverges from this view's own default,
+  // so switching to a view with configured defaults doesn't read as "filtered".
   const hasActiveFilters = useMemo(
     () =>
-      !areKanbanFiltersEqual(kanbanFilters, DEFAULT_KANBAN_FILTER_STATE) ||
-      showSubIssues !== true ||
-      showWorkspaces !== DEFAULT_KANBAN_SHOW_WORKSPACES ||
-      hideBlocked !== DEFAULT_KANBAN_HIDE_BLOCKED,
-    [kanbanFilters, showSubIssues, showWorkspaces, hideBlocked]
+      !areKanbanFiltersEqual(kanbanFilters, viewDefaultFilters) ||
+      showSubIssues !== viewDefaultShowSubIssues ||
+      showWorkspaces !== viewDefaultShowWorkspaces ||
+      hideBlocked !== viewDefaultHideBlocked,
+    [
+      kanbanFilters,
+      viewDefaultFilters,
+      showSubIssues,
+      viewDefaultShowSubIssues,
+      showWorkspaces,
+      viewDefaultShowWorkspaces,
+      hideBlocked,
+      viewDefaultHideBlocked,
+    ]
   );
   const shouldAnimateCreateButton = issues.length === 0;
 
-  // Persist an edit to the active view. Materializes the derived default views
-  // on first touch so the change survives reloads.
-  const updateActiveView = useCallback(
-    (patch: Partial<ProjectViewDefinition>) => {
-      const next = projectViews.map((v) =>
-        v.id === activeViewId ? { ...v, ...patch } : v
-      );
-      setProjectViews(projectId, next);
+  // Toolbar edits write a transient per-view override (a full snapshot of the
+  // current effective state plus the patch), leaving the saved view definition
+  // untouched. Clearing removes the override.
+  const updateViewOverride = useCallback(
+    (patch: Partial<KanbanProjectViewPreferences>) => {
+      setKanbanProjectViewPreferences(projectId, activeViewId, {
+        filters: kanbanFilters,
+        showSubIssues,
+        showWorkspaces,
+        hideBlocked,
+        ...patch,
+      });
     },
-    [projectViews, activeViewId, projectId, setProjectViews]
+    [
+      projectId,
+      activeViewId,
+      kanbanFilters,
+      showSubIssues,
+      showWorkspaces,
+      hideBlocked,
+      setKanbanProjectViewPreferences,
+    ]
   );
   const updateActiveViewFilters = useCallback(
     (patch: Partial<KanbanFilterState>) => {
-      updateActiveView({ filters: { ...kanbanFilters, ...patch } });
+      updateViewOverride({ filters: { ...kanbanFilters, ...patch } });
     },
-    [updateActiveView, kanbanFilters]
+    [updateViewOverride, kanbanFilters]
   );
 
   // Compute resolved status IDs for the blocked filter.
@@ -358,29 +400,24 @@ export function KanbanContainer() {
   );
 
   const setShowSubIssues = useCallback(
-    (show: boolean) => updateActiveView({ showSubIssues: show }),
-    [updateActiveView]
+    (show: boolean) => updateViewOverride({ showSubIssues: show }),
+    [updateViewOverride]
   );
 
   const setShowWorkspaces = useCallback(
-    (show: boolean) => updateActiveView({ showWorkspaces: show }),
-    [updateActiveView]
+    (show: boolean) => updateViewOverride({ showWorkspaces: show }),
+    [updateViewOverride]
   );
 
   const setHideBlocked = useCallback(
-    (hide: boolean) => updateActiveView({ hideBlocked: hide }),
-    [updateActiveView]
+    (hide: boolean) => updateViewOverride({ hideBlocked: hide }),
+    [updateViewOverride]
   );
 
+  // Reset the active view to its configured default by dropping the override.
   const clearKanbanFilters = useCallback(
-    () =>
-      updateActiveView({
-        filters: { ...DEFAULT_KANBAN_FILTER_STATE },
-        showSubIssues: true,
-        showWorkspaces: DEFAULT_KANBAN_SHOW_WORKSPACES,
-        hideBlocked: DEFAULT_KANBAN_HIDE_BLOCKED,
-      }),
-    [updateActiveView]
+    () => clearKanbanProjectViewPreferences(projectId, activeViewId),
+    [clearKanbanProjectViewPreferences, projectId, activeViewId]
   );
 
   const handleKanbanProjectViewChange = useCallback(
