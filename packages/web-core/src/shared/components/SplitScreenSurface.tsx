@@ -19,6 +19,7 @@ import {
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { useEscapeToBlur } from '@/shared/keyboard/useEscapeToBlur';
+import { SPLIT_PANE_OPENED_EVENT } from '@/shared/lib/openInSplitPane';
 import {
   type SplitPaneState,
   type SplitPreset,
@@ -549,6 +550,42 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   );
   usePresetHotkeys(activatePreset);
 
+  const navigatePaneAndFocus = useCallback(
+    (paneId: string, url: string) => {
+      pendingNavigationFocusPaneIdRef.current = paneId;
+      activatePane(paneId);
+      requestAnimationFrame(() => {
+        paneFramesRef.current.get(paneId)?.contentWindow?.postMessage(
+          {
+            type: MESSAGE_TYPE,
+            event: 'navigate-to',
+            paneId,
+            url,
+          } satisfies PaneMessage,
+          window.location.origin
+        );
+      });
+    },
+    [activatePane]
+  );
+
+  useEffect(() => {
+    const handlePaneOpened = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId?: unknown; url?: unknown }>)
+        .detail;
+      if (
+        typeof detail?.paneId !== 'string' ||
+        typeof detail.url !== 'string'
+      ) {
+        return;
+      }
+      navigatePaneAndFocus(detail.paneId, detail.url);
+    };
+    window.addEventListener(SPLIT_PANE_OPENED_EVENT, handlePaneOpened);
+    return () =>
+      window.removeEventListener(SPLIT_PANE_OPENED_EVENT, handlePaneOpened);
+  }, [navigatePaneAndFocus]);
+
   useEffect(() => {
     return () => {
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -639,20 +676,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
           const currentState = useSplitScreenStore.getState();
           const targetPaneId =
             currentState.presets[currentState.preset].activePaneId;
-          pendingNavigationFocusPaneIdRef.current = targetPaneId;
-          activatePane(targetPaneId);
-          requestAnimationFrame(() => {
-            const targetFrame = paneFramesRef.current.get(targetPaneId);
-            targetFrame?.contentWindow?.postMessage(
-              {
-                type: MESSAGE_TYPE,
-                event: 'navigate-to',
-                paneId: targetPaneId,
-                url: message.url,
-              } satisfies PaneMessage,
-              window.location.origin
-            );
-          });
+          navigatePaneAndFocus(targetPaneId, message.url);
         }
       } else if (
         message.event === 'max-panes' &&
@@ -681,6 +705,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     activatePreset,
     focusAdjacentPane,
     movePane,
+    navigatePaneAndFocus,
     openPane,
     setMaxPanes,
     setPresetLayout,

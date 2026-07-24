@@ -2,11 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SplitPreset, SplitPresetState } from './useSplitScreenStore';
 
 const storedValues = new Map<string, string>();
-vi.stubGlobal('localStorage', {
+const localStorageStub = {
   getItem: (key: string) => storedValues.get(key) ?? null,
   setItem: (key: string, value: string) => storedValues.set(key, value),
   removeItem: (key: string) => storedValues.delete(key),
-});
+};
+vi.stubGlobal('localStorage', localStorageStub);
 
 const {
   getAdjacentSplitPaneId,
@@ -23,6 +24,9 @@ const {
   sameOriginRelativeUrl,
   shouldFocusRequestedPane,
 } = await import('@/shared/components/SplitScreenSurface');
+const { openInSplitPane, SPLIT_PANE_OPENED_EVENT } = await import(
+  '@/shared/lib/openInSplitPane'
+);
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: preset }, (_, index) => ({
@@ -36,6 +40,8 @@ const makePreset = (preset: SplitPreset): SplitPresetState => ({
 
 describe('split screen presets', () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal('localStorage', localStorageStub);
     storedValues.clear();
     useSplitScreenStore.setState({
       activeUserId: null,
@@ -53,6 +59,37 @@ describe('split screen presets', () => {
     expect(shouldRenderSplitScreenFrames(3)).toBe(true);
     expect(shouldRenderSplitScreenFrames(4)).toBe(true);
     expect(shouldRenderSplitScreenFrames(9)).toBe(true);
+  });
+
+  it('notifies the split-screen manager to navigate and focus a pane opened from the parent', () => {
+    useSplitScreenStore.setState({ preset: 2 });
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', {
+      location: { pathname: '/', search: '', hash: '' },
+      name: '',
+      dispatchEvent,
+    });
+    vi.stubGlobal(
+      'CustomEvent',
+      class {
+        constructor(
+          readonly type: string,
+          readonly init: { detail: unknown }
+        ) {}
+
+        get detail() {
+          return this.init.detail;
+        }
+      }
+    );
+
+    openInSplitPane('/workspaces/new');
+
+    expect(dispatchEvent).toHaveBeenCalledOnce();
+    expect(dispatchEvent.mock.calls[0]?.[0]).toMatchObject({
+      type: SPLIT_PANE_OPENED_EVENT,
+      detail: { paneId: 'preset-2-pane-2', url: '/workspaces/new' },
+    });
   });
 
   it('waits for authentication before selecting the persisted user scope', () => {

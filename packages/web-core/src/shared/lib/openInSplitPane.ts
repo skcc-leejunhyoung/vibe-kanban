@@ -7,6 +7,7 @@ import {
 const MESSAGE_TYPE = 'vk-split-pane';
 const EMBED_PARAM = 'vk_split_embed';
 const WINDOW_NAME_PREFIX = 'vk-split-pane:';
+export const SPLIT_PANE_OPENED_EVENT = 'vk-split-pane-opened';
 
 function isEmbeddedPane(): boolean {
   return (
@@ -38,7 +39,18 @@ export function openInSplitPane(url: string): void {
     .openPane(url, currentRelativeUrl());
   if (result === 'overflow') {
     window.open(url, '_blank', 'noopener,noreferrer');
+    return;
   }
+
+  const state = useSplitScreenStore.getState();
+  window.dispatchEvent(
+    new CustomEvent(SPLIT_PANE_OPENED_EVENT, {
+      detail: {
+        paneId: state.presets[state.preset].activePaneId,
+        url,
+      },
+    })
+  );
 }
 
 export function activateSplitPreset(preset: SplitPreset): void {
