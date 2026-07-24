@@ -32,7 +32,15 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let check_mode = args.iter().any(|arg| arg == "--check");
 
-    let typescript = export_shapes();
+    // ts-rs preserves whitespace before line breaks in some declarations with
+    // field documentation. Normalize generated output so `git diff --check`
+    // stays clean without hand-editing the generated TypeScript file.
+    let typescript = export_shapes()
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
 
     // Path to shared/remote-types.ts relative to workspace root
     let output_path = Path::new(env!("CARGO_MANIFEST_DIR"))
