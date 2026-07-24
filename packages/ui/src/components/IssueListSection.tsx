@@ -44,6 +44,10 @@ export interface IssueListSectionProps {
   cursorIssueId?: string | null;
   /** Reports each row's DOM node for scroll-into-view / focus management. */
   onRowRef?: (issueId: string, node: HTMLDivElement | null) => void;
+  /** Whether this group header currently holds the keyboard focus. */
+  isFocused?: boolean;
+  /** Reports the header button's DOM node for scroll-into-view / focus. */
+  onHeaderRef?: (statusId: string, node: HTMLButtonElement | null) => void;
   isMultiSelectActive?: boolean;
   onIssueCheckboxChange?: (issueId: string, checked: boolean) => void;
   /** Active workspaces linked to each issue, keyed by issue id. */
@@ -72,6 +76,8 @@ export function IssueListSection({
   selectedIssueIds,
   cursorIssueId,
   onRowRef,
+  isFocused = false,
+  onHeaderRef,
   isMultiSelectActive,
   onIssueCheckboxChange,
   workspacesByIssueId,
@@ -86,13 +92,15 @@ export function IssueListSection({
       {/* Section Header */}
       <button
         type="button"
+        ref={(node) => onHeaderRef?.(status.id, node)}
         onClick={onToggleExpanded}
         className={cn(
           'flex items-center justify-between',
           'h-8 px-double py-base',
           'bg-panel border-y border-border',
-          'cursor-pointer transition-colors',
-          'hover:bg-secondary'
+          'cursor-pointer transition-colors outline-none',
+          'hover:bg-secondary',
+          isFocused && 'ring-1 ring-inset ring-brand'
         )}
       >
         <div className="flex items-center gap-base">

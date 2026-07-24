@@ -559,53 +559,25 @@ export function KanbanContainer() {
   const [isFiltersDialogOpen, setIsFiltersDialogOpen] = useState(false);
 
   // Collapsed status sections in the list view. Lifted out of IssueListSection
-  // so keyboard left/right can toggle them. Persistence mirrors the previous
-  // per-section localStorage keys (value = isExpanded), seeded once per status.
-  const [collapsedStatusIds, setCollapsedStatusIds] = useState<Set<string>>(
-    new Set()
+  // so keyboard left/right can toggle them, and persisted per-project through
+  // the UI-preferences scratch (remembered across reloads/devices).
+  const collapsedGroups = useUiPreferencesStore(
+    (s) => s.collapsedGroupsByProject[projectId]
   );
-  const seededCollapsedRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const toCollapse: string[] = [];
-    for (const status of statuses) {
-      if (seededCollapsedRef.current.has(status.id)) continue;
-      seededCollapsedRef.current.add(status.id);
-      try {
-        if (
-          localStorage.getItem(`ui.issue-list-section.${status.id}`) === 'false'
-        ) {
-          toCollapse.push(status.id);
-        }
-      } catch {
-        // localStorage may be unavailable
-      }
-    }
-    if (toCollapse.length > 0) {
-      setCollapsedStatusIds((prev) => {
-        const next = new Set(prev);
-        toCollapse.forEach((id) => next.add(id));
-        return next;
-      });
-    }
-  }, [statuses]);
-
-  const toggleStatusCollapsed = useCallback((statusId: string) => {
-    setCollapsedStatusIds((prev) => {
-      const next = new Set(prev);
-      const willCollapse = !next.has(statusId);
-      if (willCollapse) next.add(statusId);
-      else next.delete(statusId);
-      try {
-        localStorage.setItem(
-          `ui.issue-list-section.${statusId}`,
-          String(!willCollapse)
-        );
-      } catch {
-        // localStorage may be unavailable
-      }
-      return next;
-    });
-  }, []);
+  const setCollapsedGroups = useUiPreferencesStore((s) => s.setCollapsedGroups);
+  const collapsedStatusIds = useMemo(
+    () => new Set(collapsedGroups ?? []),
+    [collapsedGroups]
+  );
+  const toggleStatusCollapsed = useCallback(
+    (statusId: string) => {
+      const next = new Set(collapsedStatusIds);
+      if (next.has(statusId)) next.delete(statusId);
+      else next.add(statusId);
+      setCollapsedGroups(projectId, [...next]);
+    },
+    [collapsedStatusIds, projectId, setCollapsedGroups]
+  );
 
   // Sync items from filtered issues when they change
   useEffect(() => {
@@ -959,6 +931,28 @@ export function KanbanContainer() {
     []
   );
 
+  // List-view group headers are keyboard-focusable too (distinct from the issue
+  // cursor). `focusedSectionId` marks the focused header; when set, the issue
+  // cursor is blurred. This is what lets Left move onto a header and Right
+  // re-open a collapsed group.
+  const [focusedSectionId, setFocusedSectionId] = useState<string | null>(null);
+  const blurCursor = useIssueSelectionStore((s) => s.blurCursor);
+  const sectionRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const registerSectionRef = useCallback(
+    (statusId: string, node: HTMLButtonElement | null) => {
+      if (node) sectionRefs.current.set(statusId, node);
+      else sectionRefs.current.delete(statusId);
+    },
+    []
+  );
+  const focusSection = useCallback(
+    (statusId: string) => {
+      setFocusedSectionId(statusId);
+      blurCursor();
+    },
+    [blurCursor]
+  );
+
   // Whether keyboard focus is currently inside the board. Arrow/Enter
   // navigation is scoped to this so it doesn't hijack arrow-key scrolling or
   // Enter while the user works in the open issue panel — mirroring the
@@ -994,6 +988,41 @@ export function KanbanContainer() {
     items,
     collapsedStatusIds,
   ]);
+
+  // Move the issue cursor, clearing any focused group header.
+  const focusIssue = useCallback(
+    (issueId: string) => {
+      setFocusedSectionId(null);
+      focusCursor(issueId);
+    },
+    [focusCursor]
+  );
+
+  // Ordered focusable rows for the list view: each group header, followed by
+  // its issues (omitted for collapsed groups). Headers are always present so
+  // keyboard nav can reach — and Right-arrow can re-open — a collapsed group.
+  const listFocusables = useMemo<
+    (
+      | { type: 'header'; statusId: string }
+      | { type: 'issue'; issueId: string }
+    )[]
+  >(() => {
+    if (kanbanViewMode === 'kanban') return [];
+    const out: (
+      | { type: 'header'; statusId: string }
+      | { type: 'issue'; issueId: string }
+    )[] = [];
+    for (const status of listViewStatuses) {
+      out.push({ type: 'header', statusId: status.id });
+      if (!collapsedStatusIds.has(status.id)) {
+        for (const id of items[status.id] ?? []) {
+          out.push({ type: 'issue', issueId: id });
+        }
+      }
+    }
+    return out;
+  }, [kanbanViewMode, listViewStatuses, collapsedStatusIds, items]);
+
   const handleSearchKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
       if (event.key !== 'Enter' || orderedIssueIds.length === 0) return;
@@ -1001,9 +1030,9 @@ export function KanbanContainer() {
       // Enter from search moves the keyboard cursor onto the first issue in
       // both the board and the list.
       setIsBoardFocused(true);
-      focusCursor(orderedIssueIds[0]);
+      focusIssue(orderedIssueIds[0]);
     },
-    [focusCursor, orderedIssueIds]
+    [focusIssue, orderedIssueIds]
   );
 
   // Keep the store's ordered IDs in sync
@@ -1011,10 +1040,11 @@ export function KanbanContainer() {
     setOrderedIssueIds(orderedIssueIds, selectedKanbanIssueId);
   }, [orderedIssueIds, selectedKanbanIssueId, setOrderedIssueIds]);
 
-  // Clear multi-selection and keyboard cursor when project or view mode changes
-  // (clearSelection resets cursorIssueId too).
+  // Clear multi-selection, keyboard cursor, and any focused group header when
+  // the project or view mode changes (clearSelection resets cursorIssueId too).
   useEffect(() => {
     clearSelection();
+    setFocusedSectionId(null);
   }, [projectId, kanbanViewMode, clearSelection]);
 
   // Keep anchor in sync with the currently opened issue (e.g. from URL on
@@ -1076,20 +1106,80 @@ export function KanbanContainer() {
 
   const moveFocus = useCallback(
     (direction: 'up' | 'down' | 'left' | 'right') => {
-      // Fall back to the opened issue so navigation continues from whatever the
-      // user last looked at.
+      // --- List view: navigate group headers + issues -----------------------
+      // Up/Down step through the flat focusables (headers and, for expanded
+      // groups, their issues). Left/Right on a header collapse/expand it; Left
+      // on an issue moves focus up to its header. This lets the user reach a
+      // collapsed group's header and re-open it with Right.
+      if (!isKanbanView) {
+        const focusables = listFocusables;
+        if (focusables.length === 0) return;
+
+        const applyFocus = (f: (typeof focusables)[number]) => {
+          if (f.type === 'header') focusSection(f.statusId);
+          else focusIssue(f.issueId);
+        };
+
+        const cursor = cursorIssueId ?? selectedKanbanIssueId;
+        const currentIndex = focusedSectionId
+          ? focusables.findIndex(
+              (f) => f.type === 'header' && f.statusId === focusedSectionId
+            )
+          : cursor
+            ? focusables.findIndex(
+                (f) => f.type === 'issue' && f.issueId === cursor
+              )
+            : -1;
+
+        if (direction === 'up' || direction === 'down') {
+          if (currentIndex === -1) {
+            applyFocus(
+              direction === 'up'
+                ? focusables[focusables.length - 1]
+                : focusables[0]
+            );
+            return;
+          }
+          const next =
+            direction === 'down' ? currentIndex + 1 : currentIndex - 1;
+          if (next < 0 || next >= focusables.length) return;
+          applyFocus(focusables[next]);
+          return;
+        }
+
+        // left / right
+        if (focusedSectionId) {
+          if (direction === 'left') {
+            if (!collapsedStatusIds.has(focusedSectionId)) {
+              toggleStatusCollapsed(focusedSectionId);
+            }
+          } else if (collapsedStatusIds.has(focusedSectionId)) {
+            toggleStatusCollapsed(focusedSectionId); // expand
+          } else {
+            const first = (items[focusedSectionId] ?? [])[0];
+            if (first) focusIssue(first); // step into the first child issue
+          }
+          return;
+        }
+
+        // An issue is focused: Left moves to its group header; Right is a no-op.
+        if (direction === 'left') {
+          const statusId =
+            cursor && issueMap[cursor]
+              ? issueMap[cursor].status_id
+              : listViewStatuses[0]?.id;
+          if (statusId) focusSection(statusId);
+        }
+        return;
+      }
+
+      // --- Board (kanban) view ----------------------------------------------
       const start = cursorIssueId ?? selectedKanbanIssueId;
 
-      // up / down: navigate the flat ordered list. This is the same order used
-      // by Shift+Arrow range selection (selectAdjacent over orderedIssueIds), so
-      // the keyboard cursor and range selection move in lockstep — including
-      // across column boundaries.
       if (direction === 'up' || direction === 'down') {
         const ids = orderedIssueIds;
         if (ids.length === 0) return;
         const index = start ? ids.indexOf(start) : -1;
-        // No cursor yet (or cursor hidden in a collapsed group): enter at the
-        // last issue when going up, the first when going down.
         if (index === -1) {
           focusCursor(direction === 'up' ? ids[ids.length - 1] : ids[0]);
           return;
@@ -1100,49 +1190,7 @@ export function KanbanContainer() {
         return;
       }
 
-      // List view: left collapses the cursor's group, right expands it.
-      if (!isKanbanView) {
-        let statusId: string | undefined;
-        if (start && issueMap[start]) statusId = issueMap[start].status_id;
-        if (!statusId) {
-          statusId =
-            listViewStatuses.find((s) => (items[s.id] ?? []).length > 0)?.id ??
-            listViewStatuses[0]?.id;
-        }
-        if (!statusId) return;
-        if (direction === 'left') {
-          if (collapsedStatusIds.has(statusId)) return;
-          // Collapse, then keep a visible cursor by moving to the nearest
-          // still-visible issue (preferring the one just above the group).
-          const nextCollapsed = new Set(collapsedStatusIds);
-          nextCollapsed.add(statusId);
-          const visible = listViewStatuses
-            .filter((s) => !nextCollapsed.has(s.id))
-            .flatMap((s) => items[s.id] ?? []);
-          toggleStatusCollapsed(statusId);
-          if (start) {
-            const fullOrder = listViewStatuses.flatMap(
-              (s) => items[s.id] ?? []
-            );
-            const startIdx = fullOrder.indexOf(start);
-            const before = [...visible]
-              .reverse()
-              .find((id) => fullOrder.indexOf(id) < startIdx);
-            const after = visible.find(
-              (id) => fullOrder.indexOf(id) > startIdx
-            );
-            const nextCursor = before ?? after ?? null;
-            if (nextCursor) focusCursor(nextCursor);
-          }
-        } else if (collapsedStatusIds.has(statusId)) {
-          toggleStatusCollapsed(statusId);
-        }
-        return;
-      }
-
-      // left / right: jump between columns in the 2D grid. Locate the cursor,
-      // then move to the nearest non-empty column in that direction, clamping
-      // the row to that column's length.
+      // left / right: jump between columns in the 2D grid.
       const columns = focusColumns;
       if (!columns.some((column) => column.length > 0)) return;
 
@@ -1159,7 +1207,6 @@ export function KanbanContainer() {
         }
       }
 
-      // No cursor yet: enter at the first non-empty column.
       if (col === -1) {
         const firstCol = columns.findIndex((column) => column.length > 0);
         focusCursor(columns[firstCol][0]);
@@ -1176,17 +1223,21 @@ export function KanbanContainer() {
       }
     },
     [
+      isKanbanView,
+      listFocusables,
+      focusedSectionId,
+      focusSection,
+      focusIssue,
+      collapsedStatusIds,
+      toggleStatusCollapsed,
+      items,
+      issueMap,
+      listViewStatuses,
       orderedIssueIds,
       focusColumns,
       cursorIssueId,
       selectedKanbanIssueId,
       focusCursor,
-      isKanbanView,
-      issueMap,
-      listViewStatuses,
-      items,
-      collapsedStatusIds,
-      toggleStatusCollapsed,
     ]
   );
 
@@ -1235,31 +1286,50 @@ export function KanbanContainer() {
   useHotkeys(
     'enter',
     (e) => {
+      // A focused group header toggles collapse on Enter.
+      if (focusedSectionId) {
+        e.preventDefault();
+        toggleStatusCollapsed(focusedSectionId);
+        return;
+      }
       if (!cursorIssueId || cursorIssueId === selectedKanbanIssueId) return;
       e.preventDefault();
       handleCardClick(cursorIssueId);
     },
     {
       scopes: [Scope.KANBAN],
-      enabled: isBoardFocused && !!cursorIssueId,
+      enabled: isBoardFocused && (!!cursorIssueId || !!focusedSectionId),
       enableOnFormTags: false,
     },
-    [cursorIssueId, selectedKanbanIssueId, handleCardClick, isBoardFocused]
+    [
+      cursorIssueId,
+      selectedKanbanIssueId,
+      handleCardClick,
+      isBoardFocused,
+      focusedSectionId,
+      toggleStatusCollapsed,
+    ]
   );
 
-  // As the cursor moves, scroll the card into view. While the board owns focus
-  // (the user is navigating it), also move real DOM focus onto the card so the
-  // focus-scoped arrow/Enter hotkeys stay active. Never pull focus when the
-  // board isn't focused (e.g. on load with the issue panel open) to avoid
-  // stealing focus from the panel. Desktop cards are focusable via the dnd
-  // drag handle; on mobile focus() is a harmless no-op.
+  // As the cursor moves, scroll the focused row/header into view. While the
+  // board owns focus, also move real DOM focus onto it so the focus-scoped
+  // arrow/Enter hotkeys stay active. Never pull focus when the board isn't
+  // focused (e.g. on load with the issue panel open). A focused group header
+  // takes precedence over the issue cursor.
   useEffect(() => {
+    if (focusedSectionId) {
+      const node = sectionRefs.current.get(focusedSectionId);
+      if (!node) return;
+      if (isBoardFocused) node.focus({ preventScroll: true });
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      return;
+    }
     if (!cursorIssueId) return;
     const node = cardRefs.current.get(cursorIssueId);
     if (!node) return;
     if (isBoardFocused) node.focus({ preventScroll: true });
     node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [cursorIssueId, isBoardFocused]);
+  }, [cursorIssueId, focusedSectionId, isBoardFocused]);
 
   const handleToggleSelectionMode = useCallback(() => {
     if (isSelectionMode) {
@@ -1652,6 +1722,8 @@ export function KanbanContainer() {
               selectedIssueIds={selectedIssueIds}
               cursorIssueId={cursorIssueId}
               onRowRef={registerRowRef}
+              focusedSectionId={focusedSectionId}
+              onHeaderRef={registerSectionRef}
               isMultiSelectActive={isMultiSelectActive}
               onIssueCheckboxChange={handleCheckboxChange}
               workspacesByIssueId={workspacesByIssueId}

@@ -35,6 +35,8 @@ interface IssueSelectionState {
    * the range from this position.
    */
   focusCursor: (issueId: string) => void;
+  /** Clear the keyboard cursor/anchor (e.g. when focus moves to a group header). */
+  blurCursor: () => void;
   setOrderedIssueIds: (ids: string[], openedIssueId?: string | null) => void;
 }
 
@@ -188,6 +190,10 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
         cursorIssueId: issueId,
         selectedIssueIds: new Set<string>(),
       });
+    },
+
+    blurCursor: () => {
+      set({ cursorIssueId: null, anchorIssueId: null });
     },
 
     setOrderedIssueIds: (ids: string[], openedIssueId) => {

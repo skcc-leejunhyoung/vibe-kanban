@@ -492,6 +492,9 @@ type State = {
     Record<string, KanbanProjectViewPreferences>
   >;
 
+  // Collapsed status-group ids per project (kanban table/list view).
+  collapsedGroupsByProject: Record<string, string[]>;
+
   // Preview browser shortcuts keyed by project id. Workspaces with no
   // associated project use PREVIEW_SHORTCUTS_GLOBAL_KEY.
   previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
@@ -581,6 +584,8 @@ type State = {
     projectId: string,
     viewId: string
   ) => void;
+  // Replace the collapsed status-group id list for a project (table view).
+  setCollapsedGroups: (projectId: string, statusIds: string[]) => void;
   setPreviewShortcuts: (
     projectKey: string,
     shortcuts: PreviewShortcutData[]
@@ -647,6 +652,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   kanbanProjectViewSelections: {},
   projectViewsById: {},
   kanbanProjectViewPreferences: {},
+  collapsedGroupsByProject: {},
   previewShortcutsByProject: {},
 
   // Workspace sidebar filter state
@@ -884,6 +890,14 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       }
       return { kanbanProjectViewPreferences: next };
     }),
+
+  setCollapsedGroups: (projectId, statusIds) =>
+    set((s) => ({
+      collapsedGroupsByProject: {
+        ...s.collapsedGroupsByProject,
+        [projectId]: statusIds,
+      },
+    })),
 
   setPreviewShortcuts: (projectKey, shortcuts) =>
     set((s) => ({

@@ -63,6 +63,7 @@ function storeToScratchData(state: {
     string,
     Record<string, KanbanProjectViewPreferences>
   >;
+  collapsedGroupsByProject: Record<string, string[]>;
   previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
 }): UiPreferencesData {
   const workspacePanelStates: { [key: string]: WorkspacePanelStateData } = {};
@@ -111,6 +112,8 @@ function storeToScratchData(state: {
       string,
       JsonValue
     >,
+    kanban_collapsed_groups:
+      state.collapsedGroupsByProject as unknown as Record<string, JsonValue>,
     // Legacy global list is migrated into the per-project map on read, so we
     // always persist it empty going forward.
     preview_shortcuts: [],
@@ -144,6 +147,7 @@ function scratchDataToStore(data: UiPreferencesData): {
     string,
     Record<string, KanbanProjectViewPreferences>
   >;
+  collapsedGroupsByProject: Record<string, string[]>;
   previewShortcutsByProject: Record<string, PreviewShortcutData[]>;
 } {
   const workspacePanelStates: Record<string, WorkspacePanelState> = {};
@@ -242,6 +246,8 @@ function scratchDataToStore(data: UiPreferencesData): {
       string,
       Record<string, KanbanProjectViewPreferences>
     >,
+    collapsedGroupsByProject: (data.kanban_collapsed_groups ??
+      {}) as unknown as Record<string, string[]>,
     previewShortcutsByProject,
   };
 }
@@ -282,6 +288,7 @@ export function useUiPreferencesScratch() {
     kanbanProjectViewSelections: state.kanbanProjectViewSelections,
     projectViewsById: state.projectViewsById,
     kanbanProjectViewPreferences: state.kanbanProjectViewPreferences,
+    collapsedGroupsByProject: state.collapsedGroupsByProject,
     previewShortcutsByProject: state.previewShortcutsByProject,
   }));
 
@@ -317,6 +324,7 @@ export function useUiPreferencesScratch() {
       kanbanProjectViewSelections: currentState.kanbanProjectViewSelections,
       projectViewsById: currentState.projectViewsById,
       kanbanProjectViewPreferences: currentState.kanbanProjectViewPreferences,
+      collapsedGroupsByProject: currentState.collapsedGroupsByProject,
       previewShortcutsByProject: currentState.previewShortcutsByProject,
     });
 
@@ -369,6 +377,7 @@ export function useUiPreferencesScratch() {
         kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
         projectViewsById: serverState.projectViewsById,
         kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
+        collapsedGroupsByProject: serverState.collapsedGroupsByProject,
         previewShortcutsByProject: serverState.previewShortcutsByProject,
       });
 

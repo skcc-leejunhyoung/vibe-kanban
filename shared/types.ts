@@ -183,6 +183,11 @@ kanban_project_view_preferences: { [key in string]?: JsonValue },
  */
 kanban_project_views: { [key in string]?: JsonValue },
 /**
+ * Collapsed status-group ids per project in the kanban table (list) view.
+ * Opaque JSON (string arrays) shaped on the frontend.
+ */
+kanban_collapsed_groups: { [key in string]?: JsonValue },
+/**
  * Legacy global preview shortcuts. Kept for backward-compatible migration into the
  * per-project map below (merged under the `__global` key on the frontend).
  */

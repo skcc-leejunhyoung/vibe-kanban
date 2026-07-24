@@ -192,6 +192,10 @@ pub struct UiPreferencesData {
     /// filters/sort). Opaque JSON shaped/validated on the frontend.
     #[serde(default)]
     pub kanban_project_views: std::collections::HashMap<String, serde_json::Value>,
+    /// Collapsed status-group ids per project in the kanban table (list) view.
+    /// Opaque JSON (string arrays) shaped on the frontend.
+    #[serde(default)]
+    pub kanban_collapsed_groups: std::collections::HashMap<String, serde_json::Value>,
     /// Legacy global preview shortcuts. Kept for backward-compatible migration into the
     /// per-project map below (merged under the `__global` key on the frontend).
     #[serde(default)]

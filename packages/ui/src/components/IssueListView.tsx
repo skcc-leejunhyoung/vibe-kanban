@@ -30,6 +30,10 @@ export interface IssueListViewProps {
   cursorIssueId?: string | null;
   /** Reports each row's DOM node for scroll-into-view. */
   onRowRef?: (issueId: string, node: HTMLDivElement | null) => void;
+  /** Status id whose group header currently holds the keyboard focus. */
+  focusedSectionId?: string | null;
+  /** Reports each group header's DOM node for scroll-into-view / focus. */
+  onHeaderRef?: (statusId: string, node: HTMLButtonElement | null) => void;
   isMultiSelectActive?: boolean;
   onIssueCheckboxChange?: (issueId: string, checked: boolean) => void;
   /** Active workspaces linked to each issue, keyed by issue id. */
@@ -55,6 +59,8 @@ export function IssueListView({
   selectedIssueIds,
   cursorIssueId,
   onRowRef,
+  focusedSectionId,
+  onHeaderRef,
   isMultiSelectActive,
   onIssueCheckboxChange,
   workspacesByIssueId,
@@ -80,6 +86,8 @@ export function IssueListView({
           selectedIssueIds={selectedIssueIds}
           cursorIssueId={cursorIssueId}
           onRowRef={onRowRef}
+          isFocused={focusedSectionId === status.id}
+          onHeaderRef={onHeaderRef}
           isMultiSelectActive={isMultiSelectActive}
           onIssueCheckboxChange={onIssueCheckboxChange}
           workspacesByIssueId={workspacesByIssueId}
