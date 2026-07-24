@@ -263,15 +263,31 @@ function ViewEditorPanel({ view, statuses, onChange }: ViewEditorPanelProps) {
     return set;
   });
 
-  // Keep local order in sync when the project's status set changes.
+  // Keep local order/checked in sync when the project's status set changes.
+  // Existing decisions are preserved; a status added while the panel is open
+  // is appended and seeded with its default checked state (so a kanban view's
+  // new status defaults visible instead of silently dropping out of groups).
   useEffect(() => {
+    const ids = statuses.map((s) => s.id);
+    const idSet = new Set(ids);
     setGroupOrder((prev) => {
-      const ids = statuses.map((s) => s.id);
-      const kept = prev.filter((id) => ids.includes(id));
+      const kept = prev.filter((id) => idSet.has(id));
       const added = ids.filter((id) => !kept.includes(id));
-      return [...kept, ...added];
+      return added.length === 0 && kept.length === prev.length
+        ? prev
+        : [...kept, ...added];
     });
-  }, [statuses]);
+    setChecked((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) if (idSet.has(id)) next.add(id);
+      for (const s of statuses) {
+        if (!prev.has(s.id) && defaultChecked(s.id, s.hidden)) next.add(s.id);
+      }
+      return next.size === prev.size && [...next].every((id) => prev.has(id))
+        ? prev
+        : next;
+    });
+  }, [statuses, defaultChecked]);
 
   const statusById = useMemo(() => {
     const map = new Map<string, ViewStatus>();
