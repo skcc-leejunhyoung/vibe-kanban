@@ -51,6 +51,10 @@ interface SidebarWorkspace {
   name?: string | null;
   hostId?: string | null;
   isRunning?: boolean;
+  isArchived?: boolean;
+  updatedAt?: string;
+  latestProcessStartedAt?: string;
+  latestProcessCompletedAt?: string;
 }
 
 export interface NavigationProject {
@@ -66,6 +70,7 @@ export interface ActionExecutorContext {
   queryClient: QueryClient;
   selectWorkspace: (workspaceId: string, hostId?: string | null) => void;
   activeWorkspaces: SidebarWorkspace[];
+  archivedWorkspaces: SidebarWorkspace[];
   navigationProjects: NavigationProject[];
   currentWorkspaceId: string | null;
   currentSessionId: string | null;
@@ -180,6 +185,8 @@ interface ActionBase {
   id: string;
   label: string | ((workspace?: Workspace) => string);
   icon: ActionIcon;
+  /** Optional secondary text rendered on command palette rows. */
+  description?: string;
   shortcut?: string;
   variant?: 'default' | 'destructive';
   /** Skip restoring the element focused before the command bar opened. */

@@ -114,6 +114,7 @@ export function RemoteActionsProvider({
         noOpSelection("Workspace actions");
       },
       activeWorkspaces: [],
+      archivedWorkspaces: [],
       navigationProjects,
       currentWorkspaceId: null,
       currentSessionId: null,

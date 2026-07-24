@@ -29,6 +29,7 @@ type PriorityId = 'urgent' | 'high' | 'medium' | 'low';
 export interface CommandBarAction {
   id: string;
   icon: Icon | string;
+  description?: string;
   shortcut?: string;
   variant?: 'default' | 'destructive' | string;
   keywords?: string[];
@@ -417,7 +418,12 @@ export function CommandBar<
                     icon={item.action.icon}
                     renderSpecialActionIcon={renderSpecialActionIcon}
                   />
-                  <span>{label}</span>
+                  <span className="truncate">{label}</span>
+                  {item.action.description && (
+                    <span className="ml-auto shrink-0 text-xs text-low">
+                      {item.action.description}
+                    </span>
+                  )}
                   {shortcut && <CommandShortcut>{shortcut}</CommandShortcut>}
                 </CommandItem>
               );
@@ -458,5 +464,5 @@ function getItemSearchLabel<
     return 'create new issue';
   }
   const keywords = item.action.keywords?.join(' ') ?? '';
-  return `${item.action.id} ${getLabel(item.action)} ${keywords}`.trim();
+  return `${item.action.id} ${getLabel(item.action)} ${item.action.description ?? ''} ${keywords}`.trim();
 }

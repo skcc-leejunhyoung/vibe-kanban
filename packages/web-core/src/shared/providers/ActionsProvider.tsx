@@ -51,6 +51,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
   const {
     selectWorkspace,
     activeWorkspaces,
+    archivedWorkspaces,
     workspaceId,
     workspace,
     selectedSessionId,
@@ -223,6 +224,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       queryClient,
       selectWorkspace,
       activeWorkspaces,
+      archivedWorkspaces,
       navigationProjects,
       currentWorkspaceId: workspaceId ?? null,
       currentSessionId: selectedSessionId ?? null,
@@ -260,6 +262,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
     queryClient,
     selectWorkspace,
     activeWorkspaces,
+    archivedWorkspaces,
     navigationProjects,
     workspaceId,
     selectedSessionId,

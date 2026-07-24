@@ -56,7 +56,11 @@ vi.mock('@/shared/lib/openInSplitPane', () => ({
   openInSplitPane: vi.fn(),
 }));
 
-import { Actions, getSessionCommandLabel } from './index';
+import {
+  Actions,
+  getLinkedWorkspaceDescription,
+  getSessionCommandLabel,
+} from './index';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
@@ -108,6 +112,7 @@ function makeCtx(
       { id: 'ws1', isRunning: false },
       { id: 'ws2', isRunning: false },
     ],
+    archivedWorkspaces: [],
     ...overrides,
   } as unknown as ActionExecutorContext;
   return { ctx, selectWorkspace, invalidateQueries };
@@ -312,6 +317,36 @@ describe('session command labels', () => {
     expect(getSessionCommandLabel({ name: null, updated_at: updatedAt })).toBe(
       formatDateShortWithTime(updatedAt)
     );
+  });
+});
+
+describe('linked workspace descriptions', () => {
+  it('shows active state with the latest process activity', () => {
+    const completedAt = '2026-07-23T01:23:00Z';
+    const startedAt = '2026-07-23T02:34:00Z';
+
+    expect(
+      getLinkedWorkspaceDescription(
+        {
+          isArchived: false,
+          updatedAt: '2026-07-20T00:00:00Z',
+          latestProcessStartedAt: startedAt,
+          latestProcessCompletedAt: completedAt,
+        },
+        { archived: true, updatedAt: '2026-07-19T00:00:00Z' }
+      )
+    ).toBe(`Active · ${formatDateShortWithTime(startedAt)}`);
+  });
+
+  it('falls back to remote metadata for an archived workspace', () => {
+    const updatedAt = '2026-07-22T03:45:00Z';
+
+    expect(
+      getLinkedWorkspaceDescription(undefined, {
+        archived: true,
+        updatedAt,
+      })
+    ).toBe(`Archived · ${formatDateShortWithTime(updatedAt)}`);
   });
 });
 

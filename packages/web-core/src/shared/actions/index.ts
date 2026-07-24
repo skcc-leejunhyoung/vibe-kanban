@@ -175,6 +175,37 @@ export function getSessionCommandLabel(
   return session.name || formatDateShortWithTime(session.updated_at);
 }
 
+interface LinkedWorkspaceActivity {
+  isArchived?: boolean;
+  updatedAt?: string;
+  latestProcessStartedAt?: string;
+  latestProcessCompletedAt?: string;
+}
+
+export function getLinkedWorkspaceDescription(
+  workspace: LinkedWorkspaceActivity | undefined,
+  fallback: { archived: boolean; updatedAt: string }
+): string {
+  const activityCandidates = [
+    workspace?.latestProcessStartedAt,
+    workspace?.latestProcessCompletedAt,
+  ].filter((value): value is string => value != null);
+  const latestActivity = activityCandidates.reduce<string | undefined>(
+    (latest, candidate) => {
+      if (!latest) return candidate;
+      return new Date(candidate).getTime() > new Date(latest).getTime()
+        ? candidate
+        : latest;
+    },
+    undefined
+  );
+  const timestamp =
+    latestActivity ?? workspace?.updatedAt ?? fallback.updatedAt;
+  const status =
+    (workspace?.isArchived ?? fallback.archived) ? 'Archived' : 'Active';
+  return `${status} · ${formatDateShortWithTime(timestamp)}`;
+}
+
 // Helper to invalidate workspace-related queries
 function invalidateWorkspaceQueries(
   queryClient: QueryClient,
@@ -755,6 +786,10 @@ export const Actions = {
           workspace.issue_id === issueId &&
           workspace.local_workspace_id
       );
+      const workspaceSummaries = [
+        ...ctx.activeWorkspaces,
+        ...ctx.archivedWorkspaces,
+      ];
       const { SelectionDialog } = await import(
         '@/shared/dialogs/command-bar/SelectionDialog'
       );
@@ -772,6 +807,21 @@ export const Actions = {
                   action: {
                     id: workspace.id,
                     label: workspace.name || 'Untitled workspace',
+                    description: getLinkedWorkspaceDescription(
+                      workspaceSummaries.find(
+                        (candidate) =>
+                          candidate.id === workspace.local_workspace_id &&
+                          candidate.hostId === workspace.host_id
+                      ) ??
+                        workspaceSummaries.find(
+                          (candidate) =>
+                            candidate.id === workspace.local_workspace_id
+                        ),
+                      {
+                        archived: workspace.archived,
+                        updatedAt: workspace.updated_at,
+                      }
+                    ),
                     icon: StackIcon,
                     requiresTarget: ActionTargetType.NONE,
                     execute: () => {},
