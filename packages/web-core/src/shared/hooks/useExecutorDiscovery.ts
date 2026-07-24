@@ -62,7 +62,13 @@ function useExecutorDiscovery(
       endpoint,
       !!endpoint,
       initialData,
-      hostId !== undefined ? { targetHostId: hostId } : undefined
+      {
+        // Serve the last options for this endpoint on reconnect (live event,
+        // resume, transport blip) instead of blanking to `undefined`, which
+        // flips consumers to their loading state and flickers the UI.
+        keepSnapshotForEndpoint: true,
+        ...(hostId !== undefined ? { targetHostId: hostId } : {}),
+      }
     );
 
   // Prefer the backend-reported error from the data payload. Only fall back

@@ -17,7 +17,11 @@ export function useApprovals(): UseApprovalsResult {
   const { data, isConnected } = useJsonPatchWsStream<ApprovalState>(
     '/api/approvals/stream/ws',
     true,
-    () => ({ pending: {} })
+    () => ({ pending: {} }),
+    // Keep the last pending set on reconnect (the server replays a full
+    // snapshot first, so this is stale-while-revalidate) instead of blanking
+    // to `undefined` and flickering the chat box on every live event/resume.
+    { keepSnapshotForEndpoint: true }
   );
 
   const pendingById = useMemo(() => data?.pending ?? {}, [data?.pending]);
