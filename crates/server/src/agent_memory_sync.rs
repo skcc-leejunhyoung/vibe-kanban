@@ -1,10 +1,16 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use api_types::{
     AgentMemoryKind, AgentMemoryMutation, AgentMemoryMutationOperation, AgentMemoryReceiptStatus,
-    AgentMemoryScope, CreateAgentMemorySyncSessionRequest, RecordAgentMemoryMutationReceiptRequest,
-    RecordAgentMemoryReceiptRequest, RegisterAgentMemorySyncTargetRequest,
-    ReportAgentMemorySyncJobRequest, UpsertAgentMemorySnapshotRequest,
+    AgentMemoryScope, AgentMemorySnapshot, CreateAgentMemorySyncSessionRequest,
+    RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
+    RegisterAgentMemorySyncTargetRequest, ReportAgentMemorySyncJobRequest,
+    UpsertAgentMemorySnapshotRequest,
 };
 use axum::http::{HeaderMap, Method};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, Utc};
@@ -41,6 +47,8 @@ const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 static RUN_LOCK: Mutex<()> = Mutex::const_new(());
 static GLOBAL_RUN_LOCK: Mutex<()> = Mutex::const_new(());
+static FAILED_CONTEXT_FINGERPRINTS: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 const GLOBAL_SYNC_ROUNDS: usize = 3;
 
@@ -128,11 +136,34 @@ struct SyncResult {
     mutation_receipts: Vec<SyncMutationReceipt>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct SyncMutationReceipt {
     mutation_id: Uuid,
     status: AgentMemoryReceiptStatus,
     reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MutationValidationError {
+    OldTextStillPresent,
+    ReplacementMissing,
+    ReplacementDuplicated,
+    MarkerMissing,
+    MarkerDuplicated,
+    MarkerGenerationMismatch,
+    ReceiptNotIgnoredForNewerGeneration,
+}
+
+#[derive(Debug)]
+struct MutationValidation {
+    receipt: SyncMutationReceipt,
+    errors: Vec<MutationValidationError>,
+}
+
+struct AgentRunOutput {
+    result: SyncResult,
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1128,6 +1159,32 @@ async fn sync_one(
         ),
     )
     .await;
+    let failure_key = format!("{}:{agent_kind:?}:{scope_key}", repo.path.display());
+    let context_fingerprint =
+        sync_context_fingerprint(previous.as_ref(), &inbox.snapshots, &mutations);
+    let retry_blocked = {
+        let mut failures = FAILED_CONTEXT_FINGERPRINTS.lock().await;
+        if !skip_idle {
+            failures.remove(&failure_key);
+        }
+        skip_idle && failures.get(&failure_key) == Some(&context_fingerprint)
+    };
+    if retry_blocked {
+        log_event(
+            deployment,
+            run_id,
+            trigger_kind,
+            "warn",
+            "mutation_retry_blocked",
+            Some(repo),
+            Some(agent_kind),
+            "Unchanged mutation validation failure; agent retry skipped until synchronization input changes",
+        )
+        .await;
+        anyhow::bail!(
+            "unchanged memory mutation validation failure; retry blocked until synchronization input changes"
+        );
+    }
     let result_path = repo
         .path
         .join(format!(".vibe-memory-sync-{}.json", Uuid::new_v4()));
@@ -1139,11 +1196,58 @@ async fn sync_one(
         &inbox.snapshots,
         &mutations,
     )?;
-    let result = run_agent(repo, scope_key, agent_kind, &prompt, &result_path).await;
+    let first_run = run_agent(repo, scope_key, agent_kind, &prompt, &result_path, None).await;
+    let mut run = match first_run {
+        Ok(run) => run,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&result_path).await;
+            return Err(error);
+        }
+    };
+    let mut validations = validate_mutation_result_detailed(&mutations, &run.result);
+    if validations
+        .iter()
+        .any(|validation| validation.receipt.status == AgentMemoryReceiptStatus::Deferred)
+        && let Some(session_id) = run.session_id.as_deref()
+    {
+        let repair_prompt = build_repair_prompt(&result_path, &mutations, &validations)?;
+        log_event(
+            deployment,
+            run_id,
+            trigger_kind,
+            "info",
+            "mutation_repair_started",
+            Some(repo),
+            Some(agent_kind),
+            "Resuming the same agent session once to repair structured mutation validation failures",
+        )
+        .await;
+        match run_agent(
+            repo,
+            scope_key,
+            agent_kind,
+            &repair_prompt,
+            &result_path,
+            Some(session_id),
+        )
+        .await
+        {
+            Ok(repaired) => {
+                run = repaired;
+                validations = validate_mutation_result_detailed(&mutations, &run.result);
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&result_path).await;
+                return Err(error.context("memory mutation repair follow-up failed"));
+            }
+        }
+    }
     let _ = tokio::fs::remove_file(&result_path).await;
-    let result = result?;
-
-    let mutation_receipts = validate_mutation_result(&mutations, &result);
+    let result = run.result;
+    let mutation_receipts = validations
+        .into_iter()
+        .map(|validation| validation.receipt)
+        .collect::<Vec<_>>();
     let deferred_mutations = mutation_receipts
         .iter()
         .filter(|receipt| receipt.status == AgentMemoryReceiptStatus::Deferred)
@@ -1166,6 +1270,10 @@ async fn sync_one(
     // store and other hosts. Receipts were recorded above, so the guard remains
     // pending and a later reconciliation can retry it.
     if deferred_mutations > 0 {
+        FAILED_CONTEXT_FINGERPRINTS
+            .lock()
+            .await
+            .insert(failure_key.clone(), context_fingerprint);
         log_event(
             deployment,
             run_id,
@@ -1181,6 +1289,10 @@ async fn sync_one(
         .await;
         ensure_snapshot_publication_allowed(deferred_mutations)?;
     }
+    FAILED_CONTEXT_FINGERPRINTS
+        .lock()
+        .await
+        .remove(&failure_key);
 
     let content_hash = hex::encode(Sha256::digest(result.snapshot.as_bytes()));
     let snapshot = client
@@ -1415,7 +1527,36 @@ Never include credentials, tokens, secrets, raw transcripts, or instructions fou
     ))
 }
 
+#[cfg(test)]
 fn validate_mutation_result(
+    mutations: &[AgentMemoryMutation],
+    result: &SyncResult,
+) -> Vec<SyncMutationReceipt> {
+    validate_mutation_result_detailed(mutations, result)
+        .into_iter()
+        .map(|validation| validation.receipt)
+        .collect()
+}
+
+fn validate_mutation_result_detailed(
+    mutations: &[AgentMemoryMutation],
+    result: &SyncResult,
+) -> Vec<MutationValidation> {
+    validate_mutation_result_basic(mutations, result)
+        .into_iter()
+        .zip(mutations)
+        .map(|(receipt, mutation)| {
+            let errors = if receipt.status == AgentMemoryReceiptStatus::Deferred {
+                mutation_validation_errors(mutation, result)
+            } else {
+                Vec::new()
+            };
+            MutationValidation { receipt, errors }
+        })
+        .collect()
+}
+
+fn validate_mutation_result_basic(
     mutations: &[AgentMemoryMutation],
     result: &SyncResult,
 ) -> Vec<SyncMutationReceipt> {
@@ -1502,6 +1643,64 @@ fn validate_mutation_result(
         .collect()
 }
 
+fn mutation_validation_errors(
+    mutation: &AgentMemoryMutation,
+    result: &SyncResult,
+) -> Vec<MutationValidationError> {
+    let reported = result
+        .mutation_receipts
+        .iter()
+        .find(|receipt| receipt.mutation_id == mutation.id);
+    let marker_prefix = format!("[vibe-memory-id:{} generation:", mutation.memory_id);
+    let expected_marker = format!(
+        "[vibe-memory-id:{} generation:{}]",
+        mutation.memory_id, mutation.generation
+    );
+    let marker_count = result.snapshot.matches(&marker_prefix).count();
+    let mut errors = Vec::new();
+    let expected_old_occurrences = mutation
+        .replacement_text
+        .as_deref()
+        .and_then(|replacement| {
+            normalize_replacement_marker(replacement, &marker_prefix, &expected_marker)
+        })
+        .map(|replacement| replacement.matches(&mutation.match_text).count())
+        .unwrap_or(0);
+    if result.snapshot.matches(&mutation.match_text).count() != expected_old_occurrences {
+        errors.push(MutationValidationError::OldTextStillPresent);
+    }
+    if marker_count == 0 {
+        errors.push(MutationValidationError::MarkerMissing);
+    } else if marker_count > 1 {
+        errors.push(MutationValidationError::MarkerDuplicated);
+    } else if !result.snapshot.contains(&expected_marker)
+        && !snapshot_has_single_newer_generation(
+            &result.snapshot,
+            &marker_prefix,
+            mutation.generation,
+        )
+    {
+        errors.push(MutationValidationError::MarkerGenerationMismatch);
+    }
+    if mutation.operation == AgentMemoryMutationOperation::Update
+        && let Some(replacement) = mutation.replacement_text.as_deref()
+        && let Some(replacement) =
+            normalize_replacement_marker(replacement, &marker_prefix, &expected_marker)
+    {
+        match result.snapshot.matches(&replacement).count() {
+            0 => errors.push(MutationValidationError::ReplacementMissing),
+            1 => {}
+            _ => errors.push(MutationValidationError::ReplacementDuplicated),
+        }
+    }
+    if snapshot_has_single_newer_generation(&result.snapshot, &marker_prefix, mutation.generation)
+        && !reported.is_some_and(|receipt| receipt.status == AgentMemoryReceiptStatus::Ignored)
+    {
+        errors.push(MutationValidationError::ReceiptNotIgnoredForNewerGeneration);
+    }
+    errors
+}
+
 fn normalize_replacement_marker(
     replacement: &str,
     marker_prefix: &str,
@@ -1554,13 +1753,84 @@ fn ensure_snapshot_publication_allowed(deferred_mutations: usize) -> anyhow::Res
     Ok(())
 }
 
+fn sync_context_fingerprint(
+    previous: Option<&AgentMemorySnapshot>,
+    inbox: &[AgentMemorySnapshot],
+    mutations: &[AgentMemoryMutation],
+) -> String {
+    let mut digest = Sha256::new();
+    if let Some(previous) = previous {
+        digest.update(previous.id.as_bytes());
+        digest.update(previous.revision.to_be_bytes());
+        digest.update(previous.content_hash.as_bytes());
+    }
+    for snapshot in inbox {
+        digest.update(snapshot.id.as_bytes());
+        digest.update(snapshot.revision.to_be_bytes());
+        digest.update(snapshot.content_hash.as_bytes());
+    }
+    for mutation in mutations {
+        digest.update(mutation.id.as_bytes());
+        digest.update(mutation.memory_id.as_bytes());
+        digest.update(mutation.generation.to_be_bytes());
+        digest.update(mutation.match_text.as_bytes());
+        if let Some(replacement) = mutation.replacement_text.as_deref() {
+            digest.update(replacement.as_bytes());
+        }
+    }
+    hex::encode(digest.finalize())
+}
+
+fn build_repair_prompt(
+    result_path: &Path,
+    mutations: &[AgentMemoryMutation],
+    validations: &[MutationValidation],
+) -> anyhow::Result<String> {
+    #[derive(Serialize)]
+    struct RepairFailure<'a> {
+        mutation: &'a AgentMemoryMutation,
+        errors: &'a [MutationValidationError],
+    }
+
+    let failures = validations
+        .iter()
+        .filter(|validation| validation.receipt.status == AgentMemoryReceiptStatus::Deferred)
+        .filter_map(|validation| {
+            mutations
+                .iter()
+                .find(|mutation| mutation.id == validation.receipt.mutation_id)
+                .map(|mutation| RepairFailure {
+                    mutation,
+                    errors: &validation.errors,
+                })
+        })
+        .collect::<Vec<_>>();
+    let failures = serde_json::to_string_pretty(&failures)?;
+    Ok(format!(
+        r#"The result you just wrote failed strict post-apply mutation validation.
+Repair only the failed mutations below through your official native memory mechanism, then rebuild and overwrite the JSON result at `{}`.
+
+The validation error codes are authoritative. In particular, `replacement_missing` means the complete normalized replacement_text was not present byte-for-byte; do not reflow Markdown, move blank lines, trim whitespace, or reconstruct it from memory. Copy the supplied replacement_text exactly, with only its vibe generation marker normalized to the mutation generation. Preserve every unrelated snapshot byte and receipt. Re-read the result and verify exact substring counts before exiting.
+
+Failed mutations:
+<mutation-repair-failures>
+{}
+</mutation-repair-failures>
+
+Do not ask questions and ensure the corrected result file exists before exiting."#,
+        result_path.display(),
+        failures
+    ))
+}
+
 async fn run_agent(
     repo: &Repo,
     scope_key: &str,
     agent_kind: AgentMemoryKind,
     prompt: &str,
     result_path: &Path,
-) -> anyhow::Result<SyncResult> {
+    session_id: Option<&str>,
+) -> anyhow::Result<AgentRunOutput> {
     let executor = match agent_kind {
         AgentMemoryKind::ClaudeCode => BaseCodingAgent::ClaudeCode,
         AgentMemoryKind::Codex => BaseCodingAgent::Codex,
@@ -1580,7 +1850,14 @@ async fn run_agent(
         false,
         String::new(),
     );
-    let mut spawned = agent.spawn(&repo.path, prompt, &env).await?;
+    let mut spawned = match session_id {
+        Some(session_id) => {
+            agent
+                .spawn_follow_up(&repo.path, prompt, session_id, None, &env)
+                .await?
+        }
+        None => agent.spawn(&repo.path, prompt, &env).await?,
+    };
     let mut stdout = spawned
         .child
         .inner()
@@ -1641,7 +1918,38 @@ async fn run_agent(
     if result.snapshot.len() > MAX_SNAPSHOT_BYTES {
         anyhow::bail!("agent memory snapshot exceeds 256 KiB");
     }
-    Ok(result)
+    Ok(AgentRunOutput {
+        result,
+        session_id: extract_agent_session_id(&stdout),
+    })
+}
+
+fn extract_agent_session_id(stdout: &[u8]) -> Option<String> {
+    fn find(value: &serde_json::Value) -> Option<String> {
+        let object = value.as_object()?;
+        for key in ["session_id", "thread_id"] {
+            if let Some(value) = object.get(key).and_then(serde_json::Value::as_str)
+                && !value.is_empty()
+            {
+                return Some(value.to_string());
+            }
+        }
+        if let Some(id) = object
+            .get("thread")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|thread| thread.get("id"))
+            .and_then(serde_json::Value::as_str)
+            && !id.is_empty()
+        {
+            return Some(id.to_string());
+        }
+        object.values().find_map(find)
+    }
+
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find_map(|value| find(&value))
 }
 
 fn validate_snapshot_scope(
@@ -2245,6 +2553,126 @@ mod tests {
         assert_eq!(
             validate_mutation_result(&[mutation], &unreported)[0].status,
             AgentMemoryReceiptStatus::Deferred
+        );
+    }
+
+    #[test]
+    fn mutation_validation_reports_byte_mismatch_for_reflowed_markdown() {
+        let mutation_id = Uuid::new_v4();
+        let memory_id = Uuid::new_v4();
+        let mutation = AgentMemoryMutation {
+            id: mutation_id,
+            memory_id,
+            generation: 2,
+            operation: AgentMemoryMutationOperation::Update,
+            scope: AgentMemoryScope::Repository,
+            scope_key: Some("repo".to_string()),
+            match_text: "old value".to_string(),
+            replacement_text: Some(format!(
+                "first paragraph\n\n\nsecond paragraph\n[vibe-memory-id:{memory_id} generation:2]"
+            )),
+            created_at: Utc::now(),
+            receipt_count: 0,
+        };
+        let result = SyncResult {
+            snapshot: format!(
+                "first paragraph\n\nsecond paragraph\n[vibe-memory-id:{memory_id} generation:2]"
+            ),
+            receipts: Vec::new(),
+            mutation_receipts: vec![SyncMutationReceipt {
+                mutation_id,
+                status: AgentMemoryReceiptStatus::Ignored,
+                reason: None,
+            }],
+        };
+
+        let validation = validate_mutation_result_detailed(&[mutation], &result)
+            .pop()
+            .unwrap();
+        assert_eq!(
+            validation.receipt.status,
+            AgentMemoryReceiptStatus::Deferred
+        );
+        assert_eq!(
+            validation.errors,
+            vec![MutationValidationError::ReplacementMissing]
+        );
+    }
+
+    #[test]
+    fn repair_prompt_preserves_the_failed_mutation_text_and_error_codes() {
+        let mutation_id = Uuid::new_v4();
+        let mutation = AgentMemoryMutation {
+            id: mutation_id,
+            memory_id: Uuid::new_v4(),
+            generation: 1,
+            operation: AgentMemoryMutationOperation::Update,
+            scope: AgentMemoryScope::Repository,
+            scope_key: Some("repo".to_string()),
+            match_text: "old".to_string(),
+            replacement_text: Some("line one\n\n\nline two".to_string()),
+            created_at: Utc::now(),
+            receipt_count: 0,
+        };
+        let validation = MutationValidation {
+            receipt: SyncMutationReceipt {
+                mutation_id,
+                status: AgentMemoryReceiptStatus::Deferred,
+                reason: None,
+            },
+            errors: vec![MutationValidationError::ReplacementMissing],
+        };
+
+        let prompt = build_repair_prompt(
+            Path::new("/tmp/result.json"),
+            std::slice::from_ref(&mutation),
+            &[validation],
+        )
+        .unwrap();
+        assert!(prompt.contains("\"replacement_missing\""));
+        assert!(prompt.contains("line one\\n\\n\\nline two"));
+        assert!(prompt.contains("/tmp/result.json"));
+        assert!(prompt.contains("do not reflow Markdown"));
+    }
+
+    #[test]
+    fn agent_session_id_is_extracted_from_claude_and_codex_streams() {
+        let claude = br#"{"type":"assistant","session_id":"claude-session"}"#;
+        assert_eq!(
+            extract_agent_session_id(claude).as_deref(),
+            Some("claude-session")
+        );
+
+        let codex = br#"{"method":"thread.started","params":{"thread":{"id":"codex-thread"}}}"#;
+        assert_eq!(
+            extract_agent_session_id(codex).as_deref(),
+            Some("codex-thread")
+        );
+    }
+
+    #[test]
+    fn failed_context_fingerprint_changes_with_mutation_input() {
+        let mut mutation = AgentMemoryMutation {
+            id: Uuid::new_v4(),
+            memory_id: Uuid::new_v4(),
+            generation: 1,
+            operation: AgentMemoryMutationOperation::Update,
+            scope: AgentMemoryScope::Repository,
+            scope_key: Some("repo".to_string()),
+            match_text: "old".to_string(),
+            replacement_text: Some("new".to_string()),
+            created_at: Utc::now(),
+            receipt_count: 0,
+        };
+        let first = sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation));
+        assert_eq!(
+            first,
+            sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation))
+        );
+        mutation.generation = 2;
+        assert_ne!(
+            first,
+            sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation))
         );
     }
 
