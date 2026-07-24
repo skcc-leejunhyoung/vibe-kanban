@@ -5,6 +5,7 @@ import {
   SortDescendingIcon,
   TagIcon,
   UsersIcon,
+  XIcon,
 } from '@phosphor-icons/react';
 import type { IssuePriority, Tag } from 'shared/remote-types';
 import type { OrganizationMemberWithProfile } from 'shared/types';
@@ -25,6 +26,7 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/Dialog';
 import { Switch } from '@vibe/ui/components/Switch';
+import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { AssigneeSelectionDialog } from '@/shared/dialogs/kanban/AssigneeSelectionDialog';
 import { PriorityFilterDropdown } from '@vibe/ui/components/PriorityFilterDropdown';
 import {
@@ -65,6 +67,8 @@ interface KanbanFiltersDialogProps {
   onShowWorkspacesChange: (show: boolean) => void;
   hideBlocked: boolean;
   onHideBlockedChange: (hide: boolean) => void;
+  hasActiveFilters: boolean;
+  onClearFilters: () => void;
 }
 
 export function KanbanFiltersDialog({
@@ -85,6 +89,8 @@ export function KanbanFiltersDialog({
   onShowWorkspacesChange,
   hideBlocked,
   onHideBlockedChange,
+  hasActiveFilters,
+  onClearFilters,
 }: KanbanFiltersDialogProps) {
   const { t } = useTranslation('common');
 
@@ -310,6 +316,16 @@ export function KanbanFiltersDialog({
               />
             </div>
           </div>
+        </div>
+
+        <div className="flex items-center justify-end border-t border-border px-double py-base">
+          <PrimaryButton
+            variant="tertiary"
+            value={t('kanban.clearFilters', 'Clear filters')}
+            actionIcon={XIcon}
+            onClick={onClearFilters}
+            disabled={!hasActiveFilters}
+          />
         </div>
       </DialogContent>
     </Dialog>

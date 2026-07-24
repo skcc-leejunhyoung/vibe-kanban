@@ -58,6 +58,8 @@ export interface RenderKanbanFiltersDialogProps<
   onShowWorkspacesChange: (show: boolean) => void;
   hideBlocked: boolean;
   onHideBlockedChange: (hide: boolean) => void;
+  hasActiveFilters: boolean;
+  onClearFilters: () => void;
 }
 
 interface KanbanFilterBarProps<
@@ -236,15 +238,6 @@ export function KanbanFilterBar<
             </button>
           )}
 
-          {hasActiveFilters && (
-            <PrimaryButton
-              variant="tertiary"
-              value={t('kanban.clearFilters', 'Clear filters')}
-              actionIcon={XIcon}
-              onClick={onClearFilters}
-            />
-          )}
-
           {isMobile ? (
             <button
               type="button"
@@ -289,6 +282,8 @@ export function KanbanFilterBar<
         onShowWorkspacesChange,
         hideBlocked,
         onHideBlockedChange,
+        hasActiveFilters,
+        onClearFilters,
       })}
     </>
   );
