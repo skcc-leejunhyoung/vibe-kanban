@@ -1,7 +1,7 @@
 import { GitBranchIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
-import { RepoCard, type RepoAction } from './RepoCard';
+import { RepoCard, type RepoAction, type AiPrStatus } from './RepoCard';
 import { InputField } from './InputField';
 import { ErrorAlert } from './ErrorAlert';
 
@@ -27,6 +27,7 @@ export interface RepoInfo {
   isTargetPushError?: boolean;
   hasRemoteBranch?: boolean;
   hasUncommittedChanges?: boolean;
+  aiPrStatus?: AiPrStatus;
 }
 
 interface GitPanelProps {
@@ -85,6 +86,7 @@ export function GitPanel({
             onTargetPushClick={() => onTargetPushClick?.(repo.id)}
             hasRemoteBranch={repo.hasRemoteBranch}
             hasUncommittedChanges={repo.hasUncommittedChanges}
+            aiPrStatus={repo.aiPrStatus}
             selectedAction={repoSelectedActions?.[repo.id] ?? 'pull-request'}
             onSelectedActionChange={(action) =>
               onRepoActionChange?.(repo.id, action)

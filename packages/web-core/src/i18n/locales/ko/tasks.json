@@ -224,6 +224,19 @@
     "pushError": {
       "title": "푸시 실패",
       "copy": "복사"
+    },
+    "prFromAi": {
+      "title": "AI로 풀 리퀘스트 생성",
+      "generating": "초안 작성 중…",
+      "creating": "PR 생성 중…",
+      "created": "PR 생성 완료!",
+      "failed": "실패",
+      "successTitle": "초안 풀 리퀘스트 생성 완료",
+      "successMessage": "AI가 생성한 초안 풀 리퀘스트가 만들어졌습니다. 지금 열어볼까요?",
+      "openPr": "PR 열기",
+      "errorTitle": "풀 리퀘스트 생성 실패",
+      "errorGeneric": "풀 리퀘스트를 생성하지 못했습니다.",
+      "fallbackTitle": "풀 리퀘스트"
     }
   },
   "loading": "작업 로딩 중...",

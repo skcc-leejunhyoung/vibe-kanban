@@ -320,6 +320,19 @@
     "pushError": {
       "title": "Push failed",
       "copy": "Copy"
+    },
+    "prFromAi": {
+      "title": "Create pull request from AI",
+      "generating": "Drafting…",
+      "creating": "Creating PR…",
+      "created": "PR created!",
+      "failed": "Failed",
+      "successTitle": "Draft pull request created",
+      "successMessage": "The AI-generated draft pull request was created. Open it now?",
+      "openPr": "Open PR",
+      "errorTitle": "Failed to create pull request",
+      "errorGeneric": "Failed to create the pull request.",
+      "fallbackTitle": "Pull request"
     }
   },
   "startReviewDialog": {

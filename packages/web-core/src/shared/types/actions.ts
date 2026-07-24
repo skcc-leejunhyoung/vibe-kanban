@@ -274,6 +274,7 @@ export function isSpecialIcon(icon: ActionIcon): icon is SpecialIconType {
 // available — they operate normally on the existing branch.
 const IN_PLACE_HIDDEN_ACTION_IDS = new Set<string>([
   'git-create-pr',
+  'git-create-pr-from-ai',
   'git-link-pr',
   'git-merge',
   'git-rebase',

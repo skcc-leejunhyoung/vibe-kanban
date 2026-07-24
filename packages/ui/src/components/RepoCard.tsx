@@ -34,6 +34,10 @@ export type RepoAction =
   | 'pull'
   | 'push';
 
+// Status of the background "Create Pull Request from AI" flow for this repo:
+// generating the description, creating the draft PR, then a terminal result.
+export type AiPrStatus = 'generating' | 'creating' | 'success' | 'error';
+
 const repoActionOptions: SplitButtonOption<RepoAction>[] = [
   { value: 'commit', label: 'Commit', icon: GitCommitIcon },
   {
@@ -69,6 +73,8 @@ interface RepoCardProps {
    */
   hasRemoteBranch?: boolean;
   hasUncommittedChanges?: boolean;
+  /** In-progress / result state of the background "Create PR from AI" flow. */
+  aiPrStatus?: AiPrStatus;
   branchDropdownContent?: ReactNode;
   selectedAction?: RepoAction;
   onSelectedActionChange?: (action: RepoAction) => void;
@@ -94,6 +100,7 @@ export function RepoCard({
   onTargetPushClick,
   hasRemoteBranch = false,
   hasUncommittedChanges = false,
+  aiPrStatus,
   branchDropdownContent,
   selectedAction = 'pull-request',
   onSelectedActionChange,
@@ -232,6 +239,36 @@ export function RepoCard({
                   ? t('git.states.pushFailed')
                   : targetPushAhead}
           </button>
+        )}
+
+        {/* Background "Create PR from AI" progress / result. A non-interactive
+            status pill mirroring the push button's state feedback. */}
+        {aiPrStatus && (
+          <span
+            className={`inline-flex items-center gap-half px-base py-half rounded-sm text-sm font-medium shrink-0 ${
+              aiPrStatus === 'success'
+                ? 'bg-success/20 text-success'
+                : aiPrStatus === 'error'
+                  ? 'bg-error/20 text-error'
+                  : 'bg-panel text-normal'
+            }`}
+            title={t('git.prFromAi.title')}
+          >
+            {aiPrStatus === 'success' ? (
+              <CheckCircleIcon className="size-icon-xs" weight="fill" />
+            ) : aiPrStatus === 'error' ? (
+              <WarningCircleIcon className="size-icon-xs" weight="fill" />
+            ) : (
+              <SpinnerGapIcon className="size-icon-xs animate-spin" />
+            )}
+            {aiPrStatus === 'generating'
+              ? t('git.prFromAi.generating')
+              : aiPrStatus === 'creating'
+                ? t('git.prFromAi.creating')
+                : aiPrStatus === 'success'
+                  ? t('git.prFromAi.created')
+                  : t('git.prFromAi.failed')}
+          </span>
         )}
 
         <button

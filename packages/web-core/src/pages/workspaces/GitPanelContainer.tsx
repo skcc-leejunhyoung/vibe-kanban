@@ -7,6 +7,10 @@ import {
   useTargetPushBackground,
   usePushBackgroundStore,
 } from '@/shared/stores/usePushBackgroundStore';
+import {
+  usePrFromAiBackground,
+  type PrFromAiStatus,
+} from '@/shared/stores/usePrFromAiBackgroundStore';
 import { useRenameBranch } from '@/shared/hooks/useRenameBranch';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
@@ -27,6 +31,9 @@ type PushState = 'idle' | 'pending' | 'success' | 'error';
 // Stable empty map so reading push state for a workspace with no in-flight push
 // doesn't create a new object each render.
 const EMPTY_PUSH_STATES: Record<string, PushState> = {};
+
+// Stable empty map for the AI-PR background flow, same rationale as above.
+const EMPTY_AI_PR_STATES: Record<string, PrFromAiStatus> = {};
 
 export function GitPanelContainer({
   selectedWorkspace,
@@ -133,6 +140,12 @@ export function GitPanelContainer({
     useTargetPushBackground(selectedWorkspace?.id) ?? EMPTY_PUSH_STATES;
   const startTargetPush = usePushBackgroundStore((s) => s.startTargetPush);
 
+  // AI-PR background flow state per repo (generating / creating / success /
+  // error), so the git panel shows an in-progress badge on the repo card while
+  // the "Create Pull Request from AI" command runs after the panel unmounts.
+  const aiPrStates =
+    usePrFromAiBackground(selectedWorkspace?.id) ?? EMPTY_AI_PR_STATES;
+
   // Push the workspace's target (base) branch to origin. The initial "push the
   // base branch to origin?" confirm is a user gate kept here; once confirmed,
   // the store runs the push (including the force-push retry) and owns all state
@@ -186,9 +199,10 @@ export function GitPanelContainer({
           isTargetPushPending: targetState === 'pending',
           isTargetPushSuccess: targetState === 'success',
           isTargetPushError: targetState === 'error',
+          aiPrStatus: aiPrStates[repo.id],
         };
       }),
-    [repoInfos, pushStates, targetPushStates]
+    [repoInfos, pushStates, targetPushStates, aiPrStates]
   );
 
   // Handle opening command bar for repo actions

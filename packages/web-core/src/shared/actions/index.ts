@@ -61,6 +61,7 @@ import {
   BellIcon,
   ArrowSquareOutIcon,
   ArrowsOutIcon,
+  SparkleIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -89,6 +90,7 @@ import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsD
 import { RenameWorkspaceDialog } from '@vibe/ui/components/RenameWorkspaceDialog';
 import { ProjectsGuideDialog } from '@vibe/ui/components/ProjectsGuideDialog';
 import { CreatePRDialog } from '@/shared/dialogs/command-bar/CreatePRDialog';
+import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { getIdeName } from '@/shared/lib/ideName';
 import { EditorSelectionDialog } from '@/shared/dialogs/command-bar/EditorSelectionDialog';
 import { StartReviewDialog } from '@/shared/dialogs/command-bar/StartReviewDialog';
@@ -1480,6 +1482,41 @@ export const Actions = {
       if (!result.success && result.error) {
         throw new Error(result.error);
       }
+    },
+  },
+
+  // Fire-and-forget variant of Create PR: generate the title/description with
+  // the agent and open a draft PR against the workspace's configured target
+  // branch, all in the background. Progress shows on the git panel's repo card;
+  // completion/errors surface as popups. No dialog is opened.
+  GitCreatePRFromAI: {
+    id: 'git-create-pr-from-ai',
+    label: 'Create Pull Request from AI',
+    icon: SparkleIcon,
+    keywords: ['pull request', 'ai', 'draft', 'generate', 'pr'],
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
+    execute: async (_ctx, workspaceId, repoId) => {
+      const [repos, featureBranch] = await Promise.all([
+        workspacesApi.getRepos(workspaceId),
+        findMergedFeatureBranch(workspaceId, repoId),
+      ]);
+      const repo = repos.find((r) => r.id === repoId);
+
+      // Head (source): the feature branch the work branch was merged into
+      // (three-branch flow) when present; otherwise null so the backend defaults
+      // to the work branch.
+      const headBranch = featureBranch ?? null;
+
+      // Base (target): the workspace's configured target branch. For a feature
+      // head the target IS the head, so fall back to the repo's default base.
+      const targetBranch = featureBranch
+        ? (repo?.default_target_branch ?? repo?.target_branch ?? null)
+        : (repo?.target_branch ?? null);
+
+      usePrFromAiBackgroundStore
+        .getState()
+        .startCreateFromAi(workspaceId, repoId, { targetBranch, headBranch });
     },
   },
 
