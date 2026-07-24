@@ -86,10 +86,13 @@ async fn handle_inbound_stream(
     let io = TokioIo::new(stream);
 
     server_http1::Builder::new()
-        // A yamux stream carries exactly one HTTP exchange. Explicitly close
-        // it after the response so Hyper does not wait for a second request
-        // and report the peer's normal stream teardown as an incomplete one.
-        .keep_alive(false)
+        // A yamux stream carries exactly one HTTP exchange, but we must NOT set
+        // `.keep_alive(false)` here: for a WebSocket upgrade that makes Hyper
+        // emit `Connection: close` on the 101 response and tear the stream down
+        // before the upgrade is spliced, so the browser rejects the handshake
+        // ("bad response from the server") and the WS never connects. The
+        // single-exchange teardown instead surfaces as an incomplete-message
+        // error that `is_expected_stream_close` downgrades to a debug log.
         .serve_connection(
             io,
             service_fn(move |request: Request<Incoming>| proxy_to_local(request, local_addr)),
