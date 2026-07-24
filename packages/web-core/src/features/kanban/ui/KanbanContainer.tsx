@@ -931,13 +931,25 @@ export function KanbanContainer() {
     []
   );
 
-  // List-view group headers are keyboard-focusable too (distinct from the issue
-  // cursor). `focusedSectionId` marks the focused header; when set, the issue
-  // cursor is blurred. This is what lets Left move onto a header and Right
-  // re-open a collapsed group.
-  const [focusedSectionId, setFocusedSectionId] = useState<string | null>(null);
+  // List-view group headers and "+ Add item" rows are keyboard-focusable too
+  // (distinct from the issue cursor). `nonIssueFocus` marks which one holds
+  // focus; when set, the issue cursor is blurred. This is what lets Left move
+  // onto a header (and Right re-open a collapsed group) and arrow keys reach
+  // the add row. `editingAddStatusId` tracks which add row is in input mode.
+  const [nonIssueFocus, setNonIssueFocus] = useState<{
+    kind: 'header' | 'add';
+    statusId: string;
+  } | null>(null);
+  const [editingAddStatusId, setEditingAddStatusId] = useState<string | null>(
+    null
+  );
+  const focusedSectionId =
+    nonIssueFocus?.kind === 'header' ? nonIssueFocus.statusId : null;
+  const focusedAddStatusId =
+    nonIssueFocus?.kind === 'add' ? nonIssueFocus.statusId : null;
   const blurCursor = useIssueSelectionStore((s) => s.blurCursor);
   const sectionRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
+  const addRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const registerSectionRef = useCallback(
     (statusId: string, node: HTMLButtonElement | null) => {
       if (node) sectionRefs.current.set(statusId, node);
@@ -945,9 +957,23 @@ export function KanbanContainer() {
     },
     []
   );
+  const registerAddRef = useCallback(
+    (statusId: string, node: HTMLButtonElement | null) => {
+      if (node) addRefs.current.set(statusId, node);
+      else addRefs.current.delete(statusId);
+    },
+    []
+  );
   const focusSection = useCallback(
     (statusId: string) => {
-      setFocusedSectionId(statusId);
+      setNonIssueFocus({ kind: 'header', statusId });
+      blurCursor();
+    },
+    [blurCursor]
+  );
+  const focusAddRow = useCallback(
+    (statusId: string) => {
+      setNonIssueFocus({ kind: 'add', statusId });
       blurCursor();
     },
     [blurCursor]
@@ -989,28 +1015,31 @@ export function KanbanContainer() {
     collapsedStatusIds,
   ]);
 
-  // Move the issue cursor, clearing any focused group header.
+  // Move the issue cursor, clearing any focused group header / add row.
   const focusIssue = useCallback(
     (issueId: string) => {
-      setFocusedSectionId(null);
+      setNonIssueFocus(null);
       focusCursor(issueId);
     },
     [focusCursor]
   );
 
-  // Ordered focusable rows for the list view: each group header, followed by
-  // its issues (omitted for collapsed groups). Headers are always present so
-  // keyboard nav can reach — and Right-arrow can re-open — a collapsed group.
+  // Ordered focusable rows for the list view: each group header, then its
+  // issues, then its "+ Add item" row (issues/add omitted for collapsed
+  // groups). Headers are always present so keyboard nav can reach — and
+  // Right-arrow can re-open — a collapsed group.
   const listFocusables = useMemo<
     (
       | { type: 'header'; statusId: string }
       | { type: 'issue'; issueId: string }
+      | { type: 'add'; statusId: string }
     )[]
   >(() => {
     if (kanbanViewMode === 'kanban') return [];
     const out: (
       | { type: 'header'; statusId: string }
       | { type: 'issue'; issueId: string }
+      | { type: 'add'; statusId: string }
     )[] = [];
     for (const status of listViewStatuses) {
       out.push({ type: 'header', statusId: status.id });
@@ -1018,6 +1047,7 @@ export function KanbanContainer() {
         for (const id of items[status.id] ?? []) {
           out.push({ type: 'issue', issueId: id });
         }
+        out.push({ type: 'add', statusId: status.id });
       }
     }
     return out;
@@ -1035,16 +1065,39 @@ export function KanbanContainer() {
     [focusIssue, orderedIssueIds]
   );
 
+  // Enter/leave the inline "+ Add item" input for a group. Entering keeps the
+  // add row keyboard-focused; leaving with `refocus` (Escape) returns focus to
+  // the add-row button so arrow keys resume and Enter re-enters.
+  const handleStartAddEditing = useCallback(
+    (statusId: string) => {
+      setIsBoardFocused(true);
+      focusAddRow(statusId);
+      setEditingAddStatusId(statusId);
+    },
+    [focusAddRow]
+  );
+  const handleStopAddEditing = useCallback(
+    (statusId: string, refocus: boolean) => {
+      setEditingAddStatusId((cur) => (cur === statusId ? null : cur));
+      if (refocus) {
+        setIsBoardFocused(true);
+        focusAddRow(statusId);
+      }
+    },
+    [focusAddRow]
+  );
+
   // Keep the store's ordered IDs in sync
   useEffect(() => {
     setOrderedIssueIds(orderedIssueIds, selectedKanbanIssueId);
   }, [orderedIssueIds, selectedKanbanIssueId, setOrderedIssueIds]);
 
-  // Clear multi-selection, keyboard cursor, and any focused group header when
+  // Clear multi-selection, keyboard cursor, and any focused header/add row when
   // the project or view mode changes (clearSelection resets cursorIssueId too).
   useEffect(() => {
     clearSelection();
-    setFocusedSectionId(null);
+    setNonIssueFocus(null);
+    setEditingAddStatusId(null);
   }, [projectId, kanbanViewMode, clearSelection]);
 
   // Keep anchor in sync with the currently opened issue (e.g. from URL on
@@ -1060,6 +1113,8 @@ export function KanbanContainer() {
       // A click inside the board means it owns focus; enable arrow/Enter
       // navigation even if the card's drag handle didn't emit a focus event.
       setIsBoardFocused(true);
+      // Clicking an issue moves focus onto it, so drop any focused header/add row.
+      setNonIssueFocus(null);
 
       // In explicit selection mode (mobile/touch), any tap toggles selection
       // instead of opening the issue. Modifier-key handling stays in the hook.
@@ -1106,17 +1161,18 @@ export function KanbanContainer() {
 
   const moveFocus = useCallback(
     (direction: 'up' | 'down' | 'left' | 'right') => {
-      // --- List view: navigate group headers + issues -----------------------
-      // Up/Down step through the flat focusables (headers and, for expanded
-      // groups, their issues). Left/Right on a header collapse/expand it; Left
-      // on an issue moves focus up to its header. This lets the user reach a
-      // collapsed group's header and re-open it with Right.
+      // --- List view: navigate group headers + issues + add rows ------------
+      // Up/Down step through the flat focusables (headers, issues, and each
+      // group's "+ Add item" row). Left/Right on a header collapse/expand it;
+      // Left on an issue or add row moves focus up to its header. This lets the
+      // user reach a collapsed group's header and re-open it with Right.
       if (!isKanbanView) {
         const focusables = listFocusables;
         if (focusables.length === 0) return;
 
         const applyFocus = (f: (typeof focusables)[number]) => {
           if (f.type === 'header') focusSection(f.statusId);
+          else if (f.type === 'add') focusAddRow(f.statusId);
           else focusIssue(f.issueId);
         };
 
@@ -1125,11 +1181,15 @@ export function KanbanContainer() {
           ? focusables.findIndex(
               (f) => f.type === 'header' && f.statusId === focusedSectionId
             )
-          : cursor
+          : focusedAddStatusId
             ? focusables.findIndex(
-                (f) => f.type === 'issue' && f.issueId === cursor
+                (f) => f.type === 'add' && f.statusId === focusedAddStatusId
               )
-            : -1;
+            : cursor
+              ? focusables.findIndex(
+                  (f) => f.type === 'issue' && f.issueId === cursor
+                )
+              : -1;
 
         if (direction === 'up' || direction === 'down') {
           if (currentIndex === -1) {
@@ -1159,6 +1219,12 @@ export function KanbanContainer() {
             const first = (items[focusedSectionId] ?? [])[0];
             if (first) focusIssue(first); // step into the first child issue
           }
+          return;
+        }
+
+        // An add row is focused: Left moves to its group header; Right no-op.
+        if (focusedAddStatusId) {
+          if (direction === 'left') focusSection(focusedAddStatusId);
           return;
         }
 
@@ -1226,7 +1292,9 @@ export function KanbanContainer() {
       isKanbanView,
       listFocusables,
       focusedSectionId,
+      focusedAddStatusId,
       focusSection,
+      focusAddRow,
       focusIssue,
       collapsedStatusIds,
       toggleStatusCollapsed,
@@ -1292,13 +1360,21 @@ export function KanbanContainer() {
         toggleStatusCollapsed(focusedSectionId);
         return;
       }
+      // A focused "+ Add item" row enters its input on Enter.
+      if (focusedAddStatusId) {
+        e.preventDefault();
+        setEditingAddStatusId(focusedAddStatusId);
+        return;
+      }
       if (!cursorIssueId || cursorIssueId === selectedKanbanIssueId) return;
       e.preventDefault();
       handleCardClick(cursorIssueId);
     },
     {
       scopes: [Scope.KANBAN],
-      enabled: isBoardFocused && (!!cursorIssueId || !!focusedSectionId),
+      enabled:
+        isBoardFocused &&
+        (!!cursorIssueId || !!focusedSectionId || !!focusedAddStatusId),
       enableOnFormTags: false,
     },
     [
@@ -1307,16 +1383,26 @@ export function KanbanContainer() {
       handleCardClick,
       isBoardFocused,
       focusedSectionId,
+      focusedAddStatusId,
       toggleStatusCollapsed,
     ]
   );
 
-  // As the cursor moves, scroll the focused row/header into view. While the
-  // board owns focus, also move real DOM focus onto it so the focus-scoped
+  // As focus moves, scroll the focused header/add-row/issue into view. While
+  // the board owns focus, also move real DOM focus onto it so the focus-scoped
   // arrow/Enter hotkeys stay active. Never pull focus when the board isn't
-  // focused (e.g. on load with the issue panel open). A focused group header
-  // takes precedence over the issue cursor.
+  // focused (e.g. on load with the issue panel open). A focused group header or
+  // add row takes precedence over the issue cursor; while an add row is being
+  // edited, its input owns focus so we leave it alone.
   useEffect(() => {
+    if (focusedAddStatusId) {
+      if (editingAddStatusId === focusedAddStatusId) return;
+      const node = addRefs.current.get(focusedAddStatusId);
+      if (!node) return;
+      if (isBoardFocused) node.focus({ preventScroll: true });
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      return;
+    }
     if (focusedSectionId) {
       const node = sectionRefs.current.get(focusedSectionId);
       if (!node) return;
@@ -1329,7 +1415,13 @@ export function KanbanContainer() {
     if (!node) return;
     if (isBoardFocused) node.focus({ preventScroll: true });
     node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [cursorIssueId, focusedSectionId, isBoardFocused]);
+  }, [
+    cursorIssueId,
+    focusedSectionId,
+    focusedAddStatusId,
+    editingAddStatusId,
+    isBoardFocused,
+  ]);
 
   const handleToggleSelectionMode = useCallback(() => {
     if (isSelectionMode) {
@@ -1728,9 +1820,15 @@ export function KanbanContainer() {
               onIssueCheckboxChange={handleCheckboxChange}
               workspacesByIssueId={workspacesByIssueId}
               onWorkspaceClick={handleListWorkspaceClick}
+              onMoreActionsClick={handleCardMoreActionsClick}
               collapsedStatusIds={collapsedStatusIds}
               onToggleStatusCollapsed={toggleStatusCollapsed}
               onAddIssue={handleInlineAddIssue}
+              focusedAddStatusId={focusedAddStatusId}
+              editingAddStatusId={editingAddStatusId}
+              onStartAddEditing={handleStartAddEditing}
+              onStopAddEditing={handleStopAddEditing}
+              onAddRowRef={registerAddRef}
             />
           </KanbanProvider>
         </div>

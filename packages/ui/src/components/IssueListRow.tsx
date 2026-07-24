@@ -3,6 +3,7 @@
 import type { MouseEvent } from 'react';
 import { cn } from '../lib/cn';
 import { Draggable } from '@hello-pangea/dnd';
+import { DotsThreeIcon } from '@phosphor-icons/react';
 import { PriorityIcon, type PriorityLevel } from './PriorityIcon';
 import { StatusDot } from './StatusDot';
 import { KanbanBadge } from './KanbanBadge';
@@ -81,6 +82,8 @@ export interface IssueListRowProps {
   /** Active workspaces linked to this issue, shown indented under the row. */
   workspaces?: WorkspaceWithStats[];
   onWorkspaceClick?: (issueId: string, workspace: WorkspaceWithStats) => void;
+  /** Opens the issue actions menu (mirrors the kanban card's "…" button). */
+  onMoreActionsClick?: (issueId: string) => void;
   className?: string;
 }
 
@@ -100,6 +103,7 @@ export function IssueListRow({
   forwardedRef,
   workspaces = [],
   onWorkspaceClick,
+  onMoreActionsClick,
   className,
 }: IssueListRowProps) {
   const showCheckbox = isMultiSelectActive || isChecked;
@@ -211,6 +215,28 @@ export function IssueListRow({
               <span className="text-sm text-low w-5 text-right">
                 {formatRelativeTime(issue.created_at)}
               </span>
+              {/* Issue actions "…" — far right, on hover or when cursor-focused.
+                  Pointer starts are swallowed so it never begins a row drag. */}
+              {onMoreActionsClick && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMoreActionsClick(issue.id);
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                  className={cn(
+                    'items-center justify-center size-icon-sm rounded-sm',
+                    'text-low hover:text-normal hover:bg-panel transition-colors',
+                    isCursor ? 'flex' : 'hidden group-hover/row:flex'
+                  )}
+                  aria-label="Issue actions"
+                >
+                  <DotsThreeIcon className="size-icon-xs" weight="bold" />
+                </button>
+              )}
             </div>
           </div>
 

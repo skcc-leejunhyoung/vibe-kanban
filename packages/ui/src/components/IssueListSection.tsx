@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -53,6 +54,8 @@ export interface IssueListSectionProps {
   /** Active workspaces linked to each issue, keyed by issue id. */
   workspacesByIssueId?: Map<string, WorkspaceWithStats[]>;
   onWorkspaceClick?: (issueId: string, workspace: WorkspaceWithStats) => void;
+  /** Opens the issue actions menu for a row's "…" button. */
+  onMoreActionsClick?: (issueId: string) => void;
   /** Controlled expand/collapse. */
   isExpanded: boolean;
   onToggleExpanded: () => void;
@@ -61,6 +64,16 @@ export interface IssueListSectionProps {
    * When omitted the add row is not rendered.
    */
   onAddIssue?: (title: string) => void;
+  /** Whether the "+ Add item" row currently holds keyboard focus (ring). */
+  addRowFocused?: boolean;
+  /** Whether the "+ Add item" row is in its editing (input) state. */
+  addRowEditing?: boolean;
+  /** Enter edit mode for this group's add row. */
+  onStartAddEditing?: () => void;
+  /** Leave edit mode; `refocus` keeps the add-row button keyboard-focused. */
+  onStopAddEditing?: (refocus: boolean) => void;
+  /** Reports the add-row button DOM node for scroll-into-view / focus. */
+  onAddRowRef?: (node: HTMLButtonElement | null) => void;
   className?: string;
 }
 
@@ -82,9 +95,15 @@ export function IssueListSection({
   onIssueCheckboxChange,
   workspacesByIssueId,
   onWorkspaceClick,
+  onMoreActionsClick,
   isExpanded,
   onToggleExpanded,
   onAddIssue,
+  addRowFocused = false,
+  addRowEditing = false,
+  onStartAddEditing,
+  onStopAddEditing,
+  onAddRowRef,
   className,
 }: IssueListSectionProps) {
   return (
@@ -150,12 +169,20 @@ export function IssueListSection({
                     forwardedRef={(node) => onRowRef?.(issue.id, node)}
                     workspaces={workspacesByIssueId?.get(issue.id)}
                     onWorkspaceClick={onWorkspaceClick}
+                    onMoreActionsClick={onMoreActionsClick}
                   />
                 );
               })}
             {provided.placeholder}
             {isExpanded && onAddIssue && (
-              <IssueListAddRow onAddIssue={onAddIssue} />
+              <IssueListAddRow
+                onAddIssue={onAddIssue}
+                isFocused={addRowFocused}
+                isEditing={addRowEditing}
+                onStartEditing={onStartAddEditing}
+                onStopEditing={onStopAddEditing}
+                onButtonRef={onAddRowRef}
+              />
             )}
           </div>
         )}
@@ -165,19 +192,38 @@ export function IssueListSection({
 }
 
 /**
- * Inline "+ Add item" row rendered at the bottom of an expanded group. Clicking
- * it swaps in a title input; pressing Enter creates the issue immediately (with
- * an empty body) and keeps the input open for rapid entry. Escape or blur exits.
+ * Inline "+ Add item" row rendered at the bottom of an expanded group. It has
+ * two controlled states so it can join keyboard navigation: a focusable button
+ * (reachable by arrow keys, Enter opens the input) and the editing input
+ * (Enter creates the issue and keeps typing; Escape returns focus to the
+ * button; blur exits). Edit/focus state is owned by the container.
  */
 function IssueListAddRow({
   onAddIssue,
+  isFocused = false,
+  isEditing = false,
+  onStartEditing,
+  onStopEditing,
+  onButtonRef,
 }: {
   onAddIssue: (title: string) => void;
+  isFocused?: boolean;
+  isEditing?: boolean;
+  onStartEditing?: () => void;
+  onStopEditing?: (refocus: boolean) => void;
+  onButtonRef?: (node: HTMLButtonElement | null) => void;
 }) {
   const { t } = useTranslation('common');
-  const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Autofocus the input whenever the container switches this row into edit mode
+  // (via mouse click or keyboard Enter on the focused button).
+  useEffect(() => {
+    if (isEditing) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [isEditing]);
 
   const submit = useCallback(() => {
     const trimmed = title.trim();
@@ -194,25 +240,27 @@ function IssueListAddRow({
         e.preventDefault();
         submit();
       } else if (e.key === 'Escape') {
+        // Leave the input but keep the add-row keyboard-focused so arrow keys
+        // resume and Enter re-enters.
         e.preventDefault();
+        e.stopPropagation();
         setTitle('');
-        setIsEditing(false);
+        onStopEditing?.(true);
       }
     },
-    [submit]
+    [submit, onStopEditing]
   );
 
   if (!isEditing) {
     return (
       <button
         type="button"
-        onClick={() => {
-          setIsEditing(true);
-          requestAnimationFrame(() => inputRef.current?.focus());
-        }}
+        ref={onButtonRef}
+        onClick={() => onStartEditing?.()}
         className={cn(
-          'group/add flex items-center gap-double px-double py-half',
-          'text-low hover:bg-secondary hover:text-normal transition-colors'
+          'group/add flex items-center gap-double px-double py-half outline-none',
+          'text-low hover:bg-secondary hover:text-normal transition-colors',
+          isFocused && 'ring-1 ring-inset ring-brand text-normal'
         )}
       >
         <span className="shrink-0 w-4 flex items-center justify-center">
@@ -235,7 +283,7 @@ function IssueListAddRow({
         onKeyDown={handleKeyDown}
         onBlur={() => {
           setTitle('');
-          setIsEditing(false);
+          onStopEditing?.(false);
         }}
         placeholder={t('kanban.addItemPlaceholder', 'Issue title…')}
         className={cn(
