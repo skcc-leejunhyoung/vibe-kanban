@@ -485,6 +485,62 @@ html {
   }
 }
 
+/* Checklist rendering for the WYSIWYG markdown editor (issue body, comments,
+   chat). Lexical's CheckListPlugin detects clicks by reading the computed
+   width of `::before` on the <li>, so the checkbox box must be a real
+   `::before` with an explicit left/width - not a Tailwind before: utility. */
+@layer components {
+  ul.wysiwyg-checklist {
+    padding-left: 0;
+    list-style-type: none;
+  }
+
+  .wysiwyg-checklist-item {
+    position: relative;
+    padding-left: 24px;
+    list-style-type: none;
+    outline: none;
+  }
+
+  .wysiwyg-checklist-item-checked {
+    text-decoration: line-through;
+    color: hsl(var(--text-low));
+  }
+
+  .wysiwyg-checklist-item-unchecked::before,
+  .wysiwyg-checklist-item-checked::before {
+    content: '';
+    position: absolute;
+    display: block;
+    top: 2px;
+    left: 0;
+    width: 16px;
+    height: 16px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .wysiwyg-checklist-item-checked::before {
+    border-color: hsl(var(--brand));
+    background-color: hsl(var(--brand));
+  }
+
+  .wysiwyg-checklist-item-checked::after {
+    content: '';
+    position: absolute;
+    display: block;
+    cursor: pointer;
+    top: 6px;
+    left: 6px;
+    width: 3px;
+    height: 6px;
+    border: solid hsl(var(--text-on-brand));
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+}
+
 /* Color emoji utility - uses system color emoji fonts for reactions */
 @layer utilities {
   .color-emoji {

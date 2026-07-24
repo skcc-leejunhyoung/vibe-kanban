@@ -14,8 +14,9 @@ import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
 import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin';
 import { ContentEditable } from '@lexical/react/LexicalContentEditable';
-import { TRANSFORMERS, type Transformer } from '@lexical/markdown';
+import { CHECK_LIST, TRANSFORMERS, type Transformer } from '@lexical/markdown';
 import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin';
+import { CheckListPlugin } from '@lexical/react/LexicalCheckListPlugin';
 import { CodeBlockEscapePlugin } from '@vibe/ui/components/CodeBlockEscapePlugin';
 import { InlineCodeBoundaryPlugin } from '@vibe/ui/components/InlineCodeBoundaryPlugin';
 import { ImeDeleteGuardPlugin } from '@vibe/ui/components/ImeDeleteGuardPlugin';
@@ -466,7 +467,12 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
             // hanging indentation when an item wraps.
             ul: 'my-1 ml-3 list-disc pl-6',
             ol: 'my-1 ml-3 list-decimal pl-6',
+            checklist: 'wysiwyg-checklist',
             listitem: '',
+            listitemChecked:
+              'wysiwyg-checklist-item wysiwyg-checklist-item-checked',
+            listitemUnchecked:
+              'wysiwyg-checklist-item wysiwyg-checklist-item-unchecked',
             nested: {
               // Hide the structural wrapper marker Lexical adds for nested items.
               listitem: 'list-none pl-4',
@@ -519,6 +525,10 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
         PR_COMMENT_TRANSFORMER,
         COMPONENT_INFO_EXPORT_TRANSFORMER,
         COMPONENT_INFO_TRANSFORMER,
+        // CHECK_LIST must precede TRANSFORMERS: its regex ("- [ ] " and the
+        // Notion-style "[] "/"[x] " shorthand) overlaps with UNORDERED_LIST's
+        // ("- "), and the first matching transformer wins.
+        CHECK_LIST,
         ...TRANSFORMERS,
       ],
       [ATTACHMENT_TRANSFORMER, IMAGE_TRANSFORMER]
@@ -645,6 +655,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
 
                 <MarkdownShortcutPlugin transformers={allTransformers} />
                 <ListPlugin />
+                <CheckListPlugin />
                 <TablePlugin />
                 <CodeHighlightPlugin />
                 {/* Only include editing plugins when not in read-only mode */}

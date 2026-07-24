@@ -87,9 +87,18 @@ export function MarkdownPreview({
           {children}
         </a>
       ),
-      ul: ({ children, ...props }: ComponentPropsWithoutRef<'ul'>) => (
+      ul: ({
+        children,
+        className,
+        ...props
+      }: ComponentPropsWithoutRef<'ul'>) => (
         <ul
-          className="list-disc pl-6 mb-3 text-sm text-normal space-y-1"
+          className={cn(
+            'pl-6 mb-3 text-sm text-normal space-y-1',
+            // GFM task lists (`- [ ] foo`) get a checkbox instead of a bullet.
+            !className?.includes('contains-task-list') && 'list-disc',
+            className
+          )}
           {...props}
         >
           {children}
@@ -103,8 +112,12 @@ export function MarkdownPreview({
           {children}
         </ol>
       ),
-      li: ({ children, ...props }: ComponentPropsWithoutRef<'li'>) => (
-        <li className="leading-relaxed" {...props}>
+      li: ({
+        children,
+        className,
+        ...props
+      }: ComponentPropsWithoutRef<'li'>) => (
+        <li className={cn('leading-relaxed', className)} {...props}>
           {children}
         </li>
       ),
