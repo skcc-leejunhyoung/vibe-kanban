@@ -21,7 +21,7 @@ const {
 const {
   getSplitPresetHotkeyOptions,
   sameOriginRelativeUrl,
-  shouldFocusReadyPane,
+  shouldFocusRequestedPane,
 } = await import('@/shared/components/SplitScreenSurface');
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
@@ -346,23 +346,23 @@ describe('split pane navigation', () => {
     });
   });
 
-  it('focuses a pane only after the requested iframe reports ready', () => {
+  it('accepts focus completion only from the requested iframe', () => {
     expect(
-      shouldFocusReadyPane(
+      shouldFocusRequestedPane(
         'preset-2-pane-1',
         'preset-2-pane-1',
         'preset-2-pane-1'
       )
     ).toBe(true);
     expect(
-      shouldFocusReadyPane(
+      shouldFocusRequestedPane(
         'preset-3-pane-1',
         'preset-2-pane-1',
         'preset-2-pane-1'
       )
     ).toBe(false);
     expect(
-      shouldFocusReadyPane(
+      shouldFocusRequestedPane(
         'preset-2-pane-1',
         'preset-2-pane-1',
         'preset-2-pane-2'

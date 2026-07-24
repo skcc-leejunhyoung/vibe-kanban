@@ -943,6 +943,7 @@ export const Actions = {
     icon: ArrowSquareOutIcon,
     keywords: ['workspace', 'open', 'new tab'],
     requiresTarget: ActionTargetType.WORKSPACE,
+    restoreFocusOnClose: false,
     isVisible: (ctx) => ctx.hasWorkspace,
     execute: (ctx, workspaceId, hostId) => {
       openInSplitPane(

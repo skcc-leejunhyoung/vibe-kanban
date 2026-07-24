@@ -65,6 +65,7 @@ type PaneMessage = {
     | 'activate'
     | 'ready'
     | 'navigate'
+    | 'navigated'
     | 'preset'
     | 'focus-pane'
     | 'move-pane'
@@ -128,7 +129,7 @@ export function getSplitPresetHotkeyOptions(keys: string) {
   };
 }
 
-export function shouldFocusReadyPane(
+export function shouldFocusRequestedPane(
   pendingPaneId: string | null,
   senderPaneId: string,
   reportedPaneId: string | undefined
@@ -303,14 +304,20 @@ function EmbeddedPaneBridge({ children }: { children: ReactNode }) {
         event.data.paneId === paneId &&
         event.data.url
       ) {
+        const reportNavigationComplete = () =>
+          postToParent({ type: MESSAGE_TYPE, event: 'navigated', paneId });
         const target = sameOriginRelativeUrl(
           event.data.url,
           window.location.origin
         );
-        if (!target || target === withoutEmbedParam(currentRelativeUrl())) {
-          return;
+        if (!target) return;
+        if (target === withoutEmbedParam(currentRelativeUrl())) {
+          reportNavigationComplete();
+        } else {
+          void router
+            .navigate({ href: target })
+            .then(reportNavigationComplete, () => undefined);
         }
-        void router.navigate({ href: target });
       }
     };
     window.addEventListener('message', handleMessage);
@@ -489,6 +496,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
   const paneFramesRef = useRef(new Map<string, HTMLIFrameElement>());
   const readyPaneIdsRef = useRef(new Set<string>());
   const pendingFocusPaneIdRef = useRef<string | null>(null);
+  const pendingNavigationFocusPaneIdRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [highlightedPaneId, setHighlightedPaneId] = useState<string | null>(
     null
@@ -581,7 +589,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       if (message.event === 'ready') {
         readyPaneIdsRef.current.add(senderPaneId);
         if (
-          shouldFocusReadyPane(
+          shouldFocusRequestedPane(
             pendingFocusPaneIdRef.current,
             senderPaneId,
             message.paneId
@@ -590,6 +598,16 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
           pendingFocusPaneIdRef.current = null;
           activatePane(senderPaneId, true);
         }
+      } else if (
+        message.event === 'navigated' &&
+        shouldFocusRequestedPane(
+          pendingNavigationFocusPaneIdRef.current,
+          senderPaneId,
+          message.paneId
+        )
+      ) {
+        pendingNavigationFocusPaneIdRef.current = null;
+        activatePane(senderPaneId, true);
       } else if (message.event === 'preset' && isSplitPreset(message.preset)) {
         activatePreset(message.preset);
       } else if (
@@ -621,6 +639,8 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
           const currentState = useSplitScreenStore.getState();
           const targetPaneId =
             currentState.presets[currentState.preset].activePaneId;
+          pendingNavigationFocusPaneIdRef.current = targetPaneId;
+          activatePane(targetPaneId);
           requestAnimationFrame(() => {
             const targetFrame = paneFramesRef.current.get(targetPaneId);
             targetFrame?.contentWindow?.postMessage(
@@ -632,7 +652,6 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
               } satisfies PaneMessage,
               window.location.origin
             );
-            activatePane(targetPaneId, true);
           });
         }
       } else if (

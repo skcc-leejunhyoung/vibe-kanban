@@ -222,6 +222,7 @@ describe('command palette navigation actions', () => {
     expect(openWorkspaceInSplitPane).toHaveBeenCalledWith(
       '/hosts/host%2Fid/workspaces/workspace%2Fid'
     );
+    expect(Actions.OpenWorkspaceInNewTab.restoreFocusOnClose).toBe(false);
   });
 
   it.each([Actions.SearchWorkspaceList, Actions.SearchProjectIssues])(
