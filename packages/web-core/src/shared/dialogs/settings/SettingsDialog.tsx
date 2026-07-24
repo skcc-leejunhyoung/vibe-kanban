@@ -34,8 +34,10 @@ import {
 import {
   SettingsHostProvider,
   useSettingsHost,
+  isRemoteSharedHostId,
 } from './settings/SettingsHostContext';
 import { SettingsMachineUserSystemProvider } from './settings/SettingsMachineUserSystemProvider';
+import { SettingsRemoteUserSystemProvider } from './settings/SettingsRemoteUserSystemProvider';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 
 export interface SettingsDialogProps {
@@ -48,6 +50,19 @@ interface SettingsDialogContentProps {
   initialSection?: SettingsSectionType;
   initialState?: SettingsSectionInitialState[SettingsSectionType];
   onClose: () => void;
+}
+
+// Host settings sections that apply to the account-scoped "Remote" device.
+// The others (repos, agents, mcp, automation) configure a specific machine's
+// disk/processes, so they have no meaning without a backing host.
+const REMOTE_SHARED_HOST_SECTIONS = new Set<SettingsSectionType>(['general']);
+
+function isHostSectionAvailableForTarget(
+  sectionId: SettingsSectionType,
+  isRemoteShared: boolean
+): boolean {
+  if (!isHostSpecificSettingsSection(sectionId)) return true;
+  return isRemoteShared ? REMOTE_SHARED_HOST_SECTIONS.has(sectionId) : true;
 }
 
 function SettingsDialogNavigation({
@@ -65,8 +80,11 @@ function SettingsDialogNavigation({
     selectedHostId,
     setSelectedHostId,
   } = useSettingsHost();
+  const isRemoteShared = isRemoteSharedHostId(selectedHostId);
   const hostSections = SETTINGS_SECTION_DEFINITIONS.filter(
-    (section) => section.group === 'host'
+    (section) =>
+      section.group === 'host' &&
+      isHostSectionAvailableForTarget(section.id, isRemoteShared)
   );
   const universalSections = SETTINGS_SECTION_DEFINITIONS.filter(
     (section) => section.group === 'universal'
@@ -90,9 +108,13 @@ function SettingsDialogNavigation({
   };
 
   const isSectionDisabled = useCallback(
-    (sectionId: SettingsSectionType) =>
-      isHostSpecificSettingsSection(sectionId) && hostSettingsDisabled,
-    [hostSettingsDisabled]
+    (sectionId: SettingsSectionType) => {
+      if (!isHostSectionAvailableForTarget(sectionId, isRemoteShared)) {
+        return true;
+      }
+      return isHostSpecificSettingsSection(sectionId) && hostSettingsDisabled;
+    },
+    [hostSettingsDisabled, isRemoteShared]
   );
 
   // Give the settings dialog an initial keyboard target when it was opened by
@@ -239,7 +261,9 @@ function SettingsDialogContent({
 }: SettingsDialogContentProps) {
   const { t } = useTranslation('settings');
   const { isDirty } = useSettingsDirty();
-  const { availableHosts, hostsResolved, selectedHost } = useSettingsHost();
+  const { availableHosts, hostsResolved, selectedHost, selectedHostId } =
+    useSettingsHost();
+  const isRemoteShared = isRemoteSharedHostId(selectedHostId);
 
   const resolvedInitialSection = useMemo<SettingsSectionType>(() => {
     if (
@@ -305,6 +329,14 @@ function SettingsDialogContent({
       setActiveSection('organizations');
     }
   }, [activeSection, availableHosts.length, hostsResolved]);
+
+  // Switching to the "Remote" device hides machine-only host sections; fall
+  // back to the one host section it does support.
+  useEffect(() => {
+    if (!isHostSectionAvailableForTarget(activeSection, isRemoteShared)) {
+      setActiveSection('general');
+    }
+  }, [activeSection, isRemoteShared]);
 
   const handleMobileBack = () => {
     setMobileShowContent(false);
@@ -415,7 +447,15 @@ function SettingsDialogContent({
             {/* Section content */}
             <div className="flex-1 overflow-y-auto">
               {isHostSpecificSettingsSection(activeSection) ? (
-                selectedHost ? (
+                isRemoteShared ? (
+                  <SettingsRemoteUserSystemProvider>
+                    <SettingsSection
+                      type={activeSection}
+                      onClose={handleCloseWithConfirmation}
+                      initialState={initialState}
+                    />
+                  </SettingsRemoteUserSystemProvider>
+                ) : selectedHost ? (
                   <SettingsMachineUserSystemProvider>
                     <SettingsSection
                       type={activeSection}

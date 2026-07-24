@@ -29,10 +29,34 @@ import {
 
 export type SettingsHostTargetId = 'local' | string;
 
-export type SettingsHostTarget = MachineTarget & {
+/**
+ * Sentinel id for the account-scoped "Remote" device: the cloud-stored Config
+ * shared across every remote-web session. It has no backing machine, so it is
+ * not a {@link MachineTarget} — config load/save go to the remote server.
+ */
+export const REMOTE_SETTINGS_HOST_ID = 'remote';
+
+export type RemoteSharedSettingsTarget = {
+  kind: 'remote-shared';
+  id: typeof REMOTE_SETTINGS_HOST_ID;
+  apiHostId: null;
+  label: string;
   description?: string;
   status?: 'online' | 'offline';
 };
+
+export type SettingsHostTarget =
+  | (MachineTarget & {
+      description?: string;
+      status?: 'online' | 'offline';
+    })
+  | RemoteSharedSettingsTarget;
+
+export function isRemoteSharedHostId(
+  id: SettingsHostTargetId | null | undefined
+): boolean {
+  return id === REMOTE_SETTINGS_HOST_ID;
+}
 
 interface SettingsHostContextValue {
   availableHosts: SettingsHostTarget[];
@@ -90,8 +114,14 @@ function getInitialHostId(
     );
   }
 
+  // On the remote web, default to the account-scoped "Remote" device so its
+  // shared settings are the natural landing target when settings are opened
+  // outside a host route.
   return (
-    hosts.find((host) => host.status === 'online')?.id ?? hosts[0]?.id ?? null
+    hosts.find((host) => host.id === REMOTE_SETTINGS_HOST_ID)?.id ??
+    hosts.find((host) => host.status === 'online')?.id ??
+    hosts[0]?.id ??
+    null
   );
 }
 
@@ -143,18 +173,36 @@ export function SettingsHostProvider({
       return toLocalRuntimeTargets(localRemoteHosts?.hosts ?? [], t);
     }
 
+    // The account-scoped "Remote" device: shared, cloud-stored settings that
+    // every remote-web session reads. Listed first so it is the default target.
+    const remoteSharedTarget: SettingsHostTarget = {
+      kind: 'remote-shared',
+      id: REMOTE_SETTINGS_HOST_ID,
+      apiHostId: null,
+      label: t('settings.hostPicker.remoteShared', 'Remote'),
+      description: t(
+        'settings.hostPicker.remoteSharedHint',
+        'Shared across your remote web'
+      ),
+    };
+
     const pairedHostIds = new Set(pairedRelayHosts.map((host) => host.host_id));
-    return relayHosts
+    const machineTargets = relayHosts
       .filter((host) => pairedHostIds.has(host.id))
-      .map((host) => ({
-        id: host.id,
-        apiHostId: host.id,
-        label: host.name,
-        description: t('settings.hostPicker.remoteHost', 'Remote host'),
-        status:
-          host.status === 'online' ? ('online' as const) : ('offline' as const),
-        kind: 'remote',
-      }));
+      .map(
+        (host): SettingsHostTarget => ({
+          id: host.id,
+          apiHostId: host.id,
+          label: host.name,
+          description: t('settings.hostPicker.remoteHost', 'Remote host'),
+          status:
+            host.status === 'online'
+              ? ('online' as const)
+              : ('offline' as const),
+          kind: 'remote',
+        })
+      );
+    return [remoteSharedTarget, ...machineTargets];
   }, [localRemoteHosts?.hosts, pairedRelayHosts, relayHosts, runtime, t]);
 
   const [selectedHostId, setSelectedHostId] =
@@ -214,7 +262,7 @@ export function useSettingsMachineClient(): MachineClient | null {
   const { selectedHost } = useSettingsHost();
 
   return useMemo(() => {
-    if (!selectedHost) {
+    if (!selectedHost || selectedHost.kind === 'remote-shared') {
       return null;
     }
 

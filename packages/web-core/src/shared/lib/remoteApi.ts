@@ -11,6 +11,8 @@ import type {
   UpdateIssueRequest,
   UpdateProjectRequest,
   UpdateProjectStatusRequest,
+  UpdateUserWebSettingsRequest,
+  UserWebSettings,
 } from 'shared/remote-types';
 import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import { syncRelayApiBaseWithRemote } from '@/shared/lib/relayBackendApi';
@@ -183,6 +185,46 @@ export async function updateRelayHost(
     throw await parseErrorResponse(response, 'Failed to update relay host');
   }
   return (await response.json()) as RelayHost;
+}
+
+// ---------------------------------------------------------------------------
+// Account-scoped remote web settings (the "Remote" device in the settings host
+// picker). A single Config blob per user, shared across every remote-web
+// session so preferences edit + save once and sync to all devices.
+// ---------------------------------------------------------------------------
+
+export async function getUserWebSettings(): Promise<UserWebSettings> {
+  const response = await makeRequest('/v1/user-web-settings', {
+    method: 'GET',
+  });
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to load remote web settings'
+    );
+  }
+  return (await response.json()) as UserWebSettings;
+}
+
+export async function saveUserWebSettings(
+  settings: unknown,
+  configRevision: string | null
+): Promise<UserWebSettings> {
+  const body: UpdateUserWebSettingsRequest = {
+    settings: settings as UpdateUserWebSettingsRequest['settings'],
+    config_revision: configRevision,
+  };
+  const response = await makeRequest('/v1/user-web-settings', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to save remote web settings'
+    );
+  }
+  return (await response.json()) as UserWebSettings;
 }
 
 // ---------------------------------------------------------------------------

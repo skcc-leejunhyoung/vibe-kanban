@@ -31,6 +31,7 @@ pub mod response;
 pub mod tag;
 pub mod user;
 pub mod user_notification_preference;
+pub mod user_web_settings;
 pub mod workspace;
 pub mod workspaces;
 
@@ -58,6 +59,7 @@ pub use response::*;
 pub use tag::*;
 pub use user::*;
 pub use user_notification_preference::*;
+pub use user_web_settings::*;
 pub use workspace::*;
 pub use workspaces::*;
 

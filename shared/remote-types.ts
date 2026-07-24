@@ -73,6 +73,21 @@ export type User = { id: string, email: string, first_name: string | null, last_
 
 export type UserNotificationPreference = { user_id: string, review_requested_enabled: boolean, };
 
+export type UserWebSettings = { 
+/**
+ * The stored Config blob, or `null` when the account has never saved
+ * remote-web settings (the client then falls back to its defaults).
+ */
+settings: JsonValue | null, config_revision: string, };
+
+export type UpdateUserWebSettingsRequest = { settings: JsonValue, 
+/**
+ * Revision the client last observed. Reserved for optimistic concurrency;
+ * the current server applies last-write-wins and always returns the new
+ * revision.
+ */
+config_revision: string | null, };
+
 export type RelayHost = { id: string, owner_user_id: string, machine_id: string, name: string, status: string, last_seen_at: string | null, agent_version: string | null, created_at: string, updated_at: string, access_role: string, };
 
 export type ListRelayHostsResponse = { hosts: Array<RelayHost>, };

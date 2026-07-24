@@ -36,6 +36,7 @@ mod pull_requests;
 pub mod tags;
 mod tokens;
 mod user_notification_preferences;
+mod user_web_settings;
 mod web_push;
 mod workspaces;
 
@@ -116,6 +117,7 @@ pub fn router(state: AppState) -> Router {
         .merge(pull_requests::router())
         .merge(notifications::router())
         .merge(user_notification_preferences::router())
+        .merge(user_web_settings::router())
         .merge(web_push::router())
         .merge(workspaces::router())
         .merge(export::router())

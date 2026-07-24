@@ -12,7 +12,8 @@ use api_types::{
     PullRequestIssue, PullRequestStatus, SearchIssuesRequest, SortDirection, Tag,
     UpdateIssueCommentReactionRequest, UpdateIssueCommentRequest, UpdateIssueRequest,
     UpdateNotificationRequest, UpdateProjectRequest, UpdateProjectStatusRequest, UpdateTagRequest,
-    UpdateUserNotificationPreferenceRequest, User, UserData, UserNotificationPreference, Workspace,
+    UpdateUserNotificationPreferenceRequest, UpdateUserWebSettingsRequest, User, UserData,
+    UserNotificationPreference, UserWebSettings, Workspace,
 };
 use relay_types::{CreateRemoteSessionResponse, ListRelayHostsResponse, RelayHost};
 use remote::{
@@ -105,6 +106,8 @@ fn export_shapes() -> String {
         UserData::decl(),
         User::decl(),
         UserNotificationPreference::decl(),
+        UserWebSettings::decl(),
+        UpdateUserWebSettingsRequest::decl(),
         RelayHost::decl(),
         ListRelayHostsResponse::decl(),
         CreateRemoteSessionResponse::decl(),

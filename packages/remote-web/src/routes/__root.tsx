@@ -8,6 +8,7 @@ import {
 import { Provider as NiceModalProvider } from "@ebay/nice-modal-react";
 import { RemoteActionsProvider } from "@remote/app/providers/RemoteActionsProvider";
 import { RemoteUserSystemProvider } from "@remote/app/providers/RemoteUserSystemProvider";
+import { RemoteSharedConfigProvider } from "@remote/app/providers/RemoteSharedConfigProvider";
 import { RemoteAppShell } from "@remote/app/layout/RemoteAppShell";
 import { UserProvider } from "@/shared/providers/remote/UserProvider";
 import { WorkspaceProvider } from "@/shared/providers/WorkspaceProvider";
@@ -171,7 +172,9 @@ function RootLayout() {
       <UserProvider>
         <RemoteActionsProvider>
           <HostIdProvider>
-            <RemoteUserSystemProvider>{content}</RemoteUserSystemProvider>
+            <RemoteUserSystemProvider>
+              <RemoteSharedConfigProvider>{content}</RemoteSharedConfigProvider>
+            </RemoteUserSystemProvider>
           </HostIdProvider>
         </RemoteActionsProvider>
       </UserProvider>
