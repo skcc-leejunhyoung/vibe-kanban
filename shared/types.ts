@@ -178,6 +178,11 @@ kanban_project_view_selections: { [key in string]?: JsonValue },
  */
 kanban_project_view_preferences: { [key in string]?: JsonValue },
 /**
+ * User-defined kanban view definitions per project (layout, groups, default
+ * filters/sort). Opaque JSON shaped/validated on the frontend.
+ */
+kanban_project_views: { [key in string]?: JsonValue },
+/**
  * Legacy global preview shortcuts. Kept for backward-compatible migration into the
  * per-project map below (merged under the `__global` key on the frontend).
  */

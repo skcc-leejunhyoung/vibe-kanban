@@ -69,6 +69,7 @@ import {
   useUiPreferencesStore,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
+import { useProjectViewSwitcherStore } from '@/shared/stores/useProjectViewSwitcherStore';
 
 import {
   workspacesApi,
@@ -899,6 +900,50 @@ export const Actions = {
           projectId: ctx.kanbanProjectId,
         },
       });
+    },
+  } satisfies GlobalActionDefinition,
+
+  SelectProjectView: {
+    id: 'select-project-view',
+    label: 'Select view',
+    icon: KanbanIcon,
+    keywords: [
+      'view',
+      'switch view',
+      'select view',
+      'active',
+      'all',
+      'backlog',
+      'board',
+      'table',
+    ],
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.layoutMode === 'kanban',
+    execute: async () => {
+      const { projectId, views, activeViewId } =
+        useProjectViewSwitcherStore.getState();
+      if (!projectId || views.length === 0) return;
+      const { SelectionDialog } = await import(
+        '@/shared/dialogs/command-bar/SelectionDialog'
+      );
+      const { buildViewSelectionPages } = await import(
+        '@/shared/dialogs/command-bar/selections/viewSelection'
+      );
+      const result = await SelectionDialog.show({
+        initialPageId: 'selectView',
+        pages: buildViewSelectionPages(views, activeViewId) as Record<
+          string,
+          import('@/shared/dialogs/command-bar/SelectionDialog').SelectionPage
+        >,
+      });
+      if (result && typeof result === 'object' && 'viewId' in result) {
+        useUiPreferencesStore
+          .getState()
+          .setKanbanProjectView(
+            projectId,
+            (result as { viewId: string }).viewId
+          );
+      }
     },
   } satisfies GlobalActionDefinition,
 

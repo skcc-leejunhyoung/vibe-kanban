@@ -423,6 +423,8 @@
     "markIndependentIssue": "독립 이슈로 표시",
     "parentIssue": "상위",
     "subIssueIndicator": "↳",
+    "addItem": "항목 추가",
+    "addItemPlaceholder": "이슈 제목…",
     "viewTabs": {
       "active": "활성",
       "all": "전체"

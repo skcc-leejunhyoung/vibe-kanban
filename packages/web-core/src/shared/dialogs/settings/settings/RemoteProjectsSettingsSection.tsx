@@ -83,6 +83,7 @@ import {
   saveProjectRepoDefaults,
 } from '@/shared/hooks/useProjectRepoDefaults';
 import { useSettingsMachineClient } from './SettingsHostContext';
+import { ProjectViewsEditor } from './ProjectViewsEditor';
 
 interface FormState {
   name: string;
@@ -1524,6 +1525,19 @@ export function RemoteProjectsSettingsSection({
               </Droppable>
             </DragDropContext>
           </div>
+        )}
+
+        {/* Project views (kanban/table, groups, filter/sort defaults) */}
+        {selectedProjectId && (
+          <ProjectViewsEditor
+            projectId={selectedProjectId}
+            statuses={sortedProjectStatuses.map((s) => ({
+              id: s.id,
+              name: s.name,
+              color: s.color,
+              hidden: s.hidden,
+            }))}
+          />
         )}
       </SettingsCard>
 

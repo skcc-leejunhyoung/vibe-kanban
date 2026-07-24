@@ -42,6 +42,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
         type: 'group',
         label: 'View',
         items: [
+          { type: 'action', action: Actions.SelectProjectView },
           { type: 'action', action: Actions.ToggleAppBar },
           { type: 'action', action: Actions.ToggleWorkspaceArchiveView },
           { type: 'childPages', id: 'viewOptions' },

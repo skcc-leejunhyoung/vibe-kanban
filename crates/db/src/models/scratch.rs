@@ -188,6 +188,10 @@ pub struct UiPreferencesData {
     /// Kanban project view preferences (filters, toggles per project per view)
     #[serde(default)]
     pub kanban_project_view_preferences: std::collections::HashMap<String, serde_json::Value>,
+    /// User-defined kanban view definitions per project (layout, groups, default
+    /// filters/sort). Opaque JSON shaped/validated on the frontend.
+    #[serde(default)]
+    pub kanban_project_views: std::collections::HashMap<String, serde_json::Value>,
     /// Legacy global preview shortcuts. Kept for backward-compatible migration into the
     /// per-project map below (merged under the `__global` key on the frontend).
     #[serde(default)]

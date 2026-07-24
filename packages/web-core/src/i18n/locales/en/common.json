@@ -437,6 +437,8 @@
     "markIndependentIssue": "Mark as independent issue",
     "parentIssue": "Parent",
     "subIssueIndicator": "↳",
+    "addItem": "Add item",
+    "addItemPlaceholder": "Issue title…",
     "viewTabs": {
       "active": "Active",
       "all": "All"

@@ -3,7 +3,6 @@
 import type { MouseEvent } from 'react';
 import { cn } from '../lib/cn';
 import { Draggable } from '@hello-pangea/dnd';
-import { DotsSixVerticalIcon } from '@phosphor-icons/react';
 import { PriorityIcon, type PriorityLevel } from './PriorityIcon';
 import { StatusDot } from './StatusDot';
 import { KanbanBadge } from './KanbanBadge';
@@ -68,9 +67,13 @@ export interface IssueListRowProps {
   assignees: KanbanAssigneeUser[];
   onClick: (e: MouseEvent) => void;
   isSelected: boolean;
+  /** Keyboard-navigation cursor highlight (distinct from opened/checked). */
+  isCursor?: boolean;
   isMultiSelectActive?: boolean;
   isChecked?: boolean;
   onCheckboxChange?: (checked: boolean) => void;
+  /** Reports the row DOM node so the container can scroll it into view. */
+  forwardedRef?: (node: HTMLDivElement | null) => void;
   className?: string;
 }
 
@@ -83,9 +86,11 @@ export function IssueListRow({
   assignees,
   onClick,
   isSelected,
+  isCursor = false,
   isMultiSelectActive = false,
   isChecked = false,
   onCheckboxChange,
+  forwardedRef,
   className,
 }: IssueListRowProps) {
   const showCheckbox = isMultiSelectActive || isChecked;
@@ -95,50 +100,49 @@ export function IssueListRow({
     <Draggable draggableId={issue.id} index={index}>
       {(provided, snapshot) => (
         <div
-          ref={provided.innerRef}
+          ref={(node) => {
+            provided.innerRef(node);
+            forwardedRef?.(node);
+          }}
           {...provided.draggableProps}
+          // The entire row is the drag handle — no separate grab affordance.
+          {...provided.dragHandleProps}
           role="button"
           tabIndex={0}
           onClick={onClick}
+          // Override the drag handle's keydown so keyboard DnD (space to lift)
+          // doesn't shadow the board-level arrow navigation. Enter opens.
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
+            if (e.key === 'Enter') {
               e.preventDefault();
               onClick(e as unknown as MouseEvent);
             }
           }}
           className={cn(
             'group/row flex items-center justify-between gap-double px-double py-half',
-            'transition-colors',
+            'transition-colors cursor-pointer outline-none',
             'hover:bg-secondary',
             (isSelected || isChecked) && 'bg-secondary',
+            isCursor && 'ring-1 ring-inset ring-brand',
             snapshot.isDragging && 'bg-secondary shadow-lg cursor-grabbing',
             className
           )}
         >
-          {/* Left side: Checkbox/Drag handle, Priority, ID, Status, Title */}
+          {/* Left side: Checkbox, Priority, ID, Status, Title */}
           <div className="flex items-center gap-double flex-1 min-w-0">
+            {/* Multi-select checkbox — shown on hover or when selection is
+                active. Pointer/touch starts are swallowed so grabbing the
+                checkbox never begins a row drag. */}
             <div className="relative shrink-0 w-4 flex items-center justify-center">
-              {/* Drag handle — hidden when checkbox is shown */}
-              <div
-                {...provided.dragHandleProps}
-                className={cn(
-                  'cursor-grab',
-                  showCheckbox ? 'hidden' : 'flex group-hover/row:hidden'
-                )}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <DotsSixVerticalIcon
-                  className="size-icon-xs text-low"
-                  weight="bold"
-                />
-              </div>
-              {/* Checkbox — shown on hover or when multi-select active */}
               <div
                 className={cn(
                   'items-center justify-center',
                   showCheckbox ? 'flex' : 'hidden group-hover/row:flex'
                 )}
                 onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
               >
                 <Checkbox
                   checked={isChecked}

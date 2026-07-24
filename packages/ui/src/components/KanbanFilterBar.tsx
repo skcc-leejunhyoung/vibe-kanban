@@ -12,7 +12,6 @@ import { cn } from '../lib/cn';
 import type { PriorityLevel } from './PriorityIcon';
 import { InputField } from './InputField';
 import { PrimaryButton } from './PrimaryButton';
-import { ButtonGroup, ButtonGroupItem } from './IconButtonGroup';
 
 export interface KanbanFilterTag {
   id: string;
@@ -36,16 +35,6 @@ export interface KanbanFilterState<TSortField extends string = string> {
   sortField: TSortField;
   sortDirection: 'asc' | 'desc';
 }
-
-export interface KanbanProjectViewIds {
-  TEAM: string;
-  PERSONAL: string;
-}
-
-const DEFAULT_KANBAN_PROJECT_VIEW_IDS: KanbanProjectViewIds = {
-  TEAM: 'team',
-  PERSONAL: 'personal',
-};
 
 export interface RenderKanbanFiltersDialogProps<
   TTag extends KanbanFilterTag = KanbanFilterTag,
@@ -80,9 +69,6 @@ interface KanbanFilterBarProps<
   onFiltersDialogOpenChange: (open: boolean) => void;
   tags: TTag[];
   users: TUser[];
-  activeViewId: string;
-  onViewChange: (viewId: string) => void;
-  viewIds?: KanbanProjectViewIds;
   projectId: string;
   currentUserId: string | null;
   filters: KanbanFilterState<TSortField>;
@@ -125,9 +111,6 @@ export function KanbanFilterBar<
   onFiltersDialogOpenChange,
   tags,
   users,
-  activeViewId,
-  onViewChange,
-  viewIds = DEFAULT_KANBAN_PROJECT_VIEW_IDS,
   projectId,
   currentUserId,
   filters,
@@ -192,21 +175,6 @@ export function KanbanFilterBar<
             isMobile ? 'gap-half' : 'gap-base'
           )}
         >
-          <ButtonGroup className="flex-wrap">
-            <ButtonGroupItem
-              active={activeViewId === viewIds.TEAM}
-              onClick={() => onViewChange(viewIds.TEAM)}
-            >
-              {t('kanban.team', 'Team')}
-            </ButtonGroupItem>
-            <ButtonGroupItem
-              active={activeViewId === viewIds.PERSONAL}
-              onClick={() => onViewChange(viewIds.PERSONAL)}
-            >
-              {t('kanban.personal', 'Personal')}
-            </ButtonGroupItem>
-          </ButtonGroup>
-
           {isMobile ? (
             <button
               type="button"

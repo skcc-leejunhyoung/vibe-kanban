@@ -248,6 +248,92 @@ export const resolveKanbanProjectState = (
   };
 };
 
+// --- User-defined project views -------------------------------------------
+// A project view unifies the old Active/All/hidden-status tabs and the
+// Team/Personal filter presets into a single editable object: a layout
+// (kanban board vs. table), an ordered set of status groups, and default
+// filters/sort/toggles. Views are per-project, persisted via the UI
+// preferences scratch. Built-in defaults are derived from the project's
+// statuses when a project has no stored views yet, and materialized on first
+// edit.
+export type ProjectViewLayout = 'kanban' | 'table';
+
+export type ProjectViewDefinition = {
+  id: string;
+  name: string;
+  layout: ProjectViewLayout;
+  /**
+   * Ordered status IDs shown as groups. `null` uses the default grouping
+   * (kanban: non-hidden statuses; table: all statuses).
+   */
+  groupStatusIds: string[] | null;
+  filters: KanbanFilterState;
+  showSubIssues: boolean;
+  showWorkspaces: boolean;
+  hideBlocked: boolean;
+};
+
+export const DEFAULT_PROJECT_VIEW_IDS = {
+  ACTIVE: 'active',
+  ALL: 'all',
+} as const;
+
+/** Stable id for a built-in per-hidden-status view (Backlog, Cancelled, …). */
+export const buildStatusViewId = (statusId: string): string =>
+  `status:${statusId}`;
+
+export type ProjectViewStatusInput = {
+  id: string;
+  name: string;
+  hidden: boolean;
+};
+
+/**
+ * Reproduces the previous fixed tabs as editable views: Active (kanban, all
+ * non-hidden columns), All (table, every status), and one table view per hidden
+ * status (Backlog, Cancelled, …).
+ */
+export const buildDefaultProjectViews = (
+  statuses: ProjectViewStatusInput[],
+  labels: { active: string; all: string }
+): ProjectViewDefinition[] => {
+  const baseToggles = {
+    showSubIssues: true,
+    showWorkspaces: DEFAULT_KANBAN_SHOW_WORKSPACES,
+    hideBlocked: DEFAULT_KANBAN_HIDE_BLOCKED,
+  };
+  const views: ProjectViewDefinition[] = [
+    {
+      id: DEFAULT_PROJECT_VIEW_IDS.ACTIVE,
+      name: labels.active,
+      layout: 'kanban',
+      groupStatusIds: null,
+      filters: cloneKanbanFilters(DEFAULT_KANBAN_FILTER_STATE),
+      ...baseToggles,
+    },
+    {
+      id: DEFAULT_PROJECT_VIEW_IDS.ALL,
+      name: labels.all,
+      layout: 'table',
+      groupStatusIds: null,
+      filters: cloneKanbanFilters(DEFAULT_KANBAN_FILTER_STATE),
+      ...baseToggles,
+    },
+  ];
+  for (const status of statuses) {
+    if (!status.hidden) continue;
+    views.push({
+      id: buildStatusViewId(status.id),
+      name: status.name,
+      layout: 'table',
+      groupStatusIds: [status.id],
+      filters: cloneKanbanFilters(DEFAULT_KANBAN_FILTER_STATE),
+      ...baseToggles,
+    });
+  }
+  return views;
+};
+
 // Workspace sidebar filter state
 export type WorkspacePrFilter = 'all' | 'has_pr' | 'no_pr';
 // Coarse workspace activity buckets, mirrored from @vibe/ui
@@ -479,7 +565,7 @@ type State = {
   // Workspace-specific panel state
   workspacePanelStates: Record<string, WorkspacePanelState>;
 
-  // Selected built-in kanban view per project
+  // Selected kanban view per project (built-in or user-defined view id)
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
 
   // In-memory kanban runtime preferences per project and view
@@ -487,6 +573,9 @@ type State = {
     string,
     Record<string, KanbanProjectViewPreferences>
   >;
+
+  // User-defined view definitions per project. Empty/absent => derived defaults.
+  projectViewsById: Record<string, ProjectViewDefinition[]>;
 
   // Preview browser shortcuts keyed by project id. Workspaces with no
   // associated project use PREVIEW_SHORTCUTS_GLOBAL_KEY.
@@ -569,6 +658,8 @@ type State = {
 
   // Kanban view selection actions
   setKanbanProjectView: (projectId: string, viewId: string) => void;
+  // Replace the full ordered view list for a project (CRUD + reorder + materialize)
+  setProjectViews: (projectId: string, views: ProjectViewDefinition[]) => void;
   setKanbanProjectViewFilters: (
     projectId: string,
     viewId: string,
@@ -662,6 +753,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Kanban per-project view selection
   kanbanProjectViewSelections: {},
   kanbanProjectViewPreferences: {},
+  projectViewsById: {},
   previewShortcutsByProject: {},
 
   // Workspace sidebar filter state
@@ -851,12 +943,10 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     });
   },
 
-  // Kanban view selection actions
+  // Kanban view selection actions. View ids are now arbitrary (built-in or
+  // user-defined), so no membership guard here — the container falls back to
+  // the first view when a stored id no longer resolves.
   setKanbanProjectView: (projectId, viewId) => {
-    if (!isKanbanProjectViewId(viewId)) {
-      return;
-    }
-
     set((s) => ({
       kanbanProjectViewSelections: {
         ...s.kanbanProjectViewSelections,
@@ -864,6 +954,14 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       },
     }));
   },
+
+  setProjectViews: (projectId, views) =>
+    set((s) => ({
+      projectViewsById: {
+        ...s.projectViewsById,
+        [projectId]: views,
+      },
+    })),
 
   setKanbanProjectViewFilters: (projectId, viewId, filters) => {
     if (!isKanbanProjectViewId(viewId)) {

@@ -1,9 +1,16 @@
 'use client';
 
-import { useCallback, useState, type MouseEvent } from 'react';
+import {
+  useCallback,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { Droppable } from '@hello-pangea/dnd';
-import { CaretDownIcon } from '@phosphor-icons/react';
+import { CaretDownIcon, PlusIcon } from '@phosphor-icons/react';
 import { StatusDot } from './StatusDot';
 import { KanbanBadge } from './KanbanBadge';
 import {
@@ -32,8 +39,20 @@ export interface IssueListSectionProps {
   onIssueClick: (issueId: string, e: MouseEvent) => void;
   selectedIssueId: string | null;
   selectedIssueIds?: Set<string>;
+  /** Keyboard-navigation cursor (distinct from the opened issue). */
+  cursorIssueId?: string | null;
+  /** Reports each row's DOM node for scroll-into-view / focus management. */
+  onRowRef?: (issueId: string, node: HTMLDivElement | null) => void;
   isMultiSelectActive?: boolean;
   onIssueCheckboxChange?: (issueId: string, checked: boolean) => void;
+  /** Controlled expand/collapse. */
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
+  /**
+   * Creates a new issue in this status from the inline "+ Add item" row.
+   * When omitted the add row is not rendered.
+   */
+  onAddIssue?: (title: string) => void;
   className?: string;
 }
 
@@ -47,32 +66,21 @@ export function IssueListSection({
   onIssueClick,
   selectedIssueId,
   selectedIssueIds,
+  cursorIssueId,
+  onRowRef,
   isMultiSelectActive,
   onIssueCheckboxChange,
+  isExpanded,
+  onToggleExpanded,
+  onAddIssue,
   className,
 }: IssueListSectionProps) {
-  const storageKey = `ui.issue-list-section.${status.id}`;
-  const [isExpanded, setExpanded] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    const stored = window.localStorage.getItem(storageKey);
-    return stored == null ? true : stored === 'true';
-  });
-  const handleToggleExpanded = useCallback(() => {
-    setExpanded((prevExpanded) => {
-      const nextExpanded = !prevExpanded;
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(storageKey, String(nextExpanded));
-      }
-      return nextExpanded;
-    });
-  }, [storageKey]);
-
   return (
     <div className={cn('flex flex-col', className)}>
       {/* Section Header */}
       <button
         type="button"
-        onClick={handleToggleExpanded}
+        onClick={onToggleExpanded}
         className={cn(
           'flex items-center justify-between',
           'h-8 px-double py-base',
@@ -119,18 +127,106 @@ export function IssueListSection({
                     assignees={issueAssigneesMap[issue.id] ?? []}
                     onClick={(e) => onIssueClick(issue.id, e)}
                     isSelected={selectedIssueId === issue.id}
+                    isCursor={cursorIssueId === issue.id}
                     isMultiSelectActive={isMultiSelectActive}
                     isChecked={selectedIssueIds?.has(issue.id)}
                     onCheckboxChange={(checked) =>
                       onIssueCheckboxChange?.(issue.id, checked)
                     }
+                    forwardedRef={(node) => onRowRef?.(issue.id, node)}
                   />
                 );
               })}
             {provided.placeholder}
+            {isExpanded && onAddIssue && (
+              <IssueListAddRow onAddIssue={onAddIssue} />
+            )}
           </div>
         )}
       </Droppable>
+    </div>
+  );
+}
+
+/**
+ * Inline "+ Add item" row rendered at the bottom of an expanded group. Clicking
+ * it swaps in a title input; pressing Enter creates the issue immediately (with
+ * an empty body) and keeps the input open for rapid entry. Escape or blur exits.
+ */
+function IssueListAddRow({
+  onAddIssue,
+}: {
+  onAddIssue: (title: string) => void;
+}) {
+  const { t } = useTranslation('common');
+  const [isEditing, setIsEditing] = useState(false);
+  const [title, setTitle] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const submit = useCallback(() => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    onAddIssue(trimmed);
+    setTitle('');
+    // Keep focus for rapid successive entry.
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [title, onAddIssue]);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setTitle('');
+        setIsEditing(false);
+      }
+    },
+    [submit]
+  );
+
+  if (!isEditing) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setIsEditing(true);
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }}
+        className={cn(
+          'group/add flex items-center gap-double px-double py-half',
+          'text-low hover:bg-secondary hover:text-normal transition-colors'
+        )}
+      >
+        <span className="shrink-0 w-4 flex items-center justify-center">
+          <PlusIcon className="size-icon-xs" weight="bold" />
+        </span>
+        <span className="text-base">{t('kanban.addItem', 'Add item')}</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-double px-double py-half bg-secondary">
+      <span className="shrink-0 w-4 flex items-center justify-center text-low">
+        <PlusIcon className="size-icon-xs" weight="bold" />
+      </span>
+      <input
+        ref={inputRef}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={() => {
+          setTitle('');
+          setIsEditing(false);
+        }}
+        placeholder={t('kanban.addItemPlaceholder', 'Issue title…')}
+        className={cn(
+          'flex-1 min-w-0 bg-transparent text-base text-high',
+          'placeholder:text-low focus:outline-none'
+        )}
+      />
     </div>
   );
 }

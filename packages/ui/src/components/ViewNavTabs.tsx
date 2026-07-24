@@ -1,79 +1,46 @@
 'use client';
 
-import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { ButtonGroup, ButtonGroupItem } from './IconButtonGroup';
 
-export type ViewNavMode = 'kanban' | 'list';
-
-export type ViewNavStatus = {
+export interface ViewNavItem {
   id: string;
   name: string;
-};
+}
 
 export interface ViewNavTabsProps {
-  activeView: ViewNavMode;
-  onViewChange: (view: ViewNavMode) => void;
-  hiddenStatuses: ViewNavStatus[];
-  selectedStatusId: string | null;
-  onStatusSelect: (statusId: string | null) => void;
+  /** Ordered user-defined views to render as tabs. */
+  views: ViewNavItem[];
+  activeViewId: string;
+  onSelect: (viewId: string) => void;
   className?: string;
 }
 
+/**
+ * Renders the project's views as a horizontal tab group. Each tab switches the
+ * active view (layout + groups + default filters). Views are managed in the
+ * project settings; this is purely the switcher.
+ */
 export function ViewNavTabs({
-  activeView,
-  onViewChange,
-  hiddenStatuses,
-  selectedStatusId,
-  onStatusSelect,
+  views,
+  activeViewId,
+  onSelect,
   className,
 }: ViewNavTabsProps) {
-  const { t } = useTranslation('common');
-  const isActiveTab = activeView === 'kanban';
-  const isAllTab = activeView === 'list' && selectedStatusId === null;
+  if (views.length === 0) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-base">
       <ButtonGroup className={cn('flex-wrap', className)}>
-        {/* Active (Kanban) tab */}
-        <ButtonGroupItem
-          active={isActiveTab}
-          onClick={() => {
-            onViewChange('kanban');
-            onStatusSelect(null);
-          }}
-        >
-          {t('kanban.viewTabs.active')}
-        </ButtonGroupItem>
-
-        {/* All (List) tab */}
-        <ButtonGroupItem
-          active={isAllTab}
-          onClick={() => {
-            onViewChange('list');
-            onStatusSelect(null);
-          }}
-        >
-          {t('kanban.viewTabs.all')}
-        </ButtonGroupItem>
-
-        {/* Hidden status tabs */}
-        {hiddenStatuses.map((status) => {
-          const isStatusActive =
-            activeView === 'list' && selectedStatusId === status.id;
-          return (
-            <ButtonGroupItem
-              key={status.id}
-              active={isStatusActive}
-              onClick={() => {
-                onViewChange('list');
-                onStatusSelect(status.id);
-              }}
-            >
-              {status.name}
-            </ButtonGroupItem>
-          );
-        })}
+        {views.map((view) => (
+          <ButtonGroupItem
+            key={view.id}
+            active={view.id === activeViewId}
+            onClick={() => onSelect(view.id)}
+          >
+            {view.name}
+          </ButtonGroupItem>
+        ))}
       </ButtonGroup>
     </div>
   );
