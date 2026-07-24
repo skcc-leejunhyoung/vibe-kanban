@@ -19,6 +19,7 @@ import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPl
 import { CheckListPlugin } from '@lexical/react/LexicalCheckListPlugin';
 import { CodeBlockEscapePlugin } from '@vibe/ui/components/CodeBlockEscapePlugin';
 import { InlineCodeBoundaryPlugin } from '@vibe/ui/components/InlineCodeBoundaryPlugin';
+import { ChecklistClipboardPlugin } from '@vibe/ui/components/ChecklistClipboardPlugin';
 import { ImeDeleteGuardPlugin } from '@vibe/ui/components/ImeDeleteGuardPlugin';
 import {
   PrCommentNode,
@@ -656,6 +657,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 <MarkdownShortcutPlugin transformers={allTransformers} />
                 <ListPlugin />
                 <CheckListPlugin />
+                <ChecklistClipboardPlugin />
                 <TablePlugin />
                 <CodeHighlightPlugin />
                 {/* Only include editing plugins when not in read-only mode */}

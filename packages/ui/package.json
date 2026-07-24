@@ -18,6 +18,7 @@
     "@ebay/nice-modal-react": "^1.2.13",
     "@tanstack/react-virtual": "^3.13.23",
     "@hello-pangea/dnd": "^18.0.1",
+    "@lexical/clipboard": "^0.36.2",
     "@lexical/code": "^0.36.2",
     "@lexical/link": "^0.36.2",
     "@lexical/list": "^0.36.2",
