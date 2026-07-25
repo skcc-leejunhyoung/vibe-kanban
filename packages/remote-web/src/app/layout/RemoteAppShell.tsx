@@ -49,6 +49,14 @@ import {
   useWorkspaceHostSelectionStore,
 } from "@/shared/stores/useWorkspaceHostSelectionStore";
 import { useActions } from "@/shared/hooks/useActions";
+import { useKeyboardShortcutsStore } from "@/shared/stores/useKeyboardShortcutsStore";
+import { useReboundHotkey } from "@/shared/keyboard/useReboundHotkey";
+import {
+  NEXT_WORKSPACE_BINDING_ID,
+  PREVIOUS_WORKSPACE_BINDING_ID,
+  resolveModifier,
+} from "@/shared/keyboard/registry";
+import { getCycledProjectId } from "@/shared/lib/projectCycle";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -94,6 +102,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     (s) => s.isLeftSidebarVisible,
   );
   const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
+  const shortcutOverrides = useKeyboardShortcutsStore((s) => s.overrides);
 
   const { data: organizationsData } = useUserOrganizations();
   const organizations = organizationsData?.organizations ?? [];
@@ -208,6 +217,35 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       });
     },
     [navigate],
+  );
+
+  // Ctrl+Tab cycles between projects while on a project route, mirroring the
+  // workspace cycling in WorkspacesSidebarContainer. Both share the
+  // NEXT/PREVIOUS_WORKSPACE bindings, but only one context is mounted at a
+  // time (project routes don't mount the workspaces sidebar and vice versa).
+  const cycleProject = useCallback(
+    (direction: 1 | -1) => {
+      if (!activeProjectId) return;
+      const nextProjectId = getCycledProjectId(
+        projects.map((project) => project.id),
+        activeProjectId,
+        direction,
+      );
+      if (nextProjectId) handleProjectClick(nextProjectId);
+    },
+    [activeProjectId, projects, handleProjectClick],
+  );
+  useReboundHotkey(
+    resolveModifier(NEXT_WORKSPACE_BINDING_ID, shortcutOverrides),
+    () => cycleProject(1),
+    { enabled: !!activeProjectId },
+    [cycleProject, activeProjectId, shortcutOverrides],
+  );
+  useReboundHotkey(
+    resolveModifier(PREVIOUS_WORKSPACE_BINDING_ID, shortcutOverrides),
+    () => cycleProject(-1),
+    { enabled: !!activeProjectId },
+    [cycleProject, activeProjectId, shortcutOverrides],
   );
 
   const handleCreateProject = useCallback(async () => {
