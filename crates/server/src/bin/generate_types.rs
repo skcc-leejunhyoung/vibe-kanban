@@ -130,6 +130,7 @@ fn generate_types_content() -> String {
         server::routes::workspaces::git::PullWorkspaceResponse::decl(),
         server::routes::workspaces::git::UpdateFromBaseStrategy::decl(),
         server::routes::workspaces::git::UpdateFromBaseRequest::decl(),
+        server::routes::workspaces::git::UpdateTargetBranchFromBaseRequest::decl(),
         server::routes::workspaces::git::RenameBranchRequest::decl(),
         server::routes::workspaces::git::RenameBranchResponse::decl(),
         server::routes::sessions::review::StartReviewRequest::decl(),

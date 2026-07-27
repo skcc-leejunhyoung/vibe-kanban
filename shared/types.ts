@@ -454,6 +454,8 @@ export type UpdateFromBaseStrategy = "merge" | "rebase";
 
 export type UpdateFromBaseRequest = { repo_id: string, strategy: UpdateFromBaseStrategy, };
 
+export type UpdateTargetBranchFromBaseRequest = { repo_id: string, base_branch: string, };
+
 export type RenameBranchRequest = { new_branch_name: string, };
 
 export type RenameBranchResponse = { branch: string, };

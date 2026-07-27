@@ -88,6 +88,7 @@ import {
   PullWorkspaceRequest,
   PullWorkspaceResponse,
   UpdateFromBaseRequest,
+  UpdateTargetBranchFromBaseRequest,
   RepoBranchStatus,
   WorkspaceCommit,
   Diff,
@@ -912,6 +913,21 @@ export const workspacesApi = {
       }
     );
     return handleApiResponseAsResult<void, GitOperationError>(response);
+  },
+
+  /** Merge a selected base branch into the workspace's target branch. */
+  updateTargetBranchFromBase: async (
+    workspaceId: string,
+    data: UpdateTargetBranchFromBaseRequest
+  ): Promise<void> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/update-from-base`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<void>(response);
   },
 
   change_target_branch: async (

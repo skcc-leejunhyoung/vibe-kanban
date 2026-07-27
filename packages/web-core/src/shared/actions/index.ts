@@ -1839,7 +1839,7 @@ export const Actions = {
   // branches. Conflicts are surfaced through the existing resolve-conflicts flow.
   GitUpdateFromBase: {
     id: 'git-update-from-base',
-    label: 'Update from base',
+    label: 'Update work branch from target branch',
     icon: GitMergeIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
@@ -1884,7 +1884,7 @@ export const Actions = {
       }
 
       const confirmResult = await ConfirmDialog.show({
-        title: 'Update from base',
+        title: 'Update work branch from target branch',
         message: `Merge "${
           repoStatus?.target_branch_name ?? 'the base branch'
         }" into this branch? Your branch is ${commitsBehind} commit${
@@ -1918,9 +1918,40 @@ export const Actions = {
           invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
           return;
         }
-        throw new Error(result.message || 'Failed to update from base');
+        throw new Error(
+          result.message || 'Failed to update work branch from target branch'
+        );
       }
 
+      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+    },
+  },
+
+  GitUpdateTargetFromBase: {
+    id: 'git-update-target-from-base',
+    label: 'Update target branch from base branch',
+    icon: GitMergeIcon,
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
+    execute: async (ctx, workspaceId, repoId) => {
+      const baseBranch = await BranchPickerDialog.show({
+        repoId,
+        mode: 'updateTargetFromBase',
+      });
+      if (!baseBranch) return;
+
+      const confirmResult = await ConfirmDialog.show({
+        title: 'Update target branch from base branch',
+        message: `Merge "${baseBranch}" into this workspace's target branch?`,
+        confirmText: 'Update',
+        cancelText: 'Cancel',
+      });
+      if (confirmResult !== 'confirmed') return;
+
+      await workspacesApi.updateTargetBranchFromBase(workspaceId, {
+        repo_id: repoId,
+        base_branch: baseBranch,
+      });
       invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
     },
   },
@@ -1994,17 +2025,16 @@ export const Actions = {
     },
   },
 
-  // Fetch the repo's origin so the target (base) branch's remote-tracking ref
-  // is refreshed, then report how it compares to the remote. Mirrors the
-  // repo-settings fetch: it never moves a local branch.
+  // Preserve the legacy action id for saved command-bar preferences, but make
+  // the visible "Pull target branch" action perform a real ff-only pull.
   GitFetchTarget: {
     id: 'git-fetch-target',
-    label: 'Fetch target branch',
+    label: 'Pull target branch',
     icon: ArrowLineDownIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const status = await workspacesApi.fetchTargetBranch(workspaceId, repoId);
+      const status = await workspacesApi.pullTargetBranch(workspaceId, repoId);
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
       });
@@ -2027,8 +2057,8 @@ export const Actions = {
         ? `"${status.target_branch}" is ${status.ahead} ahead / ${status.behind} behind ${status.remote}.`
         : `"${status.target_branch}" has not been pushed to ${status.remote} yet.`;
       await ConfirmDialog.show({
-        title: 'Fetch complete',
-        message: `Fetched from ${status.remote}. ${summary}`,
+        title: 'Pull complete',
+        message: `Pulled from ${status.remote}. ${summary}`,
         confirmText: 'OK',
         showCancelButton: false,
         variant: 'success',

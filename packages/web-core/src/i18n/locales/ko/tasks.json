@@ -104,6 +104,13 @@
         "description": "작업 시도의 새 대상 브랜치를 선택하세요.",
         "title": "대상 브랜치 변경"
       }
+    },
+    "updateTargetFromBase": {
+      "dialog": {
+        "title": "베이스 브랜치로 대상 브랜치 업데이트",
+        "description": "이 작업공간의 대상 브랜치에 병합할 베이스 브랜치를 선택하세요.",
+        "action": "베이스 브랜치 선택"
+      }
     }
   },
   "diff": {
@@ -177,7 +184,8 @@
     "actions": {
       "title": "Git 작업",
       "changeTarget": "대상 변경",
-      "updateFromBase": "베이스에서 업데이트",
+      "updateFromBase": "대상 브랜치로 작업 브랜치 업데이트",
+      "updateTargetFromBase": "베이스 브랜치로 대상 브랜치 업데이트",
       "prMerged": "PR #{{number}}은(는) 이미 병합되었습니다",
       "loginRequired": {
         "title": "Git 작업을 관리하려면 로그인하세요",

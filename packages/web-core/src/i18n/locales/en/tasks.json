@@ -34,6 +34,13 @@
         "description": "Choose a new target branch for the workspace.",
         "action": "Change Branch"
       }
+    },
+    "updateTargetFromBase": {
+      "dialog": {
+        "title": "Update target branch from base branch",
+        "description": "Choose the base branch to merge into this workspace's target branch.",
+        "action": "Select Base Branch"
+      }
     }
   },
   "preview": {
@@ -273,7 +280,8 @@
     "actions": {
       "title": "Git Actions",
       "changeTarget": "Change target",
-      "updateFromBase": "Update from base",
+      "updateFromBase": "Update work branch from target branch",
+      "updateTargetFromBase": "Update target branch from base branch",
       "prMerged": "PR #{{number}} is already merged",
       "loginRequired": {
         "title": "Sign in to manage git actions",

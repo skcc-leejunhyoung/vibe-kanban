@@ -1599,6 +1599,44 @@ impl GitService {
         }
     }
 
+    /// Merge `base_branch` into a checked-out `target_branch`. This is the
+    /// target-branch counterpart to [`Self::merge_base_into_workspace`], used
+    /// for the familiar "update feature branch from main" workflow.
+    ///
+    /// Conflicts cannot be resolved from the workspace worktree, so they are
+    /// aborted in the target checkout and returned as an actionable error.
+    pub fn merge_base_into_branch_checkout(
+        &self,
+        repo_path: &Path,
+        target_branch: &str,
+        base_branch: &str,
+    ) -> Result<bool, GitServiceError> {
+        let checkout = self
+            .find_checkout_path_for_branch(repo_path, target_branch)?
+            .ok_or_else(|| {
+                GitServiceError::BranchNotFound(format!(
+                    "'{target_branch}' is not checked out in any worktree; check it out before updating it."
+                ))
+            })?;
+
+        match self.merge_base_into_workspace(repo_path, &checkout, target_branch, base_branch) {
+            Err(GitServiceError::MergeConflicts { message, .. }) => {
+                GitCli::new()
+                    .abort_merge(&checkout)
+                    .map_err(|abort_error| {
+                        GitServiceError::InvalidRepository(format!(
+                            "Target branch merge conflicted and aborting it failed: {abort_error}"
+                        ))
+                    })?;
+
+                Err(GitServiceError::InvalidRepository(format!(
+                    "{message} The target-branch merge was aborted because conflicts in its checkout cannot be resolved from this workspace. Resolve the target branch manually, then try again."
+                )))
+            }
+            result => result,
+        }
+    }
+
     /// Merge the base branch into the work branch (the equivalent of, from the
     /// work branch, `git merge <base>`). Unlike [`Self::rebase_branch`] this
     /// preserves history, so it is the safe default for shared PR branches.

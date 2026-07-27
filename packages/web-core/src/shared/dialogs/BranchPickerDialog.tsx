@@ -21,7 +21,10 @@ import { defineModal } from '@/shared/lib/modals';
  * strings. `select` = generic "pick an existing branch" (workspace creation /
  * working-branch row); `changeTarget` = "change this workspace's target branch".
  */
-export type BranchPickerMode = 'select' | 'changeTarget';
+export type BranchPickerMode =
+  | 'select'
+  | 'changeTarget'
+  | 'updateTargetFromBase';
 
 export interface BranchPickerDialogProps {
   repoId: string;
@@ -94,7 +97,9 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
     const title =
       mode === 'changeTarget'
         ? t('branches.changeTarget.dialog.title')
-        : repoDisplayName
+        : mode === 'updateTargetFromBase'
+          ? t('branches.updateTargetFromBase.dialog.title')
+          : repoDisplayName
           ? t('commandBar.selectBranchFor', {
               repoName: repoDisplayName,
               ns: 'common',
@@ -104,12 +109,16 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
     const description =
       mode === 'changeTarget'
         ? t('branches.changeTarget.dialog.description')
-        : null;
+        : mode === 'updateTargetFromBase'
+          ? t('branches.updateTargetFromBase.dialog.description')
+          : null;
 
     const confirmLabel =
       mode === 'changeTarget'
         ? t('branches.changeTarget.dialog.action')
-        : t('createMode.targetBranch.selectBranch', { ns: 'common' });
+        : mode === 'updateTargetFromBase'
+          ? t('branches.updateTargetFromBase.dialog.action')
+          : t('createMode.targetBranch.selectBranch', { ns: 'common' });
 
     return (
       <Dialog open={modal.visible} onOpenChange={handleOpenChange}>

@@ -120,6 +120,13 @@ pub struct UpdateFromBaseRequest {
     pub strategy: UpdateFromBaseStrategy,
 }
 
+/// Merge a selected base branch into the workspace's target branch.
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct UpdateTargetBranchFromBaseRequest {
+    pub repo_id: Uuid,
+    pub base_branch: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(tag = "type", rename_all = "snake_case")]
@@ -301,6 +308,10 @@ pub fn router() -> Router<DeploymentImpl> {
             get(get_target_branch_remote_status),
         )
         .route("/target-branch/fetch", post(fetch_target_branch))
+        .route(
+            "/target-branch/update-from-base",
+            post(update_target_branch_from_base),
+        )
         .route("/target-branch/push", post(push_target_branch))
         .route(
             "/target-branch/pull-and-push",
@@ -961,6 +972,44 @@ pub async fn update_workspace_from_base(
     }
 
     spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+/// Bring the selected base branch into the workspace target branch. This is
+/// equivalent to GitHub Desktop's "Update from main/develop" for the target
+/// branch. Prefer the current remote-tracking base when available so the merge
+/// includes the latest fetched upstream commit.
+#[axum::debug_handler]
+pub async fn update_target_branch_from_base(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<UpdateTargetBranchFromBaseRequest>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    let (repo, workspace_repo) =
+        load_workspace_repo(&deployment, workspace.id, payload.repo_id).await?;
+    let target_branch = workspace_repo.target_branch;
+
+    if target_branch == payload.base_branch {
+        return Ok(ResponseJson(ApiResponse::error(
+            "The target branch and base branch must be different.",
+        )));
+    }
+
+    let git = deployment.git();
+    let base_branch = if let Some(remote) = resolve_primary_remote(&deployment, &repo) {
+        git.fetch_remote(&repo.path, &remote)?;
+        let remote_base = format!("{remote}/{}", payload.base_branch);
+        if git.check_branch_exists(&repo.path, &remote_base)? {
+            remote_base
+        } else {
+            payload.base_branch
+        }
+    } else {
+        payload.base_branch
+    };
+
+    git.merge_base_into_branch_checkout(&repo.path, &target_branch, &base_branch)?;
 
     Ok(ResponseJson(ApiResponse::success(())))
 }
