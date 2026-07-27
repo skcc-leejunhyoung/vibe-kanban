@@ -70,6 +70,10 @@ miss would never be re-tried.
   requested from the user (Search API); imported PRs are tagged `review` in Vibe
   (the tag is created in the project if missing) and their footer includes a
   `branch: <head> -> <base>` line (fetched via `GET /repos/.../pulls/{n}`).
+  With `notifyPrComments` enabled (the default), it also watches PRs authored by,
+  assigned to, awaiting review from, or previously reviewed by the authenticated
+  user. New issue comments and inline review comments from other users create
+  Vibe notifications. The first poll seeds existing comments without notifying.
 - `vibe_kanban`: creates Vibe Kanban issues through HTTP.
 
 The `vibe_kanban` connector posts to `{baseUrl}/v1/issues` on the **remote** API.

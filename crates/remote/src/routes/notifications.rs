@@ -1,4 +1,7 @@
-use api_types::{DeleteResponse, MutationResponse, Notification, UpdateNotificationRequest};
+use api_types::{
+    CreatePullRequestCommentNotificationRequest, DeleteResponse, MutationResponse, Notification,
+    NotificationPayload, NotificationType, UpdateNotificationRequest,
+};
 use axum::{
     Json, Router,
     extract::{Extension, Path, Query, State},
@@ -9,12 +12,16 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use uuid::Uuid;
 
-use super::error::ErrorResponse;
+use super::{error::ErrorResponse, organization_members::ensure_project_access};
 use crate::{
     AppState,
     auth::RequestContext,
-    db::{get_txid, notifications::NotificationRepository},
+    db::{
+        get_txid, issues::IssueRepository, notifications::NotificationRepository,
+        pull_request_issues::PullRequestIssueRepository, pull_requests::PullRequestRepository,
+    },
     mutation_definition::{MutationBuilder, NoCreate},
+    web_push_notifications,
 };
 
 #[derive(Debug, Serialize)]
@@ -58,6 +65,91 @@ pub fn router() -> Router<AppState> {
     mutation()
         .router()
         .route("/notifications/bulk", post(bulk_update_notifications))
+        .route(
+            "/notifications/pull-request-comment",
+            post(create_pull_request_comment_notification),
+        )
+}
+
+async fn create_pull_request_comment_notification(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Json(payload): Json<CreatePullRequestCommentNotificationRequest>,
+) -> Result<Json<Notification>, ErrorResponse> {
+    let organization_id =
+        ensure_project_access(state.pool(), ctx.user.id, payload.project_id).await?;
+
+    let pull_request = PullRequestRepository::find_by_url_and_project(
+        state.pool(),
+        &payload.pull_request_url,
+        payload.project_id,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(?error, "failed to resolve pull request notification");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    let issue = if let Some(pull_request) = pull_request {
+        let issue_id = PullRequestIssueRepository::issue_ids_for_pr(state.pool(), pull_request.id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to resolve pull request issue");
+                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            })?
+            .into_iter()
+            .next();
+        match issue_id {
+            Some(issue_id) => IssueRepository::find_by_id(state.pool(), issue_id)
+                .await
+                .map_err(|error| {
+                    tracing::error!(?error, "failed to load mapped issue");
+                    ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                })?,
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    let notification_payload = NotificationPayload {
+        deeplink_path: issue
+            .as_ref()
+            .map(|issue| format!("/projects/{}/issues/{}", issue.project_id, issue.id)),
+        issue_id: issue.as_ref().map(|issue| issue.id),
+        issue_simple_id: issue.as_ref().map(|issue| issue.simple_id.clone()),
+        issue_title: issue
+            .as_ref()
+            .map(|issue| issue.title.clone())
+            .or(Some(payload.pull_request_title)),
+        comment_preview: payload.comment_preview,
+        pull_request_url: Some(payload.pull_request_url),
+        pull_request_number: Some(payload.pull_request_number),
+        comment_url: payload.comment_url,
+        actor_name: Some(payload.actor_name),
+        ..Default::default()
+    };
+
+    let notification = NotificationRepository::create(
+        state.pool(),
+        organization_id,
+        ctx.user.id,
+        NotificationType::PullRequestCommentAdded,
+        notification_payload,
+        issue.as_ref().map(|issue| issue.id),
+        None,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(?error, "failed to create pull request comment notification");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    tokio::spawn(web_push_notifications::send_notification(
+        state.pool().clone(),
+        notification.clone(),
+    ));
+    Ok(Json(notification))
 }
 
 #[instrument(

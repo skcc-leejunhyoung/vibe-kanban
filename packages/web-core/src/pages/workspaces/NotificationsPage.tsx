@@ -8,12 +8,14 @@ import {
   ChecksIcon,
 } from '@phosphor-icons/react';
 import { Checkbox } from '@vibe/ui/components/Checkbox';
+import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { Switch } from '@vibe/ui/components/Switch';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
+import { getPayload } from '@/shared/lib/notifications';
 import {
   getGroupedNotificationSegments,
   type MessageSegment,
@@ -295,6 +297,14 @@ export function NotificationsPage() {
       const path = group.deeplinkPath;
       if (path) {
         router.navigate({ to: path as '/' });
+      } else if (
+        group.latest.notification_type === 'pull_request_comment_added'
+      ) {
+        const payload = getPayload(group.latest);
+        void ErrorDialog.show({
+          title: 'No mapped issue',
+          message: `PR #${payload.pull_request_number ?? ''} is not mapped to an issue.`,
+        });
       }
     },
     [markGroupSeen, router]

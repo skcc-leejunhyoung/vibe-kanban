@@ -209,6 +209,14 @@ export function getGroupedNotificationSegments(
         emphasis(payload.title ?? 'Workspace task completed'),
         ...(payload.body ? [text(`: ${payload.body}`)] : []),
       ];
+    case 'pull_request_comment_added':
+      return [
+        emphasis(payload.actor_name ?? 'Someone'),
+        text(' commented on '),
+        emphasis(
+          `PR #${payload.pull_request_number ?? ''} ${payload.issue_title ?? ''}`.trim()
+        ),
+      ];
     case 'issue_deleted':
       return [...actor, text(' deleted '), ...issueSegments];
     default:

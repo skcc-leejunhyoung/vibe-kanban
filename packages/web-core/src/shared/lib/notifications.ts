@@ -101,6 +101,10 @@ const NOTIFICATION_GROUPING_META: Partial<
     issueChangeField: 'review',
     scope: 'issue',
   },
+  pull_request_comment_added: {
+    groupKind: 'comments',
+    scope: 'issue',
+  },
   issue_deleted: {
     groupKind: 'issue_deleted',
     scope: 'project',

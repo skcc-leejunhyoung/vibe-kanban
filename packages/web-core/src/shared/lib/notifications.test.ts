@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { selectUnseenNotificationIdsForView } from './notifications';
+import {
+  groupNotifications,
+  selectUnseenNotificationIdsForView,
+} from './notifications';
 import type { Notification, NotificationPayload } from 'shared/remote-types';
 
 function createNotification(
@@ -139,5 +142,23 @@ describe('selectUnseenNotificationIdsForView', () => {
     });
 
     expect(ids).toEqual(['a']);
+  });
+});
+
+describe('groupNotifications', () => {
+  it('keeps an unmapped PR comment notification clickable as a single item', () => {
+    const [group] = groupNotifications([
+      createNotification({
+        notification_type: 'pull_request_comment_added',
+        payload: {
+          pull_request_number: 42,
+          pull_request_url: 'https://github.com/acme/repo/pull/42',
+        },
+      }),
+    ]);
+
+    expect(group.kind).toBe('single');
+    expect(group.deeplinkPath).toBeNull();
+    expect(group.latest.payload.pull_request_number).toBe(42);
   });
 });

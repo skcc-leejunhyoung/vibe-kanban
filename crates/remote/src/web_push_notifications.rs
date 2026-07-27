@@ -382,6 +382,11 @@ fn notification_body(notification_type: NotificationType, payload: &Notification
             .body
             .clone()
             .unwrap_or_else(|| "workspace task completed".to_string()),
+        NotificationType::PullRequestCommentAdded => format!(
+            "PR #{}: new comment from {}",
+            payload.pull_request_number.unwrap_or_default(),
+            payload.actor_name.as_deref().unwrap_or("Someone")
+        ),
     }
 }
 

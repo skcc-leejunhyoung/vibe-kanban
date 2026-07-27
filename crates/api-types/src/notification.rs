@@ -21,6 +21,7 @@ pub enum NotificationType {
     IssueDescriptionChanged,
     IssueReviewRequested,
     WorkspaceTaskCompleted,
+    PullRequestCommentAdded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -89,6 +90,25 @@ pub struct NotificationPayload {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request_number: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+pub struct CreatePullRequestCommentNotificationRequest {
+    pub project_id: Uuid,
+    pub pull_request_url: String,
+    pub pull_request_number: i32,
+    pub pull_request_title: String,
+    pub actor_name: String,
+    pub comment_preview: Option<String>,
+    pub comment_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]

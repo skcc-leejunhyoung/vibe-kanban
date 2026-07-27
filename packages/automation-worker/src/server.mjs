@@ -83,6 +83,19 @@ const defaultGithubRuleScript = `async function handle(event, ctx) {
   });
 }`;
 
+const defaultGithubPrCommentRuleScript = `async function handle(event, ctx) {
+  if (event.source !== 'github' || event.type !== 'pr_comment') return;
+
+  await ctx.actions.vibe.notifyPullRequestComment('vibe-default', {
+    pullRequestUrl: event.pullRequestUrl,
+    pullRequestNumber: event.number,
+    pullRequestTitle: event.title,
+    actorName: event.user || 'Someone',
+    commentPreview: (event.body || '').slice(0, 240),
+    commentUrl: event.url,
+  });
+}`;
+
 const defaultState = {
   // Master switch. When false, scheduleAll() installs no poll timers, so the
   // worker stays up (and configurable from the Vibe Kanban settings page) but
@@ -132,6 +145,9 @@ const defaultState = {
         limit: 50,
         includePullRequests: false,
         reviewPrs: false,
+        notifyPrComments: true,
+        prCommentCursorTs: '',
+        seenPrCommentIds: [],
         backfill: false,
       },
     },
@@ -148,6 +164,12 @@ const defaultState = {
       name: 'GitHub assigned issue -> Vibe Kanban issue',
       enabled: true,
       script: defaultGithubRuleScript,
+    },
+    {
+      id: 'github-pr-comment-notification',
+      name: 'GitHub related PR comment -> Vibe notification',
+      enabled: true,
+      script: defaultGithubPrCommentRuleScript,
     },
   ],
   retryQueue: [],
@@ -749,6 +771,120 @@ async function githubPrBranches(connector, number) {
   };
 }
 
+async function githubRelatedPrs(connector, login) {
+  const config = connector.config || {};
+  const apiBase = String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '');
+  const qualifiers = [
+    `author:${login}`,
+    `assignee:${login}`,
+    `review-requested:${login}`,
+    `reviewed-by:${login}`,
+  ];
+  const prs = new Map();
+  for (const qualifier of qualifiers) {
+    const params = new URLSearchParams({
+      q: `repo:${config.owner}/${config.repo} is:pr ${qualifier}`,
+      per_page: String(githubPerPage(config)),
+      sort: 'updated',
+      order: 'desc',
+    });
+    const response = await fetch(`${apiBase}/search/issues?${params}`, {
+      headers: githubHeaders(config.token),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`GitHub related PR search error: ${response.status} ${text.slice(0, 200)}`);
+    }
+    const body = JSON.parse(text);
+    for (const pr of Array.isArray(body.items) ? body.items : []) {
+      prs.set(pr.number, pr);
+    }
+  }
+  return Array.from(prs.values());
+}
+
+async function githubPrComments(connector, pr, since) {
+  const config = connector.config || {};
+  const apiBase = String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '');
+  const base = `${apiBase}/repos/${config.owner}/${config.repo}`;
+  const endpoints = [
+    `${base}/issues/${pr.number}/comments`,
+    `${base}/pulls/${pr.number}/comments`,
+  ];
+  const comments = [];
+  for (const endpoint of endpoints) {
+    for (let page = 1; page <= 20; page += 1) {
+      const params = new URLSearchParams({
+        per_page: '100',
+        page: String(page),
+        sort: 'created',
+        direction: 'asc',
+      });
+      if (since) params.set('since', since);
+      const response = await fetch(`${endpoint}?${params}`, {
+        headers: githubHeaders(config.token),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`GitHub PR comments error: ${response.status} ${text.slice(0, 200)}`);
+      }
+      const pageComments = JSON.parse(text);
+      for (const comment of pageComments) comments.push(comment);
+      if (!Array.isArray(pageComments) || pageComments.length < 100) break;
+    }
+  }
+  return comments;
+}
+
+async function pollGithubPrComments(connector, login) {
+  const config = connector.config || {};
+  if (config.notifyPrComments === false) return { processed: 0, seeded: 0 };
+  const cursor = String(config.prCommentCursorTs || '');
+  const seeding = !cursor && (config.seenPrCommentIds || []).length === 0;
+  const seen = new Set(config.seenPrCommentIds || []);
+  const prs = await githubRelatedPrs(connector, login);
+  const pending = [];
+  let latest = cursor;
+
+  for (const pr of prs) {
+    const comments = await githubPrComments(connector, pr, cursor);
+    for (const comment of comments) {
+      const key = `${comment.url || ''}:${comment.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (comment.created_at && comment.created_at > latest) latest = comment.created_at;
+      if (comment.user && comment.user.login === login) continue;
+      pending.push({ pr, comment, key });
+    }
+  }
+
+  if (!seeding) {
+    pending.sort((a, b) =>
+      String(a.comment.created_at || '').localeCompare(String(b.comment.created_at || '')),
+    );
+    for (const { pr, comment } of pending) {
+      await runRules({
+        source: 'github',
+        type: 'pr_comment',
+        connectorId: connector.id,
+        repo: `${config.owner}/${config.repo}`,
+        number: pr.number,
+        title: pr.title,
+        pullRequestUrl: pr.html_url,
+        url: comment.html_url,
+        user: comment.user ? comment.user.login : null,
+        body: comment.body || '',
+        createdAt: comment.created_at,
+        raw: comment,
+      });
+    }
+  }
+
+  config.prCommentCursorTs = latest || (seeding ? new Date().toISOString() : cursor);
+  config.seenPrCommentIds = Array.from(seen).slice(-2000);
+  return { processed: seeding ? 0 : pending.length, seeded: seeding ? pending.length : 0 };
+}
+
 async function pollGithub(connector) {
   const config = connector.config || {};
   if (!config.token || !config.owner || !config.repo) {
@@ -759,6 +895,7 @@ async function pollGithub(connector) {
   const field =
     { assigned: 'assignee', created: 'creator', mentioned: 'mentioned' }[filter] || 'assignee';
   const login = await githubLogin(connector);
+  const commentResult = await pollGithubPrComments(connector, login);
 
   // GitHub caps per_page at 100; an unclamped larger limit would make the
   // "batch shorter than perPage -> last page" check fire after page 1 and
@@ -884,7 +1021,14 @@ async function pollGithub(connector) {
   } else if (processed > 0) {
     await log('info', 'github issues processed', { connectorId: connector.id, processed });
   }
-  return { ok: true, processed, seeded: seeding ? seen.size : 0, cursorTs: latest };
+  return {
+    ok: true,
+    processed,
+    seeded: seeding ? seen.size : 0,
+    cursorTs: latest,
+    commentsProcessed: commentResult.processed,
+    commentsSeeded: commentResult.seeded,
+  };
 }
 
 async function slackPermalink(token, channel, messageTs) {
@@ -1072,6 +1216,8 @@ function createRuleContext(rule, event) {
     actions: {
       vibe: {
         createIssue: (connectorId, input) => createVibeIssue(connectorId, input, event, rule),
+        notifyPullRequestComment: (connectorId, input) =>
+          createVibePullRequestCommentNotification(connectorId, input),
       },
       http: {
         request: async (url, options = {}) => {
@@ -1086,6 +1232,25 @@ function createRuleContext(rule, event) {
       },
     },
   };
+}
+
+async function createVibePullRequestCommentNotification(connectorId, input) {
+  const connector = findConnector(connectorId);
+  if (!connector.enabled) throw new Error(`Vibe connector is disabled: ${connectorId}`);
+  if (connector.type !== 'vibe_kanban') {
+    throw new Error(`connector is not vibe_kanban: ${connectorId}`);
+  }
+  const config = connector.config || {};
+  if (!config.projectId) throw new Error('Vibe projectId is required');
+  return vibeApi(connector, 'POST', '/v1/notifications/pull-request-comment', {
+    project_id: config.projectId,
+    pull_request_url: String(input.pullRequestUrl || ''),
+    pull_request_number: Number(input.pullRequestNumber),
+    pull_request_title: String(input.pullRequestTitle || ''),
+    actor_name: String(input.actorName || 'Someone'),
+    comment_preview: input.commentPreview ? String(input.commentPreview) : null,
+    comment_url: input.commentUrl ? String(input.commentUrl) : null,
+  });
 }
 
 async function createVibeIssue(connectorId, input, event, rule) {
