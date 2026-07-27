@@ -52,6 +52,13 @@ static FAILED_CONTEXT_FINGERPRINTS: LazyLock<Mutex<HashMap<String, String>>> =
 
 const GLOBAL_SYNC_ROUNDS: usize = 3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdlePolicy {
+    Never,
+    PendingOnly,
+    PendingOrNativeChanges,
+}
+
 /// Raised when an agent stopped because a usage rate limit was reached. Carries
 /// the agent-reported reset time when one was found in structured output; the
 /// central retry schedule (reset + margin, or an attempt-scaled backoff) is
@@ -266,8 +273,8 @@ pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<(
     let Some(job) = job else {
         return Ok(());
     };
-    let skip_idle = job.round > 1 || job.trigger_kind == "catch_up";
-    let result = run_now_with_mode(deployment.clone(), &job.trigger_kind, skip_idle).await;
+    let idle_policy = idle_policy_for_job(job.round, &job.trigger_kind);
+    let result = run_now_with_mode(deployment.clone(), &job.trigger_kind, idle_policy).await;
     let retry_at = result.as_ref().err().and_then(|error| {
         error
             .downcast_ref::<MemorySyncRateLimited>()
@@ -302,13 +309,13 @@ pub async fn request_central_sync_and_process(
 }
 
 pub async fn run_now(deployment: DeploymentImpl, trigger_kind: &str) -> anyhow::Result<()> {
-    run_now_with_mode(deployment, trigger_kind, false).await
+    run_now_with_mode(deployment, trigger_kind, IdlePolicy::Never).await
 }
 
 async fn run_now_with_mode(
     deployment: DeploymentImpl,
     trigger_kind: &str,
-    skip_idle: bool,
+    idle_policy: IdlePolicy,
 ) -> anyhow::Result<()> {
     let _guard = RUN_LOCK
         .try_lock()
@@ -329,7 +336,7 @@ async fn run_now_with_mode(
         "Memory synchronization started",
     )
     .await;
-    let result = run_all(&deployment, &run_id, trigger_kind, skip_idle).await;
+    let result = run_all(&deployment, &run_id, trigger_kind, idle_policy).await;
     let (level, message) = match &result {
         Ok(()) => ("info", "Memory synchronization completed".to_string()),
         Err(error) => ("error", format!("Memory synchronization failed: {error}")),
@@ -846,7 +853,7 @@ async fn run_all(
     deployment: &DeploymentImpl,
     run_id: &str,
     trigger_kind: &str,
-    skip_idle: bool,
+    idle_policy: IdlePolicy,
 ) -> anyhow::Result<()> {
     let client = deployment.remote_client()?;
     let machine_id = deployment.user_id().to_string();
@@ -899,7 +906,7 @@ async fn run_all(
                 *agent,
                 run_id,
                 trigger_kind,
-                skip_idle,
+                idle_policy,
             )
             .await
             {
@@ -1056,7 +1063,7 @@ async fn sync_one(
     agent_kind: AgentMemoryKind,
     run_id: &str,
     trigger_kind: &str,
-    skip_idle: bool,
+    idle_policy: IdlePolicy,
 ) -> anyhow::Result<()> {
     let client = deployment.remote_client()?;
     let previous = client
@@ -1075,7 +1082,7 @@ async fn sync_one(
             Some(scope_key),
         )
         .await?;
-    if skip_idle {
+    if idle_policy != IdlePolicy::Never {
         let mut pending_mutation_count = client
             .agent_memory_mutation_inbox(
                 host_id,
@@ -1100,11 +1107,16 @@ async fn sync_one(
             .await?
             .mutations
             .len();
-        if should_skip_idle(
+        let pending_is_idle = should_skip_idle(
             previous.is_some(),
             inbox.snapshots.len(),
             pending_mutation_count,
-        ) {
+        );
+        let native_is_idle = idle_policy == IdlePolicy::PendingOnly
+            || previous.as_ref().is_some_and(|snapshot| {
+                !native_memory_changed_since(repo, scope_key, agent_kind, snapshot.updated_at)
+            });
+        if pending_is_idle && native_is_idle {
             log_event(
                 deployment,
                 run_id,
@@ -1164,10 +1176,10 @@ async fn sync_one(
         sync_context_fingerprint(previous.as_ref(), &inbox.snapshots, &mutations);
     let retry_blocked = {
         let mut failures = FAILED_CONTEXT_FINGERPRINTS.lock().await;
-        if !skip_idle {
+        if idle_policy == IdlePolicy::Never {
             failures.remove(&failure_key);
         }
-        skip_idle && failures.get(&failure_key) == Some(&context_fingerprint)
+        idle_policy != IdlePolicy::Never && failures.get(&failure_key) == Some(&context_fingerprint)
     };
     if retry_blocked {
         log_event(
@@ -1401,6 +1413,62 @@ fn should_skip_idle(
     pending_mutation_count: usize,
 ) -> bool {
     has_previous_snapshot && incoming_snapshot_count == 0 && pending_mutation_count == 0
+}
+
+fn idle_policy_for_job(round: i64, trigger_kind: &str) -> IdlePolicy {
+    if round > 1 || trigger_kind == "catch_up" {
+        IdlePolicy::PendingOnly
+    } else if trigger_kind.starts_with("scheduled:") {
+        IdlePolicy::PendingOrNativeChanges
+    } else {
+        IdlePolicy::Never
+    }
+}
+
+fn native_memory_changed_since(
+    repo: &Repo,
+    scope_key: &str,
+    agent_kind: AgentMemoryKind,
+    since: DateTime<Utc>,
+) -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return true;
+    };
+    match agent_kind {
+        AgentMemoryKind::ClaudeCode => {
+            let encoded_repo_path = repo.path.to_string_lossy().replace('/', "-");
+            let directory = Path::new(&home)
+                .join(".claude/projects")
+                .join(encoded_repo_path)
+                .join("memory");
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                return true;
+            };
+            path_modified_after(&directory, since)
+                || entries
+                    .filter_map(Result::ok)
+                    .any(|entry| path_modified_after(&entry.path(), since))
+        }
+        AgentMemoryKind::Codex => {
+            let path = Path::new(&home)
+                .join(".codex/memories/extensions/ad_hoc/vibe-sync")
+                .join(format!(
+                    "{}.md",
+                    hex::encode(Sha256::digest(scope_key.as_bytes()))
+                ));
+            !path.exists() || path_modified_after(&path, since)
+        }
+    }
+}
+
+fn path_modified_after(path: &Path, since: DateTime<Utc>) -> bool {
+    match std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .map(DateTime::<Utc>::from)
+    {
+        Ok(modified) => modified > since,
+        Err(_) => true,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2386,6 +2454,39 @@ mod tests {
         assert!(!should_skip_idle(false, 0, 0));
         assert!(!should_skip_idle(true, 1, 0));
         assert!(!should_skip_idle(true, 0, 1));
+    }
+
+    #[test]
+    fn scheduled_and_catch_up_jobs_skip_idle_from_the_first_round() {
+        assert_eq!(
+            idle_policy_for_job(1, "scheduled:2026-07-27"),
+            IdlePolicy::PendingOrNativeChanges
+        );
+        assert_eq!(idle_policy_for_job(1, "catch_up"), IdlePolicy::PendingOnly);
+        assert_eq!(idle_policy_for_job(2, "manual"), IdlePolicy::PendingOnly);
+    }
+
+    #[test]
+    fn manual_and_unknown_first_round_jobs_force_reconciliation() {
+        assert_eq!(idle_policy_for_job(1, "manual"), IdlePolicy::Never);
+        assert_eq!(idle_policy_for_job(1, "global"), IdlePolicy::Never);
+    }
+
+    #[test]
+    fn native_memory_mtime_detects_changes_after_the_snapshot() {
+        let path = std::env::temp_dir().join(format!("vibe-memory-mtime-{}", Uuid::new_v4()));
+        std::fs::write(&path, "memory").unwrap();
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .map(DateTime::<Utc>::from)
+            .unwrap();
+
+        assert!(!path_modified_after(&path, modified));
+        assert!(path_modified_after(
+            &path,
+            modified - chrono::Duration::seconds(1)
+        ));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
