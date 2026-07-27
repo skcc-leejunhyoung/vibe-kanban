@@ -803,21 +803,17 @@ async function githubRelatedPrs(connector, login) {
   return Array.from(prs.values());
 }
 
-async function githubPrComments(connector, pr, since) {
+async function githubPrComments(connector, since) {
   const config = connector.config || {};
   const apiBase = String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '');
   const base = `${apiBase}/repos/${config.owner}/${config.repo}`;
-  const endpoints = [
-    `${base}/issues/${pr.number}/comments`,
-    `${base}/pulls/${pr.number}/comments`,
-  ];
-  const comments = [];
-  for (const endpoint of endpoints) {
+  const fetchComments = async (endpoint) => {
+    const comments = [];
     for (let page = 1; page <= 20; page += 1) {
       const params = new URLSearchParams({
         per_page: '100',
         page: String(page),
-        sort: 'created',
+        sort: 'updated',
         direction: 'asc',
       });
       if (since) params.set('since', since);
@@ -832,8 +828,19 @@ async function githubPrComments(connector, pr, since) {
       for (const comment of pageComments) comments.push(comment);
       if (!Array.isArray(pageComments) || pageComments.length < 100) break;
     }
-  }
-  return comments;
+    return comments;
+  };
+  const [issueComments, reviewComments] = await Promise.all([
+    fetchComments(`${base}/issues/comments`),
+    fetchComments(`${base}/pulls/comments`),
+  ]);
+  return [...issueComments, ...reviewComments];
+}
+
+function githubCommentPrNumber(comment) {
+  const url = String(comment.pull_request_url || comment.issue_url || '');
+  const number = Number(url.split('/').pop());
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
 async function pollGithubPrComments(connector, login) {
@@ -841,48 +848,59 @@ async function pollGithubPrComments(connector, login) {
   if (config.notifyPrComments === false) return { processed: 0, seeded: 0 };
   const cursor = String(config.prCommentCursorTs || '');
   const seeding = !cursor && (config.seenPrCommentIds || []).length === 0;
+  const pollStartedAt = new Date().toISOString();
+  if (seeding) {
+    config.prCommentCursorTs = pollStartedAt;
+    config.seenPrCommentIds = [];
+    return { processed: 0, seeded: 0 };
+  }
+
   const seen = new Set(config.seenPrCommentIds || []);
   const prs = await githubRelatedPrs(connector, login);
+  const prsByNumber = new Map(prs.map((pr) => [pr.number, pr]));
+  // Search results can lag behind comment APIs. Re-read a short overlap so a
+  // newly related/updated PR can appear before its comment falls behind the
+  // cursor; seen IDs keep the overlap idempotent.
+  const cursorMs = Date.parse(cursor);
+  const since = Number.isFinite(cursorMs)
+    ? new Date(cursorMs - 5 * 60 * 1000).toISOString()
+    : cursor;
+  const comments = await githubPrComments(connector, since);
   const pending = [];
-  let latest = cursor;
 
-  for (const pr of prs) {
-    const comments = await githubPrComments(connector, pr, cursor);
-    for (const comment of comments) {
-      const key = `${comment.url || ''}:${comment.id}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (comment.created_at && comment.created_at > latest) latest = comment.created_at;
-      if (comment.user && comment.user.login === login) continue;
-      pending.push({ pr, comment, key });
-    }
+  for (const comment of comments) {
+    const pr = prsByNumber.get(githubCommentPrNumber(comment));
+    if (!pr) continue;
+    const key = `${comment.url || ''}:${comment.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (comment.user && comment.user.login === login) continue;
+    pending.push({ pr, comment });
   }
 
-  if (!seeding) {
-    pending.sort((a, b) =>
-      String(a.comment.created_at || '').localeCompare(String(b.comment.created_at || '')),
-    );
-    for (const { pr, comment } of pending) {
-      await runRules({
-        source: 'github',
-        type: 'pr_comment',
-        connectorId: connector.id,
-        repo: `${config.owner}/${config.repo}`,
-        number: pr.number,
-        title: pr.title,
-        pullRequestUrl: pr.html_url,
-        url: comment.html_url,
-        user: comment.user ? comment.user.login : null,
-        body: comment.body || '',
-        createdAt: comment.created_at,
-        raw: comment,
-      });
-    }
+  pending.sort((a, b) =>
+    String(a.comment.created_at || '').localeCompare(String(b.comment.created_at || '')),
+  );
+  for (const { pr, comment } of pending) {
+    await runRules({
+      source: 'github',
+      type: 'pr_comment',
+      connectorId: connector.id,
+      repo: `${config.owner}/${config.repo}`,
+      number: pr.number,
+      title: pr.title,
+      pullRequestUrl: pr.html_url,
+      url: comment.html_url,
+      user: comment.user ? comment.user.login : null,
+      body: comment.body || '',
+      createdAt: comment.created_at,
+      raw: comment,
+    });
   }
 
-  config.prCommentCursorTs = latest || (seeding ? new Date().toISOString() : cursor);
+  config.prCommentCursorTs = pollStartedAt;
   config.seenPrCommentIds = Array.from(seen).slice(-2000);
-  return { processed: seeding ? 0 : pending.length, seeded: seeding ? pending.length : 0 };
+  return { processed: pending.length, seeded: 0 };
 }
 
 async function pollGithub(connector) {
