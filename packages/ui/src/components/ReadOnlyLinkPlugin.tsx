@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { LinkNode } from '@lexical/link';
+import { openExternalUrl } from '../lib/open-url';
 
 /**
  * Sanitize href to block dangerous protocols.
@@ -33,10 +34,44 @@ function isExternalHref(href?: string): boolean {
   return /^https:\/\//i.test(href);
 }
 
+function configureLink(link: HTMLAnchorElement): void {
+  const href = link.getAttribute('href');
+  const safeHref = sanitizeHref(href ?? undefined);
+
+  if (!safeHref) {
+    // Dangerous protocol - remove href entirely
+    link.removeAttribute('href');
+    link.style.cursor = 'not-allowed';
+    link.style.pointerEvents = 'none';
+    return;
+  }
+
+  if (isExternalHref(safeHref)) {
+    // target="_blank" hands installed PWAs off to the system browser. Use
+    // the shared helper so issue-body links stay inside the web app.
+    link.removeAttribute('target');
+    link.removeAttribute('rel');
+    link.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openExternalUrl(safeHref);
+    };
+    return;
+  }
+
+  // Internal/relative link - disable clicking
+  link.removeAttribute('href');
+  link.style.cursor = 'not-allowed';
+  link.style.pointerEvents = 'none';
+  link.setAttribute('role', 'link');
+  link.setAttribute('aria-disabled', 'true');
+  link.title = href ?? '';
+}
+
 /**
- * Plugin that handles link sanitization and security attributes in read-only mode.
+ * Plugin that handles link sanitization and navigation in read-only mode.
  * - Blocks dangerous protocols (javascript:, vbscript:, data:)
- * - External HTTPS links: clickable with target="_blank" and rel="noopener noreferrer"
+ * - External HTTPS links: opened through the web app instead of the system browser
  * - Internal/relative links: rendered but not clickable
  */
 export function ReadOnlyLinkPlugin() {
@@ -53,33 +88,7 @@ export function ReadOnlyLinkPlugin() {
           const dom = editor.getElementByKey(nodeKey);
           if (!dom || !(dom instanceof HTMLAnchorElement)) continue;
 
-          const href = dom.getAttribute('href');
-          const safeHref = sanitizeHref(href ?? undefined);
-
-          if (!safeHref) {
-            // Dangerous protocol - remove href entirely
-            dom.removeAttribute('href');
-            dom.style.cursor = 'not-allowed';
-            dom.style.pointerEvents = 'none';
-            continue;
-          }
-
-          const isExternal = isExternalHref(safeHref);
-
-          if (isExternal) {
-            // External HTTPS link - add security attributes
-            dom.setAttribute('target', '_blank');
-            dom.setAttribute('rel', 'noopener noreferrer');
-            dom.onclick = (e) => e.stopPropagation();
-          } else {
-            // Internal/relative link - disable clicking
-            dom.removeAttribute('href');
-            dom.style.cursor = 'not-allowed';
-            dom.style.pointerEvents = 'none';
-            dom.setAttribute('role', 'link');
-            dom.setAttribute('aria-disabled', 'true');
-            dom.title = href ?? '';
-          }
+          configureLink(dom);
         }
       }
     );
@@ -91,30 +100,7 @@ export function ReadOnlyLinkPlugin() {
 
       const links = root.querySelectorAll('a');
       links.forEach((link) => {
-        const href = link.getAttribute('href');
-        const safeHref = sanitizeHref(href ?? undefined);
-
-        if (!safeHref) {
-          link.removeAttribute('href');
-          link.style.cursor = 'not-allowed';
-          link.style.pointerEvents = 'none';
-          return;
-        }
-
-        const isExternal = isExternalHref(safeHref);
-
-        if (isExternal) {
-          link.setAttribute('target', '_blank');
-          link.setAttribute('rel', 'noopener noreferrer');
-          link.onclick = (e) => e.stopPropagation();
-        } else {
-          link.removeAttribute('href');
-          link.style.cursor = 'not-allowed';
-          link.style.pointerEvents = 'none';
-          link.setAttribute('role', 'link');
-          link.setAttribute('aria-disabled', 'true');
-          link.title = href ?? '';
-        }
+        configureLink(link);
       });
     });
 
