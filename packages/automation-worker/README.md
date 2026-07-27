@@ -73,7 +73,9 @@ miss would never be re-tried.
   With `notifyPrComments` enabled (the default), it also watches PRs authored by,
   assigned to, awaiting review from, or previously reviewed by the authenticated
   user. New issue comments and inline review comments from other users create
-  Vibe notifications. The first poll seeds existing comments without notifying.
+  Vibe notifications. This includes issue comments, inline review comments, and
+  non-empty submitted review bodies (for example APPROVED or CHANGES_REQUESTED
+  reviews). The first poll seeds existing comments without notifying.
 - `vibe_kanban`: creates Vibe Kanban issues through HTTP.
 
 The `vibe_kanban` connector posts to `{baseUrl}/v1/issues` on the **remote** API.

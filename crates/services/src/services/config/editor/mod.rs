@@ -344,9 +344,12 @@ mod tests {
     #[test]
     fn tunnel_replaces_ssh_url_for_vscode() {
         let config = tunnel_config(false);
-        let path = Path::new("/Users/test-user/proj");
+        let path = Path::new("/Users/test-user/project");
         let url = config.remote_url(path, true).unwrap();
-        assert_eq!(url, "https://vscode.dev/tunnel/my-mac/Users/test-user/proj");
+        assert_eq!(
+            url,
+            "https://vscode.dev/tunnel/my-mac/Users/test-user/project"
+        );
         assert!(!url.contains("ssh-remote"));
     }
 
@@ -355,7 +358,7 @@ mod tests {
         // only_in_remote_web + local web => None (opens locally); the tunnel
         // branch must not leak into the local path.
         let config = tunnel_config(true);
-        let path = Path::new("/Users/test-user/proj");
+        let path = Path::new("/Users/test-user/project");
         assert!(config.remote_url(path, false).is_none());
     }
 
@@ -365,7 +368,7 @@ mod tests {
             editor_type: EditorType::Zed,
             ..tunnel_config(false)
         };
-        let path = Path::new("/Users/test-user/proj");
+        let path = Path::new("/Users/test-user/project");
         // Zed has no vscode.dev tunnel, so it falls back to its SSH URL.
         let url = config.remote_url(path, true).unwrap();
         assert!(url.starts_with("zed://ssh/"));
@@ -377,7 +380,7 @@ mod tests {
             remote_tunnel_enabled: false,
             ..tunnel_config(false)
         };
-        let path = Path::new("/Users/test-user/proj");
+        let path = Path::new("/Users/test-user/project");
         let url = config.remote_url(path, true).unwrap();
         assert!(url.contains("ssh-remote"));
     }
@@ -388,7 +391,7 @@ mod tests {
             remote_tunnel_name: Some("  ".to_string()),
             ..tunnel_config(false)
         };
-        let path = Path::new("/Users/test-user/proj");
+        let path = Path::new("/Users/test-user/project");
         let url = config.remote_url(path, true).unwrap();
         assert!(url.contains("ssh-remote"));
     }

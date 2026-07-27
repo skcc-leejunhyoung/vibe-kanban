@@ -2,6 +2,12 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import {
+  isNotifiableReview,
+  mapWithConcurrency,
+  recentlyUpdatedPrs,
+  reviewActivity,
+} from './github-pr-activity.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -837,6 +843,37 @@ async function githubPrComments(connector, since) {
   return [...issueComments, ...reviewComments];
 }
 
+async function githubPrReviews(connector, prs, login, since) {
+  const config = connector.config || {};
+  const apiBase = String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '');
+  const base = `${apiBase}/repos/${config.owner}/${config.repo}`;
+  const reviewGroups = await mapWithConcurrency(prs, 4, async (pr) => {
+    const reviews = [];
+    for (let page = 1; page <= 20; page += 1) {
+      const params = new URLSearchParams({
+        per_page: '100',
+        page: String(page),
+      });
+      const response = await fetch(`${base}/pulls/${pr.number}/reviews?${params}`, {
+        headers: githubHeaders(config.token),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(`GitHub PR reviews error: ${response.status} ${text.slice(0, 200)}`);
+      }
+      const pageReviews = JSON.parse(text);
+      for (const review of pageReviews) {
+        if (isNotifiableReview(review, login, since)) {
+          reviews.push({ pr, activity: reviewActivity(review) });
+        }
+      }
+      if (!Array.isArray(pageReviews) || pageReviews.length < 100) break;
+    }
+    return reviews;
+  });
+  return reviewGroups.flat();
+}
+
 function githubCommentPrNumber(comment) {
   const url = String(comment.pull_request_url || comment.issue_url || '');
   const number = Number(url.split('/').pop());
@@ -865,7 +902,10 @@ async function pollGithubPrComments(connector, login) {
   const since = Number.isFinite(cursorMs)
     ? new Date(cursorMs - 5 * 60 * 1000).toISOString()
     : cursor;
-  const comments = await githubPrComments(connector, since);
+  const [comments, reviews] = await Promise.all([
+    githubPrComments(connector, since),
+    githubPrReviews(connector, recentlyUpdatedPrs(prs, since), login, since),
+  ]);
   const pending = [];
 
   for (const comment of comments) {
@@ -876,6 +916,12 @@ async function pollGithubPrComments(connector, login) {
     seen.add(key);
     if (comment.user && comment.user.login === login) continue;
     pending.push({ pr, comment });
+  }
+  for (const { pr, activity } of reviews) {
+    const key = `${activity.url || ''}:${activity.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pending.push({ pr, comment: activity });
   }
 
   pending.sort((a, b) =>
@@ -894,6 +940,7 @@ async function pollGithubPrComments(connector, login) {
       user: comment.user ? comment.user.login : null,
       body: comment.body || '',
       createdAt: comment.created_at,
+      reviewState: comment.review_state || null,
       raw: comment,
     });
   }
