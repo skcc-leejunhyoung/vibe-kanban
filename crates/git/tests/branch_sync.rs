@@ -240,6 +240,90 @@ fn merge_base_brings_base_commits_into_work_branch() {
 }
 
 #[test]
+fn merge_base_updates_unchecked_target_branch_in_temporary_worktree() {
+    let temp = TempDir::new().unwrap();
+    let repo_path = temp.path().join("repo");
+    let s = GitService::new();
+
+    s.initialize_repo_with_main_branch(&repo_path).unwrap();
+    let repo = Repository::open(&repo_path).unwrap();
+    configure_user(&repo);
+    checkout_branch(&repo, "main");
+    write_file(&repo_path, "common.txt", "base\n");
+    commit_all(&repo, "init main");
+
+    create_branch_from_head(&repo, "feature");
+    checkout_branch(&repo, "feature");
+    write_file(&repo_path, "feature.txt", "feature\n");
+    commit_all(&repo, "feature commit");
+
+    checkout_branch(&repo, "main");
+    write_file(&repo_path, "base2.txt", "from base\n");
+    commit_all(&repo, "advance base");
+
+    assert!(!s.is_branch_checked_out(&repo_path, "feature").unwrap());
+
+    let merged = s
+        .merge_base_into_branch_checkout(&repo_path, "feature", "main")
+        .unwrap();
+    assert!(merged, "expected a merge to be performed");
+    assert!(
+        !s.is_branch_checked_out(&repo_path, "feature").unwrap(),
+        "temporary worktree should be removed"
+    );
+
+    let updated_repo = Repository::open(&repo_path).unwrap();
+    let feature = updated_repo
+        .find_branch("feature", git2::BranchType::Local)
+        .unwrap()
+        .into_reference()
+        .peel_to_commit()
+        .unwrap();
+    assert_eq!(feature.parent_count(), 2);
+}
+
+#[test]
+fn merge_base_aborts_and_removes_temporary_worktree_after_conflict() {
+    let temp = TempDir::new().unwrap();
+    let repo_path = temp.path().join("repo");
+    let s = GitService::new();
+
+    s.initialize_repo_with_main_branch(&repo_path).unwrap();
+    let repo = Repository::open(&repo_path).unwrap();
+    configure_user(&repo);
+    checkout_branch(&repo, "main");
+    write_file(&repo_path, "shared.txt", "base\n");
+    commit_all(&repo, "init main");
+
+    create_branch_from_head(&repo, "feature");
+    checkout_branch(&repo, "feature");
+    write_file(&repo_path, "shared.txt", "feature change\n");
+    let feature_tip = commit_all(&repo, "feature change");
+
+    checkout_branch(&repo, "main");
+    write_file(&repo_path, "shared.txt", "base change\n");
+    commit_all(&repo, "base change");
+
+    let err = s
+        .merge_base_into_branch_checkout(&repo_path, "feature", "main")
+        .unwrap_err();
+    assert!(matches!(err, GitServiceError::InvalidRepository(_)));
+    assert!(
+        !s.is_branch_checked_out(&repo_path, "feature").unwrap(),
+        "temporary conflict worktree should be removed"
+    );
+
+    let feature_head = Repository::open(&repo_path)
+        .unwrap()
+        .find_branch("feature", git2::BranchType::Local)
+        .unwrap()
+        .into_reference()
+        .target()
+        .unwrap();
+    assert_eq!(feature_head, feature_tip);
+}
+
+#[test]
 fn merge_base_is_noop_when_already_up_to_date() {
     let temp = TempDir::new().unwrap();
     let repo_path = temp.path().join("repo");

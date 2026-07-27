@@ -1599,42 +1599,67 @@ impl GitService {
         }
     }
 
-    /// Merge `base_branch` into a checked-out `target_branch`. This is the
-    /// target-branch counterpart to [`Self::merge_base_into_workspace`], used
-    /// for the familiar "update feature branch from main" workflow.
+    /// Merge `base_branch` into `target_branch`. This is the target-branch
+    /// counterpart to [`Self::merge_base_into_workspace`], used for the
+    /// familiar "update feature branch from main" workflow.
     ///
-    /// Conflicts cannot be resolved from the workspace worktree, so they are
-    /// aborted in the target checkout and returned as an actionable error.
+    /// If the target is not already checked out, this creates a temporary
+    /// worktree for the merge and removes it afterwards. Conflicts cannot be
+    /// resolved from the workspace worktree, so they are aborted and returned
+    /// as an actionable error.
     pub fn merge_base_into_branch_checkout(
         &self,
         repo_path: &Path,
         target_branch: &str,
         base_branch: &str,
     ) -> Result<bool, GitServiceError> {
-        let checkout = self
-            .find_checkout_path_for_branch(repo_path, target_branch)?
-            .ok_or_else(|| {
-                GitServiceError::BranchNotFound(format!(
-                    "'{target_branch}' is not checked out in any worktree; check it out before updating it."
-                ))
-            })?;
+        let (checkout, temporary_dir) =
+            match self.find_checkout_path_for_branch(repo_path, target_branch)? {
+                Some(checkout) => (checkout, None),
+                None => {
+                    let dir = tempfile::Builder::new()
+                        .prefix("vibe-kanban-target-update-")
+                        .tempdir()
+                        .map_err(|e| {
+                            GitServiceError::InvalidRepository(format!(
+                                "Failed to create temporary target worktree directory: {e}"
+                            ))
+                        })?;
+                    let checkout = dir.path().join("worktree");
+                    self.add_worktree(repo_path, &checkout, target_branch, false)?;
+                    (checkout, Some(dir))
+                }
+            };
 
-        match self.merge_base_into_workspace(repo_path, &checkout, target_branch, base_branch) {
+        let result = match self.merge_base_into_workspace(
+            repo_path,
+            &checkout,
+            target_branch,
+            base_branch,
+        ) {
             Err(GitServiceError::MergeConflicts { message, .. }) => {
-                GitCli::new()
-                    .abort_merge(&checkout)
-                    .map_err(|abort_error| {
-                        GitServiceError::InvalidRepository(format!(
-                            "Target branch merge conflicted and aborting it failed: {abort_error}"
-                        ))
-                    })?;
-
-                Err(GitServiceError::InvalidRepository(format!(
-                    "{message} The target-branch merge was aborted because conflicts in its checkout cannot be resolved from this workspace. Resolve the target branch manually, then try again."
-                )))
+                match GitCli::new().abort_merge(&checkout) {
+                    Ok(()) => Err(GitServiceError::InvalidRepository(format!(
+                        "{message} The target-branch merge was aborted because conflicts in its checkout cannot be resolved from this workspace. Resolve the target branch manually, then try again."
+                    ))),
+                    Err(abort_error) => Err(GitServiceError::InvalidRepository(format!(
+                        "Target branch merge conflicted and aborting it failed: {abort_error}"
+                    ))),
+                }
             }
             result => result,
+        };
+
+        if temporary_dir.is_some() {
+            self.remove_worktree(repo_path, &checkout, true)
+                .map_err(|cleanup_error| {
+                    GitServiceError::InvalidRepository(format!(
+                        "Target branch update completed with a temporary worktree cleanup failure: {cleanup_error}"
+                    ))
+                })?;
         }
+
+        result
     }
 
     /// Merge the base branch into the work branch (the equivalent of, from the
