@@ -38,6 +38,15 @@ function configureLink(link: HTMLAnchorElement): void {
   const href = link.getAttribute('href');
   const safeHref = sanitizeHref(href ?? undefined);
 
+  // Lexical updates the existing anchor when a LinkNode URL changes. Remove
+  // any state that this plugin applied for the previous URL before handling
+  // the new one (for example, a relative link becoming an HTTPS link).
+  link.onclick = null;
+  link.style.cursor = '';
+  link.style.pointerEvents = '';
+  link.removeAttribute('role');
+  link.removeAttribute('aria-disabled');
+
   if (!safeHref) {
     // Dangerous protocol - remove href entirely
     link.removeAttribute('href');
