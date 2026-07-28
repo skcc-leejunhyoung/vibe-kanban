@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { Button } from '@vibe/ui/components/Button';
+import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { Label } from '@vibe/ui/components/Label';
 import { Switch } from '@vibe/ui/components/Switch';
 import { AgentSelector } from '@/shared/components/tasks/AgentSelector';
@@ -228,6 +229,20 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
     }, [modal]);
 
     const handleAbort = useCallback(async () => {
+      const confirmation = await ConfirmDialog.show({
+        title: t(
+          'resolveConflicts.dialog.abortConfirm.title',
+          'Abort conflict resolution?'
+        ),
+        message: t(
+          'resolveConflicts.dialog.abortConfirm.message',
+          'This will discard any conflict resolutions you have made and restore the branch to its state before the merge or rebase.'
+        ),
+        confirmText: t('resolveConflicts.dialog.abort', 'Abort and Restore'),
+        variant: 'destructive',
+      });
+      if (confirmation !== 'confirmed') return;
+
       setIsAborting(true);
       setError(null);
 
