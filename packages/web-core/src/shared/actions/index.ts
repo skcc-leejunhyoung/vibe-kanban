@@ -7,6 +7,7 @@ import type {
   Session,
   Workspace,
 } from 'shared/types';
+import type { PullRequest } from 'shared/remote-types';
 import type { QueryClient } from '@tanstack/react-query';
 import {
   CopyIcon,
@@ -96,6 +97,10 @@ import { getIdeName } from '@/shared/lib/ideName';
 import { EditorSelectionDialog } from '@/shared/dialogs/command-bar/EditorSelectionDialog';
 import { StartReviewDialog } from '@/shared/dialogs/command-bar/StartReviewDialog';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
+import {
+  SelectionDialog,
+  type SelectionPage,
+} from '@/shared/dialogs/command-bar/SelectionDialog';
 import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
@@ -156,6 +161,80 @@ async function resolveLinkedIssue(
     return { issueId: remoteWs.issue_id, remoteProjectId: remoteWs.project_id };
   }
   return undefined;
+}
+
+async function selectIssuePullRequest(
+  ctx: ActionExecutorContext,
+  issueIds: string[]
+): Promise<PullRequest | undefined> {
+  if (issueIds.length !== 1) {
+    await ConfirmDialog.show({
+      title: 'Select One Issue',
+      message: 'Select a single issue to open one of its linked pull requests.',
+      confirmText: 'OK',
+      showCancelButton: false,
+      variant: 'info',
+    });
+    return undefined;
+  }
+
+  const pullRequests =
+    ctx.projectMutations?.getPullRequestsForIssue(issueIds[0]) ?? [];
+  if (pullRequests.length === 0) {
+    await ConfirmDialog.show({
+      title: 'No Linked Pull Request',
+      message: 'The selected issue does not have a linked pull request.',
+      confirmText: 'OK',
+      showCancelButton: false,
+      variant: 'info',
+    });
+    return undefined;
+  }
+
+  if (pullRequests.length === 1) return pullRequests[0];
+
+  const pages: Record<string, SelectionPage<{ pullRequestId: string }>> = {
+    selectPullRequest: {
+      id: 'selectPullRequest',
+      title: 'Select Pull Request',
+      buildGroups: () => [
+        {
+          label: 'Linked pull requests',
+          items: pullRequests.map((pullRequest) => ({
+            type: 'action' as const,
+            action: {
+              id: `select-pull-request-${pullRequest.id}`,
+              label: `Pull Request #${pullRequest.number}`,
+              description: pullRequest.status,
+              icon: GitPullRequestIcon,
+              requiresTarget: ActionTargetType.NONE,
+              execute: () => {},
+            } satisfies GlobalActionDefinition,
+          })),
+        },
+      ],
+      onSelect: (item) => {
+        if (item.type !== 'action') {
+          return { type: 'complete', data: undefined as never };
+        }
+        const pullRequestId = item.action.id.replace(
+          'select-pull-request-',
+          ''
+        );
+        return { type: 'complete', data: { pullRequestId } };
+      },
+    },
+  };
+  const result = await SelectionDialog.show({
+    initialPageId: 'selectPullRequest',
+    pages,
+  });
+  if (!result || typeof result !== 'object' || !('pullRequestId' in result)) {
+    return undefined;
+  }
+  return pullRequests.find(
+    (pullRequest) => pullRequest.id === result.pullRequestId
+  );
 }
 
 async function getWorkspace(
@@ -1568,7 +1647,7 @@ export const Actions = {
 
   GitOpenPR: {
     id: 'git-open-pr',
-    label: 'Open PR',
+    label: 'Open PR in Web',
     icon: GitPullRequestIcon,
     keywords: ['pull request', 'browser'],
     requiresTarget: ActionTargetType.GIT,
@@ -1632,6 +1711,44 @@ export const Actions = {
       });
     },
   },
+
+  IssueOpenPRInWeb: {
+    id: 'issue-open-pr-in-web',
+    label: 'Open PR in Web',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'browser', 'web', 'pr'],
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (ctx, _projectId, issueIds) => {
+      const pullRequest = await selectIssuePullRequest(ctx, issueIds);
+      if (!pullRequest) return;
+
+      const reservedWindow = reserveExternalWindow();
+      if (!openExternalUrl(pullRequest.url, reservedWindow)) {
+        reservedWindow?.close();
+      }
+    },
+  } satisfies IssueActionDefinition,
+
+  IssueViewPRDetails: {
+    id: 'issue-view-pr-details',
+    label: 'View Pull Request Details',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'details', 'comments', 'reviews', 'pr'],
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (ctx, _projectId, issueIds) => {
+      const pullRequest = await selectIssuePullRequest(ctx, issueIds);
+      if (!pullRequest) return;
+
+      await PrDetailsDialog.show({
+        prUrl: pullRequest.url,
+        prNumber: pullRequest.number,
+      });
+    },
+  } satisfies IssueActionDefinition,
 
   GitLinkPR: {
     id: 'git-link-pr',

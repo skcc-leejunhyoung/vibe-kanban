@@ -200,6 +200,8 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.RemoveParentIssue },
           { type: 'action', action: Actions.LinkWorkspace },
           { type: 'action', action: Actions.ViewIssueWorkspaces },
+          { type: 'action', action: Actions.IssueOpenPRInWeb },
+          { type: 'action', action: Actions.IssueViewPRDetails },
           { type: 'action', action: Actions.MarkBlocking },
           { type: 'action', action: Actions.MarkBlockedBy },
           { type: 'action', action: Actions.MarkRelated },

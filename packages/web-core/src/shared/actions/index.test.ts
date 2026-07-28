@@ -55,6 +55,9 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
 vi.mock('@/shared/lib/openInSplitPane', () => ({
   openInSplitPane: vi.fn(),
 }));
+vi.mock('@/shared/dialogs/tasks/PrDetailsDialog', () => ({
+  PrDetailsDialog: { show: vi.fn() },
+}));
 
 import {
   Actions,
@@ -69,6 +72,8 @@ import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
+import { getPageActions } from '@/shared/command-bar/actions/pages';
 
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
@@ -89,6 +94,7 @@ const reservePrWindow = vi.mocked(reserveExternalWindow);
 const openWorkspaceInSplitPane = vi.mocked(openInSplitPane);
 const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
+const showPrDetails = vi.mocked(PrDetailsDialog.show);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -714,6 +720,78 @@ describe('Actions.GitOpenPR', () => {
 
     expect(reservedWindow.close).toHaveBeenCalledOnce();
     expect(openPrUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe('issue pull request actions', () => {
+  const issueActionContext = {
+    layoutMode: 'kanban',
+    hasSelectedKanbanIssue: true,
+  } as ActionVisibilityContext;
+
+  const linkedPullRequest = {
+    id: 'pr-1',
+    number: 42,
+    url: 'https://example.com/pull/42',
+    status: 'open',
+  };
+
+  it('renames the workspace browser action and exposes its issue counterpart', () => {
+    expect(Actions.GitOpenPR.label).toBe('Open PR in Web');
+    expect(Actions.IssueOpenPRInWeb.isVisible?.(issueActionContext)).toBe(true);
+    expect(getPageActions('issueActions')).toEqual(
+      expect.arrayContaining([
+        Actions.IssueOpenPRInWeb,
+        Actions.IssueViewPRDetails,
+      ])
+    );
+  });
+
+  it('opens a pull request linked to the selected issue in the browser', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    openPrUrl.mockReturnValue(true);
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        projectMutations: {
+          removeIssue: vi.fn(),
+          duplicateIssue: vi.fn(),
+          getIssue: vi.fn(),
+          getAssigneesForIssue: vi.fn(() => []),
+          getPullRequestsForIssue: vi.fn(() => [linkedPullRequest]),
+        },
+      }
+    );
+
+    await Actions.IssueOpenPRInWeb.execute(ctx, 'project-1', ['issue-1']);
+
+    expect(openPrUrl).toHaveBeenCalledWith(
+      linkedPullRequest.url,
+      reservedWindow
+    );
+  });
+
+  it('opens the detail dialog for a pull request linked to the selected issue', async () => {
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        projectMutations: {
+          removeIssue: vi.fn(),
+          duplicateIssue: vi.fn(),
+          getIssue: vi.fn(),
+          getAssigneesForIssue: vi.fn(() => []),
+          getPullRequestsForIssue: vi.fn(() => [linkedPullRequest]),
+        },
+      }
+    );
+
+    await Actions.IssueViewPRDetails.execute(ctx, 'project-1', ['issue-1']);
+
+    expect(showPrDetails).toHaveBeenCalledWith({
+      prUrl: linkedPullRequest.url,
+      prNumber: linkedPullRequest.number,
+    });
   });
 });
 

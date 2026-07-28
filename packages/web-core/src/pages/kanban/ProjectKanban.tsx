@@ -31,8 +31,14 @@ import {
  */
 function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
   const { registerProjectMutations } = useActions();
-  const { removeIssue, insertIssue, getIssue, getAssigneesForIssue, issues } =
-    useProjectContext();
+  const {
+    removeIssue,
+    insertIssue,
+    getIssue,
+    getAssigneesForIssue,
+    getPullRequestsForIssue,
+    issues,
+  } = useProjectContext();
 
   // Use ref to always access latest issues (avoid stale closure)
   const issuesRef = useRef(issues);
@@ -76,6 +82,7 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
       },
       getIssue,
       getAssigneesForIssue,
+      getPullRequestsForIssue,
     });
 
     return () => {
@@ -87,6 +94,7 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
     insertIssue,
     getIssue,
     getAssigneesForIssue,
+    getPullRequestsForIssue,
   ]);
 
   return <>{children}</>;

@@ -28,8 +28,10 @@ import { SimpleMarkdown } from '@/shared/components/SimpleMarkdown';
 import type { UnifiedPrComment } from 'shared/types';
 
 export interface PrDetailsDialogProps {
-  workspaceId: string;
-  repoId: string;
+  /** Optional when opened from an issue without a local workspace. */
+  workspaceId?: string;
+  /** Optional when opened from an issue without a local repository. */
+  repoId?: string;
   prUrl: string;
   prNumber: number;
 }
@@ -76,8 +78,8 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       enabled: modal.visible,
       staleTime: 30_000,
     });
-    const commentsQuery = usePrComments(workspaceId, repoId, {
-      enabled: modal.visible,
+    const commentsQuery = usePrComments(workspaceId ?? '', repoId ?? '', {
+      enabled: modal.visible && !!workspaceId && !!repoId,
     });
     const comments = useMemo(
       () => commentsQuery.data?.comments ?? [],
@@ -105,6 +107,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
         selectedIds.has(commentId(comment))
       );
       if (selected.length === 0) return;
+      if (!workspaceId) return;
       addChatContext(workspaceId, commentsToMarkdown(selected));
       close();
     };
@@ -236,86 +239,93 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
               </>
             ) : null}
 
-            <section>
-              <div className="mb-base flex items-center justify-between">
-                <h3 className="text-sm font-semibold">
-                  Comments ({comments.length})
-                </h3>
-                {comments.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setSelectedIds(
-                        selectedIds.size === comments.length
-                          ? new Set()
-                          : new Set(comments.map(commentId))
-                      )
-                    }
-                  >
-                    {selectedIds.size === comments.length
-                      ? 'Deselect all'
-                      : 'Select all'}
-                  </Button>
-                )}
-              </div>
-              {commentsQuery.isError ? (
-                <p className="text-sm text-error">Failed to load comments.</p>
-              ) : comments.length === 0 && !commentsQuery.isLoading ? (
-                <p className="text-sm text-low">No comments.</p>
-              ) : (
-                <div className="space-y-base">
-                  {comments.map((comment) => {
-                    const id = commentId(comment);
-                    return (
-                      <div key={id} className="flex items-start gap-base">
-                        <Checkbox
-                          checked={selectedIds.has(id)}
-                          onCheckedChange={() => toggleComment(id)}
-                          className="mt-base"
-                        />
-                        <PrCommentCard
-                          author={comment.author}
-                          body={comment.body}
-                          createdAt={comment.created_at}
-                          url={comment.url}
-                          commentType={comment.comment_type}
-                          path={
-                            comment.comment_type === 'review'
-                              ? comment.path
-                              : undefined
-                          }
-                          line={
-                            comment.comment_type === 'review' &&
-                            comment.line != null
-                              ? Number(comment.line)
-                              : undefined
-                          }
-                          diffHunk={
-                            comment.comment_type === 'review'
-                              ? comment.diff_hunk
-                              : undefined
-                          }
-                          variant="list"
-                          onClick={() => toggleComment(id)}
-                          className="flex-1 min-w-0"
-                        />
-                      </div>
-                    );
-                  })}
+            {workspaceId && repoId && (
+              <section>
+                <div className="mb-base flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">
+                    Comments ({comments.length})
+                  </h3>
+                  {comments.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setSelectedIds(
+                          selectedIds.size === comments.length
+                            ? new Set()
+                            : new Set(comments.map(commentId))
+                        )
+                      }
+                    >
+                      {selectedIds.size === comments.length
+                        ? 'Deselect all'
+                        : 'Select all'}
+                    </Button>
+                  )}
                 </div>
-              )}
-            </section>
+                {commentsQuery.isError ? (
+                  <p className="text-sm text-error">Failed to load comments.</p>
+                ) : comments.length === 0 && !commentsQuery.isLoading ? (
+                  <p className="text-sm text-low">No comments.</p>
+                ) : (
+                  <div className="space-y-base">
+                    {comments.map((comment) => {
+                      const id = commentId(comment);
+                      return (
+                        <div key={id} className="flex items-start gap-base">
+                          <Checkbox
+                            checked={selectedIds.has(id)}
+                            onCheckedChange={() => toggleComment(id)}
+                            className="mt-base"
+                          />
+                          <PrCommentCard
+                            author={comment.author}
+                            body={comment.body}
+                            createdAt={comment.created_at}
+                            url={comment.url}
+                            commentType={comment.comment_type}
+                            path={
+                              comment.comment_type === 'review'
+                                ? comment.path
+                                : undefined
+                            }
+                            line={
+                              comment.comment_type === 'review' &&
+                              comment.line != null
+                                ? Number(comment.line)
+                                : undefined
+                            }
+                            diffHunk={
+                              comment.comment_type === 'review'
+                                ? comment.diff_hunk
+                                : undefined
+                            }
+                            variant="list"
+                            onClick={() => toggleComment(id)}
+                            className="flex-1 min-w-0"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            )}
           </div>
 
           <div className="flex justify-end gap-base border-t px-base py-base">
             <Button variant="outline" onClick={close}>
               Close
             </Button>
-            <Button disabled={selectedIds.size === 0} onClick={handleAddToChat}>
-              Add to chat
-              {selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}
-            </Button>
+            {workspaceId && repoId && (
+              <Button
+                disabled={selectedIds.size === 0}
+                onClick={handleAddToChat}
+              >
+                Add to chat
+                {selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
