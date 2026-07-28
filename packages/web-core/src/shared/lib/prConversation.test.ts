@@ -87,4 +87,24 @@ describe('buildPrConversation', () => {
       thread?.kind === 'comment' && thread.thread.replies[0]?.comment.id
     ).toBe('reply');
   });
+
+  it('omits provider review snapshots that have no activity timestamp', () => {
+    const conversation = buildPrConversation(
+      {
+        ...detail,
+        reviews: [
+          {
+            id: '',
+            author: 'azure-reviewer',
+            state: 'APPROVED',
+            body: '',
+            submitted_at: null,
+          },
+        ],
+      },
+      []
+    );
+
+    expect(conversation.some((item) => item.kind === 'review')).toBe(false);
+  });
 });

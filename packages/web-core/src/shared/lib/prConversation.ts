@@ -91,11 +91,16 @@ export function buildPrConversation(
   });
 
   detail.reviews.forEach((review, index) => {
+    // Some providers expose only the reviewer's current vote, without the
+    // time that vote was submitted. Do not invent a position in the timeline
+    // for those snapshots.
+    if (!review.submitted_at) return;
+
     items.push({
       kind: 'review',
       key: `review-${review.id || `${review.author}-${index}`}`,
       review,
-      createdAt: review.submitted_at ?? detail.updated_at ?? fallbackDate,
+      createdAt: review.submitted_at,
     });
   });
 
