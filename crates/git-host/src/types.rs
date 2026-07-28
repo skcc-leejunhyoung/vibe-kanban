@@ -117,7 +117,7 @@ pub enum UnifiedPrComment {
         url: Option<String>,
     },
     Review {
-        id: i64,
+        id: String,
         author: String,
         author_association: Option<String>,
         body: String,

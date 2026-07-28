@@ -35,9 +35,7 @@ export interface PrDetailsDialogProps {
 }
 
 function commentId(comment: UnifiedPrComment): string {
-  return comment.comment_type === 'general'
-    ? comment.id
-    : comment.id.toString();
+  return comment.id;
 }
 
 function commentsToMarkdown(comments: UnifiedPrComment[]): string {

@@ -333,7 +333,7 @@ impl GitHostProvider for GitHubProvider {
 
         for c in review_comments {
             unified.push(UnifiedPrComment::Review {
-                id: c.id,
+                id: c.id.to_string(),
                 author: c.user.login,
                 author_association: Some(c.author_association),
                 body: c.body,

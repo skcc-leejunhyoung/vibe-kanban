@@ -43,6 +43,8 @@ struct AzPrResponse {
     reviewers: Vec<AzReviewer>,
     creation_date: Option<String>,
     #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
     target_ref_name: Option<String>,
     #[serde(default)]
     source_ref_name: Option<String>,
@@ -75,6 +77,7 @@ struct AzThreadsResponse {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AzThread {
+    id: Option<i64>,
     comments: Option<Vec<AzThreadComment>>,
     thread_context: Option<AzThreadContext>,
 }
@@ -518,7 +521,7 @@ impl AzCli {
                 })
                 .collect(),
             review_decision: None,
-            is_draft: false,
+            is_draft: pr.is_draft,
             created_at: pr
                 .creation_date
                 .and_then(|date| DateTime::parse_from_rfc3339(&date).ok())
@@ -545,6 +548,7 @@ impl AzCli {
         let mut comments = Vec::new();
 
         for thread in threads {
+            let thread_id = thread.id.unwrap_or_default();
             let file_path = thread
                 .thread_context
                 .as_ref()
@@ -562,7 +566,7 @@ impl AzCli {
                         continue;
                     }
 
-                    let id = c.id.unwrap_or(0);
+                    let id = format!("{thread_id}:{}", c.id.unwrap_or_default());
                     let author = c
                         .author
                         .and_then(|a| a.display_name)
@@ -589,7 +593,7 @@ impl AzCli {
                         });
                     } else {
                         comments.push(UnifiedPrComment::General {
-                            id: id.to_string(),
+                            id,
                             author,
                             author_association: None,
                             body,
@@ -668,6 +672,53 @@ mod tests {
             AzCli::map_azure_status("unknown"),
             MergeStatus::Unknown
         ));
+    }
+
+    #[test]
+    fn test_parse_pr_response_preserves_draft_status() {
+        let detail = AzCli::parse_pr_response(
+            r#"{
+                "pullRequestId": 123,
+                "status": "active",
+                "isDraft": true,
+                "repository": {
+                    "webUrl": "https://dev.azure.com/org/project/_git/repo"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(detail.is_draft);
+    }
+
+    #[test]
+    fn test_parse_pr_threads_uses_thread_scoped_comment_ids() {
+        let comments = AzCli::parse_pr_threads(
+            r#"{
+                "value": [
+                    {
+                        "id": 10,
+                        "comments": [{"id": 1, "content": "first"}]
+                    },
+                    {
+                        "id": 20,
+                        "comments": [{"id": 1, "content": "second"}]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let ids = comments
+            .iter()
+            .map(|comment| match comment {
+                UnifiedPrComment::General { id, .. } | UnifiedPrComment::Review { id, .. } => {
+                    id.as_str()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["10:1", "20:1"]);
     }
 
     #[test]
