@@ -17,7 +17,7 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
-import { sessionsApi } from '@/shared/lib/api';
+import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
@@ -32,6 +32,7 @@ import type {
 
 export interface ResolveConflictsDialogProps {
   workspaceId: string;
+  repoId: string;
   conflictOp: ConflictOp;
   sourceBranch: string | null;
   targetBranch: string;
@@ -46,6 +47,7 @@ export type ResolveConflictsDialogResult =
 const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
   ({
     workspaceId,
+    repoId,
     conflictOp,
     sourceBranch,
     targetBranch,
@@ -120,6 +122,7 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
     const [userSelectedProfile, setUserSelectedProfile] =
       useState<ExecutorProfileId | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [isAborting, setIsAborting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const effectiveProfile = userSelectedProfile ?? resolvedDefaultProfile;
@@ -224,6 +227,30 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
       modal.hide();
     }, [modal]);
 
+    const handleAbort = useCallback(async () => {
+      setIsAborting(true);
+      setError(null);
+
+      try {
+        await workspacesApi.abortConflicts(workspaceId, { repo_id: repoId });
+        await queryClient.invalidateQueries({
+          queryKey: ['branchStatus', workspaceId],
+        });
+        modal.resolve({ action: 'cancelled' } as ResolveConflictsDialogResult);
+        modal.hide();
+      } catch (err) {
+        console.error('Failed to abort git operation:', err);
+        setError(
+          t(
+            'resolveConflicts.dialog.abortError',
+            'Failed to abort the merge or rebase. Please try again.'
+          )
+        );
+      } finally {
+        setIsAborting(false);
+      }
+    }, [workspaceId, repoId, queryClient, modal, t]);
+
     const handleOpenChange = (open: boolean) => {
       if (!open) handleCancel();
     };
@@ -305,9 +332,19 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
               variant="outline"
               type="button"
               onClick={handleCancel}
-              disabled={isSubmitting}
+              disabled={isSubmitting || isAborting}
             >
               {t('common:buttons.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              type="button"
+              onClick={handleAbort}
+              disabled={isSubmitting || isAborting}
+            >
+              {isAborting
+                ? t('resolveConflicts.dialog.aborting', 'Aborting...')
+                : t('resolveConflicts.dialog.abort', 'Abort and Restore')}
             </Button>
             <div className="flex items-center gap-3">
               {hasExistingSession && (
@@ -332,7 +369,7 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
               <Button
                 type="submit"
                 onClick={handleSubmit}
-                disabled={!canSubmit}
+                disabled={!canSubmit || isAborting}
               >
                 {isSubmitting
                   ? t('resolveConflicts.dialog.resolving', 'Starting...')

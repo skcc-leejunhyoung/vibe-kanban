@@ -578,6 +578,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!workspaceId || !repoWithConflicts) return;
     ResolveConflictsDialog.show({
       workspaceId,
+      repoId: repoWithConflicts.repo_id,
       conflictOp: repoWithConflicts.conflict_op ?? 'rebase',
       sourceBranch: attemptBranch,
       targetBranch: repoWithConflicts.target_branch_name,

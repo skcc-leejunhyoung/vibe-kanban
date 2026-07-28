@@ -135,6 +135,7 @@ function RebaseDialogContent({
         // Rebase in progress WITH conflicts -> show resolve conflicts dialog
         ResolveConflictsDialog.show({
           workspaceId: workspaceId,
+          repoId,
           conflictOp: repoStatus.conflict_op ?? 'rebase',
           sourceBranch: workspace?.branch ?? null,
           targetBranch: repoStatus.target_branch_name,
@@ -203,6 +204,7 @@ function RebaseDialogContent({
         if (activeWorkspaceId === workspaceId) {
           await ResolveConflictsDialog.show({
             workspaceId: workspaceId,
+            repoId,
             conflictOp: errorData.op,
             sourceBranch: workspace?.branch ?? null,
             targetBranch: errorData.target_branch,

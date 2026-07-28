@@ -1721,6 +1721,7 @@ export const Actions = {
         // Show resolve conflicts dialog
         const result = await ResolveConflictsDialog.show({
           workspaceId,
+          repoId,
           conflictOp: repoStatus.conflict_op ?? 'merge',
           sourceBranch: workspace.branch,
           targetBranch: repoStatus.target_branch_name,
@@ -1860,6 +1861,7 @@ export const Actions = {
         const workspace = await getWorkspace(ctx.queryClient, workspaceId);
         await ResolveConflictsDialog.show({
           workspaceId,
+          repoId,
           conflictOp: repoStatus.conflict_op ?? 'merge',
           sourceBranch: repoStatus.target_branch_name,
           targetBranch: workspace.branch,
@@ -1909,6 +1911,7 @@ export const Actions = {
           const workspace = await getWorkspace(ctx.queryClient, workspaceId);
           await ResolveConflictsDialog.show({
             workspaceId,
+            repoId,
             conflictOp: 'merge',
             sourceBranch: err.target_branch,
             targetBranch: workspace.branch,
