@@ -380,7 +380,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               executor={executor}
               hostId={selectedHostId}
               autoFocus
-              sendShortcut={config?.send_message_shortcut}
+              // Quick chat always keeps Return available for line breaks. Unlike
+              // regular workspace chat, it only starts an agent on Cmd/Ctrl+Return.
+              sendShortcut="ModifierEnter"
             />
           )}
           agentIcon={
