@@ -15,6 +15,34 @@ export function getDeeplinkPath(n: Notification): string | null {
   return getPayload(n).deeplink_path ?? null;
 }
 
+export interface PullRequestDetailsNavigationTarget {
+  prUrl: string;
+  prNumber: number;
+}
+
+/**
+ * PR comment notifications carry both the issue deeplink and the exact PR that
+ * received the comment. Keep the PR target separate from the route so callers
+ * can navigate to the mapped issue before opening its details dialog.
+ */
+export function getPullRequestDetailsNavigationTarget(
+  notification: Notification
+): PullRequestDetailsNavigationTarget | null {
+  if (notification.notification_type !== 'pull_request_comment_added') {
+    return null;
+  }
+
+  const payload = getPayload(notification);
+  if (!payload.pull_request_url || payload.pull_request_number == null) {
+    return null;
+  }
+
+  return {
+    prUrl: payload.pull_request_url,
+    prNumber: payload.pull_request_number,
+  };
+}
+
 type IssueChangeField =
   | 'title'
   | 'description'

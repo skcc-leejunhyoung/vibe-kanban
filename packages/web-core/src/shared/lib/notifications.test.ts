@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  getPullRequestDetailsNavigationTarget,
   groupNotifications,
   selectUnseenNotificationIdsForView,
 } from './notifications';
@@ -160,5 +161,39 @@ describe('groupNotifications', () => {
     expect(group.kind).toBe('single');
     expect(group.deeplinkPath).toBeNull();
     expect(group.latest.payload.pull_request_number).toBe(42);
+  });
+});
+
+describe('getPullRequestDetailsNavigationTarget', () => {
+  it('returns the exact PR referenced by a PR comment notification', () => {
+    expect(
+      getPullRequestDetailsNavigationTarget(
+        createNotification({
+          notification_type: 'pull_request_comment_added',
+          payload: {
+            deeplink_path: '/projects/project-1/issues/issue-1',
+            pull_request_number: 42,
+            pull_request_url: 'https://github.com/acme/repo/pull/42',
+          },
+        })
+      )
+    ).toEqual({
+      prNumber: 42,
+      prUrl: 'https://github.com/acme/repo/pull/42',
+    });
+  });
+
+  it('does not open a PR dialog for notifications without a complete PR target', () => {
+    expect(
+      getPullRequestDetailsNavigationTarget(
+        createNotification({
+          notification_type: 'pull_request_comment_added',
+          payload: { pull_request_url: 'https://github.com/acme/repo/pull/42' },
+        })
+      )
+    ).toBeNull();
+    expect(
+      getPullRequestDetailsNavigationTarget(createNotification())
+    ).toBeNull();
   });
 });

@@ -15,7 +15,11 @@ import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
-import { getPayload } from '@/shared/lib/notifications';
+import {
+  getPayload,
+  getPullRequestDetailsNavigationTarget,
+} from '@/shared/lib/notifications';
+import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import {
   getGroupedNotificationSegments,
   type MessageSegment,
@@ -295,8 +299,12 @@ export function NotificationsPage() {
     (group: GroupedNotification) => {
       markGroupSeen(group);
       const path = group.deeplinkPath;
+      const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
       if (path) {
-        router.navigate({ to: path as '/' });
+        const navigation = router.navigate({ to: path as '/' });
+        if (prDetails) {
+          void navigation.then(() => PrDetailsDialog.show(prDetails));
+        }
       } else if (
         group.latest.notification_type === 'pull_request_comment_added'
       ) {
