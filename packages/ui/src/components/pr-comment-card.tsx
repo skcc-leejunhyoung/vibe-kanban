@@ -1,4 +1,5 @@
 import { MessageSquare, Code, ExternalLink } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { withDisplayTimeZone } from '../lib/datetime';
@@ -7,6 +8,7 @@ import { openExternalUrl } from '../lib/open-url';
 export interface PrCommentCardProps {
   author: string;
   body: string;
+  bodyContent?: ReactNode;
   createdAt: string;
   url?: string | null;
   // Optional review-specific fields
@@ -106,6 +108,7 @@ function CompactCard({
 function FullCard({
   author,
   body,
+  bodyContent,
   createdAt,
   url,
   commentType,
@@ -172,9 +175,15 @@ function FullCard({
       {isReview && diffHunk && <DiffHunk diffHunk={diffHunk} />}
 
       {/* Comment body */}
-      <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words mt-2">
-        {body}
-      </p>
+      {bodyContent ? (
+        <div className="mt-2 min-w-0 overflow-hidden text-sm text-muted-foreground">
+          {bodyContent}
+        </div>
+      ) : (
+        <p className="mt-2 whitespace-pre-wrap break-words text-sm text-muted-foreground">
+          {body}
+        </p>
+      )}
     </div>
   );
 }

@@ -708,13 +708,15 @@ working_branch: WorkingBranchInput, };
 
 export type CreateWorkspaceWithoutStartingResponse = { workspace: Workspace, };
 
-export type UnifiedPrComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, } | { "comment_type": "review", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, };
+export type UnifiedPrComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, parent_id: string | null, } | { "comment_type": "review", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, parent_id: string | null, review_id: string | null, };
 
 export type ProviderKind = "git_hub" | "azure_dev_ops" | "unknown";
 
-export type PullRequestDetail = { number: bigint, url: string, status: MergeStatus, merged_at: string | null, merge_commit_sha: string | null, title: string, body: string, author: string | null, assignees: Array<string>, reviewers: Array<string>, reviews: Array<PullRequestReview>, review_decision: string | null, is_draft: boolean, created_at: string | null, updated_at: string | null, base_branch: string, head_branch: string, };
+export type PullRequestDetail = { number: bigint, url: string, status: MergeStatus, merged_at: string | null, merge_commit_sha: string | null, title: string, body: string, author: string | null, assignees: Array<string>, reviewers: Array<string>, reviews: Array<PullRequestReview>, commits: Array<PullRequestCommit>, review_decision: string | null, is_draft: boolean, created_at: string | null, updated_at: string | null, base_branch: string, head_branch: string, };
 
-export type PullRequestReview = { author: string, state: string, submitted_at: string | null, };
+export type PullRequestReview = { id: string, author: string, state: string, body: string, submitted_at: string | null, };
+
+export type PullRequestCommit = { oid: string, message: string, authors: Array<string>, committed_at: string | null, };
 
 export type GitRemote = { name: string, url: string, };
 

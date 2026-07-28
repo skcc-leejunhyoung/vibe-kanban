@@ -102,6 +102,8 @@ pub struct PrReviewComment {
     pub side: Option<String>,
     pub diff_hunk: String,
     pub author_association: String,
+    pub in_reply_to_id: Option<i64>,
+    pub pull_request_review_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -115,6 +117,7 @@ pub enum UnifiedPrComment {
         body: String,
         created_at: DateTime<Utc>,
         url: Option<String>,
+        parent_id: Option<String>,
     },
     Review {
         id: String,
@@ -127,6 +130,8 @@ pub enum UnifiedPrComment {
         line: Option<i64>,
         side: Option<String>,
         diff_hunk: Option<String>,
+        parent_id: Option<String>,
+        review_id: Option<String>,
     },
 }
 
@@ -141,9 +146,19 @@ impl UnifiedPrComment {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PullRequestReview {
+    pub id: String,
     pub author: String,
     pub state: String,
+    pub body: String,
     pub submitted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct PullRequestCommit {
+    pub oid: String,
+    pub message: String,
+    pub authors: Vec<String>,
+    pub committed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -159,6 +174,7 @@ pub struct PullRequestDetail {
     pub assignees: Vec<String>,
     pub reviewers: Vec<String>,
     pub reviews: Vec<PullRequestReview>,
+    pub commits: Vec<PullRequestCommit>,
     pub review_decision: Option<String>,
     pub is_draft: bool,
     pub created_at: Option<DateTime<Utc>>,

@@ -346,6 +346,7 @@ impl GitHostProvider for GitHubProvider {
                 body: c.body,
                 created_at: c.created_at,
                 url: Some(c.url),
+                parent_id: None,
             });
         }
 
@@ -361,6 +362,8 @@ impl GitHostProvider for GitHubProvider {
                 line: c.line,
                 side: c.side,
                 diff_hunk: Some(c.diff_hunk),
+                parent_id: c.in_reply_to_id.map(|id| id.to_string()),
+                review_id: c.pull_request_review_id.map(|id| id.to_string()),
             });
         }
 

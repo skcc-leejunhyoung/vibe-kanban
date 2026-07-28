@@ -11,10 +11,14 @@ import {
   ArrowSquareOutIcon,
   CheckCircleIcon,
   CopyIcon,
+  GitCommitIcon,
+  GitMergeIcon,
   GitPullRequestIcon,
+  ShieldCheckIcon,
   SpinnerGapIcon,
   UserIcon,
   UsersIcon,
+  XCircleIcon,
 } from '@phosphor-icons/react';
 import { defineModal } from '@/shared/lib/modals';
 import { issuePrsApi } from '@/shared/lib/api';
@@ -34,6 +38,10 @@ import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { PrCommentCard } from '@vibe/ui/components/pr-comment-card';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import type { UnifiedPrComment } from 'shared/types';
+import {
+  buildPrConversation,
+  type PrCommentThread,
+} from '@/shared/lib/prConversation';
 
 export interface PrDetailsDialogProps {
   /** Optional when opened from an issue without a local workspace. */
@@ -58,7 +66,9 @@ function commentsToMarkdown(comments: UnifiedPrComment[]): string {
         body: comment.body,
         created_at: comment.created_at,
         url: comment.url,
+        parent_id: comment.parent_id,
         ...(comment.comment_type === 'review' && {
+          review_id: comment.review_id,
           path: comment.path,
           line: comment.line != null ? Number(comment.line) : null,
           diff_hunk: comment.diff_hunk,
@@ -67,6 +77,76 @@ function commentsToMarkdown(comments: UnifiedPrComment[]): string {
       return `\`\`\`gh-comment\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
     })
     .join('\n\n');
+}
+
+function formatActivityDate(value: string): string {
+  return new Date(value).toLocaleString();
+}
+
+function ConversationComment({
+  thread,
+  selectedIds,
+  toggleComment,
+  theme,
+  depth = 0,
+}: {
+  thread: PrCommentThread;
+  selectedIds: Set<string>;
+  toggleComment: (id: string) => void;
+  theme: 'light' | 'dark';
+  depth?: number;
+}) {
+  const { comment, replies } = thread;
+  const id = commentId(comment);
+  const isReview = comment.comment_type === 'review';
+
+  return (
+    <div
+      className={
+        depth > 0 ? 'ml-double border-l-2 border-border pl-base pt-base' : ''
+      }
+    >
+      <div className="flex min-w-0 items-start gap-base">
+        <Checkbox
+          checked={selectedIds.has(id)}
+          onCheckedChange={() => toggleComment(id)}
+          className="mt-base"
+        />
+        <PrCommentCard
+          author={comment.author}
+          body={comment.body}
+          bodyContent={
+            <MarkdownPreview
+              content={comment.body}
+              theme={theme}
+              className="min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words [&_a]:break-all [&_pre]:max-w-full [&_pre]:whitespace-pre-wrap"
+            />
+          }
+          createdAt={comment.created_at}
+          url={comment.url}
+          commentType={comment.comment_type}
+          path={isReview ? comment.path : undefined}
+          line={
+            isReview && comment.line != null ? Number(comment.line) : undefined
+          }
+          diffHunk={isReview ? comment.diff_hunk : undefined}
+          variant="list"
+          onClick={() => toggleComment(id)}
+          className="min-w-0 flex-1"
+        />
+      </div>
+      {replies.map((reply) => (
+        <ConversationComment
+          key={reply.comment.id}
+          thread={reply}
+          selectedIds={selectedIds}
+          toggleComment={toggleComment}
+          theme={theme}
+          depth={depth + 1}
+        />
+      ))}
+    </div>
+  );
 }
 
 const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
@@ -96,6 +176,11 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
     const comments = useMemo(
       () => commentsQuery.data?.comments ?? [],
       [commentsQuery.data?.comments]
+    );
+    const conversation = useMemo(
+      () =>
+        detailQuery.data ? buildPrConversation(detailQuery.data, comments) : [],
+      [comments, detailQuery.data]
     );
     const close = () => {
       modal.resolve();
@@ -251,96 +336,129 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                   )}
                 </section>
 
-                {detail.reviews.length > 0 && (
-                  <section>
-                    <h3 className="mb-base text-sm font-semibold">Reviews</h3>
-                    <div className="flex flex-wrap gap-half">
-                      {detail.reviews.map((review, index) => (
-                        <span
-                          key={`${review.author}-${index}`}
-                          className="rounded bg-secondary px-base py-half text-sm"
-                        >
-                          {review.author}: {review.state.replaceAll('_', ' ')}
-                        </span>
-                      ))}
-                    </div>
-                  </section>
-                )}
-              </>
-            ) : null}
-
-            {workspaceId && repoId && (
-              <section>
-                <div className="mb-base flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">
-                    Comments ({comments.length})
-                  </h3>
-                  {comments.length > 0 && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        setSelectedIds(
-                          selectedIds.size === comments.length
-                            ? new Set()
-                            : new Set(comments.map(commentId))
-                        )
-                      }
-                    >
-                      {selectedIds.size === comments.length
-                        ? 'Deselect all'
-                        : 'Select all'}
-                    </Button>
+                <section className="min-w-0">
+                  <div className="mb-base flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Conversation</h3>
+                    {comments.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setSelectedIds(
+                            selectedIds.size === comments.length
+                              ? new Set()
+                              : new Set(comments.map(commentId))
+                          )
+                        }
+                      >
+                        {selectedIds.size === comments.length
+                          ? 'Deselect comments'
+                          : 'Select all comments'}
+                      </Button>
+                    )}
+                  </div>
+                  {commentsQuery.isError && (
+                    <p className="mb-base text-sm text-error">
+                      Some conversation comments could not be loaded.
+                    </p>
                   )}
-                </div>
-                {commentsQuery.isError ? (
-                  <p className="text-sm text-error">Failed to load comments.</p>
-                ) : comments.length === 0 && !commentsQuery.isLoading ? (
-                  <p className="text-sm text-low">No comments.</p>
-                ) : (
-                  <div className="space-y-base">
-                    {comments.map((comment) => {
-                      const id = commentId(comment);
+                  <div className="relative space-y-base before:absolute before:bottom-base before:left-[15px] before:top-base before:w-px before:bg-border">
+                    {conversation.map((item) => {
+                      if (item.kind === 'comment') {
+                        return (
+                          <div
+                            key={item.key}
+                            className="relative pl-[42px] before:absolute before:left-[11px] before:top-base before:size-[9px] before:rounded-full before:border-2 before:border-panel before:bg-muted-foreground"
+                          >
+                            <ConversationComment
+                              thread={item.thread}
+                              selectedIds={selectedIds}
+                              toggleComment={toggleComment}
+                              theme={actualTheme}
+                            />
+                          </div>
+                        );
+                      }
+
+                      const Icon =
+                        item.kind === 'commit'
+                          ? GitCommitIcon
+                          : item.kind === 'review'
+                            ? ShieldCheckIcon
+                            : item.action === 'merged'
+                              ? GitMergeIcon
+                              : item.action === 'closed'
+                                ? XCircleIcon
+                                : GitPullRequestIcon;
                       return (
-                        <div key={id} className="flex items-start gap-base">
-                          <Checkbox
-                            checked={selectedIds.has(id)}
-                            onCheckedChange={() => toggleComment(id)}
-                            className="mt-base"
-                          />
-                          <PrCommentCard
-                            author={comment.author}
-                            body={comment.body}
-                            createdAt={comment.created_at}
-                            url={comment.url}
-                            commentType={comment.comment_type}
-                            path={
-                              comment.comment_type === 'review'
-                                ? comment.path
-                                : undefined
-                            }
-                            line={
-                              comment.comment_type === 'review' &&
-                              comment.line != null
-                                ? Number(comment.line)
-                                : undefined
-                            }
-                            diffHunk={
-                              comment.comment_type === 'review'
-                                ? comment.diff_hunk
-                                : undefined
-                            }
-                            variant="list"
-                            onClick={() => toggleComment(id)}
-                            className="flex-1 min-w-0"
-                          />
+                        <div
+                          key={item.key}
+                          className="relative flex min-w-0 items-start gap-base pl-[42px]"
+                        >
+                          <span className="absolute left-0 top-0 z-10 flex size-[30px] items-center justify-center rounded-full border bg-panel">
+                            <Icon className="size-icon-sm" />
+                          </span>
+                          <div className="min-w-0 flex-1 rounded border bg-secondary px-base py-base text-sm">
+                            {item.kind === 'commit' ? (
+                              <div className="flex min-w-0 flex-wrap items-center gap-half">
+                                <span className="font-medium">
+                                  {item.commit.authors.join(', ') ||
+                                    'Unknown author'}
+                                </span>
+                                <span className="text-low">committed</span>
+                                <span className="min-w-0 break-words font-medium">
+                                  {item.commit.message}
+                                </span>
+                                <code className="ml-auto text-xs text-low">
+                                  {item.commit.oid.slice(0, 7)}
+                                </code>
+                              </div>
+                            ) : item.kind === 'review' ? (
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-half">
+                                  <span className="font-medium">
+                                    {item.review.author || 'Unknown reviewer'}
+                                  </span>
+                                  <span className="text-low">
+                                    {item.review.state
+                                      .toLowerCase()
+                                      .replaceAll('_', ' ')}
+                                  </span>
+                                </div>
+                                {item.review.body && (
+                                  <MarkdownPreview
+                                    content={item.review.body}
+                                    theme={actualTheme}
+                                    className="mt-base min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words"
+                                  />
+                                )}
+                              </div>
+                            ) : (
+                              <div>
+                                <span className="font-medium">
+                                  {item.actor || 'Pull request'}
+                                </span>{' '}
+                                <span className="text-low">
+                                  {item.action} this pull request
+                                </span>
+                              </div>
+                            )}
+                            <div className="mt-half text-xs text-low">
+                              {formatActivityDate(item.createdAt)}
+                            </div>
+                          </div>
                         </div>
                       );
                     })}
+                    {conversation.length === 0 && !commentsQuery.isLoading && (
+                      <p className="pl-[42px] text-sm text-low">
+                        No conversation activity.
+                      </p>
+                    )}
                   </div>
-                )}
-              </section>
-            )}
+                </section>
+              </>
+            ) : null}
           </div>
 
           <div className="shrink-0 flex justify-end gap-base border-t px-base py-base">

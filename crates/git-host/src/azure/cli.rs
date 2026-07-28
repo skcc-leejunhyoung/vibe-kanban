@@ -514,12 +514,15 @@ impl AzCli {
                         _ => return None,
                     };
                     Some(crate::types::PullRequestReview {
+                        id: String::new(),
                         author: reviewer.display_name.unwrap_or_default(),
                         state: state.to_string(),
+                        body: String::new(),
                         submitted_at: None,
                     })
                 })
                 .collect(),
+            commits: Vec::new(),
             review_decision: None,
             is_draft: pr.is_draft,
             created_at: pr
@@ -560,6 +563,7 @@ impl AzCli {
                 .and_then(|p| p.line);
 
             if let Some(thread_comments) = thread.comments {
+                let mut root_id = None;
                 for c in thread_comments {
                     // Skip system-generated comments
                     if c.comment_type.as_deref() == Some("system") {
@@ -567,6 +571,8 @@ impl AzCli {
                     }
 
                     let id = format!("{thread_id}:{}", c.id.unwrap_or_default());
+                    let parent_id = root_id.clone();
+                    root_id.get_or_insert_with(|| id.clone());
                     let author = c
                         .author
                         .and_then(|a| a.display_name)
@@ -590,6 +596,8 @@ impl AzCli {
                             line,
                             side: None,
                             diff_hunk: None,
+                            parent_id,
+                            review_id: Some(thread_id.to_string()),
                         });
                     } else {
                         comments.push(UnifiedPrComment::General {
@@ -599,6 +607,7 @@ impl AzCli {
                             body,
                             created_at,
                             url: None,
+                            parent_id,
                         });
                     }
                 }
@@ -719,6 +728,28 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, vec!["10:1", "20:1"]);
+    }
+
+    #[test]
+    fn test_parse_pr_threads_nests_replies_under_thread_root() {
+        let comments = AzCli::parse_pr_threads(
+            r#"{
+                "value": [{
+                    "id": 10,
+                    "comments": [
+                        {"id": 1, "content": "root"},
+                        {"id": 2, "content": "reply"}
+                    ]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let parent_id = match &comments[1] {
+            UnifiedPrComment::General { parent_id, .. }
+            | UnifiedPrComment::Review { parent_id, .. } => parent_id.as_deref(),
+        };
+        assert_eq!(parent_id, Some("10:1"));
     }
 
     #[test]

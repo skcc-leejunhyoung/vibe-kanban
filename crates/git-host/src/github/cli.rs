@@ -19,8 +19,8 @@ use url::Url;
 use utils::{command_ext::NoWindowExt, shell::resolve_executable_path_blocking};
 
 use crate::types::{
-    CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PullRequestDetail,
-    PullRequestReview, ReviewCommentUser,
+    CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PullRequestCommit,
+    PullRequestDetail, PullRequestReview, ReviewCommentUser,
 };
 
 #[derive(Debug, Clone)]
@@ -85,10 +85,32 @@ struct GhNamedUser {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GhReviewResponse {
+    #[serde(default)]
+    id: String,
     author: Option<GhNamedUser>,
     #[serde(default)]
     state: String,
+    #[serde(default)]
+    body: String,
     submitted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhCommitResponse {
+    #[serde(default)]
+    oid: String,
+    #[serde(default)]
+    message_headline: String,
+    #[serde(default)]
+    authors: Vec<GhCommitAuthor>,
+    committed_date: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+struct GhCommitAuthor {
+    login: Option<String>,
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +130,8 @@ struct GhReviewCommentResponse {
     diff_hunk: String,
     #[serde(default)]
     author_association: String,
+    in_reply_to_id: Option<i64>,
+    pull_request_review_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +159,8 @@ struct GhPrResponse {
     review_requests: Vec<GhNamedUser>,
     #[serde(default)]
     reviews: Vec<GhReviewResponse>,
+    #[serde(default)]
+    commits: Vec<GhCommitResponse>,
     review_decision: Option<String>,
     #[serde(default)]
     is_draft: bool,
@@ -300,7 +326,7 @@ impl GhCli {
                 "view",
                 pr_url,
                 "--json",
-                "number,url,state,mergedAt,mergeCommit,title,body,author,assignees,reviewRequests,reviews,reviewDecision,isDraft,createdAt,updatedAt,baseRefName,headRefName",
+                "number,url,state,mergedAt,mergeCommit,title,body,author,assignees,reviewRequests,reviews,commits,reviewDecision,isDraft,createdAt,updatedAt,baseRefName,headRefName",
             ],
             None,
         )?;
@@ -454,6 +480,61 @@ impl GhCli {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pr_view_preserves_conversation_activity() {
+        let detail = GhCli::parse_pr_view(
+            r#"{
+                "number": 12,
+                "url": "https://github.com/example/repo/pull/12",
+                "state": "OPEN",
+                "title": "Conversation",
+                "author": {"login": "author"},
+                "reviews": [{
+                    "id": "review-1",
+                    "author": {"login": "reviewer"},
+                    "state": "APPROVED",
+                    "body": "Looks good",
+                    "submittedAt": "2026-01-02T00:00:00Z"
+                }],
+                "commits": [{
+                    "oid": "abcdef123456",
+                    "messageHeadline": "Add conversation",
+                    "authors": [{"login": "author", "name": "Author"}],
+                    "committedDate": "2026-01-01T00:00:00Z"
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(detail.reviews[0].body, "Looks good");
+        assert_eq!(detail.commits[0].oid, "abcdef123456");
+        assert_eq!(detail.commits[0].authors, vec!["author"]);
+    }
+
+    #[test]
+    fn parse_review_comments_preserves_reply_relationship() {
+        let comments = GhCli::parse_pr_review_comments(
+            r#"[{
+                "id": 2,
+                "user": {"login": "author"},
+                "body": "Fixed",
+                "created_at": "2026-01-02T00:00:00Z",
+                "path": "src/file.ts",
+                "in_reply_to_id": 1,
+                "pull_request_review_id": 7
+            }]"#,
+        )
+        .unwrap();
+
+        assert_eq!(comments[0].in_reply_to_id, Some(1));
+        assert_eq!(comments[0].pull_request_review_id, Some(7));
+    }
+}
+
 impl GhCli {
     fn parse_pr_create_text(
         raw: &str,
@@ -501,6 +582,7 @@ impl GhCli {
             assignees: Vec::new(),
             reviewers: Vec::new(),
             reviews: Vec::new(),
+            commits: Vec::new(),
             review_decision: None,
             is_draft: request.draft.unwrap_or(false),
             created_at: None,
@@ -558,9 +640,25 @@ impl GhCli {
                 .reviews
                 .into_iter()
                 .map(|review| PullRequestReview {
+                    id: review.id,
                     author: review.author.map(|author| author.login).unwrap_or_default(),
                     state: review.state,
+                    body: review.body,
                     submitted_at: review.submitted_at,
+                })
+                .collect(),
+            commits: pr
+                .commits
+                .into_iter()
+                .map(|commit| PullRequestCommit {
+                    oid: commit.oid,
+                    message: commit.message_headline,
+                    authors: commit
+                        .authors
+                        .into_iter()
+                        .filter_map(|author| author.login.or(author.name))
+                        .collect(),
+                    committed_at: commit.committed_date,
                 })
                 .collect(),
             review_decision: pr.review_decision,
@@ -624,6 +722,8 @@ impl GhCli {
                 side: c.side,
                 diff_hunk: c.diff_hunk,
                 author_association: c.author_association,
+                in_reply_to_id: c.in_reply_to_id,
+                pull_request_review_id: c.pull_request_review_id,
             })
             .collect())
     }
