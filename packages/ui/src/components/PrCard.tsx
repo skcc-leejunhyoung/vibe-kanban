@@ -193,16 +193,8 @@ export function PrCard({
         </DropdownMenu>
       </div>
 
-      <button
-        type="button"
-        onClick={onViewDetails}
-        className="w-full rounded-sm bg-panel px-base py-half text-sm font-medium text-normal hover:bg-tertiary transition-colors"
-      >
-        {t('prPanel.viewDetails')}
-      </button>
-
-      {/* PR identity: a status-colored link to the PR (open / merged / closed) */}
-      <div className="flex items-center gap-half">
+      {/* PR identity and details action */}
+      <div className="flex items-center justify-between gap-half">
         {prUrl ? (
           <button
             type="button"
@@ -221,6 +213,13 @@ export function PrCard({
             {statusLabel}
           </span>
         )}
+        <button
+          type="button"
+          onClick={onViewDetails}
+          className="ml-auto shrink-0 rounded-sm bg-panel px-base py-half text-sm font-medium text-normal transition-colors hover:bg-tertiary"
+        >
+          {t('prPanel.viewDetails')}
+        </button>
       </div>
 
       {/* Direction: head → base (both truncate; hover for full name, click to copy) */}

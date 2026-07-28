@@ -212,9 +212,16 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
     const handleDialogKeyDown = (event: KeyboardEvent) => {
       const scroller = scrollRef.current;
       if (!scroller || event.defaultPrevented) return;
-      const distance = Math.max(48, scroller.clientHeight * 0.12);
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
+        if (event.metaKey || event.ctrlKey) {
+          scroller.scrollTo({
+            top: event.key === 'ArrowDown' ? scroller.scrollHeight : 0,
+            behavior: 'smooth',
+          });
+          return;
+        }
+        const distance = Math.max(48, scroller.clientHeight * 0.12);
         scroller.scrollBy({
           top: event.key === 'ArrowDown' ? distance : -distance,
           behavior: 'smooth',
@@ -230,7 +237,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
         open={modal.visible}
         onOpenChange={(open) => !open && close()}
         onKeyDownCapture={handleDialogKeyDown}
-        className="h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] max-w-3xl min-h-0 my-0 p-0 overflow-hidden"
+        className="h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] max-w-6xl min-h-0 my-0 p-0 overflow-hidden"
       >
         <DialogContent className="min-h-0 flex-1 gap-0 overflow-hidden p-0">
           <DialogHeader className="shrink-0 px-base py-base border-b">
