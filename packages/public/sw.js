@@ -84,17 +84,10 @@ self.addEventListener('notificationclick', (event) => {
           if (new URL(client.url).origin !== self.location.origin) continue;
 
           await client.focus();
-          // Client-side route (works on iOS standalone PWAs where navigate is a
-          // no-op) and a same-origin client.navigate() fallback (reliable on
-          // desktop, no message-listener race).
+          // Let the app select the destination pane. In split-screen mode an
+          // iframe may be the matched client; client.navigate() would then
+          // navigate that arbitrary iframe instead of the last active pane.
           client.postMessage({ type: 'vk-navigate', path: targetPath });
-          if ('navigate' in client) {
-            try {
-              await client.navigate(targetUrl);
-            } catch (_error) {
-              // ignore — the postMessage handler navigates instead
-            }
-          }
           return;
         }
 

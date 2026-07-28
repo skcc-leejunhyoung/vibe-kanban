@@ -27,6 +27,9 @@ const {
 const { openInSplitPane, SPLIT_PANE_OPENED_EVENT } = await import(
   '@/shared/lib/openInSplitPane'
 );
+const { getServiceWorkerNavigationTarget } = await import(
+  '@/shared/hooks/useServiceWorkerNavigation'
+);
 
 const makePreset = (preset: SplitPreset): SplitPresetState => ({
   panes: Array.from({ length: preset }, (_, index) => ({
@@ -59,6 +62,12 @@ describe('split screen presets', () => {
     expect(shouldRenderSplitScreenFrames(3)).toBe(true);
     expect(shouldRenderSplitScreenFrames(4)).toBe(true);
     expect(shouldRenderSplitScreenFrames(9)).toBe(true);
+  });
+
+  it('routes push navigation to the active pane in a split layout', () => {
+    expect(getServiceWorkerNavigationTarget(false, 1)).toBe('router');
+    expect(getServiceWorkerNavigationTarget(false, 2)).toBe('active-pane');
+    expect(getServiceWorkerNavigationTarget(true, 2)).toBe('parent');
   });
 
   it('notifies the split-screen manager to navigate and focus a pane opened from the parent', () => {

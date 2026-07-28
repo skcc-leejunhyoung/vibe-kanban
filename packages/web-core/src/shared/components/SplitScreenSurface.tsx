@@ -34,6 +34,8 @@ import {
 
 const EMBED_PARAM = 'vk_split_embed';
 const MESSAGE_TYPE = 'vk-split-pane';
+export const SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT =
+  'vk-split-pane-service-worker-navigation';
 const WINDOW_NAME_PREFIX = 'vk-split-pane:';
 const DRAG_DATA_TYPE = 'text/x-vk-split-pane';
 const DRAG_HANDLE_SELECTOR = '[data-split-pane-drag-handle]';
@@ -72,6 +74,7 @@ type PaneMessage = {
     | 'move-pane'
     | 'open-pane'
     | 'navigate-to'
+    | 'service-worker-navigate'
     | 'max-panes'
     | 'preset-layout';
   paneId?: string;
@@ -586,6 +589,38 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       window.removeEventListener(SPLIT_PANE_OPENED_EVENT, handlePaneOpened);
   }, [navigatePaneAndFocus]);
 
+  const navigateActivePane = useCallback(
+    (url: string) => {
+      const activePaneId =
+        useSplitScreenStore.getState().presets[
+          useSplitScreenStore.getState().preset
+        ].activePaneId;
+      navigatePaneAndFocus(activePaneId, url);
+    },
+    [navigatePaneAndFocus]
+  );
+
+  useEffect(() => {
+    const handleServiceWorkerNavigation = (event: Event) => {
+      const url = (event as CustomEvent<{ url?: unknown }>).detail?.url;
+      if (
+        typeof url === 'string' &&
+        sameOriginRelativeUrl(url, window.location.origin)
+      ) {
+        navigateActivePane(url);
+      }
+    };
+    window.addEventListener(
+      SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT,
+      handleServiceWorkerNavigation
+    );
+    return () =>
+      window.removeEventListener(
+        SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT,
+        handleServiceWorkerNavigation
+      );
+  }, [navigateActivePane]);
+
   useEffect(() => {
     return () => {
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -696,6 +731,12 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
         message.url
       ) {
         setPaneUrl(message.paneId, message.url);
+      } else if (
+        message.event === 'service-worker-navigate' &&
+        typeof message.url === 'string' &&
+        sameOriginRelativeUrl(message.url, window.location.origin)
+      ) {
+        navigateActivePane(message.url);
       }
     };
     window.addEventListener('message', handleMessage);
@@ -705,6 +746,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
     activatePreset,
     focusAdjacentPane,
     movePane,
+    navigateActivePane,
     navigatePaneAndFocus,
     openPane,
     setMaxPanes,
