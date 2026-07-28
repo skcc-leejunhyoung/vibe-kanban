@@ -37,9 +37,22 @@ struct AzPrResponse {
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
+    description: Option<String>,
+    created_by: Option<AzAuthor>,
+    #[serde(default)]
+    reviewers: Vec<AzReviewer>,
+    creation_date: Option<String>,
+    #[serde(default)]
     target_ref_name: Option<String>,
     #[serde(default)]
     source_ref_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AzReviewer {
+    display_name: Option<String>,
+    vote: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -478,6 +491,39 @@ impl AzCli {
             merged_at,
             merge_commit_sha,
             title: pr.title.unwrap_or_default(),
+            body: pr.description.unwrap_or_default(),
+            author: pr.created_by.and_then(|author| author.display_name),
+            assignees: Vec::new(),
+            reviewers: pr
+                .reviewers
+                .iter()
+                .filter_map(|reviewer| reviewer.display_name.clone())
+                .collect(),
+            reviews: pr
+                .reviewers
+                .into_iter()
+                .filter_map(|reviewer| {
+                    let state = match reviewer.vote.unwrap_or_default() {
+                        10 => "APPROVED",
+                        5 => "APPROVED_WITH_SUGGESTIONS",
+                        -5 => "WAITING_FOR_AUTHOR",
+                        -10 => "CHANGES_REQUESTED",
+                        _ => return None,
+                    };
+                    Some(crate::types::PullRequestReview {
+                        author: reviewer.display_name.unwrap_or_default(),
+                        state: state.to_string(),
+                        submitted_at: None,
+                    })
+                })
+                .collect(),
+            review_decision: None,
+            is_draft: false,
+            created_at: pr
+                .creation_date
+                .and_then(|date| DateTime::parse_from_rfc3339(&date).ok())
+                .map(|date| date.with_timezone(&Utc)),
+            updated_at: None,
             base_branch: pr
                 .target_ref_name
                 .map(|r| r.strip_prefix("refs/heads/").unwrap_or(&r).to_string())

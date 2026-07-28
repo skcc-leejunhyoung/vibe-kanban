@@ -396,7 +396,8 @@
     "push": "Push",
     "pull": "Pull",
     "openInBrowser": "Open in browser",
-    "copyUrl": "Copy PR URL"
+    "copyUrl": "Copy PR URL",
+    "viewDetails": "View details"
   },
   "createPrDialog": {
     "title": "Create Pull Request",

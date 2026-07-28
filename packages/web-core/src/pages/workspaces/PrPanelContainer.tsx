@@ -6,6 +6,7 @@ import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { PrPanel, type PrInfo } from '@vibe/ui/components/PrPanel';
+import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import type { Workspace, RepoWithTargetBranch, Merge } from 'shared/types';
 
 export interface PrPanelContainerProps {
@@ -116,6 +117,19 @@ export function PrPanelContainer({
       variant: 'destructive',
     });
   }, []);
+
+  const handleViewDetails = useCallback(
+    (pr: PrInfo) => {
+      if (!workspaceId || !pr.prUrl) return;
+      void PrDetailsDialog.show({
+        workspaceId,
+        repoId: pr.repoId,
+        prUrl: pr.prUrl,
+        prNumber: pr.prNumber,
+      });
+    },
+    [workspaceId]
+  );
 
   // Fetch the repo's primary remote (refreshes both head and base tracking refs),
   // then refetch branch status so ahead/behind numbers update.
@@ -229,6 +243,7 @@ export function PrPanelContainer({
       onFetch={handleFetch}
       onPush={handlePush}
       onPull={handlePull}
+      onViewDetails={handleViewDetails}
     />
   );
 }

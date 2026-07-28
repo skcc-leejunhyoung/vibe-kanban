@@ -712,7 +712,9 @@ export type UnifiedPrComment = { "comment_type": "general", id: string, author: 
 
 export type ProviderKind = "git_hub" | "azure_dev_ops" | "unknown";
 
-export type PullRequestDetail = { number: bigint, url: string, status: MergeStatus, merged_at: string | null, merge_commit_sha: string | null, title: string, base_branch: string, head_branch: string, };
+export type PullRequestDetail = { number: bigint, url: string, status: MergeStatus, merged_at: string | null, merge_commit_sha: string | null, title: string, body: string, author: string | null, assignees: Array<string>, reviewers: Array<string>, reviews: Array<PullRequestReview>, review_decision: string | null, is_draft: boolean, created_at: string | null, updated_at: string | null, base_branch: string, head_branch: string, };
+
+export type PullRequestReview = { author: string, state: string, submitted_at: string | null, };
 
 export type GitRemote = { name: string, url: string, };
 

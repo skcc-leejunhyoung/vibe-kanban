@@ -69,7 +69,8 @@
     "push": "푸시",
     "pull": "풀",
     "openInBrowser": "브라우저에서 열기",
-    "copyUrl": "PR URL 복사"
+    "copyUrl": "PR URL 복사",
+    "viewDetails": "상세 보기"
   },
   "createPrDialog": {
     "title": "Pull Request 생성",

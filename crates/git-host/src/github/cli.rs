@@ -20,7 +20,7 @@ use utils::{command_ext::NoWindowExt, shell::resolve_executable_path_blocking};
 
 use crate::types::{
     CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PullRequestDetail,
-    ReviewCommentUser,
+    PullRequestReview, ReviewCommentUser,
 };
 
 #[derive(Debug, Clone)]
@@ -77,6 +77,21 @@ struct GhUserLogin {
 }
 
 #[derive(Deserialize)]
+struct GhNamedUser {
+    #[serde(default)]
+    login: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhReviewResponse {
+    author: Option<GhNamedUser>,
+    #[serde(default)]
+    state: String,
+    submitted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
 struct GhReviewCommentResponse {
     id: i64,
     user: Option<GhUserLogin>,
@@ -111,6 +126,19 @@ struct GhPrResponse {
     merge_commit: Option<GhMergeCommit>,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    body: String,
+    author: Option<GhNamedUser>,
+    #[serde(default)]
+    assignees: Vec<GhNamedUser>,
+    #[serde(default)]
+    review_requests: Vec<GhNamedUser>,
+    #[serde(default)]
+    reviews: Vec<GhReviewResponse>,
+    review_decision: Option<String>,
+    #[serde(default)]
+    is_draft: bool,
+    created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     base_ref_name: Option<String>,
     #[serde(default)]
@@ -272,7 +300,7 @@ impl GhCli {
                 "view",
                 pr_url,
                 "--json",
-                "number,url,state,mergedAt,mergeCommit,title,baseRefName,headRefName",
+                "number,url,state,mergedAt,mergeCommit,title,body,author,assignees,reviewRequests,reviews,reviewDecision,isDraft,createdAt,updatedAt,baseRefName,headRefName",
             ],
             None,
         )?;
@@ -468,6 +496,15 @@ impl GhCli {
             merged_at: None,
             merge_commit_sha: None,
             title: request.title.clone(),
+            body: request.body.clone().unwrap_or_default(),
+            author: None,
+            assignees: Vec::new(),
+            reviewers: Vec::new(),
+            reviews: Vec::new(),
+            review_decision: None,
+            is_draft: request.draft.unwrap_or(false),
+            created_at: None,
+            updated_at: None,
             base_branch: request.base_branch.clone(),
             head_branch: request.head_branch.clone(),
         })
@@ -509,6 +546,27 @@ impl GhCli {
             merged_at: pr.merged_at,
             merge_commit_sha: pr.merge_commit.and_then(|c| c.oid),
             title: pr.title.unwrap_or_default(),
+            body: pr.body,
+            author: pr.author.map(|author| author.login),
+            assignees: pr.assignees.into_iter().map(|user| user.login).collect(),
+            reviewers: pr
+                .review_requests
+                .into_iter()
+                .map(|user| user.login)
+                .collect(),
+            reviews: pr
+                .reviews
+                .into_iter()
+                .map(|review| PullRequestReview {
+                    author: review.author.map(|author| author.login).unwrap_or_default(),
+                    state: review.state,
+                    submitted_at: review.submitted_at,
+                })
+                .collect(),
+            review_decision: pr.review_decision,
+            is_draft: pr.is_draft,
+            created_at: pr.created_at,
+            updated_at: pr.updated_at,
             base_branch: pr.base_ref_name.unwrap_or_default(),
             head_branch: pr.head_ref_name.unwrap_or_default(),
         }

@@ -68,8 +68,7 @@ import {
 } from '@/shared/types/actions';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
-import { PrCommentsDialog } from '@/shared/dialogs/tasks/PrCommentsDialog';
-import type { NormalizedComment } from '@vibe/ui/components/pr-comment-node';
+import { usePrChatContextStore } from '@/shared/stores/usePrChatContextStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { sessionsApi, ApiError } from '@/shared/lib/api';
 import { useWorkspace } from '@/shared/hooks/useWorkspace';
@@ -660,6 +659,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const clearPendingComponentMarkdown = useInspectModeStore(
     (s) => s.clearPendingComponentMarkdown
   );
+  const pendingPrContext = usePrChatContextStore((state) => state.pending);
+  const clearPendingPrContext = usePrChatContextStore((state) => state.clear);
 
   useEffect(() => {
     if (pendingComponentMarkdown) {
@@ -670,6 +671,18 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     pendingComponentMarkdown,
     handleInsertMarkdown,
     clearPendingComponentMarkdown,
+  ]);
+
+  useEffect(() => {
+    const context = pendingPrContext;
+    if (!context || context.workspaceId !== workspaceId) return;
+    handleInsertMarkdown(context.markdown);
+    clearPendingPrContext();
+  }, [
+    pendingPrContext,
+    workspaceId,
+    handleInsertMarkdown,
+    clearPendingPrContext,
   ]);
 
   const { uploadFiles, localAttachments, clearUploadedAttachments } =
@@ -1132,40 +1145,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     prevEditRef.current = editContext.activeEdit;
   }, [editContext.activeEdit, setLocalMessage]);
 
-  // Handle inserting PR comments into the message editor
-  const handleInsertPrComments = useCallback(async () => {
-    if (!workspaceId) return;
-    const repoId = repos[0]?.id;
-    if (!repoId) return;
-
-    const result = await PrCommentsDialog.show({
-      workspaceId: workspaceId,
-      repoId,
-    });
-    if (result.comments.length > 0) {
-      const markdownBlocks = result.comments.map((comment) => {
-        const payload: NormalizedComment = {
-          id:
-            comment.comment_type === 'general'
-              ? comment.id
-              : comment.id.toString(),
-          comment_type: comment.comment_type,
-          author: comment.author,
-          body: comment.body,
-          created_at: comment.created_at,
-          url: comment.url,
-          ...(comment.comment_type === 'review' && {
-            path: comment.path,
-            line: comment.line != null ? Number(comment.line) : null,
-            diff_hunk: comment.diff_hunk,
-          }),
-        };
-        return '```gh-comment\n' + JSON.stringify(payload, null, 2) + '\n```';
-      });
-      handleInsertMarkdown(markdownBlocks.join('\n\n'));
-    }
-  }, [workspaceId, repos, handleInsertMarkdown]);
-
   // Toolbar actions handler
   const handleToolbarAction = useCallback(
     (action: ActionDefinition) => {
@@ -1512,9 +1491,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               disabled: isAttemptRunning || isHandoffPending,
             }
           : undefined
-      }
-      onPrCommentClick={
-        actionCtx.hasOpenPR ? handleInsertPrComments : undefined
       }
       stats={{
         filesChanged,

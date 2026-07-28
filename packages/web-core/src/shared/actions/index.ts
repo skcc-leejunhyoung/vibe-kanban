@@ -95,6 +95,7 @@ import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroun
 import { getIdeName } from '@/shared/lib/ideName';
 import { EditorSelectionDialog } from '@/shared/dialogs/command-bar/EditorSelectionDialog';
 import { StartReviewDialog } from '@/shared/dialogs/command-bar/StartReviewDialog';
+import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
@@ -1604,6 +1605,31 @@ export const Actions = {
         reservedWindow?.close();
         throw error;
       }
+    },
+  },
+
+  GitViewPRDetails: {
+    id: 'git-view-pr-details',
+    label: 'View Pull Request Details',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'details', 'comments', 'reviews', 'pr'],
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasOpenPR,
+    execute: async (_ctx, workspaceId, repoId) => {
+      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const openPr = branchStatus
+        .find((status) => status.repo_id === repoId)
+        ?.merges?.find(
+          (merge: Merge) =>
+            merge.type === 'pr' && merge.pr_info.status === 'open'
+        );
+      if (openPr?.type !== 'pr' || !openPr.pr_info.url) return;
+      await PrDetailsDialog.show({
+        workspaceId,
+        repoId,
+        prUrl: openPr.pr_info.url,
+        prNumber: Number(openPr.pr_info.number),
+      });
     },
   },
 

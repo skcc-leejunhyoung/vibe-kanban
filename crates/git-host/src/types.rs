@@ -140,6 +140,13 @@ impl UnifiedPrComment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct PullRequestReview {
+    pub author: String,
+    pub state: String,
+    pub submitted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PullRequestDetail {
     pub number: i64,
     pub url: String,
@@ -147,6 +154,15 @@ pub struct PullRequestDetail {
     pub merged_at: Option<DateTime<Utc>>,
     pub merge_commit_sha: Option<String>,
     pub title: String,
+    pub body: String,
+    pub author: Option<String>,
+    pub assignees: Vec<String>,
+    pub reviewers: Vec<String>,
+    pub reviews: Vec<PullRequestReview>,
+    pub review_decision: Option<String>,
+    pub is_draft: bool,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
     pub base_branch: String,
     pub head_branch: String,
 }

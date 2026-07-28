@@ -49,6 +49,7 @@ export interface PrCardProps {
   onFetch?: () => void;
   onPush?: () => void;
   onPull?: () => void;
+  onViewDetails?: () => void;
 }
 
 const iconButtonClass =
@@ -118,6 +119,7 @@ export function PrCard({
   onFetch,
   onPush,
   onPull,
+  onViewDetails,
 }: PrCardProps) {
   const { t } = useTranslation('tasks');
   // Fetch/push only make sense for an open PR; merged/closed cards are read-only.
@@ -190,6 +192,14 @@ export function PrCard({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <button
+        type="button"
+        onClick={onViewDetails}
+        className="w-full rounded-sm bg-panel px-base py-half text-sm font-medium text-normal hover:bg-tertiary transition-colors"
+      >
+        {t('prPanel.viewDetails')}
+      </button>
 
       {/* PR identity: a status-colored link to the PR (open / merged / closed) */}
       <div className="flex items-center gap-half">

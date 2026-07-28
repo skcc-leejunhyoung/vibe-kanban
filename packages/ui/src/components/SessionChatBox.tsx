@@ -20,7 +20,6 @@ import {
   LightningIcon,
   ArrowsOutIcon,
   ArrowsClockwiseIcon,
-  GithubLogoIcon,
   PencilSimpleIcon,
   DotsSixVerticalIcon,
 } from '@phosphor-icons/react';
@@ -245,7 +244,6 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   todos?: TodoProgressItem[];
   inProgressTodo?: TodoProgressItem | null;
   localAttachments?: LocalAttachmentMetadata[];
-  onPrCommentClick?: () => void;
   onViewCode?: () => void;
   onOpenWorkspace?: () => void;
   onScrollToPreviousMessage?: () => void;
@@ -322,7 +320,6 @@ export function SessionChatBox<TExecutor extends string = string>({
   todos,
   inProgressTodo,
   localAttachments,
-  onPrCommentClick,
   onViewCode,
   onOpenWorkspace,
   onScrollToPreviousMessage,
@@ -1129,15 +1126,6 @@ export function SessionChatBox<TExecutor extends string = string>({
             className="hidden"
             onChange={handleFileInputChange}
           />
-          {onPrCommentClick && (
-            <ToolbarIconButton
-              icon={GithubLogoIcon}
-              aria-label="Add PR Comments"
-              title="Insert PR comments into message"
-              onClick={onPrCommentClick}
-              disabled={areContentInsertActionsDisabled}
-            />
-          )}
           {toolbarActions?.items.map((item) => (
             <ToolbarIconButton
               key={item.id}

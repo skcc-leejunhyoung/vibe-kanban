@@ -3,13 +3,17 @@ import { cn } from '../lib/cn';
 import { PrCard, type PrCardProps } from './PrCard';
 
 /** PR card data without the interaction callbacks (bound by repoId in the panel). */
-export type PrInfo = Omit<PrCardProps, 'onFetch' | 'onPush' | 'onPull'>;
+export type PrInfo = Omit<
+  PrCardProps,
+  'onFetch' | 'onPush' | 'onPull' | 'onViewDetails'
+>;
 
 interface PrPanelProps {
   prs: PrInfo[];
   onFetch?: (repoId: string) => void;
   onPush?: (repoId: string) => void;
   onPull?: (repoId: string) => void;
+  onViewDetails?: (pr: PrInfo) => void;
   className?: string;
 }
 
@@ -18,6 +22,7 @@ export function PrPanel({
   onFetch,
   onPush,
   onPull,
+  onViewDetails,
   className,
 }: PrPanelProps) {
   const { t } = useTranslation('tasks');
@@ -40,6 +45,7 @@ export function PrPanel({
               onFetch={() => onFetch?.(pr.repoId)}
               onPush={() => onPush?.(pr.repoId)}
               onPull={() => onPull?.(pr.repoId)}
+              onViewDetails={() => onViewDetails?.(pr)}
             />
           ))
         )}
