@@ -1,11 +1,11 @@
 import { useEffect } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import {
+  getSplitScreenNotificationNavigationTarget,
   isSplitScreenEmbed,
-  SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT,
+  SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT,
 } from '@/shared/components/SplitScreenSurface';
 import {
-  shouldRenderSplitScreenFrames,
   type SplitPreset,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
@@ -15,7 +15,7 @@ export function getServiceWorkerNavigationTarget(
   preset: SplitPreset
 ): 'parent' | 'active-pane' | 'router' {
   if (isEmbedded) return 'parent';
-  return shouldRenderSplitScreenFrames(preset) ? 'active-pane' : 'router';
+  return getSplitScreenNotificationNavigationTarget(preset);
 }
 
 /**
@@ -69,7 +69,7 @@ export function useServiceWorkerNavigation() {
 
       if (target === 'active-pane') {
         window.dispatchEvent(
-          new CustomEvent(SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT, {
+          new CustomEvent(SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT, {
             detail: { url: data.path },
           })
         );

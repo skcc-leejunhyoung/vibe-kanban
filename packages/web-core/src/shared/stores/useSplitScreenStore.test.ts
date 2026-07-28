@@ -20,6 +20,7 @@ const {
   useSplitScreenStore,
 } = await import('./useSplitScreenStore');
 const {
+  getSplitScreenNotificationNavigationTarget,
   getSplitPresetHotkeyOptions,
   sameOriginRelativeUrl,
   shouldFocusRequestedPane,
@@ -65,6 +66,8 @@ describe('split screen presets', () => {
   });
 
   it('routes push navigation to the active pane in a split layout', () => {
+    expect(getSplitScreenNotificationNavigationTarget(1)).toBe('router');
+    expect(getSplitScreenNotificationNavigationTarget(2)).toBe('active-pane');
     expect(getServiceWorkerNavigationTarget(false, 1)).toBe('router');
     expect(getServiceWorkerNavigationTarget(false, 2)).toBe('active-pane');
     expect(getServiceWorkerNavigationTarget(true, 2)).toBe('parent');

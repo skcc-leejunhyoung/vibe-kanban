@@ -1,5 +1,10 @@
 import { useEffect } from 'react';
 import { isTauriApp } from '@/shared/lib/platform';
+import {
+  getSplitScreenNotificationNavigationTarget,
+  SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT,
+} from '@/shared/components/SplitScreenSurface';
+import { useSplitScreenStore } from '@/shared/stores/useSplitScreenStore';
 import { router } from '@web/app/router';
 
 /**
@@ -20,9 +25,24 @@ export function useTauriNotificationNavigation() {
         'notification-clicked',
         (event) => {
           const path = event.payload.deeplinkPath;
-          if (path) {
-            router.navigate({ to: path as '/' });
+          if (!path?.startsWith('/')) {
+            return;
           }
+
+          if (
+            getSplitScreenNotificationNavigationTarget(
+              useSplitScreenStore.getState().preset
+            ) === 'active-pane'
+          ) {
+            window.dispatchEvent(
+              new CustomEvent(SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT, {
+                detail: { url: path },
+              })
+            );
+            return;
+          }
+
+          router.navigate({ to: path as '/' });
         }
       );
     }

@@ -34,8 +34,8 @@ import {
 
 const EMBED_PARAM = 'vk_split_embed';
 const MESSAGE_TYPE = 'vk-split-pane';
-export const SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT =
-  'vk-split-pane-service-worker-navigation';
+export const SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT =
+  'vk-split-pane-notification-navigation';
 const WINDOW_NAME_PREFIX = 'vk-split-pane:';
 const DRAG_DATA_TYPE = 'text/x-vk-split-pane';
 const DRAG_HANDLE_SELECTOR = '[data-split-pane-drag-handle]';
@@ -50,6 +50,12 @@ export function isSplitScreenEmbed(): boolean {
     return true;
   }
   return window.name.startsWith(WINDOW_NAME_PREFIX);
+}
+
+export function getSplitScreenNotificationNavigationTarget(
+  preset: SplitPreset
+): 'active-pane' | 'router' {
+  return shouldRenderSplitScreenFrames(preset) ? 'active-pane' : 'router';
 }
 
 function getEmbeddedPaneId(): string | null {
@@ -611,12 +617,12 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
       }
     };
     window.addEventListener(
-      SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT,
+      SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT,
       handleServiceWorkerNavigation
     );
     return () =>
       window.removeEventListener(
-        SPLIT_PANE_SERVICE_WORKER_NAVIGATION_EVENT,
+        SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT,
         handleServiceWorkerNavigation
       );
   }, [navigateActivePane]);
