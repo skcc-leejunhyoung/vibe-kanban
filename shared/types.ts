@@ -645,7 +645,7 @@ export type PrCommentsResponse = { comments: Array<UnifiedPrComment>, };
 
 export type GetPrCommentsError = { "type": "no_pr_attached" } | { "type": "cli_not_installed", provider: ProviderKind, } | { "type": "cli_not_logged_in", provider: ProviderKind, };
 
-export type GetPrCommentsQuery = { repo_id: string, };
+export type GetPrCommentsQuery = { repo_id: string, pr_number: bigint | null, };
 
 export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, executor_config: ExecutorConfig, prompt: string, attachment_ids: Array<string> | null,
 /**

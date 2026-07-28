@@ -1245,10 +1245,13 @@ export const workspacesApi = {
 
   getPrComments: async (
     workspaceId: string,
-    repoId: string
+    repoId: string,
+    prNumber?: number
   ): Promise<PrCommentsResponse> => {
+    const prNumberParam =
+      prNumber == null ? '' : `&pr_number=${encodeURIComponent(prNumber)}`;
     const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/pull-requests/comments?repo_id=${encodeURIComponent(repoId)}`
+      `/api/workspaces/${workspaceId}/pull-requests/comments?repo_id=${encodeURIComponent(repoId)}${prNumberParam}`
     );
     return handleApiResponse<PrCommentsResponse>(response);
   },

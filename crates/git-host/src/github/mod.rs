@@ -314,8 +314,26 @@ impl GitHostProvider for GitHubProvider {
             self.fetch_review_comments(&cli2, &repo_info, pr_number)
         );
 
-        let general_comments = general_result?;
-        let review_comments = review_result?;
+        // GitHub exposes issue comments and inline review comments through
+        // different endpoints and permissions. Keep the successful half when
+        // only one endpoint fails; otherwise a missing permission for inline
+        // comments would hide ordinary PR discussion as well.
+        let (general_comments, review_comments) = match (general_result, review_result) {
+            (Ok(general), Ok(review)) => (general, review),
+            (Ok(general), Err(error)) => {
+                tracing::warn!(
+                    "Failed to fetch inline comments for PR #{pr_number}; showing general comments: {error}"
+                );
+                (general, Vec::new())
+            }
+            (Err(error), Ok(review)) => {
+                tracing::warn!(
+                    "Failed to fetch general comments for PR #{pr_number}; showing inline comments: {error}"
+                );
+                (Vec::new(), review)
+            }
+            (Err(error), Err(_)) => return Err(error),
+        };
 
         // Convert and merge into unified timeline
         let mut unified: Vec<UnifiedPrComment> = Vec::new();

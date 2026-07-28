@@ -317,6 +317,7 @@ pub enum GetPrCommentsError {
 #[derive(Debug, Deserialize, TS)]
 pub struct GetPrCommentsQuery {
     pub repo_id: Uuid,
+    pub pr_number: Option<i64>,
 }
 
 /// Whole-request budget for PR title/description generation: container reuse +
@@ -1311,8 +1312,18 @@ pub async fn get_pr_comments(
     let merges = Merge::find_by_workspace_and_repo_id(pool, workspace.id, query.repo_id).await?;
 
     // Ensure there's an attached PR for this repo
-    let pr_info = match merges.into_iter().next() {
-        Some(Merge::Pr(pr_merge)) => pr_merge.pr_info,
+    let pr_info = match merges.into_iter().find_map(|merge| match merge {
+        Merge::Pr(pr_merge)
+            if query
+                .pr_number
+                .is_none_or(|number| number == pr_merge.pr_info.number) =>
+        {
+            Some(pr_merge.pr_info)
+        }
+        Merge::Direct(_) => None,
+        Merge::Pr(_) => None,
+    }) {
+        Some(pr_info) => pr_info,
         _ => {
             return Ok(ResponseJson(ApiResponse::error_with_data(
                 GetPrCommentsError::NoPrAttached,

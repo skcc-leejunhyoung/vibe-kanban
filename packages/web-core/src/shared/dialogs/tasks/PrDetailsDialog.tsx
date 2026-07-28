@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import {
@@ -14,6 +20,8 @@ import { defineModal } from '@/shared/lib/modals';
 import { issuePrsApi } from '@/shared/lib/api';
 import { usePrComments } from '@/shared/hooks/usePrComments';
 import { usePrChatContextStore } from '@/shared/stores/usePrChatContextStore';
+import { useTheme } from '@/shared/hooks/useTheme';
+import { getActualTheme } from '@/shared/lib/theme';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import {
   Dialog,
@@ -24,7 +32,7 @@ import {
 import { Button } from '@vibe/ui/components/Button';
 import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { PrCommentCard } from '@vibe/ui/components/pr-comment-card';
-import { SimpleMarkdown } from '@/shared/components/SimpleMarkdown';
+import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import type { UnifiedPrComment } from 'shared/types';
 
 export interface PrDetailsDialogProps {
@@ -64,6 +72,9 @@ function commentsToMarkdown(comments: UnifiedPrComment[]): string {
 const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
   ({ workspaceId, repoId, prUrl, prNumber }) => {
     const modal = useModal();
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const { theme } = useTheme();
+    const actualTheme = getActualTheme(theme);
     const addChatContext = usePrChatContextStore((state) => state.add);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const detailQuery = useQuery({
@@ -78,8 +89,9 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       enabled: modal.visible,
       staleTime: 30_000,
     });
-    const commentsQuery = usePrComments(workspaceId ?? '', repoId ?? '', {
+    const commentsQuery = usePrComments(workspaceId, repoId, {
       enabled: modal.visible && !!workspaceId && !!repoId,
+      prNumber,
     });
     const comments = useMemo(
       () => commentsQuery.data?.comments ?? [],
@@ -112,6 +124,19 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       close();
     };
 
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      const scroller = scrollRef.current;
+      if (!scroller || event.defaultPrevented) return;
+      const distance = Math.max(48, scroller.clientHeight * 0.12);
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        scroller.scrollBy({
+          top: event.key === 'ArrowDown' ? distance : -distance,
+          behavior: 'smooth',
+        });
+      }
+    };
+
     const detail = detailQuery.data;
     const loading = detailQuery.isLoading || commentsQuery.isLoading;
 
@@ -119,10 +144,11 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       <Dialog
         open={modal.visible}
         onOpenChange={(open) => !open && close()}
-        className="max-w-3xl p-0 overflow-hidden"
+        onKeyDownCapture={handleDialogKeyDown}
+        className="h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] max-w-3xl min-h-0 my-0 p-0 overflow-hidden"
       >
-        <DialogContent className="p-0">
-          <DialogHeader className="px-base py-base border-b">
+        <DialogContent className="min-h-0 flex-1 gap-0 overflow-hidden p-0">
+          <DialogHeader className="shrink-0 px-base py-base border-b">
             <DialogTitle className="flex items-center gap-base min-w-0">
               <GitPullRequestIcon className="size-icon-lg shrink-0" />
               <span className="truncate">
@@ -131,7 +157,10 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
             </DialogTitle>
           </DialogHeader>
 
-          <div className="max-h-[78vh] overflow-y-auto p-double space-y-double">
+          <div
+            ref={scrollRef}
+            className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-double space-y-double"
+          >
             {loading && !detail ? (
               <div className="flex justify-center py-double">
                 <SpinnerGapIcon className="size-icon-lg animate-spin" />
@@ -156,7 +185,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                     )}
                     {detail.is_draft ? 'Draft' : detail.status}
                   </span>
-                  <span className="text-sm text-low">
+                  <span className="min-w-0 break-all text-sm text-low">
                     {detail.head_branch} → {detail.base_branch}
                   </span>
                   {detail.review_decision && (
@@ -209,12 +238,13 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                   </div>
                 </div>
 
-                <section>
+                <section className="min-w-0 overflow-hidden">
                   <h3 className="mb-base text-sm font-semibold">Description</h3>
                   {detail.body ? (
-                    <SimpleMarkdown
+                    <MarkdownPreview
                       content={detail.body}
-                      className="rounded bg-secondary p-base space-y-half"
+                      theme={actualTheme}
+                      className="min-w-0 max-w-full overflow-hidden rounded bg-secondary p-base [overflow-wrap:anywhere] break-words [&_a]:break-all [&_p]:break-words [&_pre]:max-w-full [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:max-w-full"
                     />
                   ) : (
                     <p className="text-sm text-low">No description.</p>
@@ -313,7 +343,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
             )}
           </div>
 
-          <div className="flex justify-end gap-base border-t px-base py-base">
+          <div className="shrink-0 flex justify-end gap-base border-t px-base py-base">
             <Button variant="outline" onClick={close}>
               Close
             </Button>
