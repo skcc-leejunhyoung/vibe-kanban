@@ -1,5 +1,8 @@
 const GITHUB_ATTACHMENT_PATH_PREFIX = '/user-attachments/assets/';
 
+// Supports escaped brackets and backslashes in Markdown image alt text.
+export const IMAGE_MARKDOWN_PATTERN = /!\[((?:\\.|[^\]])*)\]\(([^)]+)\)/;
+
 function getHtmlAttribute(tag: string, name: string): string | null {
   const attribute = new RegExp(
     `\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
@@ -22,8 +25,19 @@ function isGitHubAttachmentUrl(src: string): boolean {
   }
 }
 
-function escapeMarkdownImageAltText(altText: string): string {
-  return altText.replace(/[\[\]\\]/g, '\\$&');
+export function escapeMarkdownImageAltText(altText: string): string {
+  return altText
+    .replaceAll('\\', '\\\\')
+    .replaceAll('[', '\\[')
+    .replaceAll(']', '\\]');
+}
+
+export function unescapeMarkdownImageAltText(altText: string): string {
+  return altText.replace(/\\(.)/g, (match, character) =>
+    character === '[' || character === ']' || character === '\\'
+      ? character
+      : match
+  );
 }
 
 /**

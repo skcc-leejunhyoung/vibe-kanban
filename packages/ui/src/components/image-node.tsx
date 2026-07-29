@@ -14,6 +14,11 @@ import {
   createDecoratorNode,
   type DecoratorNodeConfig,
 } from './create-decorator-node';
+import {
+  escapeMarkdownImageAltText,
+  IMAGE_MARKDOWN_PATTERN,
+  unescapeMarkdownImageAltText,
+} from '@vibe/ui/lib/githubImageMarkdown';
 
 const ATTACHMENT_URL_STALE_TIME = 4 * 60 * 1000;
 const IMAGE_FILE_EXTENSION_REGEX =
@@ -564,10 +569,14 @@ export function createImageNode(options: CreateImageNodeOptions) {
     type: 'image',
     serialization: {
       format: 'inline',
-      pattern: /!\[([^\]]*)\]\(([^)]+)\)/,
+      pattern: IMAGE_MARKDOWN_PATTERN,
       trigger: ')',
-      serialize: (data) => `![${data.altText}](${data.src})`,
-      deserialize: (match) => ({ src: match[2], altText: match[1] }),
+      serialize: (data) =>
+        `![${escapeMarkdownImageAltText(data.altText)}](${data.src})`,
+      deserialize: (match) => ({
+        src: match[2],
+        altText: unescapeMarkdownImageAltText(match[1]),
+      }),
     },
     component: ImageComponent,
     domStyle: {

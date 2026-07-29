@@ -49,6 +49,10 @@ export function MarkdownSyncPlugin({
     const parsedValue = normalizeGitHubImageHtml(value);
 
     try {
+      // Lexical invokes update listeners synchronously during editor.update().
+      // Set this first so importing an externally supplied value never emits
+      // onChange and rewrites the issue before the user makes an edit.
+      lastSerializedRef.current = parsedValue;
       editor.update(() => {
         if (parsedValue.trim() === '') {
           $getRoot().clear();
@@ -67,10 +71,8 @@ export function MarkdownSyncPlugin({
           }
         }
       });
-      // Avoid rewriting imported GitHub HTML until the user actually edits it.
-      // The editor serializes the normalized representation as Markdown.
-      lastSerializedRef.current = parsedValue;
     } catch (err) {
+      lastSerializedRef.current = undefined;
       console.error('Failed to parse markdown', err);
     }
   }, [editor, value, transformers]);

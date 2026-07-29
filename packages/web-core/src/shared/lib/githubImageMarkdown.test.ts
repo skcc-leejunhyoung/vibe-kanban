@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeGitHubImageHtml } from '@vibe/ui/lib/githubImageMarkdown';
+import {
+  IMAGE_MARKDOWN_PATTERN,
+  normalizeGitHubImageHtml,
+  unescapeMarkdownImageAltText,
+} from '@vibe/ui/lib/githubImageMarkdown';
 
 describe('normalizeGitHubImageHtml', () => {
   it('converts GitHub issue attachment HTML into Markdown image syntax', () => {
@@ -18,12 +22,16 @@ describe('normalizeGitHubImageHtml', () => {
   });
 
   it('escapes Markdown syntax in an image alt attribute', () => {
-    expect(
-      normalizeGitHubImageHtml(
-        '<img alt="[Build]" src="https://github.com/user-attachments/assets/example">'
-      )
-    ).toBe(
+    const markdown = normalizeGitHubImageHtml(
+      '<img alt="[Build]" src="https://github.com/user-attachments/assets/example">'
+    );
+
+    expect(markdown).toBe(
       '![\\[Build\\]](https://github.com/user-attachments/assets/example)'
     );
+
+    const match = markdown.match(IMAGE_MARKDOWN_PATTERN);
+    expect(match).not.toBeNull();
+    expect(unescapeMarkdownImageAltText(match?.[1] ?? '')).toBe('[Build]');
   });
 });
