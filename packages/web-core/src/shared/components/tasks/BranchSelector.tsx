@@ -36,7 +36,9 @@ type RowProps = {
   isHighlighted: boolean;
   isDisabled: boolean;
   onHover: () => void;
+  onFocus: () => void;
   onSelect: () => void;
+  onItemRef: (element: HTMLDivElement | null) => void;
   disabledTooltip?: string;
 };
 
@@ -46,7 +48,9 @@ const BranchRow = memo(function BranchRow({
   isHighlighted,
   isDisabled,
   onHover,
+  onFocus,
   onSelect,
+  onItemRef,
   disabledTooltip,
 }: RowProps) {
   const { t } = useTranslation(['common']);
@@ -60,7 +64,9 @@ const BranchRow = memo(function BranchRow({
 
   const item = (
     <DropdownMenuItem
+      ref={onItemRef}
       onMouseEnter={onHover}
+      onFocus={onFocus}
       onSelect={onSelect}
       disabled={isDisabled}
       className={classes.trim()}
@@ -116,6 +122,8 @@ function BranchSelector({
   const [open, setOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const branchItemRefs = useRef(new Map<number, HTMLDivElement>());
+  const focusedBranchIndexRef = useRef<number | null>(null);
 
   const effectivePlaceholder = placeholder ?? t('branchSelector.placeholder');
   const defaultDisabledTooltip = t('branchSelector.currentDisabled');
@@ -182,18 +190,38 @@ function BranchSelector({
     [filteredBranches, highlightedIndex, isBranchDisabled]
   );
 
-  const attemptSelect = useCallback(() => {
-    if (highlightedIndex == null) return;
-    const branch = filteredBranches[highlightedIndex];
-    if (!branch) return;
-    if (isBranchDisabled(branch)) return;
-    handleBranchSelect(branch.name);
-  }, [
-    highlightedIndex,
-    filteredBranches,
-    isBranchDisabled,
-    handleBranchSelect,
-  ]);
+  const focusBranch = useCallback((index: number) => {
+    focusedBranchIndexRef.current = index;
+    setHighlightedIndex(index);
+    virtuosoRef.current?.scrollIntoView({ index, behavior: 'auto' });
+    requestAnimationFrame(() => branchItemRefs.current.get(index)?.focus());
+  }, []);
+
+  const handleBranchItemRef = useCallback(
+    (index: number, element: HTMLDivElement | null) => {
+      if (element) {
+        branchItemRefs.current.set(index, element);
+        if (focusedBranchIndexRef.current === index) {
+          element.focus();
+        }
+      } else {
+        branchItemRefs.current.delete(index);
+      }
+    },
+    []
+  );
+
+  const focusHighlightedBranch = useCallback(() => {
+    const index =
+      highlightedIndex !== null &&
+      !isBranchDisabled(filteredBranches[highlightedIndex])
+        ? highlightedIndex
+        : filteredBranches.findIndex((branch) => !isBranchDisabled(branch));
+
+    if (index >= 0) {
+      focusBranch(index);
+    }
+  }, [filteredBranches, focusBranch, highlightedIndex, isBranchDisabled]);
 
   return (
     <DropdownMenu
@@ -223,7 +251,20 @@ function BranchSelector({
       </DropdownMenuTrigger>
 
       <TooltipProvider>
-        <DropdownMenuContent className="w-80">
+        <DropdownMenuContent
+          className="w-80"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            requestAnimationFrame(() => searchInputRef.current?.focus());
+          }}
+          onKeyDownCapture={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              searchInputRef.current?.focus();
+            }
+          }}
+        >
           <div className="p-2">
             <div className="relative">
               <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -247,12 +288,7 @@ function BranchSelector({
                     case 'Enter':
                       e.preventDefault();
                       e.stopPropagation();
-                      attemptSelect();
-                      return;
-                    case 'Escape':
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setOpen(false);
+                      focusHighlightedBranch();
                       return;
                     case 'Tab':
                       return;
@@ -288,7 +324,11 @@ function BranchSelector({
                     isDisabled={isDisabled}
                     isHighlighted={isHighlighted}
                     onHover={() => setHighlightedIndex(idx)}
+                    onFocus={() => setHighlightedIndex(idx)}
                     onSelect={() => handleBranchSelect(branch.name)}
+                    onItemRef={(element) =>
+                      handleBranchItemRef(idx, element)
+                    }
                     disabledTooltip={
                       isDisabled
                         ? (disabledTooltip ?? defaultDisabledTooltip)
