@@ -170,7 +170,9 @@ impl AuthorizationProvider for GitHubOAuthProvider {
     }
 
     fn scopes(&self) -> &[&str] {
-        &["read:user", "user:email"]
+        // The authenticated image proxy fetches private GitHub issue attachments
+        // on behalf of the signed-in user.
+        &["read:user", "user:email", "repo"]
     }
 
     fn authorize_url(&self, state: &str, redirect_uri: &str) -> Result<Url> {
@@ -694,5 +696,23 @@ impl AuthorizationProvider for GoogleOAuthProvider {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use secrecy::SecretString;
+
+    use super::{AuthorizationProvider, GitHubOAuthProvider};
+
+    #[test]
+    fn github_requests_private_repository_scope_for_attachment_proxy() {
+        let provider = GitHubOAuthProvider::new(
+            "client-id".to_string(),
+            SecretString::new("client-secret".into()),
+        )
+        .expect("GitHub OAuth provider should initialize");
+
+        assert_eq!(provider.scopes(), ["read:user", "user:email", "repo"]);
     }
 }
