@@ -39,6 +39,10 @@ impl GitHubRepoInfo {
         }
     }
 
+    pub fn search_repo_spec(&self) -> String {
+        format!("{}/{}", self.owner, self.repo_name)
+    }
+
     pub fn from_pr_url(pr_url: &str) -> Result<Self, GhCliError> {
         let url = Url::parse(pr_url).map_err(|error| {
             GhCliError::UnexpectedOutput(format!("Invalid GitHub pull request URL: {error}"))
@@ -307,11 +311,27 @@ impl GhCli {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        self.run_for_host(args, dir, None)
+    }
+
+    fn run_for_host<I, S>(
+        &self,
+        args: I,
+        dir: Option<&Path>,
+        hostname: Option<&str>,
+    ) -> Result<String, GhCliError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         self.ensure_available()?;
         let gh = resolve_executable_path_blocking("gh").ok_or(GhCliError::NotAvailable)?;
         let mut cmd = Command::new(&gh);
         if let Some(d) = dir {
             cmd.current_dir(d);
+        }
+        if let Some(hostname) = hostname {
+            cmd.env("GH_HOST", hostname);
         }
         for arg in args {
             cmd.arg(arg);
@@ -438,10 +458,12 @@ impl GhCli {
 
     pub fn list_pull_request_summaries(
         &self,
+        repository: &str,
+        hostname: Option<&str>,
         involves_me: bool,
     ) -> Result<Vec<PullRequestSummary>, GhCliError> {
-        let args = pull_request_search_args(involves_me);
-        let raw = self.run(args, None)?;
+        let args = pull_request_search_args(repository, involves_me);
+        let raw = self.run_for_host(args, None, hostname)?;
         let prs: Vec<GhSearchPrResponse> = serde_json::from_str(raw.trim()).map_err(|err| {
             GhCliError::UnexpectedOutput(format!(
                 "Failed to parse gh search prs response: {err}; raw: {raw}"
@@ -674,21 +696,23 @@ impl GhCli {
     }
 }
 
-fn pull_request_search_args(involves_me: bool) -> Vec<&'static str> {
+fn pull_request_search_args(repository: &str, involves_me: bool) -> Vec<String> {
     let mut args = vec![
-        "search",
-        "prs",
-        "--limit",
-        "300",
-        "--sort",
-        "updated",
-        "--order",
-        "desc",
-        "--json",
-        "number,url,state,title,body,author,assignees,labels,repository,isDraft,commentsCount,createdAt,updatedAt,closedAt",
+        "search".to_string(),
+        "prs".to_string(),
+        "--repo".to_string(),
+        repository.to_string(),
+        "--limit".to_string(),
+        "300".to_string(),
+        "--sort".to_string(),
+        "updated".to_string(),
+        "--order".to_string(),
+        "desc".to_string(),
+        "--json".to_string(),
+        "number,url,state,title,body,author,assignees,labels,repository,isDraft,commentsCount,createdAt,updatedAt,closedAt".to_string(),
     ];
     if involves_me {
-        args.extend(["--involves", "@me"]);
+        args.extend(["--involves".to_string(), "@me".to_string()]);
     }
     args
 }
@@ -698,13 +722,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pull_request_search_can_include_all_accessible_pull_requests() {
-        let involved_args = pull_request_search_args(true);
-        assert!(involved_args.ends_with(&["--involves", "@me"]));
+    fn pull_request_search_is_scoped_to_repository() {
+        let involved_args = pull_request_search_args("acme/widgets", true);
+        assert!(involved_args.ends_with(&["--involves".to_string(), "@me".to_string()]));
+        assert!(
+            involved_args
+                .windows(2)
+                .any(|args| args == ["--repo", "acme/widgets"])
+        );
 
-        let all_args = pull_request_search_args(false);
-        assert!(!all_args.contains(&"--involves"));
-        assert!(!all_args.contains(&"--author"));
+        let all_args = pull_request_search_args("acme/widgets", false);
+        assert!(!all_args.iter().any(|arg| arg == "--involves"));
+        assert!(!all_args.iter().any(|arg| arg == "--author"));
         assert!(all_args.windows(2).any(|args| args == ["--limit", "300"]));
     }
 
@@ -716,6 +745,7 @@ mod tests {
         assert_eq!(info.owner, "acme");
         assert_eq!(info.repo_name, "widgets");
         assert_eq!(info.hostname.as_deref(), Some("github.example.com"));
+        assert_eq!(info.search_repo_spec(), "acme/widgets");
     }
 
     #[test]

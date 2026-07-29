@@ -33,17 +33,24 @@ impl GitHubProvider {
 
     pub async fn list_pull_request_summaries(
         &self,
+        repo_path: &Path,
+        remote_url: &str,
         involves_me: bool,
     ) -> Result<Vec<PullRequestSummary>, GitHostError> {
+        let repo_info = self.get_repo_info(remote_url, repo_path).await?;
+        let repository = repo_info.search_repo_spec();
+        let hostname = repo_info.hostname;
         let cli = self.gh_cli.clone();
-        task::spawn_blocking(move || cli.list_pull_request_summaries(involves_me))
-            .await
-            .map_err(|err| {
-                GitHostError::PullRequest(format!(
-                    "Failed to execute GitHub CLI for pull request search: {err}"
-                ))
-            })?
-            .map_err(Into::into)
+        task::spawn_blocking(move || {
+            cli.list_pull_request_summaries(&repository, hostname.as_deref(), involves_me)
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::PullRequest(format!(
+                "Failed to execute GitHub CLI for pull request search: {err}"
+            ))
+        })?
+        .map_err(Into::into)
     }
 
     async fn get_repo_info(

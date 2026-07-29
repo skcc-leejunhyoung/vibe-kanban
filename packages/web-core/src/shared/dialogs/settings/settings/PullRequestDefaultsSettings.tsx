@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { FunnelIcon } from '@phosphor-icons/react';
 import { Button } from '@vibe/ui/components/Button';
 import { SettingsCard } from './SettingsComponents';
 import { PullRequestFiltersDialog } from '@/pages/pull-requests/PullRequestFiltersDialog';
 import { DEFAULT_PULL_REQUEST_FILTER_STATE } from '@/pages/pull-requests/pullRequestFilters';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import { repoApi } from '@/shared/lib/api';
 
 export function PullRequestDefaultsSettings() {
   const [open, setOpen] = useState(false);
@@ -14,6 +16,15 @@ export function PullRequestDefaultsSettings() {
   const setFilters = useUiPreferencesStore(
     (state) => state.setPullRequestDefaultFilters
   );
+  const reposQuery = useQuery({
+    queryKey: ['repos'],
+    queryFn: () => repoApi.list(),
+    staleTime: 5 * 60_000,
+  });
+  const repositories = (reposQuery.data ?? []).map((repo) => ({
+    value: repo.id,
+    label: repo.display_name,
+  }));
 
   return (
     <>
@@ -30,7 +41,7 @@ export function PullRequestDefaultsSettings() {
         open={open}
         onOpenChange={setOpen}
         filters={filters}
-        repositories={[]}
+        repositories={repositories}
         authors={[]}
         onChange={setFilters}
         onReset={() => setFilters(DEFAULT_PULL_REQUEST_FILTER_STATE)}

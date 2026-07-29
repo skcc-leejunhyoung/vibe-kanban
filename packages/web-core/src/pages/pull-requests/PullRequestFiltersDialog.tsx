@@ -16,7 +16,7 @@ interface PullRequestFiltersDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   filters: PullRequestFilterState;
-  repositories: string[];
+  repositories: Array<{ value: string; label: string }>;
   authors: string[];
   onChange: (filters: PullRequestFilterState) => void;
   onReset: () => void;
@@ -59,16 +59,18 @@ export function PullRequestFiltersDialog({
                 onChange={(event) => update('repository', event.target.value)}
                 className={selectClassName}
               >
-                <option value="all">All repositories</option>
+                <option value="all">Select a repository</option>
                 {filters.repository !== 'all' &&
-                  !repositories.includes(filters.repository) && (
+                  !repositories.some(
+                    (repository) => repository.value === filters.repository
+                  ) && (
                     <option value={filters.repository}>
                       {filters.repository}
                     </option>
                   )}
-                {repositories.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
+                {repositories.map((repository) => (
+                  <option key={repository.value} value={repository.value}>
+                    {repository.label}
                   </option>
                 ))}
               </select>
@@ -78,7 +80,7 @@ export function PullRequestFiltersDialog({
                 onChange={(event) =>
                   update('repository', event.target.value || 'all')
                 }
-                placeholder="All repositories or owner/repo"
+                placeholder="Repository ID"
                 className={selectClassName}
               />
             )}

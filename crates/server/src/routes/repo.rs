@@ -487,11 +487,23 @@ pub async fn list_open_prs(
 }
 
 pub async fn list_involved_prs(
+    State(deployment): State<DeploymentImpl>,
+    Path(repo_id): Path<Uuid>,
     Query(query): Query<ListPullRequestSummariesQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<PullRequestSummary>, ListPrsError>>, ApiError> {
+    let repo = deployment
+        .repo()
+        .get_by_id(&deployment.db().pool, repo_id)
+        .await?;
+    let remote = deployment.git().get_default_remote(&repo.path)?;
+    if GitHostService::from_url(&remote.url).is_err() {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            ListPrsError::UnsupportedProvider,
+        )));
+    }
     let provider = GitHubProvider::new()?;
     match provider
-        .list_pull_request_summaries(query.involves_me)
+        .list_pull_request_summaries(&repo.path, &remote.url, query.involves_me)
         .await
     {
         Ok(prs) => Ok(ResponseJson(ApiResponse::success(prs))),
@@ -502,7 +514,7 @@ pub async fn list_involved_prs(
             ListPrsError::AuthFailed { message },
         ))),
         Err(e) => {
-            tracing::error!("Failed to list pull requests: {e}");
+            tracing::error!("Failed to list pull requests for repo {repo_id}: {e}");
             Ok(ResponseJson(ApiResponse::error(&e.to_string())))
         }
     }
@@ -656,7 +668,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/repos/{repo_id}/fetch", post(fetch_repo_remote))
         .route("/repos/{repo_id}/push", post(push_repo_branch))
         .route("/repos/{repo_id}/prs", get(list_open_prs))
-        .route("/pull-requests", get(list_involved_prs))
+        .route("/repos/{repo_id}/pull-requests", get(list_involved_prs))
         .route("/repos/pr-info", get(get_pr_info))
         .route("/repos/pr-comments", get(get_pr_comments_by_url))
         .route(

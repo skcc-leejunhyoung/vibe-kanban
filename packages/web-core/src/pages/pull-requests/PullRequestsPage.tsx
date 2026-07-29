@@ -97,6 +97,31 @@ export function PullRequestsPage() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
 
+  const reposQuery = useQuery({
+    queryKey: ['repos'],
+    queryFn: () => repoApi.list(),
+    staleTime: 5 * 60_000,
+  });
+  const repositories = useMemo(
+    () =>
+      (reposQuery.data ?? []).map((repo) => ({
+        value: repo.id,
+        label: repo.display_name,
+      })),
+    [reposQuery.data]
+  );
+
+  useEffect(() => {
+    if (
+      !reposQuery.isSuccess ||
+      filters.repository === 'all' ||
+      repositories.some((repository) => repository.value === filters.repository)
+    ) {
+      return;
+    }
+    setFilters((current) => ({ ...current, repository: 'all' }));
+  }, [filters.repository, reposQuery.isSuccess, repositories]);
+
   useEffect(() => {
     setFilters((current) =>
       resolvePullRequestFiltersAfterDefaultsChange(
@@ -109,27 +134,28 @@ export function PullRequestsPage() {
   }, [defaultFilters]);
 
   const pullRequestsQuery = useQuery({
-    queryKey: ['pull-request-summaries', filters.involvesMe],
+    queryKey: [
+      'pull-request-summaries',
+      filters.repository,
+      filters.involvesMe,
+    ],
     queryFn: async () => {
-      const result = await repoApi.listPullRequestSummaries(filters.involvesMe);
+      const result = await repoApi.listPullRequestSummaries(
+        filters.repository,
+        filters.involvesMe
+      );
       if (!result.success) {
         throw new Error(result.message || 'Failed to load pull requests');
       }
       return result.data;
     },
+    enabled: filters.repository !== 'all',
     staleTime: 5 * 60_000,
   });
 
   const pullRequests = useMemo(
     () => pullRequestsQuery.data ?? [],
     [pullRequestsQuery.data]
-  );
-  const repositories = useMemo(
-    () =>
-      [...new Set(pullRequests.map((pr) => pr.repository))].sort((a, b) =>
-        a.localeCompare(b)
-      ),
-    [pullRequests]
   );
   const authors = useMemo(
     () =>
@@ -146,12 +172,6 @@ export function PullRequestsPage() {
   const filteredPullRequests = useMemo(
     () =>
       pullRequests.filter((pr) => {
-        if (
-          filters.repository !== 'all' &&
-          pr.repository !== filters.repository
-        ) {
-          return false;
-        }
         if (filters.status !== 'all' && pr.status !== filters.status) {
           return false;
         }
@@ -184,6 +204,11 @@ export function PullRequestsPage() {
       Math.min(current, Math.max(0, filteredPullRequests.length - 1))
     );
   }, [filteredPullRequests.length]);
+
+  useEffect(() => {
+    setSelectedPullRequest(null);
+    setSelectedIndex(0);
+  }, [filters.repository]);
 
   useEffect(() => {
     const openFilters = () => setFiltersOpen(true);
@@ -265,11 +290,29 @@ export function PullRequestsPage() {
             <h1 className="text-xl font-semibold text-high">Pull Requests</h1>
             <p className="mt-half text-sm text-low">
               {filters.involvesMe
-                ? 'Pull requests involving you on GitHub'
-                : 'Recently updated pull requests on GitHub'}
+                ? 'Pull requests involving you in the selected repository'
+                : 'Recently updated pull requests in the selected repository'}
             </p>
           </div>
           <div className="flex items-center gap-half">
+            <select
+              value={filters.repository}
+              onChange={(event) =>
+                setFilters((current) => ({
+                  ...current,
+                  repository: event.target.value,
+                }))
+              }
+              className="h-9 max-w-64 rounded border border-border bg-secondary px-base text-sm text-normal focus:outline-none focus:ring-1 focus:ring-brand"
+              aria-label="Repository"
+            >
+              <option value="all">Select repository</option>
+              {repositories.map((repository) => (
+                <option key={repository.value} value={repository.value}>
+                  {repository.label}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={() => setFiltersOpen(true)}
@@ -315,7 +358,19 @@ export function PullRequestsPage() {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {pullRequestsQuery.isLoading ? (
+        {reposQuery.isLoading ? (
+          <div className="flex flex-1 items-center justify-center">
+            <SpinnerGapIcon className="size-icon-lg animate-spin text-low" />
+          </div>
+        ) : repositories.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center px-double text-center text-sm text-low">
+            Register a repository before viewing pull requests.
+          </div>
+        ) : filters.repository === 'all' ? (
+          <div className="flex flex-1 items-center justify-center px-double text-center text-sm text-low">
+            Select a repository to view its pull requests.
+          </div>
+        ) : pullRequestsQuery.isLoading ? (
           <div className="flex h-full items-center justify-center gap-half text-low">
             <SpinnerGapIcon className="size-icon-base animate-spin" />
             Loading pull requests…
