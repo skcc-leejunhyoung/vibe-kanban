@@ -436,24 +436,26 @@ impl GhCli {
         Self::parse_pr_view(&raw)
     }
 
-    pub fn list_involved_prs(&self) -> Result<Vec<PullRequestSummary>, GhCliError> {
-        let raw = self.run(
-            [
-                "search",
-                "prs",
-                "--involves",
-                "@me",
-                "--limit",
-                "100",
-                "--sort",
-                "updated",
-                "--order",
-                "desc",
-                "--json",
-                "number,url,state,title,body,author,assignees,labels,repository,isDraft,commentsCount,createdAt,updatedAt,closedAt",
-            ],
-            None,
-        )?;
+    pub fn list_pull_request_summaries(
+        &self,
+        involves_me: bool,
+    ) -> Result<Vec<PullRequestSummary>, GhCliError> {
+        let mut args = vec![
+            "search",
+            "prs",
+            "--limit",
+            "100",
+            "--sort",
+            "updated",
+            "--order",
+            "desc",
+            "--json",
+            "number,url,state,title,body,author,assignees,labels,repository,isDraft,commentsCount,createdAt,updatedAt,closedAt",
+        ];
+        if involves_me {
+            args.extend(["--involves", "@me"]);
+        }
+        let raw = self.run(args, None)?;
         let prs: Vec<GhSearchPrResponse> = serde_json::from_str(raw.trim()).map_err(|err| {
             GhCliError::UnexpectedOutput(format!(
                 "Failed to parse gh search prs response: {err}; raw: {raw}"

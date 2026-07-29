@@ -63,6 +63,7 @@ import {
   ArrowSquareOutIcon,
   ArrowsOutIcon,
   SparkleIcon,
+  FunnelIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -119,6 +120,10 @@ import {
 } from '@/shared/lib/commandPaletteEvents';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
+import {
+  PULL_REQUESTS_FOCUS_SEARCH_EVENT,
+  PULL_REQUESTS_OPEN_FILTERS_EVENT,
+} from '@/pages/pull-requests/pullRequestFilters';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -1103,6 +1108,46 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     isEnabled: (ctx) => ctx.isSignedIn,
     execute: (ctx) => ctx.appNavigation.goToNotifications(),
+  } satisfies GlobalActionDefinition,
+
+  GotoPullRequests: {
+    id: 'goto-pull-requests',
+    label: 'Goto: Pull Requests',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'pr', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.appRuntime === 'local',
+    execute: (ctx) => {
+      ctx.appNavigation.goToPullRequests?.();
+    },
+  } satisfies GlobalActionDefinition,
+
+  FilterPullRequests: {
+    id: 'filter-pull-requests',
+    label: 'Pull Requests: Filters',
+    icon: FunnelIcon,
+    keywords: ['pull request', 'pr', 'filter'],
+    requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
+    executeAfterClose: true,
+    isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
+    execute: () => {
+      window.dispatchEvent(new Event(PULL_REQUESTS_OPEN_FILTERS_EVENT));
+    },
+  } satisfies GlobalActionDefinition,
+
+  SearchPullRequests: {
+    id: 'search-pull-requests',
+    label: 'Pull Requests: Search',
+    icon: MagnifyingGlassIcon,
+    keywords: ['pull request', 'pr', 'search', 'find'],
+    requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
+    executeAfterClose: true,
+    isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
+    execute: () => {
+      window.dispatchEvent(new Event(PULL_REQUESTS_FOCUS_SEARCH_EVENT));
+    },
   } satisfies GlobalActionDefinition,
 
   SignOut: {

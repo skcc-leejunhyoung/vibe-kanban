@@ -85,6 +85,7 @@ import {
   updateSplitPresetLayout,
 } from '@/shared/lib/openInSplitPane';
 import { RightSidebarSectionOrderEditor } from './RightSidebarSectionOrderEditor';
+import { PullRequestDefaultsSettings } from './PullRequestDefaultsSettings';
 
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
@@ -1217,6 +1218,8 @@ export function GeneralSettingsSection() {
           />
         </div>
       </SettingsCard>
+
+      <PullRequestDefaultsSettings />
 
       <SettingsSaveBar
         show={hasUnsavedChanges}

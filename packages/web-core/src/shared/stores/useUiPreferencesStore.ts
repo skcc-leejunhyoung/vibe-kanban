@@ -18,6 +18,10 @@ import {
   normalizeRightSidebarSectionOrder,
   type RightSidebarSectionId,
 } from '@/shared/lib/rightSidebarSections';
+import {
+  DEFAULT_PULL_REQUEST_FILTER_STATE,
+  type PullRequestFilterState,
+} from '@/pages/pull-requests/pullRequestFilters';
 
 /**
  * Bucket key used to store preview shortcuts for workspaces that aren't
@@ -35,7 +39,7 @@ export const RIGHT_MAIN_PANEL_MODES = {
 export type RightMainPanelMode =
   (typeof RIGHT_MAIN_PANEL_MODES)[keyof typeof RIGHT_MAIN_PANEL_MODES];
 
-export type LayoutMode = 'workspaces' | 'kanban';
+export type LayoutMode = 'workspaces' | 'kanban' | 'pull-requests';
 
 export type MobileTab =
   | 'workspaces'
@@ -529,6 +533,7 @@ type State = {
   selectedOrgId: string | null;
   selectedProjectId: string | null;
   createDraftWorkspaceByDefault: boolean;
+  pullRequestDefaultFilters: PullRequestFilterState;
 
   // UI preferences actions
   setRepoAction: (repoId: string, action: RepoAction) => void;
@@ -626,6 +631,7 @@ type State = {
   clearSelectedOrgId: () => void;
   setSelectedProjectId: (projectId: string | null) => void;
   setCreateDraftWorkspaceByDefault: (value: boolean) => void;
+  setPullRequestDefaultFilters: (filters: PullRequestFilterState) => void;
 };
 
 export const useUiPreferencesStore = create<State>()((set, get) => ({
@@ -680,6 +686,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   selectedOrgId: null,
   selectedProjectId: null,
   createDraftWorkspaceByDefault: DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
+  pullRequestDefaultFilters: DEFAULT_PULL_REQUEST_FILTER_STATE,
 
   // UI preferences actions
   setRepoAction: (repoId, action) =>
@@ -1070,6 +1077,8 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   setSelectedProjectId: (projectId) => set({ selectedProjectId: projectId }),
   setCreateDraftWorkspaceByDefault: (value) =>
     set({ createDraftWorkspaceByDefault: value }),
+  setPullRequestDefaultFilters: (filters) =>
+    set({ pullRequestDefaultFilters: { ...filters } }),
 }));
 
 // Hook for repo action preference

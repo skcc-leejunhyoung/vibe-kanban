@@ -182,6 +182,10 @@ pub struct UiPreferencesData {
     /// Default setting for creating a draft workspace from new issues
     #[serde(default)]
     pub create_draft_workspace_by_default: Option<bool>,
+    /// Default filters for the standalone pull requests page. Opaque JSON
+    /// shaped and validated by the frontend.
+    #[serde(default)]
+    pub pull_request_default_filters: Option<serde_json::Value>,
     /// Kanban project view selections (active view per project)
     #[serde(default)]
     pub kanban_project_view_selections: std::collections::HashMap<String, serde_json::Value>,

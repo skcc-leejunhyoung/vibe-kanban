@@ -15,8 +15,10 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.GotoWorkspaces },
           { type: 'action', action: Actions.GotoProjects },
           { type: 'action', action: Actions.GotoNotifications },
+          { type: 'action', action: Actions.GotoPullRequests },
           { type: 'action', action: Actions.SearchWorkspaceList },
           { type: 'action', action: Actions.SearchProjectIssues },
+          { type: 'action', action: Actions.SearchPullRequests },
         ],
       },
       {
@@ -45,6 +47,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.SelectProjectView },
           { type: 'action', action: Actions.ToggleAppBar },
           { type: 'action', action: Actions.ToggleWorkspaceArchiveView },
+          { type: 'action', action: Actions.FilterPullRequests },
           { type: 'childPages', id: 'viewOptions' },
           { type: 'childPages', id: 'diffOptions' },
         ],

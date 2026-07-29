@@ -27,6 +27,10 @@ import {
   type ProjectViewDefinition,
 } from '@/shared/stores/useUiPreferencesStore';
 import {
+  DEFAULT_PULL_REQUEST_FILTER_STATE,
+  type PullRequestFilterState,
+} from '@/pages/pull-requests/pullRequestFilters';
+import {
   normalizeRightSidebarSectionOrder,
   type RightSidebarSectionId,
 } from '@/shared/lib/rightSidebarSections';
@@ -57,6 +61,7 @@ function storeToScratchData(state: {
   selectedOrgId: string | null;
   selectedProjectId: string | null;
   createDraftWorkspaceByDefault: boolean;
+  pullRequestDefaultFilters: PullRequestFilterState;
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
   projectViewsById: Record<string, ProjectViewDefinition[]>;
   kanbanProjectViewPreferences: Record<
@@ -99,6 +104,8 @@ function storeToScratchData(state: {
     selected_org_id: state.selectedOrgId,
     selected_project_id: state.selectedProjectId,
     create_draft_workspace_by_default: state.createDraftWorkspaceByDefault,
+    pull_request_default_filters:
+      state.pullRequestDefaultFilters as unknown as JsonValue,
     kanban_project_view_selections: state.kanbanProjectViewSelections as Record<
       string,
       JsonValue
@@ -141,6 +148,7 @@ function scratchDataToStore(data: UiPreferencesData): {
   selectedOrgId: string | null;
   selectedProjectId: string | null;
   createDraftWorkspaceByDefault: boolean;
+  pullRequestDefaultFilters: PullRequestFilterState;
   kanbanProjectViewSelections: Record<string, KanbanProjectViewSelection>;
   projectViewsById: Record<string, ProjectViewDefinition[]>;
   kanbanProjectViewPreferences: Record<
@@ -235,6 +243,10 @@ function scratchDataToStore(data: UiPreferencesData): {
     createDraftWorkspaceByDefault:
       data.create_draft_workspace_by_default ??
       DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
+    pullRequestDefaultFilters: {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      ...((data.pull_request_default_filters ?? {}) as PullRequestFilterState),
+    },
     kanbanProjectViewSelections: (data.kanban_project_view_selections ??
       {}) as Record<string, KanbanProjectViewSelection>,
     projectViewsById: (data.kanban_project_views ?? {}) as unknown as Record<
@@ -285,6 +297,7 @@ export function useUiPreferencesScratch() {
     selectedOrgId: state.selectedOrgId,
     selectedProjectId: state.selectedProjectId,
     createDraftWorkspaceByDefault: state.createDraftWorkspaceByDefault,
+    pullRequestDefaultFilters: state.pullRequestDefaultFilters,
     kanbanProjectViewSelections: state.kanbanProjectViewSelections,
     projectViewsById: state.projectViewsById,
     kanbanProjectViewPreferences: state.kanbanProjectViewPreferences,
@@ -321,6 +334,7 @@ export function useUiPreferencesScratch() {
       selectedOrgId: currentState.selectedOrgId,
       selectedProjectId: currentState.selectedProjectId,
       createDraftWorkspaceByDefault: currentState.createDraftWorkspaceByDefault,
+      pullRequestDefaultFilters: currentState.pullRequestDefaultFilters,
       kanbanProjectViewSelections: currentState.kanbanProjectViewSelections,
       projectViewsById: currentState.projectViewsById,
       kanbanProjectViewPreferences: currentState.kanbanProjectViewPreferences,
@@ -374,6 +388,7 @@ export function useUiPreferencesScratch() {
         selectedProjectId: serverState.selectedProjectId,
         createDraftWorkspaceByDefault:
           serverState.createDraftWorkspaceByDefault,
+        pullRequestDefaultFilters: serverState.pullRequestDefaultFilters,
         kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
         projectViewsById: serverState.projectViewsById,
         kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,

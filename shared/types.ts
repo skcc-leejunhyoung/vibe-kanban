@@ -170,6 +170,11 @@ selected_project_id: string | null,
  */
 create_draft_workspace_by_default: boolean | null,
 /**
+ * Default filters for the standalone pull requests page. Opaque JSON
+ * shaped and validated by the frontend.
+ */
+pull_request_default_filters: JsonValue | null,
+/**
  * Kanban project view selections (active view per project)
  */
 kanban_project_view_selections: { [key in string]?: JsonValue },

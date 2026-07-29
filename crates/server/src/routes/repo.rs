@@ -431,6 +431,16 @@ pub struct ListPrsQuery {
     pub remote: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListPullRequestSummariesQuery {
+    #[serde(default = "default_true")]
+    pub involves_me: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 pub async fn list_open_prs(
     State(deployment): State<DeploymentImpl>,
     Path(repo_id): Path<Uuid>,
@@ -480,10 +490,14 @@ pub async fn list_open_prs(
     }
 }
 
-pub async fn list_involved_prs()
--> Result<ResponseJson<ApiResponse<Vec<PullRequestSummary>, ListPrsError>>, ApiError> {
+pub async fn list_involved_prs(
+    Query(query): Query<ListPullRequestSummariesQuery>,
+) -> Result<ResponseJson<ApiResponse<Vec<PullRequestSummary>, ListPrsError>>, ApiError> {
     let provider = GitHubProvider::new()?;
-    match provider.list_involved_prs().await {
+    match provider
+        .list_pull_request_summaries(query.involves_me)
+        .await
+    {
         Ok(prs) => Ok(ResponseJson(ApiResponse::success(prs))),
         Err(GitHostError::CliNotInstalled { provider }) => Ok(ResponseJson(
             ApiResponse::error_with_data(ListPrsError::CliNotInstalled { provider }),

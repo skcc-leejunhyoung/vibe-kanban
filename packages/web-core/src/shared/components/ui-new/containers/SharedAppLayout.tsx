@@ -431,19 +431,6 @@ export function SharedAppLayout() {
             <button
               type="button"
               onClick={() => {
-                void navigate({ to: '/pull-requests' });
-                setIsDrawerOpen(false);
-              }}
-              className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
-            >
-              <GitPullRequestIcon className="h-4 w-4" />
-              Pull Requests
-            </button>
-
-            {/* Quick chat link */}
-            <button
-              type="button"
-              onClick={() => {
                 void QuickChatDialog.show();
                 setIsDrawerOpen(false);
               }}
@@ -451,6 +438,19 @@ export function SharedAppLayout() {
             >
               <LightningIcon className="h-4 w-4" />
               Quick chat
+            </button>
+
+            {/* Pull requests link */}
+            <button
+              type="button"
+              onClick={() => {
+                void navigate({ to: '/pull-requests' });
+                setIsDrawerOpen(false);
+              }}
+              className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+            >
+              <GitPullRequestIcon className="h-4 w-4" />
+              Pull Requests
             </button>
 
             {/* Notifications link */}

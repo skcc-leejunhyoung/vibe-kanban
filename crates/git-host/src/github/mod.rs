@@ -31,9 +31,12 @@ impl GitHubProvider {
         })
     }
 
-    pub async fn list_involved_prs(&self) -> Result<Vec<PullRequestSummary>, GitHostError> {
+    pub async fn list_pull_request_summaries(
+        &self,
+        involves_me: bool,
+    ) -> Result<Vec<PullRequestSummary>, GitHostError> {
         let cli = self.gh_cli.clone();
-        task::spawn_blocking(move || cli.list_involved_prs())
+        task::spawn_blocking(move || cli.list_pull_request_summaries(involves_me))
             .await
             .map_err(|err| {
                 GitHostError::PullRequest(format!(

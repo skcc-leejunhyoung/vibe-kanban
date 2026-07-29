@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useParams } from '@tanstack/react-router';
+import { useLocation, useParams } from '@tanstack/react-router';
 import {
   useUiPreferencesStore,
   useWorkspacePanelState,
@@ -54,6 +54,7 @@ export function useActionVisibilityContext(
     strict: false,
   });
   const destination = useCurrentAppDestination();
+  const location = useLocation();
   const { isCreateMode: kanbanCreateMode } = useCurrentKanbanRouteState();
   const effectiveProjectId = options?.projectId ?? routeProjectId;
   const optionIssueIds = options?.issueIds;
@@ -85,9 +86,12 @@ export function useActionVisibilityContext(
   }, [shouldResolveSelectedIssueParent, projectIssues, effectiveIssueIds]);
 
   // Derive layoutMode from current route instead of persisted state
-  const layoutMode: LayoutMode = isProjectDestination(destination)
-    ? 'kanban'
-    : 'workspaces';
+  const layoutMode: LayoutMode =
+    location.pathname === '/pull-requests'
+      ? 'pull-requests'
+      : isProjectDestination(destination)
+        ? 'kanban'
+        : 'workspaces';
   const { config } = useUserSystem();
   const { isStarting, isStopping, runningDevServers } =
     useDevServer(workspaceId);

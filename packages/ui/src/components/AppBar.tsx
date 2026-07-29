@@ -221,6 +221,15 @@ export function AppBar({
       onClick: onWorkspacesClick,
     });
   }
+  if (onQuickChatClick) {
+    workspaceItems.push({
+      key: 'quick-chat',
+      kind: 'icon-button',
+      label: 'Quick chat',
+      icon: LightningIcon,
+      onClick: onQuickChatClick,
+    });
+  }
   if (onPullRequestsClick) {
     workspaceItems.push({
       key: 'pull-requests',
@@ -229,15 +238,6 @@ export function AppBar({
       icon: GitPullRequestIcon,
       isActive: isPullRequestsActive,
       onClick: onPullRequestsClick,
-    });
-  }
-  if (onQuickChatClick) {
-    workspaceItems.push({
-      key: 'quick-chat',
-      kind: 'icon-button',
-      label: 'Quick chat',
-      icon: LightningIcon,
-      onClick: onQuickChatClick,
     });
   }
   if (workspaceItems.length > 0) {
