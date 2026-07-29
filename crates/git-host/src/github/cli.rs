@@ -38,6 +38,27 @@ impl GitHubRepoInfo {
             None => format!("{}/{}", self.owner, self.repo_name),
         }
     }
+
+    pub fn from_pr_url(pr_url: &str) -> Result<Self, GhCliError> {
+        let url = Url::parse(pr_url).map_err(|error| {
+            GhCliError::UnexpectedOutput(format!("Invalid GitHub pull request URL: {error}"))
+        })?;
+        let segments = url
+            .path_segments()
+            .map(|segments| segments.collect::<Vec<_>>())
+            .unwrap_or_default();
+        if segments.len() < 4 || segments[2] != "pull" {
+            return Err(GhCliError::UnexpectedOutput(format!(
+                "Invalid GitHub pull request URL: {pr_url}"
+            )));
+        }
+
+        Ok(Self {
+            owner: segments[0].to_string(),
+            repo_name: segments[1].trim_end_matches(".git").to_string(),
+            hostname: url.host_str().map(String::from),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -583,6 +604,16 @@ impl GhCli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_repository_info_from_pull_request_url() {
+        let info =
+            GitHubRepoInfo::from_pr_url("https://github.example.com/acme/widgets/pull/42").unwrap();
+
+        assert_eq!(info.owner, "acme");
+        assert_eq!(info.repo_name, "widgets");
+        assert_eq!(info.hostname.as_deref(), Some("github.example.com"));
+    }
 
     #[test]
     fn parse_pr_view_preserves_conversation_activity() {

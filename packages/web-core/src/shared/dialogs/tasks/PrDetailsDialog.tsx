@@ -287,8 +287,9 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       staleTime: 30_000,
     });
     const commentsQuery = usePrComments(workspaceId, repoId, {
-      enabled: modal.visible && !!workspaceId && !!repoId,
+      enabled: modal.visible,
       prNumber,
+      prUrl,
     });
     const comments = useMemo(
       () => commentsQuery.data?.comments ?? [],
@@ -306,17 +307,31 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       }: {
         threadId: string;
         resolved: boolean;
-      }) =>
-        workspacesApi.setPrReviewThreadResolved(
-          workspaceId!,
-          repoId!,
+      }) => {
+        if (workspaceId && repoId) {
+          return workspacesApi.setPrReviewThreadResolved(
+            workspaceId,
+            repoId,
+            prNumber,
+            threadId,
+            resolved
+          );
+        }
+        return issuePrsApi.setPrReviewThreadResolved(
+          prUrl,
           prNumber,
           threadId,
           resolved
-        ),
+        );
+      },
       onSuccess: () =>
         queryClient.invalidateQueries({
-          queryKey: prCommentsKeys.byAttempt(workspaceId, repoId, prNumber),
+          queryKey: prCommentsKeys.byAttempt(
+            workspaceId,
+            repoId,
+            prNumber,
+            prUrl
+          ),
         }),
     });
     const close = () => {
@@ -526,14 +541,11 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                               selectedIds={selectedIds}
                               toggleComment={toggleComment}
                               theme={actualTheme}
-                              onSetResolved={
-                                workspaceId && repoId
-                                  ? (threadId, resolved) =>
-                                      resolveThreadMutation.mutate({
-                                        threadId,
-                                        resolved,
-                                      })
-                                  : undefined
+                              onSetResolved={(threadId, resolved) =>
+                                resolveThreadMutation.mutate({
+                                  threadId,
+                                  resolved,
+                                })
                               }
                               isUpdating={
                                 resolveThreadMutation.isPending &&

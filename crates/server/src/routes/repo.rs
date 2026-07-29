@@ -17,7 +17,11 @@ use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{
+    DeploymentImpl,
+    error::ApiError,
+    routes::workspaces::pr::{GetPrCommentsError, PrCommentsResponse},
+};
 
 #[derive(serde::Deserialize)]
 pub struct OpenEditorRequest {
@@ -478,6 +482,20 @@ pub struct PrInfoQuery {
     pub url: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PrCommentsByUrlQuery {
+    pub url: String,
+    pub pr_number: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolvePrCommentByUrlRequest {
+    pub url: String,
+    pub pr_number: i64,
+    pub thread_id: String,
+    pub resolved: bool,
+}
+
 pub async fn get_pr_info(
     State(_deployment): State<DeploymentImpl>,
     Query(query): Query<PrInfoQuery>,
@@ -511,6 +529,46 @@ pub async fn get_pr_info(
             Ok(ResponseJson(ApiResponse::error(&e.to_string())))
         }
     }
+}
+
+pub async fn get_pr_comments_by_url(
+    State(_deployment): State<DeploymentImpl>,
+    Query(query): Query<PrCommentsByUrlQuery>,
+) -> Result<ResponseJson<ApiResponse<PrCommentsResponse, GetPrCommentsError>>, ApiError> {
+    let git_host = GitHostService::from_url(&query.url)?;
+    let provider = git_host.provider_kind();
+
+    match git_host
+        .get_pr_comments_by_url(&query.url, query.pr_number)
+        .await
+    {
+        Ok(comments) => Ok(ResponseJson(ApiResponse::success(PrCommentsResponse {
+            comments,
+        }))),
+        Err(GitHostError::CliNotInstalled { provider }) => Ok(ResponseJson(
+            ApiResponse::error_with_data(GetPrCommentsError::CliNotInstalled { provider }),
+        )),
+        Err(GitHostError::AuthFailed(_)) => Ok(ResponseJson(ApiResponse::error_with_data(
+            GetPrCommentsError::CliNotLoggedIn { provider },
+        ))),
+        Err(error) => Err(ApiError::GitHost(error)),
+    }
+}
+
+pub async fn set_pr_review_thread_resolved_by_url(
+    State(_deployment): State<DeploymentImpl>,
+    ResponseJson(payload): ResponseJson<ResolvePrCommentByUrlRequest>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    GitHostService::from_url(&payload.url)?
+        .set_pr_review_thread_resolved_by_url(
+            &payload.url,
+            payload.pr_number,
+            &payload.thread_id,
+            payload.resolved,
+        )
+        .await?;
+
+    Ok(ResponseJson(ApiResponse::success(())))
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -568,6 +626,11 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/repos/{repo_id}/push", post(push_repo_branch))
         .route("/repos/{repo_id}/prs", get(list_open_prs))
         .route("/repos/pr-info", get(get_pr_info))
+        .route("/repos/pr-comments", get(get_pr_comments_by_url))
+        .route(
+            "/repos/pr-comments/resolve",
+            post(set_pr_review_thread_resolved_by_url),
+        )
         .route("/repos/{repo_id}/search", get(search_repo))
         .route("/repos/{repo_id}/open-editor", post(open_repo_in_editor))
 }

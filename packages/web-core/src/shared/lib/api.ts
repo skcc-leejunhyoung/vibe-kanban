@@ -1519,6 +1519,34 @@ export const issuePrsApi = {
     return handleApiResponseAsResult<PullRequestDetail, ListPrsError>(response);
   },
 
+  getPrComments: async (
+    url: string,
+    prNumber: number
+  ): Promise<PrCommentsResponse> => {
+    const response = await makeRequest(
+      `/api/repos/pr-comments?url=${encodeURIComponent(url)}&pr_number=${encodeURIComponent(prNumber)}`
+    );
+    return handleApiResponse<PrCommentsResponse>(response);
+  },
+
+  setPrReviewThreadResolved: async (
+    url: string,
+    prNumber: number,
+    threadId: string,
+    resolved: boolean
+  ): Promise<void> => {
+    const response = await makeRequest('/api/repos/pr-comments/resolve', {
+      method: 'POST',
+      body: JSON.stringify({
+        url,
+        pr_number: prNumber,
+        thread_id: threadId,
+        resolved,
+      }),
+    });
+    return handleApiResponse<void>(response);
+  },
+
   linkToIssue: async (data: LinkPrToIssueRequest): Promise<void> => {
     const response = await makeRequest('/api/remote/pull-requests/link', {
       method: 'POST',

@@ -43,10 +43,24 @@ pub trait GitHostProvider: Send + Sync {
         pr_number: i64,
     ) -> Result<Vec<UnifiedPrComment>, GitHostError>;
 
+    async fn get_pr_comments_by_url(
+        &self,
+        pr_url: &str,
+        pr_number: i64,
+    ) -> Result<Vec<UnifiedPrComment>, GitHostError>;
+
     async fn set_pr_review_thread_resolved(
         &self,
         repo_path: &Path,
         remote_url: &str,
+        pr_number: i64,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), GitHostError>;
+
+    async fn set_pr_review_thread_resolved_by_url(
+        &self,
+        pr_url: &str,
         pr_number: i64,
         thread_id: &str,
         resolved: bool,

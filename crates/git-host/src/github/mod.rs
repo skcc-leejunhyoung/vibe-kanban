@@ -145,6 +145,89 @@ impl GitHubProvider {
             })?
             .map_err(Into::into)
     }
+
+    async fn get_comments_for_repo(
+        &self,
+        repo_info: &GitHubRepoInfo,
+        pr_number: i64,
+    ) -> Result<Vec<UnifiedPrComment>, GitHostError> {
+        let cli1 = self.gh_cli.clone();
+        let cli2 = self.gh_cli.clone();
+        let cli3 = self.gh_cli.clone();
+
+        let (general_result, review_result, threads_result) = tokio::join!(
+            self.fetch_general_comments(&cli1, repo_info, pr_number),
+            self.fetch_review_comments(&cli2, repo_info, pr_number),
+            self.fetch_review_threads(&cli3, repo_info, pr_number)
+        );
+
+        let (general_comments, review_comments) = match (general_result, review_result) {
+            (Ok(general), Ok(review)) => (general, review),
+            (Ok(general), Err(error)) => {
+                tracing::warn!(
+                    "Failed to fetch inline comments for PR #{pr_number}; showing general comments: {error}"
+                );
+                (general, Vec::new())
+            }
+            (Err(error), Ok(review)) => {
+                tracing::warn!(
+                    "Failed to fetch general comments for PR #{pr_number}; showing inline comments: {error}"
+                );
+                (Vec::new(), review)
+            }
+            (Err(error), Err(_)) => return Err(error),
+        };
+        let review_threads = threads_result.unwrap_or_else(|error| {
+            tracing::warn!("Failed to fetch review thread metadata for PR #{pr_number}: {error}");
+            Vec::new()
+        });
+        let thread_by_comment: HashMap<i64, &PrReviewThread> = review_threads
+            .iter()
+            .flat_map(|thread| {
+                thread
+                    .comment_ids
+                    .iter()
+                    .map(move |comment_id| (*comment_id, thread))
+            })
+            .collect();
+
+        let mut unified: Vec<UnifiedPrComment> = general_comments
+            .into_iter()
+            .map(|comment| UnifiedPrComment::General {
+                id: comment.id,
+                author: comment.author.login,
+                author_association: Some(comment.author_association),
+                body: comment.body,
+                created_at: comment.created_at,
+                url: Some(comment.url),
+                parent_id: None,
+            })
+            .collect();
+
+        unified.extend(review_comments.into_iter().map(|comment| {
+            let thread = thread_by_comment.get(&comment.id);
+            UnifiedPrComment::Review {
+                id: comment.id.to_string(),
+                author: comment.user.login,
+                author_association: Some(comment.author_association),
+                body: comment.body,
+                created_at: comment.created_at,
+                url: Some(comment.html_url),
+                path: comment.path,
+                line: comment.line,
+                side: comment.side,
+                diff_hunk: Some(comment.diff_hunk),
+                parent_id: comment.in_reply_to_id.map(|id| id.to_string()),
+                review_id: comment.pull_request_review_id.map(|id| id.to_string()),
+                thread_id: thread.map(|thread| thread.id.clone()),
+                is_resolved: thread.map(|thread| thread.is_resolved),
+                is_outdated: thread.map(|thread| thread.is_outdated),
+            }
+        }));
+
+        unified.sort_by_key(|comment| comment.created_at());
+        Ok(unified)
+    }
 }
 
 impl From<GhCliError> for GitHostError {
@@ -322,92 +405,16 @@ impl GitHostProvider for GitHubProvider {
         pr_number: i64,
     ) -> Result<Vec<UnifiedPrComment>, GitHostError> {
         let repo_info = self.get_repo_info(remote_url, repo_path).await?;
+        self.get_comments_for_repo(&repo_info, pr_number).await
+    }
 
-        // Fetch both types of comments in parallel
-        let cli1 = self.gh_cli.clone();
-        let cli2 = self.gh_cli.clone();
-        let cli3 = self.gh_cli.clone();
-
-        let (general_result, review_result, threads_result) = tokio::join!(
-            self.fetch_general_comments(&cli1, &repo_info, pr_number),
-            self.fetch_review_comments(&cli2, &repo_info, pr_number),
-            self.fetch_review_threads(&cli3, &repo_info, pr_number)
-        );
-
-        // GitHub exposes issue comments and inline review comments through
-        // different endpoints and permissions. Keep the successful half when
-        // only one endpoint fails; otherwise a missing permission for inline
-        // comments would hide ordinary PR discussion as well.
-        let (general_comments, review_comments) = match (general_result, review_result) {
-            (Ok(general), Ok(review)) => (general, review),
-            (Ok(general), Err(error)) => {
-                tracing::warn!(
-                    "Failed to fetch inline comments for PR #{pr_number}; showing general comments: {error}"
-                );
-                (general, Vec::new())
-            }
-            (Err(error), Ok(review)) => {
-                tracing::warn!(
-                    "Failed to fetch general comments for PR #{pr_number}; showing inline comments: {error}"
-                );
-                (Vec::new(), review)
-            }
-            (Err(error), Err(_)) => return Err(error),
-        };
-        let review_threads = threads_result.unwrap_or_else(|error| {
-            tracing::warn!("Failed to fetch review thread metadata for PR #{pr_number}: {error}");
-            Vec::new()
-        });
-        let thread_by_comment: HashMap<i64, &PrReviewThread> = review_threads
-            .iter()
-            .flat_map(|thread| {
-                thread
-                    .comment_ids
-                    .iter()
-                    .map(move |comment_id| (*comment_id, thread))
-            })
-            .collect();
-
-        // Convert and merge into unified timeline
-        let mut unified: Vec<UnifiedPrComment> = Vec::new();
-
-        for c in general_comments {
-            unified.push(UnifiedPrComment::General {
-                id: c.id,
-                author: c.author.login,
-                author_association: Some(c.author_association),
-                body: c.body,
-                created_at: c.created_at,
-                url: Some(c.url),
-                parent_id: None,
-            });
-        }
-
-        for c in review_comments {
-            let thread = thread_by_comment.get(&c.id);
-            unified.push(UnifiedPrComment::Review {
-                id: c.id.to_string(),
-                author: c.user.login,
-                author_association: Some(c.author_association),
-                body: c.body,
-                created_at: c.created_at,
-                url: Some(c.html_url),
-                path: c.path,
-                line: c.line,
-                side: c.side,
-                diff_hunk: Some(c.diff_hunk),
-                parent_id: c.in_reply_to_id.map(|id| id.to_string()),
-                review_id: c.pull_request_review_id.map(|id| id.to_string()),
-                thread_id: thread.map(|thread| thread.id.clone()),
-                is_resolved: thread.map(|thread| thread.is_resolved),
-                is_outdated: thread.map(|thread| thread.is_outdated),
-            });
-        }
-
-        // Sort by creation time
-        unified.sort_by_key(|c| c.created_at());
-
-        Ok(unified)
+    async fn get_pr_comments_by_url(
+        &self,
+        pr_url: &str,
+        pr_number: i64,
+    ) -> Result<Vec<UnifiedPrComment>, GitHostError> {
+        let repo_info = GitHubRepoInfo::from_pr_url(pr_url)?;
+        self.get_comments_for_repo(&repo_info, pr_number).await
     }
 
     async fn set_pr_review_thread_resolved(
@@ -419,6 +426,28 @@ impl GitHostProvider for GitHubProvider {
         resolved: bool,
     ) -> Result<(), GitHostError> {
         let repo_info = self.get_repo_info(remote_url, repo_path).await?;
+        let cli = self.gh_cli.clone();
+        let thread_id = thread_id.to_string();
+        task::spawn_blocking(move || {
+            cli.set_pr_review_thread_resolved(&repo_info, &thread_id, resolved)
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::PullRequest(format!(
+                "Failed to execute GitHub CLI for updating review thread: {err}"
+            ))
+        })?
+        .map_err(Into::into)
+    }
+
+    async fn set_pr_review_thread_resolved_by_url(
+        &self,
+        pr_url: &str,
+        _pr_number: i64,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), GitHostError> {
+        let repo_info = GitHubRepoInfo::from_pr_url(pr_url)?;
         let cli = self.gh_cli.clone();
         let thread_id = thread_id.to_string();
         task::spawn_blocking(move || {

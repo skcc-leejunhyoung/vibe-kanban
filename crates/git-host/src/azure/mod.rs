@@ -247,6 +247,34 @@ impl GitHostProvider for AzureDevOpsProvider {
         .await
     }
 
+    async fn get_pr_comments_by_url(
+        &self,
+        pr_url: &str,
+        _pr_number: i64,
+    ) -> Result<Vec<UnifiedPrComment>, GitHostError> {
+        let (repo_info, pr_number) = AzCli::parse_pr_repository_url(pr_url).ok_or_else(|| {
+            GitHostError::PullRequest(format!(
+                "Could not parse Azure DevOps pull request URL: {pr_url}"
+            ))
+        })?;
+        let cli = self.az_cli.clone();
+        task::spawn_blocking(move || {
+            cli.get_pr_threads(
+                &repo_info.organization_url,
+                &repo_info.project_id,
+                &repo_info.repo_id,
+                pr_number,
+            )
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::PullRequest(format!(
+                "Failed to execute Azure CLI for fetching PR comments: {err}"
+            ))
+        })?
+        .map_err(Into::into)
+    }
+
     async fn set_pr_review_thread_resolved(
         &self,
         repo_path: &Path,
@@ -266,6 +294,39 @@ impl GitHostProvider for AzureDevOpsProvider {
                 &organization_url,
                 &project_id,
                 &repo_id,
+                pr_number,
+                &thread_id,
+                resolved,
+            )
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::PullRequest(format!(
+                "Failed to execute Azure CLI for updating review thread: {err}"
+            ))
+        })?
+        .map_err(Into::into)
+    }
+
+    async fn set_pr_review_thread_resolved_by_url(
+        &self,
+        pr_url: &str,
+        _pr_number: i64,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), GitHostError> {
+        let (repo_info, pr_number) = AzCli::parse_pr_repository_url(pr_url).ok_or_else(|| {
+            GitHostError::PullRequest(format!(
+                "Could not parse Azure DevOps pull request URL: {pr_url}"
+            ))
+        })?;
+        let cli = self.az_cli.clone();
+        let thread_id = thread_id.to_string();
+        task::spawn_blocking(move || {
+            cli.set_pr_thread_resolved(
+                &repo_info.organization_url,
+                &repo_info.project_id,
+                &repo_info.repo_id,
                 pr_number,
                 &thread_id,
                 resolved,

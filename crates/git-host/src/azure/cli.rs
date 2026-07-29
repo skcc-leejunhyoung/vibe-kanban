@@ -505,6 +505,43 @@ impl AzCli {
 
         None
     }
+
+    pub fn parse_pr_repository_url(url: &str) -> Option<(AzureRepoInfo, i64)> {
+        let parsed = url::Url::parse(url).ok()?;
+        let host = parsed.host_str()?;
+        let parts = parsed
+            .path_segments()?
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        let git_index = parts.iter().position(|part| *part == "_git")?;
+        let pr_index = parts.iter().position(|part| *part == "pullrequest")?;
+        let pr_id = parts.get(pr_index + 1)?.parse().ok()?;
+        let repo_name = parts.get(git_index + 1)?.to_string();
+
+        let (organization_url, project) = if host.eq_ignore_ascii_case("dev.azure.com") {
+            (
+                format!("https://dev.azure.com/{}", parts.first()?),
+                parts.get(1)?.to_string(),
+            )
+        } else {
+            host.strip_suffix(".visualstudio.com")?;
+            (
+                format!("https://{host}"),
+                parts.first().map(|part| part.to_string())?,
+            )
+        };
+
+        Some((
+            AzureRepoInfo {
+                organization_url,
+                project: project.clone(),
+                project_id: project,
+                repo_name: repo_name.clone(),
+                repo_id: repo_name,
+            },
+            pr_id,
+        ))
+    }
 }
 
 impl AzCli {
@@ -721,6 +758,19 @@ mod tests {
         assert!(AzCli::parse_pr_url("https://github.com/owner/repo/pull/123").is_none());
         // Missing pullrequest path
         assert!(AzCli::parse_pr_url("https://dev.azure.com/myorg/myproject/_git/myrepo").is_none());
+    }
+
+    #[test]
+    fn test_parse_pr_repository_url() {
+        let (repo, pr_id) = AzCli::parse_pr_repository_url(
+            "https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/123",
+        )
+        .unwrap();
+
+        assert_eq!(repo.organization_url, "https://dev.azure.com/myorg");
+        assert_eq!(repo.project_id, "myproject");
+        assert_eq!(repo.repo_id, "myrepo");
+        assert_eq!(pr_id, 123);
     }
 
     #[test]
