@@ -194,7 +194,15 @@ function BranchSelector({
     focusedBranchIndexRef.current = index;
     setHighlightedIndex(index);
     virtuosoRef.current?.scrollIntoView({ index, behavior: 'auto' });
-    requestAnimationFrame(() => branchItemRefs.current.get(index)?.focus());
+    requestAnimationFrame(() => {
+      if (focusedBranchIndexRef.current !== index) return;
+
+      const item = branchItemRefs.current.get(index);
+      if (item) {
+        focusedBranchIndexRef.current = null;
+        item.focus();
+      }
+    });
   }, []);
 
   const handleBranchItemRef = useCallback(
@@ -202,6 +210,7 @@ function BranchSelector({
       if (element) {
         branchItemRefs.current.set(index, element);
         if (focusedBranchIndexRef.current === index) {
+          focusedBranchIndexRef.current = null;
           element.focus();
         }
       } else {
@@ -228,9 +237,12 @@ function BranchSelector({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) {
+        if (next) {
+          requestAnimationFrame(() => searchInputRef.current?.focus());
+        } else {
           setBranchSearchTerm('');
           setHighlightedIndex(null);
+          focusedBranchIndexRef.current = null;
         }
       }}
     >
@@ -251,20 +263,7 @@ function BranchSelector({
       </DropdownMenuTrigger>
 
       <TooltipProvider>
-        <DropdownMenuContent
-          className="w-80"
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            requestAnimationFrame(() => searchInputRef.current?.focus());
-          }}
-          onKeyDownCapture={(event) => {
-            if (event.key === 'Escape') {
-              event.preventDefault();
-              event.stopPropagation();
-              searchInputRef.current?.focus();
-            }
-          }}
-        >
+        <DropdownMenuContent className="w-80">
           <div className="p-2">
             <div className="relative">
               <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -289,6 +288,11 @@ function BranchSelector({
                       e.preventDefault();
                       e.stopPropagation();
                       focusHighlightedBranch();
+                      return;
+                    case 'Escape':
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setOpen(false);
                       return;
                     case 'Tab':
                       return;
@@ -326,9 +330,7 @@ function BranchSelector({
                     onHover={() => setHighlightedIndex(idx)}
                     onFocus={() => setHighlightedIndex(idx)}
                     onSelect={() => handleBranchSelect(branch.name)}
-                    onItemRef={(element) =>
-                      handleBranchItemRef(idx, element)
-                    }
+                    onItemRef={(element) => handleBranchItemRef(idx, element)}
                     disabledTooltip={
                       isDisabled
                         ? (disabledTooltip ?? defaultDisabledTooltip)
