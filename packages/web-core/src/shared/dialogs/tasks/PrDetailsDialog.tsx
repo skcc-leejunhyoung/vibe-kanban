@@ -370,7 +370,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
         open={modal.visible}
         onOpenChange={(open) => !open && close()}
         onKeyDownCapture={handleDialogKeyDown}
-        className="h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] max-w-6xl min-h-0 my-0 p-0 overflow-hidden"
+        className="h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[100rem] min-h-0 my-0 p-0 overflow-hidden"
       >
         <DialogContent className="min-h-0 flex-1 gap-0 overflow-hidden p-0">
           <DialogHeader className="shrink-0 px-base py-base border-b">
