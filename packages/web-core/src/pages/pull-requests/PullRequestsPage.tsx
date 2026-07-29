@@ -18,6 +18,7 @@ import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
+  resolvePullRequestFiltersAfterDefaultsChange,
   type PullRequestFilterState,
   type PullRequestUpdatedFilter,
 } from './pullRequestFilters';
@@ -92,8 +93,20 @@ export function PullRequestsPage() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selectedPullRequest, setSelectedPullRequest] =
     useState<PullRequestSummary | null>(null);
+  const previousDefaultFiltersRef = useRef(defaultFilters);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  useEffect(() => {
+    setFilters((current) =>
+      resolvePullRequestFiltersAfterDefaultsChange(
+        current,
+        previousDefaultFiltersRef.current,
+        defaultFilters
+      )
+    );
+    previousDefaultFiltersRef.current = defaultFilters;
+  }, [defaultFilters]);
 
   const pullRequestsQuery = useQuery({
     queryKey: ['pull-request-summaries', filters.involvesMe],
@@ -253,7 +266,7 @@ export function PullRequestsPage() {
             <p className="mt-half text-sm text-low">
               {filters.involvesMe
                 ? 'Pull requests involving you on GitHub'
-                : 'Recent pull requests on GitHub'}
+                : 'Pull requests authored by you on GitHub'}
             </p>
           </div>
           <div className="flex items-center gap-half">

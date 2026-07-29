@@ -168,9 +168,11 @@ export function PullRequestFiltersDialog({
           </label>
           <label className="col-span-2 flex items-center justify-between rounded border border-border bg-secondary p-base">
             <span>
-              <span className="block text-sm text-normal">involves:@me</span>
+              <span className="block text-sm text-normal">
+                Include pull requests involving you
+              </span>
               <span className="block text-xs text-low">
-                Only show pull requests involving your GitHub account.
+                When off, only pull requests authored by you are shown.
               </span>
             </span>
             <Switch

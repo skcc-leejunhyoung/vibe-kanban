@@ -440,21 +440,7 @@ impl GhCli {
         &self,
         involves_me: bool,
     ) -> Result<Vec<PullRequestSummary>, GhCliError> {
-        let mut args = vec![
-            "search",
-            "prs",
-            "--limit",
-            "100",
-            "--sort",
-            "updated",
-            "--order",
-            "desc",
-            "--json",
-            "number,url,state,title,body,author,assignees,labels,repository,isDraft,commentsCount,createdAt,updatedAt,closedAt",
-        ];
-        if involves_me {
-            args.extend(["--involves", "@me"]);
-        }
+        let args = pull_request_search_args(involves_me);
         let raw = self.run(args, None)?;
         let prs: Vec<GhSearchPrResponse> = serde_json::from_str(raw.trim()).map_err(|err| {
             GhCliError::UnexpectedOutput(format!(
@@ -688,9 +674,39 @@ impl GhCli {
     }
 }
 
+fn pull_request_search_args(involves_me: bool) -> Vec<&'static str> {
+    let mut args = vec![
+        "search",
+        "prs",
+        "--limit",
+        "100",
+        "--sort",
+        "updated",
+        "--order",
+        "desc",
+        "--json",
+        "number,url,state,title,body,author,assignees,labels,repository,isDraft,commentsCount,createdAt,updatedAt,closedAt",
+    ];
+    if involves_me {
+        args.extend(["--involves", "@me"]);
+    } else {
+        args.extend(["--author", "@me"]);
+    }
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pull_request_search_is_always_scoped_to_current_user() {
+        let involved_args = pull_request_search_args(true);
+        assert!(involved_args.ends_with(&["--involves", "@me"]));
+
+        let authored_args = pull_request_search_args(false);
+        assert!(authored_args.ends_with(&["--author", "@me"]));
+    }
 
     #[test]
     fn parses_repository_info_from_pull_request_url() {

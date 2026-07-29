@@ -22,6 +22,18 @@ export const DEFAULT_PULL_REQUEST_FILTER_STATE: PullRequestFilterState = {
   involvesMe: true,
 };
 
+export function resolvePullRequestFiltersAfterDefaultsChange(
+  current: PullRequestFilterState,
+  previousDefaults: PullRequestFilterState,
+  nextDefaults: PullRequestFilterState
+): PullRequestFilterState {
+  const stillUsingPreviousDefaults = (
+    Object.keys(previousDefaults) as Array<keyof PullRequestFilterState>
+  ).every((key) => current[key] === previousDefaults[key]);
+
+  return stillUsingPreviousDefaults ? { ...nextDefaults } : current;
+}
+
 export const PULL_REQUESTS_OPEN_FILTERS_EVENT =
   'vibe:pull-requests-open-filters';
 export const PULL_REQUESTS_FOCUS_SEARCH_EVENT =
