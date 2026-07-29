@@ -237,47 +237,51 @@ function useGitHubImageUrl(
     };
   }, [sourceUrl]);
 
-  const fetchProxy = useCallback((force = false) => {
-    if (!sourceUrl || !fetchGitHubImage || (hasTriedProxy && !force)) return;
+  const fetchProxy = useCallback(
+    (force = false) => {
+      if (!sourceUrl || !fetchGitHubImage || (hasTriedProxy && !force)) return;
 
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-    setHasTriedProxy(true);
-    setLoading(true);
-    fetchGitHubImage(sourceUrl)
-      .then((blob) => {
-        if (requestId !== requestIdRef.current) return;
-        if (objectUrlRef.current) {
-          URL.revokeObjectURL(objectUrlRef.current);
-        }
-        const objectUrl = URL.createObjectURL(blob);
-        objectUrlRef.current = objectUrl;
-        setUrl(objectUrl);
-      })
-      .catch(async (error) => {
-        if (
-          requestId === requestIdRef.current &&
-          !hasRequestedAuthorizationRef.current &&
-          onGitHubImageAuthorizationRequired
-        ) {
-          hasRequestedAuthorizationRef.current = true;
-          const reauthorized = await onGitHubImageAuthorizationRequired(error);
-          if (requestId === requestIdRef.current && reauthorized) {
-            setAuthorizationRetry((value) => value + 1);
-            return;
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      setHasTriedProxy(true);
+      setLoading(true);
+      fetchGitHubImage(sourceUrl)
+        .then((blob) => {
+          if (requestId !== requestIdRef.current) return;
+          if (objectUrlRef.current) {
+            URL.revokeObjectURL(objectUrlRef.current);
           }
-        }
-        if (requestId === requestIdRef.current) setUrl(null);
-      })
-      .finally(() => {
-        if (requestId === requestIdRef.current) setLoading(false);
-      });
-  }, [
-    fetchGitHubImage,
-    hasTriedProxy,
-    onGitHubImageAuthorizationRequired,
-    sourceUrl,
-  ]);
+          const objectUrl = URL.createObjectURL(blob);
+          objectUrlRef.current = objectUrl;
+          setUrl(objectUrl);
+        })
+        .catch(async (error) => {
+          if (
+            requestId === requestIdRef.current &&
+            !hasRequestedAuthorizationRef.current &&
+            onGitHubImageAuthorizationRequired
+          ) {
+            hasRequestedAuthorizationRef.current = true;
+            const reauthorized =
+              await onGitHubImageAuthorizationRequired(error);
+            if (requestId === requestIdRef.current && reauthorized) {
+              setAuthorizationRetry((value) => value + 1);
+              return;
+            }
+          }
+          if (requestId === requestIdRef.current) setUrl(null);
+        })
+        .finally(() => {
+          if (requestId === requestIdRef.current) setLoading(false);
+        });
+    },
+    [
+      fetchGitHubImage,
+      hasTriedProxy,
+      onGitHubImageAuthorizationRequired,
+      sourceUrl,
+    ]
+  );
 
   useEffect(() => {
     if (authorizationRetry > 0) {
