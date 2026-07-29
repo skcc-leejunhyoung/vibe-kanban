@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures_util::StreamExt;
 use reqwest::{Client, StatusCode as ReqwestStatusCode, redirect::Policy};
 use serde::Deserialize;
 use tracing::{instrument, warn};
@@ -105,13 +106,7 @@ async fn get_github_image(
     {
         return Err(GitHubImageError::TooLarge);
     }
-    let bytes = response.bytes().await.map_err(|error| {
-        warn!(?error, "failed to read GitHub attachment response");
-        GitHubImageError::Upstream
-    })?;
-    if bytes.len() > MAX_IMAGE_SIZE_BYTES {
-        return Err(GitHubImageError::TooLarge);
-    }
+    let bytes = read_image_bytes(response).await?;
 
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, content_type);
@@ -121,6 +116,29 @@ async fn get_github_image(
     );
     headers.insert(header::VARY, HeaderValue::from_static("Authorization"));
     Ok((StatusCode::OK, headers, Body::from(bytes)).into_response())
+}
+
+async fn read_image_bytes(response: reqwest::Response) -> Result<Vec<u8>, GitHubImageError> {
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            warn!(?error, "failed to read GitHub attachment response");
+            GitHubImageError::Upstream
+        })?;
+        if exceeds_image_size(bytes.len(), chunk.len()) {
+            return Err(GitHubImageError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(bytes)
+}
+
+fn exceeds_image_size(current_size: usize, chunk_size: usize) -> bool {
+    current_size > MAX_IMAGE_SIZE_BYTES
+        || chunk_size > MAX_IMAGE_SIZE_BYTES.saturating_sub(current_size)
 }
 
 async fn fetch_image(url: &Url, access_token: &str) -> Result<reqwest::Response, GitHubImageError> {
@@ -201,7 +219,7 @@ fn is_allowed_redirect_url(url: &Url) -> bool {
 mod tests {
     use url::Url;
 
-    use super::{is_allowed_redirect_url, validate_initial_url};
+    use super::{exceeds_image_size, is_allowed_redirect_url, validate_initial_url};
 
     #[test]
     fn accepts_github_user_attachment_urls() {
@@ -226,5 +244,12 @@ mod tests {
         assert!(!is_allowed_redirect_url(
             &Url::parse("https://githubusercontent.com.evil.example/image").unwrap()
         ));
+    }
+
+    #[test]
+    fn detects_image_sizes_that_exceed_the_limit() {
+        assert!(!exceeds_image_size(20 * 1024 * 1024 - 1, 1));
+        assert!(exceeds_image_size(20 * 1024 * 1024, 1));
+        assert!(exceeds_image_size(20 * 1024 * 1024 + 1, 0));
     }
 }

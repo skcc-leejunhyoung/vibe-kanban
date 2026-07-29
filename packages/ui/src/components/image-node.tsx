@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { NodeKey, SerializedLexicalNode, Spread, $getNodeByKey } from 'lexical';
@@ -208,41 +208,61 @@ function useAttachmentUrl(
 function useGitHubImageUrl(
   sourceUrl: string | null,
   fetchGitHubImage: CreateImageNodeOptions['fetchGitHubImage']
-): AttachmentUrlResult {
-  const [url, setUrl] = useState<string | null>(null);
+): AttachmentUrlResult & { handleImageError: () => void } {
+  const [url, setUrl] = useState<string | null>(sourceUrl);
   const [loading, setLoading] = useState(false);
+  const [hasTriedProxy, setHasTriedProxy] = useState(false);
+  const objectUrlRef = useRef<string | null>(null);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
-    if (!sourceUrl || !fetchGitHubImage) {
-      setUrl(null);
-      setLoading(false);
-      return;
-    }
+    requestIdRef.current += 1;
+    setUrl(sourceUrl);
+    setLoading(false);
+    setHasTriedProxy(false);
 
-    let active = true;
-    let objectUrl: string | null = null;
+    return () => {
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, [sourceUrl]);
+
+  const fetchProxy = useCallback(() => {
+    if (!sourceUrl || !fetchGitHubImage || hasTriedProxy) return;
+
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    setHasTriedProxy(true);
     setLoading(true);
-    setUrl(null);
     fetchGitHubImage(sourceUrl)
       .then((blob) => {
-        if (!active) return;
-        objectUrl = URL.createObjectURL(blob);
+        if (requestId !== requestIdRef.current) return;
+        if (objectUrlRef.current) {
+          URL.revokeObjectURL(objectUrlRef.current);
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        objectUrlRef.current = objectUrl;
         setUrl(objectUrl);
       })
       .catch(() => {
-        if (active) setUrl(null);
+        if (requestId === requestIdRef.current) setUrl(null);
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (requestId === requestIdRef.current) setLoading(false);
       });
+  }, [fetchGitHubImage, hasTriedProxy, sourceUrl]);
 
-    return () => {
-      active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [fetchGitHubImage, sourceUrl]);
+  const handleImageError = useCallback(() => {
+    if (hasTriedProxy) {
+      setUrl(null);
+      return;
+    }
+    fetchProxy();
+  }, [fetchProxy, hasTriedProxy]);
 
-  return { url, loading };
+  return { url, loading, handleImageError };
 }
 
 export function createImageNode(options: CreateImageNodeOptions) {
@@ -289,11 +309,14 @@ export function createImageNode(options: CreateImageNodeOptions) {
       'file',
       options.fetchAttachmentUrl
     );
-    const { url: githubImageUrl, loading: githubImageLoading } =
-      useGitHubImageUrl(
-        isGitHubAttachment ? src : null,
-        options.fetchGitHubImage
-      );
+    const {
+      url: githubImageUrl,
+      loading: githubImageLoading,
+      handleImageError: handleGitHubImageError,
+    } = useGitHubImageUrl(
+      isGitHubAttachment ? src : null,
+      options.fetchGitHubImage
+    );
 
     const { data: metadata, isLoading: loading } = useImageMetadata(
       workspaceId,
@@ -433,6 +456,9 @@ export function createImageNode(options: CreateImageNodeOptions) {
               alt={altText}
               className="max-w-full max-h-[640px] rounded border border-border object-contain"
               draggable={false}
+              loading="lazy"
+              onError={handleGitHubImageError}
+              referrerPolicy="no-referrer"
             />
           ) : (
             <div className="w-10 h-10 flex items-center justify-center bg-muted rounded">
