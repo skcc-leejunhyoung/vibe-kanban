@@ -116,23 +116,27 @@ function FullCard({
   line,
   diffHunk,
   onClick,
+  onDoubleClick,
   variant,
   className,
 }: PrCommentCardProps) {
   const { t } = useTranslation('tasks');
   const isReview = commentType === 'review';
+  const isInteractive = !!onClick || !!onDoubleClick;
   const Icon = isReview ? Code : MessageSquare;
 
   return (
     <div
       className={cn(
-        'p-3 bg-muted/50 rounded-md border border-border cursor-pointer hover:border-muted-foreground transition-colors overflow-hidden',
+        'p-3 bg-muted/50 rounded-md border border-border transition-colors overflow-hidden',
+        isInteractive && 'cursor-pointer hover:border-muted-foreground',
         variant === 'full' && 'inline-block align-bottom max-w-md',
         className
       )}
       onClick={onClick}
-      role="button"
-      tabIndex={0}
+      onDoubleClick={onDoubleClick}
+      role={isInteractive ? 'button' : undefined}
+      tabIndex={isInteractive ? 0 : undefined}
     >
       {/* Header */}
       <div className="flex items-center justify-between gap-2 mb-2">

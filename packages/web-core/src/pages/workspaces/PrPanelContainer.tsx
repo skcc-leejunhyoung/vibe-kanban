@@ -118,18 +118,13 @@ export function PrPanelContainer({
     });
   }, []);
 
-  const handleViewDetails = useCallback(
-    (pr: PrInfo) => {
-      if (!workspaceId || !pr.prUrl) return;
-      void PrDetailsDialog.show({
-        workspaceId,
-        repoId: pr.repoId,
-        prUrl: pr.prUrl,
-        prNumber: pr.prNumber,
-      });
-    },
-    [workspaceId]
-  );
+  const handleViewDetails = useCallback((pr: PrInfo) => {
+    if (!pr.prUrl) return;
+    void PrDetailsDialog.show({
+      prUrl: pr.prUrl,
+      prNumber: pr.prNumber,
+    });
+  }, []);
 
   // Fetch the repo's primary remote (refreshes both head and base tracking refs),
   // then refetch branch status so ahead/behind numbers update.

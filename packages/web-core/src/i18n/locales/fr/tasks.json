@@ -361,14 +361,6 @@
     }
   },
   "prComments": {
-    "dialog": {
-      "title": "Sélectionner les commentaires de la PR",
-      "noComments": "Aucun commentaire trouvé sur cette PR",
-      "selectAll": "Tout sélectionner",
-      "deselectAll": "Tout désélectionner",
-      "add": "Ajouter",
-      "selectedCount": "{{selected}} sur {{total}} sélectionnés"
-    },
     "card": {
       "review": "Révision",
       "tooltip": "Cliquer pour voir, double-cliquer pour modifier"

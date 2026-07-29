@@ -4,18 +4,18 @@ import type { PrCommentsResponse } from 'shared/types';
 
 export const prCommentsKeys = {
   all: ['prComments'] as const,
-  byAttempt: (
+  byWorkspace: (
     workspaceId: string | undefined,
     repoId: string | undefined,
-    prNumber?: number,
-    prUrl?: string
-  ) => ['prComments', workspaceId, repoId, prNumber, prUrl] as const,
+    prNumber?: number
+  ) => ['prComments', 'workspace', workspaceId, repoId, prNumber] as const,
+  byUrl: (prUrl: string, prNumber: number) =>
+    ['prComments', 'url', prUrl, prNumber] as const,
 };
 
 type Options = {
   enabled?: boolean;
   prNumber?: number;
-  prUrl?: string;
 };
 
 export function usePrComments(
@@ -23,30 +23,28 @@ export function usePrComments(
   repoId?: string,
   opts?: Options
 ) {
-  const hasWorkspaceSource = !!workspaceId && !!repoId;
-  const hasUrlSource = !!opts?.prUrl && opts.prNumber != null;
-  const enabled =
-    (opts?.enabled ?? true) && (hasWorkspaceSource || hasUrlSource);
+  const enabled = (opts?.enabled ?? true) && !!workspaceId && !!repoId;
 
   return useQuery<PrCommentsResponse>({
-    queryKey: prCommentsKeys.byAttempt(
-      workspaceId,
-      repoId,
-      opts?.prNumber,
-      opts?.prUrl
-    ),
-    queryFn: () => {
-      if (hasWorkspaceSource) {
-        return workspacesApi.getPrComments(
-          workspaceId!,
-          repoId!,
-          opts?.prNumber
-        );
-      }
-      return issuePrsApi.getPrComments(opts!.prUrl!, opts!.prNumber!);
-    },
+    queryKey: prCommentsKeys.byWorkspace(workspaceId, repoId, opts?.prNumber),
+    queryFn: () =>
+      workspacesApi.getPrComments(workspaceId!, repoId!, opts?.prNumber),
     enabled,
     staleTime: 30_000, // Cache for 30s - comments don't change frequently
+    retry: 2,
+  });
+}
+
+export function usePrCommentsByUrl(
+  prUrl: string,
+  prNumber: number,
+  enabled = true
+) {
+  return useQuery<PrCommentsResponse>({
+    queryKey: prCommentsKeys.byUrl(prUrl, prNumber),
+    queryFn: () => issuePrsApi.getPrComments(prUrl, prNumber),
+    enabled,
+    staleTime: 30_000,
     retry: 2,
   });
 }

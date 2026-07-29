@@ -24,9 +24,11 @@ import {
   XCircleIcon,
 } from '@phosphor-icons/react';
 import { defineModal } from '@/shared/lib/modals';
-import { issuePrsApi, workspacesApi } from '@/shared/lib/api';
-import { prCommentsKeys, usePrComments } from '@/shared/hooks/usePrComments';
-import { usePrChatContextStore } from '@/shared/stores/usePrChatContextStore';
+import { issuePrsApi } from '@/shared/lib/api';
+import {
+  prCommentsKeys,
+  usePrCommentsByUrl,
+} from '@/shared/hooks/usePrComments';
 import { useTheme } from '@/shared/hooks/useTheme';
 import { getActualTheme } from '@/shared/lib/theme';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
@@ -37,51 +39,16 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { Button } from '@vibe/ui/components/Button';
-import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { PrCommentCard } from '@vibe/ui/components/pr-comment-card';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
-import type { UnifiedPrComment } from 'shared/types';
 import {
   buildPrConversation,
   type PrCommentThread,
 } from '@/shared/lib/prConversation';
 
 export interface PrDetailsDialogProps {
-  /** Optional when opened from an issue without a local workspace. */
-  workspaceId?: string;
-  /** Optional when opened from an issue without a local repository. */
-  repoId?: string;
   prUrl: string;
   prNumber: number;
-}
-
-function commentId(comment: UnifiedPrComment): string {
-  return comment.id;
-}
-
-function commentsToMarkdown(comments: UnifiedPrComment[]): string {
-  return comments
-    .map((comment) => {
-      const payload = {
-        id: commentId(comment),
-        comment_type: comment.comment_type,
-        author: comment.author,
-        body: comment.body,
-        created_at: comment.created_at,
-        url: comment.url,
-        parent_id: comment.parent_id,
-        ...(comment.comment_type === 'review' && {
-          review_id: comment.review_id,
-          thread_id: comment.thread_id,
-          is_resolved: comment.is_resolved,
-          path: comment.path,
-          line: comment.line != null ? Number(comment.line) : null,
-          diff_hunk: comment.diff_hunk,
-        }),
-      };
-      return `\`\`\`gh-comment\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
-    })
-    .join('\n\n');
 }
 
 function formatActivityDate(value: string): string {
@@ -90,21 +57,16 @@ function formatActivityDate(value: string): string {
 
 function ConversationComment({
   thread,
-  selectedIds,
-  toggleComment,
   theme,
   showLocation = true,
   depth = 0,
 }: {
   thread: PrCommentThread;
-  selectedIds: Set<string>;
-  toggleComment: (id: string) => void;
   theme: 'light' | 'dark';
   showLocation?: boolean;
   depth?: number;
 }) {
   const { comment, replies } = thread;
-  const id = commentId(comment);
   const isReview = comment.comment_type === 'review';
 
   return (
@@ -114,11 +76,6 @@ function ConversationComment({
       }
     >
       <div className="flex min-w-0 items-start gap-base">
-        <Checkbox
-          checked={selectedIds.has(id)}
-          onCheckedChange={() => toggleComment(id)}
-          className="mt-base"
-        />
         <PrCommentCard
           author={comment.author}
           body={comment.body}
@@ -138,7 +95,6 @@ function ConversationComment({
           }
           diffHunk={isReview ? comment.diff_hunk : undefined}
           variant="list"
-          onClick={() => toggleComment(id)}
           className={
             isReview
               ? 'min-w-0 flex-1 bg-primary shadow-none'
@@ -150,8 +106,6 @@ function ConversationComment({
         <ConversationComment
           key={reply.comment.id}
           thread={reply}
-          selectedIds={selectedIds}
-          toggleComment={toggleComment}
           theme={theme}
           showLocation={false}
           depth={depth + 1}
@@ -163,15 +117,11 @@ function ConversationComment({
 
 function ReviewConversationThread({
   thread,
-  selectedIds,
-  toggleComment,
   theme,
   onSetResolved,
   isUpdating,
 }: {
   thread: PrCommentThread;
-  selectedIds: Set<string>;
-  toggleComment: (id: string) => void;
   theme: 'light' | 'dark';
   onSetResolved?: (threadId: string, resolved: boolean) => void;
   isUpdating: boolean;
@@ -186,14 +136,7 @@ function ReviewConversationThread({
   }, [resolved]);
 
   if (!isReview) {
-    return (
-      <ConversationComment
-        thread={thread}
-        selectedIds={selectedIds}
-        toggleComment={toggleComment}
-        theme={theme}
-      />
-    );
+    return <ConversationComment thread={thread} theme={theme} />;
   }
 
   return (
@@ -254,8 +197,6 @@ function ReviewConversationThread({
         <div className="p-base">
           <ConversationComment
             thread={thread}
-            selectedIds={selectedIds}
-            toggleComment={toggleComment}
             theme={theme}
             showLocation={false}
           />
@@ -266,14 +207,12 @@ function ReviewConversationThread({
 }
 
 const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
-  ({ workspaceId, repoId, prUrl, prNumber }) => {
+  ({ prUrl, prNumber }) => {
     const modal = useModal();
     const queryClient = useQueryClient();
     const scrollRef = useRef<HTMLDivElement>(null);
     const { theme } = useTheme();
     const actualTheme = getActualTheme(theme);
-    const addChatContext = usePrChatContextStore((state) => state.add);
-    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const detailQuery = useQuery({
       queryKey: ['pr-detail', prUrl],
       queryFn: async () => {
@@ -286,11 +225,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       enabled: modal.visible,
       staleTime: 30_000,
     });
-    const commentsQuery = usePrComments(workspaceId, repoId, {
-      enabled: modal.visible,
-      prNumber,
-      prUrl,
-    });
+    const commentsQuery = usePrCommentsByUrl(prUrl, prNumber, modal.visible);
     const comments = useMemo(
       () => commentsQuery.data?.comments ?? [],
       [commentsQuery.data?.comments]
@@ -307,58 +242,21 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       }: {
         threadId: string;
         resolved: boolean;
-      }) => {
-        if (workspaceId && repoId) {
-          return workspacesApi.setPrReviewThreadResolved(
-            workspaceId,
-            repoId,
-            prNumber,
-            threadId,
-            resolved
-          );
-        }
-        return issuePrsApi.setPrReviewThreadResolved(
+      }) =>
+        issuePrsApi.setPrReviewThreadResolved(
           prUrl,
           prNumber,
           threadId,
           resolved
-        );
-      },
+        ),
       onSuccess: () =>
         queryClient.invalidateQueries({
-          queryKey: prCommentsKeys.byAttempt(
-            workspaceId,
-            repoId,
-            prNumber,
-            prUrl
-          ),
+          queryKey: prCommentsKeys.byUrl(prUrl, prNumber),
         }),
     });
     const close = () => {
       modal.resolve();
       modal.hide();
-    };
-
-    useEffect(() => {
-      if (modal.visible) setSelectedIds(new Set());
-    }, [modal.visible]);
-
-    const toggleComment = (id: string) => {
-      setSelectedIds((current) => {
-        const next = new Set(current);
-        next.has(id) ? next.delete(id) : next.add(id);
-        return next;
-      });
-    };
-
-    const handleAddToChat = () => {
-      const selected = comments.filter((comment) =>
-        selectedIds.has(commentId(comment))
-      );
-      if (selected.length === 0) return;
-      if (!workspaceId) return;
-      addChatContext(workspaceId, commentsToMarkdown(selected));
-      close();
     };
 
     const handleDialogKeyDown = (event: KeyboardEvent) => {
@@ -496,26 +394,9 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                 </section>
 
                 <section className="min-w-0">
-                  <div className="mb-base flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">Conversation</h3>
-                    {comments.length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          setSelectedIds(
-                            selectedIds.size === comments.length
-                              ? new Set()
-                              : new Set(comments.map(commentId))
-                          )
-                        }
-                      >
-                        {selectedIds.size === comments.length
-                          ? 'Deselect comments'
-                          : 'Select all comments'}
-                      </Button>
-                    )}
-                  </div>
+                  <h3 className="mb-base text-sm font-semibold">
+                    Conversation
+                  </h3>
                   {commentsQuery.isError && (
                     <p className="mb-base text-sm text-error">
                       Some conversation comments could not be loaded.
@@ -538,8 +419,6 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                           >
                             <ReviewConversationThread
                               thread={item.thread}
-                              selectedIds={selectedIds}
-                              toggleComment={toggleComment}
                               theme={actualTheme}
                               onSetResolved={(threadId, resolved) =>
                                 resolveThreadMutation.mutate({
@@ -644,15 +523,6 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
             <Button variant="outline" onClick={close}>
               Close
             </Button>
-            {workspaceId && repoId && (
-              <Button
-                disabled={selectedIds.size === 0}
-                onClick={handleAddToChat}
-              >
-                Add to chat
-                {selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}
-              </Button>
-            )}
           </div>
         </DialogContent>
       </Dialog>

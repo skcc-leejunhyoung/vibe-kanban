@@ -68,7 +68,6 @@ import {
 } from '@/shared/types/actions';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
-import { usePrChatContextStore } from '@/shared/stores/usePrChatContextStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { sessionsApi, ApiError } from '@/shared/lib/api';
 import { useWorkspace } from '@/shared/hooks/useWorkspace';
@@ -659,9 +658,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const clearPendingComponentMarkdown = useInspectModeStore(
     (s) => s.clearPendingComponentMarkdown
   );
-  const pendingPrContext = usePrChatContextStore((state) => state.pending);
-  const clearPendingPrContext = usePrChatContextStore((state) => state.clear);
-
   useEffect(() => {
     if (pendingComponentMarkdown) {
       handleInsertMarkdown(pendingComponentMarkdown);
@@ -671,18 +667,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     pendingComponentMarkdown,
     handleInsertMarkdown,
     clearPendingComponentMarkdown,
-  ]);
-
-  useEffect(() => {
-    const context = pendingPrContext;
-    if (!context || context.workspaceId !== workspaceId) return;
-    handleInsertMarkdown(context.markdown);
-    clearPendingPrContext();
-  }, [
-    pendingPrContext,
-    workspaceId,
-    handleInsertMarkdown,
-    clearPendingPrContext,
   ]);
 
   const { uploadFiles, localAttachments, clearUploadedAttachments } =

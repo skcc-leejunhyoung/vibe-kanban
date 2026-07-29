@@ -1704,8 +1704,6 @@ export const Actions = {
         );
       if (openPr?.type !== 'pr' || !openPr.pr_info.url) return;
       await PrDetailsDialog.show({
-        workspaceId,
-        repoId,
         prUrl: openPr.pr_info.url,
         prNumber: Number(openPr.pr_info.number),
       });

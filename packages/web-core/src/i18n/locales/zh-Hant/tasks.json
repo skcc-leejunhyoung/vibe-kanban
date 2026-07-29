@@ -270,14 +270,6 @@
     }
   },
   "prComments": {
-    "dialog": {
-      "title": "選擇 PR 評論",
-      "noComments": "此 PR 沒有評論",
-      "selectAll": "全選",
-      "deselectAll": "取消全選",
-      "add": "新增",
-      "selectedCount": "已選擇 {{selected}} / {{total}}"
-    },
     "card": {
       "review": "審查",
       "tooltip": "點擊查看，雙擊編輯"

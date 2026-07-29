@@ -270,14 +270,6 @@
     }
   },
   "prComments": {
-    "dialog": {
-      "title": "选择 PR 评论",
-      "noComments": "此 PR 未找到评论",
-      "selectAll": "全选",
-      "deselectAll": "取消全选",
-      "add": "添加",
-      "selectedCount": "已选择 {{selected}} / {{total}}"
-    },
     "card": {
       "review": "审查",
       "tooltip": "点击查看，双击编辑"

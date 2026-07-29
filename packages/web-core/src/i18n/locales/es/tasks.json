@@ -271,14 +271,6 @@
     "noTasks": "Sin tareas"
   },
   "prComments": {
-    "dialog": {
-      "title": "Seleccionar comentarios del PR",
-      "noComments": "No se encontraron comentarios en este PR",
-      "selectAll": "Seleccionar todo",
-      "deselectAll": "Deseleccionar todo",
-      "add": "Agregar",
-      "selectedCount": "{{selected}} de {{total}} seleccionados"
-    },
     "card": {
       "review": "Revisión",
       "tooltip": "Clic para ver, doble clic para editar"
