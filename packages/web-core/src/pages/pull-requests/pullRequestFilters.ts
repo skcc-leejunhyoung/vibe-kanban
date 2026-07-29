@@ -19,7 +19,7 @@ export const DEFAULT_PULL_REQUEST_FILTER_STATE: PullRequestFilterState = {
   author: 'all',
   draft: 'all',
   updated: 'all',
-  involvesMe: true,
+  involvesMe: false,
 };
 
 export function resolvePullRequestFiltersAfterDefaultsChange(

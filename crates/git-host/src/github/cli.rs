@@ -679,7 +679,7 @@ fn pull_request_search_args(involves_me: bool) -> Vec<&'static str> {
         "search",
         "prs",
         "--limit",
-        "100",
+        "300",
         "--sort",
         "updated",
         "--order",
@@ -689,8 +689,6 @@ fn pull_request_search_args(involves_me: bool) -> Vec<&'static str> {
     ];
     if involves_me {
         args.extend(["--involves", "@me"]);
-    } else {
-        args.extend(["--author", "@me"]);
     }
     args
 }
@@ -700,12 +698,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pull_request_search_is_always_scoped_to_current_user() {
+    fn pull_request_search_can_include_all_accessible_pull_requests() {
         let involved_args = pull_request_search_args(true);
         assert!(involved_args.ends_with(&["--involves", "@me"]));
 
-        let authored_args = pull_request_search_args(false);
-        assert!(authored_args.ends_with(&["--author", "@me"]));
+        let all_args = pull_request_search_args(false);
+        assert!(!all_args.contains(&"--involves"));
+        assert!(!all_args.contains(&"--author"));
+        assert!(all_args.windows(2).any(|args| args == ["--limit", "300"]));
     }
 
     #[test]

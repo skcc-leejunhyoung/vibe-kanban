@@ -433,12 +433,8 @@ pub struct ListPrsQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ListPullRequestSummariesQuery {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub involves_me: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 pub async fn list_open_prs(
@@ -506,7 +502,7 @@ pub async fn list_involved_prs(
             ListPrsError::AuthFailed { message },
         ))),
         Err(e) => {
-            tracing::error!("Failed to list involved pull requests: {e}");
+            tracing::error!("Failed to list pull requests: {e}");
             Ok(ResponseJson(ApiResponse::error(&e.to_string())))
         }
     }

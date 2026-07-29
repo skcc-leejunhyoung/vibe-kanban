@@ -172,7 +172,7 @@ export function PullRequestFiltersDialog({
                 Include pull requests involving you
               </span>
               <span className="block text-xs text-low">
-                When off, only pull requests authored by you are shown.
+                When off, pull requests are not limited to your involvement.
               </span>
             </span>
             <Switch

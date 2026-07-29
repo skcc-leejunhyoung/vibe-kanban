@@ -117,7 +117,7 @@ export function PullRequestsPage() {
       }
       return result.data;
     },
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
   });
 
   const pullRequests = useMemo(
@@ -266,7 +266,7 @@ export function PullRequestsPage() {
             <p className="mt-half text-sm text-low">
               {filters.involvesMe
                 ? 'Pull requests involving you on GitHub'
-                : 'Pull requests authored by you on GitHub'}
+                : 'Recently updated pull requests on GitHub'}
             </p>
           </div>
           <div className="flex items-center gap-half">
