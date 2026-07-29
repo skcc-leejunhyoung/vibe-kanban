@@ -45,8 +45,9 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   const [state, setState] = useState<OAuthState>({ type: 'select' });
   const popupRef = useRef<Window | null>(null);
   const autoStartedRef = useRef(false);
+  const reauthenticationPopupClosedAtRef = useRef<number | null>(null);
   const [isPolling, setIsPolling] = useState(false);
-  const [reauthenticated, setReauthenticated] = useState(false);
+  const [handoffId, setHandoffId] = useState<string | null>(null);
   const [localEmail, setLocalEmail] = useState('');
   const [localPassword, setLocalPassword] = useState('');
   const [isSubmittingLocal, setIsSubmittingLocal] = useState(false);
@@ -64,22 +65,6 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   const oauthProviders = authMethods?.oauth_providers ?? [];
   const hasOAuthProviders = oauthProviders.length > 0;
 
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (
-        event.origin !== window.location.origin ||
-        event.source !== popupRef.current ||
-        event.data?.type !== 'vibe-kanban-oauth-complete'
-      ) {
-        return;
-      }
-      setReauthenticated(true);
-    };
-
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
-
   // Auth mutations hook
   const { initHandoff } = useAuthMutations({
     onInitSuccess: (data) => {
@@ -96,7 +81,8 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
       );
 
       // Start polling
-      setReauthenticated(false);
+      setHandoffId(data.handoff_id);
+      reauthenticationPopupClosedAtRef.current = null;
       setIsPolling(true);
     },
     onInitError: (error) => {
@@ -114,6 +100,16 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   const { data: statusData, isError: isStatusError } = useAuthStatus({
     enabled: isPolling,
   });
+  const { data: handoffStatus } = useQuery({
+    queryKey: ['auth', 'handoff-status', handoffId],
+    queryFn: () => oauthApi.handoffStatus(handoffId as string),
+    enabled: isPolling && reauthenticate && !!handoffId,
+    refetchInterval: isPolling && reauthenticate ? 500 : false,
+    retry: false,
+    staleTime: 0,
+  });
+  const isReauthenticationComplete =
+    !reauthenticate || handoffStatus?.completed === true;
 
   // Handle status check errors
   useEffect(() => {
@@ -132,18 +128,34 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
 
     // Check if popup is closed
     if (popupRef.current?.closed) {
-      setIsPolling(false);
-      if (!statusData.logged_in || (reauthenticate && !reauthenticated)) {
+      if (reauthenticate && !isReauthenticationComplete) {
+        const closedAt = reauthenticationPopupClosedAtRef.current ?? Date.now();
+        reauthenticationPopupClosedAtRef.current = closedAt;
+        const remainingGracePeriod = Math.max(
+          0,
+          3_000 - (Date.now() - closedAt)
+        );
+        const timeout = window.setTimeout(() => {
+          setState({
+            type: 'error',
+            message: 'OAuth window was closed before completing authentication',
+          });
+          setIsPolling(false);
+        }, remainingGracePeriod);
+        return () => window.clearTimeout(timeout);
+      }
+      if (!statusData.logged_in) {
         setState({
           type: 'error',
           message: 'OAuth window was closed before completing authentication',
         });
+        setIsPolling(false);
       }
     }
 
     // During reauthentication the local session is already logged in. Confirm
     // the callback completed instead of treating a closed popup as success.
-    if (statusData.logged_in && (!reauthenticate || reauthenticated)) {
+    if (statusData.logged_in && isReauthenticationComplete) {
       setIsPolling(false);
       if (popupRef.current && !popupRef.current.closed) {
         popupRef.current.close();
@@ -177,7 +189,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
     isPolling,
     modal,
     reauthenticate,
-    reauthenticated,
+    isReauthenticationComplete,
     reloadSystem,
     queryClient,
   ]);
@@ -191,7 +203,11 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
       // so we tag the callback URL so the server knows not to auto-close the tab.
       const isTauri = '__TAURI_INTERNALS__' in window;
       const returnTo = `${window.location.origin}/api/auth/handoff/complete${
-        isTauri && !reauthenticate ? '?source=desktop' : ''
+        isTauri && !reauthenticate
+          ? '?source=desktop'
+          : reauthenticate
+            ? '?reauthenticate=1'
+            : ''
       }`;
 
       // Initialize handoff flow

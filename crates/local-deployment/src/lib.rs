@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 use api_types::LoginStatus;
@@ -66,6 +67,7 @@ pub struct LocalDeployment {
     remote_client: Result<RemoteClient, RemoteClientNotConfigured>,
     auth_context: AuthContext,
     oauth_handoffs: Arc<RwLock<HashMap<Uuid, PendingHandoff>>>,
+    completed_oauth_handoffs: Arc<RwLock<HashMap<Uuid, Instant>>>,
     trusted_key_auth: TrustedKeyAuthRuntime,
     relay_signing: RelaySigningService,
     relay_control: Arc<RelayControl>,
@@ -202,6 +204,7 @@ impl Deployment for LocalDeployment {
         };
 
         let oauth_handoffs = Arc::new(RwLock::new(HashMap::new()));
+        let completed_oauth_handoffs = Arc::new(RwLock::new(HashMap::new()));
         let trusted_key_auth = TrustedKeyAuthRuntime::new(trusted_keys_path());
         let relay_signing = RelaySigningService::load_or_generate(&server_signing_key_path())
             .expect("Failed to load or generate server signing key");
@@ -267,6 +270,7 @@ impl Deployment for LocalDeployment {
             remote_client,
             auth_context,
             oauth_handoffs,
+            completed_oauth_handoffs,
             trusted_key_auth,
             relay_signing,
             relay_control,
@@ -454,6 +458,22 @@ impl LocalDeployment {
             .await
             .remove(handoff_id)
             .map(|state| (state.provider, state.app_verifier))
+    }
+
+    pub async fn mark_oauth_handoff_completed(&self, handoff_id: Uuid) {
+        let mut completed = self.completed_oauth_handoffs.write().await;
+        let now = Instant::now();
+        completed
+            .retain(|_, completed_at| now.duration_since(*completed_at) < Duration::from_secs(300));
+        completed.insert(handoff_id, now);
+    }
+
+    pub async fn take_completed_oauth_handoff(&self, handoff_id: &Uuid) -> bool {
+        self.completed_oauth_handoffs
+            .write()
+            .await
+            .remove(handoff_id)
+            .is_some()
     }
 
     pub fn pty(&self) -> &PtyService {

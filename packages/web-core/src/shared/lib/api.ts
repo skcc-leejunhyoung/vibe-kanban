@@ -1987,6 +1987,14 @@ export const oauthApi = {
     return handleApiResponse<StatusResponse>(response);
   },
 
+  handoffStatus: async (handoffId: string): Promise<{ completed: boolean }> => {
+    const response = await makeRequest(
+      `/api/auth/handoff/status?handoff_id=${encodeURIComponent(handoffId)}`,
+      { cache: 'no-store' }
+    );
+    return handleApiResponse<{ completed: boolean }>(response);
+  },
+
   localLogin: async (
     email: string,
     password: string

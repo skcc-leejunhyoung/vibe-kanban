@@ -84,6 +84,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/auth/methods", get(auth_methods))
         .route("/auth/handoff/init", post(handoff_init))
         .route("/auth/handoff/complete", get(handoff_complete))
+        .route("/auth/handoff/status", get(handoff_status))
         .route("/auth/local/login", post(local_login))
         .route("/auth/logout", post(logout))
         .route("/auth/status", get(status))
@@ -151,6 +152,18 @@ struct HandoffCompleteQuery {
     /// can see the success message (e.g. when opened from the Tauri desktop app).
     #[serde(default)]
     source: Option<String>,
+    #[serde(default)]
+    reauthenticate: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct HandoffStatusQuery {
+    handoff_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+struct HandoffStatusResponse {
+    completed: bool,
 }
 
 async fn handoff_complete(
@@ -205,11 +218,27 @@ async fn handoff_complete(
     )
     .await?;
 
+    if query.reauthenticate {
+        deployment
+            .mark_oauth_handoff_completed(query.handoff_id)
+            .await;
+    }
+
     let is_desktop = query.source.as_deref() == Some("desktop");
     Ok(close_window_response(
         format!("Signed in with {provider}. You can return to the app."),
         is_desktop,
     ))
+}
+
+async fn handoff_status(
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<HandoffStatusQuery>,
+) -> ResponseJson<ApiResponse<HandoffStatusResponse>> {
+    let completed = deployment
+        .take_completed_oauth_handoff(&query.handoff_id)
+        .await;
+    ResponseJson(ApiResponse::success(HandoffStatusResponse { completed }))
 }
 
 async fn local_login(
@@ -417,7 +446,6 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
     } else {
         "<script>\
            window.addEventListener('load', () => {\
-             window.opener?.postMessage({ type: 'vibe-kanban-oauth-complete' }, window.location.origin);\
              try { window.close(); } catch (err) {}\
              setTimeout(() => { window.close(); }, 150);\
            });\
@@ -450,23 +478,4 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
         .header("content-type", "text/html; charset=utf-8")
         .body(body)
         .unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::close_window_response;
-
-    #[test]
-    fn browser_callback_notifies_its_opener_before_closing() {
-        let response = close_window_response("Signed in".to_string(), false);
-
-        assert!(response.into_body().contains("vibe-kanban-oauth-complete"));
-    }
-
-    #[test]
-    fn desktop_callback_does_not_emit_a_popup_message() {
-        let response = close_window_response("Signed in".to_string(), true);
-
-        assert!(!response.into_body().contains("vibe-kanban-oauth-complete"));
-    }
 }
