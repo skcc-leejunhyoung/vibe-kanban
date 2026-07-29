@@ -10,7 +10,10 @@ use axum::{
 use db::models::repo::{Repo, SearchResult, UpdateRepo};
 use deployment::Deployment;
 use git::{GitBranch, GitRemote};
-use git_host::{GitHostError, GitHostProvider, GitHostService, ProviderKind, PullRequestDetail};
+use git_host::{
+    GitHostError, GitHostProvider, GitHostService, ProviderKind, PullRequestDetail,
+    PullRequestSummary, github::GitHubProvider,
+};
 use serde::{Deserialize, Serialize};
 use services::services::file_search::SearchQuery;
 use ts_rs::TS;
@@ -477,6 +480,24 @@ pub async fn list_open_prs(
     }
 }
 
+pub async fn list_involved_prs()
+-> Result<ResponseJson<ApiResponse<Vec<PullRequestSummary>, ListPrsError>>, ApiError> {
+    let provider = GitHubProvider::new()?;
+    match provider.list_involved_prs().await {
+        Ok(prs) => Ok(ResponseJson(ApiResponse::success(prs))),
+        Err(GitHostError::CliNotInstalled { provider }) => Ok(ResponseJson(
+            ApiResponse::error_with_data(ListPrsError::CliNotInstalled { provider }),
+        )),
+        Err(GitHostError::AuthFailed(message)) => Ok(ResponseJson(ApiResponse::error_with_data(
+            ListPrsError::AuthFailed { message },
+        ))),
+        Err(e) => {
+            tracing::error!("Failed to list involved pull requests: {e}");
+            Ok(ResponseJson(ApiResponse::error(&e.to_string())))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PrInfoQuery {
     pub url: String,
@@ -625,6 +646,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/repos/{repo_id}/fetch", post(fetch_repo_remote))
         .route("/repos/{repo_id}/push", post(push_repo_branch))
         .route("/repos/{repo_id}/prs", get(list_open_prs))
+        .route("/pull-requests", get(list_involved_prs))
         .route("/repos/pr-info", get(get_pr_info))
         .route("/repos/pr-comments", get(get_pr_comments_by_url))
         .route(

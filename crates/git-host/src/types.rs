@@ -194,6 +194,24 @@ pub struct PullRequestDetail {
     pub head_branch: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct PullRequestSummary {
+    pub number: i64,
+    pub url: String,
+    pub status: MergeStatus,
+    pub title: String,
+    pub body: String,
+    pub author: Option<String>,
+    pub assignees: Vec<String>,
+    pub labels: Vec<String>,
+    pub repository: String,
+    pub is_draft: bool,
+    pub comments_count: i64,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
 impl From<PullRequestDetail> for PullRequestInfo {
     fn from(d: PullRequestDetail) -> Self {
         PullRequestInfo {

@@ -11,8 +11,8 @@ use detection::detect_provider_from_url;
 use enum_dispatch::enum_dispatch;
 pub use types::{
     CreatePrRequest, GitHostError, PrComment, PrCommentAuthor, PrReviewComment, PrReviewThread,
-    ProviderKind, PullRequestCommit, PullRequestDetail, PullRequestReview, ReviewCommentUser,
-    UnifiedPrComment,
+    ProviderKind, PullRequestCommit, PullRequestDetail, PullRequestReview, PullRequestSummary,
+    ReviewCommentUser, UnifiedPrComment,
 };
 
 use self::{azure::AzureDevOpsProvider, github::GitHubProvider};

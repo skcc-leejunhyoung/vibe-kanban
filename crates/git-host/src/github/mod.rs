@@ -15,7 +15,7 @@ use crate::{
     GitHostProvider,
     types::{
         CreatePrRequest, GitHostError, PrComment, PrReviewComment, PrReviewThread, ProviderKind,
-        PullRequestDetail, UnifiedPrComment,
+        PullRequestDetail, PullRequestSummary, UnifiedPrComment,
     },
 };
 
@@ -29,6 +29,18 @@ impl GitHubProvider {
         Ok(Self {
             gh_cli: GhCli::new(),
         })
+    }
+
+    pub async fn list_involved_prs(&self) -> Result<Vec<PullRequestSummary>, GitHostError> {
+        let cli = self.gh_cli.clone();
+        task::spawn_blocking(move || cli.list_involved_prs())
+            .await
+            .map_err(|err| {
+                GitHostError::PullRequest(format!(
+                    "Failed to execute GitHub CLI for pull request search: {err}"
+                ))
+            })?
+            .map_err(Into::into)
     }
 
     async fn get_repo_info(

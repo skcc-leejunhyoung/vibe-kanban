@@ -11,6 +11,7 @@ import {
   KanbanIcon,
   SpinnerIcon,
   LightningIcon,
+  GitPullRequestIcon,
   type Icon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -38,6 +39,7 @@ interface AppBarProps {
   projects: AppBarProject[];
   onCreateProject: () => void;
   onWorkspacesClick: () => void;
+  onPullRequestsClick?: () => void;
   /** Opens the Quick chat launcher. When omitted, the entry is hidden. */
   onQuickChatClick?: () => void;
   showWorkspacesButton?: boolean;
@@ -45,6 +47,7 @@ interface AppBarProps {
   onProjectsDragEnd: (result: DropResult) => void;
   isSavingProjectOrder?: boolean;
   isWorkspacesActive: boolean;
+  isPullRequestsActive?: boolean;
   activeProjectId: string | null;
   isSignedIn?: boolean;
   isLoadingProjects?: boolean;
@@ -182,12 +185,14 @@ export function AppBar({
   projects,
   onCreateProject,
   onWorkspacesClick,
+  onPullRequestsClick,
   onQuickChatClick,
   showWorkspacesButton = true,
   onProjectClick,
   onProjectsDragEnd,
   isSavingProjectOrder,
   isWorkspacesActive,
+  isPullRequestsActive,
   activeProjectId,
   isSignedIn,
   isLoadingProjects,
@@ -214,6 +219,16 @@ export function AppBar({
       icon: LayoutIcon,
       isActive: isWorkspacesActive,
       onClick: onWorkspacesClick,
+    });
+  }
+  if (onPullRequestsClick) {
+    workspaceItems.push({
+      key: 'pull-requests',
+      kind: 'icon-button',
+      label: 'Pull Requests',
+      icon: GitPullRequestIcon,
+      isActive: isPullRequestsActive,
+      onClick: onPullRequestsClick,
     });
   }
   if (onQuickChatClick) {

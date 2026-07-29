@@ -101,6 +101,7 @@ import {
   GitRemote,
   ListPrsError,
   PullRequestDetail,
+  PullRequestSummary,
   LinkPrToIssueRequest,
   AttachExistingPrRequest,
   AttachPrResponse,
@@ -1498,6 +1499,15 @@ export const repoApi = {
       : '';
     const response = await makeRequest(`/api/repos/${repoId}/prs${params}`);
     return handleApiResponseAsResult<PullRequestDetail[], ListPrsError>(
+      response
+    );
+  },
+
+  listInvolvedPrs: async (): Promise<
+    Result<PullRequestSummary[], ListPrsError>
+  > => {
+    const response = await makeRequest('/api/pull-requests');
+    return handleApiResponseAsResult<PullRequestSummary[], ListPrsError>(
       response
     );
   },

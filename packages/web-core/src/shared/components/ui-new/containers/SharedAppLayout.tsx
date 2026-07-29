@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DropResult } from '@hello-pangea/dnd';
-import { Outlet, useNavigate } from '@tanstack/react-router';
+import { Outlet, useLocation, useNavigate } from '@tanstack/react-router';
 import {
   XIcon,
   PlusIcon,
@@ -8,6 +8,7 @@ import {
   KanbanIcon,
   BellIcon,
   LightningIcon,
+  GitPullRequestIcon,
 } from '@phosphor-icons/react';
 import { SyncErrorProvider } from '@/shared/providers/SyncErrorProvider';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
@@ -74,6 +75,7 @@ export function SharedAppLayout() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAppBarHovered, setIsAppBarHovered] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { registerNavigationProjects } = useActions();
   const shortcutOverrides = useKeyboardShortcutsStore((s) => s.overrides);
   const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
@@ -206,6 +208,7 @@ export function SharedAppLayout() {
     [cycleProject, projectDestination, shortcutOverrides]
   );
   const isWorkspacesActive = isLocalWorkspacesDestination(currentDestination);
+  const isPullRequestsActive = location.pathname === '/pull-requests';
   const isWorkspaceSidebarPreviewEnabled =
     !isMobile &&
     isWorkspacesActive &&
@@ -331,11 +334,15 @@ export function SharedAppLayout() {
                 projects={orderedProjects}
                 onCreateProject={handleCreateProject}
                 onWorkspacesClick={handleWorkspacesClick}
+                onPullRequestsClick={() =>
+                  void navigate({ to: '/pull-requests' })
+                }
                 onQuickChatClick={() => void QuickChatDialog.show()}
                 onProjectClick={handleProjectClick}
                 onProjectsDragEnd={handleProjectsDragEnd}
                 isSavingProjectOrder={isSavingProjectOrder}
                 isWorkspacesActive={isWorkspacesActive}
+                isPullRequestsActive={isPullRequestsActive}
                 activeProjectId={activeProjectId}
                 isSignedIn={isSignedIn}
                 isLoadingProjects={isLoading}
@@ -418,6 +425,19 @@ export function SharedAppLayout() {
             >
               <LayoutIcon className="h-4 w-4" />
               Workspaces
+            </button>
+
+            {/* Quick chat link */}
+            <button
+              type="button"
+              onClick={() => {
+                void navigate({ to: '/pull-requests' });
+                setIsDrawerOpen(false);
+              }}
+              className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+            >
+              <GitPullRequestIcon className="h-4 w-4" />
+              Pull Requests
             </button>
 
             {/* Quick chat link */}

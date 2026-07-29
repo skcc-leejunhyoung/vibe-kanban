@@ -191,6 +191,7 @@ fn generate_types_content() -> String {
         git_host::UnifiedPrComment::decl(),
         git_host::ProviderKind::decl(),
         git_host::PullRequestDetail::decl(),
+        git_host::PullRequestSummary::decl(),
         git_host::PullRequestReview::decl(),
         git_host::PullRequestCommit::decl(),
         git::GitRemote::decl(),

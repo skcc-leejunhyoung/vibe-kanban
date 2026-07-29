@@ -20,7 +20,7 @@ use utils::{command_ext::NoWindowExt, shell::resolve_executable_path_blocking};
 
 use crate::types::{
     CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PrReviewThread,
-    PullRequestCommit, PullRequestDetail, PullRequestReview, ReviewCommentUser,
+    PullRequestCommit, PullRequestDetail, PullRequestReview, PullRequestSummary, ReviewCommentUser,
 };
 
 #[derive(Debug, Clone)]
@@ -241,6 +241,41 @@ struct GhPrResponse {
     updated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhSearchRepository {
+    name_with_owner: String,
+}
+
+#[derive(Deserialize)]
+struct GhSearchLabel {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhSearchPrResponse {
+    number: i64,
+    url: String,
+    state: String,
+    title: String,
+    #[serde(default)]
+    body: String,
+    author: Option<GhNamedUser>,
+    #[serde(default)]
+    assignees: Vec<GhNamedUser>,
+    #[serde(default)]
+    labels: Vec<GhSearchLabel>,
+    repository: GhSearchRepository,
+    #[serde(default)]
+    is_draft: bool,
+    #[serde(default)]
+    comments_count: i64,
+    created_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
+    closed_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Error)]
 pub enum GhCliError {
     #[error("GitHub CLI (`gh`) executable not found or not runnable")]
@@ -399,6 +434,56 @@ impl GhCli {
             None,
         )?;
         Self::parse_pr_view(&raw)
+    }
+
+    pub fn list_involved_prs(&self) -> Result<Vec<PullRequestSummary>, GhCliError> {
+        let raw = self.run(
+            [
+                "search",
+                "prs",
+                "--involves",
+                "@me",
+                "--limit",
+                "100",
+                "--sort",
+                "updated",
+                "--order",
+                "desc",
+                "--json",
+                "number,url,state,title,body,author,assignees,labels,repository,isDraft,commentsCount,createdAt,updatedAt,closedAt",
+            ],
+            None,
+        )?;
+        let prs: Vec<GhSearchPrResponse> = serde_json::from_str(raw.trim()).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!(
+                "Failed to parse gh search prs response: {err}; raw: {raw}"
+            ))
+        })?;
+
+        Ok(prs
+            .into_iter()
+            .map(|pr| PullRequestSummary {
+                number: pr.number,
+                url: pr.url,
+                status: match pr.state.to_ascii_uppercase().as_str() {
+                    "OPEN" => MergeStatus::Open,
+                    "MERGED" => MergeStatus::Merged,
+                    "CLOSED" => MergeStatus::Closed,
+                    _ => MergeStatus::Unknown,
+                },
+                title: pr.title,
+                body: pr.body,
+                author: pr.author.map(|author| author.login),
+                assignees: pr.assignees.into_iter().map(|user| user.login).collect(),
+                labels: pr.labels.into_iter().map(|label| label.name).collect(),
+                repository: pr.repository.name_with_owner,
+                is_draft: pr.is_draft,
+                comments_count: pr.comments_count,
+                created_at: pr.created_at,
+                updated_at: pr.updated_at,
+                closed_at: pr.closed_at,
+            })
+            .collect())
     }
 
     /// List pull requests for a branch (includes closed/merged).
