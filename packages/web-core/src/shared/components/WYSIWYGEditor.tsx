@@ -94,7 +94,10 @@ import {
   buildRepoSelectionPages,
   type RepoSelectionResult,
 } from '@/shared/dialogs/command-bar/selections/repoSelection';
-import { fetchAttachmentSasUrl } from '@/shared/lib/remoteApi';
+import {
+  fetchAttachmentSasUrl,
+  fetchGitHubImage,
+} from '@/shared/lib/remoteApi';
 import { writeClipboardViaBridge } from '@/shared/lib/clipboard';
 import type { SendMessageShortcut } from 'shared/types';
 import type { BaseCodingAgent } from 'shared/types';
@@ -428,6 +431,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       () =>
         createImageNode({
           fetchAttachmentUrl: fetchAttachmentSasUrl,
+          fetchGitHubImage,
           openImagePreview: (options) => {
             ImagePreviewDialog.show(options);
           },

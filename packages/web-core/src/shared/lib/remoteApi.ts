@@ -423,3 +423,15 @@ export async function fetchAttachmentSasUrl(
   });
   return data.url;
 }
+
+/** Fetch a private GitHub issue attachment through the authenticated Vibe API. */
+export async function fetchGitHubImage(sourceUrl: string): Promise<Blob> {
+  const response = await makeRequest(
+    `/v1/github/image?url=${encodeURIComponent(sourceUrl)}`,
+    { headers: { Accept: 'image/*' } }
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch GitHub image: ${response.statusText}`);
+  }
+  return response.blob();
+}

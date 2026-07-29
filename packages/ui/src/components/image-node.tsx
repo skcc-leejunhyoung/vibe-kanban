@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { NodeKey, SerializedLexicalNode, Spread, $getNodeByKey } from 'lexical';
@@ -53,6 +53,7 @@ export interface CreateImageNodeOptions {
     attachmentId: string,
     type: AttachmentType
   ) => Promise<string>;
+  fetchGitHubImage?: (sourceUrl: string) => Promise<Blob>;
   openImagePreview: (options: OpenImagePreviewOptions) => void;
 }
 
@@ -204,6 +205,46 @@ function useAttachmentUrl(
   };
 }
 
+function useGitHubImageUrl(
+  sourceUrl: string | null,
+  fetchGitHubImage: CreateImageNodeOptions['fetchGitHubImage']
+): AttachmentUrlResult {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!sourceUrl || !fetchGitHubImage) {
+      setUrl(null);
+      setLoading(false);
+      return;
+    }
+
+    let active = true;
+    let objectUrl: string | null = null;
+    setLoading(true);
+    setUrl(null);
+    fetchGitHubImage(sourceUrl)
+      .then((blob) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => {
+        if (active) setUrl(null);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [fetchGitHubImage, sourceUrl]);
+
+  return { url, loading };
+}
+
 export function createImageNode(options: CreateImageNodeOptions) {
   function ImageComponent({
     data,
@@ -248,6 +289,11 @@ export function createImageNode(options: CreateImageNodeOptions) {
       'file',
       options.fetchAttachmentUrl
     );
+    const { url: githubImageUrl, loading: githubImageLoading } =
+      useGitHubImageUrl(
+        isGitHubAttachment ? src : null,
+        options.fetchGitHubImage
+      );
 
     const { data: metadata, isLoading: loading } = useImageMetadata(
       workspaceId,
@@ -272,9 +318,9 @@ export function createImageNode(options: CreateImageNodeOptions) {
         event.preventDefault();
         event.stopPropagation();
 
-        if (isGitHubAttachment) {
+        if (isGitHubAttachment && githubImageUrl) {
           options.openImagePreview({
-            imageUrl: src,
+            imageUrl: githubImageUrl,
             altText,
             fileName: altText || undefined,
           });
@@ -316,7 +362,7 @@ export function createImageNode(options: CreateImageNodeOptions) {
       [
         isAttachment,
         isGitHubAttachment,
-        src,
+        githubImageUrl,
         localAttachment?.proxy_url,
         fullSizeUrl,
         isImageAttachment,
@@ -377,14 +423,22 @@ export function createImageNode(options: CreateImageNodeOptions) {
           role="button"
           tabIndex={0}
         >
-          <img
-            src={src}
-            alt={altText}
-            className="max-w-full max-h-[640px] rounded border border-border object-contain"
-            draggable={false}
-            loading="lazy"
-            referrerPolicy="no-referrer"
-          />
+          {githubImageLoading ? (
+            <div className="w-10 h-10 flex items-center justify-center bg-muted rounded">
+              <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+            </div>
+          ) : githubImageUrl ? (
+            <img
+              src={githubImageUrl}
+              alt={altText}
+              className="max-w-full max-h-[640px] rounded border border-border object-contain"
+              draggable={false}
+            />
+          ) : (
+            <div className="w-10 h-10 flex items-center justify-center bg-muted rounded">
+              <HelpCircle className="w-5 h-5 text-muted-foreground" />
+            </div>
+          )}
           {editor.isEditable() && (
             <button
               onClick={handleDelete}

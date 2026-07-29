@@ -1,0 +1,230 @@
+use axum::{
+    Router,
+    body::Body,
+    extract::{Extension, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::get,
+};
+use reqwest::{Client, StatusCode as ReqwestStatusCode, redirect::Policy};
+use serde::Deserialize;
+use tracing::{instrument, warn};
+use url::Url;
+
+use crate::{AppState, auth::RequestContext, db::oauth_accounts::OAuthAccountRepository};
+
+const GITHUB_ATTACHMENT_PATH_PREFIX: &str = "/user-attachments/assets/";
+const MAX_REDIRECTS: usize = 3;
+const MAX_IMAGE_SIZE_BYTES: usize = 20 * 1024 * 1024;
+const GITHUB_USER_AGENT: &str = "VibeKanbanRemote/1.0";
+
+pub fn router() -> Router<AppState> {
+    Router::new().route("/github/image", get(get_github_image))
+}
+
+#[derive(Deserialize)]
+struct GitHubImageQuery {
+    url: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum GitHubImageError {
+    #[error("invalid GitHub attachment URL")]
+    InvalidUrl,
+    #[error("GitHub authentication is required")]
+    AuthenticationRequired,
+    #[error("GitHub attachment not found")]
+    NotFound,
+    #[error("GitHub denied access to this attachment")]
+    AccessDenied,
+    #[error("GitHub returned a non-image response")]
+    NotImage,
+    #[error("GitHub attachment is too large")]
+    TooLarge,
+    #[error("failed to fetch GitHub attachment")]
+    Upstream,
+    #[error("failed to read GitHub credentials")]
+    Credentials,
+}
+
+impl IntoResponse for GitHubImageError {
+    fn into_response(self) -> Response {
+        let status = match self {
+            Self::InvalidUrl => StatusCode::BAD_REQUEST,
+            Self::AuthenticationRequired | Self::AccessDenied => StatusCode::FORBIDDEN,
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::NotImage => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::Upstream | Self::Credentials => StatusCode::BAD_GATEWAY,
+        };
+        (status, self.to_string()).into_response()
+    }
+}
+
+#[instrument(name = "github_images.get", skip(state, ctx, query), fields(user_id = %ctx.user.id))]
+async fn get_github_image(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<GitHubImageQuery>,
+) -> Result<Response, GitHubImageError> {
+    let url = validate_initial_url(&query.url)?;
+    let account = OAuthAccountRepository::new(state.pool())
+        .get_by_user_provider(ctx.user.id, "github")
+        .await
+        .map_err(|error| {
+            warn!(?error, "failed to load GitHub OAuth account");
+            GitHubImageError::Credentials
+        })?
+        .ok_or(GitHubImageError::AuthenticationRequired)?;
+    let encrypted_tokens = account
+        .encrypted_provider_tokens
+        .ok_or(GitHubImageError::AuthenticationRequired)?;
+    let token_details = state
+        .jwt()
+        .decrypt_provider_tokens(&encrypted_tokens)
+        .map_err(|error| {
+            warn!(?error, "failed to decrypt GitHub OAuth token");
+            GitHubImageError::Credentials
+        })?;
+    if token_details.provider != "github" {
+        return Err(GitHubImageError::AuthenticationRequired);
+    }
+
+    let response = fetch_image(&url, token_details.access_token.as_str()).await?;
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("image/"))
+        .ok_or(GitHubImageError::NotImage)?;
+    let content_type =
+        HeaderValue::from_str(content_type).map_err(|_| GitHubImageError::NotImage)?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_IMAGE_SIZE_BYTES as u64)
+    {
+        return Err(GitHubImageError::TooLarge);
+    }
+    let bytes = response.bytes().await.map_err(|error| {
+        warn!(?error, "failed to read GitHub attachment response");
+        GitHubImageError::Upstream
+    })?;
+    if bytes.len() > MAX_IMAGE_SIZE_BYTES {
+        return Err(GitHubImageError::TooLarge);
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, content_type);
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=300"),
+    );
+    headers.insert(header::VARY, HeaderValue::from_static("Authorization"));
+    Ok((StatusCode::OK, headers, Body::from(bytes)).into_response())
+}
+
+async fn fetch_image(url: &Url, access_token: &str) -> Result<reqwest::Response, GitHubImageError> {
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .user_agent(GITHUB_USER_AGENT)
+        .build()
+        .map_err(|error| {
+            warn!(?error, "failed to create GitHub image client");
+            GitHubImageError::Upstream
+        })?;
+    let mut next_url = url.clone();
+
+    for _ in 0..=MAX_REDIRECTS {
+        let mut request = client
+            .get(next_url.clone())
+            .header(header::ACCEPT, "image/avif,image/webp,image/*,*/*;q=0.8");
+        if next_url.host_str() == Some("github.com") {
+            request = request.bearer_auth(access_token);
+        }
+        let response = request.send().await.map_err(|error| {
+            warn!(?error, "failed to request GitHub attachment");
+            GitHubImageError::Upstream
+        })?;
+        if response.status().is_redirection() {
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or(GitHubImageError::Upstream)?;
+            let redirect_url = next_url
+                .join(location)
+                .map_err(|_| GitHubImageError::Upstream)?;
+            if !is_allowed_redirect_url(&redirect_url) {
+                return Err(GitHubImageError::InvalidUrl);
+            }
+            next_url = redirect_url;
+            continue;
+        }
+        return match response.status() {
+            ReqwestStatusCode::OK => Ok(response),
+            ReqwestStatusCode::NOT_FOUND => Err(GitHubImageError::NotFound),
+            ReqwestStatusCode::UNAUTHORIZED | ReqwestStatusCode::FORBIDDEN => {
+                Err(GitHubImageError::AccessDenied)
+            }
+            status if status.is_client_error() || status.is_server_error() => {
+                warn!(%status, "GitHub attachment request failed");
+                Err(GitHubImageError::Upstream)
+            }
+            _ => Err(GitHubImageError::Upstream),
+        };
+    }
+    Err(GitHubImageError::Upstream)
+}
+
+fn validate_initial_url(raw_url: &str) -> Result<Url, GitHubImageError> {
+    let url = Url::parse(raw_url).map_err(|_| GitHubImageError::InvalidUrl)?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.path().starts_with(GITHUB_ATTACHMENT_PATH_PREFIX)
+    {
+        return Err(GitHubImageError::InvalidUrl);
+    }
+    Ok(url)
+}
+
+fn is_allowed_redirect_url(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    url.scheme() == "https"
+        && (host == "github.com"
+            || host == "githubusercontent.com"
+            || host.ends_with(".githubusercontent.com"))
+}
+
+#[cfg(test)]
+mod tests {
+    use url::Url;
+
+    use super::{is_allowed_redirect_url, validate_initial_url};
+
+    #[test]
+    fn accepts_github_user_attachment_urls() {
+        assert!(
+            validate_initial_url("https://github.com/user-attachments/assets/attachment-id")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_non_attachment_or_insecure_urls() {
+        assert!(validate_initial_url("http://github.com/user-attachments/assets/id").is_err());
+        assert!(validate_initial_url("https://example.com/user-attachments/assets/id").is_err());
+        assert!(validate_initial_url("https://github.com/example/repo").is_err());
+    }
+
+    #[test]
+    fn only_allows_github_redirect_hosts() {
+        assert!(is_allowed_redirect_url(
+            &Url::parse("https://private-user-images.githubusercontent.com/image").unwrap()
+        ));
+        assert!(!is_allowed_redirect_url(
+            &Url::parse("https://githubusercontent.com.evil.example/image").unwrap()
+        ));
+    }
+}
