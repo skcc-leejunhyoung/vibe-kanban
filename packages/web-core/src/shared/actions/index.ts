@@ -123,6 +123,7 @@ import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
+  PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
 } from '@/pages/pull-requests/pullRequestFilters';
 
 // Mirrored sidebar icon for right sidebar toggle
@@ -1133,6 +1134,36 @@ export const Actions = {
     isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
     execute: () => {
       window.dispatchEvent(new Event(PULL_REQUESTS_OPEN_FILTERS_EVENT));
+    },
+  } satisfies GlobalActionDefinition,
+
+  SelectPullRequestsRepository: {
+    id: 'select-pull-requests-repository',
+    label: 'Pull Requests: Select Repository',
+    icon: GitForkIcon,
+    keywords: ['pull request', 'pr', 'repository', 'repo', 'select'],
+    requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
+    executeAfterClose: true,
+    isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
+    execute: async () => {
+      const repos = await repoApi.list();
+      if (repos.length === 0) return;
+      const { buildRepoSelectionPages } = await import(
+        '@/shared/dialogs/command-bar/selections/repoSelection'
+      );
+      const result = await SelectionDialog.show({
+        initialPageId: 'selectRepo',
+        pages: buildRepoSelectionPages(repos),
+      });
+      if (!result || typeof result !== 'object' || !('repoId' in result)) {
+        return;
+      }
+      window.dispatchEvent(
+        new CustomEvent(PULL_REQUESTS_SELECT_REPOSITORY_EVENT, {
+          detail: { repoId: result.repoId },
+        })
+      );
     },
   } satisfies GlobalActionDefinition,
 

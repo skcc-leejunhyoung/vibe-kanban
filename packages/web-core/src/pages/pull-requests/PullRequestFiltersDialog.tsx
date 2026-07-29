@@ -20,6 +20,7 @@ interface PullRequestFiltersDialogProps {
   authors: string[];
   onChange: (filters: PullRequestFilterState) => void;
   onReset: () => void;
+  showRepository?: boolean;
   title?: string;
   description?: string;
 }
@@ -32,6 +33,7 @@ export function PullRequestFiltersDialog({
   authors,
   onChange,
   onReset,
+  showRepository = true,
   title = 'Pull request filters',
   description = 'Choose which pull requests appear in the list.',
 }: PullRequestFiltersDialogProps) {
@@ -51,40 +53,42 @@ export function PullRequestFiltersDialog({
         </div>
 
         <div className="grid grid-cols-2 gap-base p-double">
-          <label className="space-y-half text-sm text-low">
-            <span>Repository</span>
-            {repositories.length > 0 ? (
-              <select
-                value={filters.repository}
-                onChange={(event) => update('repository', event.target.value)}
-                className={selectClassName}
-              >
-                <option value="all">Select a repository</option>
-                {filters.repository !== 'all' &&
-                  !repositories.some(
-                    (repository) => repository.value === filters.repository
-                  ) && (
-                    <option value={filters.repository}>
-                      {filters.repository}
+          {showRepository && (
+            <label className="space-y-half text-sm text-low">
+              <span>Repository</span>
+              {repositories.length > 0 ? (
+                <select
+                  value={filters.repository}
+                  onChange={(event) => update('repository', event.target.value)}
+                  className={selectClassName}
+                >
+                  <option value="all">Select a repository</option>
+                  {filters.repository !== 'all' &&
+                    !repositories.some(
+                      (repository) => repository.value === filters.repository
+                    ) && (
+                      <option value={filters.repository}>
+                        {filters.repository}
+                      </option>
+                    )}
+                  {repositories.map((repository) => (
+                    <option key={repository.value} value={repository.value}>
+                      {repository.label}
                     </option>
-                  )}
-                {repositories.map((repository) => (
-                  <option key={repository.value} value={repository.value}>
-                    {repository.label}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={filters.repository === 'all' ? '' : filters.repository}
-                onChange={(event) =>
-                  update('repository', event.target.value || 'all')
-                }
-                placeholder="Repository ID"
-                className={selectClassName}
-              />
-            )}
-          </label>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={filters.repository === 'all' ? '' : filters.repository}
+                  onChange={(event) =>
+                    update('repository', event.target.value || 'all')
+                  }
+                  placeholder="Repository ID"
+                  className={selectClassName}
+                />
+              )}
+            </label>
+          )}
           <label className="space-y-half text-sm text-low">
             <span>Status</span>
             <select

@@ -200,6 +200,21 @@ describe('command palette navigation actions', () => {
     ).toBe(false);
   });
 
+  it('only shows pull request repository selection on the pull requests page', () => {
+    expect(
+      isActionVisible(Actions.SelectPullRequestsRepository, {
+        ...openWorkspaceContext,
+        layoutMode: 'pull-requests',
+      })
+    ).toBe(true);
+    expect(
+      isActionVisible(
+        Actions.SelectPullRequestsRepository,
+        openWorkspaceContext
+      )
+    ).toBe(false);
+  });
+
   it('opens the project workspace in the workspace view', () => {
     const goToWorkspace = vi.fn();
     const { ctx } = makeCtx(

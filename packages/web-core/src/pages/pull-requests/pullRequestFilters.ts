@@ -38,3 +38,5 @@ export const PULL_REQUESTS_OPEN_FILTERS_EVENT =
   'vibe:pull-requests-open-filters';
 export const PULL_REQUESTS_FOCUS_SEARCH_EVENT =
   'vibe:pull-requests-focus-search';
+export const PULL_REQUESTS_SELECT_REPOSITORY_EVENT =
+  'vibe:pull-requests-select-repository';

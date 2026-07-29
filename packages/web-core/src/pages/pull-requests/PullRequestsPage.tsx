@@ -18,6 +18,7 @@ import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
+  PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
   resolvePullRequestFiltersAfterDefaultsChange,
   type PullRequestFilterState,
   type PullRequestUpdatedFilter,
@@ -72,7 +73,6 @@ function shouldIgnoreListKeyboardNavigation(
 
 function activeFilterCount(filters: PullRequestFilterState): number {
   return [
-    filters.repository !== 'all',
     filters.status !== 'all',
     filters.author !== 'all',
     filters.draft !== 'all',
@@ -213,11 +213,24 @@ export function PullRequestsPage() {
   useEffect(() => {
     const openFilters = () => setFiltersOpen(true);
     const focusSearch = () => searchInputRef.current?.focus();
+    const selectRepository = (event: Event) => {
+      const repoId = (event as CustomEvent<{ repoId?: string }>).detail?.repoId;
+      if (!repoId) return;
+      setFilters((current) => ({ ...current, repository: repoId }));
+    };
     window.addEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
     window.addEventListener(PULL_REQUESTS_FOCUS_SEARCH_EVENT, focusSearch);
+    window.addEventListener(
+      PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
+      selectRepository
+    );
     return () => {
       window.removeEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
       window.removeEventListener(PULL_REQUESTS_FOCUS_SEARCH_EVENT, focusSearch);
+      window.removeEventListener(
+        PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
+        selectRepository
+      );
     };
   }, []);
 
@@ -498,7 +511,13 @@ export function PullRequestsPage() {
         repositories={repositories}
         authors={authors}
         onChange={setFilters}
-        onReset={() => setFilters({ ...defaultFilters })}
+        onReset={() =>
+          setFilters({
+            ...defaultFilters,
+            repository: filters.repository,
+          })
+        }
+        showRepository={false}
       />
     </>
   );
