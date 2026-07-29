@@ -139,7 +139,11 @@ function ConversationComment({
           diffHunk={isReview ? comment.diff_hunk : undefined}
           variant="list"
           onClick={() => toggleComment(id)}
-          className="min-w-0 flex-1"
+          className={
+            isReview
+              ? 'min-w-0 flex-1 bg-primary shadow-none'
+              : 'min-w-0 flex-1 bg-panel shadow-sm'
+          }
         />
       </div>
       {replies.map((reply) => (
@@ -193,8 +197,8 @@ function ReviewConversationThread({
   }
 
   return (
-    <div className="min-w-0 overflow-hidden rounded border bg-secondary">
-      <div className="flex min-w-0 items-center gap-half border-b px-base py-base">
+    <div className="min-w-0 overflow-hidden rounded border border-border bg-panel shadow-sm">
+      <div className="flex min-w-0 items-center gap-half border-b bg-secondary px-base py-base">
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
@@ -515,7 +519,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                         return (
                           <div
                             key={item.key}
-                            className="relative pl-[42px] before:absolute before:left-[11px] before:top-base before:size-[9px] before:rounded-full before:border-2 before:border-panel before:bg-muted-foreground"
+                            className="relative pl-[42px] before:absolute before:left-[7px] before:top-base before:z-10 before:size-[17px] before:rounded-full before:border-4 before:border-panel before:bg-brand"
                           >
                             <ReviewConversationThread
                               thread={item.thread}
@@ -556,20 +560,20 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                       return (
                         <div
                           key={item.key}
-                          className="relative flex min-w-0 items-start gap-base pl-[42px]"
+                          className="relative flex min-w-0 items-start gap-base py-half pl-[42px] text-low"
                         >
-                          <span className="absolute left-0 top-0 z-10 flex size-[30px] items-center justify-center rounded-full border bg-panel">
-                            <Icon className="size-icon-sm" />
+                          <span className="absolute left-[4px] top-half z-10 flex size-[23px] items-center justify-center rounded-full border border-border bg-secondary">
+                            <Icon className="size-icon-xs" />
                           </span>
-                          <div className="min-w-0 flex-1 rounded border bg-secondary px-base py-base text-sm">
+                          <div className="min-w-0 flex-1 px-base py-half text-sm">
                             {item.kind === 'commit' ? (
                               <div className="flex min-w-0 flex-wrap items-center gap-half">
-                                <span className="font-medium">
+                                <span className="font-medium text-normal">
                                   {item.commit.authors.join(', ') ||
                                     'Unknown author'}
                                 </span>
                                 <span className="text-low">committed</span>
-                                <span className="min-w-0 break-words font-medium">
+                                <span className="min-w-0 break-words text-normal">
                                   {item.commit.message}
                                 </span>
                                 <code className="ml-auto text-xs text-low">
@@ -579,7 +583,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                             ) : item.kind === 'review' ? (
                               <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-half">
-                                  <span className="font-medium">
+                                  <span className="font-medium text-normal">
                                     {item.review.author || 'Unknown reviewer'}
                                   </span>
                                   <span className="text-low">
@@ -598,7 +602,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                               </div>
                             ) : (
                               <div>
-                                <span className="font-medium">
+                                <span className="font-medium text-normal">
                                   {item.actor || 'Pull request'}
                                 </span>{' '}
                                 <span className="text-low">
