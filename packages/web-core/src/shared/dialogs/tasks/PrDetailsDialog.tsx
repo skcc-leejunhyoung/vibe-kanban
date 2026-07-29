@@ -141,7 +141,7 @@ function ReviewConversationThread({
 
   return (
     <div className="min-w-0 overflow-hidden rounded border border-border bg-panel shadow-sm">
-      <div className="flex min-w-0 items-center gap-half border-b bg-secondary px-base py-base">
+      <div className="flex min-w-0 items-center gap-half bg-secondary px-base py-base">
         <button
           type="button"
           onClick={() => setExpanded((value) => !value)}
@@ -176,7 +176,18 @@ function ReviewConversationThread({
             </span>
           )}
         </button>
-        {comment.thread_id && comment.is_resolved != null && onSetResolved && (
+      </div>
+      {expanded && (
+        <div className="border-t p-base">
+          <ConversationComment
+            thread={thread}
+            theme={theme}
+            showLocation={false}
+          />
+        </div>
+      )}
+      {comment.thread_id && comment.is_resolved != null && onSetResolved && (
+        <div className="flex justify-end border-t bg-secondary/50 px-base py-half">
           <Button
             variant="ghost"
             size="sm"
@@ -191,15 +202,6 @@ function ReviewConversationThread({
             )}
             {resolved ? 'Unresolve' : 'Resolve conversation'}
           </Button>
-        )}
-      </div>
-      {expanded && (
-        <div className="p-base">
-          <ConversationComment
-            thread={thread}
-            theme={theme}
-            showLocation={false}
-          />
         </div>
       )}
     </div>
@@ -287,7 +289,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
         open={modal.visible}
         onOpenChange={(open) => !open && close()}
         onKeyDownCapture={handleDialogKeyDown}
-        className="h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[100rem] min-h-0 my-0 p-0 overflow-hidden"
+        className="h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-none min-h-0 my-0 p-0 overflow-hidden"
       >
         <DialogContent className="min-h-0 flex-1 gap-0 overflow-hidden p-0">
           <DialogHeader className="shrink-0 px-base py-base border-b">
