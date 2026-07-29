@@ -451,3 +451,22 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
         .body(body)
         .unwrap()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::close_window_response;
+
+    #[test]
+    fn browser_callback_notifies_its_opener_before_closing() {
+        let response = close_window_response("Signed in".to_string(), false);
+
+        assert!(response.into_body().contains("vibe-kanban-oauth-complete"));
+    }
+
+    #[test]
+    fn desktop_callback_does_not_emit_a_popup_message() {
+        let response = close_window_response("Signed in".to_string(), true);
+
+        assert!(!response.into_body().contains("vibe-kanban-oauth-complete"));
+    }
+}
