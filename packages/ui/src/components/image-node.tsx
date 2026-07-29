@@ -18,6 +18,7 @@ import {
 const ATTACHMENT_URL_STALE_TIME = 4 * 60 * 1000;
 const IMAGE_FILE_EXTENSION_REGEX =
   /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$/i;
+const GITHUB_ATTACHMENT_PATH_PREFIX = '/user-attachments/assets/';
 
 type AttachmentType = 'file' | 'thumbnail';
 
@@ -70,6 +71,19 @@ function isImageLikeFileName(name: string): boolean {
   }
 
   return IMAGE_FILE_EXTENSION_REGEX.test(normalized);
+}
+
+function isGitHubAttachmentUrl(src: string): boolean {
+  try {
+    const url = new URL(src);
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'github.com' &&
+      url.pathname.startsWith(GITHUB_ATTACHMENT_PATH_PREFIX)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function truncatePath(path: string, maxLength = 24): string {
@@ -197,6 +211,7 @@ export function createImageNode(options: CreateImageNodeOptions) {
   }): JSX.Element {
     const { t } = useTranslation('common');
     const { src, altText } = data;
+    const isGitHubAttachment = isGitHubAttachmentUrl(src);
     const workspaceId = useWorkspaceId();
     const sessionId = useSessionId();
     const localAttachments = useLocalAttachments();
@@ -252,6 +267,15 @@ export function createImageNode(options: CreateImageNodeOptions) {
         event.preventDefault();
         event.stopPropagation();
 
+        if (isGitHubAttachment) {
+          options.openImagePreview({
+            imageUrl: src,
+            altText,
+            fileName: altText || undefined,
+          });
+          return;
+        }
+
         const localAttachmentUrl = localAttachment?.proxy_url ?? null;
 
         if (isAttachment && (localAttachmentUrl || fullSizeUrl)) {
@@ -286,6 +310,8 @@ export function createImageNode(options: CreateImageNodeOptions) {
       },
       [
         isAttachment,
+        isGitHubAttachment,
+        src,
         localAttachment?.proxy_url,
         fullSizeUrl,
         isImageAttachment,
@@ -336,6 +362,37 @@ export function createImageNode(options: CreateImageNodeOptions) {
       },
       [editor, nodeKey]
     );
+
+    if (isGitHubAttachment) {
+      return (
+        <span
+          className="group relative inline-block max-w-full cursor-zoom-in"
+          onClick={handleClick}
+          onDoubleClick={onDoubleClickEdit}
+          role="button"
+          tabIndex={0}
+        >
+          <img
+            src={src}
+            alt={altText}
+            className="max-w-full max-h-[640px] rounded border border-border object-contain"
+            draggable={false}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+          {editor.isEditable() && (
+            <button
+              onClick={handleDelete}
+              className="absolute top-1 right-1 w-4 h-4 rounded-full bg-foreground/70 hover:bg-destructive flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label={t('kanban.removeImage')}
+              type="button"
+            >
+              <X className="w-2.5 h-2.5 text-background" />
+            </button>
+          )}
+        </span>
+      );
+    }
 
     let thumbnailContent: React.ReactNode;
     let displayName: string;

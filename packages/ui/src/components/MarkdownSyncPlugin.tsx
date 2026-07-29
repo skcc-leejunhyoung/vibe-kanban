@@ -6,6 +6,7 @@ import {
   type Transformer,
 } from '@lexical/markdown';
 import { $getRoot, type EditorState } from 'lexical';
+import { normalizeGitHubImageHtml } from '@vibe/ui/lib/githubImageMarkdown';
 
 type MarkdownSyncPluginProps = {
   value: string;
@@ -45,13 +46,14 @@ export function MarkdownSyncPlugin({
   // Handle controlled value changes (external → editor)
   useEffect(() => {
     if (value === lastSerializedRef.current) return;
+    const parsedValue = normalizeGitHubImageHtml(value);
 
     try {
       editor.update(() => {
-        if (value.trim() === '') {
+        if (parsedValue.trim() === '') {
           $getRoot().clear();
         } else {
-          $convertFromMarkdownString(value, transformers);
+          $convertFromMarkdownString(parsedValue, transformers);
         }
 
         // Only position cursor at end if editor already has focus (user is actively editing)
@@ -65,7 +67,9 @@ export function MarkdownSyncPlugin({
           }
         }
       });
-      lastSerializedRef.current = value;
+      // Avoid rewriting imported GitHub HTML until the user actually edits it.
+      // The editor serializes the normalized representation as Markdown.
+      lastSerializedRef.current = parsedValue;
     } catch (err) {
       console.error('Failed to parse markdown', err);
     }
