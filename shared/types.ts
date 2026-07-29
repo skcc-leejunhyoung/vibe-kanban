@@ -647,6 +647,8 @@ export type GetPrCommentsError = { "type": "no_pr_attached" } | { "type": "cli_n
 
 export type GetPrCommentsQuery = { repo_id: string, pr_number: bigint | null, };
 
+export type SetPrReviewThreadResolvedRequest = { repo_id: string, pr_number: bigint, thread_id: string, resolved: boolean, };
+
 export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array<WorkspaceRepoInput>, linked_issue: LinkedIssueInfo | null, executor_config: ExecutorConfig, prompt: string, attachment_ids: Array<string> | null,
 /**
  * When set, work directly on an existing PR's head branch (review mode)
@@ -708,7 +710,7 @@ working_branch: WorkingBranchInput, };
 
 export type CreateWorkspaceWithoutStartingResponse = { workspace: Workspace, };
 
-export type UnifiedPrComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, parent_id: string | null, } | { "comment_type": "review", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, parent_id: string | null, review_id: string | null, };
+export type UnifiedPrComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, parent_id: string | null, } | { "comment_type": "review", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, parent_id: string | null, review_id: string | null, thread_id: string | null, is_resolved: boolean | null, is_outdated: boolean | null, };
 
 export type ProviderKind = "git_hub" | "azure_dev_ops" | "unknown";
 

@@ -180,6 +180,7 @@ fn generate_types_content() -> String {
         server::routes::workspaces::pr::PrCommentsResponse::decl(),
         server::routes::workspaces::pr::GetPrCommentsError::decl(),
         server::routes::workspaces::pr::GetPrCommentsQuery::decl(),
+        server::routes::workspaces::pr::SetPrReviewThreadResolvedRequest::decl(),
         db::models::requests::CreateAndStartWorkspaceRequest::decl(),
         db::models::requests::CreateAndStartWorkspaceResponse::decl(),
         db::models::requests::CreateQuickChatRequest::decl(),

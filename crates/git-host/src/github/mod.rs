@@ -2,7 +2,7 @@
 
 mod cli;
 
-use std::{path::Path, time::Duration};
+use std::{collections::HashMap, path::Path, time::Duration};
 
 use async_trait::async_trait;
 use backon::{ExponentialBuilder, Retryable};
@@ -14,8 +14,8 @@ use tracing::info;
 use crate::{
     GitHostProvider,
     types::{
-        CreatePrRequest, GitHostError, PrComment, PrReviewComment, ProviderKind, PullRequestDetail,
-        UnifiedPrComment,
+        CreatePrRequest, GitHostError, PrComment, PrReviewComment, PrReviewThread, ProviderKind,
+        PullRequestDetail, UnifiedPrComment,
     },
 };
 
@@ -126,6 +126,24 @@ impl GitHubProvider {
             );
         })
         .await
+    }
+
+    async fn fetch_review_threads(
+        &self,
+        cli: &GhCli,
+        repo_info: &GitHubRepoInfo,
+        pr_number: i64,
+    ) -> Result<Vec<PrReviewThread>, GitHostError> {
+        let cli = cli.clone();
+        let repo_info = repo_info.clone();
+        task::spawn_blocking(move || cli.get_pr_review_threads(&repo_info, pr_number))
+            .await
+            .map_err(|err| {
+                GitHostError::PullRequest(format!(
+                    "Failed to execute GitHub CLI for fetching review threads: {err}"
+                ))
+            })?
+            .map_err(Into::into)
     }
 }
 
@@ -308,10 +326,12 @@ impl GitHostProvider for GitHubProvider {
         // Fetch both types of comments in parallel
         let cli1 = self.gh_cli.clone();
         let cli2 = self.gh_cli.clone();
+        let cli3 = self.gh_cli.clone();
 
-        let (general_result, review_result) = tokio::join!(
+        let (general_result, review_result, threads_result) = tokio::join!(
             self.fetch_general_comments(&cli1, &repo_info, pr_number),
-            self.fetch_review_comments(&cli2, &repo_info, pr_number)
+            self.fetch_review_comments(&cli2, &repo_info, pr_number),
+            self.fetch_review_threads(&cli3, &repo_info, pr_number)
         );
 
         // GitHub exposes issue comments and inline review comments through
@@ -334,6 +354,19 @@ impl GitHostProvider for GitHubProvider {
             }
             (Err(error), Err(_)) => return Err(error),
         };
+        let review_threads = threads_result.unwrap_or_else(|error| {
+            tracing::warn!("Failed to fetch review thread metadata for PR #{pr_number}: {error}");
+            Vec::new()
+        });
+        let thread_by_comment: HashMap<i64, &PrReviewThread> = review_threads
+            .iter()
+            .flat_map(|thread| {
+                thread
+                    .comment_ids
+                    .iter()
+                    .map(move |comment_id| (*comment_id, thread))
+            })
+            .collect();
 
         // Convert and merge into unified timeline
         let mut unified: Vec<UnifiedPrComment> = Vec::new();
@@ -351,6 +384,7 @@ impl GitHostProvider for GitHubProvider {
         }
 
         for c in review_comments {
+            let thread = thread_by_comment.get(&c.id);
             unified.push(UnifiedPrComment::Review {
                 id: c.id.to_string(),
                 author: c.user.login,
@@ -364,6 +398,9 @@ impl GitHostProvider for GitHubProvider {
                 diff_hunk: Some(c.diff_hunk),
                 parent_id: c.in_reply_to_id.map(|id| id.to_string()),
                 review_id: c.pull_request_review_id.map(|id| id.to_string()),
+                thread_id: thread.map(|thread| thread.id.clone()),
+                is_resolved: thread.map(|thread| thread.is_resolved),
+                is_outdated: thread.map(|thread| thread.is_outdated),
             });
         }
 
@@ -371,6 +408,29 @@ impl GitHostProvider for GitHubProvider {
         unified.sort_by_key(|c| c.created_at());
 
         Ok(unified)
+    }
+
+    async fn set_pr_review_thread_resolved(
+        &self,
+        repo_path: &Path,
+        remote_url: &str,
+        _pr_number: i64,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), GitHostError> {
+        let repo_info = self.get_repo_info(remote_url, repo_path).await?;
+        let cli = self.gh_cli.clone();
+        let thread_id = thread_id.to_string();
+        task::spawn_blocking(move || {
+            cli.set_pr_review_thread_resolved(&repo_info, &thread_id, resolved)
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::PullRequest(format!(
+                "Failed to execute GitHub CLI for updating review thread: {err}"
+            ))
+        })?
+        .map_err(Into::into)
     }
 
     async fn list_open_prs(

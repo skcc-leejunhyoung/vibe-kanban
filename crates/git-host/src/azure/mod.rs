@@ -247,6 +247,39 @@ impl GitHostProvider for AzureDevOpsProvider {
         .await
     }
 
+    async fn set_pr_review_thread_resolved(
+        &self,
+        repo_path: &Path,
+        remote_url: &str,
+        pr_number: i64,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), GitHostError> {
+        let repo_info = self.get_repo_info(repo_path, remote_url).await?;
+        let cli = self.az_cli.clone();
+        let organization_url = repo_info.organization_url;
+        let project_id = repo_info.project_id;
+        let repo_id = repo_info.repo_id;
+        let thread_id = thread_id.to_string();
+        task::spawn_blocking(move || {
+            cli.set_pr_thread_resolved(
+                &organization_url,
+                &project_id,
+                &repo_id,
+                pr_number,
+                &thread_id,
+                resolved,
+            )
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::PullRequest(format!(
+                "Failed to execute Azure CLI for updating review thread: {err}"
+            ))
+        })?
+        .map_err(Into::into)
+    }
+
     async fn list_open_prs(
         &self,
         _repo_path: &Path,

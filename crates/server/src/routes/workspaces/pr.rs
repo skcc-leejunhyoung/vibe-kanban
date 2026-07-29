@@ -320,6 +320,14 @@ pub struct GetPrCommentsQuery {
     pub pr_number: Option<i64>,
 }
 
+#[derive(Debug, Deserialize, TS)]
+pub struct SetPrReviewThreadResolvedRequest {
+    pub repo_id: Uuid,
+    pub pr_number: i64,
+    pub thread_id: String,
+    pub resolved: bool,
+}
+
 /// Whole-request budget for PR title/description generation: container reuse +
 /// agent run + capture. The client timeout must strictly exceed this.
 const PR_GENERATE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -1375,6 +1383,50 @@ pub async fn get_pr_comments(
     }
 }
 
+pub async fn set_pr_review_thread_resolved(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<SetPrReviewThreadResolvedRequest>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, payload.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+    let has_pr = Merge::find_by_workspace_and_repo_id(pool, workspace.id, payload.repo_id)
+        .await?
+        .into_iter()
+        .any(|merge| {
+            matches!(
+                merge,
+                Merge::Pr(pr_merge) if pr_merge.pr_info.number == payload.pr_number
+            )
+        });
+    if !has_pr {
+        return Err(ApiError::GitHost(GitHostError::PullRequest(
+            "Pull request is not attached to this workspace".to_string(),
+        )));
+    }
+
+    let remote = deployment
+        .git()
+        .resolve_remote_for_branch(&repo.path, &workspace_repo.target_branch)?;
+    GitHostService::from_url(&remote.url)?
+        .set_pr_review_thread_resolved(
+            &repo.path,
+            &remote.url,
+            payload.pr_number,
+            &payload.thread_id,
+            payload.resolved,
+        )
+        .await?;
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct CreateWorkspaceFromPrBody {
     pub repo_id: Uuid,
@@ -1651,6 +1703,7 @@ pub fn router() -> Router<DeploymentImpl> {
         )
         .route("/attach", post(attach_existing_pr))
         .route("/comments", get(get_pr_comments))
+        .route("/comments/resolve", post(set_pr_review_thread_resolved))
 }
 
 #[cfg(test)]

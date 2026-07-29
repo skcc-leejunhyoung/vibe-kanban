@@ -19,8 +19,8 @@ use url::Url;
 use utils::{command_ext::NoWindowExt, shell::resolve_executable_path_blocking};
 
 use crate::types::{
-    CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PullRequestCommit,
-    PullRequestDetail, PullRequestReview, ReviewCommentUser,
+    CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PrReviewThread,
+    PullRequestCommit, PullRequestDetail, PullRequestReview, ReviewCommentUser,
 };
 
 #[derive(Debug, Clone)]
@@ -132,6 +132,53 @@ struct GhReviewCommentResponse {
     author_association: String,
     in_reply_to_id: Option<i64>,
     pull_request_review_id: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct GhReviewThreadsResponse {
+    data: GhReviewThreadsData,
+}
+
+#[derive(Deserialize)]
+struct GhReviewThreadsData {
+    repository: GhReviewThreadsRepository,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhReviewThreadsRepository {
+    pull_request: GhReviewThreadsPullRequest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhReviewThreadsPullRequest {
+    review_threads: GhReviewThreadConnection,
+}
+
+#[derive(Deserialize)]
+struct GhReviewThreadConnection {
+    nodes: Vec<GhReviewThreadNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhReviewThreadNode {
+    id: String,
+    is_resolved: bool,
+    is_outdated: bool,
+    comments: GhReviewThreadComments,
+}
+
+#[derive(Deserialize)]
+struct GhReviewThreadComments {
+    nodes: Vec<GhReviewThreadCommentNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhReviewThreadCommentNode {
+    database_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -458,6 +505,59 @@ impl GhCli {
         Self::parse_pr_review_comments(&raw)
     }
 
+    pub fn get_pr_review_threads(
+        &self,
+        repo_info: &GitHubRepoInfo,
+        pr_number: i64,
+    ) -> Result<Vec<PrReviewThread>, GhCliError> {
+        const QUERY: &str = r#"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:100){nodes{databaseId}}}}}}}"#;
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={QUERY}"),
+            "-F".to_string(),
+            format!("owner={}", repo_info.owner),
+            "-F".to_string(),
+            format!("name={}", repo_info.repo_name),
+            "-F".to_string(),
+            format!("number={pr_number}"),
+        ];
+        if let Some(ref host) = repo_info.hostname {
+            args.push("--hostname".to_string());
+            args.push(host.clone());
+        }
+        let raw = self.run(args, None)?;
+        Self::parse_pr_review_threads(&raw)
+    }
+
+    pub fn set_pr_review_thread_resolved(
+        &self,
+        repo_info: &GitHubRepoInfo,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), GhCliError> {
+        let mutation = if resolved {
+            "mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}"
+        } else {
+            "mutation($threadId:ID!){unresolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}"
+        };
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={mutation}"),
+            "-F".to_string(),
+            format!("threadId={thread_id}"),
+        ];
+        if let Some(ref host) = repo_info.hostname {
+            args.push("--hostname".to_string());
+            args.push(host.clone());
+        }
+        self.run(args, None)?;
+        Ok(())
+    }
+
     pub fn pr_checkout(
         &self,
         repo_path: &Path,
@@ -532,6 +632,39 @@ mod tests {
 
         assert_eq!(comments[0].in_reply_to_id, Some(1));
         assert_eq!(comments[0].pull_request_review_id, Some(7));
+    }
+
+    #[test]
+    fn parse_review_threads_preserves_resolution_and_comment_mapping() {
+        let threads = GhCli::parse_pr_review_threads(
+            r#"{
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [{
+                                    "id": "PRRT_thread",
+                                    "isResolved": true,
+                                    "isOutdated": false,
+                                    "comments": {
+                                        "nodes": [
+                                            {"databaseId": 10},
+                                            {"databaseId": 11}
+                                        ]
+                                    }
+                                }]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(threads[0].id, "PRRT_thread");
+        assert_eq!(threads[0].comment_ids, vec![10, 11]);
+        assert!(threads[0].is_resolved);
+        assert!(!threads[0].is_outdated);
     }
 }
 
@@ -724,6 +857,34 @@ impl GhCli {
                 author_association: c.author_association,
                 in_reply_to_id: c.in_reply_to_id,
                 pull_request_review_id: c.pull_request_review_id,
+            })
+            .collect())
+    }
+
+    fn parse_pr_review_threads(raw: &str) -> Result<Vec<PrReviewThread>, GhCliError> {
+        let response: GhReviewThreadsResponse =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse review threads GraphQL response: {err}; raw: {raw}"
+                ))
+            })?;
+        Ok(response
+            .data
+            .repository
+            .pull_request
+            .review_threads
+            .nodes
+            .into_iter()
+            .map(|thread| PrReviewThread {
+                id: thread.id,
+                comment_ids: thread
+                    .comments
+                    .nodes
+                    .into_iter()
+                    .filter_map(|comment| comment.database_id)
+                    .collect(),
+                is_resolved: thread.is_resolved,
+                is_outdated: thread.is_outdated,
             })
             .collect())
     }

@@ -106,6 +106,14 @@ pub struct PrReviewComment {
     pub pull_request_review_id: Option<i64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PrReviewThread {
+    pub id: String,
+    pub comment_ids: Vec<i64>,
+    pub is_resolved: bool,
+    pub is_outdated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "comment_type", rename_all = "snake_case")]
 #[ts(tag = "comment_type", rename_all = "snake_case")]
@@ -132,6 +140,9 @@ pub enum UnifiedPrComment {
         diff_hunk: Option<String>,
         parent_id: Option<String>,
         review_id: Option<String>,
+        thread_id: Option<String>,
+        is_resolved: Option<bool>,
+        is_outdated: Option<bool>,
     },
 }
 

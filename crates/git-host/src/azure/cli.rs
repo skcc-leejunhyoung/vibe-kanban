@@ -5,6 +5,7 @@
 
 use std::{
     ffi::{OsStr, OsString},
+    io::Write,
     path::Path,
     process::Command,
 };
@@ -12,6 +13,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use db::models::merge::MergeStatus;
 use serde::Deserialize;
+use tempfile::NamedTempFile;
 use thiserror::Error;
 use utils::{command_ext::NoWindowExt, shell::resolve_executable_path_blocking};
 
@@ -78,6 +80,7 @@ struct AzThreadsResponse {
 #[serde(rename_all = "camelCase")]
 struct AzThread {
     id: Option<i64>,
+    status: Option<String>,
     comments: Option<Vec<AzThreadComment>>,
     thread_context: Option<AzThreadContext>,
 }
@@ -416,6 +419,54 @@ impl AzCli {
         Self::parse_pr_threads(&raw)
     }
 
+    pub fn set_pr_thread_resolved(
+        &self,
+        organization_url: &str,
+        project_id: &str,
+        repo_id: &str,
+        pr_id: i64,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), AzCliError> {
+        let mut body =
+            NamedTempFile::new().map_err(|error| AzCliError::CommandFailed(error.to_string()))?;
+        write!(
+            body,
+            r#"{{"status":"{}"}}"#,
+            if resolved { "fixed" } else { "active" }
+        )
+        .map_err(|error| AzCliError::CommandFailed(error.to_string()))?;
+
+        self.run(
+            [
+                "devops",
+                "invoke",
+                "--area",
+                "git",
+                "--resource",
+                "pullRequestThreads",
+                "--route-parameters",
+                &format!(
+                    "project={project_id} repositoryId={repo_id} pullRequestId={pr_id} threadId={thread_id}"
+                ),
+                "--organization",
+                organization_url,
+                "--api-version",
+                "7.0",
+                "--http-method",
+                "PATCH",
+                "--in-file",
+                body.path()
+                    .to_str()
+                    .ok_or_else(|| AzCliError::CommandFailed("Invalid temp path".to_string()))?,
+                "--output",
+                "none",
+            ],
+            None,
+        )?;
+        Ok(())
+    }
+
     /// Parse PR URL to extract organization and PR ID.
     ///
     /// Only extracts the minimal info needed for `az repos pr show`.
@@ -552,6 +603,12 @@ impl AzCli {
 
         for thread in threads {
             let thread_id = thread.id.unwrap_or_default();
+            let is_resolved = thread.status.as_deref().is_some_and(|status| {
+                !matches!(
+                    status.to_ascii_lowercase().as_str(),
+                    "active" | "pending" | "unknown"
+                )
+            });
             let file_path = thread
                 .thread_context
                 .as_ref()
@@ -598,6 +655,9 @@ impl AzCli {
                             diff_hunk: None,
                             parent_id,
                             review_id: Some(thread_id.to_string()),
+                            thread_id: Some(thread_id.to_string()),
+                            is_resolved: Some(is_resolved),
+                            is_outdated: None,
                         });
                     } else {
                         comments.push(UnifiedPrComment::General {
@@ -736,6 +796,11 @@ mod tests {
             r#"{
                 "value": [{
                     "id": 10,
+                    "status": "fixed",
+                    "threadContext": {
+                        "filePath": "src/file.ts",
+                        "rightFileStart": {"line": 4}
+                    },
                     "comments": [
                         {"id": 1, "content": "root"},
                         {"id": 2, "content": "reply"}
@@ -750,6 +815,11 @@ mod tests {
             | UnifiedPrComment::Review { parent_id, .. } => parent_id.as_deref(),
         };
         assert_eq!(parent_id, Some("10:1"));
+        let resolved = match &comments[0] {
+            UnifiedPrComment::Review { is_resolved, .. } => *is_resolved,
+            UnifiedPrComment::General { .. } => None,
+        };
+        assert_eq!(resolved, Some(true));
     }
 
     #[test]

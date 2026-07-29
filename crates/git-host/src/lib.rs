@@ -10,8 +10,9 @@ use async_trait::async_trait;
 use detection::detect_provider_from_url;
 use enum_dispatch::enum_dispatch;
 pub use types::{
-    CreatePrRequest, GitHostError, PrComment, PrCommentAuthor, PrReviewComment, ProviderKind,
-    PullRequestCommit, PullRequestDetail, PullRequestReview, ReviewCommentUser, UnifiedPrComment,
+    CreatePrRequest, GitHostError, PrComment, PrCommentAuthor, PrReviewComment, PrReviewThread,
+    ProviderKind, PullRequestCommit, PullRequestDetail, PullRequestReview, ReviewCommentUser,
+    UnifiedPrComment,
 };
 
 use self::{azure::AzureDevOpsProvider, github::GitHubProvider};
@@ -41,6 +42,15 @@ pub trait GitHostProvider: Send + Sync {
         remote_url: &str,
         pr_number: i64,
     ) -> Result<Vec<UnifiedPrComment>, GitHostError>;
+
+    async fn set_pr_review_thread_resolved(
+        &self,
+        repo_path: &Path,
+        remote_url: &str,
+        pr_number: i64,
+        thread_id: &str,
+        resolved: bool,
+    ) -> Result<(), GitHostError>;
 
     async fn list_open_prs(
         &self,

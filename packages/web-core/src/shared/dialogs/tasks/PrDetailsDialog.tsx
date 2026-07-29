@@ -5,12 +5,15 @@ import {
   useState,
   type KeyboardEvent,
 } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import {
   ArrowSquareOutIcon,
+  CaretDownIcon,
+  CaretRightIcon,
   CheckCircleIcon,
   CopyIcon,
+  FileCodeIcon,
   GitCommitIcon,
   GitMergeIcon,
   GitPullRequestIcon,
@@ -21,8 +24,8 @@ import {
   XCircleIcon,
 } from '@phosphor-icons/react';
 import { defineModal } from '@/shared/lib/modals';
-import { issuePrsApi } from '@/shared/lib/api';
-import { usePrComments } from '@/shared/hooks/usePrComments';
+import { issuePrsApi, workspacesApi } from '@/shared/lib/api';
+import { prCommentsKeys, usePrComments } from '@/shared/hooks/usePrComments';
 import { usePrChatContextStore } from '@/shared/stores/usePrChatContextStore';
 import { useTheme } from '@/shared/hooks/useTheme';
 import { getActualTheme } from '@/shared/lib/theme';
@@ -69,6 +72,8 @@ function commentsToMarkdown(comments: UnifiedPrComment[]): string {
         parent_id: comment.parent_id,
         ...(comment.comment_type === 'review' && {
           review_id: comment.review_id,
+          thread_id: comment.thread_id,
+          is_resolved: comment.is_resolved,
           path: comment.path,
           line: comment.line != null ? Number(comment.line) : null,
           diff_hunk: comment.diff_hunk,
@@ -88,12 +93,14 @@ function ConversationComment({
   selectedIds,
   toggleComment,
   theme,
+  showLocation = true,
   depth = 0,
 }: {
   thread: PrCommentThread;
   selectedIds: Set<string>;
   toggleComment: (id: string) => void;
   theme: 'light' | 'dark';
+  showLocation?: boolean;
   depth?: number;
 }) {
   const { comment, replies } = thread;
@@ -125,7 +132,7 @@ function ConversationComment({
           createdAt={comment.created_at}
           url={comment.url}
           commentType={comment.comment_type}
-          path={isReview ? comment.path : undefined}
+          path={isReview && showLocation ? comment.path : undefined}
           line={
             isReview && comment.line != null ? Number(comment.line) : undefined
           }
@@ -142,6 +149,7 @@ function ConversationComment({
           selectedIds={selectedIds}
           toggleComment={toggleComment}
           theme={theme}
+          showLocation={false}
           depth={depth + 1}
         />
       ))}
@@ -149,9 +157,114 @@ function ConversationComment({
   );
 }
 
+function ReviewConversationThread({
+  thread,
+  selectedIds,
+  toggleComment,
+  theme,
+  onSetResolved,
+  isUpdating,
+}: {
+  thread: PrCommentThread;
+  selectedIds: Set<string>;
+  toggleComment: (id: string) => void;
+  theme: 'light' | 'dark';
+  onSetResolved?: (threadId: string, resolved: boolean) => void;
+  isUpdating: boolean;
+}) {
+  const comment = thread.comment;
+  const isReview = comment.comment_type === 'review';
+  const resolved = isReview && comment.is_resolved === true;
+  const [expanded, setExpanded] = useState(!resolved);
+
+  useEffect(() => {
+    if (resolved) setExpanded(false);
+  }, [resolved]);
+
+  if (!isReview) {
+    return (
+      <ConversationComment
+        thread={thread}
+        selectedIds={selectedIds}
+        toggleComment={toggleComment}
+        theme={theme}
+      />
+    );
+  }
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded border bg-secondary">
+      <div className="flex min-w-0 items-center gap-half border-b px-base py-base">
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="flex min-w-0 flex-1 items-center gap-half text-left"
+          aria-expanded={expanded}
+        >
+          {expanded ? (
+            <CaretDownIcon className="size-icon-xs shrink-0" weight="bold" />
+          ) : (
+            <CaretRightIcon className="size-icon-xs shrink-0" weight="bold" />
+          )}
+          <FileCodeIcon className="size-icon-sm shrink-0 text-low" />
+          <code className="min-w-0 truncate text-xs">
+            {comment.path}
+            {comment.line != null ? `:${Number(comment.line)}` : ''}
+          </code>
+          {comment.is_outdated && (
+            <span className="shrink-0 rounded bg-panel px-half py-px text-xs text-low">
+              Outdated
+            </span>
+          )}
+          {resolved && (
+            <span className="inline-flex shrink-0 items-center gap-half rounded bg-success/10 px-half py-px text-xs text-success">
+              <CheckCircleIcon className="size-icon-xs" weight="fill" />
+              Resolved
+            </span>
+          )}
+          {!expanded && (
+            <span className="ml-auto shrink-0 text-xs text-low">
+              {thread.replies.length + 1}{' '}
+              {thread.replies.length === 0 ? 'comment' : 'comments'}
+            </span>
+          )}
+        </button>
+        {comment.thread_id && comment.is_resolved != null && onSetResolved && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={isUpdating}
+            onClick={() =>
+              onSetResolved(comment.thread_id!, !comment.is_resolved)
+            }
+            className="shrink-0"
+          >
+            {isUpdating && (
+              <SpinnerGapIcon className="size-icon-xs animate-spin" />
+            )}
+            {resolved ? 'Unresolve' : 'Resolve conversation'}
+          </Button>
+        )}
+      </div>
+      {expanded && (
+        <div className="p-base">
+          <ConversationComment
+            thread={thread}
+            selectedIds={selectedIds}
+            toggleComment={toggleComment}
+            theme={theme}
+            showLocation={false}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
   ({ workspaceId, repoId, prUrl, prNumber }) => {
     const modal = useModal();
+    const queryClient = useQueryClient();
     const scrollRef = useRef<HTMLDivElement>(null);
     const { theme } = useTheme();
     const actualTheme = getActualTheme(theme);
@@ -182,6 +295,26 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
         detailQuery.data ? buildPrConversation(detailQuery.data, comments) : [],
       [comments, detailQuery.data]
     );
+    const resolveThreadMutation = useMutation({
+      mutationFn: ({
+        threadId,
+        resolved,
+      }: {
+        threadId: string;
+        resolved: boolean;
+      }) =>
+        workspacesApi.setPrReviewThreadResolved(
+          workspaceId!,
+          repoId!,
+          prNumber,
+          threadId,
+          resolved
+        ),
+      onSuccess: () =>
+        queryClient.invalidateQueries({
+          queryKey: prCommentsKeys.byAttempt(workspaceId, repoId, prNumber),
+        }),
+    });
     const close = () => {
       modal.resolve();
       modal.hide();
@@ -369,6 +502,13 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                       Some conversation comments could not be loaded.
                     </p>
                   )}
+                  {resolveThreadMutation.isError && (
+                    <p className="mb-base text-sm text-error">
+                      {resolveThreadMutation.error instanceof Error
+                        ? resolveThreadMutation.error.message
+                        : 'Failed to update conversation.'}
+                    </p>
+                  )}
                   <div className="relative space-y-base before:absolute before:bottom-base before:left-[15px] before:top-base before:w-px before:bg-border">
                     {conversation.map((item) => {
                       if (item.kind === 'comment') {
@@ -377,11 +517,27 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
                             key={item.key}
                             className="relative pl-[42px] before:absolute before:left-[11px] before:top-base before:size-[9px] before:rounded-full before:border-2 before:border-panel before:bg-muted-foreground"
                           >
-                            <ConversationComment
+                            <ReviewConversationThread
                               thread={item.thread}
                               selectedIds={selectedIds}
                               toggleComment={toggleComment}
                               theme={actualTheme}
+                              onSetResolved={
+                                workspaceId && repoId
+                                  ? (threadId, resolved) =>
+                                      resolveThreadMutation.mutate({
+                                        threadId,
+                                        resolved,
+                                      })
+                                  : undefined
+                              }
+                              isUpdating={
+                                resolveThreadMutation.isPending &&
+                                resolveThreadMutation.variables?.threadId ===
+                                  (item.thread.comment.comment_type === 'review'
+                                    ? item.thread.comment.thread_id
+                                    : undefined)
+                              }
                             />
                           </div>
                         );

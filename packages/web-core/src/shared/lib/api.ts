@@ -1256,6 +1256,28 @@ export const workspacesApi = {
     return handleApiResponse<PrCommentsResponse>(response);
   },
 
+  setPrReviewThreadResolved: async (
+    workspaceId: string,
+    repoId: string,
+    prNumber: number,
+    threadId: string,
+    resolved: boolean
+  ): Promise<void> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/comments/resolve`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          repo_id: repoId,
+          pr_number: prNumber,
+          thread_id: threadId,
+          resolved,
+        }),
+      }
+    );
+    return handleApiResponse<void>(response);
+  },
+
   /** Mark all coding agent turns for a workspace as seen */
   markSeen: async (workspaceId: string): Promise<void> => {
     const response = await makeRequest(`/api/workspaces/${workspaceId}/seen`, {
