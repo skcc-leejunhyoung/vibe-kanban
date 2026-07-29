@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
@@ -62,12 +55,17 @@ function matchesUpdatedFilter(
   return Date.now() - new Date(updatedAt).getTime() <= days * 86_400_000;
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
+function shouldIgnoreListKeyboardNavigation(
+  target: EventTarget | null
+): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest('[data-pull-request-row]')) return false;
+
+  return Boolean(
+    target.isContentEditable ||
+      target.closest(
+        'input, textarea, select, button, a, [role="button"], [role="dialog"]'
+      )
   );
 }
 
@@ -212,37 +210,42 @@ export function PullRequestsPage() {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [closeDetails, selectedPullRequest]);
 
-  const handleListKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (
-      selectedPullRequest ||
-      isEditableTarget(event.target) ||
-      filteredPullRequests.length === 0
-    ) {
-      return;
-    }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const direction = event.key === 'ArrowDown' ? 1 : -1;
-      const nextIndex = Math.min(
-        filteredPullRequests.length - 1,
-        Math.max(0, selectedIndex + direction)
-      );
-      setSelectedIndex(nextIndex);
-      focusRow(nextIndex);
-    } else if (event.key === 'Enter') {
-      const pullRequest = filteredPullRequests[selectedIndex];
-      if (pullRequest) {
-        event.preventDefault();
-        setSelectedPullRequest(pullRequest);
+  useEffect(() => {
+    if (selectedPullRequest || filteredPullRequests.length === 0) return;
+
+    const handleListKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        shouldIgnoreListKeyboardNavigation(event.target)
+      ) {
+        return;
       }
-    }
-  };
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = Math.min(
+          filteredPullRequests.length - 1,
+          Math.max(0, selectedIndex + direction)
+        );
+        setSelectedIndex(nextIndex);
+        focusRow(nextIndex);
+      } else if (event.key === 'Enter') {
+        const pullRequest = filteredPullRequests[selectedIndex];
+        if (pullRequest) {
+          event.preventDefault();
+          setSelectedPullRequest(pullRequest);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleListKeyDown);
+    return () => window.removeEventListener('keydown', handleListKeyDown);
+  }, [filteredPullRequests, focusRow, selectedIndex, selectedPullRequest]);
 
   const listContent = (
-    <main
-      className="flex h-full min-h-0 flex-col overflow-hidden"
-      onKeyDown={handleListKeyDown}
-    >
+    <main className="flex h-full min-h-0 flex-col overflow-hidden">
       <header className="shrink-0 border-b border-border px-double py-base">
         <div className="flex items-center justify-between gap-base">
           <div>
@@ -326,6 +329,7 @@ export function PullRequestsPage() {
             {filteredPullRequests.map((pr, index) => (
               <button
                 type="button"
+                data-pull-request-row
                 key={pr.url}
                 ref={(element) => {
                   if (element) rowRefs.current.set(pr.url, element);
