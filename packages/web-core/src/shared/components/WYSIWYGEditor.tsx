@@ -86,6 +86,7 @@ import { Check, Clipboard, Pencil, Trash2 } from 'lucide-react';
 import type { RepoItem } from '@/shared/types/selectionItems';
 import { TagEditDialog } from '@/shared/dialogs/shared/TagEditDialog';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
+import { OAuthDialog } from '@/shared/dialogs/global/OAuthDialog';
 import {
   SelectionDialog,
   type SelectionPage,
@@ -97,6 +98,7 @@ import {
 import {
   fetchAttachmentSasUrl,
   fetchGitHubImage,
+  isGitHubImageAuthorizationError,
 } from '@/shared/lib/remoteApi';
 import { writeClipboardViaBridge } from '@/shared/lib/clipboard';
 import type { SendMessageShortcut } from 'shared/types';
@@ -427,16 +429,41 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       }
     }, [value]);
 
+    const githubImageAuthorizationRef = useRef<Promise<boolean> | null>(null);
+    const requestGitHubImageAuthorization = useCallback((error: unknown) => {
+      if (!isGitHubImageAuthorizationError(error)) {
+        return Promise.resolve(false);
+      }
+
+      if (!githubImageAuthorizationRef.current) {
+        const authorization = OAuthDialog.show({
+          initialProvider: 'github',
+          reauthenticate: true,
+        })
+          .then((result) => result === true)
+          .catch(() => false);
+        githubImageAuthorizationRef.current = authorization;
+        void authorization.finally(() => {
+          if (githubImageAuthorizationRef.current === authorization) {
+            githubImageAuthorizationRef.current = null;
+          }
+        });
+      }
+
+      return githubImageAuthorizationRef.current;
+    }, []);
+
     const imageNodeDefinition = useMemo(
       () =>
         createImageNode({
           fetchAttachmentUrl: fetchAttachmentSasUrl,
           fetchGitHubImage,
+          onGitHubImageAuthorizationRequired: requestGitHubImageAuthorization,
           openImagePreview: (options) => {
             ImagePreviewDialog.show(options);
           },
         }),
-      []
+      [requestGitHubImageAuthorization]
     );
     const attachmentNodeDefinition = useMemo(
       () =>

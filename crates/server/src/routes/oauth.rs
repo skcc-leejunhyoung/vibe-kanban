@@ -417,6 +417,7 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
     } else {
         "<script>\
            window.addEventListener('load', () => {\
+             window.opener?.postMessage({ type: 'vibe-kanban-oauth-complete' }, window.location.origin);\
              try { window.close(); } catch (err) {}\
              setTimeout(() => { window.close(); }, 150);\
            });\

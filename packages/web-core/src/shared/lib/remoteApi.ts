@@ -424,6 +424,19 @@ export async function fetchAttachmentSasUrl(
   return data.url;
 }
 
+export class GitHubImageAuthorizationError extends Error {
+  constructor() {
+    super('GitHub authorization is required to fetch this image');
+    this.name = 'GitHubImageAuthorizationError';
+  }
+}
+
+export function isGitHubImageAuthorizationError(
+  error: unknown
+): error is GitHubImageAuthorizationError {
+  return error instanceof GitHubImageAuthorizationError;
+}
+
 /** Fetch a private GitHub issue attachment through the authenticated Vibe API. */
 export async function fetchGitHubImage(sourceUrl: string): Promise<Blob> {
   const response = await makeRequest(
@@ -431,6 +444,9 @@ export async function fetchGitHubImage(sourceUrl: string): Promise<Blob> {
     { headers: { Accept: 'image/*' } }
   );
   if (!response.ok) {
+    if (response.status === 403) {
+      throw new GitHubImageAuthorizationError();
+    }
     throw new Error(`Failed to fetch GitHub image: ${response.statusText}`);
   }
   return response.blob();

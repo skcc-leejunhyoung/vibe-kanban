@@ -25,7 +25,10 @@ import { useTranslation } from 'react-i18next';
 import { defineModal } from '@/shared/lib/modals';
 
 export type OAuthProvider = 'github' | 'google';
-type OAuthDialogProps = { initialProvider?: OAuthProvider };
+type OAuthDialogProps = {
+  initialProvider?: OAuthProvider;
+  reauthenticate?: boolean;
+};
 
 type OAuthState =
   | { type: 'select' }
@@ -33,7 +36,8 @@ type OAuthState =
   | { type: 'success'; displayName: string | null }
   | { type: 'error'; message: string };
 
-const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
+const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
+  const { initialProvider, reauthenticate = false } = props;
   const modal = useModal();
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
@@ -42,6 +46,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
   const popupRef = useRef<Window | null>(null);
   const autoStartedRef = useRef(false);
   const [isPolling, setIsPolling] = useState(false);
+  const [reauthenticated, setReauthenticated] = useState(false);
   const [localEmail, setLocalEmail] = useState('');
   const [localPassword, setLocalPassword] = useState('');
   const [isSubmittingLocal, setIsSubmittingLocal] = useState(false);
@@ -59,6 +64,22 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
   const oauthProviders = authMethods?.oauth_providers ?? [];
   const hasOAuthProviders = oauthProviders.length > 0;
 
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (
+        event.origin !== window.location.origin ||
+        event.source !== popupRef.current ||
+        event.data?.type !== 'vibe-kanban-oauth-complete'
+      ) {
+        return;
+      }
+      setReauthenticated(true);
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
   // Auth mutations hook
   const { initHandoff } = useAuthMutations({
     onInitSuccess: (data) => {
@@ -75,6 +96,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
       );
 
       // Start polling
+      setReauthenticated(false);
       setIsPolling(true);
     },
     onInitError: (error) => {
@@ -111,7 +133,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
     // Check if popup is closed
     if (popupRef.current?.closed) {
       setIsPolling(false);
-      if (!statusData.logged_in) {
+      if (!statusData.logged_in || (reauthenticate && !reauthenticated)) {
         setState({
           type: 'error',
           message: 'OAuth window was closed before completing authentication',
@@ -119,8 +141,9 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
       }
     }
 
-    // If logged in, stop polling and trigger success
-    if (statusData.logged_in) {
+    // During reauthentication the local session is already logged in. Confirm
+    // the callback completed instead of treating a closed popup as success.
+    if (statusData.logged_in && (!reauthenticate || reauthenticated)) {
       setIsPolling(false);
       if (popupRef.current && !popupRef.current.closed) {
         popupRef.current.close();
@@ -149,7 +172,15 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
         modal.remove();
       }, 1500);
     }
-  }, [statusData, isPolling, modal, reloadSystem, queryClient]);
+  }, [
+    statusData,
+    isPolling,
+    modal,
+    reauthenticate,
+    reauthenticated,
+    reloadSystem,
+    queryClient,
+  ]);
 
   const handleProviderSelect = useCallback(
     (provider: OAuthProvider) => {
@@ -159,12 +190,14 @@ const OAuthDialogImpl = create<OAuthDialogProps>(({ initialProvider }) => {
       // When running inside Tauri the OAuth flow opens in the system browser,
       // so we tag the callback URL so the server knows not to auto-close the tab.
       const isTauri = '__TAURI_INTERNALS__' in window;
-      const returnTo = `${window.location.origin}/api/auth/handoff/complete${isTauri ? '?source=desktop' : ''}`;
+      const returnTo = `${window.location.origin}/api/auth/handoff/complete${
+        isTauri && !reauthenticate ? '?source=desktop' : ''
+      }`;
 
       // Initialize handoff flow
       initHandoff.mutate({ provider, returnTo });
     },
-    [initHandoff]
+    [initHandoff, reauthenticate]
   );
 
   const handleClose = () => {

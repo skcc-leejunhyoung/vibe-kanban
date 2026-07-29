@@ -54,6 +54,9 @@ export interface CreateImageNodeOptions {
     type: AttachmentType
   ) => Promise<string>;
   fetchGitHubImage?: (sourceUrl: string) => Promise<Blob>;
+  onGitHubImageAuthorizationRequired?: (
+    error: unknown
+  ) => Promise<boolean> | boolean;
   openImagePreview: (options: OpenImagePreviewOptions) => void;
 }
 
@@ -207,19 +210,24 @@ function useAttachmentUrl(
 
 function useGitHubImageUrl(
   sourceUrl: string | null,
-  fetchGitHubImage: CreateImageNodeOptions['fetchGitHubImage']
+  fetchGitHubImage: CreateImageNodeOptions['fetchGitHubImage'],
+  onGitHubImageAuthorizationRequired: CreateImageNodeOptions['onGitHubImageAuthorizationRequired']
 ): AttachmentUrlResult & { handleImageError: () => void } {
   const [url, setUrl] = useState<string | null>(sourceUrl);
   const [loading, setLoading] = useState(false);
   const [hasTriedProxy, setHasTriedProxy] = useState(false);
+  const [authorizationRetry, setAuthorizationRetry] = useState(0);
   const objectUrlRef = useRef<string | null>(null);
   const requestIdRef = useRef(0);
+  const hasRequestedAuthorizationRef = useRef(false);
 
   useEffect(() => {
     requestIdRef.current += 1;
     setUrl(sourceUrl);
     setLoading(false);
     setHasTriedProxy(false);
+    setAuthorizationRetry(0);
+    hasRequestedAuthorizationRef.current = false;
 
     return () => {
       if (objectUrlRef.current) {
@@ -229,8 +237,8 @@ function useGitHubImageUrl(
     };
   }, [sourceUrl]);
 
-  const fetchProxy = useCallback(() => {
-    if (!sourceUrl || !fetchGitHubImage || hasTriedProxy) return;
+  const fetchProxy = useCallback((force = false) => {
+    if (!sourceUrl || !fetchGitHubImage || (hasTriedProxy && !force)) return;
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
@@ -246,13 +254,36 @@ function useGitHubImageUrl(
         objectUrlRef.current = objectUrl;
         setUrl(objectUrl);
       })
-      .catch(() => {
+      .catch(async (error) => {
+        if (
+          requestId === requestIdRef.current &&
+          !hasRequestedAuthorizationRef.current &&
+          onGitHubImageAuthorizationRequired
+        ) {
+          hasRequestedAuthorizationRef.current = true;
+          const reauthorized = await onGitHubImageAuthorizationRequired(error);
+          if (requestId === requestIdRef.current && reauthorized) {
+            setAuthorizationRetry((value) => value + 1);
+            return;
+          }
+        }
         if (requestId === requestIdRef.current) setUrl(null);
       })
       .finally(() => {
         if (requestId === requestIdRef.current) setLoading(false);
       });
-  }, [fetchGitHubImage, hasTriedProxy, sourceUrl]);
+  }, [
+    fetchGitHubImage,
+    hasTriedProxy,
+    onGitHubImageAuthorizationRequired,
+    sourceUrl,
+  ]);
+
+  useEffect(() => {
+    if (authorizationRetry > 0) {
+      fetchProxy(true);
+    }
+  }, [authorizationRetry, fetchProxy]);
 
   const handleImageError = useCallback(() => {
     if (hasTriedProxy) {
@@ -315,7 +346,8 @@ export function createImageNode(options: CreateImageNodeOptions) {
       handleImageError: handleGitHubImageError,
     } = useGitHubImageUrl(
       isGitHubAttachment ? src : null,
-      options.fetchGitHubImage
+      options.fetchGitHubImage,
+      options.onGitHubImageAuthorizationRequired
     );
 
     const { data: metadata, isLoading: loading } = useImageMetadata(
