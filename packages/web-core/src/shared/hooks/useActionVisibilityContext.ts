@@ -118,6 +118,10 @@ export function useActionVisibilityContext(
           : 'stopped';
 
     // Compute git state from branch status
+    const hasLinkedPR =
+      branchStatus?.some((repo) =>
+        repo.merges?.some((m: Merge) => m.type === 'pr')
+      ) ?? false;
     const hasOpenPR =
       branchStatus?.some((repo) =>
         repo.merges?.some(
@@ -152,6 +156,7 @@ export function useActionVisibilityContext(
       runningDevServers,
       hasGitRepos: repos.length > 0,
       hasMultipleRepos: repos.length > 1,
+      hasLinkedPR,
       hasOpenPR,
       hasUnpushedCommits,
       hasUncommittedChanges,

@@ -155,6 +155,7 @@ export interface ActionVisibilityContext {
   // Git panel state
   hasGitRepos: boolean;
   hasMultipleRepos: boolean;
+  hasLinkedPR: boolean;
   hasOpenPR: boolean;
   hasUnpushedCommits: boolean;
   hasUncommittedChanges: boolean;

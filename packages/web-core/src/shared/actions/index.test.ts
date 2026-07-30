@@ -738,6 +738,79 @@ describe('Actions.GitOpenPR', () => {
   });
 });
 
+describe('Actions.GitViewPRDetails', () => {
+  it('is visible when a merged or closed PR is connected', () => {
+    expect(
+      Actions.GitViewPRDetails.isVisible?.({
+        hasWorkspace: true,
+        hasGitRepos: true,
+        hasLinkedPR: true,
+        hasOpenPR: false,
+      } as ActionExecutorContext)
+    ).toBe(true);
+  });
+
+  it('opens merged PR details when the selected repository has no open PR', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              number: 42,
+              status: 'merged',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitViewPRDetails.execute(ctx, 'ws1', 'repo1');
+
+    expect(showPrDetails).toHaveBeenCalledWith({
+      prUrl: 'https://example.com/pull/42',
+      prNumber: 42,
+    });
+  });
+
+  it('prefers an open PR when multiple PRs are connected', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              number: 41,
+              status: 'merged',
+              url: 'https://example.com/pull/41',
+            },
+          },
+          {
+            type: 'pr',
+            pr_info: {
+              number: 42,
+              status: 'open',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitViewPRDetails.execute(ctx, 'ws1', 'repo1');
+
+    expect(showPrDetails).toHaveBeenCalledWith({
+      prUrl: 'https://example.com/pull/42',
+      prNumber: 42,
+    });
+  });
+});
+
 describe('issue pull request actions', () => {
   const issueActionContext = {
     layoutMode: 'kanban',

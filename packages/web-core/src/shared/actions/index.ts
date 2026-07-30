@@ -1801,19 +1801,23 @@ export const Actions = {
     icon: GitPullRequestIcon,
     keywords: ['pull request', 'details', 'comments', 'reviews', 'pr'],
     requiresTarget: ActionTargetType.GIT,
-    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasOpenPR,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasLinkedPR,
     execute: async (_ctx, workspaceId, repoId) => {
       const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
-      const openPr = branchStatus
-        .find((status) => status.repo_id === repoId)
-        ?.merges?.find(
+      const merges = branchStatus.find(
+        (status) => status.repo_id === repoId
+      )?.merges;
+      // Match the PR panel: prefer an open PR, then keep the most recently
+      // linked merged/closed PR available for read-only details.
+      const pullRequest =
+        merges?.find(
           (merge: Merge) =>
             merge.type === 'pr' && merge.pr_info.status === 'open'
-        );
-      if (openPr?.type !== 'pr' || !openPr.pr_info.url) return;
+        ) ?? merges?.find((merge: Merge) => merge.type === 'pr');
+      if (pullRequest?.type !== 'pr' || !pullRequest.pr_info.url) return;
       await PrDetailsDialog.show({
-        prUrl: openPr.pr_info.url,
-        prNumber: Number(openPr.pr_info.number),
+        prUrl: pullRequest.pr_info.url,
+        prNumber: Number(pullRequest.pr_info.number),
       });
     },
   },
