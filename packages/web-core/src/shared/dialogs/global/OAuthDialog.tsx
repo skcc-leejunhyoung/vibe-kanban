@@ -206,7 +206,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
         isTauri && !reauthenticate
           ? '?source=desktop'
           : reauthenticate
-            ? '?reauthenticate=1'
+            ? '?reauthenticate=true'
             : ''
       }`;
 
