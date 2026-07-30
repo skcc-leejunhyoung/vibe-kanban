@@ -263,7 +263,19 @@ function BranchSelector({
       </DropdownMenuTrigger>
 
       <TooltipProvider>
-        <DropdownMenuContent className="w-80">
+        <DropdownMenuContent
+          className="w-80"
+          onKeyDownCapture={(event) => {
+            if (
+              event.key === 'Escape' &&
+              event.target !== searchInputRef.current
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              searchInputRef.current?.focus();
+            }
+          }}
+        >
           <div className="p-2">
             <div className="relative">
               <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
