@@ -21,8 +21,6 @@ const KEYBOARD_DIALOG_MAX_WIDTHS: Record<KeyboardDialogSize, string> = {
   full: 'none',
 };
 
-export function getKeyboardDialogMaxWidth(
-  size: KeyboardDialogSize
-): string {
+export function getKeyboardDialogMaxWidth(size: KeyboardDialogSize): string {
   return KEYBOARD_DIALOG_MAX_WIDTHS[size];
 }
