@@ -130,8 +130,8 @@ const CreateRemoteProjectDialogImpl = create<CreateRemoteProjectDialogProps>(
     };
 
     return (
-      <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="md">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>
               {t('createProjectDialog.title', 'Create Project')}

@@ -294,8 +294,8 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
+    <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="lg">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('linkPrToIssue.title')}</DialogTitle>
           <DialogDescription>

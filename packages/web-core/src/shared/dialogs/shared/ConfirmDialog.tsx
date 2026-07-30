@@ -59,8 +59,8 @@ const ConfirmDialogImpl = create<ConfirmDialogProps>((props) => {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleCancel}>
-      <DialogContent className="sm:max-w-[425px]">
+    <Dialog open={modal.visible} onOpenChange={handleCancel} size="md">
+      <DialogContent>
         <DialogHeader>
           <div className="flex items-center gap-3">
             {getIcon()}

@@ -586,7 +586,8 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
       <Dialog
         open={modal.visible}
         onOpenChange={(open) => !open && close()}
-        className="my-0 h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] min-h-0 w-[calc(100vw-2rem)] max-w-none overflow-hidden p-0"
+        size="full"
+        className="my-0 h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] min-h-0 overflow-hidden p-0"
       >
         <PrDetailsContent
           prUrl={prUrl}

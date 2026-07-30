@@ -149,8 +149,8 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
 
     return (
       <div className="fixed inset-0 z-[10000] pointer-events-none [&>*]:pointer-events-auto">
-        <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
-          <DialogContent className="max-w-[600px] w-full h-[700px] flex flex-col overflow-hidden">
+        <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="xl">
+          <DialogContent className="h-[700px] flex flex-col overflow-hidden">
             <DialogHeader>
               <DialogTitle>{title}</DialogTitle>
               <DialogDescription>{description}</DialogDescription>

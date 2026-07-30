@@ -4,10 +4,20 @@ import { useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { createPortal } from 'react-dom';
 
 import { cn } from '../lib/cn';
+import {
+  getKeyboardDialogMaxWidth,
+  type KeyboardDialogSize,
+} from '../lib/keyboard-dialog-size';
+
+export type { KeyboardDialogSize } from '../lib/keyboard-dialog-size';
 
 const DIALOG_SCOPE = 'dialog';
 const KANBAN_SCOPE = 'kanban';
 const PROJECTS_SCOPE = 'projects';
+
+// Width belongs to the outer dialog, not DialogContent. Apply it inline so
+// callers never need competing max-w-* classes; `cn` is clsx-only and cannot
+// resolve Tailwind width conflicts reliably.
 
 // Stack of currently-open KeyboardDialog instances. Escape only closes the
 // top-most (most recently opened) one. Stacked dialogs all listen on `document`
@@ -33,8 +43,9 @@ const Dialog = React.forwardRef<
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
     uncloseable?: boolean;
+    size?: KeyboardDialogSize;
   }
->(({ className, open, onOpenChange, children, uncloseable, ...props }, ref) => {
+>(({ className, open, onOpenChange, children, uncloseable, size = 'xl', style, ...props }, ref) => {
   const { enableScope, disableScope } = useHotkeysContext();
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
   const dialogIdRef = React.useRef<symbol | null>(null);
@@ -200,9 +211,10 @@ const Dialog = React.forwardRef<
         ref={setDialogRef}
         tabIndex={-1}
         className={cn(
-          'relative z-[10000] flex flex-col w-full max-w-xl gap-4 bg-primary p-6 shadow-lg duration-200 sm:rounded-lg my-8 outline-none',
+          'relative z-[10000] flex flex-col w-full gap-4 bg-primary p-6 shadow-lg duration-200 sm:rounded-lg my-8 outline-none',
           className
         )}
+        style={{ ...style, maxWidth: getKeyboardDialogMaxWidth(size) }}
         {...props}
       >
         {!uncloseable && (

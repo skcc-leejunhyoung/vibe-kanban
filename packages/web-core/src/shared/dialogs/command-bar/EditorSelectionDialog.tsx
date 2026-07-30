@@ -50,8 +50,9 @@ const EditorSelectionDialogImpl = create<EditorSelectionDialogProps>(
       <Dialog
         open={modal.visible}
         onOpenChange={(open) => !open && handleCancel()}
+        size="md"
       >
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Choose Editor</DialogTitle>
             <DialogDescription>

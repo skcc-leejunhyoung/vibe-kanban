@@ -513,10 +513,9 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
           handleClose();
         }
       }}
+      size="lg"
     >
-      <DialogContent className="sm:max-w-[500px]">
-        {renderContent()}
-      </DialogContent>
+      <DialogContent>{renderContent()}</DialogContent>
     </Dialog>
   );
 });

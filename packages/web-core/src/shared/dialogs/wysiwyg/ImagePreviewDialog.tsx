@@ -40,8 +40,8 @@ const ImagePreviewDialogImpl = create<ImagePreviewDialogProps>((props) => {
   const metadataLine = metadataParts.join(' · ');
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleClose}>
-      <DialogContent className="w-full max-w-5xl p-0 overflow-hidden">
+    <Dialog open={modal.visible} onOpenChange={handleClose} size="5xl">
+      <DialogContent className="w-full p-0 overflow-hidden">
         {fileName && (
           <DialogHeader className="px-4 pt-4 pb-0">
             <DialogTitle className="truncate">{fileName}</DialogTitle>

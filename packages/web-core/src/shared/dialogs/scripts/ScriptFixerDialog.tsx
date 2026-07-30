@@ -275,7 +275,8 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
       <Dialog
         open={modal.visible}
         onOpenChange={handleOpenChange}
-        className="max-w-4xl w-[90vw]"
+        size="4xl"
+        className="w-[90vw]"
       >
         <DialogContent className="max-h-[80vh] flex flex-col overflow-hidden">
           <DialogHeader>

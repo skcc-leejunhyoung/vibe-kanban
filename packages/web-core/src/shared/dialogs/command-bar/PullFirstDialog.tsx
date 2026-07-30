@@ -127,8 +127,8 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
   const isProcessing = pullAndPush.isPending || resetToRemote.isPending;
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleCancel}>
-      <DialogContent className="sm:max-w-[500px]">
+    <Dialog open={modal.visible} onOpenChange={handleCancel} size="lg">
+      <DialogContent>
         <DialogHeader>
           <div className="flex items-center gap-3">
             <ArrowDownToLine className="h-6 w-6 text-primary" />

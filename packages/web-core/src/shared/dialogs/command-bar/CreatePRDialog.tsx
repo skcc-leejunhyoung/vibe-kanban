@@ -641,8 +641,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
               handleDismiss();
             }
           }}
+          size="lg"
         >
-          <DialogContent className="sm:max-w-[525px]">
+          <DialogContent>
             <DialogHeader>
               <DialogTitle>{t('createPrDialog.title')}</DialogTitle>
               <DialogDescription>

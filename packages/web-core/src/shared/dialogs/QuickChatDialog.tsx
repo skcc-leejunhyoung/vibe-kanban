@@ -271,7 +271,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       onOpenChange={(open) => {
         if (!open) close();
       }}
-      className="max-w-xl"
+      size="xl"
       // KeyboardDialog stacks dialogs at the top (items-start). Quick chat is
       // short, so center it vertically. Inline style overrides the base `my-8`
       // (cn is clsx-only, so a `my-auto` class wouldn't win).

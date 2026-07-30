@@ -281,8 +281,8 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
     const hasExistingSession = Boolean(selectedSessionId);
 
     return (
-      <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
-        <DialogContent className="sm:max-w-[500px]">
+      <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="lg">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>
               {t('resolveConflicts.dialog.title', 'Resolve Conflicts')}

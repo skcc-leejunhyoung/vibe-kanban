@@ -62,8 +62,8 @@ const ForcePushDialogImpl = create<ForcePushDialogProps>((props) => {
   const isProcessing = forcePush.isPending;
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleCancel}>
-      <DialogContent className="sm:max-w-[500px]">
+    <Dialog open={modal.visible} onOpenChange={handleCancel} size="lg">
+      <DialogContent>
         <DialogHeader>
           <div className="flex items-center gap-3">
             <AlertTriangle className="h-6 w-6 text-destructive" />

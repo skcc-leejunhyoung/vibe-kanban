@@ -130,8 +130,8 @@ const CreateOrganizationDialogImpl = create<NoProps>(() => {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+    <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="md">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('createDialog.title')}</DialogTitle>
           <DialogDescription>{t('createDialog.description')}</DialogDescription>

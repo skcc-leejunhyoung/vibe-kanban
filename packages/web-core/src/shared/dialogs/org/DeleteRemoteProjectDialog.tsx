@@ -59,8 +59,8 @@ const DeleteRemoteProjectDialogImpl = create<DeleteRemoteProjectDialogProps>(
     };
 
     return (
-      <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="md">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>
               {t('deleteProjectDialog.title', 'Delete Project?')}

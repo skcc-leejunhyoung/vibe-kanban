@@ -40,8 +40,8 @@ const PushErrorDialogImpl = create<PushErrorDialogProps>((props) => {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[640px]">
+    <Dialog open={modal.visible} onOpenChange={handleClose} size="2xl">
+      <DialogContent>
         <DialogHeader>
           <div className="flex items-center gap-3">
             <WarningIcon className="h-6 w-6 text-destructive" />
