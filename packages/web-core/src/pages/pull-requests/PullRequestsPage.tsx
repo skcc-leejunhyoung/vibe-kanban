@@ -3,28 +3,91 @@ import { useQuery } from '@tanstack/react-query';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
   ArrowClockwiseIcon,
+  ArrowSquareOutIcon,
   ChatCircleIcon,
   FunnelIcon,
   GitMergeIcon,
   GitPullRequestIcon,
   MagnifyingGlassIcon,
   SpinnerGapIcon,
+  StackIcon,
 } from '@phosphor-icons/react';
 import { repoApi } from '@/shared/lib/api';
+import {
+  getRemoteIssue,
+  listPullRequestIssueMappings,
+} from '@/shared/lib/remoteApi';
 import { cn } from '@/shared/lib/utils';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
+import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
+import { ActionTargetType } from '@/shared/types/actions';
 import { PullRequestDetailsPanel } from './PullRequestDetailsPanel';
 import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
+  PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
   PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
+  PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
   resolvePullRequestFiltersAfterDefaultsChange,
   type PullRequestFilterState,
   type PullRequestUpdatedFilter,
 } from './pullRequestFilters';
 import type { MergeStatus, PullRequestSummary } from 'shared/types';
+import type { Issue, PullRequestIssue, Workspace } from 'shared/remote-types';
+
+type MappedIssue = {
+  link: PullRequestIssue;
+  issue: Issue;
+};
+
+async function showEmptyMapping(message: string) {
+  await ErrorDialog.show({
+    title: 'No mapping found',
+    message,
+    buttonText: 'OK',
+  });
+}
+
+async function selectMappedIssue(
+  mappedIssues: MappedIssue[]
+): Promise<MappedIssue | undefined> {
+  if (mappedIssues.length === 1) return mappedIssues[0];
+  const selectedIssueId = (await SelectionDialog.show({
+    initialPageId: 'mappedIssues',
+    pages: {
+      mappedIssues: {
+        id: 'mappedIssues',
+        title: 'Mapped issues',
+        buildGroups: () => [
+          {
+            label: 'Issues',
+            items: mappedIssues.map(({ issue }) => ({
+              type: 'action' as const,
+              action: {
+                id: issue.id,
+                label: issue.title,
+                description: issue.simple_id,
+                icon: ArrowSquareOutIcon,
+                requiresTarget: ActionTargetType.NONE,
+                execute: () => {},
+              },
+            })),
+          },
+        ],
+        onSelect: (item) => ({
+          type: 'complete' as const,
+          data: item.type === 'action' ? item.action.id : undefined,
+        }),
+      },
+    },
+  })) as string | undefined;
+  return mappedIssues.find(({ issue }) => issue.id === selectedIssueId);
+}
 
 function statusLabel(status: MergeStatus): string {
   if (status === 'open') return 'Open';
@@ -62,7 +125,7 @@ function shouldIgnoreListKeyboardNavigation(
   target: EventTarget | null
 ): boolean {
   if (!(target instanceof HTMLElement)) return false;
-  if (target.closest('[data-pull-request-row]')) return false;
+  if (target.closest('[data-pull-request-primary]')) return false;
 
   return Boolean(
     target.isContentEditable ||
@@ -84,6 +147,8 @@ function activeFilterCount(filters: PullRequestFilterState): number {
 
 export function PullRequestsPage() {
   const isMobile = useIsMobile();
+  const appNavigation = useAppNavigation();
+  const { workspaces } = useUserContext();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );
@@ -201,6 +266,120 @@ export function PullRequestsPage() {
     [filters, normalizedQuery, pullRequests]
   );
 
+  const loadMappedIssues = useCallback(async (prUrl: string) => {
+    const links = await listPullRequestIssueMappings(prUrl);
+    return Promise.all(
+      links.map(async (link) => ({
+        link,
+        issue: await getRemoteIssue(link.issue_id),
+      }))
+    );
+  }, []);
+
+  const goToMappedIssue = useCallback(
+    async (pullRequest: PullRequestSummary) => {
+      try {
+        const mappedIssues = await loadMappedIssues(pullRequest.url);
+        if (mappedIssues.length === 0) {
+          await showEmptyMapping(
+            'This pull request is not mapped to an issue.'
+          );
+          return;
+        }
+        const selected = await selectMappedIssue(mappedIssues);
+        if (selected) {
+          appNavigation.goToProjectIssue(
+            selected.link.project_id,
+            selected.link.issue_id
+          );
+        }
+      } catch (error) {
+        await ErrorDialog.show({
+          title: 'Could not load mapped issue',
+          message: error instanceof Error ? error.message : 'Please try again.',
+          buttonText: 'OK',
+        });
+      }
+    },
+    [appNavigation, loadMappedIssues]
+  );
+
+  const viewMappedWorkspaces = useCallback(
+    async (pullRequest: PullRequestSummary) => {
+      try {
+        const mappedIssues = await loadMappedIssues(pullRequest.url);
+        const issueIds = new Set(mappedIssues.map(({ link }) => link.issue_id));
+        const mappedWorkspaces = workspaces.filter(
+          (
+            workspace
+          ): workspace is Workspace & {
+            issue_id: string;
+            local_workspace_id: string;
+          } =>
+            workspace.issue_id !== null &&
+            workspace.local_workspace_id !== null &&
+            issueIds.has(workspace.issue_id)
+        );
+        if (mappedWorkspaces.length === 0) {
+          await showEmptyMapping('This pull request has no mapped workspaces.');
+          return;
+        }
+        const selectedWorkspaceId = (await SelectionDialog.show({
+          initialPageId: 'mappedWorkspaces',
+          pages: {
+            mappedWorkspaces: {
+              id: 'mappedWorkspaces',
+              title: 'Mapped workspaces',
+              buildGroups: () => [
+                {
+                  label: 'Workspaces',
+                  items: mappedWorkspaces.map((workspace) => {
+                    const mappedIssue = mappedIssues.find(
+                      ({ link }) => link.issue_id === workspace.issue_id
+                    );
+                    return {
+                      type: 'action' as const,
+                      action: {
+                        id: workspace.id,
+                        label: workspace.name || 'Untitled workspace',
+                        description: mappedIssue?.issue.simple_id,
+                        icon: StackIcon,
+                        requiresTarget: ActionTargetType.NONE,
+                        execute: () => {},
+                      },
+                    };
+                  }),
+                },
+              ],
+              onSelect: (item) => ({
+                type: 'complete' as const,
+                data: item.type === 'action' ? item.action.id : undefined,
+              }),
+            },
+          },
+        })) as string | undefined;
+        const selected = mappedWorkspaces.find(
+          (workspace) => workspace.id === selectedWorkspaceId
+        );
+        if (selected) {
+          appNavigation.goToProjectIssueWorkspace(
+            selected.project_id,
+            selected.issue_id,
+            selected.local_workspace_id,
+            { hostId: selected.host_id }
+          );
+        }
+      } catch (error) {
+        await ErrorDialog.show({
+          title: 'Could not load mapped workspaces',
+          message: error instanceof Error ? error.message : 'Please try again.',
+          buttonText: 'OK',
+        });
+      }
+    },
+    [appNavigation, loadMappedIssues, workspaces]
+  );
+
   useEffect(() => {
     setSelectedIndex((current) =>
       Math.min(current, Math.max(0, filteredPullRequests.length - 1))
@@ -220,11 +399,29 @@ export function PullRequestsPage() {
       if (!repoId) return;
       setFilters((current) => ({ ...current, repository: repoId }));
     };
+    const getSelectedPullRequest = () =>
+      filteredPullRequests[selectedIndex] ?? null;
+    const gotoMappedIssue = () => {
+      const pullRequest = getSelectedPullRequest();
+      if (pullRequest) void goToMappedIssue(pullRequest);
+    };
+    const showMappedWorkspaces = () => {
+      const pullRequest = getSelectedPullRequest();
+      if (pullRequest) void viewMappedWorkspaces(pullRequest);
+    };
     window.addEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
     window.addEventListener(PULL_REQUESTS_FOCUS_SEARCH_EVENT, focusSearch);
     window.addEventListener(
       PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
       selectRepository
+    );
+    window.addEventListener(
+      PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
+      gotoMappedIssue
+    );
+    window.addEventListener(
+      PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
+      showMappedWorkspaces
     );
     return () => {
       window.removeEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
@@ -233,8 +430,21 @@ export function PullRequestsPage() {
         PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
         selectRepository
       );
+      window.removeEventListener(
+        PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
+        gotoMappedIssue
+      );
+      window.removeEventListener(
+        PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
+        showMappedWorkspaces
+      );
     };
-  }, []);
+  }, [
+    filteredPullRequests,
+    goToMappedIssue,
+    selectedIndex,
+    viewMappedWorkspaces,
+  ]);
 
   const focusRow = useCallback(
     (index: number) => {
@@ -410,59 +620,90 @@ export function PullRequestsPage() {
         ) : (
           <div className="divide-y divide-border">
             {filteredPullRequests.map((pr, index) => (
-              <button
-                type="button"
+              <div
                 data-pull-request-row
                 key={pr.url}
-                ref={(element) => {
-                  if (element) rowRefs.current.set(pr.url, element);
-                  else rowRefs.current.delete(pr.url);
-                }}
-                onFocus={() => setSelectedIndex(index)}
-                onClick={() => setSelectedPullRequest(pr)}
                 className={cn(
-                  'flex w-full items-start gap-base px-double py-base text-left outline-none hover:bg-secondary/60 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand',
+                  'flex w-full items-start pr-base hover:bg-secondary/60',
                   index === selectedIndex && 'bg-secondary/40'
                 )}
               >
-                <span className="mt-half">{statusIcon(pr.status)}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-center gap-half">
-                    <span className="truncate text-base font-medium text-high">
-                      {pr.title}
-                    </span>
-                    {pr.is_draft && (
-                      <span className="rounded bg-secondary px-half py-0.5 text-xs text-low">
-                        Draft
+                <button
+                  type="button"
+                  data-pull-request-primary
+                  ref={(element) => {
+                    if (element) rowRefs.current.set(pr.url, element);
+                    else rowRefs.current.delete(pr.url);
+                  }}
+                  onFocus={() => setSelectedIndex(index)}
+                  onClick={() => setSelectedPullRequest(pr)}
+                  className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
+                >
+                  <span className="mt-half">{statusIcon(pr.status)}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-half">
+                      <span className="truncate text-base font-medium text-high">
+                        {pr.title}
                       </span>
-                    )}
-                    {pr.labels.map((label) => (
-                      <span
-                        key={label}
-                        className="rounded border border-border px-half py-0.5 text-xs text-low"
-                      >
-                        {label}
-                      </span>
-                    ))}
-                  </span>
-                  <span className="mt-half flex flex-wrap items-center gap-x-base gap-y-half text-sm text-low">
-                    <span>
-                      {pr.repository} #{String(pr.number)}
+                      {pr.is_draft && (
+                        <span className="rounded bg-secondary px-half py-0.5 text-xs text-low">
+                          Draft
+                        </span>
+                      )}
+                      {pr.labels.map((label) => (
+                        <span
+                          key={label}
+                          className="rounded border border-border px-half py-0.5 text-xs text-low"
+                        >
+                          {label}
+                        </span>
+                      ))}
                     </span>
-                    <span>{statusLabel(pr.status)}</span>
-                    <span>by {pr.author ?? 'unknown'}</span>
-                    {pr.updated_at && (
+                    <span className="mt-half flex flex-wrap items-center gap-x-base gap-y-half text-sm text-low">
                       <span>
-                        updated {new Date(pr.updated_at).toLocaleDateString()}
+                        {pr.repository} #{String(pr.number)}
                       </span>
-                    )}
-                    <span className="inline-flex items-center gap-1">
-                      <ChatCircleIcon className="size-icon-xs" />
-                      {String(pr.comments_count)}
+                      <span>{statusLabel(pr.status)}</span>
+                      <span>by {pr.author ?? 'unknown'}</span>
+                      {pr.updated_at && (
+                        <span>
+                          updated {new Date(pr.updated_at).toLocaleDateString()}
+                        </span>
+                      )}
+                      <span className="inline-flex items-center gap-1">
+                        <ChatCircleIcon className="size-icon-xs" />
+                        {String(pr.comments_count)}
+                      </span>
                     </span>
                   </span>
+                </button>
+                <span className="flex shrink-0 items-center gap-half py-base">
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void goToMappedIssue(pr);
+                    }}
+                    className="flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high"
+                    aria-label={`Go to issue mapped to pull request #${String(pr.number)}`}
+                    title="Go to mapped issue"
+                  >
+                    <ArrowSquareOutIcon className="size-icon-sm" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void viewMappedWorkspaces(pr);
+                    }}
+                    className="flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high"
+                    aria-label={`View workspaces mapped to pull request #${String(pr.number)}`}
+                    title="View mapped workspaces"
+                  >
+                    <StackIcon className="size-icon-sm" />
+                  </button>
                 </span>
-              </button>
+              </div>
             ))}
           </div>
         )}

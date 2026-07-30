@@ -19,6 +19,14 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.SearchWorkspaceList },
           { type: 'action', action: Actions.SearchProjectIssues },
           { type: 'action', action: Actions.SearchPullRequests },
+          {
+            type: 'action',
+            action: Actions.GotoPullRequestMappedIssue,
+          },
+          {
+            type: 'action',
+            action: Actions.ViewPullRequestMappedWorkspaces,
+          },
         ],
       },
       {

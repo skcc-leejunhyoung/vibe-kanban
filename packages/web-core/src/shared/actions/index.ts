@@ -122,8 +122,10 @@ import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
+  PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
   PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
+  PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
 } from '@/pages/pull-requests/pullRequestFilters';
 
 // Mirrored sidebar icon for right sidebar toggle
@@ -1178,6 +1180,36 @@ export const Actions = {
     isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
     execute: () => {
       window.dispatchEvent(new Event(PULL_REQUESTS_FOCUS_SEARCH_EVENT));
+    },
+  } satisfies GlobalActionDefinition,
+
+  GotoPullRequestMappedIssue: {
+    id: 'goto-pull-request-mapped-issue',
+    label: 'Pull Requests: Go to mapped issue',
+    icon: ArrowSquareOutIcon,
+    keywords: ['pull request', 'pr', 'issue', 'mapped', 'go to'],
+    requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
+    executeAfterClose: true,
+    isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
+    execute: () => {
+      window.dispatchEvent(new Event(PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT));
+    },
+  } satisfies GlobalActionDefinition,
+
+  ViewPullRequestMappedWorkspaces: {
+    id: 'view-pull-request-mapped-workspaces',
+    label: 'Pull Requests: View mapped workspaces',
+    icon: StackIcon,
+    keywords: ['pull request', 'pr', 'workspace', 'mapped', 'linked'],
+    requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
+    executeAfterClose: true,
+    isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
+    execute: () => {
+      window.dispatchEvent(
+        new Event(PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT)
+      );
     },
   } satisfies GlobalActionDefinition,
 

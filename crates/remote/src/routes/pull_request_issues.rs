@@ -26,7 +26,8 @@ use crate::{
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ListPullRequestIssuesQuery {
-    pub issue_id: Uuid,
+    pub issue_id: Option<Uuid>,
+    pub url: Option<String>,
 }
 
 pub fn mutation() -> MutationBuilder<PullRequestIssue, CreatePullRequestIssueRequest, NoUpdate> {
@@ -44,25 +45,66 @@ pub fn router() -> axum::Router<AppState> {
 #[instrument(
     name = "pull_request_issues.list",
     skip(state, ctx),
-    fields(issue_id = %query.issue_id, user_id = %ctx.user.id)
+    fields(issue_id = ?query.issue_id, url = ?query.url, user_id = %ctx.user.id)
 )]
 async fn list_pull_request_issues(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Query(query): Query<ListPullRequestIssuesQuery>,
 ) -> Result<Json<ListPullRequestIssuesResponse>, ErrorResponse> {
-    ensure_issue_access(state.pool(), ctx.user.id, query.issue_id).await?;
-
-    let pull_request_issues =
-        PullRequestIssueRepository::list_by_issue(state.pool(), query.issue_id)
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, "failed to list pull request issues");
-                ErrorResponse::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "failed to list pull request issues",
-                )
-            })?;
+    let pull_request_issues = match (query.issue_id, query.url.as_deref()) {
+        (Some(issue_id), None) => {
+            ensure_issue_access(state.pool(), ctx.user.id, issue_id).await?;
+            PullRequestIssueRepository::list_by_issue(state.pool(), issue_id).await
+        }
+        (None, Some(url)) => {
+            let pull_requests =
+                PullRequestRepository::list_by_url_for_user(state.pool(), url, ctx.user.id)
+                    .await
+                    .map_err(|error| {
+                        tracing::error!(?error, "failed to find pull requests by URL");
+                        ErrorResponse::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "failed to list pull request issues",
+                        )
+                    })?;
+            let mut links = Vec::new();
+            for pull_request in pull_requests {
+                links.extend(
+                    PullRequestIssueRepository::list_by_project(
+                        state.pool(),
+                        pull_request.project_id,
+                    )
+                    .await
+                    .map_err(|error| {
+                        tracing::error!(?error, "failed to list pull request issues");
+                        ErrorResponse::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "failed to list pull request issues",
+                        )
+                    })?
+                    .into_iter()
+                    .filter(|link| link.pull_request_id == pull_request.id),
+                );
+            }
+            return Ok(Json(ListPullRequestIssuesResponse {
+                pull_request_issues: links,
+            }));
+        }
+        _ => {
+            return Err(ErrorResponse::new(
+                StatusCode::BAD_REQUEST,
+                "provide exactly one of issue_id or url",
+            ));
+        }
+    }
+    .map_err(|error| {
+        tracing::error!(?error, "failed to list pull request issues");
+        ErrorResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to list pull request issues",
+        )
+    })?;
 
     Ok(Json(ListPullRequestIssuesResponse {
         pull_request_issues,

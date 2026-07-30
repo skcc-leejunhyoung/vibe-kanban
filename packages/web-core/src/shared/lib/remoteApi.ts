@@ -8,6 +8,8 @@ import type {
   InitUploadResponse,
   ListRelayHostsResponse,
   RelayHost,
+  Issue,
+  PullRequestIssue,
   UpdateIssueRequest,
   UpdateProjectRequest,
   UpdateProjectStatusRequest,
@@ -45,6 +47,31 @@ export function getRemoteApiUrl(): string {
 
 // Backward-compatible export — consumers should migrate to getRemoteApiUrl()
 export const REMOTE_API_URL = BUILD_TIME_API_BASE;
+
+export async function listPullRequestIssueMappings(
+  url: string
+): Promise<PullRequestIssue[]> {
+  const response = await makeRequest(
+    `/v1/pull_request_issues?url=${encodeURIComponent(url)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to load pull request mappings');
+  }
+  const body = (await response.json()) as {
+    pull_request_issues: PullRequestIssue[];
+  };
+  return body.pull_request_issues;
+}
+
+export async function getRemoteIssue(issueId: string): Promise<Issue> {
+  const response = await makeRequest(
+    `/v1/issues/${encodeURIComponent(issueId)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to load mapped issue');
+  }
+  return (await response.json()) as Issue;
+}
 
 export const makeRequest = async (
   path: string,
