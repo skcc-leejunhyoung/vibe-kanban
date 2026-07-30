@@ -282,26 +282,32 @@ struct GhSearchPrResponse {
 }
 
 #[derive(Deserialize)]
-struct GhPullRequestCommentCountsResponse {
-    data: GhPullRequestCommentCountsData,
+struct GhPullRequestListMetadataResponse {
+    data: GhPullRequestListMetadataData,
 }
 
 #[derive(Deserialize)]
-struct GhPullRequestCommentCountsData {
-    repository: GhPullRequestCommentCountsRepository,
+struct GhPullRequestListMetadataData {
+    repository: GhPullRequestListMetadataRepository,
 }
 
 #[derive(Deserialize)]
-struct GhPullRequestCommentCountsRepository {
+struct GhPullRequestListMetadataRepository {
     #[serde(flatten)]
-    pull_requests: HashMap<String, Option<GhPullRequestCommentCounts>>,
+    pull_requests: HashMap<String, Option<GhPullRequestListMetadata>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GhPullRequestCommentCounts {
+struct GhPullRequestListMetadata {
+    review_decision: Option<String>,
     comments: GhTotalCount,
     review_threads: GhReviewThreadCountConnection,
+}
+
+struct PullRequestListMetadata {
+    comments_count: i64,
+    review_decision: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -519,14 +525,14 @@ impl GhCli {
             ))
         })?;
 
-        let comment_counts = self
-            .fetch_pull_request_comment_counts(
+        let metadata = self
+            .fetch_pull_request_list_metadata(
                 repository,
                 hostname,
                 &prs.iter().map(|pr| pr.number).collect::<Vec<_>>(),
             )
             .unwrap_or_else(|error| {
-                tracing::warn!("Failed to include review comments in pull request counts: {error}");
+                tracing::warn!("Failed to include pull request list metadata: {error}");
                 HashMap::new()
             });
 
@@ -548,9 +554,12 @@ impl GhCli {
                 labels: pr.labels.into_iter().map(|label| label.name).collect(),
                 repository: pr.repository.name_with_owner,
                 is_draft: pr.is_draft,
-                comments_count: comment_counts
+                review_decision: metadata
                     .get(&pr.number)
-                    .copied()
+                    .and_then(|metadata| metadata.review_decision.clone()),
+                comments_count: metadata
+                    .get(&pr.number)
+                    .map(|metadata| metadata.comments_count)
                     .unwrap_or(pr.comments_count),
                 created_at: pr.created_at,
                 updated_at: pr.updated_at,
@@ -559,12 +568,12 @@ impl GhCli {
             .collect())
     }
 
-    fn fetch_pull_request_comment_counts(
+    fn fetch_pull_request_list_metadata(
         &self,
         repository: &str,
         hostname: Option<&str>,
         pull_request_numbers: &[i64],
-    ) -> Result<HashMap<i64, i64>, GhCliError> {
+    ) -> Result<HashMap<i64, PullRequestListMetadata>, GhCliError> {
         let (owner, name) = repository.split_once('/').ok_or_else(|| {
             GhCliError::UnexpectedOutput(format!(
                 "Invalid GitHub repository name for comment count query: {repository}"
@@ -580,13 +589,13 @@ impl GhCli {
 
         // Keep each GraphQL request bounded while avoiding one REST request per PR.
         for batch in pull_request_numbers.chunks(50) {
-            let query = pull_request_comment_counts_query(&owner, &name, batch);
+            let query = pull_request_list_metadata_query(&owner, &name, batch);
             let raw = self.run_for_host(
                 ["api", "graphql", "-f", &format!("query={query}")],
                 None,
                 hostname,
             )?;
-            result.extend(parse_pull_request_comment_counts(&raw, batch)?);
+            result.extend(parse_pull_request_list_metadata(&raw, batch)?);
         }
 
         Ok(result)
@@ -792,12 +801,13 @@ impl GhCli {
     }
 }
 
-fn pull_request_comment_counts_query(owner: &str, name: &str, numbers: &[i64]) -> String {
+fn pull_request_list_metadata_query(owner: &str, name: &str, numbers: &[i64]) -> String {
     let pull_requests = numbers
         .iter()
         .map(|number| {
             format!(
                 "pr_{number}: pullRequest(number: {number}) {{ \
+                    reviewDecision \
                     comments {{ totalCount }} \
                     reviewThreads(first: 100) {{ \
                         nodes {{ comments {{ totalCount }} }} \
@@ -811,14 +821,14 @@ fn pull_request_comment_counts_query(owner: &str, name: &str, numbers: &[i64]) -
     format!("query {{ repository(owner: {owner}, name: {name}) {{ {pull_requests} }} }}")
 }
 
-fn parse_pull_request_comment_counts(
+fn parse_pull_request_list_metadata(
     raw: &str,
     numbers: &[i64],
-) -> Result<HashMap<i64, i64>, GhCliError> {
-    let mut response: GhPullRequestCommentCountsResponse = serde_json::from_str(raw.trim())
+) -> Result<HashMap<i64, PullRequestListMetadata>, GhCliError> {
+    let mut response: GhPullRequestListMetadataResponse = serde_json::from_str(raw.trim())
         .map_err(|err| {
             GhCliError::UnexpectedOutput(format!(
-                "Failed to parse pull request comment counts response: {err}; raw: {raw}"
+                "Failed to parse pull request list metadata response: {err}; raw: {raw}"
             ))
         })?;
     let mut result = HashMap::new();
@@ -839,7 +849,13 @@ fn parse_pull_request_comment_counts(
             .into_iter()
             .map(|thread| thread.comments.total_count)
             .sum::<i64>();
-        result.insert(*number, counts.comments.total_count + review_comments);
+        result.insert(
+            *number,
+            PullRequestListMetadata {
+                comments_count: counts.comments.total_count + review_comments,
+                review_decision: counts.review_decision,
+            },
+        );
     }
 
     Ok(result)
@@ -887,12 +903,13 @@ mod tests {
     }
 
     #[test]
-    fn pull_request_comment_count_includes_review_thread_comments() {
-        let counts = parse_pull_request_comment_counts(
+    fn pull_request_metadata_includes_review_decision_and_thread_comments() {
+        let metadata = parse_pull_request_list_metadata(
             r#"{
                 "data": {
                     "repository": {
                         "pr_42": {
+                            "reviewDecision": "APPROVED",
                             "comments": {"totalCount": 6},
                             "reviewThreads": {
                                 "nodes": [
@@ -909,16 +926,19 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(counts.get(&42), Some(&13));
+        let pr_metadata = metadata.get(&42).unwrap();
+        assert_eq!(pr_metadata.comments_count, 13);
+        assert_eq!(pr_metadata.review_decision.as_deref(), Some("APPROVED"));
     }
 
     #[test]
-    fn pull_request_comment_count_query_batches_multiple_prs() {
-        let query = pull_request_comment_counts_query("\"acme\"", "\"widgets\"", &[12, 34]);
+    fn pull_request_metadata_query_batches_multiple_prs() {
+        let query = pull_request_list_metadata_query("\"acme\"", "\"widgets\"", &[12, 34]);
 
         assert!(query.contains("repository(owner: \"acme\", name: \"widgets\")"));
         assert!(query.contains("pr_12: pullRequest(number: 12)"));
         assert!(query.contains("pr_34: pullRequest(number: 34)"));
+        assert!(query.contains("reviewDecision"));
         assert!(query.contains("reviewThreads(first: 100)"));
     }
 

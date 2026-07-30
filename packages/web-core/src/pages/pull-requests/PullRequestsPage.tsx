@@ -5,6 +5,7 @@ import {
   ArrowClockwiseIcon,
   ArrowSquareOutIcon,
   ChatCircleIcon,
+  CheckCircleIcon,
   FunnelIcon,
   GitMergeIcon,
   GitPullRequestIcon,
@@ -648,6 +649,15 @@ export function PullRequestsPage() {
                       {pr.is_draft && (
                         <span className="rounded bg-secondary px-half py-0.5 text-xs text-low">
                           Draft
+                        </span>
+                      )}
+                      {pr.review_decision === 'APPROVED' && (
+                        <span className="inline-flex items-center gap-1 rounded bg-success/10 px-half py-0.5 text-xs text-success">
+                          <CheckCircleIcon
+                            className="size-icon-xs"
+                            weight="fill"
+                          />
+                          Approved
                         </span>
                       )}
                       {pr.labels.map((label) => (

@@ -206,6 +206,7 @@ pub struct PullRequestSummary {
     pub labels: Vec<String>,
     pub repository: String,
     pub is_draft: bool,
+    pub review_decision: Option<String>,
     pub comments_count: i64,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
