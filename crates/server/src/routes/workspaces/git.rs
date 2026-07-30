@@ -89,6 +89,12 @@ pub struct PullWorkspaceRequest {
     pub repo_id: Uuid,
 }
 
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct ResetWorkspaceToRemoteRequest {
+    pub repo_id: Uuid,
+    pub confirm_discard: bool,
+}
+
 /// Outcome of fast-forwarding the work branch to its own remote. `diverged` is
 /// not an error — it tells the UI a fast-forward was impossible (the remote was
 /// left untouched) so it can offer rebase / update-from-base instead.
@@ -297,6 +303,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/push", post(push_workspace_branch))
         .route("/push/force", post(force_push_workspace_branch))
         .route("/pull-and-push", post(pull_and_push_workspace_branch))
+        .route("/reset-to-remote", post(reset_workspace_branch_to_remote))
         .route("/pull", post(pull_workspace_branch_from_remote))
         .route("/update-from-base", post(update_workspace_from_base))
         .route("/rebase", post(rebase_workspace))
@@ -807,6 +814,47 @@ pub async fn pull_and_push_workspace_branch(
         .git()
         .push_to_remote(&worktree_path, &workspace.branch, false, no_verify)?;
 
+    spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+/// Replace the local work branch with its latest remote state. This is the
+/// destructive counterpart to pull-and-push for cases where a remote force-push
+/// is authoritative and the local commits should be discarded.
+#[axum::debug_handler]
+pub async fn reset_workspace_branch_to_remote(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<ResetWorkspaceToRemoteRequest>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    if !request.confirm_discard {
+        return Err(ApiError::BadRequest(
+            "Explicit confirmation is required to discard local work".to_string(),
+        ));
+    }
+
+    let pool = &deployment.db().pool;
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        Path::new(&container_ref).join(&repo.name)
+    };
+
+    deployment
+        .git()
+        .reset_workspace_branch_to_remote(&worktree_path, &workspace.branch)?;
     spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
 
     Ok(ResponseJson(ApiResponse::success(())))

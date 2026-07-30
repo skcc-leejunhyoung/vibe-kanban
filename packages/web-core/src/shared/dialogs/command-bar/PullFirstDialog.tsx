@@ -11,9 +11,11 @@ import { create, useModal } from '@ebay/nice-modal-react';
 import { ArrowDownToLine, Loader2 } from 'lucide-react';
 import { defineModal } from '@/shared/lib/modals';
 import { usePullAndPush } from '@/shared/hooks/usePullAndPush';
+import { useResetToRemote } from '@/shared/hooks/useResetToRemote';
 import { useState } from 'react';
 import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { useTranslation } from 'react-i18next';
+import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 
 export interface PullFirstDialogProps {
   workspaceId: string;
@@ -66,6 +68,20 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
     },
     isTarget ?? false
   );
+  const resetToRemote = useResetToRemote(
+    workspaceId,
+    () => {
+      modal.resolve('success');
+      modal.hide();
+    },
+    (err: unknown) => {
+      const message =
+        err && typeof err === 'object' && 'message' in err
+          ? String(err.message)
+          : t('tasks:git.pullFirstDialog.resetError');
+      setError(message);
+    }
+  );
 
   const handlePullAndPush = async () => {
     setError(null);
@@ -81,12 +97,34 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
     modal.hide();
   };
 
+  const handleResetToRemote = async () => {
+    const confirmation = await ConfirmDialog.show({
+      title: t('tasks:git.pullFirstDialog.resetConfirmTitle'),
+      message: t('tasks:git.pullFirstDialog.resetConfirmMessage', {
+        ahead,
+      }),
+      confirmText: t('tasks:git.pullFirstDialog.resetToRemote'),
+      variant: 'destructive',
+    });
+    if (confirmation !== 'confirmed') return;
+
+    setError(null);
+    try {
+      await resetToRemote.mutateAsync({
+        repo_id: repoId,
+        confirm_discard: true,
+      });
+    } catch {
+      // Error already handled by the onError callback.
+    }
+  };
+
   const handleCancel = () => {
     modal.resolve('canceled');
     modal.hide();
   };
 
-  const isProcessing = pullAndPush.isPending;
+  const isProcessing = pullAndPush.isPending || resetToRemote.isPending;
 
   return (
     <Dialog open={modal.visible} onOpenChange={handleCancel}>
@@ -124,6 +162,17 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
             {t('tasks:git.pullFirstDialog.forceInstead')}
           </Button>
           <div className="flex gap-2">
+            {!isTarget && (
+              <Button
+                variant="outline"
+                type="button"
+                onClick={handleResetToRemote}
+                disabled={isProcessing}
+                className="text-destructive hover:text-destructive"
+              >
+                {t('tasks:git.pullFirstDialog.resetToRemote')}
+              </Button>
+            )}
             <Button
               variant="outline"
               type="button"

@@ -453,6 +453,8 @@ export type PushWorkspaceRequest = { repo_id: string, };
 
 export type PullWorkspaceRequest = { repo_id: string, };
 
+export type ResetWorkspaceToRemoteRequest = { repo_id: string, confirm_discard: boolean, };
+
 export type PullWorkspaceResponse = { "type": "up_to_date" } | { "type": "fast_forwarded", commits: number, } | { "type": "diverged", ahead: number, behind: number, };
 
 export type UpdateFromBaseStrategy = "merge" | "rebase";

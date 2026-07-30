@@ -86,6 +86,7 @@ import {
   PullTargetBranchRequest,
   TargetBranchRemoteStatus,
   PullWorkspaceRequest,
+  ResetWorkspaceToRemoteRequest,
   PullWorkspaceResponse,
   UpdateFromBaseRequest,
   UpdateTargetBranchFromBaseRequest,
@@ -851,6 +852,20 @@ export const workspacesApi = {
       }
     );
     return handleApiResponseAsResult<void, GitOperationError>(response);
+  },
+
+  resetToRemote: async (
+    workspaceId: string,
+    data: ResetWorkspaceToRemoteRequest
+  ): Promise<void> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/reset-to-remote`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<void>(response);
   },
 
   /**

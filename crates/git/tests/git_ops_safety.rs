@@ -478,6 +478,103 @@ fn merge_remote_into_workspace_branch_reports_conflicts_without_losing_commits()
 }
 
 #[test]
+fn reset_workspace_branch_to_remote_discards_local_state_but_preserves_untracked_files() {
+    let temp_dir = TempDir::new().unwrap();
+    let remote_path = temp_dir.path().join("remote.git");
+    Repository::init_bare(&remote_path).expect("init bare remote");
+    let remote_url = remote_path.to_str().expect("remote path str");
+
+    let seed_path = temp_dir.path().join("seed");
+    let service = GitService::new();
+    service
+        .initialize_repo_with_main_branch(&seed_path)
+        .expect("init seed repo");
+    let seed_repo = Repository::open(&seed_path).expect("open seed repo");
+    configure_user(&seed_repo);
+    write_file(&seed_path, "shared.txt", "initial\n");
+    commit_all(&seed_repo, "initial commit");
+    seed_repo.remote("origin", remote_url).expect("add remote");
+    push_ref(&seed_repo, "refs/heads/main", "refs/heads/main");
+    Repository::open_bare(&remote_path)
+        .expect("open bare remote")
+        .set_head("refs/heads/main")
+        .expect("set remote HEAD");
+
+    let local_path = temp_dir.path().join("local");
+    let local_repo = Repository::clone(remote_url, &local_path).expect("clone local");
+    configure_user(&local_repo);
+    write_file(&local_path, "shared.txt", "local commit\n");
+    commit_all(&local_repo, "local-only commit");
+    write_file(&local_path, "shared.txt", "uncommitted local change\n");
+    write_file(&local_path, "untracked.txt", "keep me\n");
+
+    let updater_path = temp_dir.path().join("updater");
+    let updater_repo = Repository::clone(remote_url, &updater_path).expect("clone updater");
+    configure_user(&updater_repo);
+    write_file(&updater_path, "shared.txt", "authoritative remote\n");
+    commit_all(&updater_repo, "remote replacement");
+    let remote_oid = updater_repo.head().unwrap().target().unwrap();
+    push_ref(&updater_repo, "refs/heads/main", "refs/heads/main");
+
+    let reset_oid = service
+        .reset_workspace_branch_to_remote(&local_path, "main")
+        .expect("reset to authoritative remote");
+
+    let reset_repo = Repository::open(&local_path).unwrap();
+    assert_eq!(reset_oid, remote_oid.to_string());
+    assert_eq!(reset_repo.head().unwrap().target().unwrap(), remote_oid);
+    assert_eq!(
+        std::fs::read_to_string(local_path.join("shared.txt")).unwrap(),
+        "authoritative remote\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(local_path.join("untracked.txt")).unwrap(),
+        "keep me\n",
+        "untracked files must not be deleted"
+    );
+}
+
+#[test]
+fn reset_workspace_branch_to_remote_refuses_in_progress_merge() {
+    let temp_dir = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_direct_conflict_repo(&temp_dir);
+    let service = GitService::new();
+
+    service
+        .merge_base_into_workspace(&repo_path, &worktree_path, "feature", "main")
+        .expect_err("merge must stop on conflicts");
+    let head_before = Repository::open(&worktree_path)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap();
+
+    let err = service
+        .reset_workspace_branch_to_remote(&worktree_path, "feature")
+        .expect_err("reset must not discard an in-progress merge");
+
+    assert!(
+        err.to_string()
+            .contains("Abort the in-progress merge or rebase"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        Repository::open(&worktree_path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap(),
+        head_before
+    );
+    assert!(
+        GitCli::new().is_merge_in_progress(&worktree_path).unwrap(),
+        "the user's conflict state must remain intact"
+    );
+}
+
+#[test]
 fn merge_remote_into_branch_checkout_aborts_hidden_target_conflicts() {
     let temp_dir = TempDir::new().unwrap();
     let remote_path = temp_dir.path().join("remote.git");

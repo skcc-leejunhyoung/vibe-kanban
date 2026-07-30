@@ -1438,6 +1438,66 @@ impl GitService {
         })
     }
 
+    /// Discard the checked-out work branch's local state and make it exactly
+    /// match its latest remote-tracking branch.
+    ///
+    /// This intentionally drops local commits and tracked-file changes, so
+    /// callers must obtain explicit confirmation before invoking it. Untracked
+    /// files are preserved. An in-progress merge or rebase must be aborted
+    /// separately so this operation never silently destroys conflict work.
+    pub fn reset_workspace_branch_to_remote(
+        &self,
+        worktree_path: &Path,
+        work_branch: &str,
+    ) -> Result<String, GitServiceError> {
+        let repo = self.open_repo(worktree_path)?;
+        let current_branch = self.get_current_branch(worktree_path)?;
+        if current_branch != work_branch {
+            return Err(GitServiceError::InvalidRepository(format!(
+                "Cannot reset work branch '{work_branch}' because '{current_branch}' is checked out"
+            )));
+        }
+
+        let git = GitCli::new();
+        if git.is_rebase_in_progress(worktree_path).unwrap_or(false)
+            || git.is_merge_in_progress(worktree_path).unwrap_or(false)
+        {
+            return Err(GitServiceError::InvalidRepository(
+                "Abort the in-progress merge or rebase before resetting to the remote branch"
+                    .to_string(),
+            ));
+        }
+
+        let remote = self.resolve_remote_for_branch(worktree_path, work_branch)?;
+        let remote_tracking = format!("{}/{work_branch}", remote.name);
+        let remote_refname = format!("refs/remotes/{}/{work_branch}", remote.name);
+        let refspec = format!(
+            "+refs/heads/{work_branch}:refs/remotes/{}/{work_branch}",
+            remote.name
+        );
+        git.fetch_with_refspec(repo.path(), &remote.url, &refspec)
+            .map_err(|e| {
+                GitServiceError::InvalidRepository(format!(
+                    "Failed to fetch '{work_branch}' from '{}': {e}",
+                    remote.name
+                ))
+            })?;
+
+        let remote_head = repo
+            .find_reference(&remote_refname)?
+            .peel_to_commit()?
+            .id()
+            .to_string();
+        git.git(worktree_path, ["reset", "--hard", &remote_head])
+            .map_err(|e| {
+                GitServiceError::InvalidRepository(format!(
+                    "Failed to reset '{work_branch}' to '{remote_tracking}': {e}"
+                ))
+            })?;
+        let _ = git.git(worktree_path, ["sparse-checkout", "reapply"]);
+        Ok(remote_head)
+    }
+
     /// Integrate the work branch's own diverged remote into the local branch by
     /// merging the remote-tracking ref into the checked-out branch (the
     /// equivalent of `git pull` with the default merge strategy). This is the
