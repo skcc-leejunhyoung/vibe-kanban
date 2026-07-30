@@ -4,6 +4,7 @@
 //! the REST client does not cover well.
 
 use std::{
+    collections::HashMap,
     ffi::{OsStr, OsString},
     io::Write,
     path::Path,
@@ -280,6 +281,54 @@ struct GhSearchPrResponse {
     closed_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Deserialize)]
+struct GhPullRequestCommentCountsResponse {
+    data: GhPullRequestCommentCountsData,
+}
+
+#[derive(Deserialize)]
+struct GhPullRequestCommentCountsData {
+    repository: GhPullRequestCommentCountsRepository,
+}
+
+#[derive(Deserialize)]
+struct GhPullRequestCommentCountsRepository {
+    #[serde(flatten)]
+    pull_requests: HashMap<String, Option<GhPullRequestCommentCounts>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhPullRequestCommentCounts {
+    comments: GhTotalCount,
+    review_threads: GhReviewThreadCountConnection,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhTotalCount {
+    total_count: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhReviewThreadCountConnection {
+    #[serde(default)]
+    nodes: Vec<GhReviewThreadCommentCount>,
+    page_info: GhPageInfo,
+}
+
+#[derive(Deserialize)]
+struct GhReviewThreadCommentCount {
+    comments: GhTotalCount,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhPageInfo {
+    has_next_page: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum GhCliError {
     #[error("GitHub CLI (`gh`) executable not found or not runnable")]
@@ -470,6 +519,17 @@ impl GhCli {
             ))
         })?;
 
+        let comment_counts = self
+            .fetch_pull_request_comment_counts(
+                repository,
+                hostname,
+                &prs.iter().map(|pr| pr.number).collect::<Vec<_>>(),
+            )
+            .unwrap_or_else(|error| {
+                tracing::warn!("Failed to include review comments in pull request counts: {error}");
+                HashMap::new()
+            });
+
         Ok(prs
             .into_iter()
             .map(|pr| PullRequestSummary {
@@ -488,12 +548,48 @@ impl GhCli {
                 labels: pr.labels.into_iter().map(|label| label.name).collect(),
                 repository: pr.repository.name_with_owner,
                 is_draft: pr.is_draft,
-                comments_count: pr.comments_count,
+                comments_count: comment_counts
+                    .get(&pr.number)
+                    .copied()
+                    .unwrap_or(pr.comments_count),
                 created_at: pr.created_at,
                 updated_at: pr.updated_at,
                 closed_at: pr.closed_at,
             })
             .collect())
+    }
+
+    fn fetch_pull_request_comment_counts(
+        &self,
+        repository: &str,
+        hostname: Option<&str>,
+        pull_request_numbers: &[i64],
+    ) -> Result<HashMap<i64, i64>, GhCliError> {
+        let (owner, name) = repository.split_once('/').ok_or_else(|| {
+            GhCliError::UnexpectedOutput(format!(
+                "Invalid GitHub repository name for comment count query: {repository}"
+            ))
+        })?;
+        let owner = serde_json::to_string(owner).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!("Failed to encode repository owner: {err}"))
+        })?;
+        let name = serde_json::to_string(name).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!("Failed to encode repository name: {err}"))
+        })?;
+        let mut result = HashMap::new();
+
+        // Keep each GraphQL request bounded while avoiding one REST request per PR.
+        for batch in pull_request_numbers.chunks(50) {
+            let query = pull_request_comment_counts_query(&owner, &name, batch);
+            let raw = self.run_for_host(
+                ["api", "graphql", "-f", &format!("query={query}")],
+                None,
+                hostname,
+            )?;
+            result.extend(parse_pull_request_comment_counts(&raw, batch)?);
+        }
+
+        Ok(result)
     }
 
     /// List pull requests for a branch (includes closed/merged).
@@ -696,6 +792,59 @@ impl GhCli {
     }
 }
 
+fn pull_request_comment_counts_query(owner: &str, name: &str, numbers: &[i64]) -> String {
+    let pull_requests = numbers
+        .iter()
+        .map(|number| {
+            format!(
+                "pr_{number}: pullRequest(number: {number}) {{ \
+                    comments {{ totalCount }} \
+                    reviewThreads(first: 100) {{ \
+                        nodes {{ comments {{ totalCount }} }} \
+                        pageInfo {{ hasNextPage }} \
+                    }} \
+                }}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("query {{ repository(owner: {owner}, name: {name}) {{ {pull_requests} }} }}")
+}
+
+fn parse_pull_request_comment_counts(
+    raw: &str,
+    numbers: &[i64],
+) -> Result<HashMap<i64, i64>, GhCliError> {
+    let mut response: GhPullRequestCommentCountsResponse = serde_json::from_str(raw.trim())
+        .map_err(|err| {
+            GhCliError::UnexpectedOutput(format!(
+                "Failed to parse pull request comment counts response: {err}; raw: {raw}"
+            ))
+        })?;
+    let mut result = HashMap::new();
+
+    for number in numbers {
+        let alias = format!("pr_{number}");
+        let Some(Some(counts)) = response.data.repository.pull_requests.remove(&alias) else {
+            continue;
+        };
+        if counts.review_threads.page_info.has_next_page {
+            return Err(GhCliError::UnexpectedOutput(format!(
+                "Pull request #{number} has more than 100 review threads"
+            )));
+        }
+        let review_comments = counts
+            .review_threads
+            .nodes
+            .into_iter()
+            .map(|thread| thread.comments.total_count)
+            .sum::<i64>();
+        result.insert(*number, counts.comments.total_count + review_comments);
+    }
+
+    Ok(result)
+}
+
 fn pull_request_search_args(repository: &str, involves_me: bool) -> Vec<String> {
     let mut args = vec![
         "search".to_string(),
@@ -735,6 +884,42 @@ mod tests {
         assert!(!all_args.iter().any(|arg| arg == "--involves"));
         assert!(!all_args.iter().any(|arg| arg == "--author"));
         assert!(all_args.windows(2).any(|args| args == ["--limit", "300"]));
+    }
+
+    #[test]
+    fn pull_request_comment_count_includes_review_thread_comments() {
+        let counts = parse_pull_request_comment_counts(
+            r#"{
+                "data": {
+                    "repository": {
+                        "pr_42": {
+                            "comments": {"totalCount": 6},
+                            "reviewThreads": {
+                                "nodes": [
+                                    {"comments": {"totalCount": 2}},
+                                    {"comments": {"totalCount": 5}}
+                                ],
+                                "pageInfo": {"hasNextPage": false}
+                            }
+                        }
+                    }
+                }
+            }"#,
+            &[42],
+        )
+        .unwrap();
+
+        assert_eq!(counts.get(&42), Some(&13));
+    }
+
+    #[test]
+    fn pull_request_comment_count_query_batches_multiple_prs() {
+        let query = pull_request_comment_counts_query("\"acme\"", "\"widgets\"", &[12, 34]);
+
+        assert!(query.contains("repository(owner: \"acme\", name: \"widgets\")"));
+        assert!(query.contains("pr_12: pullRequest(number: 12)"));
+        assert!(query.contains("pr_34: pullRequest(number: 34)"));
+        assert!(query.contains("reviewThreads(first: 100)"));
     }
 
     #[test]
