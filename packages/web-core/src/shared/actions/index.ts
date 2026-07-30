@@ -107,6 +107,7 @@ import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
 import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
@@ -2070,12 +2071,11 @@ export const Actions = {
           variant: 'success',
         });
       } else if (outcome.type === 'diverged') {
-        await ConfirmDialog.show({
-          title: 'Cannot fast-forward',
-          message: `Your branch has diverged from the remote (${outcome.ahead} ahead, ${outcome.behind} behind), so a fast-forward pull is not possible. Use "Update from base" or "Rebase", or reconcile manually.`,
-          confirmText: 'OK',
-          showCancelButton: false,
-          variant: 'info',
+        await ReconcileRemoteBranchDialog.show({
+          workspaceId,
+          repoId,
+          ahead: outcome.ahead,
+          behind: outcome.behind,
         });
       } else {
         await ConfirmDialog.show({
@@ -2261,15 +2261,13 @@ export const Actions = {
       const result = await workspacesApi.push(workspaceId, { repo_id: repoId });
       if (!result.success) {
         if (result.error?.type === 'diverged') {
-          const choice = await PullFirstDialog.show({
+          await ReconcileRemoteBranchDialog.show({
             workspaceId,
             repoId,
             ahead: result.error.ahead,
             behind: result.error.behind,
+            triggeredByPush: true,
           });
-          if (choice === 'force') {
-            await ForcePushDialog.show({ workspaceId, repoId });
-          }
           return;
         }
         if (result.error?.type === 'force_push_required') {

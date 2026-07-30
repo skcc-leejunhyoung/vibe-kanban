@@ -5,6 +5,7 @@ import { queryClient } from '@/shared/lib/queryClient';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
 import i18n from '@/i18n/config';
 
@@ -144,18 +145,17 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
 
           // Diverged → the remote has commits we don't. Lead with the safe
           // pull-first resolution; only fall through to a force push if the user
-          // explicitly asks (a bare force push would discard the remote commits).
+          // Push only directs the user to local reconciliation. It must not
+          // update the remote again after merging or resetting.
           if (result.error?.type === 'diverged') {
             clearStatus('byWorkspace', workspaceId, repoId);
-            const choice = await PullFirstDialog.show({
+            await ReconcileRemoteBranchDialog.show({
               workspaceId,
               repoId,
               ahead: result.error.ahead,
               behind: result.error.behind,
+              triggeredByPush: true,
             });
-            if (choice === 'force') {
-              await ForcePushDialog.show({ workspaceId, repoId });
-            }
             return;
           }
 

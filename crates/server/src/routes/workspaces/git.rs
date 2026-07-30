@@ -303,6 +303,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/push", post(push_workspace_branch))
         .route("/push/force", post(force_push_workspace_branch))
         .route("/pull-and-push", post(pull_and_push_workspace_branch))
+        .route("/merge-remote", post(merge_remote_workspace_branch))
         .route("/reset-to-remote", post(reset_workspace_branch_to_remote))
         .route("/pull", post(pull_workspace_branch_from_remote))
         .route("/update-from-base", post(update_workspace_from_base))
@@ -819,8 +820,68 @@ pub async fn pull_and_push_workspace_branch(
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
+/// Integrate the work branch's own remote into the local worktree without
+/// pushing. This is the Pull-side divergence resolution: it preserves both
+/// histories and leaves any conflicts in the workspace for the existing
+/// conflict-resolution UI.
+#[axum::debug_handler]
+pub async fn merge_remote_workspace_branch(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<PushWorkspaceRequest>,
+) -> Result<ResponseJson<ApiResponse<(), GitOperationError>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+    let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+    let worktree_path = if workspace.in_place {
+        PathBuf::from(&container_ref)
+    } else {
+        Path::new(&container_ref).join(&repo.name)
+    };
+
+    if let Err(e) = deployment
+        .git()
+        .merge_remote_into_workspace_branch(&worktree_path, &workspace.branch)
+    {
+        return match e {
+            GitServiceError::MergeConflicts {
+                message,
+                conflicted_files,
+            } => Ok(ResponseJson(
+                ApiResponse::<(), GitOperationError>::error_with_data(
+                    GitOperationError::MergeConflicts {
+                        message,
+                        op: ConflictOp::Merge,
+                        conflicted_files,
+                        target_branch: workspace.branch.clone(),
+                    },
+                ),
+            )),
+            GitServiceError::RebaseInProgress => Ok(ResponseJson(ApiResponse::<
+                (),
+                GitOperationError,
+            >::error_with_data(
+                GitOperationError::RebaseInProgress,
+            ))),
+            other => Err(ApiError::GitService(other)),
+        };
+    }
+
+    spawn_workspace_stats_sync(&deployment, &workspace, &container_ref);
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
 /// Replace the local work branch with its latest remote state. This is the
-/// destructive counterpart to pull-and-push for cases where a remote force-push
+/// destructive counterpart to merge-remote for cases where a remote force-push
 /// is authoritative and the local commits should be discarded.
 #[axum::debug_handler]
 pub async fn reset_workspace_branch_to_remote(

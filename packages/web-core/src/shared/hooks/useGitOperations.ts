@@ -8,7 +8,7 @@ import { useGitOperationsError } from '@/shared/hooks/GitOperationsContext';
 import { Result } from '@/shared/lib/api';
 import type { GitOperationError, PushWorkspaceRequest } from 'shared/types';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
-import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 
 export function useGitOperations(
   workspaceId: string | undefined,
@@ -75,21 +75,16 @@ export function useGitOperations(
     async (err: unknown, errorData, params?: PushWorkspaceRequest) => {
       // Handle typed push errors
       if (errorData?.type === 'diverged') {
-        // Diverged: lead with the safe pull-first resolution; force push is an
-        // explicit opt-in fallback, never the default (it discards remote work).
+        // Diverged: reconcile the local work branch first. Pushing remains a
+        // separate action so synchronization never updates the remote implicitly.
         if (workspaceId && params?.repo_id) {
-          const choice = await PullFirstDialog.show({
+          await ReconcileRemoteBranchDialog.show({
             workspaceId,
             repoId: params.repo_id,
             ahead: errorData.ahead,
             behind: errorData.behind,
+            triggeredByPush: true,
           });
-          if (choice === 'force') {
-            await ForcePushDialog.show({
-              workspaceId,
-              repoId: params.repo_id,
-            });
-          }
         }
         return;
       }

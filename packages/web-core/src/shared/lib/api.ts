@@ -854,6 +854,20 @@ export const workspacesApi = {
     return handleApiResponseAsResult<void, GitOperationError>(response);
   },
 
+  mergeRemote: async (
+    workspaceId: string,
+    data: PushWorkspaceRequest
+  ): Promise<Result<void, GitOperationError>> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/merge-remote`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponseAsResult<void, GitOperationError>(response);
+  },
+
   resetToRemote: async (
     workspaceId: string,
     data: ResetWorkspaceToRemoteRequest

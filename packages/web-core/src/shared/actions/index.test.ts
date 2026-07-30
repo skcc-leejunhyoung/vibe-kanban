@@ -24,6 +24,7 @@ vi.mock('@/shared/lib/api', () => ({
     runSetupScript: vi.fn(),
     runCleanupScript: vi.fn(),
     runArchiveScript: vi.fn(),
+    pull: vi.fn(),
     push: vi.fn(),
     pushTargetBranch: vi.fn(),
   },
@@ -44,6 +45,9 @@ vi.mock('@vibe/ui/components/ConfirmDialog', () => ({
 }));
 vi.mock('@/shared/dialogs/command-bar/PullFirstDialog', () => ({
   PullFirstDialog: { show: vi.fn() },
+}));
+vi.mock('@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog', () => ({
+  ReconcileRemoteBranchDialog: { show: vi.fn() },
 }));
 vi.mock('@/shared/dialogs/command-bar/ForcePushDialog', () => ({
   ForcePushDialog: { show: vi.fn() },
@@ -69,6 +73,7 @@ import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
@@ -88,6 +93,7 @@ const showConfirm = vi.mocked(ConfirmDialog.show);
 const push = vi.mocked(workspacesApi.push);
 const pushTargetBranch = vi.mocked(workspacesApi.pushTargetBranch);
 const showPullFirst = vi.mocked(PullFirstDialog.show);
+const showReconcileRemote = vi.mocked(ReconcileRemoteBranchDialog.show);
 const showForcePush = vi.mocked(ForcePushDialog.show);
 const openPrUrl = vi.mocked(openExternalUrl);
 const reservePrWindow = vi.mocked(reserveExternalWindow);
@@ -526,19 +532,21 @@ describe('diverged push recovery', () => {
     error: { type: 'diverged', ahead: 2, behind: 3 },
   } as never;
 
-  it('routes command-bar work-branch pushes through pull-first', async () => {
+  it('routes command-bar work-branch pushes to local reconciliation without pushing again', async () => {
     push.mockResolvedValue(diverged);
-    showPullFirst.mockResolvedValue('canceled');
+    showReconcileRemote.mockResolvedValue('canceled');
     const { ctx } = makeCtx({ id: 'ws1' });
 
     await Actions.GitPush.execute(ctx, 'ws1', 'repo1');
 
-    expect(showPullFirst).toHaveBeenCalledWith({
+    expect(showReconcileRemote).toHaveBeenCalledWith({
       workspaceId: 'ws1',
       repoId: 'repo1',
       ahead: 2,
       behind: 3,
+      triggeredByPush: true,
     });
+    expect(push).toHaveBeenCalledTimes(1);
     expect(showForcePush).not.toHaveBeenCalled();
   });
 
@@ -564,6 +572,28 @@ describe('diverged push recovery', () => {
       expect.objectContaining({ variant: 'destructive' })
     );
     expect(pushTargetBranch).toHaveBeenLastCalledWith('ws1', 'repo1', true);
+  });
+});
+
+describe('diverged pull recovery', () => {
+  it('opens local reconciliation from Pull instead of suggesting a target rebase', async () => {
+    vi.mocked(workspacesApi.pull).mockResolvedValue({
+      type: 'diverged',
+      ahead: 2,
+      behind: 3,
+    });
+    showReconcileRemote.mockResolvedValue('canceled');
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitPull.execute(ctx, 'ws1', 'repo1');
+
+    expect(showReconcileRemote).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      repoId: 'repo1',
+      ahead: 2,
+      behind: 3,
+    });
+    expect(showPullFirst).not.toHaveBeenCalled();
   });
 });
 
