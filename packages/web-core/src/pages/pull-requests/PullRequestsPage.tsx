@@ -12,6 +12,7 @@ import {
 } from '@phosphor-icons/react';
 import { repoApi } from '@/shared/lib/api';
 import { cn } from '@/shared/lib/utils';
+import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { PullRequestDetailsPanel } from './PullRequestDetailsPanel';
 import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
@@ -82,6 +83,7 @@ function activeFilterCount(filters: PullRequestFilterState): number {
 }
 
 export function PullRequestsPage() {
+  const isMobile = useIsMobile();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );
@@ -468,41 +470,59 @@ export function PullRequestsPage() {
     </main>
   );
 
+  const detailsContent = selectedPullRequest ? (
+    <PullRequestDetailsPanel
+      prUrl={selectedPullRequest.url}
+      prNumber={Number(selectedPullRequest.number)}
+      onClose={closeDetails}
+    />
+  ) : null;
+
   return (
     <>
-      <Group
-        orientation="horizontal"
-        className="h-full min-w-0 flex-1"
-        defaultLayout={{ 'pull-requests-list': 65, 'pull-request-detail': 35 }}
-      >
-        <Panel
-          id="pull-requests-list"
-          minSize="20%"
-          className="h-full min-w-0 overflow-hidden bg-primary"
+      {isMobile ? (
+        <div
+          className={cn(
+            'h-full min-h-0 w-full overflow-hidden',
+            selectedPullRequest ? 'bg-secondary' : 'bg-primary'
+          )}
         >
-          {listContent}
-        </Panel>
-        {selectedPullRequest && (
-          <Separator
-            id="pull-requests-separator"
-            className="w-1 cursor-col-resize bg-panel outline-none transition-colors hover:bg-brand/50"
-          />
-        )}
-        {selectedPullRequest && (
+          {detailsContent ?? listContent}
+        </div>
+      ) : (
+        <Group
+          orientation="horizontal"
+          className="h-full min-w-0 flex-1"
+          defaultLayout={{
+            'pull-requests-list': 65,
+            'pull-request-detail': 35,
+          }}
+        >
           <Panel
-            id="pull-request-detail"
-            minSize="400px"
-            maxSize="800px"
-            className="h-full min-w-0 overflow-hidden bg-secondary"
+            id="pull-requests-list"
+            minSize="20%"
+            className="h-full min-w-0 overflow-hidden bg-primary"
           >
-            <PullRequestDetailsPanel
-              prUrl={selectedPullRequest.url}
-              prNumber={Number(selectedPullRequest.number)}
-              onClose={closeDetails}
-            />
+            {listContent}
           </Panel>
-        )}
-      </Group>
+          {selectedPullRequest && (
+            <Separator
+              id="pull-requests-separator"
+              className="w-1 cursor-col-resize bg-panel outline-none transition-colors hover:bg-brand/50"
+            />
+          )}
+          {selectedPullRequest && (
+            <Panel
+              id="pull-request-detail"
+              minSize="400px"
+              maxSize="800px"
+              className="h-full min-w-0 overflow-hidden bg-secondary"
+            >
+              {detailsContent}
+            </Panel>
+          )}
+        </Group>
+      )}
 
       <PullRequestFiltersDialog
         open={filtersOpen}
