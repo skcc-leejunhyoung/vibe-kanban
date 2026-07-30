@@ -478,7 +478,7 @@ fn merge_remote_into_workspace_branch_reports_conflicts_without_losing_commits()
 }
 
 #[test]
-fn reset_workspace_branch_to_remote_discards_local_state_but_preserves_untracked_files() {
+fn reset_workspace_branch_to_remote_preserves_nonconflicting_untracked_files() {
     let temp_dir = TempDir::new().unwrap();
     let remote_path = temp_dir.path().join("remote.git");
     Repository::init_bare(&remote_path).expect("init bare remote");
@@ -530,7 +530,7 @@ fn reset_workspace_branch_to_remote_discards_local_state_but_preserves_untracked
     assert_eq!(
         std::fs::read_to_string(local_path.join("untracked.txt")).unwrap(),
         "keep me\n",
-        "untracked files must not be deleted"
+        "nonconflicting untracked files must not be deleted"
     );
 }
 

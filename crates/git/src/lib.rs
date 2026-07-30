@@ -1443,8 +1443,10 @@ impl GitService {
     ///
     /// This intentionally drops local commits and tracked-file changes, so
     /// callers must obtain explicit confirmation before invoking it. Untracked
-    /// files are preserved. An in-progress merge or rebase must be aborted
-    /// separately so this operation never silently destroys conflict work.
+    /// files are normally preserved, but Git may overwrite or remove one when
+    /// the remote commit tracks the same path. An in-progress merge or rebase
+    /// must be aborted separately so this operation never silently destroys
+    /// conflict work.
     pub fn reset_workspace_branch_to_remote(
         &self,
         worktree_path: &Path,

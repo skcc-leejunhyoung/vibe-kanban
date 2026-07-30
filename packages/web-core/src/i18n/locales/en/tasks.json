@@ -239,7 +239,7 @@
       "forceInstead": "Force push instead",
       "resetToRemote": "Replace local with remote",
       "resetConfirmTitle": "Discard local work?",
-      "resetConfirmMessage": "Reset the local work branch to the remote branch. This deletes {{ahead}} local-only commit(s) and uncommitted changes to tracked files. This may be difficult to undo.",
+      "resetConfirmMessage": "Reset the local work branch to the remote branch. This deletes {{ahead}} local-only commit(s) and uncommitted changes to tracked files. Untracked files may also be deleted or overwritten when the remote commit tracks the same path. This may be difficult to undo.",
       "resetError": "Failed to restore the local branch from the remote",
       "error": "Failed to pull and push"
     },
