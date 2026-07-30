@@ -1,4 +1,4 @@
-use api_types::UpsertPullRequestRequest;
+use api_types::{CreateWorkspaceRequest, UpsertPullRequestRequest};
 use db::models::workspace::Workspace;
 use git::GitService;
 use sqlx::SqlitePool;
@@ -185,38 +185,125 @@ pub async fn sync_all_linked_workspaces(
     };
 
     for workspace in &workspaces {
-        match client.workspace_exists(workspace.id).await {
-            Ok(true) => {}
-            Ok(false) => {
-                debug!(
-                    "Workspace {} not found on remote, skipping post-login sync",
-                    workspace.id
-                );
-                continue;
-            }
-            Err(RemoteClientError::Auth) => {
-                debug!("Post-login workspace sync skipped: not authenticated");
-                return;
-            }
-            Err(e) => {
-                error!(
-                    "Failed to check workspace {} existence on remote during post-login sync: {}",
-                    workspace.id, e
-                );
-                continue;
-            }
-        }
-
-        let stats = diff_stream::compute_diff_stats(pool, git, workspace).await;
-        update_workspace_on_remote(
-            client,
-            workspace.id,
-            workspace.name.clone().map(Some),
-            Some(workspace.archived),
-            stats.as_ref(),
-        )
-        .await;
+        sync_or_create_linked_workspace(client, pool, git, workspace).await;
     }
 
     debug!("Post-login workspace sync completed");
+}
+
+/// Reconciles a single workspace's cloud row, creating it if missing.
+///
+/// The cloud workspace row is normally created by the one-shot "link" call at
+/// creation time. If that link never ran or failed (a swallowed frontend error,
+/// a transient network failure, or a host-registration race), the workspace is
+/// left as a local-only orphan: it carries a `task_id` mirror but has no cloud
+/// row, so it never appears on the issue board/panel — regardless of which host
+/// it runs on. Backfilling from the local `task_id` here lets those orphans
+/// self-heal on the next sync (post-login or after an agent execution).
+pub async fn sync_or_create_linked_workspace(
+    client: &RemoteClient,
+    pool: &SqlitePool,
+    git: &GitService,
+    workspace: &Workspace,
+) {
+    match client.workspace_exists(workspace.id).await {
+        Ok(true) => {
+            let stats = diff_stream::compute_diff_stats(pool, git, workspace).await;
+            update_workspace_on_remote(
+                client,
+                workspace.id,
+                workspace.name.clone().map(Some),
+                Some(workspace.archived),
+                stats.as_ref(),
+            )
+            .await;
+        }
+        Ok(false) => match workspace.task_id {
+            // Only issue-linked workspaces can be backfilled — the cloud row
+            // requires an issue_id (and, via the issue, its project).
+            Some(issue_id) => {
+                create_linked_workspace_on_remote(client, pool, git, workspace, issue_id).await;
+            }
+            None => {
+                debug!(
+                    "Workspace {} not found on remote and not issue-linked, skipping",
+                    workspace.id
+                );
+            }
+        },
+        Err(RemoteClientError::Auth) => {
+            debug!("Workspace {} sync skipped: not authenticated", workspace.id);
+        }
+        Err(e) => {
+            error!(
+                "Failed to check workspace {} existence on remote: {}",
+                workspace.id, e
+            );
+        }
+    }
+}
+
+/// Creates a missing cloud row for a locally issue-linked workspace, resolving
+/// the remote project from the linked issue and stamping the current host.
+async fn create_linked_workspace_on_remote(
+    client: &RemoteClient,
+    pool: &SqlitePool,
+    git: &GitService,
+    workspace: &Workspace,
+    issue_id: Uuid,
+) {
+    // The cloud row is project-scoped; resolve the project from the issue.
+    let issue = match client.get_issue(issue_id).await {
+        Ok(issue) => issue,
+        Err(RemoteClientError::Auth) => return,
+        Err(e) => {
+            error!(
+                "Failed to resolve issue {} while backfilling workspace {}: {}",
+                issue_id, workspace.id, e
+            );
+            return;
+        }
+    };
+
+    let host_id = match client.current_host_id().await {
+        Ok(host_id) => host_id,
+        Err(e) => {
+            debug!(
+                "Skipping workspace {} backfill; this host is not registered: {}",
+                workspace.id, e
+            );
+            return;
+        }
+    };
+
+    let stats = diff_stream::compute_diff_stats(pool, git, workspace).await;
+    match client
+        .create_workspace(CreateWorkspaceRequest {
+            project_id: issue.project_id,
+            host_id,
+            local_workspace_id: workspace.id,
+            issue_id,
+            name: workspace.name.clone(),
+            archived: Some(workspace.archived),
+            files_changed: stats.as_ref().map(|s| s.files_changed as i32),
+            lines_added: stats.as_ref().map(|s| s.lines_added as i32),
+            lines_removed: stats.as_ref().map(|s| s.lines_removed as i32),
+        })
+        .await
+    {
+        Ok(_) => {
+            debug!(
+                "Backfilled missing remote workspace row for {} (issue {})",
+                workspace.id, issue_id
+            );
+        }
+        // A concurrent link may have created the row first (local_workspace_id
+        // is unique) — that's benign, the row exists either way.
+        Err(e) => {
+            error!(
+                "Failed to backfill remote workspace row for {}: {}",
+                workspace.id, e
+            );
+        }
+    }
 }

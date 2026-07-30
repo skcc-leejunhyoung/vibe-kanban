@@ -204,7 +204,7 @@ impl RemoteClient {
         })
     }
 
-    async fn current_host_id(&self) -> Result<Uuid, RemoteClientError> {
+    pub async fn current_host_id(&self) -> Result<Uuid, RemoteClientError> {
         // Host registrations and authenticated accounts can change while the
         // local backend stays alive. Resolve against the current account on
         // every host-scoped operation instead of retaining a stale UUID.

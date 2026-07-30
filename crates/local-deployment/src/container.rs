@@ -910,34 +910,35 @@ impl LocalContainerService {
                     }
                 }
 
-                // Sync workspace to remote after CodingAgent execution
+                // Sync workspace to remote after CodingAgent execution. This
+                // also backfills the cloud row if the one-shot link at creation
+                // never succeeded, so issue-linked workspaces self-heal instead
+                // of staying invisible on the issue board.
                 if matches!(
                     &ctx.execution_process.run_reason,
                     ExecutionProcessRunReason::CodingAgent
                 ) && let Some(client) = &container.remote_client
                 {
-                    let stats = diff_stream::compute_diff_stats(
-                        &container.db.pool,
-                        &container.git,
-                        &ctx.workspace,
-                    )
-                    .await;
-                    let workspace_name =
-                        Workspace::find_by_id_with_status(&container.db.pool, ctx.workspace.id)
-                            .await
-                            .ok()
-                            .flatten()
-                            .and_then(|ws| ws.workspace.name);
                     let client = client.clone();
+                    let pool = container.db.pool.clone();
+                    let git = container.git.clone();
                     let workspace_id = ctx.workspace.id;
-                    let archived = ctx.workspace.archived;
                     tokio::spawn(async move {
-                        remote_sync::sync_workspace_to_remote(
-                            &client,
-                            workspace_id,
-                            workspace_name.map(Some),
-                            Some(archived),
-                            stats.as_ref(),
+                        // Re-read for the current name/archived/task_id.
+                        let workspace = match Workspace::find_by_id(&pool, workspace_id).await {
+                            Ok(Some(workspace)) => workspace,
+                            Ok(None) => return,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to load workspace {} for remote sync: {}",
+                                    workspace_id,
+                                    e
+                                );
+                                return;
+                            }
+                        };
+                        remote_sync::sync_or_create_linked_workspace(
+                            &client, &pool, &git, &workspace,
                         )
                         .await;
                     });
