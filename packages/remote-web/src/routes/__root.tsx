@@ -136,7 +136,9 @@ function RootLayout() {
     location.pathname.startsWith("/invitations");
   const destination = resolveRemoteDestinationFromPath(location.pathname);
   const isWorkspaceProviderRoute =
-    isProjectDestination(destination) || isWorkspacesDestination(destination);
+    isProjectDestination(destination) ||
+    isWorkspacesDestination(destination) ||
+    destination?.kind === "pull-requests";
 
   const appShell = (
     <RemoteAppShell>

@@ -35,6 +35,10 @@ export function resolveRemoteDestinationFromPath(
       return { kind: "export" };
     case "/notifications":
       return { kind: "notifications" };
+    case "/hosts/$hostId/pull-requests": {
+      const hostId = getPathParam(routeParams, "hostId");
+      return hostId ? { kind: "pull-requests", hostId } : null;
+    }
     case "/hosts/$hostId/workspaces": {
       const hostId = getPathParam(routeParams, "hostId");
       return hostId ? { kind: "workspaces", hostId } : null;
@@ -170,6 +174,14 @@ function destinationToRemoteTarget(
       return { to: "/export" } as const;
     case "notifications":
       return { to: "/notifications" } as const;
+    case "pull-requests":
+      if (effectiveHostId) {
+        return {
+          to: "/hosts/$hostId/pull-requests",
+          params: { hostId: effectiveHostId },
+        } as const;
+      }
+      throw new Error("A host is required to open pull requests");
     case "project":
       return {
         to: "/projects/$projectId",
@@ -251,6 +263,8 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
+    goToPullRequests: (transition) =>
+      navigateTo({ kind: "pull-requests", hostId }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>
@@ -333,6 +347,11 @@ function createRemoteAppNavigation(): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
+    goToPullRequests: (transition) =>
+      navigateTo(
+        { kind: "pull-requests", hostId: transition?.hostId },
+        transition,
+      ),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>

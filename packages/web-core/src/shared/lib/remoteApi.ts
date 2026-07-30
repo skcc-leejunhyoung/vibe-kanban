@@ -55,7 +55,10 @@ export async function listPullRequestIssueMappings(
     `/v1/pull_request_issues?url=${encodeURIComponent(url)}`
   );
   if (!response.ok) {
-    throw new Error('Failed to load pull request mappings');
+    throw await parseErrorResponse(
+      response,
+      'Failed to load pull request mappings'
+    );
   }
   const body = (await response.json()) as {
     pull_request_issues: PullRequestIssue[];
@@ -68,7 +71,7 @@ export async function getRemoteIssue(issueId: string): Promise<Issue> {
     `/v1/issues/${encodeURIComponent(issueId)}`
   );
   if (!response.ok) {
-    throw new Error('Failed to load mapped issue');
+    throw await parseErrorResponse(response, 'Failed to load mapped issue');
   }
   return (await response.json()) as Issue;
 }

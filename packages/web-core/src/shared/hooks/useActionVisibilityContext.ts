@@ -25,6 +25,7 @@ import type {
   DevServerState,
 } from '@/shared/types/actions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface ActionVisibilityOptions {
   projectId?: string;
@@ -40,6 +41,7 @@ export function useActionVisibilityContext(
   options?: ActionVisibilityOptions
 ): ActionVisibilityContext {
   const appRuntime = useAppRuntime();
+  const currentHostId = useHostId();
   const { workspace, workspaceId, isCreateMode, repos } = useWorkspaceContext();
   // Use workspace-specific panel state (pass undefined when in create mode)
   const panelState = useWorkspacePanelState(
@@ -86,12 +88,11 @@ export function useActionVisibilityContext(
   }, [shouldResolveSelectedIssueParent, projectIssues, effectiveIssueIds]);
 
   // Derive layoutMode from current route instead of persisted state
-  const layoutMode: LayoutMode =
-    location.pathname === '/pull-requests'
-      ? 'pull-requests'
-      : isProjectDestination(destination)
-        ? 'kanban'
-        : 'workspaces';
+  const layoutMode: LayoutMode = location.pathname.endsWith('/pull-requests')
+    ? 'pull-requests'
+    : isProjectDestination(destination)
+      ? 'kanban'
+      : 'workspaces';
   const { config } = useUserSystem();
   const { isStarting, isStopping, runningDevServers } =
     useDevServer(workspaceId);
@@ -138,6 +139,7 @@ export function useActionVisibilityContext(
 
     return {
       appRuntime,
+      currentHostId,
       layoutMode,
       rightMainPanelMode: panelState.rightMainPanelMode,
       isLeftSidebarVisible: panelState.isLeftSidebarVisible,
@@ -169,6 +171,7 @@ export function useActionVisibilityContext(
     };
   }, [
     appRuntime,
+    currentHostId,
     layoutMode,
     panelState.rightMainPanelMode,
     panelState.isLeftSidebarVisible,

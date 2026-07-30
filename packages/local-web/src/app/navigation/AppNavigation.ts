@@ -48,6 +48,8 @@ function resolveLocalDestinationFromPath(path: string): AppDestination | null {
       return { kind: 'export' };
     case '/_app/notifications':
       return { kind: 'notifications' };
+    case '/_app/pull-requests':
+      return { kind: 'pull-requests' };
     case '/_app/hosts/$hostId/workspaces': {
       const hostId = getPathParam(routeParams, 'hostId');
       return hostId ? { kind: 'workspaces', hostId } : null;
@@ -240,6 +242,8 @@ function destinationToLocalTarget(
       return { to: '/export' } as const;
     case 'notifications':
       return { to: '/notifications' } as const;
+    case 'pull-requests':
+      return { to: '/pull-requests' } as const;
     case 'project':
       return {
         to: '/projects/$projectId',

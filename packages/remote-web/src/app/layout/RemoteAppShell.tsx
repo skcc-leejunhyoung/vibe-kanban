@@ -16,6 +16,7 @@ import {
   BellIcon,
   LightningIcon,
   StackIcon,
+  GitPullRequestIcon,
 } from "@phosphor-icons/react";
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
@@ -85,6 +86,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const { isSignedIn, userId } = useAuth();
   const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
   const isProjectRoute = /^\/projects\/[^/]+/.test(location.pathname);
+  const isPullRequestsRoute = location.pathname.endsWith("/pull-requests");
 
   useEffect(() => {
     syncWorkspaceHostUser(isSignedIn ? userId : null);
@@ -92,7 +94,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
 
   useCommandBarShortcut(
     () => CommandBarDialog.show(),
-    isWorkspaceContextRoute || isProjectRoute,
+    isWorkspaceContextRoute || isProjectRoute || isPullRequestsRoute,
   );
   useMarkNotificationsReadOnView();
   const isMobile = useIsMobile();
@@ -174,6 +176,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
       ?.name ?? null;
 
   const isWorkspacesActive = location.pathname.includes("/workspaces");
+  const isPullRequestsActive = location.pathname.endsWith("/pull-requests");
   // Gate the hover preview on the resolved workspaces *destination* rather than
   // a loose pathname match: WorkspacesSidebarContainer reads WorkspaceContext,
   // which the root only mounts on workspace/project destinations. A workspaces
@@ -208,6 +211,31 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     selectWorkspaceHost(ALL_WORKSPACE_HOSTS_ID);
     navigate({ to: "/workspaces" });
   }, [navigate, selectWorkspaceHost]);
+
+  const selectedWorkspaceHostId = useWorkspaceHostSelectionStore(
+    (state) => state.selectedHostId,
+  );
+  const pullRequestsHostId = useMemo(() => {
+    const routeMatch = location.pathname.match(/^\/hosts\/([^/]+)/);
+    if (routeMatch?.[1]) {
+      return decodeURIComponent(routeMatch[1]);
+    }
+    if (selectedWorkspaceHostId !== ALL_WORKSPACE_HOSTS_ID) {
+      return selectedWorkspaceHostId;
+    }
+    return relayHosts.find((host) => host.status === "online")?.id ?? null;
+  }, [location.pathname, relayHosts, selectedWorkspaceHostId]);
+
+  const handlePullRequestsClick = useCallback(() => {
+    if (!pullRequestsHostId) {
+      openRelaySettings();
+      return;
+    }
+    navigate({
+      to: "/hosts/$hostId/pull-requests",
+      params: { hostId: pullRequestsHostId },
+    });
+  }, [navigate, openRelaySettings, pullRequestsHostId]);
 
   const handleProjectClick = useCallback(
     (projectId: string) => {
@@ -319,11 +347,13 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
             onCreateProject={handleCreateProject}
             onWorkspacesClick={handleWorkspacesClick}
             onQuickChatClick={() => void QuickChatDialog.show()}
+            onPullRequestsClick={handlePullRequestsClick}
             showWorkspacesButton
             onProjectClick={handleProjectClick}
             onProjectsDragEnd={() => {}}
             isSavingProjectOrder={true}
             isWorkspacesActive={isWorkspacesActive}
+            isPullRequestsActive={isPullRequestsActive}
             activeProjectId={activeProjectId}
             isSignedIn={isSignedIn}
             isLoadingProjects={isLoadingProjects}
@@ -389,6 +419,18 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
             >
               <LightningIcon className="h-4 w-4" />
               Quick chat
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                handlePullRequestsClick();
+                setIsDrawerOpen(false);
+              }}
+              className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+            >
+              <GitPullRequestIcon className="h-4 w-4" />
+              Pull requests
             </button>
 
             {/* Notifications link */}
@@ -582,17 +624,21 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
         </MobileDrawer>
 
         <div className="flex min-w-0 flex-1 flex-col pb-base">
-          {isMobile && (isWorkspaceContextRoute || isProjectRoute) && (
-            <RemoteNavbarContainer
-              organizationName={selectedOrgName}
-              mobileMode={isMobile}
-              onOpenDrawer={() => setIsDrawerOpen(true)}
-              mobileUserSlot={mobileUserSlot}
-            />
-          )}
-          {!isMobile && (isWorkspaceContextRoute || isProjectRoute) && (
-            <RemoteDesktopNavbar />
-          )}
+          {isMobile &&
+            (isWorkspaceContextRoute ||
+              isProjectRoute ||
+              isPullRequestsRoute) && (
+              <RemoteNavbarContainer
+                organizationName={selectedOrgName}
+                mobileMode={isMobile}
+                onOpenDrawer={() => setIsDrawerOpen(true)}
+                mobileUserSlot={mobileUserSlot}
+              />
+            )}
+          {!isMobile &&
+            (isWorkspaceContextRoute ||
+              isProjectRoute ||
+              isPullRequestsRoute) && <RemoteDesktopNavbar />}
           <div className="relative min-h-0 flex-1 overflow-hidden">
             <WorkspaceSidebarHoverPreview
               enabled={isWorkspaceSidebarPreviewEnabled}

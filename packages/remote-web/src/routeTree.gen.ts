@@ -22,6 +22,7 @@ import { Route as AccountCompleteRouteImport } from './routes/account_.complete'
 import { Route as InvitationsTokenCompleteRouteImport } from './routes/invitations.$token.complete'
 import { Route as InvitationsTokenAcceptRouteImport } from './routes/invitations.$token.accept'
 import { Route as HostsHostIdWorkspacesRouteImport } from './routes/hosts.$hostId.workspaces'
+import { Route as HostsHostIdPullRequestsRouteImport } from './routes/hosts.$hostId.pull-requests'
 import { Route as AccountOrganizationsOrgIdRouteImport } from './routes/account_.organizations.$orgId'
 import { Route as ProjectsProjectIdIssuesIssueIdRouteImport } from './routes/projects.$projectId_.issues.$issueId'
 import { Route as HostsHostIdWorkspacesCreateRouteImport } from './routes/hosts.$hostId.workspaces_.create'
@@ -97,6 +98,11 @@ const HostsHostIdWorkspacesRoute = HostsHostIdWorkspacesRouteImport.update({
   path: '/hosts/$hostId/workspaces',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HostsHostIdPullRequestsRoute = HostsHostIdPullRequestsRouteImport.update({
+  id: '/hosts/$hostId/pull-requests',
+  path: '/hosts/$hostId/pull-requests',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AccountOrganizationsOrgIdRoute =
   AccountOrganizationsOrgIdRouteImport.update({
     id: '/account_/organizations/$orgId',
@@ -162,6 +168,7 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRoute
   '/account/organizations/$orgId': typeof AccountOrganizationsOrgIdRoute
+  '/hosts/$hostId/pull-requests': typeof HostsHostIdPullRequestsRoute
   '/hosts/$hostId/workspaces': typeof HostsHostIdWorkspacesRouteWithChildren
   '/invitations/$token/accept': typeof InvitationsTokenAcceptRoute
   '/invitations/$token/complete': typeof InvitationsTokenCompleteRoute
@@ -185,6 +192,7 @@ export interface FileRoutesByTo {
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRoute
   '/account/organizations/$orgId': typeof AccountOrganizationsOrgIdRoute
+  '/hosts/$hostId/pull-requests': typeof HostsHostIdPullRequestsRoute
   '/hosts/$hostId/workspaces': typeof HostsHostIdWorkspacesRouteWithChildren
   '/invitations/$token/accept': typeof InvitationsTokenAcceptRoute
   '/invitations/$token/complete': typeof InvitationsTokenCompleteRoute
@@ -209,6 +217,7 @@ export interface FileRoutesById {
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/workspace/$workspaceId': typeof WorkspaceWorkspaceIdRoute
   '/account_/organizations/$orgId': typeof AccountOrganizationsOrgIdRoute
+  '/hosts/$hostId/pull-requests': typeof HostsHostIdPullRequestsRoute
   '/hosts/$hostId/workspaces': typeof HostsHostIdWorkspacesRouteWithChildren
   '/invitations/$token/accept': typeof InvitationsTokenAcceptRoute
   '/invitations/$token/complete': typeof InvitationsTokenCompleteRoute
@@ -234,6 +243,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/workspace/$workspaceId'
     | '/account/organizations/$orgId'
+    | '/hosts/$hostId/pull-requests'
     | '/hosts/$hostId/workspaces'
     | '/invitations/$token/accept'
     | '/invitations/$token/complete'
@@ -257,6 +267,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/workspace/$workspaceId'
     | '/account/organizations/$orgId'
+    | '/hosts/$hostId/pull-requests'
     | '/hosts/$hostId/workspaces'
     | '/invitations/$token/accept'
     | '/invitations/$token/complete'
@@ -280,6 +291,7 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/workspace/$workspaceId'
     | '/account_/organizations/$orgId'
+    | '/hosts/$hostId/pull-requests'
     | '/hosts/$hostId/workspaces'
     | '/invitations/$token/accept'
     | '/invitations/$token/complete'
@@ -304,6 +316,7 @@ export interface RootRouteChildren {
   ProjectsProjectIdRoute: typeof ProjectsProjectIdRoute
   WorkspaceWorkspaceIdRoute: typeof WorkspaceWorkspaceIdRoute
   AccountOrganizationsOrgIdRoute: typeof AccountOrganizationsOrgIdRoute
+  HostsHostIdPullRequestsRoute: typeof HostsHostIdPullRequestsRoute
   HostsHostIdWorkspacesRoute: typeof HostsHostIdWorkspacesRouteWithChildren
   InvitationsTokenAcceptRoute: typeof InvitationsTokenAcceptRoute
   InvitationsTokenCompleteRoute: typeof InvitationsTokenCompleteRoute
@@ -408,6 +421,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HostsHostIdWorkspacesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/hosts/$hostId/pull-requests': {
+      id: '/hosts/$hostId/pull-requests'
+      path: '/hosts/$hostId/pull-requests'
+      fullPath: '/hosts/$hostId/pull-requests'
+      preLoaderRoute: typeof HostsHostIdPullRequestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/account_/organizations/$orgId': {
       id: '/account_/organizations/$orgId'
       path: '/account/organizations/$orgId'
@@ -493,6 +513,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsProjectIdRoute: ProjectsProjectIdRoute,
   WorkspaceWorkspaceIdRoute: WorkspaceWorkspaceIdRoute,
   AccountOrganizationsOrgIdRoute: AccountOrganizationsOrgIdRoute,
+  HostsHostIdPullRequestsRoute: HostsHostIdPullRequestsRoute,
   HostsHostIdWorkspacesRoute: HostsHostIdWorkspacesRouteWithChildren,
   InvitationsTokenAcceptRoute: InvitationsTokenAcceptRoute,
   InvitationsTokenCompleteRoute: InvitationsTokenCompleteRoute,

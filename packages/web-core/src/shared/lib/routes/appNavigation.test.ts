@@ -49,6 +49,15 @@ describe('applyNavigationTransition', () => {
     ).toEqual({ kind: 'workspaces', hostId: null });
   });
 
+  it('switches pull request navigation to the selected host', () => {
+    expect(
+      applyNavigationTransition(
+        { kind: 'pull-requests', hostId: 'current-host' },
+        { hostId: 'next-host' }
+      )
+    ).toEqual({ kind: 'pull-requests', hostId: 'next-host' });
+  });
+
   it('does not add a host to destinations that are not host scoped', () => {
     expect(
       applyNavigationTransition(

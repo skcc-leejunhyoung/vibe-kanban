@@ -124,6 +124,7 @@ export interface ActionExecutorContext {
 // Context for evaluating action visibility and state conditions
 export interface ActionVisibilityContext {
   appRuntime: AppRuntime;
+  currentHostId: string | null;
   // Layout state
   layoutMode: LayoutMode;
   rightMainPanelMode:

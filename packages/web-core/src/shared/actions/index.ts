@@ -1119,9 +1119,10 @@ export const Actions = {
     icon: GitPullRequestIcon,
     keywords: ['pull request', 'pr', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
-    isVisible: (ctx) => ctx.appRuntime === 'local',
+    isVisible: (ctx) =>
+      ctx.appRuntime === 'local' || ctx.currentHostId !== null,
     execute: (ctx) => {
-      ctx.appNavigation.goToPullRequests?.();
+      ctx.appNavigation.goToPullRequests();
     },
   } satisfies GlobalActionDefinition,
 
