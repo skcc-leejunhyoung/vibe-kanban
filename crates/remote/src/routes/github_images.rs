@@ -18,6 +18,8 @@ const GITHUB_ATTACHMENT_PATH_PREFIX: &str = "/user-attachments/assets/";
 const MAX_REDIRECTS: usize = 3;
 const MAX_IMAGE_SIZE_BYTES: usize = 20 * 1024 * 1024;
 const GITHUB_USER_AGENT: &str = "VibeKanbanRemote/1.0";
+const GITHUB_USER_API_URL: &str = "https://api.github.com/user";
+const GITHUB_OAUTH_SCOPES_HEADER: &str = "x-oauth-scopes";
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/github/image", get(get_github_image))
@@ -180,7 +182,13 @@ async fn fetch_image(url: &Url, access_token: &str) -> Result<reqwest::Response,
         }
         return match response.status() {
             ReqwestStatusCode::OK => Ok(response),
-            ReqwestStatusCode::NOT_FOUND => Err(GitHubImageError::NotFound),
+            ReqwestStatusCode::NOT_FOUND => {
+                if token_has_private_repository_scope(&client, access_token).await? {
+                    Err(GitHubImageError::NotFound)
+                } else {
+                    Err(GitHubImageError::AccessDenied)
+                }
+            }
             ReqwestStatusCode::UNAUTHORIZED | ReqwestStatusCode::FORBIDDEN => {
                 Err(GitHubImageError::AccessDenied)
             }
@@ -192,6 +200,42 @@ async fn fetch_image(url: &Url, access_token: &str) -> Result<reqwest::Response,
         };
     }
     Err(GitHubImageError::Upstream)
+}
+
+async fn token_has_private_repository_scope(
+    client: &Client,
+    access_token: &str,
+) -> Result<bool, GitHubImageError> {
+    let response = client
+        .get(GITHUB_USER_API_URL)
+        .header(header::ACCEPT, "application/vnd.github+json")
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|error| {
+            warn!(?error, "failed to inspect GitHub OAuth scopes");
+            GitHubImageError::Upstream
+        })?;
+
+    match response.status() {
+        ReqwestStatusCode::OK => Ok(has_private_repository_scope(response.headers())),
+        ReqwestStatusCode::UNAUTHORIZED | ReqwestStatusCode::FORBIDDEN => Ok(false),
+        status => {
+            warn!(%status, "failed to inspect GitHub OAuth scopes");
+            Err(GitHubImageError::Upstream)
+        }
+    }
+}
+
+fn has_private_repository_scope(headers: &HeaderMap) -> bool {
+    headers
+        .get(GITHUB_OAUTH_SCOPES_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|scopes| {
+            scopes
+                .split(',')
+                .any(|scope| scope.trim().eq_ignore_ascii_case("repo"))
+        })
 }
 
 fn validate_initial_url(raw_url: &str) -> Result<Url, GitHubImageError> {
@@ -217,9 +261,13 @@ fn is_allowed_redirect_url(url: &Url) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
     use url::Url;
 
-    use super::{exceeds_image_size, is_allowed_redirect_url, validate_initial_url};
+    use super::{
+        GITHUB_OAUTH_SCOPES_HEADER, exceeds_image_size, has_private_repository_scope,
+        is_allowed_redirect_url, validate_initial_url,
+    };
 
     #[test]
     fn accepts_github_user_attachment_urls() {
@@ -251,5 +299,29 @@ mod tests {
         assert!(!exceeds_image_size(20 * 1024 * 1024 - 1, 1));
         assert!(exceeds_image_size(20 * 1024 * 1024, 1));
         assert!(exceeds_image_size(20 * 1024 * 1024 + 1, 0));
+    }
+
+    #[test]
+    fn detects_private_repository_scope() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            GITHUB_OAUTH_SCOPES_HEADER,
+            HeaderValue::from_static("read:user, user:email, repo"),
+        );
+
+        assert!(has_private_repository_scope(&headers));
+    }
+
+    #[test]
+    fn rejects_missing_or_public_only_repository_scopes() {
+        assert!(!has_private_repository_scope(&HeaderMap::new()));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            GITHUB_OAUTH_SCOPES_HEADER,
+            HeaderValue::from_static("read:user, user:email, public_repo"),
+        );
+
+        assert!(!has_private_repository_scope(&headers));
     }
 }
