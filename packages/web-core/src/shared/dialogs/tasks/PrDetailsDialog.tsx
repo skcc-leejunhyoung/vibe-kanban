@@ -313,8 +313,9 @@ export function PrDetailsContent({
               variant === 'panel' ? 'size-icon-base' : 'size-icon-lg'
             )}
           />
+          <span className="shrink-0 text-low">#{prNumber}</span>
           <span className="min-w-0 flex-1 truncate">
-            {detail?.title || `Pull Request #${prNumber}`}
+            {detail?.title || 'Pull Request'}
           </span>
           {variant === 'panel' && onClose && (
             <button
