@@ -22,6 +22,7 @@ import type { AutomationRule } from '@/shared/lib/automationWorker';
 export interface LinkGithubIssueDialogProps {
   runtime: AppRuntime;
   hostId: string | null;
+  hosts: { id: string; name: string }[];
   issueId: string;
   title: string;
   description: string | null;
@@ -35,19 +36,22 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
   const [url, setUrl] = useState('');
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [ruleId, setRuleId] = useState('');
+  const [selectedHostId, setSelectedHostId] = useState(props.hostId ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const target = useMemo<MachineTarget>(
     () =>
-      props.hostId
+      selectedHostId
         ? {
             kind: 'remote',
-            id: props.hostId,
-            apiHostId: props.hostId,
-            label: props.hostId,
+            id: selectedHostId,
+            apiHostId: selectedHostId,
+            label:
+              props.hosts.find((host) => host.id === selectedHostId)?.name ??
+              selectedHostId,
           }
         : { kind: 'local', id: 'local', apiHostId: null, label: 'Local' },
-    [props.hostId]
+    [props.hosts, selectedHostId]
   );
   const client = useMemo(
     () => createMachineClient(props.runtime, target),
@@ -55,23 +59,45 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
   );
 
   useEffect(() => {
-    if (props.runtime === 'remote' && !props.hostId) {
-      setError('An online host is required to access GitHub issue automation.');
+    if (
+      props.runtime === 'remote' &&
+      selectedHostId &&
+      !props.hosts.some((host) => host.id === selectedHostId)
+    ) {
+      setSelectedHostId('');
+    }
+  }, [props.hosts, props.runtime, selectedHostId]);
+
+  useEffect(() => {
+    if (props.runtime === 'remote' && !selectedHostId) {
+      setRules([]);
+      setRuleId('');
+      setError(null);
       return;
     }
+    let cancelled = false;
+    setRules([]);
+    setRuleId('');
+    setError(null);
     client
       .getAutomationState()
       .then((state) => {
+        if (cancelled) return;
         const syncRules = state.rules.filter(
           (rule) => rule.enabled && rule.kind === 'github_issue_sync'
         );
         setRules(syncRules);
         setRuleId(syncRules[0]?.id ?? '');
       })
-      .catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason))
-      );
-  }, [client, props.hostId, props.runtime]);
+      .catch((reason) => {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, props.runtime, selectedHostId]);
 
   const submit = async () => {
     if (!ruleId || (mode === 'existing' && !url.trim())) return;
@@ -106,6 +132,35 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          {props.runtime === 'remote' && (
+            <div className="space-y-2">
+              <Label htmlFor="github-automation-host">Automation host</Label>
+              <select
+                id="github-automation-host"
+                value={selectedHostId}
+                onChange={(event) => {
+                  setRules([]);
+                  setRuleId('');
+                  setError(null);
+                  setSelectedHostId(event.target.value);
+                }}
+                disabled={busy}
+                className="w-full rounded border border-border bg-secondary px-3 py-2 text-sm"
+              >
+                <option value="">Select an online host</option>
+                {props.hosts.map((host) => (
+                  <option key={host.id} value={host.id}>
+                    {host.name}
+                  </option>
+                ))}
+              </select>
+              {!props.hosts.length && (
+                <p className="text-sm text-muted-foreground">
+                  No online host is available.
+                </p>
+              )}
+            </div>
+          )}
           <div className="flex gap-2">
             <Button
               type="button"
@@ -168,7 +223,12 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
           </Button>
           <Button
             onClick={submit}
-            disabled={busy || !ruleId || (mode === 'existing' && !url.trim())}
+            disabled={
+              busy ||
+              (props.runtime === 'remote' && !selectedHostId) ||
+              !ruleId ||
+              (mode === 'existing' && !url.trim())
+            }
           >
             {busy
               ? 'Working…'

@@ -10,7 +10,12 @@ export function resolveGithubIssueAutomationHostId(
   routeHostId: string | null,
   hosts: GithubIssueAutomationHost[]
 ): string | null {
-  if (routeHostId) return routeHostId;
   if (runtime === 'local') return null;
-  return hosts.find((host) => host.status === 'online')?.id ?? null;
+  if (
+    routeHostId &&
+    hosts.some((host) => host.id === routeHostId && host.status === 'online')
+  ) {
+    return routeHostId;
+  }
+  return null;
 }

@@ -1174,13 +1174,21 @@ export function KanbanIssuePanelContainer({
     await LinkGithubIssueDialog.show({
       runtime,
       hostId: githubIssueAutomationHostId,
+      hosts: availableWorkspaceHosts
+        .filter((host) => host.status === 'online')
+        .map((host) => ({ id: host.id, name: host.name })),
       issueId: selectedIssue.id,
       title: selectedIssue.title,
       description: selectedIssue.description,
       statusId: selectedIssue.status_id,
       updatedAt: selectedIssue.updated_at,
     });
-  }, [githubIssueAutomationHostId, runtime, selectedIssue]);
+  }, [
+    availableWorkspaceHosts,
+    githubIssueAutomationHostId,
+    runtime,
+    selectedIssue,
+  ]);
 
   const handleRemoveGithubIssue = useCallback(
     (linkId: string) => {

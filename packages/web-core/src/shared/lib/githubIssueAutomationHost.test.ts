@@ -10,14 +10,20 @@ describe('GitHub issue automation host resolution', () => {
 
   it('keeps the route host when one is explicitly selected', () => {
     expect(
-      resolveGithubIssueAutomationHostId('remote', 'route-host', hosts)
-    ).toBe('route-host');
+      resolveGithubIssueAutomationHostId('remote', 'online-host', hosts)
+    ).toBe('online-host');
   });
 
-  it('uses the first online host for a remote project route without a host', () => {
-    expect(resolveGithubIssueAutomationHostId('remote', null, hosts)).toBe(
-      'online-host'
-    );
+  it('requires an explicit selection for a remote project route without a host', () => {
+    expect(
+      resolveGithubIssueAutomationHostId('remote', null, hosts)
+    ).toBeNull();
+  });
+
+  it('does not preselect an offline route host', () => {
+    expect(
+      resolveGithubIssueAutomationHostId('remote', 'offline-host', hosts)
+    ).toBeNull();
   });
 
   it('keeps local requests on the current machine', () => {
