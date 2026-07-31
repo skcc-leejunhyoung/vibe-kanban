@@ -86,6 +86,10 @@ import {
 } from '@/shared/lib/openInSplitPane';
 import { RightSidebarSectionOrderEditor } from './RightSidebarSectionOrderEditor';
 import { PullRequestDefaultsSettings } from './PullRequestDefaultsSettings';
+import {
+  type DiffViewMode,
+  useDiffViewStore,
+} from '@/shared/stores/useDiffViewStore';
 
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
@@ -108,6 +112,8 @@ export function GeneralSettingsSection() {
   );
   const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
   const splitPresetStates = useSplitScreenStore((state) => state.presets);
+  const diffViewMode = useDiffViewStore((state) => state.mode);
+  const setDiffViewMode = useDiffViewStore((state) => state.setMode);
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
       ns: 'common',
@@ -466,6 +472,44 @@ export function GeneralSettingsSection() {
             />
           </SettingsField>
         )}
+      </SettingsCard>
+
+      <SettingsCard
+        title={t('settings.general.diff.title', {
+          defaultValue: 'Diff display',
+        })}
+        description={t('settings.general.diff.description', {
+          defaultValue: 'Choose how file changes are displayed.',
+        })}
+      >
+        <SettingsField
+          label={t('settings.general.diff.layout.label', {
+            defaultValue: 'Layout',
+          })}
+          description={t('settings.general.diff.layout.helper', {
+            defaultValue:
+              'Unified shows changes in one column. Split shows old and new versions side by side.',
+          })}
+        >
+          <SettingsSelect
+            value={diffViewMode}
+            options={[
+              {
+                value: 'unified' as DiffViewMode,
+                label: t('settings.general.diff.layout.unified', {
+                  defaultValue: 'Unified',
+                }),
+              },
+              {
+                value: 'split' as DiffViewMode,
+                label: t('settings.general.diff.layout.split', {
+                  defaultValue: 'Split',
+                }),
+              },
+            ]}
+            onChange={(value: DiffViewMode) => setDiffViewMode(value)}
+          />
+        </SettingsField>
       </SettingsCard>
 
       {/* Editor */}

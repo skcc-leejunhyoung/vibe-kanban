@@ -15,6 +15,14 @@ interface ChangesViewProviderProps {
   children: React.ReactNode;
 }
 
+export function notifyChangesFileSelection(
+  callback: ScrollToFileCallback | null,
+  path: string,
+  lineNumber?: number
+) {
+  callback?.(path, lineNumber);
+}
+
 export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
   const diffPaths = useDiffPaths();
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -61,6 +69,9 @@ export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
     (filePath: string) => {
       setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
       setSelectedFilePath(filePath);
+      setSelectedLineNumber(null);
+      useFileInViewStore.getState().setFileInView(filePath);
+      notifyChangesFileSelection(scrollToFileCallbackRef.current, filePath);
     },
     [setRightMainPanelMode]
   );

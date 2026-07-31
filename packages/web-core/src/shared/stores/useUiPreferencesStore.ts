@@ -539,7 +539,6 @@ type State = {
   setRepoAction: (repoId: string, action: RepoAction) => void;
   setExpanded: (key: string, value: boolean) => void;
   toggleExpanded: (key: string, defaultValue?: boolean) => void;
-  setExpandedAll: (keys: string[], value: boolean) => void;
   setContextBarPosition: (position: ContextBarPosition) => void;
   setPaneSize: (key: string, size: number | string) => void;
   setCollapsedPaths: (key: string, paths: string[]) => void;
@@ -698,13 +697,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       expanded: {
         ...s.expanded,
         [key]: !(s.expanded[key] ?? defaultValue),
-      },
-    })),
-  setExpandedAll: (keys, value) =>
-    set((s) => ({
-      expanded: {
-        ...s.expanded,
-        ...Object.fromEntries(keys.map((k) => [k, value])),
       },
     })),
   setContextBarPosition: (position) => set({ contextBarPosition: position }),
@@ -1130,14 +1122,6 @@ export function usePaneSize(
   const size = useUiPreferencesStore((s) => s.paneSizes[key] ?? defaultSize);
   const setSize = useUiPreferencesStore((s) => s.setPaneSize);
   return [size, (s) => setSize(key, s)];
-}
-
-// Hook for bulk expanded state operations
-export function useExpandedAll() {
-  const expanded = useUiPreferencesStore((s) => s.expanded);
-  const setExpanded = useUiPreferencesStore((s) => s.setExpanded);
-  const setExpandedAll = useUiPreferencesStore((s) => s.setExpandedAll);
-  return { expanded, setExpanded, setExpandedAll };
 }
 
 // Hook for persisted file tree collapsed paths (per workspace)

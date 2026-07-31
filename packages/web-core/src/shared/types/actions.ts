@@ -146,7 +146,6 @@ export interface ActionVisibilityContext {
   // Diff state
   hasDiffs: boolean;
   diffViewMode: DiffViewMode;
-  isAllDiffsExpanded: boolean;
 
   // Dev server state
   editorType: EditorType | null;

@@ -130,7 +130,6 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.ToggleDiffViewMode },
           { type: 'action', action: Actions.ToggleWrapLines },
           { type: 'action', action: Actions.ToggleIgnoreWhitespace },
-          { type: 'action', action: Actions.ToggleAllDiffs },
         ],
       },
     ],

@@ -4,7 +4,7 @@ description: "Review code modifications and provide feedback to agents"
 ---
 
 <Frame>
-<img style={{maxHeight: "400px"}} src="/images/workspaces-changes-panel.png" alt="Changes panel showing file tree and side-by-side diff view with code changes" />
+<img style={{maxHeight: "400px"}} src="/images/workspaces-changes-panel.png" alt="Changes panel showing the changed file list and side-by-side diff view" />
 </Frame>
 
 The changes panel lets you review all code modifications in your workspace and provide feedback to agents.
@@ -28,14 +28,14 @@ Before committing or creating a PR, you should always review what the agent chan
 - Click the changes icon in the context bar
 - Use the command bar: `Cmd/Ctrl + K` → "Toggle Changes Panel"
 
-## File Tree
+## Changed Files
 
-The changes panel displays a hierarchical file tree:
+The changed files section shows every added, modified, renamed, copied, or deleted file:
 
-- **Folders**: Expand/collapse to navigate
-- **Files**: Click to view the diff
-- **Search**: Filter files by name
-- **Expand/Collapse All**: Quick navigation buttons
+- Select a file to display its diff.
+- Use the status letter to identify how the file changed.
+- Check the section header for the total number of changed files.
+- In multi-repository workspaces, use the repository headings to identify where each file belongs.
 
 ## Diff Viewer
 
@@ -47,6 +47,8 @@ View code changes with syntax highlighting:
 | **Deletions** | Red highlighting for removed lines |
 | **Context** | Surrounding unchanged lines for reference |
 | **Line numbers** | Original and new line numbers |
+
+The panel displays one selected file at a time. For a large diff, select **Load diff** to render it. If a file exceeds the inline diff size limit, select **Open in editor** to inspect it.
 
 ## Diff View Modes
 
@@ -67,8 +69,6 @@ Customise the diff display:
 |--------|-------------|
 | **Wrap Lines** | Enable/disable line wrapping for long lines |
 | **Ignore Whitespace** | Show/hide whitespace-only changes |
-| **Expand All** | Expand all collapsed diff sections |
-| **Collapse All** | Collapse all diff sections |
 
 Access these via the command bar's Diff Options page.
 

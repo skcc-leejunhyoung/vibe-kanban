@@ -99,6 +99,16 @@
           "helper": "Choose your preferred language. Browser Default follows your system language."
         }
       },
+      "diff": {
+        "title": "Diff display",
+        "description": "Choose how file changes are displayed.",
+        "layout": {
+          "label": "Layout",
+          "helper": "Unified shows changes in one column. Split shows old and new versions side by side.",
+          "unified": "Unified",
+          "split": "Split"
+        }
+      },
       "themeEditor": {
         "manage": "Edit theme presets…",
         "title": "Theme presets",

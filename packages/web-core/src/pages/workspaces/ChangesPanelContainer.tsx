@@ -1,8 +1,8 @@
 import { memo, useEffect, useCallback, useRef, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  CaretDownIcon,
   CopyIcon,
+  FileIcon,
   GithubLogoIcon,
   PlusIcon,
 } from '@phosphor-icons/react';
@@ -14,14 +14,11 @@ const WorkerUrl = new URL(
 ).href;
 import { sortDiffs } from '@/shared/lib/fileTreeUtils';
 import { useChangesView } from '@/shared/hooks/useChangesView';
-import { useScrollSyncStateMachine } from '@/shared/hooks/useScrollSyncStateMachine';
-import { useFileInViewStore } from '@/shared/stores/useFileInViewStore';
 import {
   useDiffs,
   useShowGitHubComments,
   useGetGitHubCommentsForFile,
 } from '@/shared/stores/useWorkspaceDiffStore';
-import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import {
   useDiffViewMode,
   useWrapTextDiff,
@@ -38,6 +35,7 @@ import {
 import { DiffSide } from '@/shared/types/diff';
 import { isRealMobileDevice } from '@/shared/hooks/useIsMobile';
 import { useOpenInEditor } from '@/shared/hooks/useOpenInEditor';
+import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { OpenInIdeButton } from '@/shared/components/OpenInIdeButton';
 import { CopyButton } from '@/shared/components/CopyButton';
 import { writeClipboardViaBridge } from '@/shared/lib/clipboard';
@@ -48,7 +46,15 @@ import { GitHubCommentRenderer } from './GitHubCommentRenderer';
 import { CommentWidgetLine } from './CommentWidgetLine';
 import { CommitSelector } from './CommitSelector';
 import type { Diff } from 'shared/types';
-import { shouldAutoCollapse } from './diffCollapse';
+import {
+  findDiffByPath,
+  getDiffKey,
+  getDiffPath,
+  getDiffStyle,
+  groupDiffsByRepo,
+  shouldDeferDiffLoad,
+  splitFilePath,
+} from './changesPanelModel';
 
 function workerFactory() {
   return new Worker(WorkerUrl, { type: 'module' });
@@ -63,6 +69,31 @@ const HIGHLIGHTER_OPTIONS = {
 const IS_MOBILE = isRealMobileDevice();
 const NOOP = () => {};
 
+function MiddleEllipsisPath({
+  path,
+  className = '',
+}: {
+  path: string;
+  className?: string;
+}) {
+  const { directory, fileName } = splitFilePath(path);
+
+  return (
+    <span
+      className={`min-w-0 flex-1 flex items-baseline font-mono ${className}`}
+      title={path}
+    >
+      {directory && (
+        <>
+          <span className="shrink min-w-0 truncate text-low">{directory}</span>
+          <span className="shrink-0 text-low">/</span>
+        </>
+      )}
+      <span className="shrink-0 font-medium">{fileName}</span>
+    </span>
+  );
+}
+
 const PIERRE_DIFFS_THEME_CSS = `
   :host {
     position: relative;
@@ -74,12 +105,11 @@ const PIERRE_DIFFS_THEME_CSS = `
     position: sticky;
     top: 0;
     z-index: 10;
-    cursor: pointer;
     padding-inline: 12px;
     border-radius: 4px 4px 0 0;
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.875rem;
-    line-height: 1.25rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
   }
 
   [data-diffs-header]::before {
@@ -98,6 +128,18 @@ const PIERRE_DIFFS_THEME_CSS = `
   }
 
   [data-diffs-header] [data-change-icon] {
+    display: none;
+  }
+
+  [data-header-content] > slot[name='header-prefix'] {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  [data-header-content] [data-prev-name],
+  [data-header-content] [data-rename-icon],
+  [data-header-content] [data-title] {
     display: none;
   }
 
@@ -229,15 +271,17 @@ function getCodeLineForComment(
   return getLineContent(content, lineNumber);
 }
 
-function scrollToLineInDiff(fileEl: HTMLElement, lineNumber: number): void {
+function scrollToLineInDiff(fileEl: HTMLElement, lineNumber: number): boolean {
   const container = fileEl.querySelector('diffs-container');
   const shadowRoot = container?.shadowRoot ?? null;
   if (shadowRoot) {
     const lineEl = shadowRoot.querySelector(`[data-line="${lineNumber}"]`);
     if (lineEl instanceof HTMLElement) {
       lineEl.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+      return true;
     }
   }
+  return false;
 }
 
 const DIFF_CACHE_MAX = 200;
@@ -291,22 +335,15 @@ function getCachedFileDiffMetadata(diff: Diff, ignoreWhitespace: boolean) {
 
 interface DiffFileItemProps {
   diff: Diff;
-  initialExpanded: boolean;
   workspaceId: string;
 }
 
 const DiffFileItem = memo(function DiffFileItem({
   diff,
-  initialExpanded,
   workspaceId,
 }: DiffFileItemProps) {
   const { t } = useTranslation('common');
   const filePath = diff.newPath || diff.oldPath || '';
-  const expandKey = `diff:${filePath}`;
-
-  const expanded = useUiPreferencesStore(
-    (s) => s.expanded[expandKey] ?? initialExpanded
-  );
 
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
@@ -381,24 +418,18 @@ const DiffFileItem = memo(function DiffFileItem({
 
   const options = useMemo(
     () => ({
-      diffStyle:
-        globalMode === 'split' ? ('split' as const) : ('unified' as const),
+      diffStyle: getDiffStyle(globalMode),
       diffIndicators: 'classic' as const,
       themeType: actualTheme,
       overflow: wrapText ? ('wrap' as const) : ('scroll' as const),
       hunkSeparators: 'line-info' as const,
-      collapsed: !expanded,
       enableHoverUtility: true,
       onLineClick: handleLineClick,
       theme: { dark: 'github-dark', light: 'github-light' } as const,
       unsafeCSS: PIERRE_DIFFS_THEME_CSS,
     }),
-    [globalMode, actualTheme, wrapText, expanded, handleLineClick]
+    [globalMode, actualTheme, wrapText, handleLineClick]
   );
-
-  const handleToggle = useCallback(() => {
-    useUiPreferencesStore.getState().toggleExpanded(expandKey, initialExpanded);
-  }, [expandKey, initialExpanded]);
 
   const handleCopyFilePath = useCallback(() => {
     void writeClipboardViaBridge(filePath);
@@ -445,17 +476,11 @@ const DiffFileItem = memo(function DiffFileItem({
             className="size-icon-xs p-0"
           />
         )}
-        <CaretDownIcon
-          className={`size-icon-xs text-low transition-transform cursor-pointer${!expanded ? ' -rotate-90' : ''}`}
-          onClick={handleToggle}
-        />
       </div>
     ),
     [
       handleCopyFilePath,
       handleOpenInIde,
-      expanded,
-      handleToggle,
       githubCommentCount,
       additions,
       deletions,
@@ -468,8 +493,13 @@ const DiffFileItem = memo(function DiffFileItem({
   );
 
   const renderHeaderPrefix = useCallback(
-    () => <FileIcon className="size-icon-base shrink-0" />,
-    [FileIcon]
+    () => (
+      <span className="min-w-0 flex flex-1 items-center gap-2">
+        <FileIcon className="size-icon-base shrink-0" />
+        <MiddleEllipsisPath path={filePath} className="text-xs leading-none" />
+      </span>
+    ),
+    [FileIcon, filePath]
   );
 
   const renderAnnotation = useCallback(
@@ -550,7 +580,11 @@ const DiffFileItem = memo(function DiffFileItem({
   );
 
   return (
-    <div data-diff-path={filePath} className="rounded-sm">
+    <div
+      data-diff-key={getDiffKey(diff)}
+      data-diff-path={filePath}
+      className="rounded-sm"
+    >
       <FileDiff<ExtendedCommentAnnotation>
         fileDiff={fileDiffMetadata}
         options={options}
@@ -558,7 +592,7 @@ const DiffFileItem = memo(function DiffFileItem({
         renderAnnotation={annotations ? renderAnnotation : undefined}
         renderHeaderPrefix={renderHeaderPrefix}
         renderHeaderMetadata={renderHeaderMetadata}
-        renderHoverUtility={expanded ? renderHoverUtility : undefined}
+        renderHoverUtility={renderHoverUtility}
       />
     </div>
   );
@@ -574,178 +608,100 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   workspaceId,
 }: ChangesPanelContainerProps) {
   const diffs = useDiffs();
-  const { registerScrollToFile } = useChangesView();
-  const [processedPaths] = useState(() => new Set<string>());
-
-  const diffItems = useMemo(() => {
-    const sorted = sortDiffs(diffs);
-    return sorted.map((diff) => {
-      const path = diff.newPath || diff.oldPath || '';
-
-      let initialExpanded = true;
-      if (!processedPaths.has(path)) {
-        processedPaths.add(path);
-        initialExpanded = !shouldAutoCollapse(diff);
-      }
-
-      return { diff, initialExpanded };
-    });
-  }, [diffs, processedPaths]);
-
-  const topBandCandidatesRef = useRef<Set<HTMLElement>>(new Set());
-  const latestScrollRequestRef = useRef<number | null>(null);
-
-  const orderedPaths = useMemo(
-    () => diffItems.map(({ diff }) => diff.newPath || diff.oldPath || ''),
-    [diffItems]
+  const { registerScrollToFile, selectedFilePath } = useChangesView();
+  const { repos } = useWorkspaceRepo(workspaceId);
+  const openInEditor = useOpenInEditor(workspaceId);
+  const sortedDiffs = useMemo(() => sortDiffs(diffs), [diffs]);
+  const groupedDiffs = useMemo(
+    () =>
+      groupDiffsByRepo(
+        sortedDiffs,
+        repos.map((repo) => ({
+          id: repo.id,
+          label: repo.display_name || repo.name,
+        }))
+      ),
+    [repos, sortedDiffs]
   );
-
-  const pathToIndex = useMemo(
-    () => new Map(orderedPaths.map((p, i) => [p, i])),
-    [orderedPaths]
+  const showRepoHeaders = repos.length > 1 || groupedDiffs.length > 1;
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [loadedDiffKeys, setLoadedDiffKeys] = useState<Set<string>>(
+    () => new Set()
   );
+  const handledRequestedPathRef = useRef<string | null>(null);
+  const lineScrollRequestRef = useRef(0);
 
-  const indexToPath = useCallback(
-    (index: number) => orderedPaths[index] ?? null,
-    [orderedPaths]
+  const selectedDiff = useMemo(
+    () =>
+      sortedDiffs.find((diff) => getDiffKey(diff) === selectedKey) ??
+      sortedDiffs[0] ??
+      null,
+    [selectedKey, sortedDiffs]
   );
-
-  const handleFileInViewChanged = useCallback((path: string | null) => {
-    useFileInViewStore.getState().setFileInView(path);
-  }, []);
-
-  const {
-    scrollToFile: beginProgrammaticScroll,
-    onRangeChanged: updateFileInViewFromRange,
-    onScrollComplete,
-  } = useScrollSyncStateMachine({
-    pathToIndex,
-    indexToPath,
-    onFileInViewChanged: handleFileInViewChanged,
-  });
-
-  const pathToIndexRef = useRef(pathToIndex);
-  pathToIndexRef.current = pathToIndex;
-  const updateFIVRef = useRef(updateFileInViewFromRange);
-  updateFIVRef.current = updateFileInViewFromRange;
-
-  const hasItems = diffItems.length > 0;
 
   useEffect(() => {
-    if (!hasItems) return;
+    if (!selectedFilePath) return;
+    if (
+      handledRequestedPathRef.current === selectedFilePath &&
+      selectedKey !== null
+    ) {
+      return;
+    }
+    const requestedDiff = findDiffByPath(sortedDiffs, selectedFilePath);
+    if (requestedDiff) {
+      handledRequestedPathRef.current = selectedFilePath;
+      setSelectedKey(getDiffKey(requestedDiff));
+    }
+  }, [selectedFilePath, selectedKey, sortedDiffs]);
 
-    const firstWrapper = document.querySelector('[data-diff-path]');
-    const scrollRoot =
-      firstWrapper instanceof HTMLElement
-        ? firstWrapper.closest('.overflow-auto')
-        : null;
-
-    if (!(scrollRoot instanceof HTMLElement)) return;
-
-    topBandCandidatesRef.current.clear();
-
-    const intersectionObs = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!(entry.target instanceof HTMLElement)) continue;
-          if (!entry.target.isConnected) {
-            topBandCandidatesRef.current.delete(entry.target);
-            continue;
-          }
-          if (entry.isIntersecting) {
-            topBandCandidatesRef.current.add(entry.target);
-          } else {
-            topBandCandidatesRef.current.delete(entry.target);
-          }
-        }
-
-        let topPath: string | null = null;
-        let minDist = Infinity;
-        const rootTop = scrollRoot.getBoundingClientRect().top;
-
-        for (const el of topBandCandidatesRef.current) {
-          if (!el.isConnected) {
-            topBandCandidatesRef.current.delete(el);
-            continue;
-          }
-          const dist = Math.abs(el.getBoundingClientRect().top - rootTop);
-          if (dist < minDist) {
-            minDist = dist;
-            topPath = el.dataset.diffPath ?? null;
-          }
-        }
-
-        if (topPath) {
-          const idx = pathToIndexRef.current.get(topPath);
-          if (idx !== undefined) {
-            updateFIVRef.current({ startIndex: idx, endIndex: idx });
-          }
-        }
-      },
-      {
-        root: scrollRoot,
-        rootMargin: '0px 0px -90% 0px',
-        threshold: 0,
-      }
-    );
-
-    scrollRoot
-      .querySelectorAll<HTMLElement>('[data-diff-path]')
-      .forEach((el) => intersectionObs.observe(el));
-
-    const mutationObs = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (!(node instanceof HTMLElement)) continue;
-          if (node.dataset.diffPath !== undefined) {
-            intersectionObs.observe(node);
-          }
-          node
-            .querySelectorAll<HTMLElement>('[data-diff-path]')
-            .forEach((child) => intersectionObs.observe(child));
-        }
-      }
-    });
-    mutationObs.observe(scrollRoot, { childList: true, subtree: true });
-
-    return () => {
-      topBandCandidatesRef.current.clear();
-      intersectionObs.disconnect();
-      mutationObs.disconnect();
-    };
-  }, [hasItems]);
+  useEffect(() => {
+    const key = selectedDiff ? getDiffKey(selectedDiff) : null;
+    if (key !== selectedKey) setSelectedKey(key);
+  }, [selectedDiff, selectedKey]);
 
   const handleScrollToFile = useCallback(
     (path: string, lineNumber?: number) => {
-      const expandKey = `diff:${path}`;
-      const expandedState = useUiPreferencesStore.getState().expanded;
-      if (!(expandedState[expandKey] ?? false)) {
-        useUiPreferencesStore.getState().setExpanded(expandKey, true);
-      }
+      const requestedDiff = findDiffByPath(sortedDiffs, path);
+      if (!requestedDiff) return;
+      const diffKey = getDiffKey(requestedDiff);
+      handledRequestedPathRef.current = path;
+      setSelectedKey(diffKey);
 
-      const requestId = beginProgrammaticScroll(path, lineNumber);
-      if (requestId === null) return;
-      latestScrollRequestRef.current = requestId;
+      const requestId = ++lineScrollRequestRef.current;
+      if (!lineNumber || requestedDiff.contentOmitted) return;
 
-      requestAnimationFrame(() => {
+      setLoadedDiffKeys((current) => {
+        if (current.has(diffKey)) return current;
+        const next = new Set(current);
+        next.add(diffKey);
+        return next;
+      });
+
+      let attemptsRemaining = 60;
+      const scrollWhenReady = () => {
+        if (lineScrollRequestRef.current !== requestId) return;
         const wrapper = document.querySelector(
-          `[data-diff-path="${CSS.escape(path)}"]`
+          `[data-diff-key="${CSS.escape(diffKey)}"]`
         );
-        if (!(wrapper instanceof HTMLElement)) {
-          onScrollComplete(requestId);
+        if (
+          wrapper instanceof HTMLElement &&
+          scrollToLineInDiff(wrapper, lineNumber)
+        ) {
           return;
         }
-
-        // Non-virtualized: files render in full, so a plain scrollIntoView on
-        // the file wrapper is enough. No @pierre scroll manipulation.
-        wrapper.scrollIntoView({ block: 'start', behavior: 'instant' });
-        if (lineNumber && latestScrollRequestRef.current === requestId) {
-          scrollToLineInDiff(wrapper, lineNumber);
-        }
-        requestAnimationFrame(() => onScrollComplete(requestId));
-      });
+        attemptsRemaining -= 1;
+        if (attemptsRemaining > 0) requestAnimationFrame(scrollWhenReady);
+      };
+      requestAnimationFrame(scrollWhenReady);
     },
-    [beginProgrammaticScroll, onScrollComplete]
+    [sortedDiffs]
+  );
+
+  useEffect(
+    () => () => {
+      lineScrollRequestRef.current += 1;
+    },
+    []
   );
 
   useEffect(() => {
@@ -762,27 +718,142 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     >
       <div className={`flex flex-col h-full min-h-0 bg-secondary ${className}`}>
         <CommitSelector workspaceId={workspaceId} />
-        {/* Non-virtualized render: no <Virtualizer> context, so each FileDiff
-            renders in full (no line windowing → no scrollHeight churn). Native
-            browser scroll anchoring keeps the viewport stable while async
-            syntax highlighting settles — no manual scroll correction. */}
-        <div
-          className="w-full flex-1 min-h-0 overflow-auto px-base pt-1"
-          style={{ overflowAnchor: 'auto' }}
-        >
-          <div className="flex flex-col gap-1">
-            {diffItems.map(({ diff, initialExpanded }) => {
-              const path = diff.newPath || diff.oldPath || '';
-              return (
+        <div className="flex flex-1 min-h-0 max-md:flex-col">
+          <section className="w-64 min-w-48 max-w-[38%] shrink-0 border-r border-border bg-panel flex flex-col min-h-0 max-md:w-full max-md:max-w-none max-md:h-44 max-md:border-r-0 max-md:border-b">
+            <div className="h-9 shrink-0 px-base flex items-center justify-between border-b border-border">
+              <span className="text-xs font-medium text-high">
+                Changed files
+              </span>
+              <span className="text-xs tabular-nums text-low">
+                {sortedDiffs.length}
+              </span>
+            </div>
+            <div className="min-h-0 overflow-y-auto py-1">
+              {groupedDiffs.map((group) => (
+                <div key={group.repoId ?? 'unknown'}>
+                  {showRepoHeaders && (
+                    <div
+                      className="h-7 px-base flex items-center text-[10px] font-semibold uppercase tracking-wide text-low bg-secondary/70"
+                      title={group.label}
+                    >
+                      <span className="truncate">{group.label}</span>
+                    </div>
+                  )}
+                  {group.diffs.map((diff) => {
+                    const path = getDiffPath(diff);
+                    const diffKey = getDiffKey(diff);
+                    const status = {
+                      added: ['A', 'text-success'],
+                      deleted: ['D', 'text-error'],
+                      modified: ['M', 'text-warning'],
+                      renamed: ['R', 'text-brand'],
+                      copied: ['C', 'text-brand'],
+                      permissionChange: ['P', 'text-warning'],
+                    }[diff.change];
+                    const isSelected = diffKey === selectedKey;
+
+                    return (
+                      <button
+                        key={diffKey}
+                        type="button"
+                        title={path}
+                        onClick={() => {
+                          setSelectedKey(diffKey);
+                        }}
+                        className={`w-full h-8 px-base flex items-center gap-2 text-left transition-colors ${
+                          isSelected
+                            ? 'bg-brand/15 text-high'
+                            : 'text-normal hover:bg-secondary'
+                        }`}
+                      >
+                        <FileIcon className="size-icon-xs shrink-0 text-low" />
+                        <MiddleEllipsisPath
+                          path={path}
+                          className="text-[11px] leading-none"
+                        />
+                        <span
+                          className={`w-3 shrink-0 text-center text-[10px] font-semibold ${status[1]}`}
+                        >
+                          {status[0]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+              {sortedDiffs.length === 0 && (
+                <div className="px-base py-4 text-xs text-low">
+                  No changed files
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="flex-1 min-w-0 min-h-0 overflow-auto px-base pt-1">
+            {selectedDiff?.contentOmitted && (
+              <div className="h-full min-h-48 flex flex-col items-center justify-center gap-2 text-center px-6">
+                <p className="text-sm font-medium text-high">
+                  Diff is too large to display
+                </p>
+                <p className="text-xs text-low">
+                  This file exceeds the inline diff size limit. Open it in your
+                  editor to inspect the changes.
+                </p>
+                {!IS_MOBILE && (
+                  <button
+                    type="button"
+                    className="px-base py-half rounded-sm bg-brand text-white text-sm font-medium hover:bg-brand/90"
+                    onClick={() => {
+                      openInEditor({ filePath: getDiffPath(selectedDiff) });
+                    }}
+                  >
+                    Open in editor
+                  </button>
+                )}
+              </div>
+            )}
+            {selectedDiff &&
+              !selectedDiff.contentOmitted &&
+              shouldDeferDiffLoad(selectedDiff) &&
+              !loadedDiffKeys.has(getDiffKey(selectedDiff)) && (
+                <div className="h-full min-h-48 flex flex-col items-center justify-center gap-3 text-center px-6">
+                  <div>
+                    <p className="text-sm font-medium text-high">Large diff</p>
+                    <p className="mt-1 text-xs text-low">
+                      {(
+                        (selectedDiff.additions ?? 0) +
+                        (selectedDiff.deletions ?? 0)
+                      ).toLocaleString()}{' '}
+                      changed lines
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="px-base py-half rounded-sm bg-brand text-white text-sm font-medium hover:bg-brand/90"
+                    onClick={() => {
+                      const diffKey = getDiffKey(selectedDiff);
+                      setLoadedDiffKeys((current) => {
+                        const next = new Set(current);
+                        next.add(diffKey);
+                        return next;
+                      });
+                    }}
+                  >
+                    Load diff
+                  </button>
+                </div>
+              )}
+            {selectedDiff &&
+              !selectedDiff.contentOmitted &&
+              (!shouldDeferDiffLoad(selectedDiff) ||
+                loadedDiffKeys.has(getDiffKey(selectedDiff))) && (
                 <DiffFileItem
-                  key={path}
-                  diff={diff}
-                  initialExpanded={initialExpanded}
+                  key={getDiffKey(selectedDiff)}
+                  diff={selectedDiff}
                   workspaceId={workspaceId}
                 />
-              );
-            })}
-          </div>
+              )}
+          </section>
         </div>
       </div>
     </WorkerPoolContextProvider>

@@ -31,8 +31,6 @@ import {
   TerminalIcon,
   SignInIcon,
   SignOutIcon,
-  CaretDoubleUpIcon,
-  CaretDoubleDownIcon,
   PlayIcon,
   PauseIcon,
   SpinnerIcon,
@@ -70,7 +68,6 @@ import {
   FunnelIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
-import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
 import {
   useUiPreferencesStore,
   RIGHT_MAIN_PANEL_MODES,
@@ -1443,36 +1440,6 @@ export const Actions = {
     },
   },
 
-  // === Diff Actions for Navbar ===
-  ToggleAllDiffs: {
-    id: 'toggle-all-diffs',
-    label: () => {
-      const diffPaths = Array.from(useWorkspaceDiffStore.getState().diffPaths);
-      const { expanded } = useUiPreferencesStore.getState();
-      const keys = diffPaths.map((p) => `diff:${p}`);
-      const isAllExpanded =
-        keys.length > 0 && keys.every((k) => expanded[k] !== false);
-      return isAllExpanded ? 'Collapse All Diffs' : 'Expand All Diffs';
-    },
-    icon: CaretDoubleUpIcon,
-    requiresTarget: ActionTargetType.NONE,
-    isVisible: (ctx) =>
-      ctx.rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.CHANGES &&
-      ctx.layoutMode === 'workspaces',
-    getIcon: (ctx) =>
-      ctx.isAllDiffsExpanded ? CaretDoubleUpIcon : CaretDoubleDownIcon,
-    getTooltip: (ctx) =>
-      ctx.isAllDiffsExpanded ? 'Collapse all diffs' : 'Expand all diffs',
-    execute: () => {
-      const diffPaths = Array.from(useWorkspaceDiffStore.getState().diffPaths);
-      const { expanded, setExpandedAll } = useUiPreferencesStore.getState();
-      const keys = diffPaths.map((p) => `diff:${p}`);
-      const isAllExpanded =
-        keys.length > 0 && keys.every((k) => expanded[k] !== false);
-      setExpandedAll(keys, !isAllExpanded);
-    },
-  },
-
   // === ContextBar Actions ===
   OpenInIDE: {
     id: 'open-in-ide',
@@ -2793,7 +2760,6 @@ export const NavbarActionGroups = {
   right: [
     Actions.ToggleAppBar,
     Actions.ToggleDiffViewMode,
-    Actions.ToggleAllDiffs,
     NavbarDivider,
     Actions.ToggleLeftSidebar,
     Actions.ToggleLeftMainPanel,

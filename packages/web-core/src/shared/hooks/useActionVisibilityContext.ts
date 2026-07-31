@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { useLocation, useParams } from '@tanstack/react-router';
 import {
-  useUiPreferencesStore,
   useWorkspacePanelState,
   type LayoutMode,
 } from '@/shared/stores/useUiPreferencesStore';
@@ -49,7 +48,6 @@ export function useActionVisibilityContext(
   );
   const diffPathsSet = useDiffPaths();
   const diffViewMode = useDiffViewMode();
-  const expanded = useUiPreferencesStore((s) => s.expanded);
 
   // Derive kanban state from URL (URL is single source of truth)
   const { projectId: routeProjectId, issueId: routeIssueId } = useParams({
@@ -102,13 +100,6 @@ export function useActionVisibilityContext(
   const { isSignedIn } = useAuth();
 
   return useMemo(() => {
-    // Compute isAllDiffsExpanded
-    const diffPaths = Array.from(diffPathsSet);
-    const diffKeys = diffPaths.map((p: string) => `diff:${p}`);
-    const isAllDiffsExpanded =
-      diffKeys.length > 0 &&
-      diffKeys.every((k: string) => expanded[k] !== false);
-
     // Compute dev server state
     const devServerState: DevServerState = isStarting
       ? 'starting'
@@ -152,7 +143,6 @@ export function useActionVisibilityContext(
       isInPlace: workspace?.in_place ?? false,
       hasDiffs: diffPathsSet.size > 0,
       diffViewMode,
-      isAllDiffsExpanded,
       editorType: config?.editor?.editor_type ?? null,
       devServerState,
       runningDevServers,
@@ -182,7 +172,6 @@ export function useActionVisibilityContext(
     repos,
     diffPathsSet,
     diffViewMode,
-    expanded,
     config?.editor?.editor_type,
     isStarting,
     isStopping,

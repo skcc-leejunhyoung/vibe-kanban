@@ -11,9 +11,6 @@ type State = {
   setIgnoreWhitespace: (value: boolean) => void;
   wrapText: boolean;
   setWrapText: (value: boolean) => void;
-  // Current diff paths for expand/collapse all functionality
-  diffPaths: string[];
-  setDiffPaths: (paths: string[]) => void;
 };
 
 export const useDiffViewStore = create<State>()(
@@ -27,12 +24,9 @@ export const useDiffViewStore = create<State>()(
       setIgnoreWhitespace: (value) => set({ ignoreWhitespace: value }),
       wrapText: false,
       setWrapText: (value) => set({ wrapText: value }),
-      diffPaths: [],
-      setDiffPaths: (paths) => set({ diffPaths: paths }),
     }),
     {
       name: 'diff-view-preferences',
-      // Don't persist diffPaths as it's transient state
       partialize: (state) => ({
         mode: state.mode,
         ignoreWhitespace: state.ignoreWhitespace,
