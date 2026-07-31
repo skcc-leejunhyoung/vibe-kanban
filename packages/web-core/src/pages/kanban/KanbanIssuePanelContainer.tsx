@@ -66,6 +66,7 @@ import {
   useKanbanIssueComposer,
   useKanbanIssueComposerStore,
 } from '@/shared/stores/useKanbanIssueComposerStore';
+import { resolveGithubIssueAutomationHostId } from '@/shared/lib/githubIssueAutomationHost';
 
 interface KanbanIssuePanelContainerProps {
   issueResolution: 'resolving' | 'ready' | 'missing' | null;
@@ -107,6 +108,15 @@ export function KanbanIssuePanelContainer({
     }
     return workspaceHosts[0]?.id ?? null;
   }, [routeState.hostId, workspaceHosts]);
+  const githubIssueAutomationHostId = useMemo(
+    () =>
+      resolveGithubIssueAutomationHostId(
+        runtime,
+        routeState.hostId,
+        availableWorkspaceHosts
+      ),
+    [availableWorkspaceHosts, routeState.hostId, runtime]
+  );
 
   const { openWorkspaceCreateFromState } = useProjectWorkspaceCreateDraft();
   const { workspaces } = useUserContext();
@@ -1163,14 +1173,14 @@ export function KanbanIssuePanelContainer({
     );
     await LinkGithubIssueDialog.show({
       runtime,
-      hostId: routeState.hostId,
+      hostId: githubIssueAutomationHostId,
       issueId: selectedIssue.id,
       title: selectedIssue.title,
       description: selectedIssue.description,
       statusId: selectedIssue.status_id,
       updatedAt: selectedIssue.updated_at,
     });
-  }, [routeState.hostId, runtime, selectedIssue]);
+  }, [githubIssueAutomationHostId, runtime, selectedIssue]);
 
   const handleRemoveGithubIssue = useCallback(
     (linkId: string) => {

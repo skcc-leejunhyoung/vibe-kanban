@@ -55,6 +55,10 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
   );
 
   useEffect(() => {
+    if (props.runtime === 'remote' && !props.hostId) {
+      setError('An online host is required to access GitHub issue automation.');
+      return;
+    }
     client
       .getAutomationState()
       .then((state) => {
@@ -67,7 +71,7 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
       .catch((reason) =>
         setError(reason instanceof Error ? reason.message : String(reason))
       );
-  }, [client]);
+  }, [client, props.hostId, props.runtime]);
 
   const submit = async () => {
     if (!ruleId || (mode === 'existing' && !url.trim())) return;

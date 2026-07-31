@@ -8,6 +8,16 @@ import {
   recentlyUpdatedPrs,
   reviewActivity,
 } from './github-pr-activity.mjs';
+import {
+  backfillLegacyGithubIssueLinks,
+  ensureGithubIssueForLink,
+  githubIssueMapBackfillEntries,
+  runSingleFlight,
+  retryPendingGithubIssueLinkOperations,
+  shouldSyncGithubProjectStatus,
+  withGithubIssueMarker,
+  withoutGithubIssueMarker,
+} from './github-issue-sync.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -186,6 +196,7 @@ const defaultState = {
     },
   ],
   retryQueue: [],
+  githubIssueLinkOperations: [],
 };
 
 let state = structuredClone(defaultState);
@@ -204,6 +215,7 @@ const pollInFlight = new Map();
 // trigger and poll-driven pass never run the same item (and its side effect)
 // twice.
 const retryInFlight = new Set();
+const githubIssueLinkInFlight = new Map();
 let writeQueue = Promise.resolve();
 
 await bootstrap();
@@ -241,6 +253,7 @@ function ensureDefaults() {
   state.connectors ||= [];
   state.rules ||= [];
   state.retryQueue ||= [];
+  state.githubIssueLinkOperations ||= [];
   for (const connector of defaultState.connectors) {
     if (!state.connectors.some((item) => item.id === connector.id)) {
       state.connectors.push(structuredClone(connector));
@@ -469,7 +482,13 @@ function safeEqual(a, b) {
 // Poller-managed runtime state lives in connector.config. Preserve it for
 // partial config patches, but let full connector saves from the JSON editor be
 // authoritative so operators can reset cursors/dedup maps from the web UI.
-const RUNTIME_CONFIG_KEYS = ['cursorTs', 'seenIds', 'issueMap', 'tagMap'];
+const RUNTIME_CONFIG_KEYS = [
+  'cursorTs',
+  'seenIds',
+  'issueMap',
+  'tagMap',
+  'githubIssueLinkBackfillSkipped',
+];
 
 // Credential fields in connector.config. They are replaced with SECRET_MASK in
 // every API response so tokens never leave the process in plaintext, and a save
@@ -503,6 +522,9 @@ function preserveMaskedSecrets(prevConfig, nextConfig) {
 // Deep copy of state with every credential replaced by the mask, for responses.
 function maskState(current) {
   const copy = cloneData(current);
+  // Incomplete operations can contain issue titles/descriptions. They are
+  // internal recovery state, not automation settings, so never expose them.
+  delete copy.githubIssueLinkOperations;
   for (const connector of copy.connectors || []) {
     const config = connector.config;
     if (!config) continue;
@@ -1230,6 +1252,8 @@ async function pollGithub(connector) {
     commentsProcessed: commentResult.processed,
     commentsSeeded: commentResult.seeded,
     linksSynced: syncResult.synced,
+    linksRecovered: syncResult.recovered,
+    linksBackfilled: syncResult.backfilled,
   };
 }
 
@@ -1382,7 +1406,130 @@ async function githubProjectStatusOption(connector, itemId, fieldId) {
   return value?.optionId || null;
 }
 
+function githubIssueLinkOperationKey(ruleId, issueId) {
+  return `${ruleId}:${issueId}`;
+}
+
+function compactGithubIssue(issue) {
+  return {
+    number: issue.number,
+    html_url: issue.html_url,
+    node_id: issue.node_id,
+    state: issue.state,
+    updated_at: issue.updated_at,
+    title: issue.title,
+    body: issue.body ?? null,
+    pull_request: issue.pull_request ? {} : undefined,
+  };
+}
+
+async function fetchGithubIssueByUrl(connector, inputUrl) {
+  const config = connector.config || {};
+  const parsed = parseGithubIssueUrl(inputUrl);
+  const expected = `${config.owner}/${config.repo}`.toLowerCase();
+  if (parsed.repository.toLowerCase() !== expected) {
+    throw new Error(`issue must belong to configured repository ${expected}`);
+  }
+  const response = await fetch(
+    `${String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '')}/repos/${parsed.repository}/issues/${parsed.number}`,
+    { headers: githubHeaders(config.token) }
+  );
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `GitHub issue lookup error: ${response.status} ${text.slice(0, 300)}`
+    );
+  }
+  const issue = JSON.parse(text);
+  if (issue.pull_request)
+    throw new Error('pull request URLs cannot be linked as GitHub issues');
+  return compactGithubIssue(issue);
+}
+
+async function findGithubIssueByMarker(connector, marker, createdAt) {
+  const config = connector.config || {};
+  const apiBase = String(config.apiBase || 'https://api.github.com').replace(
+    /\/+$/,
+    ''
+  );
+  const since = new Date(
+    Math.max(0, Date.parse(createdAt) - 10 * 60_000)
+  ).toISOString();
+  for (let page = 1; page <= 20; page += 1) {
+    const params = new URLSearchParams({
+      state: 'all',
+      since,
+      sort: 'created',
+      direction: 'asc',
+      per_page: '100',
+      page: String(page),
+    });
+    const response = await fetch(
+      `${apiBase}/repos/${config.owner}/${config.repo}/issues?${params}`,
+      { headers: githubHeaders(config.token) }
+    );
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(
+        `GitHub issue recovery error: ${response.status} ${text.slice(0, 300)}`
+      );
+    }
+    const issues = JSON.parse(text);
+    const match = issues.find(
+      (issue) =>
+        !issue.pull_request && String(issue.body || '').includes(marker)
+    );
+    if (match) return compactGithubIssue(match);
+    if (issues.length < 100) break;
+  }
+  return null;
+}
+
+async function createGithubIssue(connector, { title, body }) {
+  const config = connector.config || {};
+  const response = await fetch(
+    `${String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '')}/repos/${config.owner}/${config.repo}/issues`,
+    {
+      method: 'POST',
+      headers: githubHeaders(config.token),
+      body: JSON.stringify({ title, body }),
+    }
+  );
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `GitHub issue create error: ${response.status} ${text.slice(0, 300)}`
+    );
+  }
+  return compactGithubIssue(JSON.parse(text));
+}
+
+async function findGithubIssueLinkForIssue(vibe, issueId) {
+  const body = await vibeApi(
+    vibe,
+    'GET',
+    `/v1/github_issue_links?issue_id=${encodeURIComponent(issueId)}`
+  );
+  return body?.github_issue_links?.[0] || null;
+}
+
+function removeGithubIssueLinkOperation(key) {
+  state.githubIssueLinkOperations = (
+    state.githubIssueLinkOperations || []
+  ).filter((operation) => operation.key !== key);
+}
+
 async function linkGithubIssue(input) {
+  const key = githubIssueLinkOperationKey(
+    String(input.ruleId || 'github-issue-to-vibe'),
+    String(input.issueId || '')
+  );
+  return runSingleFlight(githubIssueLinkInFlight, key, () =>
+    linkGithubIssueOnce(input, key)
+  );
+}
+
+async function linkGithubIssueOnce(input, operationKey) {
   const rule = findRule(String(input.ruleId || 'github-issue-to-vibe'));
   if (rule.kind !== 'github_issue_sync')
     throw new Error('rule is not github_issue_sync');
@@ -1403,59 +1550,74 @@ async function linkGithubIssue(input) {
     throw new Error('GitHub token, owner, and repo are required');
   }
   if (!vibe.config?.projectId) throw new Error('Vibe projectId is required');
-  let issue;
-
-  if (input.mode === 'create') {
-    const title = String(input.title || '').trim();
-    if (!title) throw new Error('issue title is required');
-    const response = await fetch(
-      `${String(githubConfig.apiBase || 'https://api.github.com').replace(/\/+$/, '')}/repos/${githubConfig.owner}/${githubConfig.repo}/issues`,
-      {
-        method: 'POST',
-        headers: githubHeaders(githubConfig.token),
-        body: JSON.stringify({
-          title,
-          body: input.description == null ? null : String(input.description),
-        }),
-      }
-    );
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(
-        `GitHub issue create error: ${response.status} ${text.slice(0, 300)}`
-      );
-    }
-    issue = JSON.parse(text);
-  } else {
-    const parsed = parseGithubIssueUrl(input.url);
-    const expected = `${githubConfig.owner}/${githubConfig.repo}`.toLowerCase();
-    if (parsed.repository.toLowerCase() !== expected) {
-      throw new Error(`issue must belong to configured repository ${expected}`);
-    }
-    const response = await fetch(
-      `${String(githubConfig.apiBase || 'https://api.github.com').replace(/\/+$/, '')}/repos/${parsed.repository}/issues/${parsed.number}`,
-      { headers: githubHeaders(githubConfig.token) }
-    );
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(
-        `GitHub issue lookup error: ${response.status} ${text.slice(0, 300)}`
-      );
-    }
-    issue = JSON.parse(text);
-    if (issue.pull_request)
-      throw new Error('pull request URLs cannot be linked as GitHub issues');
+  const existingLink = await findGithubIssueLinkForIssue(vibe, input.issueId);
+  if (existingLink) {
+    removeGithubIssueLinkOperation(operationKey);
+    await persistState();
+    return existingLink;
   }
 
-  const projectItemId = await addGithubIssueToProject(
-    github,
-    config.githubProjectId,
-    issue.node_id
+  const title = String(input.title || '').trim();
+  if (!title) throw new Error('issue title is required');
+  let operation = (state.githubIssueLinkOperations || []).find(
+    (item) => item.key === operationKey
   );
+  if (!operation) {
+    operation = {
+      key: operationKey,
+      ruleId: rule.id,
+      githubConnectorId: github.id,
+      vibeConnectorId: vibe.id,
+      createdAt: new Date().toISOString(),
+      input: cloneData(input),
+      githubIssue: null,
+      projectItemId: null,
+    };
+    state.githubIssueLinkOperations.push(operation);
+    await persistState();
+  } else if (!operation.githubIssue) {
+    // Validation-only failures for an existing URL are safe to correct and retry.
+    operation.input = cloneData(input);
+    await persistState();
+  }
+
+  const effectiveInput = operation.input;
+  let issue;
+  try {
+    issue = await ensureGithubIssueForLink({
+      mode: effectiveInput.mode,
+      issueId: effectiveInput.issueId,
+      url: effectiveInput.url,
+      title: String(effectiveInput.title || '').trim(),
+      description: effectiveInput.description,
+      operation,
+      findCreatedIssue: (marker, createdAt) =>
+        findGithubIssueByMarker(github, marker, createdAt),
+      createIssue: (payload) => createGithubIssue(github, payload),
+      fetchExistingIssue: (url) => fetchGithubIssueByUrl(github, url),
+      persistOperation: persistState,
+    });
+  } catch (error) {
+    if (effectiveInput.mode === 'existing' && !operation.githubIssue) {
+      removeGithubIssueLinkOperation(operationKey);
+      await persistState();
+    }
+    throw error;
+  }
+
+  if (!operation.projectItemId && config.githubProjectId) {
+    operation.projectItemId = await addGithubIssueToProject(
+      github,
+      config.githubProjectId,
+      issue.node_id
+    );
+    await persistState();
+  }
+  const projectItemId = operation.projectItemId || null;
   const statusMapping = (config.statusMappings || []).find(
-    (mapping) => mapping.vibeStatusId === input.statusId
+    (mapping) => mapping.vibeStatusId === effectiveInput.statusId
   );
-  if (statusMapping && projectItemId) {
+  if (shouldSyncGithubProjectStatus(config) && statusMapping && projectItemId) {
     await updateGithubProjectStatus(
       github,
       config,
@@ -1466,7 +1628,7 @@ async function linkGithubIssue(input) {
 
   const repository = `${githubConfig.owner}/${githubConfig.repo}`;
   const created = await vibeApi(vibe, 'POST', '/v1/github_issue_links', {
-    issue_id: input.issueId,
+    issue_id: effectiveInput.issueId,
     repository,
     number: issue.number,
     url: issue.html_url,
@@ -1474,24 +1636,86 @@ async function linkGithubIssue(input) {
     project_item_id: projectItemId,
     github_state: issue.state,
     github_updated_at: issue.updated_at,
-    last_synced_vibe_updated_at: input.vibeUpdatedAt || null,
-    synced_title: String(input.title || ''),
+    last_synced_vibe_updated_at: effectiveInput.vibeUpdatedAt || null,
+    synced_title: String(effectiveInput.title || ''),
     synced_description:
-      input.description == null ? null : String(input.description),
-    synced_vibe_status_id: input.statusId || null,
-    synced_github_status_option_id: statusMapping?.githubOptionId || null,
+      effectiveInput.description == null
+        ? null
+        : String(effectiveInput.description),
+    synced_vibe_status_id: effectiveInput.statusId || null,
+    synced_github_status_option_id: shouldSyncGithubProjectStatus(config)
+      ? statusMapping?.githubOptionId || null
+      : null,
   });
+  removeGithubIssueLinkOperation(operationKey);
+  await persistState();
   await log('info', 'github issue linked', {
     ruleId: rule.id,
     issueId: input.issueId,
     githubUrl: issue.html_url,
-    created: input.mode === 'create',
+    created: effectiveInput.mode === 'create',
   });
   return created;
 }
 
+async function retryPendingGithubIssueLinks(githubConnector) {
+  return retryPendingGithubIssueLinkOperations({
+    operations: [...(state.githubIssueLinkOperations || [])],
+    connectorId: githubConnector.id,
+    linkIssue: linkGithubIssue,
+    onFailure: async (operation, error) => {
+      await log('warn', 'pending github issue link retry failed', {
+        ruleId: operation.ruleId,
+        issueId: operation.input?.issueId,
+        error: errorMessage(error),
+      });
+    },
+  });
+}
+
+async function backfillGithubIssueMapLinks({
+  rule,
+  github,
+  vibe,
+  issues,
+  links,
+}) {
+  const repository = `${github.config.owner}/${github.config.repo}`;
+  const skipped = (vibe.config.githubIssueLinkBackfillSkipped ||= []);
+  const entries = githubIssueMapBackfillEntries({
+    issueMap: vibe.config.issueMap,
+    repository,
+    linkedIssueIds: links.map((link) => link.issue_id),
+    skippedSourceKeys: skipped,
+  });
+  let skipStateChanged = false;
+  const result = await backfillLegacyGithubIssueLinks({
+    entries,
+    issues,
+    repository,
+    ruleId: rule.id,
+    linkIssue: linkGithubIssue,
+    onPullRequest: async (entry) => {
+      skipped.push(entry.sourceKey);
+      skipStateChanged = true;
+    },
+    onFailure: async (entry, issue, error) => {
+      await log('warn', 'legacy github issue link backfill failed', {
+        ruleId: rule.id,
+        issueId: issue.id,
+        sourceKey: entry.sourceKey,
+        error: errorMessage(error),
+      });
+    },
+  });
+  if (skipStateChanged) await persistState();
+  return result.linked;
+}
+
 async function reconcileGithubIssueRules(githubConnector) {
   let synced = 0;
+  const recovered = await retryPendingGithubIssueLinks(githubConnector);
+  let backfilled = 0;
   const rules = state.rules.filter(
     (rule) =>
       rule.enabled &&
@@ -1520,7 +1744,15 @@ async function reconcileGithubIssueRules(githubConnector) {
         issue,
       ])
     );
-    for (const link of (linksBody && linksBody.github_issue_links) || []) {
+    const links = (linksBody && linksBody.github_issue_links) || [];
+    backfilled += await backfillGithubIssueMapLinks({
+      rule,
+      github: githubConnector,
+      vibe,
+      issues,
+      links,
+    });
+    for (const link of links) {
       if (
         String(link.repository).toLowerCase() !==
         `${githubConnector.config.owner}/${githubConnector.config.repo}`.toLowerCase()
@@ -1548,7 +1780,7 @@ async function reconcileGithubIssueRules(githubConnector) {
       }
     }
   }
-  return { synced };
+  return { synced, recovered, backfilled };
 }
 
 async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
@@ -1568,10 +1800,14 @@ async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
       `GitHub issue lookup error: ${response.status} ${text.slice(0, 200)}`
     );
   const external = JSON.parse(text);
+  const hasVibeMarker = String(external.body || '').includes(
+    '<!-- vibe-kanban-issue:'
+  );
+  const externalDescription = withoutGithubIssueMarker(external.body);
   const syncedDescription = link.synced_description ?? null;
   const githubChanged =
     (syncTitle && external.title !== link.synced_title) ||
-    (syncDescription && (external.body ?? null) !== syncedDescription);
+    (syncDescription && externalDescription !== syncedDescription);
   const vibeChanged =
     (syncTitle && vibeIssue.title !== link.synced_title) ||
     (syncDescription && (vibeIssue.description ?? null) !== syncedDescription);
@@ -1584,7 +1820,7 @@ async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
       Date.parse(external.updated_at) >= Date.parse(vibeIssue.updated_at))
   ) {
     if (syncTitle) title = external.title;
-    if (syncDescription) description = external.body ?? null;
+    if (syncDescription) description = externalDescription;
     await vibeApi(
       vibe,
       'PATCH',
@@ -1602,7 +1838,13 @@ async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
         headers: githubHeaders(github.config.token),
         body: JSON.stringify({
           ...(syncTitle ? { title } : {}),
-          ...(syncDescription ? { body: description } : {}),
+          ...(syncDescription
+            ? {
+                body: hasVibeMarker
+                  ? withGithubIssueMarker(description, vibeIssue.id)
+                  : description,
+              }
+            : {}),
         }),
       }
     );
