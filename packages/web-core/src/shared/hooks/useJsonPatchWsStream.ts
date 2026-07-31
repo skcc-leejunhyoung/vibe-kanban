@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
@@ -55,6 +55,8 @@ interface UseJsonPatchStreamResult<T> {
   isConnected: boolean;
   isInitialized: boolean;
   error: string | null;
+  /** Reconnect and replay the authoritative server snapshot. */
+  reconcile: () => void;
 }
 
 /**
@@ -106,6 +108,15 @@ export const useJsonPatchWsStream = <T extends object>(
   const targetHostId = options?.targetHostId;
   const silenceTimeoutMs = options?.silenceTimeoutMs;
   const shouldReconcileAfterSilence = options?.shouldReconcileAfterSilence;
+
+  const reconcile = useCallback(() => {
+    if (!enabled || !endpoint) return;
+    if (retryTimerRef.current) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    setRetryNonce((n) => n + 1);
+  }, [enabled, endpoint]);
 
   useEffect(() => {
     isConnectedRef.current = isConnected;
@@ -564,5 +575,6 @@ export const useJsonPatchWsStream = <T extends object>(
     isConnected,
     isInitialized: isInitializedForCurrentEndpoint,
     error,
+    reconcile,
   };
 };

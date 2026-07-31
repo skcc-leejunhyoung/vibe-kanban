@@ -27,6 +27,7 @@ export const ExecutionProcessesProvider: React.FC<{
     isLoading,
     isConnected,
     error,
+    reconcile,
   } = useExecutionProcesses(sessionId, { showSoftDeleted: true });
 
   const [optimistic, setOptimistic] = useState<Record<string, OptimisticOp>>(
@@ -186,6 +187,7 @@ export const ExecutionProcessesProvider: React.FC<{
       isLoading,
       isConnected,
       error,
+      reconcile,
       addOptimisticProcess,
       patchOptimisticProcess,
       removeOptimisticProcess,
@@ -201,6 +203,7 @@ export const ExecutionProcessesProvider: React.FC<{
       isLoading,
       isConnected,
       error,
+      reconcile,
       addOptimisticProcess,
       patchOptimisticProcess,
       removeOptimisticProcess,

@@ -1,11 +1,17 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueApi } from '@/shared/lib/api';
 import type { ExecutorConfig, QueuedMessage, QueueStatus } from 'shared/types';
+import {
+  didQueueDrain,
+  queueStatusRefetchInterval,
+} from '../queueReconciliation';
 
 interface UseSessionQueueInteractionOptions {
   /** Session ID for queue operations */
   sessionId: string | undefined;
+  /** Reconcile execution state after the server consumes the queue. */
+  onQueueConsumed?: () => void;
 }
 
 interface UseSessionQueueInteractionResult {
@@ -42,6 +48,7 @@ const QUEUE_STATUS_KEY = 'queue-status';
  */
 export function useSessionQueueInteraction({
   sessionId,
+  onQueueConsumed,
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
 
@@ -51,11 +58,32 @@ export function useSessionQueueInteraction({
       queryKey: [QUEUE_STATUS_KEY, sessionId],
       queryFn: () => queueApi.getStatus(sessionId!),
       enabled: !!sessionId,
+      // Queue state is in-memory and has no push stream of its own. Poll only
+      // while work is waiting, including in non-focused split-screen panes.
+      refetchInterval: (query) => queueStatusRefetchInterval(query.state.data),
+      refetchIntervalInBackground: true,
     });
 
   const queuedMessages =
     queueStatus.status === 'queued' ? queueStatus.messages : [];
   const isQueued = queuedMessages.length > 0;
+  const queueTrackingRef = useRef({ sessionId, wasQueued: false });
+
+  useEffect(() => {
+    if (queueTrackingRef.current.sessionId !== sessionId) {
+      queueTrackingRef.current = { sessionId, wasQueued: isQueued };
+      return;
+    }
+
+    const wasQueued = queueTrackingRef.current.wasQueued;
+    queueTrackingRef.current.wasQueued = isQueued;
+    if (didQueueDrain(wasQueued, isQueued)) {
+      // The queue can be consumed between execution-process stream patches.
+      // Replay the authoritative process snapshot so a panel that missed the
+      // new-process add immediately shows the running follow-up.
+      onQueueConsumed?.();
+    }
+  }, [isQueued, onQueueConsumed]);
 
   const applyStatus = useCallback(
     (status: QueueStatus) => {

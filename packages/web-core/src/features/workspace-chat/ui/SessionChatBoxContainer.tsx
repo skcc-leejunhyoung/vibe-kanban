@@ -381,6 +381,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     patchOptimisticProcess,
     removeOptimisticProcess,
     clearOptimisticProcess,
+    reconcile: reconcileExecutionProcesses,
   } = useExecutionProcessesContext();
 
   // Stop, reflected immediately: mark the running coding-agent turn(s) killed so
@@ -739,7 +740,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     cancelQueue,
     cancelOne,
     refreshQueueStatus,
-  } = useSessionQueueInteraction({ sessionId });
+  } = useSessionQueueInteraction({
+    sessionId,
+    onQueueConsumed: reconcileExecutionProcesses,
+  });
 
   // Send actions
   const {

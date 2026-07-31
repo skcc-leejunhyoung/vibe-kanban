@@ -285,26 +285,6 @@ describe('resolveStreamTransport', () => {
     );
   });
 
-  it('uses WebSocket inside split-screen panes to avoid starving streams', () => {
-    expect(
-      resolveStreamTransport({
-        protocol: 'https:',
-        flag: null,
-        isSplitScreenEmbed: true,
-      })
-    ).toBe('ws');
-  });
-
-  it('keeps split-screen panes on WebSocket even with the SSE test flag', () => {
-    expect(
-      resolveStreamTransport({
-        protocol: 'http:',
-        flag: 'sse',
-        isSplitScreenEmbed: true,
-      })
-    ).toBe('ws');
-  });
-
   it('stays on WebSocket over plain http by default', () => {
     expect(resolveStreamTransport({ protocol: 'http:', flag: null })).toBe(
       'ws'

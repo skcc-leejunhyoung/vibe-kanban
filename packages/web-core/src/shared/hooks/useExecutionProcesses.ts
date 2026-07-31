@@ -15,6 +15,7 @@ interface UseExecutionProcessesResult {
   isLoading: boolean;
   isConnected: boolean;
   error: string | null;
+  reconcile: () => void;
 }
 
 /**
@@ -51,7 +52,7 @@ export const useExecutionProcesses = (
     []
   );
 
-  const { data, isConnected, isInitialized, error } =
+  const { data, isConnected, isInitialized, error, reconcile } =
     useJsonPatchWsStream<ExecutionProcessState>(
       endpoint,
       !!sessionId,
@@ -106,5 +107,6 @@ export const useExecutionProcesses = (
     isLoading,
     isConnected,
     error,
+    reconcile,
   };
 };

@@ -14,6 +14,8 @@ export type ExecutionProcessesContextType = {
   isLoading: boolean;
   isConnected: boolean;
   error: string | null;
+  /** Reconnect the session stream and replay its authoritative snapshot. */
+  reconcile: () => void;
 
   /**
    * Optimistically add a just-created process (e.g. the one returned by a
