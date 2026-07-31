@@ -44,6 +44,7 @@ const Dialog = React.forwardRef<
     onOpenChange?: (open: boolean) => void;
     uncloseable?: boolean;
     size?: KeyboardDialogSize;
+    scrollMode?: 'viewport' | 'content';
   }
 >(
   (
@@ -54,6 +55,7 @@ const Dialog = React.forwardRef<
       children,
       uncloseable,
       size = 'xl',
+      scrollMode = 'viewport',
       style,
       ...props
     },
@@ -216,7 +218,12 @@ const Dialog = React.forwardRef<
     if (!open) return null;
 
     return createPortal(
-      <div className="fixed inset-0 z-[10000] flex items-start justify-center p-4 overflow-y-auto">
+      <div
+        className={cn(
+          'fixed inset-0 z-[10000] flex items-start justify-center p-4',
+          scrollMode === 'content' ? 'overflow-hidden' : 'overflow-y-auto'
+        )}
+      >
         <div
           data-tauri-drag-region
           className="fixed inset-0 bg-black/50"

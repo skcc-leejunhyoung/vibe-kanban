@@ -292,10 +292,10 @@ export function PrDetailsContent({
   const loading = detailQuery.isLoading || commentsQuery.isLoading;
 
   useEffect(() => {
-    if (variant === 'panel' && active) {
+    if (active) {
       scrollRef.current?.focus();
     }
-  }, [active, prUrl, variant]);
+  }, [active, prUrl]);
 
   return (
     <DialogContent
@@ -331,7 +331,7 @@ export function PrDetailsContent({
 
       <div
         ref={scrollRef}
-        tabIndex={variant === 'panel' ? -1 : undefined}
+        tabIndex={-1}
         className="min-h-0 min-w-0 flex-1 space-y-double overflow-x-hidden overflow-y-auto p-base outline-none @sm:p-double"
       >
         {loading && !detail ? (
@@ -587,6 +587,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
         open={modal.visible}
         onOpenChange={(open) => !open && close()}
         size="full"
+        scrollMode="content"
         className="my-0 h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] min-h-0 overflow-hidden p-0"
       >
         <PrDetailsContent
