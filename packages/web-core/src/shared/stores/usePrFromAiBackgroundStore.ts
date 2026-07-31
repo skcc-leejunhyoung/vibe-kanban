@@ -30,6 +30,7 @@ export interface PrFromAiOptions {
   targetBranch: string | null;
   // Head (source) branch. Null lets the backend default to the work branch.
   headBranch: string | null;
+  hostId?: string | null;
 }
 
 interface PrFromAiBackgroundState {
@@ -39,7 +40,7 @@ interface PrFromAiBackgroundState {
     workspaceId: string,
     repoId: string,
     opts: PrFromAiOptions
-  ) => void;
+  ) => Promise<boolean>;
 }
 
 // How long the terminal success / error badge lingers before auto-clearing.
@@ -121,83 +122,89 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
   return {
     byWorkspace: {},
 
-    startCreateFromAi: (workspaceId, repoId, opts) => {
+    startCreateFromAi: async (workspaceId, repoId, opts) => {
       const current = get().byWorkspace[workspaceId]?.[repoId];
       // Don't start a second run while one is already in flight for this repo.
-      if (current === 'generating' || current === 'creating') return;
+      if (current === 'generating' || current === 'creating') return false;
       cancelTimer(workspaceId, repoId);
       setStatus(workspaceId, repoId, 'generating');
 
-      (async () => {
-        try {
-          // 1. Generate the PR title + description with the workspace's agent.
-          const generated = await workspacesApi.generatePrDescription(
-            workspaceId,
-            {
-              repo_id: repoId,
-              target_branch: opts.targetBranch,
-              head_branch: opts.headBranch,
-              // Null reuses the workspace's most recently used agent config.
-              executor_config: null,
-            }
-          );
+      try {
+        // 1. Generate the PR title + description with the workspace's agent.
+        const generated = await workspacesApi.generatePrDescription(
+          workspaceId,
+          {
+            repo_id: repoId,
+            target_branch: opts.targetBranch,
+            head_branch: opts.headBranch,
+            // Null reuses the workspace's most recently used agent config.
+            executor_config: null,
+          },
+          undefined,
+          opts.hostId
+        );
 
-          const title =
-            generated.title?.trim() ||
-            i18n.t('tasks:git.prFromAi.fallbackTitle');
+        const title =
+          generated.title?.trim() || i18n.t('tasks:git.prFromAi.fallbackTitle');
 
-          // 2. Open the draft PR with the generated content.
-          setStatus(workspaceId, repoId, 'creating');
-          const result = await workspacesApi.createPR(workspaceId, {
+        // 2. Open the draft PR with the generated content.
+        setStatus(workspaceId, repoId, 'creating');
+        const result = await workspacesApi.createPR(
+          workspaceId,
+          {
             title,
             body: generated.description || null,
             target_branch: opts.targetBranch,
             head_branch: opts.headBranch,
             draft: true,
             repo_id: repoId,
-          });
+          },
+          undefined,
+          opts.hostId
+        );
 
-          if (!result.success) {
-            setStatus(workspaceId, repoId, 'error');
-            scheduleClear(workspaceId, repoId, ERROR_CLEAR_MS);
-            showErrorDialog(
-              result.message || i18n.t('tasks:git.prFromAi.errorGeneric')
-            );
-            return;
-          }
-
-          // The PR button / link is driven by the branch-status query. Refresh
-          // it now so a PR created in the background is reflected immediately
-          // instead of after the next poll.
-          queryClient.invalidateQueries({
-            queryKey: ['branchStatus', workspaceId],
-          });
-          setStatus(workspaceId, repoId, 'success');
-          scheduleClear(workspaceId, repoId, SUCCESS_CLEAR_MS);
-
-          // Completion popup — offer to open the new draft PR. The dialog button
-          // click is a fresh user gesture, so opening the tab isn't popup-blocked.
-          const prUrl = result.data;
-          const choice = await ConfirmDialog.show({
-            title: i18n.t('tasks:git.prFromAi.successTitle'),
-            message: i18n.t('tasks:git.prFromAi.successMessage'),
-            variant: 'success',
-            confirmText: i18n.t('tasks:git.prFromAi.openPr'),
-            cancelText: i18n.t('common:buttons.close'),
-          });
-          if (choice === 'confirmed' && prUrl) {
-            openExternalUrl(prUrl);
-          }
-        } catch (err) {
+        if (!result.success) {
           setStatus(workspaceId, repoId, 'error');
           scheduleClear(workspaceId, repoId, ERROR_CLEAR_MS);
           showErrorDialog(
-            err instanceof Error
-              ? err.message
-              : i18n.t('tasks:git.prFromAi.errorGeneric')
+            result.message || i18n.t('tasks:git.prFromAi.errorGeneric')
           );
+          return false;
         }
-      })();
+
+        // The PR button / link is driven by the branch-status query. Refresh
+        // it now so a PR created in the background is reflected immediately
+        // instead of after the next poll.
+        queryClient.invalidateQueries({
+          queryKey: ['branchStatus', workspaceId],
+        });
+        setStatus(workspaceId, repoId, 'success');
+        scheduleClear(workspaceId, repoId, SUCCESS_CLEAR_MS);
+
+        // Completion popup — offer to open the new draft PR. The dialog button
+        // click is a fresh user gesture, so opening the tab isn't popup-blocked.
+        const prUrl = result.data;
+        const choice = await ConfirmDialog.show({
+          title: i18n.t('tasks:git.prFromAi.successTitle'),
+          message: i18n.t('tasks:git.prFromAi.successMessage'),
+          variant: 'success',
+          confirmText: i18n.t('tasks:git.prFromAi.openPr'),
+          cancelText: i18n.t('common:buttons.close'),
+        });
+        if (choice === 'confirmed' && prUrl) {
+          openExternalUrl(prUrl);
+        }
+        return true;
+      } catch (err) {
+        setStatus(workspaceId, repoId, 'error');
+        scheduleClear(workspaceId, repoId, ERROR_CLEAR_MS);
+        showErrorDialog(
+          err instanceof Error
+            ? err.message
+            : i18n.t('tasks:git.prFromAi.errorGeneric')
+        );
+        return false;
+      }
     },
   };
 });

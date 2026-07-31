@@ -419,6 +419,17 @@ export const sessionsApi = {
     return handleApiResponse<Session, ReviewError>(response);
   },
 
+  getVibeReviewStatus: async (
+    sessionId: string,
+    hostId?: string | null
+  ): Promise<{ phase: string | null }> => {
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/vibe-review/status`,
+      hostId
+    );
+    return handleApiResponse<{ phase: string | null }>(response);
+  },
+
   reset: async (
     sessionId: string,
     data: ResetProcessRequest
@@ -1007,11 +1018,13 @@ export const workspacesApi = {
   pushTargetBranch: async (
     workspaceId: string,
     repoId: string,
-    force = false
+    force = false,
+    hostId?: string | null
   ): Promise<Result<TargetBranchRemoteStatus, PushError>> => {
     const payload: PushTargetBranchRequest = { repo_id: repoId, force };
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/push`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -1086,10 +1099,12 @@ export const workspacesApi = {
   createPR: async (
     workspaceId: string,
     data: CreatePrApiRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    hostId?: string | null
   ): Promise<Result<string, PrError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/pull-requests`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1107,10 +1122,12 @@ export const workspacesApi = {
   generatePrDescription: async (
     workspaceId: string,
     data: GeneratePrDescriptionRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    hostId?: string | null
   ): Promise<GeneratePrDescriptionResponse> => {
-    const startResponse = await makeRequest(
+    const startResponse = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/pull-requests/generate/start`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1137,7 +1154,9 @@ export const workspacesApi = {
           signal?.addEventListener('abort', onAbort, { once: true });
         });
 
-        const statusResponse = await makeRequest(statusUrl, { signal });
+        const statusResponse = await makeHostAwareRequest(statusUrl, hostId, {
+          signal,
+        });
         const status =
           await handleApiResponse<PrDescriptionGenerationStatus>(
             statusResponse
@@ -1153,7 +1172,7 @@ export const workspacesApi = {
       if (signal?.aborted) {
         // The polling request is canceled locally; explicitly stop the detached
         // server job as a separate short relay request.
-        void makeRequest(statusUrl, { method: 'DELETE' });
+        void makeHostAwareRequest(statusUrl, hostId, { method: 'DELETE' });
       }
       throw error;
     }

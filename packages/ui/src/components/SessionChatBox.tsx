@@ -22,6 +22,7 @@ import {
   ArrowsClockwiseIcon,
   PencilSimpleIcon,
   DotsSixVerticalIcon,
+  CaretDownIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -79,6 +80,9 @@ interface ActionsProps {
   /** Start an automated `vibe` review session. When provided, a "review" button
    * is shown next to send while idle. */
   onVibeReview?: () => void;
+  /** Run review and, after its merge completes, push the target branch and
+   * create a draft pull request with AI-generated content. */
+  onVibeReviewAndCreatePr?: () => void;
   /** True while a vibe review request is in flight; disables the review button
    * and shows a spinner so a double-click can't fire a second request. */
   isReviewing?: boolean;
@@ -593,13 +597,47 @@ export function SessionChatBox<TExecutor extends string = string>({
         return (
           <>
             {actions.onVibeReview && (
-              <PrimaryButton
-                variant="secondary"
-                onClick={actions.onVibeReview}
-                disabled={actions.isReviewing}
-                actionIcon={actions.isReviewing ? 'spinner' : undefined}
-                value={t('conversation.actions.review')}
-              />
+              <div className="flex">
+                <PrimaryButton
+                  variant="secondary"
+                  onClick={actions.onVibeReview}
+                  disabled={actions.isReviewing}
+                  actionIcon={actions.isReviewing ? 'spinner' : undefined}
+                  value={t('conversation.actions.review')}
+                  className={
+                    actions.onVibeReviewAndCreatePr
+                      ? 'rounded-r-none'
+                      : undefined
+                  }
+                />
+                {actions.onVibeReviewAndCreatePr && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="min-h-cta rounded-sm rounded-l-none border-l border-on-brand/20 bg-brand-secondary px-half text-on-brand hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-panel"
+                        disabled={actions.isReviewing}
+                        aria-label={t(
+                          'conversation.actions.reviewMore',
+                          'More review actions'
+                        )}
+                      >
+                        <CaretDownIcon className="size-icon-xs" weight="thin" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={actions.onVibeReviewAndCreatePr}
+                      >
+                        {t(
+                          'conversation.actions.reviewAndCreatePr',
+                          'Review and create PR'
+                        )}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
             )}
             <PrimaryButton
               onClick={actions.onSend}

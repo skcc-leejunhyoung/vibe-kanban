@@ -5,6 +5,7 @@ use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
     session::Session,
+    vibe_run::{VibeRun, VibeRunError},
     workspace::{Workspace, WorkspaceError},
     workspace_repo::WorkspaceRepo,
 };
@@ -38,6 +39,26 @@ pub struct StartReviewRequest {
 pub enum ReviewError {
     ProcessAlreadyRunning,
     NoLinkedIssue,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct VibeReviewStatus {
+    pub phase: Option<String>,
+}
+
+#[axum::debug_handler]
+pub async fn vibe_review_status(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<VibeReviewStatus>>, ApiError> {
+    let run = VibeRun::find_by_workspace_id(&deployment.db().pool, session.workspace_id)
+        .await
+        .map_err(|error| match error {
+            VibeRunError::Database(error) => ApiError::Database(error),
+        })?;
+    Ok(ResponseJson(ApiResponse::success(VibeReviewStatus {
+        phase: run.map(|run| run.phase),
+    })))
 }
 
 #[axum::debug_handler]
