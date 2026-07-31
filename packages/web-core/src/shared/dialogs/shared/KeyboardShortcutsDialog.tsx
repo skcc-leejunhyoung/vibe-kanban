@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { XIcon, GearIcon } from '@phosphor-icons/react';
 import { create, useModal } from '@ebay/nice-modal-react';
+import { useModalKeyboardLayer } from '@vibe/ui/lib/modal-keyboard';
 import { defineModal, type NoProps } from '@/shared/lib/modals';
 
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
@@ -249,6 +250,7 @@ const KeyboardShortcutsDialogImpl = create<NoProps>(() => {
   const { t } = useTranslation('common');
   const modal = useModal();
   const groups = useShortcutGroups();
+  useModalKeyboardLayer(true);
 
   const handleClose = useCallback(() => {
     modal.hide();
