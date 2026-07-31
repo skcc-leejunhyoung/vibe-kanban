@@ -25,6 +25,9 @@ pub struct OpenRemoteWorkspaceInEditorRequest {
     pub editor_type: Option<String>,
     #[serde(default)]
     pub file_path: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub repo_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,7 +43,8 @@ async fn open_remote_workspace_in_editor(
     let relay_host = relay_hosts.host(req.host_id).await?;
 
     // Build the editor path API URL.
-    let api_path = build_editor_path_api_path(req.workspace_id, req.file_path.as_deref());
+    let api_path =
+        build_editor_path_api_path(req.workspace_id, req.file_path.as_deref(), req.repo_id);
 
     // Resolve workspace path via relay proxy (WebRTC-first, relay fallback).
     let mut response = relay_host
@@ -89,14 +93,42 @@ async fn open_remote_workspace_in_editor(
     Ok(Json(ApiResponse::success(response)))
 }
 
-fn build_editor_path_api_path(workspace_id: Uuid, file_path: Option<&str>) -> String {
+fn build_editor_path_api_path(
+    workspace_id: Uuid,
+    file_path: Option<&str>,
+    repo_id: Option<Uuid>,
+) -> String {
     let base = format!("/api/workspaces/{workspace_id}/integration/editor/path");
-    let Some(file_path) = file_path.filter(|v| !v.is_empty()) else {
+    let file_path = file_path.filter(|v| !v.is_empty());
+    if file_path.is_none() && repo_id.is_none() {
         return base;
-    };
+    }
 
-    let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("file_path", file_path)
-        .finish();
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(file_path) = file_path {
+        serializer.append_pair("file_path", file_path);
+    }
+    if let Some(repo_id) = repo_id {
+        serializer.append_pair("repo_id", &repo_id.to_string());
+    }
+    let query = serializer.finish();
     format!("{base}?{query}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_path_query_includes_repository_identity() {
+        let workspace_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let repo_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+
+        assert_eq!(
+            build_editor_path_api_path(workspace_id, Some("src/main.rs"), Some(repo_id)),
+            format!(
+                "/api/workspaces/{workspace_id}/integration/editor/path?file_path=src%2Fmain.rs&repo_id={repo_id}"
+            )
+        );
+    }
 }

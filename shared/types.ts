@@ -471,7 +471,7 @@ export type StartReviewRequest = { executor_config: ExecutorConfig, additional_p
 
 export type ReviewError = { "type": "process_already_running" } | { "type": "no_linked_issue" };
 
-export type OpenEditorRequest = { editor_type: string | null, file_path: string | null,
+export type OpenEditorRequest = { editor_type: string | null, file_path: string | null, repo_id?: string,
 /**
  * Whether the request originates from the remote web app. Used together
  * with the editor's `remote_ssh_only_in_remote_web` setting.
@@ -482,7 +482,7 @@ export type OpenEditorResponse = { url: string | null, };
 
 export type OpenRemoteEditorResponse = { url: string, local_port: number, ssh_alias: string, };
 
-export type OpenRemoteWorkspaceInEditorRequest = { host_id: string, workspace_id: string, editor_type: string | null, file_path: string | null, };
+export type OpenRemoteWorkspaceInEditorRequest = { host_id: string, workspace_id: string, editor_type: string | null, file_path: string | null, repo_id?: string, };
 
 export type PairRelayHostRequest = { host_id: string, host_name: string, enrollment_code: string, };
 

@@ -458,8 +458,8 @@ const DiffFileItem = memo(function DiffFileItem({
   }, [filePath]);
 
   const handleOpenInIde = useCallback(() => {
-    openInEditor({ filePath });
-  }, [openInEditor, filePath]);
+    openInEditor({ filePath, repoId: diff.repoId ?? undefined });
+  }, [openInEditor, filePath, diff.repoId]);
 
   const githubCommentCount = githubCommentsForFile.length;
 
@@ -836,7 +836,10 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
                     type="button"
                     className="px-base py-half rounded-sm bg-brand text-white text-sm font-medium hover:bg-brand/90"
                     onClick={() => {
-                      openInEditor({ filePath: getDiffPath(selectedDiff) });
+                      openInEditor({
+                        filePath: getDiffPath(selectedDiff),
+                        repoId: selectedDiff.repoId ?? undefined,
+                      });
                     }}
                   >
                     Open in editor

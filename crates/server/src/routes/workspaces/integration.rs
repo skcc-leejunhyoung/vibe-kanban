@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use services::services::container::ContainerService;
 use ts_rs::TS;
 use utils::response::ApiResponse;
+use uuid::Uuid;
 
 use super::{codex_setup, cursor_setup, gh_cli_setup::GhCliSetupError};
 use crate::{DeploymentImpl, error::ApiError};
@@ -32,6 +33,8 @@ pub struct RunAgentSetupResponse {}
 pub struct OpenEditorRequest {
     editor_type: Option<String>,
     file_path: Option<String>,
+    #[ts(optional)]
+    repo_id: Option<Uuid>,
     /// Whether the request originates from the remote web app. Used together
     /// with the editor's `remote_ssh_only_in_remote_web` setting.
     #[serde(default)]
@@ -51,6 +54,7 @@ pub struct OpenEditorPathResponse {
 #[derive(Debug, Deserialize)]
 pub struct OpenEditorPathQuery {
     file_path: Option<String>,
+    repo_id: Option<Uuid>,
 }
 
 pub fn router() -> Router<DeploymentImpl> {
@@ -88,8 +92,13 @@ pub async fn open_workspace_in_editor(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<OpenEditorRequest>,
 ) -> Result<ResponseJson<ApiResponse<OpenEditorResponse>>, ApiError> {
-    let path = resolve_workspace_editor_path(&deployment, &workspace, payload.file_path.as_deref())
-        .await?;
+    let path = resolve_workspace_editor_path(
+        &deployment,
+        &workspace,
+        payload.file_path.as_deref(),
+        payload.repo_id,
+    )
+    .await?;
 
     let editor_config = {
         let config = deployment.config().read().await;
@@ -127,8 +136,13 @@ pub async fn get_workspace_editor_path(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<OpenEditorPathQuery>,
 ) -> Result<ResponseJson<ApiResponse<OpenEditorPathResponse>>, ApiError> {
-    let path =
-        resolve_workspace_editor_path(&deployment, &workspace, query.file_path.as_deref()).await?;
+    let path = resolve_workspace_editor_path(
+        &deployment,
+        &workspace,
+        query.file_path.as_deref(),
+        query.repo_id,
+    )
+    .await?;
 
     Ok(ResponseJson(ApiResponse::success(OpenEditorPathResponse {
         workspace_path: path.to_string_lossy().into_owned(),
@@ -139,6 +153,7 @@ async fn resolve_workspace_editor_path(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
     file_path: Option<&str>,
+    repo_id: Option<Uuid>,
 ) -> Result<PathBuf, ApiError> {
     let container_ref = deployment
         .container()
@@ -149,7 +164,18 @@ async fn resolve_workspace_editor_path(
     let workspace_path = Path::new(&container_ref);
     let workspace_repos =
         WorkspaceRepo::find_repos_for_workspace(&deployment.db().pool, workspace.id).await?;
-    let workspace_path = if workspace_repos.len() == 1 && file_path.is_none() {
+    let workspace_path = if let Some(repo_id) = repo_id {
+        let repo = workspace_repos
+            .iter()
+            .find(|repo| repo.id == repo_id)
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "Repository {repo_id} does not belong to workspace {}",
+                    workspace.id
+                ))
+            })?;
+        workspace_path.join(&repo.name)
+    } else if workspace_repos.len() == 1 && file_path.is_none() {
         workspace_path.join(&workspace_repos[0].name)
     } else {
         workspace_path.to_path_buf()

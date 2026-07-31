@@ -8,6 +8,7 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 type OpenEditorOptions = {
   editorType?: EditorType;
   filePath?: string;
+  repoId?: string;
 };
 
 export function useOpenInEditor(
@@ -21,7 +22,7 @@ export function useOpenInEditor(
     async (options?: OpenEditorOptions): Promise<void> => {
       if (!workspaceId) return;
 
-      const { editorType, filePath } = options ?? {};
+      const { editorType, filePath, repoId } = options ?? {};
 
       try {
         const response =
@@ -31,10 +32,12 @@ export function useOpenInEditor(
                 workspace_id: workspaceId,
                 editor_type: editorType ?? null,
                 file_path: filePath ?? null,
+                repo_id: repoId,
               })
             : await workspacesApi.openEditor(workspaceId, {
                 editor_type: editorType ?? null,
                 file_path: filePath ?? null,
+                repo_id: repoId,
                 is_remote_web: appRuntime === 'remote',
               });
 
