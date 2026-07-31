@@ -936,6 +936,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               ahead: pushResult.error.ahead,
               behind: pushResult.error.behind,
               isTarget: true,
+              hostId,
             });
             if (resolution !== 'success') {
               throw new Error(

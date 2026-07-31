@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { searchApi, tagsApi } from './api';
+import { searchApi, tagsApi, workspacesApi } from './api';
 import { setLocalApiTransport } from './localApiTransport';
 
 function apiResponse<T>(data: T): Response {
@@ -73,5 +73,29 @@ describe('host-aware task APIs', () => {
     expect(request.mock.calls[0]?.[0]).toBe(
       '/api/host/host-2/search?q=query&repo_ids=repo-1'
     );
+  });
+
+  it('routes diverged branch reconciliation to the selected host', async () => {
+    const request = vi.fn(async () => apiResponse(undefined));
+    setLocalApiTransport({
+      request,
+      openWebSocket: vi.fn(),
+    });
+
+    await workspacesApi.pullAndPush(
+      'workspace-1',
+      { repo_id: 'repo-1' },
+      'host-3'
+    );
+    await workspacesApi.pullAndPushTargetBranch(
+      'workspace-1',
+      'repo-1',
+      'host-3'
+    );
+
+    expect(request.mock.calls.map(([path]) => path)).toEqual([
+      '/api/host/host-3/workspaces/workspace-1/git/pull-and-push',
+      '/api/host/host-3/workspaces/workspace-1/git/target-branch/pull-and-push',
+    ]);
   });
 });

@@ -853,10 +853,12 @@ export const workspacesApi = {
    */
   pullAndPush: async (
     workspaceId: string,
-    data: PushWorkspaceRequest
+    data: PushWorkspaceRequest,
+    hostId?: string | null
   ): Promise<Result<void, GitOperationError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/pull-and-push`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -900,10 +902,12 @@ export const workspacesApi = {
    */
   pullAndPushTargetBranch: async (
     workspaceId: string,
-    repoId: string
+    repoId: string,
+    hostId?: string | null
   ): Promise<Result<void, GitOperationError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/pull-and-push`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify({ repo_id: repoId }),

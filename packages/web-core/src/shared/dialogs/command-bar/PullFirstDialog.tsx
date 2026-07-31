@@ -25,6 +25,8 @@ export interface PullFirstDialogProps {
   behind: number;
   /** Resolve the divergence on the target (base) branch instead of the work branch. */
   isTarget?: boolean;
+  /** Host that owns the workspace. Null/undefined uses the current host. */
+  hostId?: string | null;
 }
 
 /**
@@ -39,7 +41,8 @@ export interface PullFirstDialogProps {
  */
 const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
   const modal = useModal();
-  const { workspaceId, repoId, branchName, ahead, behind, isTarget } = props;
+  const { workspaceId, repoId, branchName, ahead, behind, isTarget, hostId } =
+    props;
   const [error, setError] = useState<string | null>(null);
   const { t } = useTranslation(['tasks', 'common']);
   const branchLabel = branchName ? ` "${branchName}"` : '';
@@ -64,7 +67,8 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
           : t('tasks:git.pullFirstDialog.error');
       setError(message);
     },
-    isTarget ?? false
+    isTarget ?? false,
+    hostId
   );
   const handlePullAndPush = async () => {
     setError(null);

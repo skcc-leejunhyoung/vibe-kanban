@@ -83,7 +83,9 @@ describe('usePrFromAiBackgroundStore', () => {
     );
     expect(createPR).toHaveBeenCalledWith(
       'ws1',
-      expect.objectContaining({ title: 'T', body: 'D', draft: true })
+      expect.objectContaining({ title: 'T', body: 'D', draft: true }),
+      undefined,
+      undefined
     );
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['branchStatus', 'ws1'],
@@ -162,7 +164,34 @@ describe('usePrFromAiBackgroundStore', () => {
 
     expect(createPR).toHaveBeenCalledWith(
       'ws-fallback',
-      expect.objectContaining({ title: 'tasks:git.prFromAi.fallbackTitle' })
+      expect.objectContaining({ title: 'tasks:git.prFromAi.fallbackTitle' }),
+      undefined,
+      undefined
+    );
+  });
+
+  it('routes generation and creation through the owning host', async () => {
+    generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
+    createPR.mockResolvedValue({ success: true, data: 'https://pr' });
+
+    await usePrFromAiBackgroundStore
+      .getState()
+      .startCreateFromAi('ws-remote', 'repo1', {
+        ...opts,
+        hostId: 'remote-host',
+      });
+
+    expect(generatePrDescription).toHaveBeenCalledWith(
+      'ws-remote',
+      expect.objectContaining({ repo_id: 'repo1' }),
+      undefined,
+      'remote-host'
+    );
+    expect(createPR).toHaveBeenCalledWith(
+      'ws-remote',
+      expect.objectContaining({ repo_id: 'repo1' }),
+      undefined,
+      'remote-host'
     );
   });
 

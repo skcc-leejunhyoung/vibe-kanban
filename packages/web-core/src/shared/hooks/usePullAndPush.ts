@@ -25,7 +25,8 @@ export function usePullAndPush(
   onError?: (err: unknown, errorData?: GitOperationError) => void,
   // When true, resolve the divergence on the target (base) branch instead of the
   // workspace's work branch.
-  isTarget = false
+  isTarget = false,
+  hostId?: string | null
 ) {
   const queryClient = useQueryClient();
 
@@ -35,9 +36,10 @@ export function usePullAndPush(
       const result = isTarget
         ? await workspacesApi.pullAndPushTargetBranch(
             workspaceId,
-            params.repo_id
+            params.repo_id,
+            hostId
           )
-        : await workspacesApi.pullAndPush(workspaceId, params);
+        : await workspacesApi.pullAndPush(workspaceId, params, hostId);
       if (!result.success) {
         throw new PullAndPushErrorWithData(
           result.message || 'Pull and push failed',
