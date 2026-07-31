@@ -2076,8 +2076,9 @@ impl LocalContainerService {
     }
 
     /// Rule 5: fast-forward merge each qualifying repo into its target branch,
-    /// classifying the outcome for [`decide_after_merge`]. Skips repos with an
-    /// open PR, a remote target, or an already-recorded direct merge.
+    /// classifying the outcome for [`decide_after_merge`]. Remote-only targets
+    /// are first materialized as local tracking branches, matching manual Merge.
+    /// Skips repos with an open PR or an already-recorded direct merge.
     async fn vibe_perform_merge(&self, ctx: &ExecutionContext) -> MergeOutcome {
         let workspace = ctx.workspace.clone();
         let workspace_id = workspace.id;
@@ -2105,9 +2106,8 @@ impl LocalContainerService {
         let mut any_other_failure = false;
         // Whether at least one repo reached a review-ready state: freshly merged,
         // already merged, or carrying an open PR. Without this, a run where every
-        // repo is skipped (open PR / already merged / remote target needing a PR)
-        // would fall through to `Success` and mark the issue In review / Done even
-        // though nothing actually merged.
+        // repo is skipped would fall through to `Success` and mark the issue In
+        // review / Done even though nothing actually merged.
         let mut any_review_ready = false;
 
         for workspace_repo in &workspace_repos {
@@ -2169,12 +2169,11 @@ impl LocalContainerService {
                 }
             }
 
-            match self
+            let is_target_remote = match self
                 .git
                 .is_remote_branch(&repo.path, &workspace_repo.target_branch)
             {
-                Ok(true) => continue, // remote target needs a PR — nothing merged here
-                Ok(false) => {}
+                Ok(is_remote) => is_remote,
                 Err(e) => {
                     tracing::error!(
                         "vibe merge: is_remote_branch failed for {}: {}",
@@ -2184,14 +2183,38 @@ impl LocalContainerService {
                     any_other_failure = true;
                     continue;
                 }
-            }
+            };
+            // Match the manual Merge action: a remote-only target such as
+            // `origin/feature` is materialized as a local tracking branch
+            // (`feature`) before merging. Persist the local target only after
+            // the merge succeeds, so a failed attempt does not silently rewrite
+            // the workspace configuration.
+            let target_branch = if is_target_remote {
+                match self
+                    .git
+                    .ensure_local_branch_for_remote(&repo.path, &workspace_repo.target_branch)
+                {
+                    Ok(branch) => branch,
+                    Err(e) => {
+                        tracing::error!(
+                            "vibe merge: materialize remote target failed for {}: {}",
+                            repo.name,
+                            e
+                        );
+                        any_other_failure = true;
+                        continue;
+                    }
+                }
+            } else {
+                workspace_repo.target_branch.clone()
+            };
 
             let worktree_path = workspace_path.join(&repo.name);
             let mut merge_result = self.git.merge_changes(
                 &repo.path,
                 &worktree_path,
                 &workspace.branch,
-                &workspace_repo.target_branch,
+                &target_branch,
             );
 
             // The base moved forward since the workspace branched, so a
@@ -2209,8 +2232,8 @@ impl LocalContainerService {
                 match self.git.rebase_branch(
                     &repo.path,
                     &worktree_path,
-                    &workspace_repo.target_branch,
-                    &workspace_repo.target_branch,
+                    &target_branch,
+                    &target_branch,
                     &workspace.branch,
                 ) {
                     Ok(_) => {
@@ -2224,7 +2247,7 @@ impl LocalContainerService {
                             &repo.path,
                             &worktree_path,
                             &workspace.branch,
-                            &workspace_repo.target_branch,
+                            &target_branch,
                         );
                     }
                     // Rebase failed. A conflict becomes the agent's job; any
@@ -2238,11 +2261,28 @@ impl LocalContainerService {
 
             match merge_result {
                 Ok(merge_commit_id) => {
+                    if is_target_remote
+                        && let Err(e) = WorkspaceRepo::update_target_branch(
+                            &self.db.pool,
+                            workspace_id,
+                            repo.id,
+                            &target_branch,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            "vibe merge: persist materialized target failed for {}: {}",
+                            repo.name,
+                            e
+                        );
+                        any_other_failure = true;
+                        continue;
+                    }
                     if let Err(e) = Merge::create_direct(
                         &self.db.pool,
                         workspace_id,
                         repo.id,
-                        &workspace_repo.target_branch,
+                        &target_branch,
                         &merge_commit_id,
                     )
                     .await
@@ -2272,9 +2312,8 @@ impl LocalContainerService {
         } else if any_review_ready {
             MergeOutcome::Success
         } else {
-            // Nothing merged and no review artifact (e.g. only repos whose target
-            // is a remote branch needing a PR). Escalate to a human instead of
-            // silently marking the issue as merged.
+            // Nothing merged and no review artifact. Escalate to a human instead
+            // of silently marking the issue as merged.
             MergeOutcome::OtherFailure
         }
     }
