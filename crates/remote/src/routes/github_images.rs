@@ -20,6 +20,7 @@ const MAX_IMAGE_SIZE_BYTES: usize = 20 * 1024 * 1024;
 const GITHUB_USER_AGENT: &str = "VibeKanbanRemote/1.0";
 const GITHUB_USER_API_URL: &str = "https://api.github.com/user";
 const GITHUB_OAUTH_SCOPES_HEADER: &str = "x-oauth-scopes";
+const GITHUB_USER_ASSET_S3_HOST: &str = "github-production-user-asset-6210df.s3.amazonaws.com";
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/github/image", get(get_github_image))
@@ -256,7 +257,8 @@ fn is_allowed_redirect_url(url: &Url) -> bool {
     url.scheme() == "https"
         && (host == "github.com"
             || host == "githubusercontent.com"
-            || host.ends_with(".githubusercontent.com"))
+            || host.ends_with(".githubusercontent.com")
+            || host == GITHUB_USER_ASSET_S3_HOST)
 }
 
 #[cfg(test)]
@@ -289,8 +291,22 @@ mod tests {
         assert!(is_allowed_redirect_url(
             &Url::parse("https://private-user-images.githubusercontent.com/image").unwrap()
         ));
+        assert!(is_allowed_redirect_url(
+            &Url::parse("https://github-production-user-asset-6210df.s3.amazonaws.com/attachment")
+                .unwrap()
+        ));
         assert!(!is_allowed_redirect_url(
             &Url::parse("https://githubusercontent.com.evil.example/image").unwrap()
+        ));
+        assert!(!is_allowed_redirect_url(
+            &Url::parse("https://github-production-user-asset-evil.s3.amazonaws.com/attachment")
+                .unwrap()
+        ));
+        assert!(!is_allowed_redirect_url(
+            &Url::parse(
+                "https://github-production-user-asset-6210df.s3.amazonaws.com.evil.example/image"
+            )
+            .unwrap()
         ));
     }
 
