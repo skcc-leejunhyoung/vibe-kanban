@@ -3,6 +3,7 @@ import { ScratchType } from 'shared/types';
 import {
   clearLegacyLocalStorageScratch,
   clearLocalStorageScratchForUser,
+  computeScratchIsLoading,
   localStorageScratchUpdate,
 } from './useLocalStorageScratch';
 
@@ -103,5 +104,33 @@ describe('user-scoped local scratch storage', () => {
 
     expect(localStorage.length).toBe(1);
     expect(localStorage.key(0)).toContain('vk-scratch-user:user-a:');
+  });
+});
+
+describe('computeScratchIsLoading', () => {
+  // Regression: while userId is unresolved the hook uses storageKey='' and
+  // loadedKey=null, which must still read as "loading" so useUiPreferencesScratch
+  // doesn't latch on empty data and clobber persisted preferences on re-entry.
+  it('reports loading while the userId is unresolved', () => {
+    expect(computeScratchIsLoading(true, null, '')).toBe(true);
+  });
+
+  it('is not loading once the effective key has been read', () => {
+    expect(
+      computeScratchIsLoading(
+        true,
+        'vk-scratch-user:u:X:1',
+        'vk-scratch-user:u:X:1'
+      )
+    ).toBe(false);
+  });
+
+  it('reports loading while transitioning between keys', () => {
+    expect(computeScratchIsLoading(true, 'old-key', 'new-key')).toBe(true);
+  });
+
+  it('is inactive (not loading) when the caller disables the scratch', () => {
+    expect(computeScratchIsLoading(false, null, '')).toBe(false);
+    expect(computeScratchIsLoading(false, 'old-key', 'new-key')).toBe(false);
   });
 });

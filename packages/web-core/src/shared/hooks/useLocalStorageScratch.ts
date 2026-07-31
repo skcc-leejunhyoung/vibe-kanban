@@ -49,6 +49,23 @@ function removeFromStorage(key: string): void {
   }
 }
 
+/**
+ * Whether the scratch should report as still loading (as opposed to "loaded,
+ * and empty"). It loads while the scratch is active (`optionsEnabled`) but the
+ * effective storage key hasn't been read yet — which includes the window where
+ * `userId` is still unresolved and `storageKey` is empty. Reporting `true` here
+ * keeps consumers that latch on the first non-loading state (e.g.
+ * `useUiPreferencesScratch`) from initializing against empty data and then
+ * overwriting the persisted value once the real userId arrives.
+ */
+export function computeScratchIsLoading(
+  optionsEnabled: boolean,
+  loadedKey: string | null,
+  storageKey: string
+): boolean {
+  return optionsEnabled && loadedKey !== storageKey;
+}
+
 function buildScratchEntry(
   id: string,
   update: UpdateScratch,
@@ -138,8 +155,10 @@ export const useLocalStorageScratch = (
   id: string,
   options?: UseLocalStorageScratchOptions
 ): UseScratchResult => {
-  const enabled =
-    (options?.enabled ?? true) && userId !== null && id.length > 0;
+  // The caller-controlled switch: whether this scratch is active at all.
+  const optionsEnabled = (options?.enabled ?? true) && id.length > 0;
+  // Whether we can actually read/write yet — requires a resolved userId.
+  const enabled = optionsEnabled && userId !== null;
   const storageKey = userId ? buildStorageKey(userId, scratchType, id) : '';
 
   const [scratch, setScratch] = useState<Scratch | null>(() =>
@@ -197,7 +216,7 @@ export const useLocalStorageScratch = (
 
   return {
     scratch,
-    isLoading: enabled && loadedKey !== storageKey,
+    isLoading: computeScratchIsLoading(optionsEnabled, loadedKey, storageKey),
     isConnected: true,
     error: null,
     updateScratch,
