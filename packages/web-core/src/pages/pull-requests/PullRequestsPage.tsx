@@ -566,6 +566,17 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     [filteredPullRequests]
   );
 
+  const openDetails = useCallback(
+    (pullRequest: Pick<PullRequestSummary, 'url' | 'number'>) => {
+      setSelectedPullRequest({
+        url: pullRequest.url,
+        number: Number(pullRequest.number),
+      });
+      appNavigation.goToPullRequests(pullRequest.url, { replace: true });
+    },
+    [appNavigation]
+  );
+
   const closeDetails = useCallback(() => {
     setSelectedPullRequest(null);
     appNavigation.goToPullRequests(undefined, { replace: true });
@@ -610,15 +621,17 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       const nextPullRequest = filteredPullRequests[nextIndex];
       if (!nextPullRequest || nextIndex === currentIndex) return;
       setSelectedIndex(nextIndex);
-      setSelectedPullRequest({
-        url: nextPullRequest.url,
-        number: Number(nextPullRequest.number),
-      });
+      openDetails(nextPullRequest);
       void prefetchPullRequest(nextPullRequest);
     };
     window.addEventListener('keydown', handleDetailNavigation);
     return () => window.removeEventListener('keydown', handleDetailNavigation);
-  }, [filteredPullRequests, prefetchPullRequest, selectedPullRequest]);
+  }, [
+    filteredPullRequests,
+    openDetails,
+    prefetchPullRequest,
+    selectedPullRequest,
+  ]);
 
   useEffect(() => {
     if (selectedPullRequest || filteredPullRequests.length === 0) return;
@@ -645,17 +658,20 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         const pullRequest = filteredPullRequests[selectedIndex];
         if (pullRequest) {
           event.preventDefault();
-          setSelectedPullRequest({
-            url: pullRequest.url,
-            number: Number(pullRequest.number),
-          });
+          openDetails(pullRequest);
         }
       }
     };
 
     window.addEventListener('keydown', handleListKeyDown);
     return () => window.removeEventListener('keydown', handleListKeyDown);
-  }, [filteredPullRequests, focusRow, selectedIndex, selectedPullRequest]);
+  }, [
+    filteredPullRequests,
+    focusRow,
+    openDetails,
+    selectedIndex,
+    selectedPullRequest,
+  ]);
 
   const listContent = (
     <main className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -792,12 +808,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                     cancelScheduledPrefetch();
                     void prefetchPullRequest(pr);
                   }}
-                  onClick={() =>
-                    setSelectedPullRequest({
-                      url: pr.url,
-                      number: Number(pr.number),
-                    })
-                  }
+                  onClick={() => openDetails(pr)}
                   className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
                 >
                   <span className="mt-half">{statusIcon(pr.status)}</span>
