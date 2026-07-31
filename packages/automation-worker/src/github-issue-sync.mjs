@@ -23,6 +23,24 @@ export function shouldSyncGithubProjectStatus(config) {
   return config?.fields?.status !== false;
 }
 
+export function assertGithubIssueProject(issue, expectedProjectId) {
+  if (!issue || issue.project_id !== expectedProjectId) {
+    throw new Error('Vibe issue does not belong to the configured project');
+  }
+}
+
+export function shouldRunGithubIssueSyncRule(rule, event) {
+  return (
+    rule?.kind !== 'github_issue_sync' ||
+    rule.config?.githubConnectorId === event?.connectorId
+  );
+}
+
+export function githubIssueSyncVibeConnectorId(rule, requestedConnectorId) {
+  if (rule?.kind !== 'github_issue_sync') return requestedConnectorId;
+  return String(rule.config?.vibeConnectorId || requestedConnectorId || '');
+}
+
 export function githubIssueMapBackfillEntries({
   issueMap,
   repository,

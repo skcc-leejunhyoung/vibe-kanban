@@ -22,6 +22,7 @@ import type { AutomationRule } from '@/shared/lib/automationWorker';
 export interface LinkGithubIssueDialogProps {
   runtime: AppRuntime;
   hostId: string | null;
+  projectId: string;
   hosts: { id: string; name: string }[];
   issueId: string;
   title: string;
@@ -83,9 +84,14 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
       .getAutomationState()
       .then((state) => {
         if (cancelled) return;
-        const syncRules = state.rules.filter(
-          (rule) => rule.enabled && rule.kind === 'github_issue_sync'
-        );
+        const syncRules = state.rules.filter((rule) => {
+          if (!rule.enabled || rule.kind !== 'github_issue_sync') return false;
+          const vibeConnectorId = String(rule.config?.vibeConnectorId ?? '');
+          const vibeConnector = state.connectors.find(
+            (connector) => connector.id === vibeConnectorId
+          );
+          return vibeConnector?.config.projectId === props.projectId;
+        });
         setRules(syncRules);
         setRuleId(syncRules[0]?.id ?? '');
       })
@@ -97,7 +103,7 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
     return () => {
       cancelled = true;
     };
-  }, [client, props.runtime, selectedHostId]);
+  }, [client, props.projectId, props.runtime, selectedHostId]);
 
   const submit = async () => {
     if (!ruleId || (mode === 'existing' && !url.trim())) return;

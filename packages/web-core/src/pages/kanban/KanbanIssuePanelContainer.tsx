@@ -1174,6 +1174,7 @@ export function KanbanIssuePanelContainer({
     await LinkGithubIssueDialog.show({
       runtime,
       hostId: githubIssueAutomationHostId,
+      projectId,
       hosts: availableWorkspaceHosts
         .filter((host) => host.status === 'online')
         .map((host) => ({ id: host.id, name: host.name })),
@@ -1186,6 +1187,7 @@ export function KanbanIssuePanelContainer({
   }, [
     availableWorkspaceHosts,
     githubIssueAutomationHostId,
+    projectId,
     runtime,
     selectedIssue,
   ]);

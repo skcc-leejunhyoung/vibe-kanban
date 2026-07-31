@@ -9,11 +9,14 @@ import {
   reviewActivity,
 } from './github-pr-activity.mjs';
 import {
+  assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
+  githubIssueSyncVibeConnectorId,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
+  shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withGithubIssueMarker,
   withoutGithubIssueMarker,
@@ -1550,6 +1553,12 @@ async function linkGithubIssueOnce(input, operationKey) {
     throw new Error('GitHub token, owner, and repo are required');
   }
   if (!vibe.config?.projectId) throw new Error('Vibe projectId is required');
+  const vibeIssue = await vibeApi(
+    vibe,
+    'GET',
+    `/v1/issues/${encodeURIComponent(input.issueId)}`
+  );
+  assertGithubIssueProject(vibeIssue, vibe.config.projectId);
   const existingLink = await findGithubIssueLinkForIssue(vibe, input.issueId);
   if (existingLink) {
     removeGithubIssueLinkOperation(operationKey);
@@ -1855,43 +1864,44 @@ async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
     }
   }
 
-  let githubStatusOption = await githubProjectStatusOption(
-    github,
-    link.project_item_id,
-    config.githubStatusFieldId
-  );
-  const vibeMapping = (config.statusMappings || []).find(
-    (mapping) => mapping.vibeStatusId === vibeIssue.status_id
-  );
-  const githubMapping = (config.statusMappings || []).find(
-    (mapping) => mapping.githubOptionId === githubStatusOption
-  );
-  if (
-    config.fields?.status !== false &&
-    vibeMapping &&
-    vibeIssue.status_id !== link.synced_vibe_status_id
-  ) {
-    await updateGithubProjectStatus(
+  let githubStatusOption = link.synced_github_status_option_id ?? null;
+  if (shouldSyncGithubProjectStatus(config)) {
+    githubStatusOption = await githubProjectStatusOption(
       github,
-      config,
       link.project_item_id,
-      vibeMapping.githubOptionId
+      config.githubStatusFieldId
     );
-    githubStatusOption = vibeMapping.githubOptionId;
-  } else if (
-    config.fields?.status !== false &&
-    githubMapping &&
-    githubStatusOption !== link.synced_github_status_option_id
-  ) {
-    await vibeApi(
-      vibe,
-      'PATCH',
-      `/v1/issues/${encodeURIComponent(vibeIssue.id)}`,
-      {
-        status_id: githubMapping.vibeStatusId,
-      }
+    const vibeMapping = (config.statusMappings || []).find(
+      (mapping) => mapping.vibeStatusId === vibeIssue.status_id
     );
-    vibeIssue.status_id = githubMapping.vibeStatusId;
+    const githubMapping = (config.statusMappings || []).find(
+      (mapping) => mapping.githubOptionId === githubStatusOption
+    );
+    if (
+      vibeMapping &&
+      vibeIssue.status_id !== link.synced_vibe_status_id
+    ) {
+      await updateGithubProjectStatus(
+        github,
+        config,
+        link.project_item_id,
+        vibeMapping.githubOptionId
+      );
+      githubStatusOption = vibeMapping.githubOptionId;
+    } else if (
+      githubMapping &&
+      githubStatusOption !== link.synced_github_status_option_id
+    ) {
+      await vibeApi(
+        vibe,
+        'PATCH',
+        `/v1/issues/${encodeURIComponent(vibeIssue.id)}`,
+        {
+          status_id: githubMapping.vibeStatusId,
+        }
+      );
+      vibeIssue.status_id = githubMapping.vibeStatusId;
+    }
   }
 
   await vibeApi(
@@ -2067,6 +2077,7 @@ async function processRetryQueue({
 }
 
 async function runRule(rule, event) {
+  if (!shouldRunGithubIssueSyncRule(rule, event)) return;
   // Hand the script a detached copy so a rule can't mutate live state/event.
   // (Hygiene, not a security boundary — vm is not a sandbox.)
   const safeEvent = cloneData(event);
@@ -2142,11 +2153,15 @@ async function createVibePullRequestCommentNotification(connectorId, input) {
 }
 
 async function createVibeIssue(connectorId, input, event, rule) {
-  const connector = findConnector(connectorId);
+  const effectiveConnectorId = githubIssueSyncVibeConnectorId(
+    rule,
+    connectorId
+  );
+  const connector = findConnector(effectiveConnectorId);
   if (!connector.enabled)
-    throw new Error(`Vibe connector is disabled: ${connectorId}`);
+    throw new Error(`Vibe connector is disabled: ${effectiveConnectorId}`);
   if (connector.type !== 'vibe_kanban') {
-    throw new Error(`connector is not vibe_kanban: ${connectorId}`);
+    throw new Error(`connector is not vibe_kanban: ${effectiveConnectorId}`);
   }
 
   const config = connector.config || {};
@@ -2200,7 +2215,7 @@ async function createVibeIssue(connectorId, input, event, rule) {
         if (tagId) await attachVibeTag(connector, createdId, tagId);
       } catch (error) {
         await log('warn', 'vibe tag failed', {
-          connectorId,
+          connectorId: effectiveConnectorId,
           tag: name,
           error: errorMessage(error),
         });
@@ -2227,7 +2242,7 @@ async function createVibeIssue(connectorId, input, event, rule) {
       });
     } catch (error) {
       await log('warn', 'github issue database link failed', {
-        connectorId,
+        connectorId: effectiveConnectorId,
         issueId: createdId,
         githubUrl: event.url,
         error: errorMessage(error),
@@ -2256,13 +2271,13 @@ async function createVibeIssue(connectorId, input, event, rule) {
         target_branch_name: event.baseRef || 'main',
       });
       await log('info', 'vibe PR linked to issue', {
-        connectorId,
+        connectorId: effectiveConnectorId,
         issueId: createdId,
         prUrl: event.url,
       });
     } catch (error) {
       await log('warn', 'vibe PR link failed', {
-        connectorId,
+        connectorId: effectiveConnectorId,
         issueId: createdId,
         prUrl: event.url,
         error: errorMessage(error),
@@ -2270,7 +2285,7 @@ async function createVibeIssue(connectorId, input, event, rule) {
     }
   }
   await log('info', 'vibe issue created', {
-    connectorId,
+    connectorId: effectiveConnectorId,
     ruleId: rule.id,
     title: payload.title,
     parentIssueId: payload.parent_issue_id || null,

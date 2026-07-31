@@ -2,16 +2,55 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueMarker,
+  githubIssueSyncVibeConnectorId,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
+  shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withGithubIssueMarker,
   withoutGithubIssueMarker,
 } from './github-issue-sync.mjs';
+
+test('rejects linking an issue outside the rule configured project', () => {
+  assert.doesNotThrow(() =>
+    assertGithubIssueProject({ project_id: 'project-1' }, 'project-1')
+  );
+  assert.throws(
+    () => assertGithubIssueProject({ project_id: 'project-2' }, 'project-1'),
+    /does not belong to the configured project/
+  );
+});
+
+test('scopes GitHub sync rules to their configured source and target connectors', () => {
+  const rule = {
+    kind: 'github_issue_sync',
+    config: {
+      githubConnectorId: 'github-2',
+      vibeConnectorId: 'vibe-2',
+    },
+  };
+  assert.equal(
+    shouldRunGithubIssueSyncRule(rule, { connectorId: 'github-1' }),
+    false
+  );
+  assert.equal(
+    shouldRunGithubIssueSyncRule(rule, { connectorId: 'github-2' }),
+    true
+  );
+  assert.equal(
+    githubIssueSyncVibeConnectorId(rule, 'vibe-default'),
+    'vibe-2'
+  );
+  assert.equal(
+    githubIssueSyncVibeConnectorId({ kind: 'script' }, 'vibe-default'),
+    'vibe-default'
+  );
+});
 
 test('reuses the persisted GitHub issue when link persistence is retried', async () => {
   const operation = {
