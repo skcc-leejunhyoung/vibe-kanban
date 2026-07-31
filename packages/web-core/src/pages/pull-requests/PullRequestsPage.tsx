@@ -23,10 +23,9 @@ import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
-import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
-import { getLinkedWorkspaceDescription } from '@/shared/lib/linkedWorkspaceDescription';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
+import { selectLinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { ActionTargetType } from '@/shared/types/actions';
 import { PullRequestDetailsPanel } from './PullRequestDetailsPanel';
@@ -410,68 +409,15 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
           await showEmptyMapping('This pull request has no mapped workspaces.');
           return;
         }
-        const selectedWorkspaceId = (await SelectionDialog.show({
-          initialPageId: 'mappedWorkspaces',
-          pages: {
-            mappedWorkspaces: {
-              id: 'mappedWorkspaces',
-              title: 'Mapped workspaces',
-              buildGroups: () => [
-                {
-                  label: 'Workspaces',
-                  items: mappedWorkspaces.map((workspace) => {
-                    const mappedIssue = mappedIssues.find(
-                      ({ link }) => link.issue_id === workspace.issue_id
-                    );
-                    return {
-                      type: 'action' as const,
-                      action: {
-                        id: workspace.id,
-                        label: workspace.name || 'Untitled workspace',
-                        description: [
-                          mappedIssue?.issue.simple_id,
-                          getLinkedWorkspaceDescription(
-                            workspaceSummaries.find(
-                              (candidate) =>
-                                getHostWorkspaceKey(
-                                  candidate.id,
-                                  candidate.hostId
-                                ) ===
-                                getHostWorkspaceKey(
-                                  workspace.local_workspace_id,
-                                  workspace.host_id
-                                )
-                            ) ??
-                              workspaceSummaries.find(
-                                (candidate) =>
-                                  candidate.id === workspace.local_workspace_id
-                              ),
-                            {
-                              archived: workspace.archived,
-                              updatedAt: workspace.updated_at,
-                            }
-                          ),
-                        ]
-                          .filter(Boolean)
-                          .join(' · '),
-                        icon: StackIcon,
-                        requiresTarget: ActionTargetType.NONE,
-                        execute: () => {},
-                      },
-                    };
-                  }),
-                },
-              ],
-              onSelect: (item) => ({
-                type: 'complete' as const,
-                data: item.type === 'action' ? item.action.id : undefined,
-              }),
-            },
-          },
-        })) as string | undefined;
-        const selected = mappedWorkspaces.find(
-          (workspace) => workspace.id === selectedWorkspaceId
-        );
+        const selected = await selectLinkedWorkspace({
+          title: 'Mapped workspaces',
+          workspaces: mappedWorkspaces,
+          workspaceSummaries,
+          getDescriptionPrefix: (workspace) =>
+            mappedIssues.find(
+              ({ link }) => link.issue_id === workspace.issue_id
+            )?.issue.simple_id,
+        });
         if (selected) {
           appNavigation.goToProjectIssueWorkspace(
             selected.project_id,

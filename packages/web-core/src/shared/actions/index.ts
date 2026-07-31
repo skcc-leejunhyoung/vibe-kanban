@@ -7,9 +7,11 @@ import type {
   Session,
   Workspace,
 } from 'shared/types';
-import type { PullRequest } from 'shared/remote-types';
+import type {
+  PullRequest,
+  Workspace as RemoteWorkspace,
+} from 'shared/remote-types';
 import type { QueryClient } from '@tanstack/react-query';
-import { getLinkedWorkspaceDescription } from '@/shared/lib/linkedWorkspaceDescription';
 export { getLinkedWorkspaceDescription } from '@/shared/lib/linkedWorkspaceDescription';
 import {
   CopyIcon,
@@ -844,63 +846,26 @@ export const Actions = {
       const issueId = issueIds[0];
       if (!issueId) return;
       const workspaces = ctx.remoteWorkspaces.filter(
-        (workspace) =>
+        (
+          workspace
+        ): workspace is RemoteWorkspace & { local_workspace_id: string } =>
           workspace.project_id === projectId &&
           workspace.issue_id === issueId &&
-          workspace.local_workspace_id
+          workspace.local_workspace_id !== null
       );
       const workspaceSummaries = [
         ...ctx.activeWorkspaces,
         ...ctx.archivedWorkspaces,
       ];
-      const { SelectionDialog } = await import(
-        '@/shared/dialogs/command-bar/SelectionDialog'
+      const { selectLinkedWorkspace } = await import(
+        '@/shared/dialogs/command-bar/selectLinkedWorkspace'
       );
-      const selectedId = (await SelectionDialog.show({
-        initialPageId: 'workspaces',
-        pages: {
-          workspaces: {
-            id: 'workspaces',
-            title: 'Linked workspaces',
-            buildGroups: () => [
-              {
-                label: 'Workspaces',
-                items: workspaces.map((workspace) => ({
-                  type: 'action' as const,
-                  action: {
-                    id: workspace.id,
-                    label: workspace.name || 'Untitled workspace',
-                    description: getLinkedWorkspaceDescription(
-                      workspaceSummaries.find(
-                        (candidate) =>
-                          candidate.id === workspace.local_workspace_id &&
-                          candidate.hostId === workspace.host_id
-                      ) ??
-                        workspaceSummaries.find(
-                          (candidate) =>
-                            candidate.id === workspace.local_workspace_id
-                        ),
-                      {
-                        archived: workspace.archived,
-                        updatedAt: workspace.updated_at,
-                      }
-                    ),
-                    icon: StackIcon,
-                    requiresTarget: ActionTargetType.NONE,
-                    execute: () => {},
-                  },
-                })),
-              },
-            ],
-            onSelect: (item) => ({
-              type: 'complete' as const,
-              data: item.type === 'action' ? item.action.id : undefined,
-            }),
-          },
-        },
-      })) as string | undefined;
-      const workspace = workspaces.find((item) => item.id === selectedId);
-      if (workspace?.local_workspace_id) {
+      const workspace = await selectLinkedWorkspace({
+        title: 'Linked workspaces',
+        workspaces,
+        workspaceSummaries,
+      });
+      if (workspace) {
         ctx.appNavigation.goToProjectIssueWorkspace(
           projectId,
           issueId,
