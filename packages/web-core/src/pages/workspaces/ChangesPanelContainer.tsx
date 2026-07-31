@@ -18,6 +18,7 @@ import {
   useDiffs,
   useShowGitHubComments,
   useGetGitHubCommentsForFile,
+  useGitHubCommentsRepoId,
 } from '@/shared/stores/useWorkspaceDiffStore';
 import {
   useDiffViewMode,
@@ -51,7 +52,11 @@ import {
   getDiffKey,
   getDiffPath,
   getDiffStyle,
+  getReviewCommentsForDiff,
+  getReviewWidgetKey,
   groupDiffsByRepo,
+  hasGitHubCommentsForDiff,
+  resolveSelectedDiff,
   shouldDeferDiffLoad,
   splitFilePath,
 } from './changesPanelModel';
@@ -357,6 +362,7 @@ const DiffFileItem = memo(function DiffFileItem({
 
   const showGitHubComments = useShowGitHubComments();
   const getGitHubCommentsForFile = useGetGitHubCommentsForFile();
+  const gitHubCommentsRepoId = useGitHubCommentsRepoId();
 
   const openInEditor = useOpenInEditor(workspaceId);
 
@@ -366,13 +372,22 @@ const DiffFileItem = memo(function DiffFileItem({
   );
 
   const commentsForFile = useMemo(
-    () => comments.filter((c) => c.filePath === filePath),
-    [comments, filePath]
+    () => getReviewCommentsForDiff(comments, diff),
+    [comments, diff]
   );
 
   const githubCommentsForFile = useMemo(
-    () => (showGitHubComments ? getGitHubCommentsForFile(filePath) : []),
-    [showGitHubComments, getGitHubCommentsForFile, filePath]
+    () =>
+      showGitHubComments && hasGitHubCommentsForDiff(diff, gitHubCommentsRepoId)
+        ? getGitHubCommentsForFile(filePath)
+        : [],
+    [
+      showGitHubComments,
+      diff.repoId,
+      gitHubCommentsRepoId,
+      getGitHubCommentsForFile,
+      filePath,
+    ]
   );
 
   const annotations = useMemo(() => {
@@ -384,7 +399,13 @@ const DiffFileItem = memo(function DiffFileItem({
 
     const draftAnns: DiffLineAnnotation<ExtendedCommentAnnotation>[] = [];
     Object.entries(drafts).forEach(([key, draft]) => {
-      if (!draft || draft.filePath !== filePath) return;
+      if (
+        !draft ||
+        draft.repoId !== diff.repoId ||
+        draft.filePath !== filePath
+      ) {
+        return;
+      }
       draftAnns.push({
         side: mapSideToAnnotationSide(draft.side),
         lineNumber: draft.lineNumber,
@@ -395,17 +416,18 @@ const DiffFileItem = memo(function DiffFileItem({
     return base.length > 0 || draftAnns.length > 0
       ? [...base, ...draftAnns]
       : undefined;
-  }, [commentsForFile, githubCommentsForFile, filePath, drafts]);
+  }, [commentsForFile, githubCommentsForFile, filePath, diff.repoId, drafts]);
 
   const handleLineClick = useCallback(
     (props: { lineNumber: number; annotationSide: AnnotationSide }) => {
       const { lineNumber, annotationSide } = props;
       const splitSide = mapAnnotationSideToSplitSide(annotationSide);
-      const widgetKey = `${filePath}-${splitSide}-${lineNumber}`;
+      const widgetKey = getReviewWidgetKey(diff, splitSide, lineNumber);
       if (draftsRef.current[widgetKey]) return;
 
       const codeLine = getCodeLineForComment(diff, lineNumber, splitSide);
       setDraft(widgetKey, {
+        repoId: diff.repoId,
         filePath,
         side: splitSide,
         lineNumber,
@@ -530,6 +552,7 @@ const DiffFileItem = memo(function DiffFileItem({
                 githubComment.side
               );
               addComment({
+                repoId: diff.repoId,
                 filePath,
                 lineNumber: githubComment.lineNumber,
                 side: githubComment.side,
@@ -559,11 +582,12 @@ const DiffFileItem = memo(function DiffFileItem({
           if (!line) return;
           const { side, lineNumber } = line;
           const splitSide = mapAnnotationSideToSplitSide(side);
-          const widgetKey = `${filePath}-${splitSide}-${lineNumber}`;
+          const widgetKey = getReviewWidgetKey(diff, splitSide, lineNumber);
           if (draftsRef.current[widgetKey]) return;
 
           const codeLine = getCodeLineForComment(diff, lineNumber, splitSide);
           setDraft(widgetKey, {
+            repoId: diff.repoId,
             filePath,
             side: splitSide,
             lineNumber,
@@ -608,7 +632,8 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   workspaceId,
 }: ChangesPanelContainerProps) {
   const diffs = useDiffs();
-  const { registerScrollToFile, selectedFilePath } = useChangesView();
+  const { registerFileRequest, selectFile, selectedFilePath, selectedRepoId } =
+    useChangesView();
   const { repos } = useWorkspaceRepo(workspaceId);
   const openInEditor = useOpenInEditor(workspaceId);
   const sortedDiffs = useMemo(() => sortDiffs(diffs), [diffs]);
@@ -632,39 +657,46 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   const lineScrollRequestRef = useRef(0);
 
   const selectedDiff = useMemo(
-    () =>
-      sortedDiffs.find((diff) => getDiffKey(diff) === selectedKey) ??
-      sortedDiffs[0] ??
-      null,
+    () => resolveSelectedDiff(sortedDiffs, selectedKey),
     [selectedKey, sortedDiffs]
   );
 
   useEffect(() => {
     if (!selectedFilePath) return;
+    const requestKey = `${selectedRepoId ?? 'unknown'}:${selectedFilePath}`;
     if (
-      handledRequestedPathRef.current === selectedFilePath &&
+      handledRequestedPathRef.current === requestKey &&
       selectedKey !== null
     ) {
       return;
     }
-    const requestedDiff = findDiffByPath(sortedDiffs, selectedFilePath);
+    const requestedDiff = findDiffByPath(
+      sortedDiffs,
+      selectedFilePath,
+      selectedRepoId ?? undefined
+    );
     if (requestedDiff) {
-      handledRequestedPathRef.current = selectedFilePath;
+      handledRequestedPathRef.current = requestKey;
       setSelectedKey(getDiffKey(requestedDiff));
     }
-  }, [selectedFilePath, selectedKey, sortedDiffs]);
+  }, [selectedFilePath, selectedRepoId, selectedKey, sortedDiffs]);
 
   useEffect(() => {
     const key = selectedDiff ? getDiffKey(selectedDiff) : null;
-    if (key !== selectedKey) setSelectedKey(key);
-  }, [selectedDiff, selectedKey]);
+    if (key !== selectedKey) {
+      setSelectedKey(key);
+      if (selectedDiff) {
+        selectFile(getDiffPath(selectedDiff), selectedDiff.repoId);
+      }
+    }
+  }, [selectedDiff, selectedKey, selectFile]);
 
-  const handleScrollToFile = useCallback(
-    (path: string, lineNumber?: number) => {
-      const requestedDiff = findDiffByPath(sortedDiffs, path);
+  const handleFileRequest = useCallback(
+    (path: string, lineNumber?: number, repoId?: string | null) => {
+      const requestedDiff = findDiffByPath(sortedDiffs, path, repoId);
       if (!requestedDiff) return;
       const diffKey = getDiffKey(requestedDiff);
-      handledRequestedPathRef.current = path;
+      handledRequestedPathRef.current = diffKey;
       setSelectedKey(diffKey);
 
       const requestId = ++lineScrollRequestRef.current;
@@ -705,11 +737,11 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   );
 
   useEffect(() => {
-    registerScrollToFile(handleScrollToFile);
+    registerFileRequest(handleFileRequest);
     return () => {
-      registerScrollToFile(null);
+      registerFileRequest(null);
     };
-  }, [registerScrollToFile, handleScrollToFile]);
+  }, [registerFileRequest, handleFileRequest]);
 
   return (
     <WorkerPoolContextProvider
@@ -758,7 +790,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
                         type="button"
                         title={path}
                         onClick={() => {
-                          setSelectedKey(diffKey);
+                          selectFile(path, diff.repoId);
                         }}
                         className={`w-full h-8 px-base flex items-center gap-2 text-left transition-colors ${
                           isSelected

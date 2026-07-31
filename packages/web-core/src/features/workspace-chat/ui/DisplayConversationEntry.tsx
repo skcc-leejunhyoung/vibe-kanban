@@ -494,7 +494,13 @@ function AppChatMarkdown({
   className: string | undefined;
   maxWidth: string | undefined;
 }) {
-  const { viewFileInChanges, findMatchingDiffPath } = useChangesViewActions();
+  const { viewFileInChanges, findMatchingDiffTarget } = useChangesViewActions();
+  const handleCodeClick = useCallback(
+    (target: { path: string; repoId: string | null }) => {
+      viewFileInChanges(target.path, target.repoId);
+    },
+    [viewFileInChanges]
+  );
 
   return (
     <ChatMarkdown
@@ -509,8 +515,8 @@ function AppChatMarkdown({
           className={className}
           workspaceId={workspaceId}
           sessionId={sessionId}
-          findMatchingDiffPath={findMatchingDiffPath}
-          onCodeClick={viewFileInChanges}
+          findMatchingDiffTarget={findMatchingDiffTarget}
+          onCodeClick={handleCodeClick}
         />
       )}
     />
@@ -536,7 +542,7 @@ function FileEditEntry({
   );
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
-  const { viewFileInChanges, hasDiffPath } = useChangesViewActions();
+  const { viewFileInChanges, findMatchingDiffTarget } = useChangesViewActions();
   const FileIcon = useMemo(
     () => getFileIcon(path, actualTheme),
     [path, actualTheme]
@@ -583,9 +589,10 @@ function FileEditEntry({
 
   // Only show "open in changes" button if the file exists in current diffs
   const handleOpenInChanges = useCallback(() => {
-    if (!hasDiffPath(path)) return;
-    viewFileInChanges(path);
-  }, [viewFileInChanges, hasDiffPath, path]);
+    const target = findMatchingDiffTarget(path);
+    if (!target) return;
+    viewFileInChanges(target.path, target.repoId);
+  }, [viewFileInChanges, findMatchingDiffTarget, path]);
   const handleOpenInVSCode = useCallback((filename: string) => {
     openFileInVSCode(filename, { openAsDiff: false });
   }, []);
@@ -1349,7 +1356,7 @@ function AggregatedThinkingGroupEntry({
 function AggregatedDiffGroupEntry({ group }: { group: AggregatedDiffGroup }) {
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
-  const { viewFileInChanges, hasDiffPath } = useChangesViewActions();
+  const { viewFileInChanges, findMatchingDiffTarget } = useChangesViewActions();
   const [expanded, toggle] = usePersistedExpanded(
     `diff:${group.patchKey}`,
     false
@@ -1396,9 +1403,10 @@ function AggregatedDiffGroupEntry({ group }: { group: AggregatedDiffGroup }) {
   }, []);
 
   const handleOpenInChanges = useCallback(() => {
-    if (!hasDiffPath(group.filePath)) return;
-    viewFileInChanges(group.filePath);
-  }, [viewFileInChanges, hasDiffPath, group.filePath]);
+    const target = findMatchingDiffTarget(group.filePath);
+    if (!target) return;
+    viewFileInChanges(target.path, target.repoId);
+  }, [viewFileInChanges, findMatchingDiffTarget, group.filePath]);
   const handleOpenInVSCode = useCallback((filePath: string) => {
     openFileInVSCode(filePath, { openAsDiff: false });
   }, []);

@@ -5,6 +5,7 @@ import {
   type ReviewComment,
   type ReviewDraft,
 } from '@/shared/hooks/useReview';
+import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 
 export function ReviewProvider({
   children,
@@ -15,6 +16,14 @@ export function ReviewProvider({
 }) {
   const [comments, setComments] = useState<ReviewComment[]>([]);
   const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
+  const { repos } = useWorkspaceRepo(workspaceId);
+  const repoLabels = useMemo(
+    () =>
+      new Map(
+        repos.map((repo) => [repo.id, repo.display_name || repo.name] as const)
+      ),
+    [repos]
+  );
 
   const addComment = useCallback((comment: Omit<ReviewComment, 'id'>) => {
     const newComment: ReviewComment = {
@@ -73,19 +82,23 @@ export function ReviewProvider({
     const commentsMd = comments
       .map((comment) => {
         const codeLine = formatCodeLine(comment.codeLine);
+        const repoLabel = comment.repoId
+          ? (repoLabels.get(comment.repoId) ?? comment.repoId)
+          : 'Repository';
+        const location = `${repoLabel}/${comment.filePath}`;
         // Format file paths in comment body with backticks
         const bodyWithFormattedPaths = comment.text
           .trim()
           .replace(/([/\\]?[\w.-]+(?:[/\\][\w.-]+)+)/g, '`$1`');
         if (codeLine) {
-          return `**${comment.filePath}** (Line ${comment.lineNumber})\n${codeLine}\n\n> ${bodyWithFormattedPaths}\n`;
+          return `**${location}** (Line ${comment.lineNumber})\n${codeLine}\n\n> ${bodyWithFormattedPaths}\n`;
         }
-        return `**${comment.filePath}** (Line ${comment.lineNumber})\n\n> ${bodyWithFormattedPaths}\n`;
+        return `**${location}** (Line ${comment.lineNumber})\n\n> ${bodyWithFormattedPaths}\n`;
       })
       .join('\n');
 
     return header + commentsMd;
-  }, [comments]);
+  }, [comments, repoLabels]);
 
   const contextValue = useMemo(
     () => ({

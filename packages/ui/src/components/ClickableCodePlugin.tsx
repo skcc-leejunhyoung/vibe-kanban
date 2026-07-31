@@ -1,11 +1,13 @@
-import { useEffect, useRef } from 'react';
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { useEffect, useRef } from "react";
+import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 
 interface ClickableCodePluginProps {
-  /** Function to find a matching diff path (supports partial/right-hand match) */
-  findMatchingDiffPath: (text: string) => string | null;
-  /** Callback when a clickable code element is clicked (receives the full path) */
-  onCodeClick: (fullPath: string) => void;
+  /** Function to find a matching diff target (supports partial/right-hand match) */
+  findMatchingDiffTarget: (
+    text: string,
+  ) => { path: string; repoId: string | null } | null;
+  /** Callback when a clickable code element is clicked */
+  onCodeClick: (target: { path: string; repoId: string | null }) => void;
 }
 
 /**
@@ -19,7 +21,7 @@ interface ClickableCodePluginProps {
  * to matching code elements.
  */
 export function ClickableCodePlugin({
-  findMatchingDiffPath,
+  findMatchingDiffTarget,
   onCodeClick,
 }: ClickableCodePluginProps) {
   const [editor] = useLexicalComposerContext();
@@ -28,36 +30,38 @@ export function ClickableCodePlugin({
   useEffect(() => {
     const root = editor.getRootElement();
     if (!root) return;
+    const clickHandlers = new Map<Element, EventListener>();
 
     // Process a single code element
     const processCodeElement = (element: Element) => {
       // Skip if already processed
       if (processedElementsRef.current.has(element)) return;
 
-      const text = element.textContent?.trim() ?? '';
+      const text = element.textContent?.trim() ?? "";
 
       // Check if this matches a diff path (supports fuzzy right-hand match)
-      const matchedPath = findMatchingDiffPath(text);
-      if (!matchedPath) return;
+      const matchedTarget = findMatchingDiffTarget(text);
+      if (!matchedTarget) return;
 
       // Mark as processed
       processedElementsRef.current.add(element);
 
       // Add clickable styling
-      (element as HTMLElement).style.cursor = 'pointer';
-      element.classList.add('clickable-code');
+      (element as HTMLElement).style.cursor = "pointer";
+      element.classList.add("clickable-code");
 
       // Add click handler - use the full matched path for navigation
       const handleClick = (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
-        onCodeClick(matchedPath);
+        onCodeClick(matchedTarget);
       };
 
-      element.addEventListener('click', handleClick);
+      element.addEventListener("click", handleClick);
+      clickHandlers.set(element, handleClick);
 
       // Store cleanup function on the element
-      (element as HTMLElement).dataset.clickableCode = 'true';
+      (element as HTMLElement).dataset.clickableCode = "true";
     };
 
     // Process all existing code elements
@@ -65,7 +69,7 @@ export function ClickableCodePlugin({
       // Inline code uses the theme class which includes 'font-mono' and 'bg-muted'
       // The actual class applied is from theme.text.code
       const codeElements = root.querySelectorAll(
-        'code, .font-mono.bg-muted, [class*="text-code"]'
+        'code, .font-mono.bg-muted, [class*="text-code"]',
       );
       codeElements.forEach(processCodeElement);
     };
@@ -87,7 +91,7 @@ export function ClickableCodePlugin({
             }
             // Check child code elements
             const childCodeElements = node.querySelectorAll(
-              'code, .font-mono.bg-muted, [class*="text-code"]'
+              'code, .font-mono.bg-muted, [class*="text-code"]',
             );
             childCodeElements.forEach(processCodeElement);
           }
@@ -103,15 +107,18 @@ export function ClickableCodePlugin({
     return () => {
       observer.disconnect();
       // Clean up click handlers
-      const clickableElements = root.querySelectorAll('[data-clickable-code]');
+      const clickableElements = root.querySelectorAll("[data-clickable-code]");
       clickableElements.forEach((el) => {
-        (el as HTMLElement).style.cursor = '';
-        el.classList.remove('clickable-code');
+        const handler = clickHandlers.get(el);
+        if (handler) el.removeEventListener("click", handler);
+        (el as HTMLElement).style.cursor = "";
+        el.classList.remove("clickable-code");
         delete (el as HTMLElement).dataset.clickableCode;
       });
+      clickHandlers.clear();
       processedElementsRef.current = new WeakSet();
     };
-  }, [editor, findMatchingDiffPath, onCodeClick]);
+  }, [editor, findMatchingDiffTarget, onCodeClick]);
 
   return null;
 }

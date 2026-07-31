@@ -34,6 +34,7 @@ interface WorkspaceDiffData {
   diffPaths: Set<string>;
   diffStats: DiffStats;
   gitHubComments: UnifiedPrComment[];
+  gitHubCommentsRepoId: string | null;
   isGitHubCommentsLoading: boolean;
   showGitHubComments: boolean;
   setShowGitHubComments: (show: boolean) => void;
@@ -55,6 +56,7 @@ const DEFAULT_DATA: WorkspaceDiffData = {
   diffPaths: EMPTY_DIFF_PATHS,
   diffStats: EMPTY_DIFF_STATS,
   gitHubComments: EMPTY_COMMENTS,
+  gitHubCommentsRepoId: null,
   isGitHubCommentsLoading: false,
   showGitHubComments: false,
   setShowGitHubComments: noopSetShowGitHubComments,
@@ -88,6 +90,9 @@ export const useDiffStats = () => useWorkspaceDiffStore((s) => s.diffStats);
 
 export const useStoreDiffGitHubComments = () =>
   useWorkspaceDiffStore((s) => s.gitHubComments);
+
+export const useGitHubCommentsRepoId = () =>
+  useWorkspaceDiffStore((s) => s.gitHubCommentsRepoId);
 
 export const useIsGitHubCommentsLoading = () =>
   useWorkspaceDiffStore((s) => s.isGitHubCommentsLoading);

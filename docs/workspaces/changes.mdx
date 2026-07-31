@@ -3,10 +3,6 @@ title: "Changes Panel"
 description: "Review code modifications and provide feedback to agents"
 ---
 
-<Frame>
-<img style={{maxHeight: "400px"}} src="/images/workspaces-changes-panel.png" alt="Changes panel showing the changed file list and side-by-side diff view" />
-</Frame>
-
 The changes panel lets you review all code modifications in your workspace and provide feedback to agents.
 
 ## Why Review Changes?
@@ -153,7 +149,7 @@ Click the Changes icon in the navbar or use `Cmd/Ctrl + K` → "Toggle Changes P
 </Step>
 
 <Step title="Review each file">
-Click through each modified file in the file tree. Look for:
+Click through each modified file in the changed-file list. In multi-repository workspaces, files are grouped by repository. Look for:
 - **Logic errors** - Does the code do what you intended?
 - **Missing pieces** - Are there unhandled edge cases?
 - **Code quality** - Is the code readable and maintainable?

@@ -2,14 +2,15 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 
 import { FileTree } from '@vibe/ui/components/FileTree';
 import {
-  buildFileTree,
+  buildFileTreeByRepo,
   filterFileTree,
+  findDiffByFileTreePath,
+  getFileTreePath,
   getExpandedPathsForSearch,
   getAllFolderPaths,
   sortDiffs,
 } from '@/shared/lib/fileTreeUtils';
 import { usePersistedCollapsedPaths } from '@/shared/stores/useUiPreferencesStore';
-import { useFileInView } from '@/shared/stores/useFileInViewStore';
 import {
   useShowGitHubComments,
   useSetShowGitHubComments,
@@ -17,10 +18,12 @@ import {
   useGetFilesWithGitHubComments,
   useGetFirstCommentLineForFile,
   useIsGitHubCommentsLoading,
+  useGitHubCommentsRepoId,
 } from '@/shared/stores/useWorkspaceDiffStore';
 import { useChangesView } from '@/shared/hooks/useChangesView';
 import { getFileIcon } from '@/shared/lib/fileTypeIcon';
 import { useTheme } from '@/shared/hooks/useTheme';
+import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { getActualTheme } from '@/shared/lib/theme';
 import type { Diff } from 'shared/types';
 
@@ -37,6 +40,7 @@ export function FileTreeContainer({
 }: FileTreeContainerProps) {
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
+  const { repos } = useWorkspaceRepo(workspaceId);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [collapsedPaths, setCollapsedPaths] =
@@ -47,10 +51,34 @@ export function FileTreeContainer({
   const getFilesWithGitHubComments = useGetFilesWithGitHubComments();
   const getFirstCommentLineForFile = useGetFirstCommentLineForFile();
   const isGitHubCommentsLoading = useIsGitHubCommentsLoading();
+  const gitHubCommentsRepoId = useGitHubCommentsRepoId();
 
-  const { selectedFilePath, scrollToFile } = useChangesView();
-  const fileInView = useFileInView();
-  const activeFilePath = fileInView ?? selectedFilePath;
+  const { selectedFilePath, selectedRepoId, selectFile, selectFileAtLine } =
+    useChangesView();
+  const { nodes: fullTree, groupByRepo } = useMemo(
+    () =>
+      buildFileTreeByRepo(
+        diffs,
+        repos.map((repo) => ({
+          id: repo.id,
+          label: repo.display_name || repo.name,
+        }))
+      ),
+    [diffs, repos]
+  );
+  const activeDiff = useMemo(
+    () =>
+      diffs.find(
+        (diff) =>
+          (diff.newPath === selectedFilePath ||
+            diff.oldPath === selectedFilePath) &&
+          diff.repoId === selectedRepoId
+      ) ?? null,
+    [diffs, selectedFilePath, selectedRepoId]
+  );
+  const activeFilePath = activeDiff
+    ? getFileTreePath(activeDiff, groupByRepo)
+    : null;
   const treeScrollRef = useRef<HTMLDivElement | null>(null);
   const treeScrollCallbackRef = useCallback((el: HTMLDivElement | null) => {
     treeScrollRef.current = el;
@@ -78,8 +106,6 @@ export function FileTreeContainer({
     const rafId = requestAnimationFrame(scrollNodeIntoView);
     return () => cancelAnimationFrame(rafId);
   }, [activeFilePath]);
-
-  const fullTree = useMemo(() => buildFileTree(diffs), [diffs]);
 
   // Get all folder paths for expand all functionality
   const allFolderPaths = useMemo(() => getAllFolderPaths(fullTree), [fullTree]);
@@ -131,37 +157,40 @@ export function FileTreeContainer({
 
   const handleSelectFile = useCallback(
     (path: string) => {
-      const diff = diffs.find((d) => d.newPath === path || d.oldPath === path);
+      const diff = findDiffByFileTreePath(fullTree, path);
 
       if (diff) {
-        const targetPath = diff.newPath || diff.oldPath || path;
-        scrollToFile(targetPath);
+        const targetPath = diff.newPath || diff.oldPath || '';
+        selectFile(targetPath, diff.repoId);
       }
     },
-    [diffs, scrollToFile]
+    [fullTree, selectFile]
   );
 
   // Get list of diff paths that have GitHub comments, sorted to match visual order
   const filesWithComments = useMemo(() => {
     const ghFiles = getFilesWithGitHubComments();
     // Sort diffs first to match visual order, then filter to those with comments
-    return sortDiffs(diffs)
-      .map((d) => d.newPath || d.oldPath || '')
-      .filter((diffPath) =>
-        ghFiles.some(
-          (ghPath) => diffPath === ghPath || diffPath.endsWith('/' + ghPath)
-        )
+    return sortDiffs(diffs).filter((diff) => {
+      if (diff.repoId !== gitHubCommentsRepoId) return false;
+      const diffPath = diff.newPath || diff.oldPath || '';
+      return ghFiles.some(
+        (ghPath) => diffPath === ghPath || diffPath.endsWith('/' + ghPath)
       );
-  }, [getFilesWithGitHubComments, diffs]);
+    });
+  }, [getFilesWithGitHubComments, gitHubCommentsRepoId, diffs]);
 
   // Navigate between files with GitHub comments
   const handleNavigateComments = useCallback(
     (direction: 'prev' | 'next') => {
       if (filesWithComments.length === 0) return;
 
-      const currentIndex = activeFilePath
-        ? filesWithComments.indexOf(activeFilePath)
-        : -1;
+      const currentIndex = filesWithComments.findIndex(
+        (diff) =>
+          (diff.newPath === selectedFilePath ||
+            diff.oldPath === selectedFilePath) &&
+          diff.repoId === selectedRepoId
+      );
       let nextIndex: number;
 
       if (direction === 'next') {
@@ -172,16 +201,18 @@ export function FileTreeContainer({
           currentIndex > 0 ? currentIndex - 1 : filesWithComments.length - 1;
       }
 
-      const targetPath = filesWithComments[nextIndex];
+      const targetDiff = filesWithComments[nextIndex];
+      const targetPath = targetDiff.newPath || targetDiff.oldPath || '';
       const lineNumber = getFirstCommentLineForFile(targetPath);
 
-      scrollToFile(targetPath, lineNumber ?? undefined);
+      selectFileAtLine(targetPath, lineNumber ?? undefined, targetDiff.repoId);
     },
     [
       filesWithComments,
-      activeFilePath,
+      selectedFilePath,
+      selectedRepoId,
       getFirstCommentLineForFile,
-      scrollToFile,
+      selectFileAtLine,
     ]
   );
 
@@ -191,6 +222,15 @@ export function FileTreeContainer({
       return FileIcon ? <FileIcon size={14} /> : null;
     },
     [actualTheme]
+  );
+  const getCommentCountForTreePath = useCallback(
+    (path: string) => {
+      const diff = findDiffByFileTreePath(fullTree, path);
+      if (diff?.repoId !== gitHubCommentsRepoId) return 0;
+      const filePath = diff?.newPath || diff?.oldPath;
+      return filePath ? getGitHubCommentCountForFile(filePath) : 0;
+    },
+    [fullTree, gitHubCommentsRepoId, getGitHubCommentCountForFile]
   );
 
   return (
@@ -209,7 +249,7 @@ export function FileTreeContainer({
       scrollContainerRef={treeScrollCallbackRef}
       showGitHubComments={showGitHubComments}
       onToggleGitHubComments={setShowGitHubComments}
-      getGitHubCommentCountForFile={getGitHubCommentCountForFile}
+      getGitHubCommentCountForFile={getCommentCountForTreePath}
       isGitHubCommentsLoading={isGitHubCommentsLoading}
       onNavigateComments={handleNavigateComments}
       hasFilesWithComments={filesWithComments.length > 0}

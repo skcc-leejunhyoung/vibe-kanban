@@ -30,6 +30,7 @@ export const CommentWidgetLine = memo(function CommentWidgetLine({
   const handleSave = useCallback(() => {
     if (value.trim()) {
       addComment({
+        repoId: draft.repoId,
         filePath: draft.filePath,
         side: draft.side,
         lineNumber: draft.lineNumber,

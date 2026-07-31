@@ -3,119 +3,133 @@ import {
   useUiPreferencesStore,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
-import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
 import {
   ChangesViewContext,
   ChangesViewActionsContext,
-  type ScrollToFileCallback,
+  type ChangesFileRequestCallback,
+  type ChangesFileTarget,
 } from '@/shared/hooks/useChangesView';
-import { useFileInViewStore } from '@/shared/stores/useFileInViewStore';
+import { useDiffs } from '@/shared/stores/useWorkspaceDiffStore';
+import type { Diff } from 'shared/types';
 
 interface ChangesViewProviderProps {
   children: React.ReactNode;
 }
 
 export function notifyChangesFileSelection(
-  callback: ScrollToFileCallback | null,
+  callback: ChangesFileRequestCallback | null,
   path: string,
-  lineNumber?: number
+  lineNumber?: number,
+  repoId?: string | null
 ) {
-  callback?.(path, lineNumber);
+  callback?.(path, lineNumber, repoId);
+}
+
+export function findMatchingChangesTarget(
+  diffs: Diff[],
+  text: string,
+  preferredRepoId?: string | null
+): ChangesFileTarget | null {
+  const matches = diffs.filter((diff) => {
+    const path = diff.newPath || diff.oldPath || '';
+    return path === text || path.endsWith('/' + text);
+  });
+  const match =
+    matches.find((diff) => diff.repoId === preferredRepoId) ?? matches[0];
+  if (!match) return null;
+  return {
+    path: match.newPath || match.oldPath || text,
+    repoId: match.repoId,
+  };
 }
 
 export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
-  const diffPaths = useDiffPaths();
+  const diffs = useDiffs();
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const [selectedLineNumber, setSelectedLineNumber] = useState<number | null>(
-    null
-  );
+  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const setRightMainPanelMode = useUiPreferencesStore(
     (s) => s.setRightMainPanelMode
   );
 
-  const scrollToFileCallbackRef = useRef<ScrollToFileCallback | null>(null);
-  const diffPathsRef = useRef(diffPaths);
-  diffPathsRef.current = diffPaths;
-
-  const registerScrollToFile = useCallback(
-    (callback: ScrollToFileCallback | null) => {
-      scrollToFileCallbackRef.current = callback;
+  const fileRequestCallbackRef = useRef<ChangesFileRequestCallback | null>(
+    null
+  );
+  const registerFileRequest = useCallback(
+    (callback: ChangesFileRequestCallback | null) => {
+      fileRequestCallbackRef.current = callback;
     },
     []
   );
 
-  const selectFile = useCallback((path: string, lineNumber?: number) => {
+  const selectFile = useCallback((path: string, repoId?: string | null) => {
     setSelectedFilePath(path);
-    setSelectedLineNumber(lineNumber ?? null);
-    useFileInViewStore.getState().setFileInView(path);
+    setSelectedRepoId(repoId ?? null);
+    notifyChangesFileSelection(
+      fileRequestCallbackRef.current,
+      path,
+      undefined,
+      repoId
+    );
   }, []);
 
-  const scrollToFile = useCallback(
-    (path: string, lineNumber?: number) => {
+  const selectFileAtLine = useCallback(
+    (path: string, lineNumber?: number, repoId?: string | null) => {
       setSelectedFilePath(path);
-      setSelectedLineNumber(lineNumber ?? null);
-      useFileInViewStore.getState().setFileInView(path);
-
-      if (scrollToFileCallbackRef.current) {
-        scrollToFileCallbackRef.current(path, lineNumber);
-      } else {
-        selectFile(path, lineNumber);
-      }
+      setSelectedRepoId(repoId ?? null);
+      notifyChangesFileSelection(
+        fileRequestCallbackRef.current,
+        path,
+        lineNumber,
+        repoId
+      );
     },
-    [selectFile]
+    []
   );
 
   const viewFileInChanges = useCallback(
-    (filePath: string) => {
+    (filePath: string, repoId?: string | null) => {
       setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
       setSelectedFilePath(filePath);
-      setSelectedLineNumber(null);
-      useFileInViewStore.getState().setFileInView(filePath);
-      notifyChangesFileSelection(scrollToFileCallbackRef.current, filePath);
+      setSelectedRepoId(repoId ?? null);
+      notifyChangesFileSelection(
+        fileRequestCallbackRef.current,
+        filePath,
+        undefined,
+        repoId
+      );
     },
     [setRightMainPanelMode]
   );
 
-  const findMatchingDiffPath = useCallback((text: string): string | null => {
-    const currentDiffPaths = diffPathsRef.current;
-    if (currentDiffPaths.has(text)) return text;
-    for (const fullPath of currentDiffPaths) {
-      if (fullPath.endsWith('/' + text)) {
-        return fullPath;
-      }
-    }
-    return null;
-  }, []);
-
-  const hasDiffPath = useCallback((path: string): boolean => {
-    return diffPathsRef.current.has(path);
-  }, []);
+  const findMatchingDiffTarget = useCallback(
+    (text: string): ChangesFileTarget | null =>
+      findMatchingChangesTarget(diffs, text, selectedRepoId),
+    [diffs, selectedRepoId]
+  );
 
   const actionsValue = useMemo(
-    () => ({ viewFileInChanges, findMatchingDiffPath, hasDiffPath }),
-    [viewFileInChanges, findMatchingDiffPath, hasDiffPath]
+    () => ({ viewFileInChanges, findMatchingDiffTarget }),
+    [viewFileInChanges, findMatchingDiffTarget]
   );
 
   const value = useMemo(
     () => ({
       selectedFilePath,
-      selectedLineNumber,
+      selectedRepoId,
       selectFile,
-      scrollToFile,
+      selectFileAtLine,
       viewFileInChanges,
-      diffPaths,
-      findMatchingDiffPath,
-      registerScrollToFile,
+      findMatchingDiffTarget,
+      registerFileRequest,
     }),
     [
       selectedFilePath,
-      selectedLineNumber,
+      selectedRepoId,
       selectFile,
-      scrollToFile,
+      selectFileAtLine,
       viewFileInChanges,
-      diffPaths,
-      findMatchingDiffPath,
-      registerScrollToFile,
+      findMatchingDiffTarget,
+      registerFileRequest,
     ]
   );
 

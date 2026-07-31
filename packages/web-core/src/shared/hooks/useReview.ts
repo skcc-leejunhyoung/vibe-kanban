@@ -4,6 +4,7 @@ import { DiffSide } from '@/shared/types/diff';
 
 export interface ReviewComment {
   id: string;
+  repoId: string | null;
   filePath: string;
   lineNumber: number;
   side: DiffSide;
@@ -12,6 +13,7 @@ export interface ReviewComment {
 }
 
 export interface ReviewDraft {
+  repoId: string | null;
   filePath: string;
   side: DiffSide;
   lineNumber: number;

@@ -1,6 +1,96 @@
 import type { Diff } from 'shared/types';
 import type { TreeNode } from '@/shared/types/fileTree';
 
+export interface FileTreeRepo {
+  id: string;
+  label: string;
+}
+
+const REPO_PATH_PREFIX = 'repo:';
+
+function getRepoTreeRootPath(repoId: string | null): string {
+  return `${REPO_PATH_PREFIX}${repoId ?? 'unknown'}`;
+}
+
+export function getFileTreePath(diff: Diff, groupByRepo: boolean): string {
+  const filePath = diff.newPath ?? diff.oldPath ?? '';
+  return groupByRepo
+    ? `${getRepoTreeRootPath(diff.repoId)}/${filePath}`
+    : filePath;
+}
+
+function prefixTreePaths(nodes: TreeNode[], prefix: string): TreeNode[] {
+  return nodes.map((node) => {
+    const path = `${prefix}/${node.path}`;
+    return {
+      ...node,
+      id: path,
+      path,
+      children: node.children
+        ? prefixTreePaths(node.children, prefix)
+        : undefined,
+    };
+  });
+}
+
+/**
+ * Builds a file tree with repository roots when changes span multiple repos.
+ */
+export function buildFileTreeByRepo(
+  diffs: Diff[],
+  repos: FileTreeRepo[]
+): { nodes: TreeNode[]; groupByRepo: boolean } {
+  const repoIds = new Set(diffs.map((diff) => diff.repoId ?? 'unknown'));
+  const groupByRepo = repos.length > 1 || repoIds.size > 1;
+
+  if (!groupByRepo) {
+    return { nodes: buildFileTree(diffs), groupByRepo };
+  }
+
+  const repoLabels = new Map(repos.map((repo) => [repo.id, repo.label]));
+  const diffsByRepo = new Map<string, Diff[]>();
+  for (const diff of diffs) {
+    const key = diff.repoId ?? 'unknown';
+    const group = diffsByRepo.get(key);
+    if (group) {
+      group.push(diff);
+    } else {
+      diffsByRepo.set(key, [diff]);
+    }
+  }
+
+  const nodes = [...diffsByRepo.values()].map((repoDiffs) => {
+    const repoId = repoDiffs[0]?.repoId ?? null;
+    const path = getRepoTreeRootPath(repoId);
+    return {
+      id: path,
+      name: repoId ? (repoLabels.get(repoId) ?? repoId) : 'Repository',
+      path,
+      type: 'folder' as const,
+      children: prefixTreePaths(buildFileTree(repoDiffs), path),
+    };
+  });
+
+  return {
+    nodes: nodes.sort((a, b) => a.name.localeCompare(b.name)),
+    groupByRepo,
+  };
+}
+
+export function findDiffByFileTreePath(
+  nodes: TreeNode[],
+  path: string
+): Diff | null {
+  for (const node of nodes) {
+    if (node.path === path && node.diff) return node.diff;
+    if (node.children) {
+      const diff = findDiffByFileTreePath(node.children, path);
+      if (diff) return diff;
+    }
+  }
+  return null;
+}
+
 /**
  * Transforms flat Diff[] into hierarchical TreeNode[]
  */

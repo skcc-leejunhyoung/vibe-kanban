@@ -5,10 +5,15 @@ import {
   findDiffByPath,
   getDiffKey,
   getDiffStyle,
+  getReviewCommentsForDiff,
+  getReviewWidgetKey,
   groupDiffsByRepo,
+  hasGitHubCommentsForDiff,
+  resolveSelectedDiff,
   shouldDeferDiffLoad,
   splitFilePath,
 } from './changesPanelModel';
+import { DiffSide } from '@/shared/types/diff';
 
 function makeDiff(repoId: string, path: string): Diff {
   return {
@@ -61,6 +66,21 @@ describe('changesPanelModel', () => {
     ).toBe(requested);
   });
 
+  it('resolves identical paths using the requested repository', () => {
+    const first = makeDiff('repo-1', 'package.json');
+    const second = makeDiff('repo-2', 'package.json');
+
+    expect(findDiffByPath([first, second], 'package.json', 'repo-2')).toBe(
+      second
+    );
+  });
+
+  it('falls back to the first diff for the initial shared selection', () => {
+    const first = makeDiff('repo-1', 'src/first.ts');
+
+    expect(resolveSelectedDiff([first], null)).toBe(first);
+  });
+
   it('splits a path so the directory can truncate without hiding the filename', () => {
     expect(splitFilePath('packages/web-core/src/ChangesPanel.tsx')).toEqual({
       directory: 'packages/web-core/src',
@@ -87,5 +107,41 @@ describe('changesPanelModel', () => {
     diff.additions = DEFER_DIFF_LOAD_LINES + 1;
 
     expect(shouldDeferDiffLoad(diff)).toBe(false);
+  });
+
+  it('isolates review comments and draft keys by repository', () => {
+    const first = makeDiff('repo-1', 'package.json');
+    const second = makeDiff('repo-2', 'package.json');
+    const comments = [
+      {
+        id: 'comment-1',
+        repoId: 'repo-1',
+        filePath: 'package.json',
+        lineNumber: 1,
+        side: DiffSide.New,
+        text: 'First repository',
+      },
+      {
+        id: 'comment-2',
+        repoId: 'repo-2',
+        filePath: 'package.json',
+        lineNumber: 1,
+        side: DiffSide.New,
+        text: 'Second repository',
+      },
+    ];
+
+    expect(getReviewCommentsForDiff(comments, second)).toEqual([comments[1]]);
+    expect(getReviewWidgetKey(first, DiffSide.New, 1)).not.toBe(
+      getReviewWidgetKey(second, DiffSide.New, 1)
+    );
+  });
+
+  it('shows GitHub comments only in the repository they were fetched for', () => {
+    const first = makeDiff('repo-1', 'package.json');
+    const second = makeDiff('repo-2', 'package.json');
+
+    expect(hasGitHubCommentsForDiff(first, 'repo-1')).toBe(true);
+    expect(hasGitHubCommentsForDiff(second, 'repo-1')).toBe(false);
   });
 });

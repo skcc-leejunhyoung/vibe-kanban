@@ -142,10 +142,12 @@ type WysiwygProps = {
   onDelete?: () => void;
   /** Auto-focus the editor on mount */
   autoFocus?: boolean;
-  /** Function to find a matching diff path for clickable inline code (only in read-only mode) */
-  findMatchingDiffPath?: (text: string) => string | null;
+  /** Function to find a matching diff target for clickable inline code (only in read-only mode) */
+  findMatchingDiffTarget?: (
+    text: string
+  ) => { path: string; repoId: string | null } | null;
   /** Callback when clickable inline code is clicked (only in read-only mode) */
-  onCodeClick?: (fullPath: string) => void;
+  onCodeClick?: (target: { path: string; repoId: string | null }) => void;
   /** Hide the copy/edit/delete action buttons in read-only mode */
   hideActions?: boolean;
   /** Show a static toolbar below the editor content */
@@ -295,7 +297,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       onEdit,
       onDelete,
       autoFocus = false,
-      findMatchingDiffPath,
+      findMatchingDiffTarget,
       onCodeClick,
       hideActions = false,
       showStaticToolbar = false,
@@ -748,9 +750,9 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 {/* Link sanitization for read-only mode */}
                 {disabled && <ReadOnlyLinkPlugin />}
                 {/* Clickable code for file paths in read-only mode */}
-                {disabled && findMatchingDiffPath && onCodeClick && (
+                {disabled && findMatchingDiffTarget && onCodeClick && (
                   <ClickableCodePlugin
-                    findMatchingDiffPath={findMatchingDiffPath}
+                    findMatchingDiffTarget={findMatchingDiffTarget}
                     onCodeClick={onCodeClick}
                   />
                 )}

@@ -1,43 +1,50 @@
 import { useContext } from 'react';
 import { createHmrContext } from '@/shared/lib/hmrContext';
 
-/** Callback type for scroll-to-file implementation (provided by ChangesPanelContainer) */
-export type ScrollToFileCallback = (path: string, lineNumber?: number) => void;
+/** File request callback implemented by ChangesPanelContainer. */
+export type ChangesFileRequestCallback = (
+  path: string,
+  lineNumber?: number,
+  repoId?: string | null
+) => void;
+
+export interface ChangesFileTarget {
+  path: string;
+  repoId: string | null;
+}
 
 interface ChangesViewContextValue {
   selectedFilePath: string | null;
-  selectedLineNumber: number | null;
-  selectFile: (path: string, lineNumber?: number) => void;
-  scrollToFile: (path: string, lineNumber?: number) => void;
-  viewFileInChanges: (filePath: string) => void;
-  diffPaths: Set<string>;
-  findMatchingDiffPath: (text: string) => string | null;
-  registerScrollToFile: (callback: ScrollToFileCallback | null) => void;
+  selectedRepoId: string | null;
+  selectFile: (path: string, repoId?: string | null) => void;
+  selectFileAtLine: (
+    path: string,
+    lineNumber?: number,
+    repoId?: string | null
+  ) => void;
+  viewFileInChanges: (filePath: string, repoId?: string | null) => void;
+  findMatchingDiffTarget: (text: string) => ChangesFileTarget | null;
+  registerFileRequest: (callback: ChangesFileRequestCallback | null) => void;
 }
 
 interface ChangesViewActionsContextValue {
-  viewFileInChanges: (filePath: string) => void;
-  findMatchingDiffPath: (text: string) => string | null;
-  hasDiffPath: (path: string) => boolean;
+  viewFileInChanges: (filePath: string, repoId?: string | null) => void;
+  findMatchingDiffTarget: (text: string) => ChangesFileTarget | null;
 }
-
-const EMPTY_SET = new Set<string>();
 
 const defaultValue: ChangesViewContextValue = {
   selectedFilePath: null,
-  selectedLineNumber: null,
+  selectedRepoId: null,
   selectFile: () => {},
-  scrollToFile: () => {},
+  selectFileAtLine: () => {},
   viewFileInChanges: () => {},
-  diffPaths: EMPTY_SET,
-  findMatchingDiffPath: () => null,
-  registerScrollToFile: () => {},
+  findMatchingDiffTarget: () => null,
+  registerFileRequest: () => {},
 };
 
 const defaultActionsValue: ChangesViewActionsContextValue = {
   viewFileInChanges: () => {},
-  findMatchingDiffPath: () => null,
-  hasDiffPath: () => false,
+  findMatchingDiffTarget: () => null,
 };
 
 export const ChangesViewContext = createHmrContext<ChangesViewContextValue>(

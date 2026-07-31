@@ -17,21 +17,13 @@ There are three ways to open the changes panel:
   <img src="/images/reviewing-code-agent-idle.png" alt="Workspace showing the Toggle Changes Panel button in the navbar" />
 </Frame>
 
-The changes panel shows the diff viewer in the centre and the file tree on the right.
+The changes panel shows a changed-file list on the left and the selected file's diff in the centre. If the file tree sidebar is open, changes from multi-repository workspaces are grouped by repository.
 
-<Frame>
-  <img src="/images/reviewing-code-changes-panel.png" alt="Changes panel showing the file tree on the left and diff viewer on the right" />
-</Frame>
+## 2. Select a changed file
 
-## 2. Navigate the file tree
+The changed-file list shows all files that were added, modified, or deleted. Click any file to replace the diff in the viewer. In a multi-repository workspace, repository headings keep identical paths separate.
 
-The file tree shows all files that were added, modified, or deleted. Click any file to load its diff in the viewer.
-
-<Frame>
-  <img src="/images/reviewing-code-file-tree.png" alt="File tree with folders expanded and search box visible" />
-</Frame>
-
-Use the search box at the top to filter files by name. The toggle button in the search bar lets you expand or collapse all folders at once.
+The optional file tree sidebar is also grouped by repository. Use its search box to filter files by name, or its toggle button to expand or collapse all folders.
 
 <Tip>
 Start with the files you care most about — the main feature file or the entry point — rather than reviewing alphabetically. This gives you context for the rest of the changes.

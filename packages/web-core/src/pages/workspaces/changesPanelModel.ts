@@ -1,5 +1,7 @@
 import type { Diff } from 'shared/types';
 import type { DiffViewMode } from '@/shared/stores/useDiffViewStore';
+import type { ReviewComment } from '@/shared/hooks/useReview';
+import type { DiffSide } from '@/shared/types/diff';
 
 export interface ChangesRepo {
   id: string;
@@ -60,8 +62,27 @@ export function groupDiffsByRepo(
   return [...groups.values()];
 }
 
-export function findDiffByPath(diffs: Diff[], path: string): Diff | null {
-  return diffs.find((diff) => getDiffPath(diff) === path) ?? null;
+export function findDiffByPath(
+  diffs: Diff[],
+  path: string,
+  repoId?: string | null
+): Diff | null {
+  return (
+    diffs.find(
+      (diff) =>
+        getDiffPath(diff) === path &&
+        (repoId === undefined || diff.repoId === repoId)
+    ) ?? null
+  );
+}
+
+export function resolveSelectedDiff(
+  diffs: Diff[],
+  selectedKey: string | null
+): Diff | null {
+  return (
+    diffs.find((diff) => getDiffKey(diff) === selectedKey) ?? diffs[0] ?? null
+  );
 }
 
 export function getDiffStyle(mode: DiffViewMode): 'unified' | 'split' {
@@ -71,4 +92,29 @@ export function getDiffStyle(mode: DiffViewMode): 'unified' | 'split' {
 export function shouldDeferDiffLoad(diff: Diff): boolean {
   if (diff.contentOmitted) return false;
   return (diff.additions ?? 0) + (diff.deletions ?? 0) > DEFER_DIFF_LOAD_LINES;
+}
+
+export function getReviewWidgetKey(
+  diff: Diff,
+  side: DiffSide,
+  lineNumber: number
+): string {
+  return `${getDiffKey(diff)}:${side}:${lineNumber}`;
+}
+
+export function getReviewCommentsForDiff(
+  comments: ReviewComment[],
+  diff: Diff
+): ReviewComment[] {
+  const path = getDiffPath(diff);
+  return comments.filter(
+    (comment) => comment.repoId === diff.repoId && comment.filePath === path
+  );
+}
+
+export function hasGitHubCommentsForDiff(
+  diff: Diff,
+  gitHubCommentsRepoId: string | null
+): boolean {
+  return diff.repoId === gitHubCommentsRepoId;
 }
