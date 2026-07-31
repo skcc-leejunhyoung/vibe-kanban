@@ -13,6 +13,7 @@ import type {
   LocalApiRequestOptions,
   LocalApiWebSocketOptions,
 } from "@/shared/lib/localApiTransport";
+import { openSseAsWebSocket, toSseUrl } from "@/shared/lib/sseStream";
 import { getWebRtcConnection, WEBRTC_ENABLED } from "./connectionManager";
 import { createDataChannelWebSocket } from "./dataChannelWebSocket";
 
@@ -144,6 +145,37 @@ export async function openLocalApiWebSocketViaWebRtc(
     conn,
     unscopeHostApiPath(pathAndQuery, hostId),
   );
+}
+
+/**
+ * Opens one-way local API streams through relay HTTP/SSE.
+ *
+ * Remote workspaces can have several JSON-patch and log streams per split
+ * pane. Routing those through individual relay WebSocket upgrades makes a
+ * transient tunnel failure repaint every pane while each stream reconnects.
+ * SSE keeps the same WebSocket-shaped consumer API but uses the relay's normal
+ * streaming HTTP path instead. Do not send this through the WebRTC data
+ * channel: it buffers HTTP responses and cannot carry an unbounded stream.
+ */
+export function openLocalApiStreamViaWebRtc(
+  pathOrUrl: string,
+  options: LocalApiWebSocketOptions = {},
+): WebSocket {
+  const pathAndQuery = toPathAndQuery(pathOrUrl);
+  const sseUrl = toSseUrl(pathAndQuery);
+
+  if (!shouldRelayApiPath(pathAndQuery)) {
+    return openSseAsWebSocket(sseUrl) as unknown as WebSocket;
+  }
+
+  return openSseAsWebSocket(sseUrl, (url, init) =>
+    requestLocalApiViaRelay(String(url), {
+      ...init,
+      hostScope: options.hostScope,
+      hostId: options.hostId,
+      relayHostId: options.relayHostId,
+    }),
+  ) as unknown as WebSocket;
 }
 
 function dataChannelResponseToResponse(dcResp: DataChannelResponse): Response {

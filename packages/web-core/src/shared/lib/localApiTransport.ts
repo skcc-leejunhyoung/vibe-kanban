@@ -29,9 +29,8 @@ export interface LocalApiTransport {
     options?: LocalApiWebSocketOptions
   ) => Promise<WebSocket> | WebSocket;
   /**
-   * Open a JSON-patch stream. Optional: transports that don't implement it
-   * (e.g. the remote WebRTC transport, which already multiplexes) fall back to
-   * `openWebSocket`. The local transport uses this to choose SSE vs WebSocket.
+   * Open a JSON-patch stream. Optional transports fall back to `openWebSocket`.
+   * Implementations may select SSE to avoid opening one WebSocket per stream.
    */
   openStream?: (
     pathOrUrl: string,
@@ -150,7 +149,7 @@ export async function openLocalApiWebSocket(
 /**
  * Open a JSON-patch stream through the active transport. Uses the transport's
  * `openStream` (local: SSE-or-WebSocket) when present, otherwise falls back to
- * `openWebSocket` (remote WebRTC transport, which has no SSE path).
+ * `openWebSocket` when the active transport has no stream-specific path.
  */
 export async function openLocalApiStream(
   pathOrUrl: string,

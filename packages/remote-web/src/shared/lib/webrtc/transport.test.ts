@@ -12,6 +12,9 @@ const requestLocalApiViaRelayMock = vi.fn(
 const openLocalApiWebSocketViaRelayMock = vi.fn(
   async (..._args: unknown[]) => ({}) as WebSocket,
 );
+const openSseAsWebSocketMock = vi.fn(
+  (_url: string, _fetchImpl: typeof fetch) => ({}) as WebSocket,
+);
 const getWebRtcConnectionMock = vi.fn();
 const createDataChannelWebSocketMock = vi.fn();
 
@@ -24,6 +27,11 @@ vi.mock("@remote/shared/lib/relayHostApi", () => ({
     requestLocalApiViaRelayMock(...args),
   openLocalApiWebSocketViaRelay: (...args: unknown[]) =>
     openLocalApiWebSocketViaRelayMock(...args),
+}));
+vi.mock("@/shared/lib/sseStream", () => ({
+  openSseAsWebSocket: (url: string, fetchImpl: typeof fetch) =>
+    openSseAsWebSocketMock(url, fetchImpl),
+  toSseUrl: (path: string) => path.replace(/\/ws(\?|$)/, "/sse$1"),
 }));
 vi.mock("./dataChannelWebSocket", () => ({
   createDataChannelWebSocket: (...args: unknown[]) =>
@@ -40,6 +48,7 @@ vi.mock("@remote/shared/lib/relay/bytes", () => ({
 
 import {
   requestLocalApiViaWebRtc,
+  openLocalApiStreamViaWebRtc,
   openLocalApiWebSocketViaWebRtc,
 } from "./transport";
 
@@ -61,6 +70,27 @@ describe("transport — WebRTC disabled (relay-only)", () => {
     expect(openLocalApiWebSocketViaRelayMock).toHaveBeenCalledOnce();
     expect(getWebRtcConnectionMock).not.toHaveBeenCalled();
     expect(createDataChannelWebSocketMock).not.toHaveBeenCalled();
+  });
+
+  it("opens one-way streams through relay SSE instead of relay WebSocket", async () => {
+    openLocalApiStreamViaWebRtc("/api/workspaces/streams/ws", {
+      relayHostId: "host-1",
+    });
+
+    expect(openSseAsWebSocketMock).toHaveBeenCalledOnce();
+    const [url, fetchViaRelay] = openSseAsWebSocketMock.mock
+      .calls[0] as unknown as [string, typeof fetch];
+    expect(url).toBe("/api/workspaces/streams/sse");
+
+    await fetchViaRelay(url, { headers: { Accept: "text/event-stream" } });
+    expect(requestLocalApiViaRelayMock).toHaveBeenCalledWith(url, {
+      headers: { Accept: "text/event-stream" },
+      hostScope: undefined,
+      hostId: undefined,
+      relayHostId: "host-1",
+    });
+    expect(openLocalApiWebSocketViaRelayMock).not.toHaveBeenCalled();
+    expect(getWebRtcConnectionMock).not.toHaveBeenCalled();
   });
 
   it("never opens a WebRTC data channel for any relayable request", async () => {

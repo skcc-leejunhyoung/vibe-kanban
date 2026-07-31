@@ -22,6 +22,7 @@ import "@/shared/types/modals";
 import { queryClient } from "@/shared/lib/queryClient";
 import {
   requestLocalApiViaWebRtc,
+  openLocalApiStreamViaWebRtc,
   openLocalApiWebSocketViaWebRtc,
 } from "@remote/shared/lib/webrtc";
 import { installRelayResumeReconnect } from "@remote/shared/lib/relay/resumeReconnect";
@@ -35,6 +36,7 @@ setRelayApiBase(
 setLocalApiTransport({
   request: requestLocalApiViaWebRtc,
   openWebSocket: openLocalApiWebSocketViaWebRtc,
+  openStream: openLocalApiStreamViaWebRtc,
 });
 // Re-establish the relay transport after the (standalone PWA) app is resumed
 // from suspension, so a stale signing session / dead data channel doesn't leave
