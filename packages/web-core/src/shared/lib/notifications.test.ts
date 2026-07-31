@@ -196,4 +196,23 @@ describe('getPullRequestDetailsNavigationTarget', () => {
       getPullRequestDetailsNavigationTarget(createNotification())
     ).toBeNull();
   });
+
+  it('includes the owning host when the notification resolved one', () => {
+    expect(
+      getPullRequestDetailsNavigationTarget(
+        createNotification({
+          notification_type: 'pull_request_comment_added',
+          payload: {
+            host_id: 'host-1',
+            pull_request_number: 42,
+            pull_request_url: 'https://github.com/acme/repo/pull/42',
+          },
+        })
+      )
+    ).toEqual({
+      hostId: 'host-1',
+      prNumber: 42,
+      prUrl: 'https://github.com/acme/repo/pull/42',
+    });
+  });
 });

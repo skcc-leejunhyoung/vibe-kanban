@@ -19,6 +19,7 @@ use crate::{
     db::{
         get_txid, issues::IssueRepository, notifications::NotificationRepository,
         pull_request_issues::PullRequestIssueRepository, pull_requests::PullRequestRepository,
+        workspaces::WorkspaceRepository,
     },
     mutation_definition::{MutationBuilder, NoCreate},
     web_push_notifications,
@@ -90,6 +91,21 @@ async fn create_pull_request_comment_notification(
         ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
     })?;
 
+    let mut host_id = if let Some(workspace_id) = pull_request
+        .as_ref()
+        .and_then(|pull_request| pull_request.workspace_id)
+    {
+        WorkspaceRepository::find_owned_by_local_id(state.pool(), workspace_id, ctx.user.id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to resolve pull request host");
+                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            })?
+            .and_then(|workspace| workspace.host_id)
+    } else {
+        None
+    };
+
     let issue = if let Some(pull_request) = pull_request {
         let issue_id = PullRequestIssueRepository::issue_ids_for_pr(state.pool(), pull_request.id)
             .await
@@ -112,6 +128,30 @@ async fn create_pull_request_comment_notification(
         None
     };
 
+    if host_id.is_none()
+        && let Some(issue_id) = issue.as_ref().map(|issue| issue.id)
+    {
+        host_id = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT host_id
+            FROM workspaces
+            WHERE issue_id = $1
+              AND owner_user_id = $2
+              AND host_id IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(issue_id)
+        .bind(ctx.user.id)
+        .fetch_optional(state.pool())
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, "failed to resolve mapped issue host");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+        })?;
+    }
+
     let notification_payload = NotificationPayload {
         deeplink_path: issue
             .as_ref()
@@ -123,6 +163,7 @@ async fn create_pull_request_comment_notification(
             .map(|issue| issue.title.clone())
             .or(Some(payload.pull_request_title)),
         comment_preview: payload.comment_preview,
+        host_id,
         pull_request_url: Some(payload.pull_request_url),
         pull_request_number: Some(payload.pull_request_number),
         comment_url: payload.comment_url,

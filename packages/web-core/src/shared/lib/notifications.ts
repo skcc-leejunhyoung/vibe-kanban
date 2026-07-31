@@ -18,6 +18,7 @@ export function getDeeplinkPath(n: Notification): string | null {
 export interface PullRequestDetailsNavigationTarget {
   prUrl: string;
   prNumber: number;
+  hostId?: string;
 }
 
 /**
@@ -40,6 +41,7 @@ export function getPullRequestDetailsNavigationTarget(
   return {
     prUrl: payload.pull_request_url,
     prNumber: payload.pull_request_number,
+    ...(payload.host_id ? { hostId: payload.host_id } : {}),
   };
 }
 

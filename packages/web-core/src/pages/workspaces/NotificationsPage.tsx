@@ -305,6 +305,12 @@ export function NotificationsPage() {
       const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
       if (prDetails) {
         if (runtime === 'remote') {
+          if (prDetails.hostId) {
+            appNavigation.goToPullRequests(prDetails.prUrl, {
+              hostId: prDetails.hostId,
+            });
+            return;
+          }
           void selectWorkspaceHost().then((hostId) => {
             if (hostId) {
               appNavigation.goToPullRequests(prDetails.prUrl, { hostId });

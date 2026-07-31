@@ -251,9 +251,20 @@ async fn remote_web_push_click_url(
 ) -> Option<String> {
     let base_url = config.remote_base_url.as_deref()?;
     let workspace_id = notification_workspace_id(pool, notification).await;
+    let host_id = if notification.notification_type == NotificationType::PullRequestCommentAdded {
+        match notification.payload.host_id {
+            Some(host_id) => Some(host_id),
+            None => notification_workspace_host_id(pool, notification).await,
+        }
+    } else {
+        None
+    };
     remote_web_push_click_url_from_parts(
         base_url,
         &config.workspace_path_template,
+        notification.notification_type,
+        host_id,
+        notification.payload.pull_request_url.as_deref(),
         workspace_id,
         notification.payload.deeplink_path.as_deref(),
     )
@@ -262,9 +273,25 @@ async fn remote_web_push_click_url(
 fn remote_web_push_click_url_from_parts(
     base_url: &str,
     workspace_path_template: &str,
+    notification_type: NotificationType,
+    host_id: Option<Uuid>,
+    pull_request_url: Option<&str>,
     workspace_id: Option<Uuid>,
     deeplink_path: Option<&str>,
 ) -> Option<String> {
+    if notification_type == NotificationType::PullRequestCommentAdded {
+        return Some(match (host_id, pull_request_url) {
+            (Some(host_id), Some(pull_request_url)) => remote_path(
+                base_url,
+                &format!(
+                    "/hosts/{host_id}/pull-requests?prUrl={}",
+                    urlencoding::encode(pull_request_url)
+                ),
+            ),
+            _ => remote_path(base_url, "/notifications"),
+        });
+    }
+
     if let Some(workspace_id) = workspace_id {
         return Some(remote_path(
             base_url,
@@ -273,6 +300,41 @@ fn remote_web_push_click_url_from_parts(
     }
 
     deeplink_path.map(|path| remote_path(base_url, path))
+}
+
+async fn notification_workspace_host_id(
+    pool: &PgPool,
+    notification: &Notification,
+) -> Option<Uuid> {
+    let issue_id = notification.payload.issue_id.or(notification.issue_id)?;
+
+    match sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT host_id
+        FROM workspaces
+        WHERE issue_id = $1
+          AND owner_user_id = $2
+          AND host_id IS NOT NULL
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(issue_id)
+    .bind(notification.user_id)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(host_id) => host_id,
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                notification_id = %notification.id,
+                issue_id = %issue_id,
+                "failed to resolve web push host URL"
+            );
+            None
+        }
+    }
 }
 
 async fn notification_workspace_id(pool: &PgPool, notification: &Notification) -> Option<Uuid> {
@@ -404,6 +466,7 @@ fn issue_label(payload: &NotificationPayload) -> String {
 
 #[cfg(test)]
 mod tests {
+    use api_types::NotificationType;
     use uuid::Uuid;
 
     use super::{remote_path, remote_web_push_click_url_from_parts, workspace_path};
@@ -444,6 +507,9 @@ mod tests {
             remote_web_push_click_url_from_parts(
                 "https://vk.example.com/",
                 "/workspace/{workspace_id}",
+                NotificationType::IssueCommentAdded,
+                None,
+                None,
                 Some(workspace_id),
                 Some("/projects/project-id/issues/issue-id"),
             ),
@@ -459,10 +525,50 @@ mod tests {
             remote_web_push_click_url_from_parts(
                 "https://vk.example.com/",
                 "/workspace/{workspace_id}",
+                NotificationType::IssueCommentAdded,
+                None,
+                None,
                 None,
                 Some("/projects/project-id/issues/issue-id"),
             ),
             Some("https://vk.example.com/projects/project-id/issues/issue-id".to_string())
+        );
+    }
+
+    #[test]
+    fn pull_request_comment_uses_host_pull_request_route() {
+        let host_id = Uuid::parse_str("018f5f99-7f0d-7a7f-9abc-001122334455").unwrap();
+
+        assert_eq!(
+            remote_web_push_click_url_from_parts(
+                "https://vk.example.com/",
+                "/workspace/{workspace_id}",
+                NotificationType::PullRequestCommentAdded,
+                Some(host_id),
+                Some("https://github.com/BloopAI/vibe-kanban/pull/123"),
+                None,
+                Some("/projects/project-id/issues/issue-id"),
+            ),
+            Some(
+                "https://vk.example.com/hosts/018f5f99-7f0d-7a7f-9abc-001122334455/pull-requests?prUrl=https%3A%2F%2Fgithub.com%2FBloopAI%2Fvibe-kanban%2Fpull%2F123"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn pull_request_comment_without_host_uses_notifications_fallback() {
+        assert_eq!(
+            remote_web_push_click_url_from_parts(
+                "https://vk.example.com/",
+                "/workspace/{workspace_id}",
+                NotificationType::PullRequestCommentAdded,
+                None,
+                Some("https://github.com/BloopAI/vibe-kanban/pull/123"),
+                None,
+                Some("/projects/project-id/issues/issue-id"),
+            ),
+            Some("https://vk.example.com/notifications".to_string())
         );
     }
 }
