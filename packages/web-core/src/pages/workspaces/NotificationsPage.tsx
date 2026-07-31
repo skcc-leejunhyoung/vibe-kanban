@@ -11,6 +11,7 @@ import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { Switch } from '@vibe/ui/components/Switch';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
@@ -216,6 +217,7 @@ export function NotificationsPage() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       if (
         (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') ||
         event.altKey ||

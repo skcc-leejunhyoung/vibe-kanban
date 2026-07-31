@@ -2,6 +2,7 @@ import { type ReactNode, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 
 import { cn } from '../lib/cn';
+import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 
 interface MobileDrawerProps {
   open: boolean;
@@ -10,6 +11,7 @@ interface MobileDrawerProps {
 }
 
 export function MobileDrawer({ open, onClose, children }: MobileDrawerProps) {
+  useModalKeyboardLayer(open);
   // Close on Escape, matching the backdrop click.
   useEffect(() => {
     if (!open) return;

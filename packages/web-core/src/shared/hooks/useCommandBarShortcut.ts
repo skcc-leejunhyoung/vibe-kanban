@@ -6,6 +6,7 @@ import {
   mapCodeToLogicalKey,
 } from '@/shared/keyboard/registry';
 import { isMac } from '@/shared/lib/platform';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 
 /**
  * Match a KeyboardEvent against a combo string like 'mod+k'.
@@ -50,6 +51,7 @@ export function useCommandBarShortcut(
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       if (matchesCombo(event, combo)) {
         event.preventDefault();
         event.stopPropagation();

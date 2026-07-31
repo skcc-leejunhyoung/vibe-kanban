@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 
 export function blurFocusedElementOnEscape(
   event: Pick<KeyboardEvent, 'key' | 'preventDefault'>,
@@ -28,6 +29,7 @@ export function blurFocusedElementOnEscape(
 export function useEscapeToBlur(): void {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       blurFocusedElementOnEscape(event, document.activeElement);
     };
 

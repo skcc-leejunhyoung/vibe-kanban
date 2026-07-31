@@ -39,6 +39,7 @@ import {
 import { SettingsMachineUserSystemProvider } from './settings/SettingsMachineUserSystemProvider';
 import { SettingsRemoteUserSystemProvider } from './settings/SettingsRemoteUserSystemProvider';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
+import { useModalKeyboardLayer } from '@vibe/ui/lib/modal-keyboard';
 
 export interface SettingsDialogProps {
   initialSection?: SettingsSectionType;
@@ -259,6 +260,7 @@ function SettingsDialogContent({
   initialState,
   onClose,
 }: SettingsDialogContentProps) {
+  useModalKeyboardLayer(true);
   const { t } = useTranslation('settings');
   const { isDirty } = useSettingsDirty();
   const { availableHosts, hostsResolved, selectedHost, selectedHostId } =

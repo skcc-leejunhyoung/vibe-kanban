@@ -13,6 +13,7 @@ import {
   mapCodeToLogicalKey,
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 
 interface SequenceTrackerContextValue {
   buffer: string[];
@@ -110,6 +111,7 @@ export function SequenceTrackerProvider({
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       if (event.metaKey || event.ctrlKey || event.altKey) {
         return;
       }

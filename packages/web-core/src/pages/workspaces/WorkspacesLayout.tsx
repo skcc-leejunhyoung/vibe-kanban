@@ -45,6 +45,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { Scope } from '@/shared/keyboard/registry';
 import { resolveUnfocusedChatKeyAction } from './workspaceChatKeyboard';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
@@ -173,6 +174,7 @@ export function WorkspacesLayout({
 
   useEffect(() => {
     const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       if (
         isCreateMode ||
         !selectedWorkspace ||

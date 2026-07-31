@@ -7,8 +7,36 @@ import {
   dialogCenteringWrapperClasses,
   dialogContentBaseClasses,
 } from '../lib/dialog-centering';
+import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 
-const Dialog = DialogPrimitive.Root;
+function Dialog({
+  open,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
+  const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
+  const isOpen = open ?? internalOpen;
+  useModalKeyboardLayer(isOpen);
+
+  const handleOpenChange = React.useCallback(
+    (nextOpen: boolean) => {
+      if (open === undefined) {
+        setInternalOpen(nextOpen);
+      }
+      onOpenChange?.(nextOpen);
+    },
+    [open, onOpenChange]
+  );
+
+  return (
+    <DialogPrimitive.Root
+      open={isOpen}
+      onOpenChange={handleOpenChange}
+      {...props}
+    />
+  );
+}
 
 const DialogTrigger = DialogPrimitive.Trigger;
 

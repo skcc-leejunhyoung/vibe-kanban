@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { CaretLeftIcon, XIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 
 export interface GuideDialogTopic {
   id: string;
@@ -23,6 +24,7 @@ export function GuideDialogShell({
   onClose,
   className,
 }: GuideDialogShellProps) {
+  useModalKeyboardLayer(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mobileShowContent, setMobileShowContent] = useState(false);
 

@@ -9,6 +9,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { cn } from '../lib/cn';
+import { isModalKeyboardActive } from '../lib/modal-keyboard';
 import {
   XIcon,
   LinkIcon,
@@ -273,6 +274,7 @@ export function KanbanIssuePanel({
 
   useEffect(() => {
     const handleUnfocusedPanelKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       if (
         event.defaultPrevented ||
         event.isComposing ||

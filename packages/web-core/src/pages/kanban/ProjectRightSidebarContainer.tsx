@@ -43,6 +43,7 @@ import {
   closeKanbanIssueComposer,
   useKanbanIssueComposer,
 } from '@/shared/stores/useKanbanIssueComposerStore';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 
 interface WorkspaceSessionPanelProps {
   workspaceId: string;
@@ -255,6 +256,7 @@ function WorkspaceSessionPanel({
 
   useEffect(() => {
     const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       const activeElement = document.activeElement;
       const hasNoFocusedControl =
         activeElement === null ||

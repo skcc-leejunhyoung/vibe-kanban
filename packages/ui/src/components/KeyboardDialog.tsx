@@ -1,9 +1,10 @@
 import * as React from 'react';
 import { X } from 'lucide-react';
-import { useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
+import { useHotkeys } from 'react-hotkeys-hook';
 import { createPortal } from 'react-dom';
 
 import { cn } from '../lib/cn';
+import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 import {
   getKeyboardDialogMaxWidth,
   type KeyboardDialogSize,
@@ -12,20 +13,10 @@ import {
 export type { KeyboardDialogSize } from '../lib/keyboard-dialog-size';
 
 const DIALOG_SCOPE = 'dialog';
-const KANBAN_SCOPE = 'kanban';
-const PROJECTS_SCOPE = 'projects';
 
 // Width belongs to the outer dialog, not DialogContent. Apply it inline so
 // callers never need competing max-w-* classes; `cn` is clsx-only and cannot
 // resolve Tailwind width conflicts reliably.
-
-// Stack of currently-open KeyboardDialog instances. Escape only closes the
-// top-most (most recently opened) one. Stacked dialogs all listen on `document`
-// in the bubble phase, where listeners fire in registration order (outer first),
-// so without this gate Escape would wrongly close the OUTER dialog and orphan
-// the inner one. Identity is a per-instance symbol pushed while the dialog is
-// open.
-const openDialogStack: symbol[] = [];
 
 function assignRef<T>(ref: React.ForwardedRef<T>, value: T | null) {
   if (typeof ref === 'function') {
@@ -61,12 +52,8 @@ const Dialog = React.forwardRef<
     },
     ref
   ) => {
-    const { enableScope, disableScope } = useHotkeysContext();
+    const { isTopLayer } = useModalKeyboardLayer(!!open);
     const dialogRef = React.useRef<HTMLDivElement | null>(null);
-    const dialogIdRef = React.useRef<symbol | null>(null);
-    if (dialogIdRef.current === null) {
-      dialogIdRef.current = Symbol('keyboard-dialog');
-    }
 
     const setDialogRef = React.useCallback(
       (node: HTMLDivElement | null) => {
@@ -75,37 +62,6 @@ const Dialog = React.forwardRef<
       },
       [ref]
     );
-
-    // Manage dialog scope when open/closed
-    React.useEffect(() => {
-      if (open) {
-        enableScope(DIALOG_SCOPE);
-        disableScope(KANBAN_SCOPE);
-        disableScope(PROJECTS_SCOPE);
-      } else {
-        disableScope(DIALOG_SCOPE);
-        enableScope(KANBAN_SCOPE);
-        enableScope(PROJECTS_SCOPE);
-      }
-      return () => {
-        disableScope(DIALOG_SCOPE);
-        enableScope(KANBAN_SCOPE);
-        enableScope(PROJECTS_SCOPE);
-      };
-    }, [open, enableScope, disableScope]);
-
-    // Track this dialog in the open-dialog stack while it is open. Depends only on
-    // `open`/`uncloseable` so the stack order is stable even when `onOpenChange` is
-    // recreated on a parent re-render (which re-runs the Escape effect below).
-    React.useEffect(() => {
-      if (!open || uncloseable) return;
-      const id = dialogIdRef.current!;
-      openDialogStack.push(id);
-      return () => {
-        const idx = openDialogStack.lastIndexOf(id);
-        if (idx !== -1) openDialogStack.splice(idx, 1);
-      };
-    }, [open, uncloseable]);
 
     // Close on Escape. We use a native document listener (bubble phase) instead
     // of `useHotkeys` so Escape still fires while an input/textarea/contentEditable
@@ -125,17 +81,13 @@ const Dialog = React.forwardRef<
       const handleEscape = (event: KeyboardEvent) => {
         if (event.key !== 'Escape' || event.defaultPrevented) return;
         if (!onOpenChange) return;
-        if (
-          openDialogStack[openDialogStack.length - 1] !== dialogIdRef.current
-        ) {
-          return;
-        }
+        if (!isTopLayer()) return;
         event.preventDefault();
         onOpenChange(false);
       };
       document.addEventListener('keydown', handleEscape);
       return () => document.removeEventListener('keydown', handleEscape);
-    }, [open, uncloseable, onOpenChange]);
+    }, [open, uncloseable, onOpenChange, isTopLayer]);
 
     // Move focus into the dialog when it opens. KeyboardDialog is a custom (non-
     // Radix) implementation with no built-in focus management, so otherwise focus
@@ -171,7 +123,7 @@ const Dialog = React.forwardRef<
     useHotkeys(
       'enter',
       (e) => {
-        if (!open) return;
+        if (!open || !isTopLayer()) return;
 
         const activeElement = document.activeElement as HTMLElement;
         if (activeElement?.tagName === 'TEXTAREA') {
@@ -212,7 +164,7 @@ const Dialog = React.forwardRef<
         enabled: !!open,
         scopes: [DIALOG_SCOPE],
       },
-      [open]
+      [open, isTopLayer]
     );
 
     if (!open) return null;

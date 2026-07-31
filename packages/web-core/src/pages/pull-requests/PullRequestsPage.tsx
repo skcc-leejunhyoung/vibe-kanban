@@ -27,6 +27,7 @@ import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { selectLinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { ActionTargetType } from '@/shared/types/actions';
 import { PullRequestDetailsPanel } from './PullRequestDetailsPanel';
 import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
@@ -586,6 +587,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   useEffect(() => {
     if (!selectedPullRequest) return;
     const closeOnEscape = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       handlePullRequestDetailsEscape(
         event,
         document.activeElement as HTMLElement | null,
@@ -599,6 +601,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   useEffect(() => {
     if (!selectedPullRequest || filteredPullRequests.length === 0) return;
     const handleDetailNavigation = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       if (
         !(event.metaKey || event.ctrlKey) ||
         event.altKey ||
@@ -637,6 +640,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     if (selectedPullRequest || filteredPullRequests.length === 0) return;
 
     const handleListKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
       if (
         event.altKey ||
         event.ctrlKey ||
