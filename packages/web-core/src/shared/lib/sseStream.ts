@@ -288,7 +288,13 @@ export function toSseUrl(wsPathOrUrl: string): string {
 export function resolveStreamTransport(input: {
   protocol: string;
   flag: string | null;
+  isSplitScreenEmbed?: boolean;
 }): 'sse' | 'ws' {
+  // Split-screen panes are same-origin iframes. Each pane owns several
+  // long-lived streams, so using SSE in multiple panes can exhaust the
+  // browser's per-origin HTTP connection pool and leave later streams queued
+  // indefinitely. WebSockets do not consume those HTTP request slots.
+  if (input.isSplitScreenEmbed) return 'ws';
   if (input.protocol === 'https:') return 'sse';
   if (input.flag === 'sse') return 'sse';
   return 'ws';
@@ -302,7 +308,12 @@ export function shouldUseSseStream(): boolean {
       typeof localStorage !== 'undefined'
         ? localStorage.getItem('vk-stream-transport')
         : null;
-    return resolveStreamTransport({ protocol, flag }) === 'sse';
+    const isSplitScreenEmbed =
+      typeof location !== 'undefined' &&
+      new URLSearchParams(location.search).get('vk_split_embed') === '1';
+    return (
+      resolveStreamTransport({ protocol, flag, isSplitScreenEmbed }) === 'sse'
+    );
   } catch {
     return false;
   }
