@@ -3,6 +3,7 @@ import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { getGroupedNotificationText } from '@/shared/lib/notificationMessage';
+import { getPullRequestDetailsNavigationTarget } from '@/shared/lib/notifications';
 import { showSystemNotification } from '@web/app/notifications/showSystemNotification';
 
 export function AppSystemNotifications() {
@@ -48,11 +49,14 @@ export function AppSystemNotifications() {
       }
 
       displayedNotificationIdsRef.current.add(group.id);
+      const prTarget = getPullRequestDetailsNavigationTarget(group.latest);
       void showSystemNotification({
         id: group.id,
         title: 'Vibe Kanban',
         body: getGroupedNotificationText(group, membersByUserId),
-        deeplinkPath: group.deeplinkPath ?? undefined,
+        deeplinkPath: prTarget
+          ? `/pull-requests?prUrl=${encodeURIComponent(prTarget.prUrl)}`
+          : (group.deeplinkPath ?? undefined),
       });
     }
   }, [enabled, groupedNotifications, isFetching, isLoading, membersByUserId]);

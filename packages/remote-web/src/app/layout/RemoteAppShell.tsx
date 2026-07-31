@@ -234,6 +234,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     navigate({
       to: "/hosts/$hostId/pull-requests",
       params: { hostId: pullRequestsHostId },
+      search: { prUrl: undefined },
     });
   }, [navigate, openRelaySettings, pullRequestsHostId]);
 

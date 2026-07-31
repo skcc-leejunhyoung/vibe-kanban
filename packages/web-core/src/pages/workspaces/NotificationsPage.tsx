@@ -12,6 +12,8 @@ import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { Switch } from '@vibe/ui/components/Switch';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
@@ -160,6 +162,8 @@ function WebPushToggle() {
 
 export function NotificationsPage() {
   const router = useRouter();
+  const appNavigation = useAppNavigation();
+  const runtime = useAppRuntime();
   const notificationListRef = useRef<HTMLDivElement>(null);
   const {
     data,
@@ -300,10 +304,15 @@ export function NotificationsPage() {
       const path = group.deeplinkPath;
       const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
       if (prDetails) {
-        void router.navigate({
-          to: '/pull-requests',
-          search: { prUrl: prDetails.prUrl },
-        });
+        if (runtime === 'remote') {
+          void selectWorkspaceHost().then((hostId) => {
+            if (hostId) {
+              appNavigation.goToPullRequests(prDetails.prUrl, { hostId });
+            }
+          });
+        } else {
+          appNavigation.goToPullRequests(prDetails.prUrl);
+        }
         return;
       }
       if (path) {
@@ -318,7 +327,7 @@ export function NotificationsPage() {
         });
       }
     },
-    [markGroupSeen, router]
+    [appNavigation, markGroupSeen, router, runtime]
   );
 
   const handleMarkAllSeen = useCallback(() => {

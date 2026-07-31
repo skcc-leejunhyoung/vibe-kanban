@@ -89,7 +89,7 @@ export interface AppNavigation {
   ): void;
   goToExport(transition?: NavigationTransition): void;
   goToNotifications(transition?: NavigationTransition): void;
-  goToPullRequests(transition?: NavigationTransition): void;
+  goToPullRequests(prUrl?: string, transition?: NavigationTransition): void;
   goToProject(projectId: string, transition?: NavigationTransition): void;
   goToProjectIssue(
     projectId: string,

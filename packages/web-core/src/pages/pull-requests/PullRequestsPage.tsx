@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  keepPreviousData,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
   ArrowClockwiseIcon,
@@ -35,6 +31,10 @@ import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { ActionTargetType } from '@/shared/types/actions';
 import { PullRequestDetailsPanel } from './PullRequestDetailsPanel';
 import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
+import {
+  getPullRequestNumberFromUrl,
+  getRepositoryNameFromPrUrl,
+} from './pullRequestUrl';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
@@ -157,13 +157,17 @@ interface PullRequestsPageProps {
   initialPrUrl?: string;
 }
 
-function getRepositoryNameFromPrUrl(prUrl: string): string | null {
-  try {
-    const segments = new URL(prUrl).pathname.split('/').filter(Boolean);
-    return segments.length >= 4 && segments[2] === 'pull' ? segments[1] : null;
-  } catch {
-    return null;
-  }
+type PullRequestTarget = {
+  url: string;
+  number: number;
+};
+
+function getPullRequestTargetFromUrl(
+  prUrl: string | undefined
+): PullRequestTarget | null {
+  if (!prUrl) return null;
+  const number = getPullRequestNumberFromUrl(prUrl);
+  return number === null ? null : { url: prUrl, number };
 }
 
 export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
@@ -182,9 +186,17 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selectedPullRequest, setSelectedPullRequest] =
-    useState<PullRequestSummary | null>(null);
+    useState<PullRequestTarget | null>(() =>
+      getPullRequestTargetFromUrl(initialPrUrl)
+    );
   const previousDefaultFiltersRef = useRef(defaultFilters);
-  const openedInitialPrUrlRef = useRef<string | undefined>(undefined);
+  const handledInitialPrUrlRef = useRef<string | undefined>(
+    selectedPullRequest ? initialPrUrl : undefined
+  );
+  const resolvedInitialRepositoryRef = useRef<string | undefined>(undefined);
+  const previousRepositoryRef = useRef(filters.repository);
+  const skipNextRepositoryResetRef = useRef(false);
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -243,9 +255,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       return result.data;
     },
     enabled: filters.repository !== 'all',
-    staleTime: 30 * 60_000,
-    gcTime: 24 * 60 * 60_000,
-    placeholderData: keepPreviousData,
+    staleTime: 5 * 60_000,
   });
 
   const pullRequests = useMemo(
@@ -326,8 +336,33 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     [queryClient]
   );
 
+  const cancelScheduledPrefetch = useCallback(() => {
+    if (prefetchTimerRef.current) {
+      clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
+    }
+  }, []);
+
+  const schedulePullRequestPrefetch = useCallback(
+    (pullRequest: PullRequestSummary) => {
+      cancelScheduledPrefetch();
+      prefetchTimerRef.current = setTimeout(() => {
+        prefetchTimerRef.current = null;
+        void prefetchPullRequest(pullRequest);
+      }, 150);
+    },
+    [cancelScheduledPrefetch, prefetchPullRequest]
+  );
+
+  useEffect(
+    () => () => {
+      cancelScheduledPrefetch();
+    },
+    [cancelScheduledPrefetch]
+  );
+
   const goToMappedIssue = useCallback(
-    async (pullRequest: PullRequestSummary) => {
+    async (pullRequest: Pick<PullRequestTarget, 'url'>) => {
       try {
         const mappedIssues = await loadMappedIssues(pullRequest.url);
         if (mappedIssues.length === 0) {
@@ -355,7 +390,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   );
 
   const viewMappedWorkspaces = useCallback(
-    async (pullRequest: PullRequestSummary) => {
+    async (pullRequest: Pick<PullRequestTarget, 'url'>) => {
       try {
         const mappedIssues = await loadMappedIssues(pullRequest.url);
         const issueIds = new Set(mappedIssues.map(({ link }) => link.issue_id));
@@ -456,13 +491,24 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   );
 
   useEffect(() => {
+    if (!initialPrUrl || handledInitialPrUrlRef.current === initialPrUrl) {
+      return;
+    }
+    const prNumber = getPullRequestNumberFromUrl(initialPrUrl);
+    if (prNumber === null) return;
+    handledInitialPrUrlRef.current = initialPrUrl;
+    setSelectedPullRequest({ url: initialPrUrl, number: prNumber });
+  }, [initialPrUrl]);
+
+  useEffect(() => {
     if (
       !initialPrUrl ||
-      openedInitialPrUrlRef.current === initialPrUrl ||
+      resolvedInitialRepositoryRef.current === initialPrUrl ||
       repositories.length === 0
     ) {
       return;
     }
+    resolvedInitialRepositoryRef.current = initialPrUrl;
     const repositoryName = getRepositoryNameFromPrUrl(initialPrUrl);
     if (!repositoryName) return;
     const repository = repositories.find(
@@ -472,6 +518,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         candidate.path.split('/').pop() === repositoryName
     );
     if (repository && filters.repository !== repository.value) {
+      skipNextRepositoryResetRef.current = true;
       setFilters((current) => ({
         ...current,
         repository: repository.value,
@@ -480,20 +527,12 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   }, [filters.repository, initialPrUrl, repositories]);
 
   useEffect(() => {
-    if (!initialPrUrl || openedInitialPrUrlRef.current === initialPrUrl) {
-      return;
-    }
-    const pullRequest = pullRequests.find(
-      (candidate) => candidate.url === initialPrUrl
-    );
-    if (!pullRequest) return;
+    if (!initialPrUrl) return;
     const index = filteredPullRequests.findIndex(
       (candidate) => candidate.url === initialPrUrl
     );
     if (index >= 0) setSelectedIndex(index);
-    openedInitialPrUrlRef.current = initialPrUrl;
-    setSelectedPullRequest(pullRequest);
-  }, [filteredPullRequests, initialPrUrl, pullRequests]);
+  }, [filteredPullRequests, initialPrUrl]);
 
   useEffect(() => {
     setSelectedIndex((current) =>
@@ -502,6 +541,13 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   }, [filteredPullRequests.length]);
 
   useEffect(() => {
+    if (previousRepositoryRef.current === filters.repository) return;
+    previousRepositoryRef.current = filters.repository;
+    if (skipNextRepositoryResetRef.current) {
+      skipNextRepositoryResetRef.current = false;
+      setSelectedIndex(0);
+      return;
+    }
     setSelectedPullRequest(null);
     setSelectedIndex(0);
   }, [filters.repository]);
@@ -515,7 +561,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       setFilters((current) => ({ ...current, repository: repoId }));
     };
     const getSelectedPullRequest = () =>
-      filteredPullRequests[selectedIndex] ?? null;
+      selectedPullRequest ?? filteredPullRequests[selectedIndex] ?? null;
     const gotoMappedIssue = () => {
       const pullRequest = getSelectedPullRequest();
       if (pullRequest) void goToMappedIssue(pullRequest);
@@ -558,6 +604,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     filteredPullRequests,
     goToMappedIssue,
     selectedIndex,
+    selectedPullRequest,
     viewMappedWorkspaces,
   ]);
 
@@ -613,7 +660,10 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       const nextPullRequest = filteredPullRequests[nextIndex];
       if (!nextPullRequest || nextIndex === currentIndex) return;
       setSelectedIndex(nextIndex);
-      setSelectedPullRequest(nextPullRequest);
+      setSelectedPullRequest({
+        url: nextPullRequest.url,
+        number: Number(nextPullRequest.number),
+      });
       void prefetchPullRequest(nextPullRequest);
     };
     window.addEventListener('keydown', handleDetailNavigation);
@@ -645,7 +695,10 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         const pullRequest = filteredPullRequests[selectedIndex];
         if (pullRequest) {
           event.preventDefault();
-          setSelectedPullRequest(pullRequest);
+          setSelectedPullRequest({
+            url: pullRequest.url,
+            number: Number(pullRequest.number),
+          });
         }
       }
     };
@@ -783,9 +836,18 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                     else rowRefs.current.delete(pr.url);
                   }}
                   onFocus={() => setSelectedIndex(index)}
-                  onMouseEnter={() => void prefetchPullRequest(pr)}
-                  onFocusCapture={() => void prefetchPullRequest(pr)}
-                  onClick={() => setSelectedPullRequest(pr)}
+                  onMouseEnter={() => schedulePullRequestPrefetch(pr)}
+                  onMouseLeave={cancelScheduledPrefetch}
+                  onFocusCapture={() => {
+                    cancelScheduledPrefetch();
+                    void prefetchPullRequest(pr);
+                  }}
+                  onClick={() =>
+                    setSelectedPullRequest({
+                      url: pr.url,
+                      number: Number(pr.number),
+                    })
+                  }
                   className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
                 >
                   <span className="mt-half">{statusIcon(pr.status)}</span>
@@ -877,7 +939,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const detailsContent = selectedPullRequest ? (
     <PullRequestDetailsPanel
       prUrl={selectedPullRequest.url}
-      prNumber={Number(selectedPullRequest.number)}
+      prNumber={selectedPullRequest.number}
       onClose={closeDetails}
     />
   ) : null;

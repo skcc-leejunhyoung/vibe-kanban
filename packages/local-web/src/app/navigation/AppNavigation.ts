@@ -357,10 +357,10 @@ export function createLocalAppNavigation(): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: 'export' }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: 'notifications' }, transition),
-    goToPullRequests: (transition) =>
+    goToPullRequests: (prUrl, transition) =>
       void router.navigate({
         to: '/pull-requests',
-        search: { prUrl: undefined },
+        search: { prUrl },
         ...(transition?.replace !== undefined
           ? { replace: transition.replace }
           : {}),

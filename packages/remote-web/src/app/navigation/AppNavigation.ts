@@ -263,8 +263,15 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
-    goToPullRequests: (transition) =>
-      navigateTo({ kind: "pull-requests", hostId }, transition),
+    goToPullRequests: (prUrl, transition) =>
+      void router.navigate({
+        to: "/hosts/$hostId/pull-requests",
+        params: { hostId },
+        search: { prUrl },
+        ...(transition?.replace !== undefined
+          ? { replace: transition.replace }
+          : {}),
+      }),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>
@@ -347,11 +354,20 @@ function createRemoteAppNavigation(): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
-    goToPullRequests: (transition) =>
-      navigateTo(
-        { kind: "pull-requests", hostId: transition?.hostId },
-        transition,
-      ),
+    goToPullRequests: (prUrl, transition) => {
+      const targetHostId = transition?.hostId;
+      if (!targetHostId) {
+        throw new Error("A host is required to open pull requests");
+      }
+      void router.navigate({
+        to: "/hosts/$hostId/pull-requests",
+        params: { hostId: targetHostId },
+        search: { prUrl },
+        ...(transition.replace !== undefined
+          ? { replace: transition.replace }
+          : {}),
+      });
+    },
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>
