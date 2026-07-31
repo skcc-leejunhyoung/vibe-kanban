@@ -335,7 +335,10 @@ export function SharedAppLayout() {
                 onCreateProject={handleCreateProject}
                 onWorkspacesClick={handleWorkspacesClick}
                 onPullRequestsClick={() =>
-                  void navigate({ to: '/pull-requests' })
+                  void navigate({
+                    to: '/pull-requests',
+                    search: { prUrl: undefined },
+                  })
                 }
                 onQuickChatClick={() => void QuickChatDialog.show()}
                 onProjectClick={handleProjectClick}
@@ -444,7 +447,10 @@ export function SharedAppLayout() {
             <button
               type="button"
               onClick={() => {
-                void navigate({ to: '/pull-requests' });
+                void navigate({
+                  to: '/pull-requests',
+                  search: { prUrl: undefined },
+                });
                 setIsDrawerOpen(false);
               }}
               className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"

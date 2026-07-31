@@ -360,6 +360,7 @@ export function createLocalAppNavigation(): AppNavigation {
     goToPullRequests: (transition) =>
       void router.navigate({
         to: '/pull-requests',
+        search: { prUrl: undefined },
         ...(transition?.replace !== undefined
           ? { replace: transition.replace }
           : {}),

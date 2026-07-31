@@ -19,7 +19,6 @@ import {
   getPayload,
   getPullRequestDetailsNavigationTarget,
 } from '@/shared/lib/notifications';
-import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import {
   getGroupedNotificationSegments,
   type MessageSegment,
@@ -300,11 +299,15 @@ export function NotificationsPage() {
       markGroupSeen(group);
       const path = group.deeplinkPath;
       const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
+      if (prDetails) {
+        void router.navigate({
+          to: '/pull-requests',
+          search: { prUrl: prDetails.prUrl },
+        });
+        return;
+      }
       if (path) {
-        const navigation = router.navigate({ to: path as '/' });
-        if (prDetails) {
-          void navigation.then(() => PrDetailsDialog.show(prDetails));
-        }
+        void router.navigate({ to: path as '/' });
       } else if (
         group.latest.notification_type === 'pull_request_comment_added'
       ) {

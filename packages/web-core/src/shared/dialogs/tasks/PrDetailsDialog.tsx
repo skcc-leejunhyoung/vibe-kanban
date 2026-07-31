@@ -237,7 +237,8 @@ export function PrDetailsContent({
       return result.data;
     },
     enabled: active,
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
   });
   const commentsQuery = usePrCommentsByUrl(prUrl, prNumber, active);
   const comments = useMemo(

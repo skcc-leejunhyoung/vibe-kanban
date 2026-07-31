@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
   ArrowClockwiseIcon,
@@ -13,7 +17,7 @@ import {
   SpinnerGapIcon,
   StackIcon,
 } from '@phosphor-icons/react';
-import { repoApi } from '@/shared/lib/api';
+import { issuePrsApi, repoApi } from '@/shared/lib/api';
 import {
   getRemoteIssue,
   listPullRequestIssueMappings,
@@ -22,6 +26,9 @@ import { cn } from '@/shared/lib/utils';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useUserContext } from '@/shared/hooks/useUserContext';
+import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
+import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
+import { getLinkedWorkspaceDescription } from '@/shared/lib/linkedWorkspaceDescription';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
@@ -146,10 +153,25 @@ function activeFilterCount(filters: PullRequestFilterState): number {
   ].filter(Boolean).length;
 }
 
-export function PullRequestsPage() {
+interface PullRequestsPageProps {
+  initialPrUrl?: string;
+}
+
+function getRepositoryNameFromPrUrl(prUrl: string): string | null {
+  try {
+    const segments = new URL(prUrl).pathname.split('/').filter(Boolean);
+    return segments.length >= 4 && segments[2] === 'pull' ? segments[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const isMobile = useIsMobile();
   const appNavigation = useAppNavigation();
+  const queryClient = useQueryClient();
   const { workspaces } = useUserContext();
+  const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );
@@ -162,6 +184,7 @@ export function PullRequestsPage() {
   const [selectedPullRequest, setSelectedPullRequest] =
     useState<PullRequestSummary | null>(null);
   const previousDefaultFiltersRef = useRef(defaultFilters);
+  const openedInitialPrUrlRef = useRef<string | undefined>(undefined);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -175,6 +198,8 @@ export function PullRequestsPage() {
       (reposQuery.data ?? []).map((repo) => ({
         value: repo.id,
         label: repo.display_name,
+        name: repo.name,
+        path: repo.path,
       })),
     [reposQuery.data]
   );
@@ -218,7 +243,9 @@ export function PullRequestsPage() {
       return result.data;
     },
     enabled: filters.repository !== 'all',
-    staleTime: 5 * 60_000,
+    staleTime: 30 * 60_000,
+    gcTime: 24 * 60 * 60_000,
+    placeholderData: keepPreviousData,
   });
 
   const pullRequests = useMemo(
@@ -276,6 +303,28 @@ export function PullRequestsPage() {
       }))
     );
   }, []);
+
+  const workspaceSummaries = useMemo(
+    () => [...activeWorkspaces, ...archivedWorkspaces],
+    [activeWorkspaces, archivedWorkspaces]
+  );
+
+  const prefetchPullRequest = useCallback(
+    (pullRequest: PullRequestSummary) =>
+      queryClient.prefetchQuery({
+        queryKey: ['pr-detail', pullRequest.url],
+        queryFn: async () => {
+          const result = await issuePrsApi.getPrInfo(pullRequest.url);
+          if (!result.success) {
+            throw new Error(result.message || 'Failed to load pull request');
+          }
+          return result.data;
+        },
+        staleTime: 5 * 60_000,
+        gcTime: 30 * 60_000,
+      }),
+    [queryClient]
+  );
 
   const goToMappedIssue = useCallback(
     async (pullRequest: PullRequestSummary) => {
@@ -343,7 +392,32 @@ export function PullRequestsPage() {
                       action: {
                         id: workspace.id,
                         label: workspace.name || 'Untitled workspace',
-                        description: mappedIssue?.issue.simple_id,
+                        description: [
+                          mappedIssue?.issue.simple_id,
+                          getLinkedWorkspaceDescription(
+                            workspaceSummaries.find(
+                              (candidate) =>
+                                getHostWorkspaceKey(
+                                  candidate.id,
+                                  candidate.hostId
+                                ) ===
+                                getHostWorkspaceKey(
+                                  workspace.local_workspace_id,
+                                  workspace.host_id
+                                )
+                            ) ??
+                              workspaceSummaries.find(
+                                (candidate) =>
+                                  candidate.id === workspace.local_workspace_id
+                              ),
+                            {
+                              archived: workspace.archived,
+                              updatedAt: workspace.updated_at,
+                            }
+                          ),
+                        ]
+                          .filter(Boolean)
+                          .join(' · '),
                         icon: StackIcon,
                         requiresTarget: ActionTargetType.NONE,
                         execute: () => {},
@@ -378,8 +452,48 @@ export function PullRequestsPage() {
         });
       }
     },
-    [appNavigation, loadMappedIssues, workspaces]
+    [appNavigation, loadMappedIssues, workspaces, workspaceSummaries]
   );
+
+  useEffect(() => {
+    if (
+      !initialPrUrl ||
+      openedInitialPrUrlRef.current === initialPrUrl ||
+      repositories.length === 0
+    ) {
+      return;
+    }
+    const repositoryName = getRepositoryNameFromPrUrl(initialPrUrl);
+    if (!repositoryName) return;
+    const repository = repositories.find(
+      (candidate) =>
+        candidate.name === repositoryName ||
+        candidate.label === repositoryName ||
+        candidate.path.split('/').pop() === repositoryName
+    );
+    if (repository && filters.repository !== repository.value) {
+      setFilters((current) => ({
+        ...current,
+        repository: repository.value,
+      }));
+    }
+  }, [filters.repository, initialPrUrl, repositories]);
+
+  useEffect(() => {
+    if (!initialPrUrl || openedInitialPrUrlRef.current === initialPrUrl) {
+      return;
+    }
+    const pullRequest = pullRequests.find(
+      (candidate) => candidate.url === initialPrUrl
+    );
+    if (!pullRequest) return;
+    const index = filteredPullRequests.findIndex(
+      (candidate) => candidate.url === initialPrUrl
+    );
+    if (index >= 0) setSelectedIndex(index);
+    openedInitialPrUrlRef.current = initialPrUrl;
+    setSelectedPullRequest(pullRequest);
+  }, [filteredPullRequests, initialPrUrl, pullRequests]);
 
   useEffect(() => {
     setSelectedIndex((current) =>
@@ -473,6 +587,38 @@ export function PullRequestsPage() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [closeDetails, selectedPullRequest]);
+
+  useEffect(() => {
+    if (!selectedPullRequest || filteredPullRequests.length === 0) return;
+    const handleDetailNavigation = (event: KeyboardEvent) => {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey ||
+        (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') ||
+        shouldIgnoreListKeyboardNavigation(event.target)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      const direction = event.key === 'ArrowRight' ? 1 : -1;
+      const currentIndex = filteredPullRequests.findIndex(
+        (candidate) => candidate.url === selectedPullRequest.url
+      );
+      if (currentIndex < 0) return;
+      const nextIndex = Math.min(
+        filteredPullRequests.length - 1,
+        Math.max(0, currentIndex + direction)
+      );
+      const nextPullRequest = filteredPullRequests[nextIndex];
+      if (!nextPullRequest || nextIndex === currentIndex) return;
+      setSelectedIndex(nextIndex);
+      setSelectedPullRequest(nextPullRequest);
+      void prefetchPullRequest(nextPullRequest);
+    };
+    window.addEventListener('keydown', handleDetailNavigation);
+    return () => window.removeEventListener('keydown', handleDetailNavigation);
+  }, [filteredPullRequests, prefetchPullRequest, selectedPullRequest]);
 
   useEffect(() => {
     if (selectedPullRequest || filteredPullRequests.length === 0) return;
@@ -637,6 +783,8 @@ export function PullRequestsPage() {
                     else rowRefs.current.delete(pr.url);
                   }}
                   onFocus={() => setSelectedIndex(index)}
+                  onMouseEnter={() => void prefetchPullRequest(pr)}
+                  onFocusCapture={() => void prefetchPullRequest(pr)}
                   onClick={() => setSelectedPullRequest(pr)}
                   className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
                 >
@@ -658,6 +806,11 @@ export function PullRequestsPage() {
                             weight="fill"
                           />
                           Approved
+                        </span>
+                      )}
+                      {pr.is_review_requested && (
+                        <span className="rounded bg-brand/10 px-half py-0.5 text-xs text-brand">
+                          Review requested
                         </span>
                       )}
                       {pr.labels.map((label) => (

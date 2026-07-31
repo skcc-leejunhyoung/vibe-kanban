@@ -207,6 +207,7 @@ pub struct PullRequestSummary {
     pub repository: String,
     pub is_draft: bool,
     pub review_decision: Option<String>,
+    pub is_review_requested: bool,
     pub comments_count: i64,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,

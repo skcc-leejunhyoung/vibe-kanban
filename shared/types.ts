@@ -723,7 +723,7 @@ export type ProviderKind = "git_hub" | "azure_dev_ops" | "unknown";
 
 export type PullRequestDetail = { number: bigint, url: string, status: MergeStatus, merged_at: string | null, merge_commit_sha: string | null, title: string, body: string, author: string | null, assignees: Array<string>, reviewers: Array<string>, reviews: Array<PullRequestReview>, commits: Array<PullRequestCommit>, review_decision: string | null, is_draft: boolean, created_at: string | null, updated_at: string | null, base_branch: string, head_branch: string, };
 
-export type PullRequestSummary = { number: bigint, url: string, status: MergeStatus, title: string, body: string, author: string | null, assignees: Array<string>, labels: Array<string>, repository: string, is_draft: boolean, review_decision: string | null, comments_count: bigint, created_at: string | null, updated_at: string | null, closed_at: string | null, };
+export type PullRequestSummary = { number: bigint, url: string, status: MergeStatus, title: string, body: string, author: string | null, assignees: Array<string>, labels: Array<string>, repository: string, is_draft: boolean, review_decision: string | null, is_review_requested: boolean, comments_count: bigint, created_at: string | null, updated_at: string | null, closed_at: string | null, };
 
 export type PullRequestReview = { id: string, author: string, state: string, body: string, submitted_at: string | null, };
 

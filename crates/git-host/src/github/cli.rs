@@ -301,6 +301,7 @@ struct GhPullRequestListMetadataRepository {
 #[serde(rename_all = "camelCase")]
 struct GhPullRequestListMetadata {
     review_decision: Option<String>,
+    review_requests: GhTotalCount,
     comments: GhTotalCount,
     review_threads: GhReviewThreadCountConnection,
 }
@@ -308,6 +309,7 @@ struct GhPullRequestListMetadata {
 struct PullRequestListMetadata {
     comments_count: i64,
     review_decision: Option<String>,
+    is_review_requested: bool,
 }
 
 #[derive(Deserialize)]
@@ -557,6 +559,9 @@ impl GhCli {
                 review_decision: metadata
                     .get(&pr.number)
                     .and_then(|metadata| metadata.review_decision.clone()),
+                is_review_requested: metadata
+                    .get(&pr.number)
+                    .is_some_and(|metadata| metadata.is_review_requested),
                 comments_count: metadata
                     .get(&pr.number)
                     .map(|metadata| metadata.comments_count)
@@ -808,6 +813,7 @@ fn pull_request_list_metadata_query(owner: &str, name: &str, numbers: &[i64]) ->
             format!(
                 "pr_{number}: pullRequest(number: {number}) {{ \
                     reviewDecision \
+                    reviewRequests(first: 1) {{ totalCount }} \
                     comments {{ totalCount }} \
                     reviewThreads(first: 100) {{ \
                         nodes {{ comments {{ totalCount }} }} \
@@ -854,6 +860,7 @@ fn parse_pull_request_list_metadata(
             PullRequestListMetadata {
                 comments_count: counts.comments.total_count + review_comments,
                 review_decision: counts.review_decision,
+                is_review_requested: counts.review_requests.total_count > 0,
             },
         );
     }
@@ -910,6 +917,7 @@ mod tests {
                     "repository": {
                         "pr_42": {
                             "reviewDecision": "APPROVED",
+                            "reviewRequests": {"totalCount": 1},
                             "comments": {"totalCount": 6},
                             "reviewThreads": {
                                 "nodes": [
@@ -929,6 +937,7 @@ mod tests {
         let pr_metadata = metadata.get(&42).unwrap();
         assert_eq!(pr_metadata.comments_count, 13);
         assert_eq!(pr_metadata.review_decision.as_deref(), Some("APPROVED"));
+        assert!(pr_metadata.is_review_requested);
     }
 
     #[test]
@@ -939,6 +948,7 @@ mod tests {
         assert!(query.contains("pr_12: pullRequest(number: 12)"));
         assert!(query.contains("pr_34: pullRequest(number: 34)"));
         assert!(query.contains("reviewDecision"));
+        assert!(query.contains("reviewRequests(first: 1)"));
         assert!(query.contains("reviewThreads(first: 100)"));
     }
 
