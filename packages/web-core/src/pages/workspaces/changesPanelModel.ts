@@ -16,6 +16,13 @@ export interface DiffGroup {
 
 export const DEFER_DIFF_LOAD_LINES = 800;
 
+export function shouldStackChangesPanel(
+  width: number,
+  height: number
+): boolean {
+  return height > width;
+}
+
 export function getDiffPath(diff: Diff): string {
   return diff.newPath || diff.oldPath || '';
 }

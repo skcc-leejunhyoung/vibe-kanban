@@ -2,6 +2,8 @@ import { memo, useEffect, useCallback, useRef, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   CopyIcon,
+  CaretDownIcon,
+  CaretRightIcon,
   FileIcon,
   GithubLogoIcon,
   PlusIcon,
@@ -57,6 +59,7 @@ import {
   groupDiffsByRepo,
   hasGitHubCommentsForDiff,
   resolveSelectedDiff,
+  shouldStackChangesPanel,
   shouldDeferDiffLoad,
   splitFilePath,
 } from './changesPanelModel';
@@ -85,16 +88,22 @@ function MiddleEllipsisPath({
 
   return (
     <span
-      className={`min-w-0 flex-1 flex items-baseline font-mono ${className}`}
+      className={`min-w-0 max-w-full flex flex-1 items-baseline overflow-hidden font-mono ${className}`}
       title={path}
     >
       {directory && (
         <>
-          <span className="shrink min-w-0 truncate text-low">{directory}</span>
+          <span className="min-w-0 flex-1 truncate text-low">{directory}</span>
           <span className="shrink-0 text-low">/</span>
         </>
       )}
-      <span className="shrink-0 font-medium">{fileName}</span>
+      <span
+        className={`min-w-0 shrink-0 truncate font-medium ${
+          directory ? 'max-w-[calc(100%-0.75rem)]' : 'max-w-full'
+        }`}
+      >
+        {fileName}
+      </span>
     </span>
   );
 }
@@ -649,12 +658,32 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     [repos, sortedDiffs]
   );
   const showRepoHeaders = repos.length > 1 || groupedDiffs.length > 1;
+  const panelRef = useRef<HTMLDivElement>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [isStacked, setIsStacked] = useState(false);
+  const [isFileListCollapsed, setIsFileListCollapsed] = useState(false);
   const [loadedDiffKeys, setLoadedDiffKeys] = useState<Set<string>>(
     () => new Set()
   );
   const handledRequestedPathRef = useRef<string | null>(null);
   const lineScrollRequestRef = useRef(0);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+
+    const updateLayout = () => {
+      const { width, height } = panel.getBoundingClientRect();
+      setIsStacked(shouldStackChangesPanel(width, height));
+    };
+
+    updateLayout();
+    if (typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(updateLayout);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, []);
 
   const selectedDiff = useMemo(
     () => resolveSelectedDiff(sortedDiffs, selectedKey),
@@ -748,18 +777,59 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
       poolOptions={POOL_OPTIONS}
       highlighterOptions={HIGHLIGHTER_OPTIONS}
     >
-      <div className={`flex flex-col h-full min-h-0 bg-secondary ${className}`}>
+      <div
+        ref={panelRef}
+        className={`flex flex-col h-full min-h-0 bg-secondary ${className}`}
+      >
         <CommitSelector workspaceId={workspaceId} />
-        <div className="flex flex-1 min-h-0 max-md:flex-col">
-          <section className="w-64 min-w-48 max-w-[38%] shrink-0 border-r border-border bg-panel flex flex-col min-h-0 max-md:w-full max-md:max-w-none max-md:h-44 max-md:border-r-0 max-md:border-b">
-            <div className="h-9 shrink-0 px-base flex items-center justify-between border-b border-border">
-              <span className="text-xs font-medium text-high">
+        <div
+          className={`flex flex-1 min-h-0 ${
+            isStacked ? 'flex-col' : 'flex-row'
+          }`}
+        >
+          <section
+            className={`shrink-0 overflow-hidden bg-panel flex flex-col min-h-0 ${
+              isStacked
+                ? `w-full max-w-none border-b border-border ${
+                    isFileListCollapsed ? 'h-9' : 'h-52'
+                  }`
+                : 'w-64 min-w-48 max-w-[38%] border-r border-border'
+            }`}
+          >
+            <button
+              type="button"
+              disabled={!isStacked}
+              aria-expanded={!isFileListCollapsed}
+              onClick={() => {
+                if (isStacked) {
+                  setIsFileListCollapsed((collapsed) => !collapsed);
+                }
+              }}
+              className={`h-9 w-full shrink-0 px-base flex items-center justify-between border-b border-border text-left ${
+                isStacked
+                  ? 'cursor-pointer hover:bg-secondary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand'
+                  : 'cursor-default'
+              }`}
+            >
+              <span className="flex min-w-0 items-center gap-half text-xs font-medium text-high">
+                {isStacked &&
+                  (isFileListCollapsed ? (
+                    <CaretRightIcon
+                      className="size-icon-xs shrink-0"
+                      weight="bold"
+                    />
+                  ) : (
+                    <CaretDownIcon
+                      className="size-icon-xs shrink-0"
+                      weight="bold"
+                    />
+                  ))}
                 Changed files
               </span>
               <span className="text-xs tabular-nums text-low">
                 {sortedDiffs.length}
               </span>
-            </div>
+            </button>
             <div className="min-h-0 overflow-y-auto py-1">
               {groupedDiffs.map((group) => (
                 <div key={group.repoId ?? 'unknown'}>

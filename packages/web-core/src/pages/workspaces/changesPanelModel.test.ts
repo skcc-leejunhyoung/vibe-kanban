@@ -10,6 +10,7 @@ import {
   groupDiffsByRepo,
   hasGitHubCommentsForDiff,
   resolveSelectedDiff,
+  shouldStackChangesPanel,
   shouldDeferDiffLoad,
   splitFilePath,
 } from './changesPanelModel';
@@ -30,6 +31,12 @@ function makeDiff(repoId: string, path: string): Diff {
 }
 
 describe('changesPanelModel', () => {
+  it('stacks the file list above the diff when the panel is taller than wide', () => {
+    expect(shouldStackChangesPanel(400, 600)).toBe(true);
+    expect(shouldStackChangesPanel(600, 400)).toBe(false);
+    expect(shouldStackChangesPanel(600, 600)).toBe(false);
+  });
+
   it('keeps identical paths in different repositories independently selectable', () => {
     const first = makeDiff('repo-1', 'package.json');
     const second = makeDiff('repo-2', 'package.json');
