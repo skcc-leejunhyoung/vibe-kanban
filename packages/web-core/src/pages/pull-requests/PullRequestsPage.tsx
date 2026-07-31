@@ -35,6 +35,7 @@ import {
   getPullRequestNumberFromUrl,
   getRepositoryNameFromPrUrl,
 } from './pullRequestUrl';
+import { handlePullRequestDetailsEscape } from './pullRequestDetailsEscape';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
@@ -621,15 +622,18 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
 
   const closeDetails = useCallback(() => {
     setSelectedPullRequest(null);
+    appNavigation.goToPullRequests(undefined, { replace: true });
     window.requestAnimationFrame(() => focusRow(selectedIndex));
-  }, [focusRow, selectedIndex]);
+  }, [appNavigation, focusRow, selectedIndex]);
 
   useEffect(() => {
     if (!selectedPullRequest) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      closeDetails();
+      handlePullRequestDetailsEscape(
+        event,
+        document.activeElement as HTMLElement | null,
+        closeDetails
+      );
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
