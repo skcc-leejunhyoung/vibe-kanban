@@ -4,6 +4,7 @@ import type { RebaseWorkspaceRequest } from 'shared/types';
 import type { GitOperationError } from 'shared/types';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export function useRebase(
   workspaceId: string | undefined,
@@ -12,6 +13,7 @@ export function useRebase(
   onError?: (err: Result<void, GitOperationError>) => void
 ) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
 
   type RebaseMutationArgs = {
     repoId: string;
@@ -51,7 +53,7 @@ export function useRebase(
 
         // Refresh repos to update target_branch in RepoCard
         queryClient.invalidateQueries({
-          queryKey: workspaceRepoKeys.byWorkspace(workspaceId),
+          queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),
         });
 
         // Refresh branch list

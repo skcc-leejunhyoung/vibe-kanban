@@ -6,6 +6,7 @@ import type {
 } from 'shared/types';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 type ChangeTargetBranchParams = {
   newTargetBranch: string;
@@ -19,6 +20,7 @@ export function useChangeTargetBranch(
   onError?: (err: unknown) => void
 ) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
 
   return useMutation<
     ChangeTargetBranchResponse,
@@ -47,7 +49,7 @@ export function useChangeTargetBranch(
         });
         // Refresh repos to update target_branch in RepoCard
         queryClient.invalidateQueries({
-          queryKey: workspaceRepoKeys.byWorkspace(workspaceId),
+          queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),
         });
       }
 
