@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueApi } from '@/shared/lib/api';
 import type { ExecutorConfig, QueuedMessage, QueueStatus } from 'shared/types';
 import {
-  didQueueDrain,
+  advanceQueueTracking,
   queueStatusRefetchInterval,
 } from '../queueReconciliation';
 
@@ -70,14 +70,13 @@ export function useSessionQueueInteraction({
   const queueTrackingRef = useRef({ sessionId, wasQueued: false });
 
   useEffect(() => {
-    if (queueTrackingRef.current.sessionId !== sessionId) {
-      queueTrackingRef.current = { sessionId, wasQueued: isQueued };
-      return;
-    }
-
-    const wasQueued = queueTrackingRef.current.wasQueued;
-    queueTrackingRef.current.wasQueued = isQueued;
-    if (didQueueDrain(wasQueued, isQueued)) {
+    const next = advanceQueueTracking(
+      queueTrackingRef.current,
+      sessionId,
+      isQueued
+    );
+    queueTrackingRef.current = next.state;
+    if (next.shouldReconcile) {
       // The queue can be consumed between execution-process stream patches.
       // Replay the authoritative process snapshot so a panel that missed the
       // new-process add immediately shows the running follow-up.
