@@ -84,6 +84,7 @@
     "description": "Connectez-vous pour rejoindre des organisations et partager des tâches avec votre équipe",
     "continueWithGitHub": "Continuer avec GitHub",
     "continueWithGoogle": "Continuer avec Google",
+    "reauthenticateGitHub": "Reconnecter GitHub",
     "waitingTitle": "Terminer l'authentification",
     "waitingDescription": "Une fenêtre popup a été ouverte pour l'authentification",
     "waitingForAuth": "En attente de l'authentification...",

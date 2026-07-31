@@ -430,11 +430,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     }, [value]);
 
     const githubImageAuthorizationRef = useRef<Promise<boolean> | null>(null);
-    const requestGitHubImageAuthorization = useCallback((error: unknown) => {
-      if (!isGitHubImageAuthorizationError(error)) {
-        return Promise.resolve(false);
-      }
-
+    const requestGitHubImageAuthorization = useCallback(() => {
       if (!githubImageAuthorizationRef.current) {
         const authorization = OAuthDialog.show({
           initialProvider: 'github',
@@ -452,18 +448,33 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
 
       return githubImageAuthorizationRef.current;
     }, []);
+    const requestGitHubImageAuthorizationIfRequired = useCallback(
+      (error: unknown) => {
+        if (!isGitHubImageAuthorizationError(error)) {
+          return Promise.resolve(false);
+        }
+
+        return requestGitHubImageAuthorization();
+      },
+      [requestGitHubImageAuthorization]
+    );
 
     const imageNodeDefinition = useMemo(
       () =>
         createImageNode({
           fetchAttachmentUrl: fetchAttachmentSasUrl,
           fetchGitHubImage,
-          onGitHubImageAuthorizationRequired: requestGitHubImageAuthorization,
+          onGitHubImageAuthorizationRequired:
+            requestGitHubImageAuthorizationIfRequired,
+          onGitHubImageAuthorizationRequested: requestGitHubImageAuthorization,
           openImagePreview: (options) => {
             ImagePreviewDialog.show(options);
           },
         }),
-      [requestGitHubImageAuthorization]
+      [
+        requestGitHubImageAuthorization,
+        requestGitHubImageAuthorizationIfRequired,
+      ]
     );
     const attachmentNodeDefinition = useMemo(
       () =>

@@ -57,6 +57,7 @@ export interface CreateImageNodeOptions {
   onGitHubImageAuthorizationRequired?: (
     error: unknown
   ) => Promise<boolean> | boolean;
+  onGitHubImageAuthorizationRequested?: () => Promise<boolean> | boolean;
   openImagePreview: (options: OpenImagePreviewOptions) => void;
 }
 
@@ -211,8 +212,12 @@ function useAttachmentUrl(
 function useGitHubImageUrl(
   sourceUrl: string | null,
   fetchGitHubImage: CreateImageNodeOptions['fetchGitHubImage'],
-  onGitHubImageAuthorizationRequired: CreateImageNodeOptions['onGitHubImageAuthorizationRequired']
-): AttachmentUrlResult & { handleImageError: () => void } {
+  onGitHubImageAuthorizationRequired: CreateImageNodeOptions['onGitHubImageAuthorizationRequired'],
+  onGitHubImageAuthorizationRequested: CreateImageNodeOptions['onGitHubImageAuthorizationRequested']
+): AttachmentUrlResult & {
+  handleImageError: () => void;
+  requestAuthorization: () => void;
+} {
   const [url, setUrl] = useState<string | null>(sourceUrl);
   const [loading, setLoading] = useState(false);
   const [hasTriedProxy, setHasTriedProxy] = useState(false);
@@ -297,7 +302,19 @@ function useGitHubImageUrl(
     fetchProxy();
   }, [fetchProxy, hasTriedProxy]);
 
-  return { url, loading, handleImageError };
+  const requestAuthorization = useCallback(() => {
+    if (!onGitHubImageAuthorizationRequested) return;
+
+    void Promise.resolve(onGitHubImageAuthorizationRequested())
+      .then((reauthorized) => {
+        if (reauthorized) {
+          setAuthorizationRetry((value) => value + 1);
+        }
+      })
+      .catch(() => {});
+  }, [onGitHubImageAuthorizationRequested]);
+
+  return { url, loading, handleImageError, requestAuthorization };
 }
 
 export function createImageNode(options: CreateImageNodeOptions) {
@@ -348,10 +365,12 @@ export function createImageNode(options: CreateImageNodeOptions) {
       url: githubImageUrl,
       loading: githubImageLoading,
       handleImageError: handleGitHubImageError,
+      requestAuthorization: requestGitHubImageAuthorization,
     } = useGitHubImageUrl(
       isGitHubAttachment ? src : null,
       options.fetchGitHubImage,
-      options.onGitHubImageAuthorizationRequired
+      options.onGitHubImageAuthorizationRequired,
+      options.onGitHubImageAuthorizationRequested
     );
 
     const { data: metadata, isLoading: loading } = useImageMetadata(
@@ -497,8 +516,21 @@ export function createImageNode(options: CreateImageNodeOptions) {
               referrerPolicy="no-referrer"
             />
           ) : (
-            <div className="w-10 h-10 flex items-center justify-center bg-muted rounded">
+            <div className="flex items-center gap-2 rounded bg-muted p-2">
               <HelpCircle className="w-5 h-5 text-muted-foreground" />
+              {options.onGitHubImageAuthorizationRequested && (
+                <button
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    requestGitHubImageAuthorization();
+                  }}
+                  className="text-xs text-primary hover:underline"
+                  type="button"
+                >
+                  {t('oauth.reauthenticateGitHub')}
+                </button>
+              )}
             </div>
           )}
           {editor.isEditable() && (
