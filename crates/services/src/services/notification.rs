@@ -454,6 +454,19 @@ fn web_push_workspace_path(workspace_id: Uuid) -> String {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_WEB_PUSH_WORKSPACE_PATH_TEMPLATE.to_string());
+    workspace_path_from_template(&template, workspace_id)
+}
+
+fn workspace_path_from_template(template: &str, workspace_id: Uuid) -> String {
+    let template = if template.contains("{workspace_id}") {
+        template
+    } else {
+        tracing::warn!(
+            env = WEB_PUSH_WORKSPACE_PATH_TEMPLATE_ENV,
+            "ignoring web push workspace path template without workspace_id placeholder"
+        );
+        DEFAULT_WEB_PUSH_WORKSPACE_PATH_TEMPLATE
+    };
     let path = template.replace("{workspace_id}", &workspace_id.to_string());
 
     if path.starts_with('/') {
@@ -710,7 +723,7 @@ mod tests {
 
     use super::{
         build_web_push_click_url, local_notification_url, normalize_local_web_push_base_url,
-        normalize_remote_notification_url,
+        normalize_remote_notification_url, workspace_path_from_template,
     };
 
     #[test]
@@ -747,6 +760,16 @@ mod tests {
             Some(
                 "http://localhost:4173/workspace/018f5f99-7f0d-7a7f-9abc-001122334455".to_string()
             )
+        );
+    }
+
+    #[test]
+    fn workspace_path_rejects_template_without_workspace_id() {
+        let workspace_id = Uuid::parse_str("018f5f99-7f0d-7a7f-9abc-001122334455").unwrap();
+
+        assert_eq!(
+            workspace_path_from_template("/workspace", workspace_id),
+            "/workspace/018f5f99-7f0d-7a7f-9abc-001122334455"
         );
     }
 

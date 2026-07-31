@@ -391,6 +391,16 @@ async fn resolve_workspace_host_id(
 }
 
 fn workspace_path(template: &str, workspace_id: Uuid) -> String {
+    const DEFAULT_WORKSPACE_PATH_TEMPLATE: &str = "/workspace/{workspace_id}";
+
+    let template = if template.contains("{workspace_id}") {
+        template
+    } else {
+        tracing::warn!(
+            "ignoring web push workspace path template without workspace_id placeholder"
+        );
+        DEFAULT_WORKSPACE_PATH_TEMPLATE
+    };
     let path = template.replace("{workspace_id}", &workspace_id.to_string());
 
     if path.starts_with('/') {
@@ -487,6 +497,16 @@ mod tests {
 
         assert_eq!(
             workspace_path("workspace/{workspace_id}", workspace_id),
+            "/workspace/018f5f99-7f0d-7a7f-9abc-001122334455"
+        );
+    }
+
+    #[test]
+    fn workspace_path_rejects_template_without_workspace_id() {
+        let workspace_id = Uuid::parse_str("018f5f99-7f0d-7a7f-9abc-001122334455").unwrap();
+
+        assert_eq!(
+            workspace_path("/workspace", workspace_id),
             "/workspace/018f5f99-7f0d-7a7f-9abc-001122334455"
         );
     }
