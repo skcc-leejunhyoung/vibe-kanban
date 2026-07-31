@@ -3,6 +3,7 @@ pub mod auth;
 pub mod blobs;
 pub mod electric_publications;
 pub mod export;
+pub mod github_issue_links;
 pub mod hosts;
 pub mod identity_errors;
 pub mod invitations;

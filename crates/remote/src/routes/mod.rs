@@ -17,6 +17,7 @@ pub(crate) mod electric_proxy;
 pub(crate) mod error;
 mod export;
 mod github_images;
+pub mod github_issue_links;
 pub mod hosts;
 mod identity;
 pub mod issue_assignees;
@@ -115,6 +116,7 @@ pub fn router(state: AppState) -> Router {
         .merge(issue_followers::router())
         .merge(issue_tags::router())
         .merge(issue_relationships::router())
+        .merge(github_issue_links::router())
         .merge(pull_request_issues::router())
         .merge(pull_requests::router())
         .merge(notifications::router())
@@ -188,6 +190,7 @@ pub fn all_mutation_definitions() -> Vec<crate::mutation_definition::MutationDef
         issue_followers::mutation().definition(),
         issue_tags::mutation().definition(),
         issue_relationships::mutation().definition(),
+        github_issue_links::mutation().definition(),
         issue_comments::mutation().definition(),
         issue_comment_reactions::mutation().definition(),
         pull_request_issues::mutation().definition(),

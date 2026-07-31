@@ -12,6 +12,7 @@ import type {
   IssueRelationship,
   PullRequest,
   PullRequestIssue,
+  GithubIssueLink,
   Workspace,
   CreateIssueRequest,
   UpdateIssueRequest,
@@ -24,6 +25,8 @@ import type {
   CreateIssueTagRequest,
   CreateIssueRelationshipRequest,
   CreatePullRequestIssueRequest,
+  CreateGithubIssueLinkRequest,
+  UpdateGithubIssueLinkRequest,
 } from 'shared/remote-types';
 
 /**
@@ -54,6 +57,7 @@ export interface ProjectContextValue {
   issueRelationships: IssueRelationship[];
   pullRequests: PullRequest[];
   pullRequestIssues: PullRequestIssue[];
+  githubIssueLinks: GithubIssueLink[];
   workspaces: Workspace[];
 
   // Loading/error state
@@ -111,6 +115,15 @@ export interface ProjectContextValue {
     data: CreatePullRequestIssueRequest
   ) => InsertResult<PullRequestIssue>;
   removePullRequestIssue: (id: string) => MutationResult;
+
+  insertGithubIssueLink: (
+    data: CreateGithubIssueLinkRequest
+  ) => InsertResult<GithubIssueLink>;
+  updateGithubIssueLink: (
+    id: string,
+    changes: Partial<UpdateGithubIssueLinkRequest>
+  ) => MutationResult;
+  removeGithubIssueLink: (id: string) => MutationResult;
 
   // Lookup helpers
   getIssue: (issueId: string) => Issue | undefined;

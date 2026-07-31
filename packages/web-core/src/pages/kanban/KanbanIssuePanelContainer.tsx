@@ -140,6 +140,8 @@ export function KanbanIssuePanelContainer({
     getPullRequestsForIssue,
     pullRequestIssues,
     removePullRequestIssue,
+    githubIssueLinks,
+    removeGithubIssueLink,
     isLoading: projectLoading,
   } = useProjectContext();
   const selectedKanbanIssueId = routeState.issueId;
@@ -263,6 +265,19 @@ export function KanbanIssuePanelContainer({
       status: pr.status,
     }));
   }, [getPullRequestsForIssue, selectedKanbanIssueId]);
+
+  const linkedGithubIssues = useMemo(() => {
+    if (!selectedKanbanIssueId) return [];
+    return githubIssueLinks
+      .filter((link) => link.issue_id === selectedKanbanIssueId)
+      .map((link) => ({
+        id: link.id,
+        number: link.number,
+        repository: link.repository,
+        url: link.url,
+        state: link.github_state,
+      }));
+  }, [githubIssueLinks, selectedKanbanIssueId]);
 
   // Determine mode from composer state (create) or issue route (edit).
   const mode = kanbanCreateMode ? 'create' : 'edit';
@@ -1141,6 +1156,38 @@ export function KanbanIssuePanelContainer({
     });
   }, [selectedKanbanIssueId, projectId]);
 
+  const handleLinkGithubIssue = useCallback(async () => {
+    if (!selectedIssue) return;
+    const { LinkGithubIssueDialog } = await import(
+      '@/shared/dialogs/command-bar/LinkGithubIssueDialog'
+    );
+    await LinkGithubIssueDialog.show({
+      runtime,
+      hostId: routeState.hostId,
+      issueId: selectedIssue.id,
+      title: selectedIssue.title,
+      description: selectedIssue.description,
+      statusId: selectedIssue.status_id,
+      updatedAt: selectedIssue.updated_at,
+    });
+  }, [routeState.hostId, runtime, selectedIssue]);
+
+  const handleRemoveGithubIssue = useCallback(
+    (linkId: string) => {
+      void (async () => {
+        const result = await ConfirmDialog.show({
+          title: 'Unlink GitHub issue?',
+          message:
+            'This removes synchronization. The GitHub issue itself is not affected.',
+          confirmText: 'Unlink',
+          variant: 'destructive',
+        });
+        if (result === 'confirmed') removeGithubIssueLink(linkId);
+      })();
+    },
+    [removeGithubIssueLink]
+  );
+
   const handleRemovePr = useCallback(
     (prId: string) => {
       if (!selectedKanbanIssueId) return;
@@ -1201,8 +1248,13 @@ export function KanbanIssuePanelContainer({
       onParentIssueClick={handleParentIssueClick}
       onRemoveParentIssue={handleRemoveParentIssue}
       linkedPrs={linkedPrs}
+      linkedGithubIssues={linkedGithubIssues}
       onLinkPr={mode === 'edit' ? handleLinkPr : undefined}
       onRemovePr={mode === 'edit' ? handleRemovePr : undefined}
+      onLinkGithubIssue={mode === 'edit' ? handleLinkGithubIssue : undefined}
+      onRemoveGithubIssue={
+        mode === 'edit' ? handleRemoveGithubIssue : undefined
+      }
       onClose={closeKanbanIssuePanel}
       onSubmit={handleSubmit}
       onCmdEnterSubmit={handleCmdEnterSubmit}

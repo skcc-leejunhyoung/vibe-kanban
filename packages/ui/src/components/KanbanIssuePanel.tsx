@@ -121,8 +121,11 @@ export interface KanbanIssuePanelProps {
   onParentIssueClick?: () => void;
   onRemoveParentIssue?: () => void;
   linkedPrs?: LinkedPullRequest[];
+  linkedGithubIssues?: import('./IssueTagsRow').LinkedGithubIssue[];
   onLinkPr?: () => void;
   onRemovePr?: (prId: string) => void;
+  onLinkGithubIssue?: () => void;
+  onRemoveGithubIssue?: (linkId: string) => void;
 
   // Actions
   onClose: () => void;
@@ -194,8 +197,11 @@ export function KanbanIssuePanel({
   onParentIssueClick,
   onRemoveParentIssue,
   linkedPrs = [],
+  linkedGithubIssues = [],
   onLinkPr,
   onRemovePr,
+  onLinkGithubIssue,
+  onRemoveGithubIssue,
   onClose,
   onSubmit,
   onCmdEnterSubmit,
@@ -451,11 +457,16 @@ export function KanbanIssuePanel({
             selectedTagIds={formData.tagIds}
             availableTags={tags}
             linkedPrs={isCreateMode ? [] : linkedPrs}
+            linkedGithubIssues={isCreateMode ? [] : linkedGithubIssues}
             onTagsChange={(tagIds) => onFormChange('tagIds', tagIds)}
             onCreateTag={onCreateTag}
             renderAddTagControl={renderAddTagControl}
             onLinkPr={!isCreateMode ? onLinkPr : undefined}
             onRemovePr={!isCreateMode ? onRemovePr : undefined}
+            onLinkGithubIssue={!isCreateMode ? onLinkGithubIssue : undefined}
+            onRemoveGithubIssue={
+              !isCreateMode ? onRemoveGithubIssue : undefined
+            }
             disabled={isSubmitting}
           />
         </div>

@@ -9,6 +9,7 @@ import type {
   ListRelayHostsResponse,
   RelayHost,
   Issue,
+  ProjectStatus,
   PullRequestIssue,
   UpdateIssueRequest,
   UpdateProjectRequest,
@@ -187,6 +188,22 @@ export async function bulkUpdateProjectStatuses(
     const error = await response.json();
     throw new Error(error.message || 'Failed to bulk update project statuses');
   }
+}
+
+export async function listProjectStatuses(
+  projectId: string
+): Promise<ProjectStatus[]> {
+  const response = await makeRequest(
+    `/v1/project_statuses?project_id=${encodeURIComponent(projectId)}`,
+    { method: 'GET' }
+  );
+  if (!response.ok) {
+    throw await parseErrorResponse(response, 'Failed to list project statuses');
+  }
+  const body = (await response.json()) as {
+    project_statuses: ProjectStatus[];
+  };
+  return body.project_statuses;
 }
 
 // ---------------------------------------------------------------------------

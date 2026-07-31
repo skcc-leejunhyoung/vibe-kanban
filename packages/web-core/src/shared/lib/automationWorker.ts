@@ -17,7 +17,52 @@ export interface AutomationRule {
   id: string;
   name: string;
   enabled: boolean;
+  kind?: 'script' | 'github_issue_sync' | string;
+  config?: GithubIssueSyncRuleConfig | Record<string, unknown>;
   script: string;
+}
+
+export interface GithubStatusMapping {
+  vibeStatusId: string;
+  githubOptionId: string;
+}
+
+export interface GithubIssueSyncRuleConfig {
+  githubConnectorId: string;
+  vibeConnectorId: string;
+  githubProjectId: string;
+  githubStatusFieldId: string;
+  statusMappings: GithubStatusMapping[];
+  fields: {
+    title: boolean;
+    description: boolean;
+    status: boolean;
+  };
+}
+
+export interface GithubProjectMetadata {
+  id: string;
+  number: number;
+  title: string;
+  statusField: {
+    id: string;
+    options: Array<{ id: string; name: string }>;
+  } | null;
+}
+
+export interface GithubProjectsMetadata {
+  projects: GithubProjectMetadata[];
+}
+
+export interface LinkGithubIssueRequest {
+  ruleId: string;
+  mode: 'existing' | 'create';
+  issueId: string;
+  url?: string;
+  title: string;
+  description: string | null;
+  statusId: string;
+  vibeUpdatedAt: string;
 }
 
 export interface AutomationRetryItem {

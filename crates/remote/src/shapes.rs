@@ -1,9 +1,9 @@
 //! All shape constant instances for realtime streaming.
 
 use api_types::{
-    Issue, IssueAssignee, IssueComment, IssueCommentReaction, IssueFollower, IssueRelationship,
-    IssueTag, Notification, OrganizationMember, Project, ProjectStatus, PullRequest,
-    PullRequestIssue, Tag, User, Workspace,
+    GithubIssueLink, Issue, IssueAssignee, IssueComment, IssueCommentReaction, IssueFollower,
+    IssueRelationship, IssueTag, Notification, OrganizationMember, Project, ProjectStatus,
+    PullRequest, PullRequestIssue, Tag, User, Workspace,
 };
 
 use crate::shape_definition::ShapeDefinition;
@@ -139,6 +139,17 @@ pub const PROJECT_PULL_REQUEST_ISSUES_SHAPE: ShapeDefinition<PullRequestIssue> =
     url: "/shape/project/{project_id}/pull_request_issues",
     params: ["project_id"],
 );
+
+// Kept as an explicit definition until the migration-backed SQLx query cache is
+// generated; runtime shape registration is identical to `define_shape!`.
+pub const PROJECT_GITHUB_ISSUE_LINKS_SHAPE: ShapeDefinition<GithubIssueLink> = ShapeDefinition {
+    name: "PROJECT_GITHUB_ISSUE_LINKS_SHAPE",
+    table: "github_issue_links",
+    where_clause: r#""project_id" = $1"#,
+    params: &["project_id"],
+    url: "/shape/project/{project_id}/github_issue_links",
+    _phantom: std::marker::PhantomData,
+};
 
 // =============================================================================
 // Issue-scoped shapes

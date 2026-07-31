@@ -1,5 +1,11 @@
 import type { ReactNode } from 'react';
-import { PlusIcon, HashIcon, GitPullRequest } from '@phosphor-icons/react';
+import {
+  PlusIcon,
+  HashIcon,
+  GitPullRequest,
+  GithubLogo,
+  XIcon,
+} from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
 import { PRESET_COLORS } from './ColorPicker';
 import { PrBadge, type PrBadgeStatus } from './PrBadge';
@@ -27,11 +33,20 @@ export interface LinkedIssue {
   title: string;
 }
 
+export interface LinkedGithubIssue {
+  id: string;
+  number: number;
+  repository: string;
+  url: string;
+  state: string;
+}
+
 export interface IssueTagsRowProps<TTag extends IssueTagBase = IssueTagBase> {
   selectedTagIds: string[];
   availableTags: TTag[];
   linkedPrs?: LinkedPullRequest[];
   linkedIssues?: LinkedIssue[];
+  linkedGithubIssues?: LinkedGithubIssue[];
   onTagsChange: (tagIds: string[]) => void;
   onCreateTag?: (data: { name: string; color: string }) => string;
   renderAddTagControl?: (
@@ -39,6 +54,8 @@ export interface IssueTagsRowProps<TTag extends IssueTagBase = IssueTagBase> {
   ) => ReactNode;
   onLinkPr?: () => void;
   onRemovePr?: (prId: string) => void;
+  onLinkGithubIssue?: () => void;
+  onRemoveGithubIssue?: (linkId: string) => void;
   disabled?: boolean;
   className?: string;
 }
@@ -59,11 +76,14 @@ export function IssueTagsRow<TTag extends IssueTagBase>({
   availableTags,
   linkedPrs = [],
   linkedIssues = [],
+  linkedGithubIssues = [],
   onTagsChange,
   onCreateTag,
   renderAddTagControl,
   onLinkPr,
   onRemovePr,
+  onLinkGithubIssue,
+  onRemoveGithubIssue,
   disabled,
   className,
 }: IssueTagsRowProps<TTag>) {
@@ -145,6 +165,48 @@ export function IssueTagsRow<TTag extends IssueTagBase>({
           aria-label="Link pull request"
         >
           <GitPullRequest className="size-icon-xs" weight="bold" />
+        </button>
+      )}
+
+      {linkedGithubIssues.map((issue) => (
+        <span
+          key={issue.id}
+          className="inline-flex items-center gap-half h-5 px-base bg-panel rounded-sm text-sm text-low hover:text-normal transition-colors"
+          title={`${issue.repository}#${issue.number} · ${issue.state}`}
+        >
+          <a
+            href={issue.url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-half"
+          >
+            <GithubLogo className="size-icon-xs" weight="bold" />
+            <span>#{issue.number}</span>
+          </a>
+          {onRemoveGithubIssue && (
+            <button
+              type="button"
+              onClick={() => onRemoveGithubIssue(issue.id)}
+              disabled={disabled}
+              aria-label={`Unlink GitHub issue #${issue.number}`}
+              className="text-low hover:text-error disabled:opacity-50"
+            >
+              <XIcon className="size-icon-2xs" weight="bold" />
+            </button>
+          )}
+        </span>
+      ))}
+
+      {onLinkGithubIssue && linkedGithubIssues.length === 0 && (
+        <button
+          type="button"
+          onClick={onLinkGithubIssue}
+          disabled={disabled}
+          className="flex items-center justify-center h-5 w-5 rounded-sm text-low hover:text-normal hover:bg-panel transition-colors disabled:opacity-50"
+          aria-label="Link GitHub issue"
+          title="Link GitHub issue"
+        >
+          <GithubLogo className="size-icon-xs" weight="bold" />
         </button>
       )}
 

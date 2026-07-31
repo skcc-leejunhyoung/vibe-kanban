@@ -1,9 +1,9 @@
 //! All shape route declarations with authorization scope and REST fallback.
 
 use api_types::{
-    ListIssueAssigneesResponse, ListIssueCommentReactionsResponse, ListIssueCommentsResponse,
-    ListIssueFollowersResponse, ListIssueRelationshipsResponse, ListIssueTagsResponse,
-    ListIssuesResponse, ListProjectStatusesResponse, ListProjectsResponse,
+    ListGithubIssueLinksResponse, ListIssueAssigneesResponse, ListIssueCommentReactionsResponse,
+    ListIssueCommentsResponse, ListIssueFollowersResponse, ListIssueRelationshipsResponse,
+    ListIssueTagsResponse, ListIssuesResponse, ListProjectStatusesResponse, ListProjectsResponse,
     ListPullRequestIssuesResponse, ListPullRequestsResponse, ListTagsResponse, Notification,
     OrganizationMember, SearchIssuesRequest, User, Workspace,
 };
@@ -18,7 +18,7 @@ use crate::{
     AppState,
     auth::RequestContext,
     db::{
-        issue_assignees::IssueAssigneeRepository,
+        github_issue_links::GithubIssueLinkRepository, issue_assignees::IssueAssigneeRepository,
         issue_comment_reactions::IssueCommentReactionRepository,
         issue_comments::IssueCommentRepository, issue_followers::IssueFollowerRepository,
         issue_relationships::IssueRelationshipRepository, issue_tags::IssueTagRepository,
@@ -163,6 +163,12 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
             ShapeScope::Project,
             "/fallback/pull_request_issues",
             fallback_list_pull_request_issues,
+        ),
+        ShapeRoute::new(
+            &shapes::PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
+            ShapeScope::Project,
+            "/fallback/github_issue_links",
+            fallback_list_github_issue_links,
         ),
         // Issue-scoped
         ShapeRoute::new(
@@ -484,6 +490,27 @@ async fn fallback_list_pull_request_issues(
     Ok(Json(ListPullRequestIssuesResponse {
         pull_request_issues,
     }))
+}
+
+async fn fallback_list_github_issue_links(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<ProjectFallbackQuery>,
+) -> Result<Json<ListGithubIssueLinksResponse>, ErrorResponse> {
+    ensure_project_access(state.pool(), ctx.user.id, query.project_id).await?;
+
+    let github_issue_links =
+        GithubIssueLinkRepository::list_by_project(state.pool(), query.project_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, project_id = %query.project_id, "failed to list github issue links (fallback)");
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to list github issue links",
+                )
+            })?;
+
+    Ok(Json(ListGithubIssueLinksResponse { github_issue_links }))
 }
 
 // =============================================================================

@@ -32,6 +32,8 @@ import {
 import type {
   AutomationConnector,
   AutomationLogEntry,
+  GithubProjectsMetadata,
+  LinkGithubIssueRequest,
   AutomationRetryItem,
   AutomationRule,
   AutomationState,
@@ -98,6 +100,10 @@ export interface MachineClient {
   saveAutomationRule: (rule: AutomationRule) => Promise<AutomationState>;
   deleteAutomationRule: (id: string) => Promise<AutomationState>;
   pollAutomationConnector: (id: string) => Promise<unknown>;
+  getGithubProjectsMetadata: (
+    connectorId: string
+  ) => Promise<GithubProjectsMetadata>;
+  linkGithubIssue: (request: LinkGithubIssueRequest) => Promise<unknown>;
   getAutomationLogs: () => Promise<AutomationLogEntry[]>;
   getAutomationRetryQueue: () => Promise<AutomationRetryItem[]>;
   processAutomationRetries: (includeExhausted: boolean) => Promise<unknown>;
@@ -429,6 +435,26 @@ export function createMachineClient(
           target,
           `/api/automation/poll/${encodeURIComponent(id)}`,
           { method: 'POST' }
+        )
+      ),
+    getGithubProjectsMetadata: async (connectorId) =>
+      readAutomationJson<GithubProjectsMetadata>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/automation/github/projects?connectorId=${encodeURIComponent(
+            connectorId
+          )}`,
+          { cache: 'no-store' }
+        )
+      ),
+    linkGithubIssue: async (request) =>
+      readAutomationJson<unknown>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/automation/github/issues/link',
+          { method: 'POST', body: JSON.stringify(request) }
         )
       ),
     getAutomationLogs: async () =>

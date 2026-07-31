@@ -24,6 +24,8 @@ export type Tag = { id: string, project_id: string, name: string, color: string,
 
 export type Issue = { id: string, project_id: string, issue_number: number, simple_id: string, status_id: string, title: string, description: string | null, priority: IssuePriority | null, start_date: string | null, target_date: string | null, completed_at: string | null, sort_order: number, parent_issue_id: string | null, parent_issue_sort_order: number | null, extension_metadata: JsonValue, creator_user_id: string | null, created_at: string, updated_at: string, };
 
+export type GithubIssueLink = { id: string, project_id: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, created_at: string, updated_at: string, };
+
 export type IssueAssignee = { id: string, issue_id: string, user_id: string, assigned_at: string, project_id: string, };
 
 export type Blob = { id: string, project_id: string, blob_path: string, thumbnail_blob_path: string | null, original_name: string, mime_type: string | null, size_bytes: bigint, hash: string, width: number | null, height: number | null, created_at: string, updated_at: string, };
@@ -66,6 +68,10 @@ export type CreatePullRequestIssueRequest = {
  * Using client-generated IDs enables stable optimistic updates.
  */
 id?: string, issue_id: string, url: string, number: number, status: PullRequestStatus, merged_at: string | null, merge_commit_sha: string | null, target_branch_name: string, };
+
+export type CreateGithubIssueLinkRequest = { id?: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, };
+
+export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, };
 
 export type SortDirection = "asc" | "desc";
 
@@ -329,6 +335,13 @@ export const PROJECT_PULL_REQUEST_ISSUES_SHAPE = defineShape<PullRequestIssue>(
   '/v1/fallback/pull_request_issues'
 );
 
+export const PROJECT_GITHUB_ISSUE_LINKS_SHAPE = defineShape<GithubIssueLink>(
+  'github_issue_links',
+  ['project_id'] as const,
+  '/v1/shape/project/{project_id}/github_issue_links',
+  '/v1/fallback/github_issue_links'
+);
+
 export const ISSUE_COMMENTS_SHAPE = defineShape<IssueComment>(
   'issue_comments',
   ['issue_id'] as const,
@@ -408,6 +421,11 @@ export const ISSUE_TAG_MUTATION = defineMutation<IssueTag, CreateIssueTagRequest
 export const ISSUE_RELATIONSHIP_MUTATION = defineMutation<IssueRelationship, CreateIssueRelationshipRequest, unknown>(
   'IssueRelationship',
   '/v1/issue_relationships'
+);
+
+export const GITHUB_ISSUE_LINK_MUTATION = defineMutation<GithubIssueLink, CreateGithubIssueLinkRequest, UpdateGithubIssueLinkRequest>(
+  'GithubIssueLink',
+  '/v1/github_issue_links'
 );
 
 export const ISSUE_COMMENT_MUTATION = defineMutation<IssueComment, CreateIssueCommentRequest, UpdateIssueCommentRequest>(

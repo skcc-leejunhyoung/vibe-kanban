@@ -9,6 +9,7 @@ import type {
   AgentMemorySyncLogEntry,
   AgentMemorySyncStatus,
 } from 'shared/types';
+import type { ProjectStatus } from 'shared/remote-types';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import { cn } from '@/shared/lib/utils';
@@ -29,7 +30,11 @@ import {
   type AutomationLogEntry,
   type AutomationRule,
   type AutomationState,
+  type GithubIssueSyncRuleConfig,
+  type GithubProjectMetadata,
 } from '@/shared/lib/automationWorker';
+import type { MachineClient } from '@/shared/lib/machineClient';
+import { listProjectStatuses } from '@/shared/lib/remoteApi';
 
 const CONNECTOR_TYPES: AutomationConnectorType[] = [
   'slack',
@@ -50,8 +55,239 @@ interface RuleDraft {
   id: string;
   name: string;
   enabled: boolean;
+  kind: string;
+  config: Record<string, unknown>;
   script: string;
   isNew: boolean;
+}
+
+const EMPTY_GITHUB_SYNC_CONFIG: GithubIssueSyncRuleConfig = {
+  githubConnectorId: 'github-default',
+  vibeConnectorId: 'vibe-default',
+  githubProjectId: '',
+  githubStatusFieldId: '',
+  statusMappings: [],
+  fields: { title: true, description: true, status: true },
+};
+
+function asGithubSyncConfig(
+  value: Record<string, unknown>
+): GithubIssueSyncRuleConfig {
+  return {
+    ...EMPTY_GITHUB_SYNC_CONFIG,
+    ...value,
+    statusMappings: Array.isArray(value.statusMappings)
+      ? (value.statusMappings as GithubIssueSyncRuleConfig['statusMappings'])
+      : [],
+    fields: {
+      ...EMPTY_GITHUB_SYNC_CONFIG.fields,
+      ...(typeof value.fields === 'object' && value.fields ? value.fields : {}),
+    },
+  };
+}
+
+function GithubIssueSyncRuleEditor({
+  machineClient,
+  connectors,
+  value,
+  onChange,
+}: {
+  machineClient: MachineClient;
+  connectors: AutomationConnector[];
+  value: Record<string, unknown>;
+  onChange: (value: Record<string, unknown>) => void;
+}) {
+  const config = asGithubSyncConfig(value);
+  const [projects, setProjects] = useState<GithubProjectMetadata[]>([]);
+  const [vibeStatuses, setVibeStatuses] = useState<ProjectStatus[]>([]);
+  const githubConnectors = connectors.filter((item) => item.type === 'github');
+  const vibeConnectors = connectors.filter(
+    (item) => item.type === 'vibe_kanban'
+  );
+  const selectedProject = projects.find(
+    (project) => project.id === config.githubProjectId
+  );
+  const vibeConnector = vibeConnectors.find(
+    (item) => item.id === config.vibeConnectorId
+  );
+  const vibeProjectId = String(vibeConnector?.config.projectId ?? '');
+
+  useEffect(() => {
+    if (!config.githubConnectorId) {
+      setProjects([]);
+      return;
+    }
+    machineClient
+      .getGithubProjectsMetadata(config.githubConnectorId)
+      .then((result) => setProjects(result.projects))
+      .catch(() => setProjects([]));
+  }, [config.githubConnectorId, machineClient]);
+
+  useEffect(() => {
+    if (!vibeProjectId) {
+      setVibeStatuses([]);
+      return;
+    }
+    listProjectStatuses(vibeProjectId)
+      .then(setVibeStatuses)
+      .catch(() => setVibeStatuses([]));
+  }, [vibeProjectId]);
+
+  const update = (patch: Partial<GithubIssueSyncRuleConfig>) =>
+    onChange({ ...config, ...patch });
+
+  const updateMapping = (vibeStatusId: string, githubOptionId: string) => {
+    const rest = config.statusMappings.filter(
+      (mapping) => mapping.vibeStatusId !== vibeStatusId
+    );
+    update({
+      statusMappings: githubOptionId
+        ? [...rest, { vibeStatusId, githubOptionId }]
+        : rest,
+    });
+  };
+
+  return (
+    <div className="space-y-4 rounded-sm border border-border p-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <SettingsField label="GitHub connector">
+          <SettingsSelect
+            value={config.githubConnectorId}
+            options={githubConnectors.map((item) => ({
+              value: item.id,
+              label: item.name,
+            }))}
+            onChange={(githubConnectorId) =>
+              update({
+                githubConnectorId,
+                githubProjectId: '',
+                githubStatusFieldId: '',
+                statusMappings: [],
+              })
+            }
+          />
+        </SettingsField>
+        <SettingsField label="Vibe connector">
+          <SettingsSelect
+            value={config.vibeConnectorId}
+            options={vibeConnectors.map((item) => ({
+              value: item.id,
+              label: item.name,
+            }))}
+            onChange={(vibeConnectorId) =>
+              update({ vibeConnectorId, statusMappings: [] })
+            }
+          />
+        </SettingsField>
+      </div>
+      <SettingsField label="GitHub Project">
+        <SettingsSelect
+          value={config.githubProjectId}
+          options={[
+            { value: '', label: 'Select a project' },
+            ...projects.map((project) => ({
+              value: project.id,
+              label: project.title,
+            })),
+          ]}
+          onChange={(githubProjectId) => {
+            const project = projects.find(
+              (item) => item.id === githubProjectId
+            );
+            const options = project?.statusField?.options ?? [];
+            const statusMappings = vibeStatuses.flatMap((status) => {
+              const option = options.find(
+                (item) =>
+                  item.name.trim().toLowerCase() ===
+                  status.name.trim().toLowerCase()
+              );
+              return option
+                ? [{ vibeStatusId: status.id, githubOptionId: option.id }]
+                : [];
+            });
+            update({
+              githubProjectId,
+              githubStatusFieldId: project?.statusField?.id ?? '',
+              statusMappings,
+            });
+          }}
+        />
+      </SettingsField>
+      <SettingsField label="Status mapping">
+        <div className="space-y-2">
+          {vibeStatuses.map((status) => (
+            <div
+              key={status.id}
+              className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-3"
+            >
+              <span className="truncate text-sm text-normal">
+                {status.name}
+              </span>
+              <SettingsSelect
+                value={
+                  config.statusMappings.find(
+                    (mapping) => mapping.vibeStatusId === status.id
+                  )?.githubOptionId ?? ''
+                }
+                options={[
+                  { value: '', label: 'Do not sync' },
+                  ...(selectedProject?.statusField?.options ?? [])
+                    .filter(
+                      (option) =>
+                        !config.statusMappings.some(
+                          (mapping) =>
+                            mapping.githubOptionId === option.id &&
+                            mapping.vibeStatusId !== status.id
+                        )
+                    )
+                    .map((option) => ({
+                      value: option.id,
+                      label: option.name,
+                    })),
+                ]}
+                onChange={(githubOptionId) =>
+                  updateMapping(status.id, githubOptionId)
+                }
+              />
+            </div>
+          ))}
+          {!vibeStatuses.length && (
+            <p className="text-sm text-low">
+              Select configured GitHub and Vibe connectors.
+            </p>
+          )}
+        </div>
+      </SettingsField>
+      <SettingsField label="Synchronized fields">
+        <div className="space-y-2">
+          <SettingsCheckbox
+            id="github-sync-title"
+            label="Title"
+            checked={config.fields.title}
+            onChange={(title) =>
+              update({ fields: { ...config.fields, title } })
+            }
+          />
+          <SettingsCheckbox
+            id="github-sync-description"
+            label="Description"
+            checked={config.fields.description}
+            onChange={(description) =>
+              update({ fields: { ...config.fields, description } })
+            }
+          />
+          <SettingsCheckbox
+            id="github-sync-status"
+            label="Project status"
+            checked={config.fields.status}
+            onChange={(status) =>
+              update({ fields: { ...config.fields, status } })
+            }
+          />
+        </div>
+      </SettingsField>
+    </div>
+  );
 }
 
 function randomId(prefix: string) {
@@ -380,6 +616,8 @@ export function AutomationSettingsSection() {
       id: r.id,
       name: r.name,
       enabled: r.enabled,
+      kind: r.kind ?? 'script',
+      config: (r.config ?? {}) as Record<string, unknown>,
       script: r.script,
       isNew: false,
     });
@@ -389,6 +627,8 @@ export function AutomationSettingsSection() {
       id: randomId('rule'),
       name: t('settings.automation.untitledRule', 'Untitled rule'),
       enabled: true,
+      kind: 'script',
+      config: {},
       script:
         'async function handle(event, ctx) {\n  ctx.log("info", "event received", { event });\n}',
       isNew: true,
@@ -402,6 +642,8 @@ export function AutomationSettingsSection() {
           id: rule.id.trim(),
           name: rule.name.trim() || rule.id.trim(),
           enabled: rule.enabled,
+          kind: rule.kind,
+          config: rule.config,
           script: rule.script,
         });
         setRule(null);
@@ -971,16 +1213,25 @@ export function AutomationSettingsSection() {
               checked={rule.enabled}
               onChange={(v) => setRule({ ...rule, enabled: v })}
             />
-            <SettingsField
-              label={t('settings.automation.fields.script', 'Rule script')}
-            >
-              <SettingsTextarea
-                value={rule.script}
-                onChange={(v) => setRule({ ...rule, script: v })}
-                rows={16}
-                monospace
+            {rule.kind === 'github_issue_sync' ? (
+              <GithubIssueSyncRuleEditor
+                machineClient={machineClient}
+                connectors={state?.connectors ?? []}
+                value={rule.config}
+                onChange={(config) => setRule({ ...rule, config })}
               />
-            </SettingsField>
+            ) : (
+              <SettingsField
+                label={t('settings.automation.fields.script', 'Rule script')}
+              >
+                <SettingsTextarea
+                  value={rule.script}
+                  onChange={(v) => setRule({ ...rule, script: v })}
+                  rows={16}
+                  monospace
+                />
+              </SettingsField>
+            )}
             <div className="flex flex-wrap gap-2">
               <PrimaryButton
                 value={t('settings.automation.actions.save', 'Save')}

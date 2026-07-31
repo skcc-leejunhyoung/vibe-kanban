@@ -10,6 +10,7 @@ import {
   PROJECT_ISSUE_RELATIONSHIPS_SHAPE,
   PROJECT_PULL_REQUESTS_SHAPE,
   PROJECT_PULL_REQUEST_ISSUES_SHAPE,
+  PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
   PROJECT_WORKSPACES_SHAPE,
   ISSUE_MUTATION,
   PROJECT_STATUS_MUTATION,
@@ -19,6 +20,7 @@ import {
   ISSUE_TAG_MUTATION,
   ISSUE_RELATIONSHIP_MUTATION,
   PULL_REQUEST_ISSUE_MUTATION,
+  GITHUB_ISSUE_LINK_MUTATION,
   type Issue,
   type ProjectStatus,
   type Tag,
@@ -75,6 +77,11 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     params,
     { enabled, mutation: PULL_REQUEST_ISSUE_MUTATION }
   );
+  const githubIssueLinksResult = useShape(
+    PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
+    params,
+    { enabled, mutation: GITHUB_ISSUE_LINK_MUTATION }
+  );
   const workspacesResult = useShape(PROJECT_WORKSPACES_SHAPE, params, {
     enabled,
   });
@@ -94,6 +101,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issueRelationshipsResult.error ||
     pullRequestsResult.error ||
     pullRequestIssuesResult.error ||
+    githubIssueLinksResult.error ||
     workspacesResult.error ||
     null;
 
@@ -108,6 +116,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issueRelationshipsResult.retry();
     pullRequestsResult.retry();
     pullRequestIssuesResult.retry();
+    githubIssueLinksResult.retry();
     workspacesResult.retry();
   }, [
     issuesResult,
@@ -119,6 +128,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issueRelationshipsResult,
     pullRequestsResult,
     pullRequestIssuesResult,
+    githubIssueLinksResult,
     workspacesResult,
   ]);
 
@@ -238,6 +248,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       issueRelationships: issueRelationshipsResult.data,
       pullRequests: pullRequestsResult.data,
       pullRequestIssues: pullRequestIssuesResult.data,
+      githubIssueLinks: githubIssueLinksResult.data,
       workspaces: workspacesResult.data,
 
       // Loading/error
@@ -280,6 +291,10 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       insertPullRequestIssue: pullRequestIssuesResult.insert,
       removePullRequestIssue: pullRequestIssuesResult.remove,
 
+      insertGithubIssueLink: githubIssueLinksResult.insert,
+      updateGithubIssueLink: githubIssueLinksResult.update,
+      removeGithubIssueLink: githubIssueLinksResult.remove,
+
       // Lookup helpers
       getIssue,
       getIssuesForStatus,
@@ -309,6 +324,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       issueRelationshipsResult,
       pullRequestsResult,
       pullRequestIssuesResult,
+      githubIssueLinksResult,
       workspacesResult,
       isLoading,
       error,
