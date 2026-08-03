@@ -736,7 +736,9 @@ export const Actions = {
     isVisible: (ctx) => ctx.hasWorkspace,
     getTooltip: () => 'Review, merge, push target, and create an AI draft PR',
     execute: async (ctx, workspaceId, hostId) => {
-      const isCurrentWorkspace = ctx.currentWorkspaceId === workspaceId;
+      const isCurrentWorkspace =
+        ctx.currentWorkspaceId === workspaceId &&
+        (hostId === undefined || hostId === ctx.currentHostId);
       const targetHostId =
         hostId === undefined
           ? isCurrentWorkspace

@@ -507,6 +507,38 @@ describe('Actions.StartReviewAndCreatePR', () => {
     expect(selectSession).toHaveBeenCalledWith('review-session');
   });
 
+  it('does not reuse the current session when the same workspace id is selected on another host', async () => {
+    getSessionsByWorkspace.mockResolvedValue([
+      { id: 'remote-session' },
+    ] as never);
+    reviewAndCreatePr.mockResolvedValue(true);
+    const { ctx } = makeCtx(
+      { id: 'shared-workspace-id' },
+      {
+        currentWorkspaceId: 'shared-workspace-id',
+        currentHostId: 'local-host',
+        currentSessionId: 'local-session',
+      }
+    );
+
+    await Actions.StartReviewAndCreatePR.execute(
+      ctx,
+      'shared-workspace-id',
+      'remote-host'
+    );
+
+    expect(getSessionsByWorkspace).toHaveBeenCalledWith(
+      'shared-workspace-id',
+      'remote-host'
+    );
+    expect(reviewAndCreatePr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'remote-session',
+        hostId: 'remote-host',
+      })
+    );
+  });
+
   it('is registered on the workspace command palette page', () => {
     expect(getPageActions('workspaceActions')).toContain(
       Actions.StartReviewAndCreatePR
