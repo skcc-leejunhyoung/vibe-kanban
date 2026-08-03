@@ -182,6 +182,25 @@ describe('command palette navigation actions', () => {
     isInPlace: false,
   } as ActionVisibilityContext;
 
+  it('exposes pull request linking from issue actions and targets one issue', async () => {
+    const linkPullRequest = vi.fn();
+    const { ctx } = makeCtx(
+      {},
+      { projectMutations: { linkPullRequest } as never }
+    );
+
+    expect(getPageActions('issueActions')).toContain(Actions.LinkPullRequest);
+    expect(
+      isActionVisible(Actions.LinkPullRequest, {
+        ...openWorkspaceContext,
+        hasSelectedKanbanIssue: true,
+      })
+    ).toBe(true);
+
+    await Actions.LinkPullRequest.execute(ctx, 'project-1', ['issue-1']);
+    expect(linkPullRequest).toHaveBeenCalledWith('issue-1');
+  });
+
   it('exposes GitHub issue linking from issue actions and targets one issue', async () => {
     const linkGithubIssue = vi.fn();
     const { ctx } = makeCtx(

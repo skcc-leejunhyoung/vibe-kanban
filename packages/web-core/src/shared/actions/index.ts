@@ -2777,6 +2777,20 @@ export const Actions = {
     },
   } satisfies IssueActionDefinition,
 
+  LinkPullRequest: {
+    id: 'link-pull-request',
+    label: 'Link Pull Request to Issue',
+    icon: LinkIcon,
+    keywords: ['pull request', 'link', 'pr', 'issue'],
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (ctx, _projectId, issueIds) => {
+      if (issueIds.length !== 1) return;
+      await ctx.projectMutations?.linkPullRequest(issueIds[0]);
+    },
+  } satisfies IssueActionDefinition,
+
   LinkGithubIssue: {
     id: 'link-github-issue',
     label: 'Link GitHub Issue',

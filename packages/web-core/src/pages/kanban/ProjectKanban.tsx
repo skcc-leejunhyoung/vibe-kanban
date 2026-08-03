@@ -86,6 +86,17 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
           extension_metadata: issue.extension_metadata,
         });
       },
+      linkPullRequest: async (issueId) => {
+        const issue = getIssue(issueId);
+        if (!issue) return;
+        const { LinkPrToIssueDialog } = await import(
+          '@/shared/dialogs/command-bar/LinkPrToIssueDialog'
+        );
+        await LinkPrToIssueDialog.show({
+          projectId: issue.project_id,
+          issueId: issue.id,
+        });
+      },
       linkGithubIssue: async (issueId) => {
         const issue = getIssue(issueId);
         if (!issue) return;
