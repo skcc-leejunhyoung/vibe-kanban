@@ -32,6 +32,10 @@ import {
   githubIssueRepositoriesShareOwner,
   updateGithubIssueParent,
 } from './github-sub-issues.mjs';
+import {
+  buildPullRequestLinkOperation,
+  retryPendingPullRequestLinkOperations,
+} from './pull-request-links.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -211,6 +215,7 @@ const defaultState = {
   ],
   retryQueue: [],
   githubIssueLinkOperations: [],
+  pullRequestLinkOperations: [],
 };
 
 let state = structuredClone(defaultState);
@@ -268,6 +273,7 @@ function ensureDefaults() {
   state.rules ||= [];
   state.retryQueue ||= [];
   state.githubIssueLinkOperations ||= [];
+  state.pullRequestLinkOperations ||= [];
   for (const connector of defaultState.connectors) {
     if (!state.connectors.some((item) => item.id === connector.id)) {
       state.connectors.push(structuredClone(connector));
@@ -539,6 +545,7 @@ function maskState(current) {
   // Incomplete operations can contain issue titles/descriptions. They are
   // internal recovery state, not automation settings, so never expose them.
   delete copy.githubIssueLinkOperations;
+  delete copy.pullRequestLinkOperations;
   for (const connector of copy.connectors || []) {
     const config = connector.config;
     if (!config) continue;
@@ -1240,6 +1247,9 @@ async function pollGithub(connector) {
   }
 
   const syncResult = await reconcileGithubIssueRules(connector);
+  // Recover any structural PR→issue links whose create POST failed on a prior
+  // poll. No-op (single length check) when the queue is empty, which is the norm.
+  await retryPendingPullRequestLinks();
   connector.config.cursorTs = latest;
   connector.config.seenIds = Array.from(seen).slice(-1000);
   await persistState();
@@ -1657,6 +1667,55 @@ async function retryPendingGithubIssueLinks(githubConnector) {
       });
     },
   });
+}
+
+// Re-attempt structural PR→issue links whose create POST failed during issue
+// creation. Steady-state cost is a single empty-array check per poll; work
+// happens only after a (rare) transient failure. See pull-request-links.mjs.
+async function retryPendingPullRequestLinks() {
+  const operations = state.pullRequestLinkOperations || [];
+  if (!operations.length) return 0;
+  const { remaining, recovered, changed } =
+    await retryPendingPullRequestLinkOperations({
+      operations,
+      now: Date.now(),
+      maxAttempts: RETRY_MAX_ATTEMPTS,
+      retryDelay,
+      resolveConnector: (id) => {
+        const connector = state.connectors.find((item) => item.id === id);
+        return connector && connector.enabled ? connector : null;
+      },
+      linkPr: (connector, payload) =>
+        vibeApi(connector, 'POST', '/v1/pull_request_issues', payload),
+      onRecovered: (op) =>
+        log('info', 'vibe PR link recovered', {
+          connectorId: op.vibeConnectorId,
+          issueId: op.issueId,
+          prUrl: op.payload?.url,
+          attempts: op.attempts,
+        }),
+      onFailed: (op) =>
+        log('warn', 'vibe PR link retry failed', {
+          connectorId: op.vibeConnectorId,
+          issueId: op.issueId,
+          prUrl: op.payload?.url,
+          attempts: op.attempts,
+          error: op.lastError,
+        }),
+      onExhausted: (op) =>
+        log('error', 'vibe PR link retry exhausted', {
+          connectorId: op.vibeConnectorId,
+          issueId: op.issueId,
+          prUrl: op.payload?.url,
+          attempts: op.attempts,
+          error: op.lastError,
+        }),
+    });
+  if (changed) {
+    state.pullRequestLinkOperations = remaining;
+    await persistState();
+  }
+  return recovered;
 }
 
 async function backfillGithubIssueMapLinks({
@@ -2347,34 +2406,57 @@ async function createVibeIssue(connectorId, input, event, rule) {
   // not just as a URL in the description body — Vibe's review mode only activates
   // when this join row exists; a plain URL in the body is ignored. The stored
   // html_url matches what the local gh `listOpenPrs` returns, so review mode's
-  // URL match succeeds. Best-effort: a failure here must not undo the created
-  // issue, so it is logged like the tag-attach path above.
+  // URL match succeeds. Best-effort but NOT lost on a transient failure: the PR
+  // id is already in `seen`, so without recovery the worker would never revisit
+  // the PR and the issue would keep its `review` tag but never get its link. On
+  // failure we queue it for retry on the next poll (see retryPendingPullRequestLinks).
   if (createdId && event && event.type === 'pr' && event.url) {
     const prRaw = (event.raw && event.raw.pull_request) || null;
     const mergedAt = prRaw && prRaw.merged_at ? prRaw.merged_at : null;
     const status =
       event.state === 'closed' ? (mergedAt ? 'merged' : 'closed') : 'open';
+    const prLinkPayload = {
+      issue_id: createdId,
+      url: event.url,
+      number: event.number,
+      status,
+      merged_at: mergedAt,
+      merge_commit_sha: null,
+      target_branch_name: event.baseRef || 'main',
+    };
     try {
-      await vibeApi(connector, 'POST', '/v1/pull_request_issues', {
-        issue_id: createdId,
-        url: event.url,
-        number: event.number,
-        status,
-        merged_at: mergedAt,
-        merge_commit_sha: null,
-        target_branch_name: event.baseRef || 'main',
-      });
+      await vibeApi(
+        connector,
+        'POST',
+        '/v1/pull_request_issues',
+        prLinkPayload
+      );
       await log('info', 'vibe PR linked to issue', {
         connectorId: effectiveConnectorId,
         issueId: createdId,
         prUrl: event.url,
       });
     } catch (error) {
+      state.pullRequestLinkOperations ||= [];
+      state.pullRequestLinkOperations.push(
+        buildPullRequestLinkOperation({
+          id: randomUUID(),
+          vibeConnectorId: effectiveConnectorId,
+          issueId: createdId,
+          payload: prLinkPayload,
+          now: Date.now(),
+          maxAttempts: RETRY_MAX_ATTEMPTS,
+          retryDelay,
+          error,
+        })
+      );
+      await persistState();
       await log('warn', 'vibe PR link failed', {
         connectorId: effectiveConnectorId,
         issueId: createdId,
         prUrl: event.url,
         error: errorMessage(error),
+        queuedForRetry: true,
       });
     }
   }
