@@ -1603,7 +1603,7 @@ pub async fn pull_and_push_target_branch(
     // 1. Fetch + merge origin/<target> into the local target branch (wherever
     //    it's checked out). The git service aborts target-checkout conflicts so
     //    they are not mistaken for conflicts in this workspace's worktree.
-    if let Err(e) = git.merge_remote_into_branch_checkout(&repo.path, &target) {
+    if let Err(e) = git.merge_remote_into_branch_checkout(&repo.path, &target, &remote) {
         return match e {
             GitServiceError::RebaseInProgress => Ok(ResponseJson(ApiResponse::<
                 (),
@@ -1633,9 +1633,16 @@ pub async fn merge_remote_target_branch(
 ) -> Result<ResponseJson<ApiResponse<(), GitOperationError>>, ApiError> {
     let (repo, workspace_repo) =
         load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
-    deployment
-        .git()
-        .merge_remote_into_branch_checkout(&repo.path, &workspace_repo.target_branch)?;
+    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+        return Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+    };
+    deployment.git().merge_remote_into_branch_checkout(
+        &repo.path,
+        &workspace_repo.target_branch,
+        &remote,
+    )?;
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
@@ -1654,9 +1661,16 @@ pub async fn reset_target_branch_to_remote(
     }
     let (repo, workspace_repo) =
         load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
-    deployment
-        .git()
-        .reset_branch_checkout_to_remote(&repo.path, &workspace_repo.target_branch)?;
+    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+        return Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+    };
+    deployment.git().reset_branch_checkout_to_remote(
+        &repo.path,
+        &workspace_repo.target_branch,
+        &remote,
+    )?;
     Ok(ResponseJson(ApiResponse::success(())))
 }
 

@@ -1507,15 +1507,61 @@ impl GitService {
         &self,
         repo_path: &Path,
         branch: &str,
+        remote_name: &str,
     ) -> Result<String, GitServiceError> {
-        let checkout = self
-            .find_checkout_path_for_branch(repo_path, branch)?
-            .ok_or_else(|| {
-                GitServiceError::BranchNotFound(format!(
-                    "'{branch}' is not checked out in any worktree; check it out before resetting."
+        let remote = self
+            .list_remotes(repo_path)?
+            .into_iter()
+            .find(|remote| remote.name == remote_name)
+            .ok_or_else(|| GitServiceError::BranchNotFound(remote_name.to_string()))?;
+        let refspec = format!("+refs/heads/{branch}:refs/remotes/{remote_name}/{branch}");
+        GitCli::new()
+            .fetch_with_refspec(repo_path, &remote.url, &refspec)
+            .map_err(|e| {
+                GitServiceError::InvalidRepository(format!(
+                    "Failed to fetch '{branch}' from '{remote_name}': {e}"
                 ))
             })?;
-        self.reset_workspace_branch_to_remote(&checkout, branch)
+
+        if let Some(checkout) = self.find_checkout_path_for_branch(repo_path, branch)? {
+            let repo = self.open_repo(&checkout)?;
+            if GitCli::new()
+                .is_rebase_in_progress(&checkout)
+                .unwrap_or(false)
+                || GitCli::new()
+                    .is_merge_in_progress(&checkout)
+                    .unwrap_or(false)
+            {
+                return Err(GitServiceError::InvalidRepository(
+                    "Abort the in-progress merge or rebase before resetting to the remote branch"
+                        .to_string(),
+                ));
+            }
+            let remote_ref = format!("refs/remotes/{remote_name}/{branch}");
+            let remote_head = repo.find_reference(&remote_ref)?.peel_to_commit()?.id();
+            GitCli::new()
+                .git(&checkout, ["reset", "--hard", &remote_head.to_string()])
+                .map_err(|e| {
+                    GitServiceError::InvalidRepository(format!(
+                        "Failed to reset '{branch}' to '{remote_name}/{branch}': {e}"
+                    ))
+                })?;
+            let _ = GitCli::new().git(&checkout, ["sparse-checkout", "reapply"]);
+            return Ok(remote_head.to_string());
+        }
+
+        let repo = self.open_repo(repo_path)?;
+        let remote_head = repo
+            .find_reference(&format!("refs/remotes/{remote_name}/{branch}"))?
+            .peel_to_commit()?
+            .id();
+        repo.reference(
+            &format!("refs/heads/{branch}"),
+            remote_head,
+            true,
+            "reset target branch to remote",
+        )?;
+        Ok(remote_head.to_string())
     }
 
     /// Integrate the work branch's own diverged remote into the local branch by
@@ -1536,9 +1582,17 @@ impl GitService {
         worktree_path: &Path,
         work_branch: &str,
     ) -> Result<(), GitServiceError> {
-        let repo = self.open_repo(worktree_path)?;
-
         let remote = self.resolve_remote_for_branch(worktree_path, work_branch)?;
+        self.merge_named_remote_into_workspace_branch(worktree_path, work_branch, &remote)
+    }
+
+    fn merge_named_remote_into_workspace_branch(
+        &self,
+        worktree_path: &Path,
+        work_branch: &str,
+        remote: &GitRemote,
+    ) -> Result<(), GitServiceError> {
+        let repo = self.open_repo(worktree_path)?;
         let remote_tracking = format!("{}/{work_branch}", remote.name);
 
         // Refresh the remote-tracking ref so the comparison and merge below see
@@ -1639,22 +1693,38 @@ impl GitService {
     }
 
     /// Like [`Self::merge_remote_into_workspace_branch`] but for a branch given
-    /// only by name (e.g. the target/base branch): locate the worktree where
-    /// `branch` is checked out and run the merge-pull there. Errors when the
-    /// branch is not checked out anywhere (a merge needs a working tree).
+    /// only by name (e.g. the target/base branch). Uses the branch's existing
+    /// checkout when available, or creates a temporary worktree for the merge.
     pub fn merge_remote_into_branch_checkout(
         &self,
         repo_path: &Path,
         branch: &str,
+        remote_name: &str,
     ) -> Result<(), GitServiceError> {
-        let checkout = self
-            .find_checkout_path_for_branch(repo_path, branch)?
-            .ok_or_else(|| {
-                GitServiceError::BranchNotFound(format!(
-                    "'{branch}' is not checked out in any worktree; check it out before pulling."
-                ))
-            })?;
-        match self.merge_remote_into_workspace_branch(&checkout, branch) {
+        let remote = self
+            .list_remotes(repo_path)?
+            .into_iter()
+            .find(|remote| remote.name == remote_name)
+            .ok_or_else(|| GitServiceError::BranchNotFound(remote_name.to_string()))?;
+        let (checkout, temporary_dir) =
+            match self.find_checkout_path_for_branch(repo_path, branch)? {
+                Some(checkout) => (checkout, None),
+                None => {
+                    let dir = tempfile::Builder::new()
+                        .prefix("vibe-kanban-target-pull-")
+                        .tempdir()
+                        .map_err(|e| {
+                            GitServiceError::InvalidRepository(format!(
+                                "Failed to create temporary target worktree directory: {e}"
+                            ))
+                        })?;
+                    let checkout = dir.path().join("worktree");
+                    self.add_worktree(repo_path, &checkout, branch, false)?;
+                    (checkout, Some(dir))
+                }
+            };
+        let result = match self.merge_named_remote_into_workspace_branch(&checkout, branch, &remote)
+        {
             Err(GitServiceError::MergeConflicts { message, .. }) => {
                 // Target-branch conflicts happen in the checkout that owns the
                 // target branch, not in the workspace worktree. The existing
@@ -1676,7 +1746,18 @@ impl GitService {
                 )))
             }
             result => result,
+        };
+
+        if temporary_dir.is_some() {
+            self.remove_worktree(repo_path, &checkout, true)
+                .map_err(|cleanup_error| {
+                    GitServiceError::InvalidRepository(format!(
+                        "Target branch pull completed with a temporary worktree cleanup failure: {cleanup_error}"
+                    ))
+                })?;
         }
+
+        result
     }
 
     /// Merge `base_branch` into `target_branch`. This is the target-branch
