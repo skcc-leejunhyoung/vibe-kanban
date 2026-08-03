@@ -2,6 +2,12 @@ export function githubIssueLinkKey(issue) {
   return `${String(issue.repository || '').toLowerCase()}#${Number(issue.number)}`;
 }
 
+export function githubIssueRepositoriesShareOwner(first, second) {
+  const firstOwner = String(first || '').split('/', 1)[0].toLowerCase();
+  const secondOwner = String(second || '').split('/', 1)[0].toLowerCase();
+  return Boolean(firstOwner && secondOwner && firstOwner === secondOwner);
+}
+
 export function githubIssueRepository(issue) {
   const repositoryUrl = String(issue?.repository_url || '');
   const match = repositoryUrl.match(/\/repos\/([^/]+)\/([^/]+)\/?$/i);

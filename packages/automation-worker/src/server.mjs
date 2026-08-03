@@ -27,6 +27,7 @@ import {
   fetchGithubIssueParent,
   githubIssueLinkKey,
   githubIssueRepository,
+  githubIssueRepositoriesShareOwner,
   updateGithubIssueParent,
 } from './github-sub-issues.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
@@ -1817,6 +1818,15 @@ async function reconcileGithubIssueParent({
     const nextParentLink = decision.parentIssueId
       ? linksByIssueId.get(decision.parentIssueId)
       : null;
+    if (
+      nextParentLink &&
+      !githubIssueRepositoriesShareOwner(
+        nextParentLink.repository,
+        link.repository
+      )
+    ) {
+      return undefined;
+    }
     await updateGithubIssueParent({
       fetchImpl: fetch,
       apiBase,

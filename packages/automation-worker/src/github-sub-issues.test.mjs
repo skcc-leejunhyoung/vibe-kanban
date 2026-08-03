@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   fetchGithubIssueParent,
   githubIssueLinkKey,
+  githubIssueRepositoriesShareOwner,
   updateGithubIssueParent,
 } from './github-sub-issues.mjs';
 
@@ -66,6 +67,18 @@ test('adds or replaces a parent with the official sub_issues endpoint', async ()
     headers: {},
     body: JSON.stringify({ sub_issue_id: 123, replace_parent: true }),
   });
+});
+
+test('recognizes the GitHub same-owner constraint for sub-issues', () => {
+  assert.equal(
+    githubIssueRepositoriesShareOwner('Org/Parent', 'org/child'),
+    true
+  );
+  assert.equal(
+    githubIssueRepositoriesShareOwner('Other/Parent', 'org/child'),
+    false
+  );
+  assert.equal(githubIssueRepositoriesShareOwner('', 'org/child'), false);
 });
 
 test('removes the current parent with the official sub_issue endpoint', async () => {
