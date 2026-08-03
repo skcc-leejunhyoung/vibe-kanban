@@ -7,6 +7,7 @@ import {
   XIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { openExternalUrl } from '../lib/open-url';
 import { PRESET_COLORS } from './ColorPicker';
 import { PrBadge, type PrBadgeStatus } from './PrBadge';
 import { TAG_COLORS } from './SearchableTagDropdown';
@@ -176,8 +177,11 @@ export function IssueTagsRow<TTag extends IssueTagBase>({
         >
           <a
             href={issue.url}
-            target="_blank"
-            rel="noreferrer"
+            onClick={(event) => {
+              event.stopPropagation();
+              event.preventDefault();
+              openExternalUrl(issue.url);
+            }}
             className="inline-flex items-center gap-half"
           >
             <GithubLogo className="size-icon-xs" weight="bold" />
