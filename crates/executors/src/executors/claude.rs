@@ -4212,6 +4212,40 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_event_overage_rejected_alone_does_not_trigger() {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        // `overageStatus` can be a static account attribute (overage billing not
+        // permitted); on a routine "allowed" request it must not be read as a
+        // hard limit, or every usage update would schedule a spurious resume.
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","overageStatus":"rejected","resetsAt":1785751800},"session_id":"s"}"#;
+        let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+        let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+        assert!(
+            collect_rate_limit_infos(&patches).is_empty(),
+            "overageStatus alone must not schedule a resume"
+        );
+    }
+
+    #[test]
+    fn rate_limit_event_reset_snake_case_is_parsed() {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        // The CLI has emitted snake_case reset keys; the exact time must survive.
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resets_at":"2026-08-03T10:10:00Z","rate_limit_type":"five_hour"},"session_id":"s"}"#;
+        let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+        let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+        let infos = collect_rate_limit_infos(&patches);
+        assert_eq!(infos.len(), 1);
+        assert_eq!(
+            infos[0].resets_at.as_deref(),
+            Some("2026-08-03T10:10:00Z"),
+            "snake_case reset key must be honored"
+        );
+        assert_eq!(infos[0].scope.as_deref(), Some("five_hour"));
+    }
+
+    #[test]
     fn result_api_error_429_detected_without_matching_text() {
         let mut processor = ClaudeLogProcessor::new();
         let provider = EntryIndexProvider::test_new();
