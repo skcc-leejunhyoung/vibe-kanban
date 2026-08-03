@@ -4,6 +4,7 @@ import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
+import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 
 const VIBE_REVIEW_POLL_MS = 2000;
 const VIBE_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
@@ -98,6 +99,14 @@ async function executeReviewAndCreatePr({
       directMerge?.type === 'direct'
         ? directMerge.target_branch_name
         : undefined;
+    const proceed = await confirmUnpushedWorkBranchPush(
+      workspaceId,
+      repo.id,
+      workspace.branch,
+      featureBranch ?? null,
+      hostId
+    );
+    if (!proceed) return false;
     const created = await usePrFromAiBackgroundStore
       .getState()
       .startCreateFromAi(workspaceId, repo.id, {

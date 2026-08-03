@@ -24,7 +24,8 @@ export async function confirmUnpushedWorkBranchPush(
   workspaceId: string,
   repoId: string,
   workBranch: string,
-  headBranch?: string | null
+  headBranch?: string | null,
+  hostId?: string | null
 ): Promise<boolean> {
   const effectiveHead = headBranch?.trim() || workBranch;
   // Only the work branch risks a first-time push here; a feature-branch head is
@@ -33,7 +34,10 @@ export async function confirmUnpushedWorkBranchPush(
 
   let workBranchHasRemote: boolean | undefined;
   try {
-    const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+    const branchStatus = await workspacesApi.getBranchStatus(
+      workspaceId,
+      hostId
+    );
     workBranchHasRemote = branchStatus.find(
       (status) => status.repo_id === repoId
     )?.work_branch_has_remote;

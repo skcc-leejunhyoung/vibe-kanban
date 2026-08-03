@@ -3,6 +3,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
+import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import { runReviewAndCreatePr } from './reviewAndCreatePr';
 
 vi.mock('@vibe/ui/components/ErrorDialog', () => ({
@@ -11,6 +12,10 @@ vi.mock('@vibe/ui/components/ErrorDialog', () => ({
 
 vi.mock('@/shared/dialogs/command-bar/PullFirstDialog', () => ({
   PullFirstDialog: { show: vi.fn() },
+}));
+
+vi.mock('@/shared/lib/unpushedWorkBranch', () => ({
+  confirmUnpushedWorkBranchPush: vi.fn(),
 }));
 
 vi.mock('@/shared/lib/api', () => ({
@@ -38,6 +43,7 @@ const queryClient = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(confirmUnpushedWorkBranchPush).mockResolvedValue(true);
 });
 
 describe('runReviewAndCreatePr', () => {
@@ -109,6 +115,46 @@ describe('runReviewAndCreatePr', () => {
       workBranch: 'vk/work-branch',
       hostId: undefined,
     });
+    expect(confirmUnpushedWorkBranchPush).toHaveBeenCalledWith(
+      'workspace-1',
+      'repo-1',
+      'vk/work-branch',
+      'feature',
+      undefined
+    );
     expect(ErrorDialog.show).not.toHaveBeenCalled();
+  });
+
+  it('does not create an AI PR when the unpushed-work-branch warning is cancelled', async () => {
+    vi.mocked(sessionsApi.vibeReview).mockResolvedValue({
+      id: 'review-session-1',
+    } as never);
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      phase: 'done',
+    } as never);
+    vi.mocked(workspacesApi.get).mockResolvedValue({
+      branch: 'vk/work-branch',
+    } as never);
+    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
+      { id: 'repo-1', name: 'repo-1', target_branch: 'develop' },
+    ] as never);
+    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
+      { repo_id: 'repo-1', is_target_remote: true, merges: [] },
+    ] as never);
+    vi.mocked(confirmUnpushedWorkBranchPush).mockResolvedValue(false);
+    const startCreateFromAi = vi.fn();
+    vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
+      startCreateFromAi,
+    } as never);
+
+    await expect(
+      runReviewAndCreatePr({
+        workspaceId: 'workspace-1',
+        sessionId: 'session-1',
+        queryClient,
+      })
+    ).resolves.toBe(false);
+
+    expect(startCreateFromAi).not.toHaveBeenCalled();
   });
 });
