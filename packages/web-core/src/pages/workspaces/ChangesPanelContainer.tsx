@@ -68,6 +68,7 @@ import {
   groupDiffsByRepo,
   hasGitHubCommentsForDiff,
   resolveSelectedDiff,
+  shouldApplyInitialChangesPanelAutoFocus,
   shouldStackChangesPanel,
   shouldDeferDiffLoad,
   splitFilePath,
@@ -687,6 +688,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingDiffFocusKeyRef = useRef<string | null>(null);
   const pendingFileListFocusKeyRef = useRef<string | null>(null);
+  const hasAppliedInitialAutoFocusRef = useRef(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [isStacked, setIsStacked] = useState(false);
   const [isFileListCollapsed, setIsFileListCollapsed] = useState(false);
@@ -742,7 +744,17 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   }, [isFileListCollapsed]);
 
   useEffect(() => {
-    if (!autoFocus || !selectedDiffKey) return;
+    if (
+      !selectedDiffKey ||
+      !shouldApplyInitialChangesPanelAutoFocus(
+        autoFocus,
+        hasAppliedInitialAutoFocusRef.current
+      )
+    ) {
+      return;
+    }
+
+    hasAppliedInitialAutoFocusRef.current = true;
 
     requestAnimationFrame(() => {
       const selectedButton = fileButtonRefs.current.get(selectedDiffKey);

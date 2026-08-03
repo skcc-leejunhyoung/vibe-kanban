@@ -23,6 +23,13 @@ export function shouldStackChangesPanel(
   return height > width;
 }
 
+export function shouldApplyInitialChangesPanelAutoFocus(
+  autoFocus: boolean,
+  hasAppliedInitialAutoFocus: boolean
+): boolean {
+  return autoFocus && !hasAppliedInitialAutoFocus;
+}
+
 export function getDiffPath(diff: Diff): string {
   return diff.newPath || diff.oldPath || '';
 }

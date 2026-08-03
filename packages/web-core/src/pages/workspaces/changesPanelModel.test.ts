@@ -11,6 +11,7 @@ import {
   groupDiffsByRepo,
   hasGitHubCommentsForDiff,
   resolveSelectedDiff,
+  shouldApplyInitialChangesPanelAutoFocus,
   shouldStackChangesPanel,
   shouldDeferDiffLoad,
   splitFilePath,
@@ -36,6 +37,12 @@ describe('changesPanelModel', () => {
     expect(shouldStackChangesPanel(400, 600)).toBe(true);
     expect(shouldStackChangesPanel(600, 400)).toBe(false);
     expect(shouldStackChangesPanel(600, 600)).toBe(false);
+  });
+
+  it('applies panel autofocus only for the initial selection', () => {
+    expect(shouldApplyInitialChangesPanelAutoFocus(true, false)).toBe(true);
+    expect(shouldApplyInitialChangesPanelAutoFocus(true, true)).toBe(false);
+    expect(shouldApplyInitialChangesPanelAutoFocus(false, false)).toBe(false);
   });
 
   it('keeps identical paths in different repositories independently selectable', () => {
