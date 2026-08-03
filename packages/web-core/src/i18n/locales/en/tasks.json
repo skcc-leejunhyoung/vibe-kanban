@@ -432,6 +432,11 @@
     "generateUnavailableRemote": "AI generation is only available in the local app.",
     "creating": "Creating...",
     "createButton": "Create PR",
+    "unpushedWorkBranch": {
+      "title": "Push work branch to origin?",
+      "message": "The work branch '{{branch}}' has not been pushed to origin yet. Creating this pull request will push it to the remote. Continue?",
+      "confirm": "Push and create PR"
+    },
     "errors": {
       "failedToCreate": "Failed to create PR",
       "gitCliNotLoggedIn": "Git is not authenticated. Run \"gh auth login\" (or configure Git credentials) and try again.",

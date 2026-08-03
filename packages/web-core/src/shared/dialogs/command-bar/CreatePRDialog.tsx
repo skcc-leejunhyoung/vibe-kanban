@@ -45,6 +45,7 @@ import { AgentSelector } from '@/shared/components/tasks/AgentSelector';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { defineModal } from '@/shared/lib/modals';
 import { splitMessageToTitleDescription } from '@/shared/lib/string';
+import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 
 interface CreatePRDialogProps {
   attempt: Workspace;
@@ -398,8 +399,17 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
 
     // Kick off PR creation in the background store so it survives the dialog
     // being dismissed with X / ESC. The outcome is handled by the effect below.
-    const handleConfirmCreatePR = useCallback(() => {
+    const handleConfirmCreatePR = useCallback(async () => {
       if (!repoId || !attempt.id || creatingPR) return;
+      // Warn before opening a PR from a work branch that has never been pushed
+      // to origin: creating the PR would push it for the first time.
+      const proceed = await confirmUnpushedWorkBranchPush(
+        attempt.id,
+        repoId,
+        attempt.branch,
+        prHeadBranch
+      );
+      if (!proceed) return;
       setError(null);
       setGhCliHelp(null);
       startCreate(attempt.id, {
@@ -412,6 +422,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       });
     }, [
       attempt.id,
+      attempt.branch,
       repoId,
       prHeadBranch,
       prBaseBranch,

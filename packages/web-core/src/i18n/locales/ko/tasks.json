@@ -90,6 +90,11 @@
     "generateUnavailableRemote": "AI 생성은 로컬 앱에서만 사용할 수 있습니다.",
     "creating": "생성 중...",
     "createButton": "PR 생성",
+    "unpushedWorkBranch": {
+      "title": "작업 브랜치를 origin에 push할까요?",
+      "message": "작업 브랜치 '{{branch}}'이(가) 아직 origin에 push되지 않았습니다. 이 풀 리퀘스트를 생성하면 원격에 push됩니다. 계속할까요?",
+      "confirm": "Push하고 PR 생성"
+    },
     "errors": {
       "failedToCreate": "PR 생성에 실패했습니다",
       "gitCliNotLoggedIn": "Git이 인증되지 않았습니다. \"gh auth login\"을 실행하거나 Git 자격 증명을 설정한 후 다시 시도하세요.",

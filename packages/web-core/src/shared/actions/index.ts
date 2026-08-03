@@ -122,6 +122,7 @@ import {
 } from '@/shared/lib/commandPaletteEvents';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
@@ -1675,8 +1676,9 @@ export const Actions = {
     keywords: ['pull request', 'ai', 'draft', 'generate', 'pr'],
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
-    execute: async (_ctx, workspaceId, repoId) => {
-      const [repos, featureBranch] = await Promise.all([
+    execute: async (ctx, workspaceId, repoId) => {
+      const [workspace, repos, featureBranch] = await Promise.all([
+        getWorkspace(ctx.queryClient, workspaceId),
         workspacesApi.getRepos(workspaceId),
         findMergedFeatureBranch(workspaceId, repoId),
       ]);
@@ -1686,6 +1688,16 @@ export const Actions = {
       // (three-branch flow) when present; otherwise null so the backend defaults
       // to the work branch.
       const headBranch = featureBranch ?? null;
+
+      // This flow opens a PR without a dialog, so warn here before it pushes a
+      // work branch that has never been pushed to origin.
+      const proceed = await confirmUnpushedWorkBranchPush(
+        workspaceId,
+        repoId,
+        workspace.branch,
+        headBranch
+      );
+      if (!proceed) return;
 
       // Base (target): the workspace's configured target branch. For a feature
       // head the target IS the head, so fall back to the repo's default base.
