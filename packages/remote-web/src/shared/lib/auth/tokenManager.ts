@@ -58,7 +58,13 @@ async function doTokenRefresh(): Promise<string> {
   }
 
   const tokens = await refreshWithRetry(refreshToken);
-  await storeTokens(tokens.access_token, tokens.refresh_token);
+  // This is a credential rotation inside the existing signed-in session, not
+  // an auth-state transition. Emitting AUTH_CHANGED_EVENT here resets the
+  // identity query and briefly disables every isSignedIn-gated data source on
+  // each access-token refresh (~100 seconds with the current TTL/leeway).
+  await storeTokens(tokens.access_token, tokens.refresh_token, {
+    notifyAuthChange: false,
+  });
   return tokens.access_token;
 }
 

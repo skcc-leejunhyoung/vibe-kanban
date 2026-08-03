@@ -7,6 +7,17 @@ const ACCESS_TOKEN_KEY = "access_token";
 const REFRESH_TOKEN_KEY = "refresh_token";
 export const AUTH_CHANGED_EVENT = "remote-auth-changed";
 
+interface StoreTokensOptions {
+  /**
+   * Notify React auth state that the signed-in session changed.
+   *
+   * Token rotation for the same session must keep this false: resetting the
+   * identity query briefly marks the app signed out and remounts host-scoped
+   * data every time the short-lived access token is refreshed.
+   */
+  notifyAuthChange?: boolean;
+}
+
 export function accessTokensBelongToDifferentUsers(
   previousToken: string,
   nextToken: string,
@@ -86,6 +97,7 @@ function del(key: string): Promise<void> {
 export async function storeTokens(
   accessToken: string,
   refreshToken: string,
+  { notifyAuthChange = true }: StoreTokensOptions = {},
 ): Promise<void> {
   const previousAccessToken = await getAccessToken();
   if (
@@ -96,7 +108,9 @@ export async function storeTokens(
   }
   await put(ACCESS_TOKEN_KEY, accessToken);
   await put(REFRESH_TOKEN_KEY, refreshToken);
-  emitAuthChanged();
+  if (notifyAuthChange) {
+    emitAuthChanged();
+  }
 }
 
 export function getAccessToken(): Promise<string | null> {
