@@ -413,18 +413,20 @@ impl PullRequest {
         Ok(result.rows_affected())
     }
 
-    /// Unlinks a single PR (by its unique URL) from a workspace. Scoped to the
-    /// workspace so one workspace can never unlink another's PR row. Removes the
-    /// local link only — the PR on the host is untouched. Returns the number of
-    /// links removed (0 or 1).
-    pub async fn delete_by_workspace_and_url(
+    /// Unlinks a single PR (by its unique URL) from a workspace/repo. Scoped to
+    /// both identifiers so one repo cannot unlink another repo's PR row in the
+    /// same workspace. Removes the local link only — the PR on the host is
+    /// untouched. Returns the number of links removed (0 or 1).
+    pub async fn delete_by_workspace_repo_and_url(
         pool: &SqlitePool,
         workspace_id: Uuid,
+        repo_id: Uuid,
         pr_url: &str,
     ) -> Result<u64, sqlx::Error> {
         let result = sqlx::query!(
-            "DELETE FROM pull_requests WHERE workspace_id = ? AND pr_url = ?",
+            "DELETE FROM pull_requests WHERE workspace_id = ? AND repo_id = ? AND pr_url = ?",
             workspace_id,
+            repo_id,
             pr_url,
         )
         .execute(pool)
@@ -467,5 +469,106 @@ impl PullRequest {
 
     pub fn to_merge(&self) -> Merge {
         Merge::Pr(self.to_pr_merge())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+    use uuid::Uuid;
+
+    use super::PullRequest;
+
+    #[tokio::test]
+    async fn unlinking_a_pr_keeps_links_for_other_repos_in_the_workspace() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE pull_requests (
+                id TEXT PRIMARY KEY NOT NULL,
+                workspace_id BLOB,
+                repo_id BLOB,
+                pr_url TEXT NOT NULL UNIQUE,
+                pr_number INTEGER NOT NULL,
+                pr_status TEXT NOT NULL,
+                target_branch_name TEXT NOT NULL,
+                head_branch_name TEXT,
+                merged_at TEXT,
+                merge_commit_sha TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                synced_at DATETIME
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let workspace_id = Uuid::new_v4();
+        let selected_repo_id = Uuid::new_v4();
+        let other_repo_id = Uuid::new_v4();
+        let selected_url = "https://example.test/selected/1";
+        let other_url = "https://example.test/other/2";
+        PullRequest::create_for_workspace(
+            &pool,
+            workspace_id,
+            selected_repo_id,
+            "main",
+            1,
+            selected_url,
+            None,
+        )
+        .await
+        .unwrap();
+        PullRequest::create_for_workspace(
+            &pool,
+            workspace_id,
+            other_repo_id,
+            "main",
+            2,
+            other_url,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            PullRequest::delete_by_workspace_repo_and_url(
+                &pool,
+                workspace_id,
+                selected_repo_id,
+                other_url,
+            )
+            .await
+            .unwrap(),
+            0
+        );
+        assert!(
+            PullRequest::find_by_url(&pool, other_url)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        assert_eq!(
+            PullRequest::delete_by_workspace_repo_and_url(
+                &pool,
+                workspace_id,
+                selected_repo_id,
+                selected_url,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(
+            PullRequest::find_by_url(&pool, selected_url)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

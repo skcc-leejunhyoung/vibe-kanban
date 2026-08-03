@@ -1333,7 +1333,13 @@ pub async fn unlink_pr(
     // the workspace/repo is unlinked.
     let unlinked = match request.pr_url.as_deref() {
         Some(pr_url) => {
-            PullRequest::delete_by_workspace_and_url(pool, workspace.id, pr_url).await?
+            PullRequest::delete_by_workspace_repo_and_url(
+                pool,
+                workspace.id,
+                request.repo_id,
+                pr_url,
+            )
+            .await?
         }
         None => {
             PullRequest::delete_by_workspace_and_repo(pool, workspace.id, request.repo_id).await?

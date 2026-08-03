@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM pull_requests WHERE workspace_id = ? AND repo_id = ? AND pr_url = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d3ce326cb1ffb80b180c7f6f8775beed56c786dff63fff713ffdc434d4766803"
+}
