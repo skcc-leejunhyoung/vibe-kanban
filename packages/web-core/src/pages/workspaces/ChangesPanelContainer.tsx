@@ -1,4 +1,12 @@
-import { memo, useEffect, useCallback, useRef, useState, useMemo } from 'react';
+import {
+  memo,
+  useEffect,
+  useCallback,
+  useRef,
+  useState,
+  useMemo,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   CopyIcon,
@@ -51,6 +59,7 @@ import { CommitSelector } from './CommitSelector';
 import type { Diff } from 'shared/types';
 import {
   findDiffByPath,
+  getAdjacentDiffKey,
   getDiffKey,
   getDiffPath,
   getDiffStyle,
@@ -669,6 +678,10 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   );
   const showRepoHeaders = repos.length > 1 || groupedDiffs.length > 1;
   const panelRef = useRef<HTMLDivElement>(null);
+  const diffPanelRef = useRef<HTMLElement>(null);
+  const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingDiffFocusKeyRef = useRef<string | null>(null);
+  const pendingFileListFocusKeyRef = useRef<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [isStacked, setIsStacked] = useState(false);
   const [isFileListCollapsed, setIsFileListCollapsed] = useState(false);
@@ -699,6 +712,28 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     () => resolveSelectedDiff(sortedDiffs, selectedKey),
     [selectedKey, sortedDiffs]
   );
+
+  useEffect(() => {
+    if (
+      !selectedDiff ||
+      pendingDiffFocusKeyRef.current !== getDiffKey(selectedDiff)
+    ) {
+      return;
+    }
+
+    pendingDiffFocusKeyRef.current = null;
+    requestAnimationFrame(() => diffPanelRef.current?.focus());
+  }, [selectedDiff, selectedKey]);
+
+  useEffect(() => {
+    const pendingKey = pendingFileListFocusKeyRef.current;
+    if (!pendingKey || isFileListCollapsed) return;
+
+    pendingFileListFocusKeyRef.current = null;
+    requestAnimationFrame(() =>
+      fileButtonRefs.current.get(pendingKey)?.focus()
+    );
+  }, [isFileListCollapsed]);
 
   useEffect(() => {
     if (!selectedFilePath) return;
@@ -781,6 +816,86 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
       registerFileRequest(null);
     };
   }, [registerFileRequest, handleFileRequest]);
+
+  const activateFileFromKeyboard = useCallback(
+    (diff: Diff) => {
+      const diffKey = getDiffKey(diff);
+      if (selectedKey === diffKey) {
+        requestAnimationFrame(() => diffPanelRef.current?.focus());
+      } else {
+        pendingDiffFocusKeyRef.current = diffKey;
+        setSelectedKey(diffKey);
+      }
+      selectFile(getDiffPath(diff), diff.repoId);
+    },
+    [selectFile, selectedKey]
+  );
+
+  const handleFileListKeyDown = useCallback(
+    (
+      event: ReactKeyboardEvent<HTMLButtonElement>,
+      diffKey: string,
+      diff: Diff
+    ) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        activateFileFromKeyboard(diff);
+        return;
+      }
+
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+
+      event.preventDefault();
+      const adjacentKey = getAdjacentDiffKey(
+        sortedDiffs,
+        diffKey,
+        event.key === 'ArrowDown' ? 'next' : 'previous'
+      );
+      if (adjacentKey) fileButtonRefs.current.get(adjacentKey)?.focus();
+    },
+    [activateFileFromKeyboard, sortedDiffs]
+  );
+
+  const handleDiffPanelKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.defaultPrevented || event.currentTarget !== event.target) {
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        const diffKey = selectedDiff ? getDiffKey(selectedDiff) : null;
+        if (!diffKey) return;
+
+        event.preventDefault();
+        if (isStacked && isFileListCollapsed) {
+          pendingFileListFocusKeyRef.current = diffKey;
+          setIsFileListCollapsed(false);
+        } else {
+          requestAnimationFrame(() =>
+            fileButtonRefs.current.get(diffKey)?.focus()
+          );
+        }
+        return;
+      }
+
+      const distance = 48;
+      const scrollBy =
+        event.key === 'ArrowUp'
+          ? { top: -distance }
+          : event.key === 'ArrowDown'
+            ? { top: distance }
+            : event.key === 'ArrowLeft'
+              ? { left: -distance }
+              : event.key === 'ArrowRight'
+                ? { left: distance }
+                : null;
+      if (!scrollBy) return;
+
+      event.preventDefault();
+      event.currentTarget.scrollBy({ ...scrollBy, behavior: 'smooth' });
+    },
+    [isFileListCollapsed, isStacked, selectedDiff]
+  );
 
   return (
     <WorkerPoolContextProvider
@@ -869,9 +984,19 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
                         key={diffKey}
                         type="button"
                         title={path}
+                        ref={(element) => {
+                          if (element) {
+                            fileButtonRefs.current.set(diffKey, element);
+                          } else {
+                            fileButtonRefs.current.delete(diffKey);
+                          }
+                        }}
                         onClick={() => {
                           selectFile(path, diff.repoId);
                         }}
+                        onKeyDown={(event) =>
+                          handleFileListKeyDown(event, diffKey, diff)
+                        }
                         className={`w-full h-8 px-base flex items-center gap-2 text-left transition-colors ${
                           isSelected
                             ? 'bg-brand/15 text-high'
@@ -901,7 +1026,13 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
             </div>
           </section>
 
-          <section className="flex-1 min-w-0 min-h-0 overflow-auto px-base pt-1">
+          <section
+            ref={diffPanelRef}
+            tabIndex={0}
+            aria-label="Changed file diff"
+            onKeyDown={handleDiffPanelKeyDown}
+            className="flex-1 min-w-0 min-h-0 overflow-auto px-base pt-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
+          >
             {selectedDiff?.contentOmitted && (
               <div className="h-full min-h-48 flex flex-col items-center justify-center gap-2 text-center px-6">
                 <p className="text-sm font-medium text-high">

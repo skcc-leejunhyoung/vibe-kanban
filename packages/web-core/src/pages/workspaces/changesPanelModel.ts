@@ -92,6 +92,20 @@ export function resolveSelectedDiff(
   );
 }
 
+export function getAdjacentDiffKey(
+  diffs: Diff[],
+  currentKey: string,
+  direction: 'previous' | 'next'
+): string | null {
+  const currentIndex = diffs.findIndex(
+    (diff) => getDiffKey(diff) === currentKey
+  );
+  if (currentIndex === -1) return null;
+
+  const adjacentDiff = diffs[currentIndex + (direction === 'next' ? 1 : -1)];
+  return adjacentDiff ? getDiffKey(adjacentDiff) : null;
+}
+
 export function getDiffStyle(mode: DiffViewMode): 'unified' | 'split' {
   return mode;
 }

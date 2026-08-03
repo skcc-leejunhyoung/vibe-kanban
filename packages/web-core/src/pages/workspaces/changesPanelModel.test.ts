@@ -3,6 +3,7 @@ import type { Diff } from 'shared/types';
 import {
   DEFER_DIFF_LOAD_LINES,
   findDiffByPath,
+  getAdjacentDiffKey,
   getDiffKey,
   getDiffStyle,
   getReviewCommentsForDiff,
@@ -86,6 +87,22 @@ describe('changesPanelModel', () => {
     const first = makeDiff('repo-1', 'src/first.ts');
 
     expect(resolveSelectedDiff([first], null)).toBe(first);
+  });
+
+  it('finds adjacent changed files for keyboard list navigation', () => {
+    const first = makeDiff('repo-1', 'src/first.ts');
+    const second = makeDiff('repo-1', 'src/second.ts');
+    const third = makeDiff('repo-2', 'src/third.ts');
+    const diffs = [first, second, third];
+
+    expect(getAdjacentDiffKey(diffs, getDiffKey(second), 'previous')).toBe(
+      getDiffKey(first)
+    );
+    expect(getAdjacentDiffKey(diffs, getDiffKey(second), 'next')).toBe(
+      getDiffKey(third)
+    );
+    expect(getAdjacentDiffKey(diffs, getDiffKey(first), 'previous')).toBeNull();
+    expect(getAdjacentDiffKey(diffs, getDiffKey(third), 'next')).toBeNull();
   });
 
   it('splits a path so the directory can truncate without hiding the filename', () => {
