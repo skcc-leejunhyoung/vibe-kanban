@@ -293,7 +293,6 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
             models: [
                 ("fable", "Fable"),
                 ("opus", "Opus"),
-                ("opus[1m]", "Opus (1M context)"),
                 ("sonnet", "Sonnet"),
                 ("haiku", "Haiku"),
             ]
@@ -746,10 +745,15 @@ const DEFAULT_CLAUDE_CONTEXT_WINDOW: u32 = 200_000;
 /// wins. The heuristic just makes the pre-result display correct for models
 /// whose window differs from the 200K default:
 /// - Fable / Mythos ship a 1M context window *by default* (no opt-in variant).
-/// - Opus exposes 1M only through the explicit `[1m]` beta variant.
+/// - A `[1m]` suffix forces the 1M window explicitly. This is no longer offered
+///   in the model picker (modern Opus 4.7+ already runs at 1M on the Anthropic
+///   API and is auto-upgraded to 1M on Max/Team/Enterprise plans), but the
+///   suffix can still arrive via an `ANTHROPIC_DEFAULT_OPUS_MODEL='...[1m]'` pin.
 ///
-/// Anything else falls back to the 200K default and self-corrects once the
-/// first result arrives, so new 1M models need no code change here.
+/// A plain `opus` session is usually 1M too on those tiers, but that depends on
+/// plan/access, so the placeholder stays at the conservative 200K default and
+/// self-corrects once the first result arrives — new 1M models need no code
+/// change here.
 fn initial_context_window_for_model(model: &str) -> u32 {
     let model = model.to_ascii_lowercase();
     if model.contains("fable") || model.contains("mythos") || model.contains("[1m]") {
@@ -3032,7 +3036,7 @@ mod tests {
             initial_context_window_for_model("claude-mythos-5"),
             1_000_000
         );
-        // Opus only reaches 1M via the explicit [1m] beta variant.
+        // An explicit `[1m]` suffix (e.g. from an env pin) still forces 1M.
         assert_eq!(initial_context_window_for_model("opus[1m]"), 1_000_000);
         // Everything else falls back to the 200K default (result message corrects it).
         assert_eq!(
