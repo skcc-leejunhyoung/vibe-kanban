@@ -15,6 +15,7 @@ import {
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueSyncVibeConnectorId,
+  normalizeOptionalTimestamp,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
   shouldRunGithubIssueSyncRule,
@@ -1615,8 +1616,11 @@ async function linkGithubIssueOnce(input, operationKey) {
     github_node_id: issue.node_id,
     project_item_id: projectItemId,
     github_state: issue.state,
-    github_updated_at: issue.updated_at,
-    last_synced_vibe_updated_at: effectiveInput.vibeUpdatedAt || null,
+    github_updated_at: normalizeOptionalTimestamp(issue.updated_at),
+    last_synced_vibe_updated_at: normalizeOptionalTimestamp(
+      vibeIssue.updated_at,
+      effectiveInput.vibeUpdatedAt
+    ),
     synced_title: String(effectiveInput.title || ''),
     synced_description:
       effectiveInput.description == null

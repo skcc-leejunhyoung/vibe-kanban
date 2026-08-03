@@ -2685,6 +2685,19 @@ export const Actions = {
     },
   } satisfies IssueActionDefinition,
 
+  LinkGithubIssue: {
+    id: 'link-github-issue',
+    label: 'Link GitHub Issue',
+    icon: LinkIcon,
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (ctx, _projectId, issueIds) => {
+      if (issueIds.length !== 1) return;
+      await ctx.projectMutations?.linkGithubIssue(issueIds[0]);
+    },
+  } satisfies IssueActionDefinition,
+
   DeleteIssue: {
     id: 'delete-issue',
     label: 'Delete Issue',

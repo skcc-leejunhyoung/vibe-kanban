@@ -9,6 +9,7 @@ import {
   githubIssueMapBackfillEntries,
   githubIssueMarker,
   githubIssueSyncVibeConnectorId,
+  normalizeOptionalTimestamp,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
   shouldRunGithubIssueSyncRule,
@@ -16,6 +17,18 @@ import {
   withGithubIssueMarker,
   withoutGithubIssueMarker,
 } from './github-issue-sync.mjs';
+
+test('normalizes Electric timestamps before sending them to the Vibe API', () => {
+  assert.equal(
+    normalizeOptionalTimestamp('2026-08-03 06:02:25.367666+00'),
+    '2026-08-03T06:02:25.367Z'
+  );
+  assert.equal(
+    normalizeOptionalTimestamp('', '2026-08-03T06:03:32Z'),
+    '2026-08-03T06:03:32.000Z'
+  );
+  assert.equal(normalizeOptionalTimestamp('', 'invalid'), null);
+});
 
 test('synchronizes parent creation, moves, removal, and concurrent changes', () => {
   assert.deepEqual(

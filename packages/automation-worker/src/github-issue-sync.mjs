@@ -4,6 +4,15 @@ export function githubIssueMarker(issueId) {
   return `${MARKER_PREFIX}${issueId} -->`;
 }
 
+export function normalizeOptionalTimestamp(...candidates) {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const timestamp = Date.parse(String(candidate));
+    if (Number.isFinite(timestamp)) return new Date(timestamp).toISOString();
+  }
+  return null;
+}
+
 export function decideGithubParentSync({
   baselineParentIssueId,
   vibeParentIssueId,

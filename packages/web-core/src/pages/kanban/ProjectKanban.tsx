@@ -21,6 +21,9 @@ import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
+import { resolveGithubIssueAutomationHostId } from '@/shared/lib/githubIssueAutomationHost';
 import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
@@ -31,6 +34,9 @@ import {
  */
 function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
   const { registerProjectMutations } = useActions();
+  const runtime = useAppRuntime();
+  const routeState = useCurrentKanbanRouteState();
+  const { hosts } = useWorkspaceHostOptions();
   const {
     removeIssue,
     insertIssue,
@@ -80,6 +86,30 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
           extension_metadata: issue.extension_metadata,
         });
       },
+      linkGithubIssue: async (issueId) => {
+        const issue = getIssue(issueId);
+        if (!issue) return;
+        const { LinkGithubIssueDialog } = await import(
+          '@/shared/dialogs/command-bar/LinkGithubIssueDialog'
+        );
+        await LinkGithubIssueDialog.show({
+          runtime,
+          hostId: resolveGithubIssueAutomationHostId(
+            runtime,
+            routeState.hostId,
+            hosts
+          ),
+          projectId: issue.project_id,
+          hosts: hosts
+            .filter((host) => host.status === 'online')
+            .map((host) => ({ id: host.id, name: host.name })),
+          issueId: issue.id,
+          title: issue.title,
+          description: issue.description,
+          statusId: issue.status_id,
+          updatedAt: issue.updated_at,
+        });
+      },
       getIssue,
       getAssigneesForIssue,
       getPullRequestsForIssue,
@@ -95,6 +125,9 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
     getIssue,
     getAssigneesForIssue,
     getPullRequestsForIssue,
+    hosts,
+    routeState.hostId,
+    runtime,
   ]);
 
   return <>{children}</>;
