@@ -556,7 +556,7 @@ pub async fn get_pr_info(
         }
     };
 
-    match git_host.get_pr_status(&query.url).await {
+    match git_host.get_pr_status_with_activity(&query.url).await {
         Ok(info) => Ok(ResponseJson(ApiResponse::success(info))),
         Err(GitHostError::CliNotInstalled { provider }) => Ok(ResponseJson(
             ApiResponse::error_with_data(ListPrsError::CliNotInstalled { provider }),

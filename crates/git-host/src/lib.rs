@@ -30,6 +30,13 @@ pub trait GitHostProvider: Send + Sync {
 
     async fn get_pr_status(&self, pr_url: &str) -> Result<PullRequestDetail, GitHostError>;
 
+    async fn get_pr_status_with_activity(
+        &self,
+        pr_url: &str,
+    ) -> Result<PullRequestDetail, GitHostError> {
+        self.get_pr_status(pr_url).await
+    }
+
     async fn list_prs_for_branch(
         &self,
         repo_path: &Path,

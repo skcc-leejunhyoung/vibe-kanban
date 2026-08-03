@@ -344,6 +344,43 @@ impl GitHostProvider for GitHubProvider {
     }
 
     async fn get_pr_status(&self, pr_url: &str) -> Result<PullRequestDetail, GitHostError> {
+        let cli = self.gh_cli.clone();
+        let url = pr_url.to_string();
+
+        (|| async {
+            let cli = cli.clone();
+            let url = url.clone();
+            let pr = task::spawn_blocking(move || cli.view_pr(&url))
+                .await
+                .map_err(|err| {
+                    GitHostError::PullRequest(format!(
+                        "Failed to execute GitHub CLI for viewing PR: {err}"
+                    ))
+                })?;
+            pr.map_err(GitHostError::from)
+        })
+        .retry(
+            &ExponentialBuilder::default()
+                .with_min_delay(Duration::from_secs(1))
+                .with_max_delay(Duration::from_secs(30))
+                .with_max_times(3)
+                .with_jitter(),
+        )
+        .when(|err: &GitHostError| err.should_retry())
+        .notify(|err: &GitHostError, dur: Duration| {
+            tracing::warn!(
+                "GitHub API call failed, retrying after {:.2}s: {}",
+                dur.as_secs_f64(),
+                err
+            );
+        })
+        .await
+    }
+
+    async fn get_pr_status_with_activity(
+        &self,
+        pr_url: &str,
+    ) -> Result<PullRequestDetail, GitHostError> {
         let detail_cli = self.gh_cli.clone();
         let events_cli = self.gh_cli.clone();
         let url = pr_url.to_string();

@@ -110,11 +110,18 @@ struct GhNamedUser {
 }
 
 #[derive(Deserialize)]
+struct GhNamedTeam {
+    #[serde(default)]
+    slug: String,
+}
+
+#[derive(Deserialize)]
 struct GhReviewRequestEvent {
     id: i64,
     event: String,
     actor: Option<GhNamedUser>,
     requested_reviewer: Option<GhNamedUser>,
+    requested_team: Option<GhNamedTeam>,
     review_requester: Option<GhNamedUser>,
     created_at: Option<DateTime<Utc>>,
 }
@@ -569,13 +576,21 @@ impl GhCli {
             if event.event != "review_requested" {
                 continue;
             }
-            let Some(reviewer) = event.requested_reviewer else {
+            let target = event
+                .requested_reviewer
+                .map(|reviewer| (format!("user:{}", reviewer.login), reviewer.login))
+                .or_else(|| {
+                    event
+                        .requested_team
+                        .map(|team| (format!("team:{}", team.slug), team.slug))
+                });
+            let Some((target_key, target_name)) = target else {
                 continue;
             };
             let Some(created_at) = event.created_at else {
                 continue;
             };
-            let action = if previously_requested.insert(reviewer.login.clone()) {
+            let action = if previously_requested.insert(target_key) {
                 PullRequestReviewRequestAction::Requested
             } else {
                 PullRequestReviewRequestAction::Rerequested
@@ -588,7 +603,7 @@ impl GhCli {
             review_requests.push(PullRequestReviewRequest {
                 id: event.id.to_string(),
                 actor,
-                requested_reviewer: reviewer.login,
+                requested_reviewer: target_name,
                 action,
                 created_at,
             });
@@ -1104,12 +1119,19 @@ mod tests {
                     "actor": {"login": "author"},
                     "requested_reviewer": {"login": "reviewer"},
                     "created_at": "2026-01-03T00:00:00Z"
+                },
+                {
+                    "id": 4,
+                    "event": "review_requested",
+                    "actor": {"login": "author"},
+                    "requested_team": {"slug": "platform-reviewers"},
+                    "created_at": "2026-01-04T00:00:00Z"
                 }
             ]]"#,
         )
         .unwrap();
 
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0].action, PullRequestReviewRequestAction::Requested);
         assert_eq!(
             events[1].action,
@@ -1117,6 +1139,8 @@ mod tests {
         );
         assert_eq!(events[1].actor, "author");
         assert_eq!(events[1].requested_reviewer, "reviewer");
+        assert_eq!(events[2].action, PullRequestReviewRequestAction::Requested);
+        assert_eq!(events[2].requested_reviewer, "platform-reviewers");
     }
 
     #[test]
