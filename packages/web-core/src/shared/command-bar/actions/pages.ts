@@ -178,6 +178,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.GitOpenPR },
           { type: 'action', action: Actions.GitViewPRDetails },
           { type: 'action', action: Actions.GitLinkPR },
+          { type: 'action', action: Actions.GitUnlinkPR },
           { type: 'action', action: Actions.GitMerge },
           { type: 'action', action: Actions.GitPull },
           { type: 'action', action: Actions.GitUpdateFromBase },

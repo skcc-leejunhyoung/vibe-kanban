@@ -300,6 +300,17 @@ pub struct AttachExistingPrRequest {
     pub head_branch: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct UnlinkPrRequest {
+    pub repo_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct UnlinkPrResponse {
+    /// Number of PR links removed from the workspace/repo.
+    pub unlinked: usize,
+}
+
 #[derive(Debug, Serialize, TS)]
 pub struct PrCommentsResponse {
     pub comments: Vec<UnifiedPrComment>,
@@ -1299,6 +1310,39 @@ pub async fn attach_existing_pr(
     }
 }
 
+/// Unlink every PR tracked for a workspace/repo. This removes only the local
+/// association (the row in `pull_requests`); the PR on the host is untouched.
+/// Mirrors the automatic stale-PR cleanup on target-branch change, but is
+/// user-triggered from the PR panel / command palette.
+pub async fn unlink_pr(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<UnlinkPrRequest>,
+) -> Result<ResponseJson<ApiResponse<UnlinkPrResponse>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    // Ensure the repo actually belongs to this workspace before mutating.
+    WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+
+    let unlinked =
+        PullRequest::delete_by_workspace_and_repo(pool, workspace.id, request.repo_id).await?;
+
+    if unlinked > 0 {
+        tracing::info!(
+            "Unlinked {} PR(s) from workspace {} repo {} on user request",
+            unlinked,
+            workspace.id,
+            request.repo_id
+        );
+    }
+
+    Ok(ResponseJson(ApiResponse::success(UnlinkPrResponse {
+        unlinked: unlinked as usize,
+    })))
+}
+
 pub async fn get_pr_comments(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
@@ -1702,6 +1746,7 @@ pub fn router() -> Router<DeploymentImpl> {
             get(get_pr_draft).put(put_pr_draft).delete(delete_pr_draft),
         )
         .route("/attach", post(attach_existing_pr))
+        .route("/unlink", post(unlink_pr))
         .route("/comments", get(get_pr_comments))
         .route("/comments/resolve", post(set_pr_review_thread_resolved))
 }

@@ -178,6 +178,8 @@ fn generate_types_content() -> String {
         server::routes::workspaces::attachments::ImportIssueAttachmentsResponse::decl(),
         server::routes::workspaces::pr::AttachPrResponse::decl(),
         server::routes::workspaces::pr::AttachExistingPrRequest::decl(),
+        server::routes::workspaces::pr::UnlinkPrRequest::decl(),
+        server::routes::workspaces::pr::UnlinkPrResponse::decl(),
         server::routes::workspaces::pr::PrCommentsResponse::decl(),
         server::routes::workspaces::pr::GetPrCommentsError::decl(),
         server::routes::workspaces::pr::GetPrCommentsQuery::decl(),

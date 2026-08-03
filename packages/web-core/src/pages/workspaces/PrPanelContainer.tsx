@@ -126,6 +126,30 @@ export function PrPanelContainer({
     });
   }, []);
 
+  // Unlink the PR from the workspace. Removes only the local link (the PR on the
+  // host is untouched), then refreshes branch status so the panel updates.
+  const handleUnlink = useCallback(
+    async (pr: PrInfo) => {
+      if (!workspaceId) return;
+      const confirm = await ConfirmDialog.show({
+        title: t('prPanel.unlinkTitle'),
+        message: t('prPanel.unlinkMessage'),
+        confirmText: t('prPanel.unlink'),
+        variant: 'destructive',
+      });
+      if (confirm !== 'confirmed') return;
+      try {
+        await workspacesApi.unlinkPr(workspaceId, { repo_id: pr.repoId });
+        queryClient.invalidateQueries({
+          queryKey: ['branchStatus', workspaceId],
+        });
+      } catch (err) {
+        showError(err instanceof Error ? err.message : 'Failed to unlink PR');
+      }
+    },
+    [workspaceId, queryClient, showError, t]
+  );
+
   // Fetch the repo's primary remote (refreshes both head and base tracking refs),
   // then refetch branch status so ahead/behind numbers update.
   const handleFetch = useCallback(
@@ -239,6 +263,7 @@ export function PrPanelContainer({
       onPush={handlePush}
       onPull={handlePull}
       onViewDetails={handleViewDetails}
+      onUnlink={handleUnlink}
     />
   );
 }

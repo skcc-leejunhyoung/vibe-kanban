@@ -648,6 +648,14 @@ export type AttachExistingPrRequest = { repo_id: string,
  */
 head_branch: string | null, };
 
+export type UnlinkPrRequest = { repo_id: string, };
+
+export type UnlinkPrResponse = {
+/**
+ * Number of PR links removed from the workspace/repo.
+ */
+unlinked: number, };
+
 export type PrCommentsResponse = { comments: Array<UnifiedPrComment>, };
 
 export type GetPrCommentsError = { "type": "no_pr_attached" } | { "type": "cli_not_installed", provider: ProviderKind, } | { "type": "cli_not_logged_in", provider: ProviderKind, };

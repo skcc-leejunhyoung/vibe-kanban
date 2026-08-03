@@ -395,6 +395,24 @@ impl PullRequest {
         Ok(())
     }
 
+    /// Unlinks every PR tracked for a workspace/repo (user-triggered unlink).
+    /// Removes the local link only — the PR on the host is untouched. Returns the
+    /// number of links removed.
+    pub async fn delete_by_workspace_and_repo(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        repo_id: Uuid,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query!(
+            "DELETE FROM pull_requests WHERE workspace_id = ? AND repo_id = ?",
+            workspace_id,
+            repo_id,
+        )
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Unlinks stale PRs from a workspace/repo when its target branch changes.
     ///
     /// Only removes PRs whose head is the workspace's own work branch — a NULL

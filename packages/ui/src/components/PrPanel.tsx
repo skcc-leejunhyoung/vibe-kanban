@@ -14,6 +14,7 @@ interface PrPanelProps {
   onPush?: (repoId: string) => void;
   onPull?: (repoId: string) => void;
   onViewDetails?: (pr: PrInfo) => void;
+  onUnlink?: (pr: PrInfo) => void;
   className?: string;
 }
 
@@ -23,6 +24,7 @@ export function PrPanel({
   onPush,
   onPull,
   onViewDetails,
+  onUnlink,
   className,
 }: PrPanelProps) {
   const { t } = useTranslation('tasks');
@@ -46,6 +48,7 @@ export function PrPanel({
               onPush={() => onPush?.(pr.repoId)}
               onPull={() => onPull?.(pr.repoId)}
               onViewDetails={() => onViewDetails?.(pr)}
+              onUnlink={onUnlink ? () => onUnlink(pr) : undefined}
             />
           ))
         )}

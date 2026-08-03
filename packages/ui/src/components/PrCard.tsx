@@ -10,6 +10,7 @@ import {
   SpinnerGapIcon,
   DotsThreeIcon,
   CopyIcon,
+  LinkBreakIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '../lib/open-url';
@@ -50,6 +51,8 @@ export interface PrCardProps {
   onPush?: () => void;
   onPull?: () => void;
   onViewDetails?: () => void;
+  /** Unlink the PR from the workspace (local link only; PR is not affected). */
+  onUnlink?: () => void;
 }
 
 const iconButtonClass =
@@ -120,6 +123,7 @@ export function PrCard({
   onPush,
   onPull,
   onViewDetails,
+  onUnlink,
 }: PrCardProps) {
   const { t } = useTranslation('tasks');
   // Fetch/push only make sense for an open PR; merged/closed cards are read-only.
@@ -189,6 +193,12 @@ export function PrCard({
               <CopyIcon className="size-icon-xs" weight="bold" />
               {t('prPanel.copyUrl')}
             </DropdownMenuItem>
+            {onUnlink && (
+              <DropdownMenuItem onClick={onUnlink} className="text-error">
+                <LinkBreakIcon className="size-icon-xs" weight="bold" />
+                {t('prPanel.unlink')}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

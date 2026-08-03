@@ -106,6 +106,8 @@ import {
   LinkPrToIssueRequest,
   AttachExistingPrRequest,
   AttachPrResponse,
+  UnlinkPrRequest,
+  UnlinkPrResponse,
   CreateWorkspaceFromPrBody,
   CreateWorkspaceFromPrResponse,
   CreateFromPrError,
@@ -1249,6 +1251,21 @@ export const workspacesApi = {
       }
     );
     return handleApiResponseAsResult<AttachPrResponse, PrError>(response);
+  },
+
+  /** Unlink the PR(s) tracked for a repo. Removes only the local link. */
+  unlinkPr: async (
+    workspaceId: string,
+    data: UnlinkPrRequest
+  ): Promise<UnlinkPrResponse> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/unlink`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<UnlinkPrResponse>(response);
   },
 
   startDevServer: async (workspaceId: string): Promise<ExecutionProcess[]> => {

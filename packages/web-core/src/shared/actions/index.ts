@@ -54,6 +54,7 @@ import {
   UsersIcon,
   TreeStructureIcon,
   LinkIcon,
+  LinkBreakIcon,
   ArrowBendUpRightIcon,
   ProhibitIcon,
   LightningIcon,
@@ -1882,6 +1883,44 @@ export const Actions = {
         });
       } else if (!result.success) {
         throw new Error(result.message || 'Failed to attach PR');
+      }
+    },
+  },
+
+  GitUnlinkPR: {
+    id: 'git-unlink-pr',
+    label: 'Unlink Pull Request',
+    icon: LinkBreakIcon,
+    keywords: ['pull request', 'unlink', 'detach', 'remove', 'pr'],
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasLinkedPR,
+    execute: async (ctx, workspaceId, repoId) => {
+      const confirm = await ConfirmDialog.show({
+        title: 'Unlink pull request?',
+        message:
+          'This removes the link between the pull request and this workspace. The pull request itself is not affected.',
+        confirmText: 'Unlink',
+        variant: 'destructive',
+      });
+      if (confirm !== 'confirmed') return;
+
+      const result = await workspacesApi.unlinkPr(workspaceId, {
+        repo_id: repoId,
+      });
+
+      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+      ctx.queryClient.invalidateQueries({
+        queryKey: ['branchStatus', workspaceId],
+      });
+
+      if (result.unlinked === 0) {
+        await ConfirmDialog.show({
+          title: 'No Linked Pull Request',
+          message: 'There was no pull request linked to this workspace.',
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'info',
+        });
       }
     },
   },
