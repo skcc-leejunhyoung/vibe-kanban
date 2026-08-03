@@ -1,5 +1,10 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
+import {
+  advanceExecutionActivity,
+  TERMINAL_EXECUTION_RECONCILE_DELAY_MS,
+  type ExecutionActivityState,
+} from '@/shared/lib/executionProcessReconciliation';
 import { EXECUTION_PROCESS_STREAM_SILENCE_TIMEOUT_MS } from '@/shared/lib/wsStreamHeartbeat';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { ExecutionProcess } from 'shared/types';
@@ -96,6 +101,31 @@ export const useExecutionProcesses = (
         process.run_reason === 'archivescript') &&
       process.status === 'running'
   );
+  const executionActivityRef = useRef<ExecutionActivityState>({
+    sessionId,
+    wasRunning: false,
+  });
+
+  useEffect(() => {
+    const transition = advanceExecutionActivity(
+      executionActivityRef.current,
+      sessionId,
+      isAttemptRunning
+    );
+    executionActivityRef.current = transition.state;
+
+    if (!transition.shouldReconcile) return;
+
+    // Vibe and other server-driven continuations are created after the
+    // completed-process patch. Reconnect once after that handoff window so a
+    // missed child-process add cannot leave the conversation stale forever.
+    const timeoutId = window.setTimeout(
+      reconcile,
+      TERMINAL_EXECUTION_RECONCILE_DELAY_MS
+    );
+    return () => window.clearTimeout(timeoutId);
+  }, [isAttemptRunning, reconcile, sessionId]);
+
   // Loading until the first snapshot — unless a cached snapshot is already
   // being served (data defined pre-Ready), which renders immediately.
   const isLoading = !!sessionId && !isInitialized && !error && !data;
