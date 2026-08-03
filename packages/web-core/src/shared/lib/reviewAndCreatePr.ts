@@ -1,4 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query';
+import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
@@ -37,7 +38,7 @@ export interface ReviewAndCreatePrOptions {
  * Shared workflow behind both the composer split-button and command palette:
  * review -> merge -> push the materialized target -> create an AI draft PR.
  */
-export async function runReviewAndCreatePr({
+async function executeReviewAndCreatePr({
   workspaceId,
   sessionId,
   hostId,
@@ -112,4 +113,21 @@ export async function runReviewAndCreatePr({
   }
 
   return true;
+}
+
+export async function runReviewAndCreatePr(
+  options: ReviewAndCreatePrOptions
+): Promise<boolean> {
+  try {
+    return await executeReviewAndCreatePr(options);
+  } catch (error) {
+    void ErrorDialog.show({
+      title: 'Review and create PR from ai failed',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'The review and pull request workflow failed.',
+    });
+    return false;
+  }
 }
