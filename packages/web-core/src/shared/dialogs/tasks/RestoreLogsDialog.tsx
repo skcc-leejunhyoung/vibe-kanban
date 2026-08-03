@@ -11,8 +11,6 @@ import { Button } from '@vibe/ui/components/Button';
 import { AlertTriangle, GitCommit, Loader2 } from 'lucide-react';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
-import { useKeySubmitTask } from '@/shared/keyboard/hooks';
-import { Scope } from '@/shared/keyboard/registry';
 import { executionProcessesApi } from '@/shared/lib/api';
 import {
   isCodingAgent,
@@ -176,11 +174,9 @@ const RestoreLogsDialogImpl = create<RestoreLogsDialogProps>(
       }
     };
 
-    // CMD+Enter to confirm
-    useKeySubmitTask(handleConfirm, {
-      scope: Scope.DIALOG,
-      when: modal.visible && !isConfirmDisabled,
-    });
+    // CMD+Enter confirm comes from KeyboardDialog's shared dialog keyboard
+    // layer (type="submit" resolution) — a separate hotkey here would fire a
+    // second time on the same keypress and ignores the modal stack.
 
     return (
       <Dialog open={modal.visible} onOpenChange={handleOpenChange}>

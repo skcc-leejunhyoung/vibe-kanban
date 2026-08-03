@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import NiceModal, { useModal } from '@ebay/nice-modal-react';
@@ -16,15 +16,8 @@ const ProjectsGuideDialogImpl = NiceModal.create<NoProps>(() => {
     modal.remove();
   }, [modal]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleClose]);
+  // Escape is handled by GuideDialogShell's shared dialog keyboard layer,
+  // which also gates on the modal stack for stacked dialogs.
 
   if (!container) return null;
 

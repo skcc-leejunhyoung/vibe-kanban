@@ -119,6 +119,8 @@ export function useDialogKeyboard({
     if (!open || !onClose) return;
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      // Escape during IME composition only cancels the composition.
+      if (event.isComposing) return;
       if (event.defaultPrevented && !isEscapeDeferred(event)) return;
       if (!isTopLayer()) return;
       event.preventDefault();

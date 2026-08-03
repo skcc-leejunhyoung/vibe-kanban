@@ -9,6 +9,10 @@ interface PrimaryButtonProps {
   disabled?: boolean;
   children?: React.ReactNode;
   className?: string;
+  // Explicit type keeps untyped instances from being picked up as a dialog's
+  // Cmd/Ctrl+Enter primary action (dialog-keyboard.ts rule 3). Pass 'submit'
+  // when the button really is the dialog's confirm.
+  type?: 'button' | 'submit';
 }
 
 export function PrimaryButton({
@@ -19,6 +23,7 @@ export function PrimaryButton({
   disabled,
   children,
   className,
+  type = 'button',
 }: PrimaryButtonProps) {
   const variantStyles = disabled
     ? 'cursor-not-allowed bg-panel'
@@ -30,6 +35,7 @@ export function PrimaryButton({
 
   return (
     <button
+      type={type}
       className={cn(
         'rounded-sm px-base py-half text-cta min-h-cta flex gap-half items-center',
         variantStyles,

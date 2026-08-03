@@ -109,18 +109,21 @@ const DialogContent = React.forwardRef<
     // Cmd/Ctrl+Enter activates the dialog's primary action. Radix keeps
     // focus inside the content, so a listener on the content sees every
     // keydown of this dialog — and only this dialog, since stacked dialogs
-    // are portaled as sibling trees.
+    // are portaled as sibling trees. The top-layer gate still matters:
+    // Radix's FocusScope pulls focus back from a non-Radix dialog stacked
+    // above, so without it this dialog would claim the top dialog's confirm.
     const handleKeyDown = React.useCallback(
       (event: React.KeyboardEvent<HTMLDivElement>) => {
         onKeyDown?.(event);
         if (event.defaultPrevented) return;
         if (!isDialogConfirmKey(event.nativeEvent)) return;
+        if (isTopLayer && !isTopLayer()) return;
         const primary = findDialogPrimaryAction(event.currentTarget);
         if (!primary) return;
         event.preventDefault();
         primary.click();
       },
-      [onKeyDown]
+      [onKeyDown, isTopLayer]
     );
 
     // Radix only coordinates Escape among its own layers; gate on the shared

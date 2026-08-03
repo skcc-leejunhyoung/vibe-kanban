@@ -49,13 +49,18 @@ Uses a small radius by default (`--radius: 0.125rem`):
 
 ### Focus States
 
-Focus rings use `ring-brand` (orange) and are inset by default.
+Keyboard focus indication is global: `*:focus-visible:not([tabindex='-1'])`
+in `../web-core/src/app/styles/new/index.css` draws a 2px `brand` outline on
+every focus-visible element. Do NOT add `outline-none`/`focus:outline-none`
+or per-component focus rings (`focus:ring-*`, `focus-visible:ring-*`) — the
+global rule wins the specificity tie anyway, so a custom ring only renders a
+doubled indicator. Programmatic focus targets opt out via `tabindex="-1"`.
 
 ### Example Component Styling
 
 ```tsx
-// Input field
-className="px-base bg-secondary rounded border text-base text-normal placeholder:text-low focus:outline-none focus:ring-1 focus:ring-brand"
+// Input field (no focus classes — the global focus-visible outline applies)
+className="px-base bg-secondary rounded border text-base text-normal placeholder:text-low"
 
 // Button (icon)
 className="flex items-center justify-center bg-secondary rounded border text-low hover:text-normal"
