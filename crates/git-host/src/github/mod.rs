@@ -344,20 +344,38 @@ impl GitHostProvider for GitHubProvider {
     }
 
     async fn get_pr_status(&self, pr_url: &str) -> Result<PullRequestDetail, GitHostError> {
-        let cli = self.gh_cli.clone();
+        let detail_cli = self.gh_cli.clone();
+        let events_cli = self.gh_cli.clone();
         let url = pr_url.to_string();
 
         (|| async {
-            let cli = cli.clone();
-            let url = url.clone();
-            let pr = task::spawn_blocking(move || cli.view_pr(&url))
-                .await
-                .map_err(|err| {
-                    GitHostError::PullRequest(format!(
-                        "Failed to execute GitHub CLI for viewing PR: {err}"
-                    ))
-                })?;
-            pr.map_err(GitHostError::from)
+            let detail_cli = detail_cli.clone();
+            let events_cli = events_cli.clone();
+            let detail_url = url.clone();
+            let events_url = url.clone();
+            let (detail_result, events_result) = tokio::join!(
+                task::spawn_blocking(move || detail_cli.view_pr(&detail_url)),
+                task::spawn_blocking(move || {
+                    events_cli.get_pr_review_request_events(&events_url)
+                })
+            );
+            let mut detail = detail_result.map_err(|err| {
+                GitHostError::PullRequest(format!(
+                    "Failed to execute GitHub CLI for viewing PR: {err}"
+                ))
+            })??;
+            match events_result {
+                Ok(Ok(review_requests)) => detail.review_requests = review_requests,
+                Ok(Err(error)) => tracing::warn!(
+                    %error,
+                    "Failed to load PR review request timeline; continuing without it"
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "Failed to join PR review request timeline task; continuing without it"
+                ),
+            }
+            Ok(detail)
         })
         .retry(
             &ExponentialBuilder::default()

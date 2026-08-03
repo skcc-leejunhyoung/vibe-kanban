@@ -11,7 +11,8 @@ use detection::detect_provider_from_url;
 use enum_dispatch::enum_dispatch;
 pub use types::{
     CreatePrRequest, GitHostError, PrComment, PrCommentAuthor, PrReviewComment, PrReviewThread,
-    ProviderKind, PullRequestCommit, PullRequestDetail, PullRequestReview, PullRequestSummary,
+    ProviderKind, PullRequestCommit, PullRequestDetail, PullRequestReview,
+    PullRequestReviewRequest, PullRequestReviewRequestAction, PullRequestSummary,
     ReviewCommentUser, UnifiedPrComment,
 };
 

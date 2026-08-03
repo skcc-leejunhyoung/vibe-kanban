@@ -610,6 +610,7 @@ impl AzCli {
                     })
                 })
                 .collect(),
+            review_requests: Vec::new(),
             commits: Vec::new(),
             review_decision: None,
             is_draft: pr.is_draft,

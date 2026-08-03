@@ -2,6 +2,7 @@ import type {
   PullRequestCommit,
   PullRequestDetail,
   PullRequestReview,
+  PullRequestReviewRequest,
   UnifiedPrComment,
 } from 'shared/types';
 
@@ -31,36 +32,20 @@ export type PrConversationItem =
       createdAt: string;
     }
   | {
+      kind: 'review-request';
+      key: string;
+      reviewRequest: PullRequestReviewRequest;
+      createdAt: string;
+    }
+  | {
       kind: 'comment';
       key: string;
       thread: PrCommentThread;
       createdAt: string;
     };
 
-export type PrReviewActivityTone = 'approved' | 'review-requested' | 'default';
-
-export function isReviewRequestText(value: string): boolean {
-  return /\b(?:re-?requested|requested) a review from\b/i.test(value);
-}
-
-export function getPrReviewActivityTone(
-  review: PullRequestReview
-): PrReviewActivityTone {
-  const state = review.state.toUpperCase().replaceAll('-', '_');
-  if (state === 'APPROVED') return 'approved';
-  if (
-    [
-      'REQUESTED',
-      'RE_REQUESTED',
-      'REREQUESTED',
-      'REVIEW_REQUESTED',
-      'REVIEW_REREQUESTED',
-    ].includes(state) ||
-    isReviewRequestText(review.body)
-  ) {
-    return 'review-requested';
-  }
-  return 'default';
+export function isApprovedReview(review: PullRequestReview): boolean {
+  return review.state.toUpperCase() === 'APPROVED';
 }
 
 function buildCommentThreads(comments: UnifiedPrComment[]): PrCommentThread[] {
@@ -130,6 +115,15 @@ export function buildPrConversation(
       key: `review-${review.id || `${review.author}-${index}`}`,
       review,
       createdAt: review.submitted_at,
+    });
+  });
+
+  detail.review_requests.forEach((reviewRequest) => {
+    items.push({
+      kind: 'review-request',
+      key: `review-request-${reviewRequest.id}`,
+      reviewRequest,
+      createdAt: reviewRequest.created_at,
     });
   });
 

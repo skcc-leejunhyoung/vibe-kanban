@@ -20,6 +20,7 @@ import {
   ShieldCheckIcon,
   SpinnerGapIcon,
   UserIcon,
+  UserPlusIcon,
   UsersIcon,
   XIcon,
   XCircleIcon,
@@ -44,8 +45,7 @@ import { PrCommentCard } from '@vibe/ui/components/pr-comment-card';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import {
   buildPrConversation,
-  getPrReviewActivityTone,
-  isReviewRequestText,
+  isApprovedReview,
   type PrCommentThread,
 } from '@/shared/lib/prConversation';
 import { useMarkPullRequestNotificationsRead } from '@/shared/hooks/useMarkPullRequestNotificationsRead';
@@ -79,7 +79,6 @@ function ConversationComment({
 }) {
   const { comment, replies } = thread;
   const isReview = comment.comment_type === 'review';
-  const isReviewRequest = isReviewRequestText(comment.body);
 
   return (
     <div
@@ -95,10 +94,7 @@ function ConversationComment({
             <MarkdownPreview
               content={comment.body}
               theme={theme}
-              className={cn(
-                'min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words [&_a]:break-all [&_pre]:max-w-full [&_pre]:whitespace-pre-wrap',
-                isReviewRequest && 'text-error [&_a]:text-error'
-              )}
+              className="min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words [&_a]:break-all [&_pre]:max-w-full [&_pre]:whitespace-pre-wrap"
             />
           }
           createdAt={comment.created_at}
@@ -492,27 +488,30 @@ export function PrDetailsContent({
                     );
                   }
 
-                  const reviewTone =
-                    item.kind === 'review'
-                      ? getPrReviewActivityTone(item.review)
-                      : null;
                   const Icon =
                     item.kind === 'commit'
                       ? GitCommitIcon
                       : item.kind === 'review'
                         ? ShieldCheckIcon
-                        : item.action === 'merged'
-                          ? GitMergeIcon
-                          : item.action === 'closed'
-                            ? XCircleIcon
-                            : GitPullRequestIcon;
+                        : item.kind === 'review-request'
+                          ? UserPlusIcon
+                          : item.action === 'merged'
+                            ? GitMergeIcon
+                            : item.action === 'closed'
+                              ? XCircleIcon
+                              : GitPullRequestIcon;
                   return (
                     <div
                       key={item.key}
                       className="relative flex min-w-0 items-start gap-base py-half pl-[42px] text-low"
                     >
                       <span className="absolute left-[4px] top-half z-10 flex size-[23px] items-center justify-center rounded-full border border-border bg-secondary">
-                        <Icon className="size-icon-xs" />
+                        <Icon
+                          className={cn(
+                            'size-icon-xs',
+                            item.kind === 'review-request' && 'text-error'
+                          )}
+                        />
                       </span>
                       <div className="min-w-0 flex-1 px-base py-half text-sm">
                         {item.kind === 'commit' ? (
@@ -530,23 +529,16 @@ export function PrDetailsContent({
                             </code>
                           </div>
                         ) : item.kind === 'review' ? (
-                          <div
-                            className={cn(
-                              'min-w-0',
-                              reviewTone === 'review-requested' && 'text-error'
-                            )}
-                          >
+                          <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-half">
                               <span className="font-medium text-normal">
                                 {item.review.author || 'Unknown reviewer'}
                               </span>
                               <span
                                 className={cn(
-                                  reviewTone === 'approved'
+                                  isApprovedReview(item.review)
                                     ? 'text-success'
-                                    : reviewTone === 'review-requested'
-                                      ? 'text-error'
-                                      : 'text-low'
+                                    : 'text-low'
                                 )}
                               >
                                 {item.review.state
@@ -558,13 +550,25 @@ export function PrDetailsContent({
                               <MarkdownPreview
                                 content={item.review.body}
                                 theme={actualTheme}
-                                className={cn(
-                                  'mt-base min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words',
-                                  reviewTone === 'review-requested' &&
-                                    'text-error [&_a]:text-error'
-                                )}
+                                className="mt-base min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words"
                               />
                             )}
+                          </div>
+                        ) : item.kind === 'review-request' ? (
+                          <div className="text-error">
+                            <span className="font-medium">
+                              {item.reviewRequest.actor || 'Someone'}
+                            </span>{' '}
+                            <span>
+                              {item.reviewRequest.action === 'rerequested'
+                                ? 're-requested'
+                                : 'requested'}{' '}
+                              a review from{' '}
+                            </span>
+                            <span className="font-medium">
+                              {item.reviewRequest.requested_reviewer ||
+                                'a reviewer'}
+                            </span>
                           </div>
                         ) : (
                           <div>

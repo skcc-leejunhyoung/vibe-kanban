@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PullRequestDetail, UnifiedPrComment } from 'shared/types';
-import {
-  buildPrConversation,
-  getPrReviewActivityTone,
-  isReviewRequestText,
-} from './prConversation';
+import { buildPrConversation, isApprovedReview } from './prConversation';
 
 const detail: PullRequestDetail = {
   number: 12n,
@@ -17,6 +13,22 @@ const detail: PullRequestDetail = {
   author: 'author',
   assignees: [],
   reviewers: [],
+  review_requests: [
+    {
+      id: 'request-1',
+      actor: 'author',
+      requested_reviewer: 'reviewer',
+      action: 'requested',
+      created_at: '2026-01-01T02:00:00Z',
+    },
+    {
+      id: 'request-2',
+      actor: 'author',
+      requested_reviewer: 'reviewer',
+      action: 'rerequested',
+      created_at: '2026-01-02T03:00:00Z',
+    },
+  ],
   review_decision: null,
   is_draft: false,
   created_at: '2026-01-01T00:00:00Z',
@@ -82,8 +94,10 @@ describe('buildPrConversation', () => {
     expect(conversation.map((item) => item.kind)).toEqual([
       'status',
       'commit',
+      'review-request',
       'review',
       'comment',
+      'review-request',
     ]);
     const thread = conversation.find((item) => item.kind === 'comment');
     expect(thread?.kind === 'comment' && thread.thread.comment.id).toBe('root');
@@ -135,22 +149,6 @@ describe('buildPrConversation', () => {
 
 describe('PR review activity presentation', () => {
   it('uses the approved tone for approvals', () => {
-    expect(getPrReviewActivityTone(detail.reviews[0])).toBe('approved');
-  });
-
-  it('uses the error tone for requested and re-requested reviews', () => {
-    const requestedReview = {
-      ...detail.reviews[0],
-      state: 'COMMENTED',
-      body: '[author](https://github.com/author) requested a review from [reviewer](https://github.com/reviewer)',
-    };
-    const rerequestedReview = {
-      ...requestedReview,
-      body: '[author](https://github.com/author) re-requested a review from [reviewer](https://github.com/reviewer)',
-    };
-
-    expect(getPrReviewActivityTone(requestedReview)).toBe('review-requested');
-    expect(getPrReviewActivityTone(rerequestedReview)).toBe('review-requested');
-    expect(isReviewRequestText(rerequestedReview.body)).toBe(true);
+    expect(isApprovedReview(detail.reviews[0])).toBe(true);
   });
 });

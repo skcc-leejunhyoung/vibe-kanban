@@ -4,7 +4,7 @@
 //! the REST client does not cover well.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     io::Write,
     path::Path,
@@ -21,7 +21,8 @@ use utils::{command_ext::NoWindowExt, shell::resolve_executable_path_blocking};
 
 use crate::types::{
     CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PrReviewThread,
-    PullRequestCommit, PullRequestDetail, PullRequestReview, PullRequestSummary, ReviewCommentUser,
+    PullRequestCommit, PullRequestDetail, PullRequestReview, PullRequestReviewRequest,
+    PullRequestReviewRequestAction, PullRequestSummary, ReviewCommentUser,
 };
 
 #[derive(Debug, Clone)]
@@ -106,6 +107,16 @@ struct GhUserLogin {
 struct GhNamedUser {
     #[serde(default)]
     login: String,
+}
+
+#[derive(Deserialize)]
+struct GhReviewRequestEvent {
+    id: i64,
+    event: String,
+    actor: Option<GhNamedUser>,
+    requested_reviewer: Option<GhNamedUser>,
+    review_requester: Option<GhNamedUser>,
+    created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize)]
@@ -511,6 +522,79 @@ impl GhCli {
             None,
         )?;
         Self::parse_pr_view(&raw)
+    }
+
+    pub fn get_pr_review_request_events(
+        &self,
+        pr_url: &str,
+    ) -> Result<Vec<PullRequestReviewRequest>, GhCliError> {
+        let repo_info = GitHubRepoInfo::from_pr_url(pr_url)?;
+        let pr_number = Url::parse(pr_url)
+            .ok()
+            .and_then(|url| {
+                url.path_segments()?
+                    .nth(3)
+                    .and_then(|value| value.parse::<i64>().ok())
+            })
+            .ok_or_else(|| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse PR number from URL '{pr_url}'"
+                ))
+            })?;
+        let endpoint = format!(
+            "repos/{}/{}/issues/{pr_number}/timeline?per_page=100",
+            repo_info.owner, repo_info.repo_name
+        );
+        let raw = self.run_for_host(
+            ["api", endpoint.as_str(), "--paginate", "--slurp"],
+            None,
+            repo_info.hostname.as_deref(),
+        )?;
+        Self::parse_pr_review_request_events(&raw)
+    }
+
+    fn parse_pr_review_request_events(
+        raw: &str,
+    ) -> Result<Vec<PullRequestReviewRequest>, GhCliError> {
+        let pages: Vec<Vec<GhReviewRequestEvent>> =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse PR timeline events: {err}; raw: {raw}"
+                ))
+            })?;
+        let mut previously_requested = HashSet::new();
+        let mut review_requests = Vec::new();
+
+        for event in pages.into_iter().flatten() {
+            if event.event != "review_requested" {
+                continue;
+            }
+            let Some(reviewer) = event.requested_reviewer else {
+                continue;
+            };
+            let Some(created_at) = event.created_at else {
+                continue;
+            };
+            let action = if previously_requested.insert(reviewer.login.clone()) {
+                PullRequestReviewRequestAction::Requested
+            } else {
+                PullRequestReviewRequestAction::Rerequested
+            };
+            let actor = event
+                .review_requester
+                .or(event.actor)
+                .map(|user| user.login)
+                .unwrap_or_default();
+            review_requests.push(PullRequestReviewRequest {
+                id: event.id.to_string(),
+                actor,
+                requested_reviewer: reviewer.login,
+                action,
+                created_at,
+            });
+        }
+
+        Ok(review_requests)
     }
 
     pub fn list_pull_request_summaries(
@@ -995,6 +1079,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_review_request_and_rerequest_timeline_events() {
+        let events = GhCli::parse_pr_review_request_events(
+            r#"[[
+                {
+                    "id": 1,
+                    "event": "review_requested",
+                    "actor": {"login": "author"},
+                    "requested_reviewer": {"login": "reviewer"},
+                    "review_requester": {"login": "author"},
+                    "created_at": "2026-01-01T00:00:00Z"
+                },
+                {
+                    "id": 2,
+                    "event": "review_request_removed",
+                    "actor": {"login": "author"},
+                    "requested_reviewer": {"login": "reviewer"},
+                    "created_at": "2026-01-02T00:00:00Z"
+                }
+            ], [
+                {
+                    "id": 3,
+                    "event": "review_requested",
+                    "actor": {"login": "author"},
+                    "requested_reviewer": {"login": "reviewer"},
+                    "created_at": "2026-01-03T00:00:00Z"
+                }
+            ]]"#,
+        )
+        .unwrap();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].action, PullRequestReviewRequestAction::Requested);
+        assert_eq!(
+            events[1].action,
+            PullRequestReviewRequestAction::Rerequested
+        );
+        assert_eq!(events[1].actor, "author");
+        assert_eq!(events[1].requested_reviewer, "reviewer");
+    }
+
+    #[test]
     fn parse_review_comments_preserves_reply_relationship() {
         let comments = GhCli::parse_pr_review_comments(
             r#"[{
@@ -1094,6 +1219,7 @@ impl GhCli {
             assignees: Vec::new(),
             reviewers: Vec::new(),
             reviews: Vec::new(),
+            review_requests: Vec::new(),
             commits: Vec::new(),
             review_decision: None,
             is_draft: request.draft.unwrap_or(false),
@@ -1159,6 +1285,7 @@ impl GhCli {
                     submitted_at: review.submitted_at,
                 })
                 .collect(),
+            review_requests: Vec::new(),
             commits: pr
                 .commits
                 .into_iter()

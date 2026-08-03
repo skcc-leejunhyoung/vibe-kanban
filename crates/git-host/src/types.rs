@@ -164,6 +164,22 @@ pub struct PullRequestReview {
     pub submitted_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestReviewRequestAction {
+    Requested,
+    Rerequested,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct PullRequestReviewRequest {
+    pub id: String,
+    pub actor: String,
+    pub requested_reviewer: String,
+    pub action: PullRequestReviewRequestAction,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PullRequestCommit {
     pub oid: String,
@@ -185,6 +201,7 @@ pub struct PullRequestDetail {
     pub assignees: Vec<String>,
     pub reviewers: Vec<String>,
     pub reviews: Vec<PullRequestReview>,
+    pub review_requests: Vec<PullRequestReviewRequest>,
     pub commits: Vec<PullRequestCommit>,
     pub review_decision: Option<String>,
     pub is_draft: bool,
