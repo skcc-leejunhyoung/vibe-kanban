@@ -121,6 +121,7 @@ import {
   dispatchCommandPaletteEvent,
 } from '@/shared/lib/commandPaletteEvents';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
@@ -723,6 +724,44 @@ export const Actions = {
         ctx.selectWorkspace(workspaceId, targetHostId);
       }
       ctx.selectSession(reviewSession.id);
+    },
+  },
+
+  StartReviewAndCreatePR: {
+    id: 'start-review-and-create-pr',
+    label: 'Review and create PR from ai',
+    icon: SparkleIcon,
+    keywords: ['review', 'merge', 'push', 'pull request', 'ai', 'draft'],
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.hasWorkspace,
+    getTooltip: () => 'Review, merge, push target, and create an AI draft PR',
+    execute: async (ctx, workspaceId, hostId) => {
+      const isCurrentWorkspace = ctx.currentWorkspaceId === workspaceId;
+      const targetHostId =
+        hostId === undefined
+          ? isCurrentWorkspace
+            ? ctx.currentHostId
+            : null
+          : hostId;
+      const targetSessionId = isCurrentWorkspace
+        ? ctx.currentSessionId
+        : (await sessionsApi.getByWorkspace(workspaceId, targetHostId))[0]?.id;
+      if (!targetSessionId) {
+        throw new Error('Select a chat session before starting a review');
+      }
+
+      await runReviewAndCreatePr({
+        workspaceId,
+        sessionId: targetSessionId,
+        hostId: targetHostId,
+        queryClient: ctx.queryClient,
+        onReviewSession: (reviewSessionId) => {
+          if (!isCurrentWorkspace) {
+            ctx.selectWorkspace(workspaceId, targetHostId);
+          }
+          ctx.selectSession(reviewSessionId);
+        },
+      });
     },
   },
 

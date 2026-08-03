@@ -631,7 +631,7 @@ export function SessionChatBox<TExecutor extends string = string>({
                       >
                         {t(
                           'conversation.actions.reviewAndCreatePr',
-                          'Review and create PR'
+                          'Review and create PR from ai'
                         )}
                       </DropdownMenuItem>
                     </DropdownMenuContent>

@@ -60,6 +60,9 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
 vi.mock('@/shared/lib/openInSplitPane', () => ({
   openInSplitPane: vi.fn(),
 }));
+vi.mock('@/shared/lib/reviewAndCreatePr', () => ({
+  runReviewAndCreatePr: vi.fn(),
+}));
 vi.mock('@/shared/dialogs/tasks/PrDetailsDialog', () => ({
   PrDetailsDialog: { show: vi.fn() },
 }));
@@ -80,6 +83,7 @@ import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import { getPageActions } from '@/shared/command-bar/actions/pages';
+import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
@@ -102,6 +106,7 @@ const openWorkspaceInSplitPane = vi.mocked(openInSplitPane);
 const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
 const showPrDetails = vi.mocked(PrDetailsDialog.show);
+const reviewAndCreatePr = vi.mocked(runReviewAndCreatePr);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -427,6 +432,85 @@ describe('Actions.StartReview', () => {
       'remote-host'
     );
     expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
+});
+
+describe('Actions.StartReviewAndCreatePR', () => {
+  it('runs the shared workflow for the current workspace and selects its review session', async () => {
+    reviewAndCreatePr.mockImplementation(async ({ onReviewSession }) => {
+      onReviewSession?.('review-session');
+      return true;
+    });
+    const selectSession = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'current-host',
+        currentSessionId: 'session-1',
+        selectSession,
+      }
+    );
+
+    await Actions.StartReviewAndCreatePR.execute(ctx, 'ws1');
+
+    expect(reviewAndCreatePr).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      sessionId: 'session-1',
+      hostId: 'current-host',
+      queryClient: ctx.queryClient,
+      onReviewSession: expect.any(Function),
+    });
+    expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
+
+  it('resolves a remote workspace session and preserves its host scope', async () => {
+    getSessionsByWorkspace.mockResolvedValue([
+      { id: 'target-session' },
+    ] as never);
+    reviewAndCreatePr.mockImplementation(async ({ onReviewSession }) => {
+      onReviewSession?.('review-session');
+      return true;
+    });
+    const selectWorkspace = vi.fn();
+    const selectSession = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'current-workspace' },
+      {
+        currentWorkspaceId: 'current-workspace',
+        currentSessionId: 'current-session',
+        selectWorkspace,
+        selectSession,
+      }
+    );
+
+    await Actions.StartReviewAndCreatePR.execute(
+      ctx,
+      'target-workspace',
+      'remote-host'
+    );
+
+    expect(getSessionsByWorkspace).toHaveBeenCalledWith(
+      'target-workspace',
+      'remote-host'
+    );
+    expect(reviewAndCreatePr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'target-workspace',
+        sessionId: 'target-session',
+        hostId: 'remote-host',
+      })
+    );
+    expect(selectWorkspace).toHaveBeenCalledWith(
+      'target-workspace',
+      'remote-host'
+    );
+    expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
+
+  it('is registered on the workspace command palette page', () => {
+    expect(getPageActions('workspaceActions')).toContain(
+      Actions.StartReviewAndCreatePR
+    );
   });
 });
 

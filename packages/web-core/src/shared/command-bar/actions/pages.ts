@@ -91,6 +91,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
         label: 'Workspace',
         items: [
           { type: 'action', action: Actions.StartReview },
+          { type: 'action', action: Actions.StartReviewAndCreatePR },
           { type: 'action', action: Actions.ViewWorkspaceSessions },
           { type: 'action', action: Actions.NewSession },
           { type: 'action', action: Actions.RenameSession },

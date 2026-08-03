@@ -69,35 +69,13 @@ import {
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
-import { sessionsApi, workspacesApi, ApiError } from '@/shared/lib/api';
+import { sessionsApi, ApiError } from '@/shared/lib/api';
 import { useWorkspace } from '@/shared/hooks/useWorkspace';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import type { TurnNavigationItem } from '@vibe/ui/components/TurnNavigationPopup';
-import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
-import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
-
-const VIBE_REVIEW_POLL_MS = 2000;
-const VIBE_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
-
-async function waitForVibeReviewCompletion(
-  sessionId: string,
-  hostId?: string | null
-): Promise<void> {
-  const deadline = Date.now() + VIBE_REVIEW_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const { phase } = await sessionsApi.getVibeReviewStatus(sessionId, hostId);
-    if (phase === 'done') return;
-    if (phase === 'blocked') {
-      throw new Error('The automated review was blocked before merge.');
-    }
-    await new Promise((resolve) =>
-      window.setTimeout(resolve, VIBE_REVIEW_POLL_MS)
-    );
-  }
-  throw new Error('Timed out waiting for the automated review to merge.');
-}
+import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 
 /** Compute execution status from boolean flags */
 function computeExecutionStatus(params: {
@@ -910,72 +888,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!sessionId || !workspaceId || isReviewing) return;
     setIsReviewing(true);
     try {
-      const reviewSession = await sessionsApi.vibeReview(sessionId, hostId);
-      await queryClient.invalidateQueries({
-        queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+      await runReviewAndCreatePr({
+        workspaceId,
+        sessionId,
+        hostId,
+        queryClient,
+        onReviewSession: onSelectSession,
       });
-      onSelectSession?.(reviewSession.id);
-
-      await waitForVibeReviewCompletion(reviewSession.id, hostId);
-      const [repos, branchStatuses] = await Promise.all([
-        workspacesApi.getRepos(workspaceId, hostId),
-        workspacesApi.getBranchStatus(workspaceId, hostId),
-      ]);
-
-      for (const repo of repos) {
-        const repoStatus = branchStatuses.find(
-          (status) => status.repo_id === repo.id
-        );
-        if (repoStatus && !repoStatus.is_target_remote) {
-          const pushResult = await workspacesApi.pushTargetBranch(
-            workspaceId,
-            repo.id,
-            false,
-            hostId
-          );
-          if (!pushResult.success && pushResult.error?.type === 'diverged') {
-            const resolution = await PullFirstDialog.show({
-              workspaceId,
-              repoId: repo.id,
-              ahead: pushResult.error.ahead,
-              behind: pushResult.error.behind,
-              isTarget: true,
-              hostId,
-            });
-            if (resolution !== 'success') {
-              throw new Error(
-                'The target branch must be reconciled before creating the pull request.'
-              );
-            }
-          } else if (!pushResult.success) {
-            throw new Error(
-              pushResult.message ||
-                `Failed to push target branch for ${repo.display_name || repo.name}.`
-            );
-          }
-        }
-
-        const directMerge = repoStatus?.merges?.find(
-          (merge) => merge.type === 'direct'
-        );
-        const featureBranch =
-          directMerge?.type === 'direct'
-            ? directMerge.target_branch_name
-            : undefined;
-        const created = await usePrFromAiBackgroundStore
-          .getState()
-          .startCreateFromAi(workspaceId, repo.id, {
-            headBranch: featureBranch ?? null,
-            targetBranch: featureBranch
-              ? (repo.default_target_branch ?? repo.target_branch ?? null)
-              : (repo.target_branch ?? null),
-            hostId,
-          });
-        if (!created) {
-          // The background PR store already surfaced the detailed failure.
-          return;
-        }
-      }
     } catch (error) {
       void ErrorDialog.show({
         title: t(
