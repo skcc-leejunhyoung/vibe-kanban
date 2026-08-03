@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import {
   ArrowClockwiseIcon,
@@ -257,6 +257,38 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     },
     enabled: filters.repository !== 'all',
     staleTime: 5 * 60_000,
+  });
+  const refreshPullRequests = useMutation({
+    mutationFn: async ({
+      repository,
+      involvesMe,
+    }: {
+      repository: string;
+      involvesMe: boolean;
+    }) => {
+      const result = await repoApi.listPullRequestSummaries(
+        repository,
+        involvesMe,
+        true
+      );
+      if (!result.success) {
+        throw new Error(result.message || 'Failed to refresh pull requests');
+      }
+      return result.data;
+    },
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData(
+        ['pull-request-summaries', variables.repository, variables.involvesMe],
+        data
+      );
+    },
+    onError: (error) =>
+      ErrorDialog.show({
+        title: 'Could not refresh pull requests',
+        message:
+          error instanceof Error ? error.message : 'An unknown error occurred.',
+        buttonText: 'OK',
+      }),
   });
 
   const pullRequests = useMemo(
@@ -721,8 +753,15 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
             </button>
             <button
               type="button"
-              onClick={() => void pullRequestsQuery.refetch()}
-              disabled={pullRequestsQuery.isFetching}
+              onClick={() =>
+                refreshPullRequests.mutate({
+                  repository: filters.repository,
+                  involvesMe: filters.involvesMe,
+                })
+              }
+              disabled={
+                pullRequestsQuery.isFetching || refreshPullRequests.isPending
+              }
               className="flex size-9 items-center justify-center rounded border border-border bg-secondary text-normal hover:text-high disabled:opacity-50"
               aria-label="Refresh pull requests"
               title="Refresh pull requests"
@@ -730,7 +769,9 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
               <ArrowClockwiseIcon
                 className={cn(
                   'size-icon-sm',
-                  pullRequestsQuery.isFetching && 'animate-spin'
+                  (pullRequestsQuery.isFetching ||
+                    refreshPullRequests.isPending) &&
+                    'animate-spin'
                 )}
               />
             </button>

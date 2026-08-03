@@ -29,6 +29,10 @@ where
             .await;
         cell.get_or_try_init(init).await.cloned()
     }
+
+    pub async fn invalidate(&self, key: &K) {
+        self.entries.invalidate(key).await;
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +82,20 @@ mod tests {
 
         assert_eq!(first, Err("failed"));
         assert_eq!(second, Ok(7));
+    }
+
+    #[tokio::test]
+    async fn fetches_again_after_invalidation() {
+        let cache = PullRequestCache::new(Duration::from_secs(60));
+        let first = cache
+            .get_or_try_init("key", || async { Ok::<_, ()>(1) })
+            .await;
+        cache.invalidate(&"key").await;
+        let second = cache
+            .get_or_try_init("key", || async { Ok::<_, ()>(2) })
+            .await;
+
+        assert_eq!(first, Ok(1));
+        assert_eq!(second, Ok(2));
     }
 }

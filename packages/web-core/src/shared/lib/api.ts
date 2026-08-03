@@ -1602,10 +1602,11 @@ export const repoApi = {
 
   listPullRequestSummaries: async (
     repoId: string,
-    involvesMe: boolean
+    involvesMe: boolean,
+    refresh = false
   ): Promise<Result<PullRequestSummary[], ListPrsError>> => {
     const response = await makeRequest(
-      `/api/repos/${repoId}/pull-requests?involves_me=${involvesMe}`
+      `/api/repos/${repoId}/pull-requests?involves_me=${involvesMe}&refresh=${refresh}`
     );
     return handleApiResponseAsResult<PullRequestSummary[], ListPrsError>(
       response

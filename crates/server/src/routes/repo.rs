@@ -458,6 +458,8 @@ pub struct ListPrsQuery {
 pub struct ListPullRequestSummariesQuery {
     #[serde(default)]
     pub involves_me: bool,
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 pub async fn list_open_prs(
@@ -530,6 +532,9 @@ pub async fn list_involved_prs(
         remote_url: remote.url.clone(),
         involves_me: query.involves_me,
     };
+    if query.refresh {
+        pull_request_summaries_cache().invalidate(&cache_key).await;
+    }
     match pull_request_summaries_cache()
         .get_or_try_init(cache_key, || async move {
             provider
