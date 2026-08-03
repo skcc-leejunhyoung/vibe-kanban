@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useSearch } from "@tanstack/react-router";
 import { acceptInvitation, redeemOAuth } from "@remote/shared/lib/api";
 import { storeTokens } from "@remote/shared/lib/auth";
+import { openExternalUrl } from "@vibe/ui/lib/open-url";
 import {
   clearInvitationToken,
   clearVerifier,
@@ -97,8 +98,10 @@ export default function InvitationCompletePage() {
         </p>
         <a
           href="https://www.vibekanban.com/docs/getting-started"
-          target="_blank"
-          rel="noopener noreferrer"
+          onClick={(event) => {
+            event.preventDefault();
+            openExternalUrl(event.currentTarget.href);
+          }}
           className="mt-double block w-full rounded-sm bg-brand px-base py-half text-center text-sm font-medium text-on-brand transition-colors hover:bg-brand-hover"
         >
           Get started

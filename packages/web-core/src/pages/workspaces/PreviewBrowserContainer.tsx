@@ -30,6 +30,7 @@ import { usePreviewNavigation } from '@/shared/hooks/usePreviewNavigation';
 import { PreviewDevToolsBridge } from '@/shared/lib/previewDevToolsBridge';
 import { useInspectModeStore } from '@/features/workspace-chat/model/store/useInspectModeStore';
 import type { PreviewDevToolsMessage } from '@/shared/types/previewDevTools';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 const MIN_RESPONSIVE_WIDTH = 320;
 const MIN_RESPONSIVE_HEIGHT = 480;
@@ -931,7 +932,7 @@ export function PreviewBrowserContainer({
 
     const normalizedUrl = normalizePreviewUrl(displayedPreviewUrl);
     if (normalizedUrl) {
-      window.open(normalizedUrl, '_blank');
+      openExternalUrl(normalizedUrl);
     }
   }, [displayedPreviewUrl]);
 
@@ -979,7 +980,7 @@ export function PreviewBrowserContainer({
   const handleOpenShortcutInNewTab = useCallback((url: string) => {
     const normalizedUrl = normalizePreviewUrl(url);
     if (normalizedUrl) {
-      window.open(normalizedUrl, '_blank');
+      openExternalUrl(normalizedUrl);
     }
   }, []);
 

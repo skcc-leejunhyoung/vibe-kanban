@@ -3,6 +3,7 @@ import {
   type SplitPreset,
   useSplitScreenStore,
 } from '@/shared/stores/useSplitScreenStore';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 const MESSAGE_TYPE = 'vk-split-pane';
 const EMBED_PARAM = 'vk_split_embed';
@@ -38,7 +39,7 @@ export function openInSplitPane(url: string): void {
     .getState()
     .openPane(url, currentRelativeUrl());
   if (result === 'overflow') {
-    window.open(url, '_blank', 'noopener,noreferrer');
+    openExternalUrl(url);
     return;
   }
 

@@ -14,6 +14,7 @@ import {
   createDecoratorNode,
   type DecoratorNodeConfig,
 } from './create-decorator-node';
+import { openExternalUrl, reserveExternalWindow } from '../lib/open-url';
 
 const ATTACHMENT_URL_STALE_TIME = 4 * 60 * 1000;
 
@@ -214,14 +215,20 @@ export function createAttachmentNode(options: CreateAttachmentNodeOptions) {
       async (event: React.MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
+        const reservedWindow = reserveExternalWindow();
 
         let nextUrl = resolvedUrl;
         if (!nextUrl && attachmentId) {
           nextUrl = await options.fetchAttachmentUrl(attachmentId, 'file');
         }
 
-        if (!nextUrl) return;
-        window.open(nextUrl, '_blank', 'noopener,noreferrer');
+        if (!nextUrl) {
+          reservedWindow?.close();
+          return;
+        }
+        if (!openExternalUrl(nextUrl, reservedWindow)) {
+          reservedWindow?.close();
+        }
       },
       [attachmentId, resolvedUrl]
     );

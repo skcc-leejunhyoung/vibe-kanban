@@ -24,6 +24,7 @@ import {
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
+import { openExternalUrl } from '../lib/open-url';
 import { PrimaryButton } from './PrimaryButton';
 import { IconButtonGroup, IconButtonGroupItem } from './IconButtonGroup';
 import { Tooltip } from './Tooltip';
@@ -862,8 +863,10 @@ export function PreviewBrowser({
                   </div>
                   <a
                     href="https://www.vibekanban.com/docs/core-features/testing-your-application"
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      openExternalUrl(event.currentTarget.href);
+                    }}
                     className="text-brand hover:text-brand-hover underline"
                   >
                     {t('preview.noServer.learnMore')}

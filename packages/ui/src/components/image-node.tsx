@@ -19,6 +19,7 @@ import {
   IMAGE_MARKDOWN_PATTERN,
   unescapeMarkdownImageAltText,
 } from '@vibe/ui/lib/githubImageMarkdown';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 const ATTACHMENT_URL_STALE_TIME = 4 * 60 * 1000;
 const IMAGE_FILE_EXTENSION_REGEX =
@@ -418,7 +419,7 @@ export function createImageNode(options: CreateImageNodeOptions) {
               fileName: altText || undefined,
             });
           } else {
-            window.open(resolvedFullSizeUrl, '_blank', 'noopener,noreferrer');
+            openExternalUrl(resolvedFullSizeUrl);
           }
           return;
         }
@@ -433,7 +434,7 @@ export function createImageNode(options: CreateImageNodeOptions) {
               sizeBytes: metadata.size_bytes,
             });
           } else {
-            window.open(metadata.proxy_url, '_blank', 'noopener,noreferrer');
+            openExternalUrl(metadata.proxy_url);
           }
         }
       },

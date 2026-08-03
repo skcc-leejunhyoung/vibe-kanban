@@ -14,6 +14,7 @@ import { useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 
 interface GhCliSetupDialogProps {
   workspaceId: string;
@@ -73,8 +74,10 @@ export const GhCliHelpInstructions = ({
           {t('settings:integrations.github.cliSetup.help.homebrew.description')}{' '}
           <a
             href="https://brew.sh/"
-            target="_blank"
-            rel="noreferrer"
+            onClick={(event) => {
+              event.preventDefault();
+              openExternalUrl(event.currentTarget.href);
+            }}
             className="underline"
           >
             {t('settings:integrations.github.cliSetup.help.homebrew.brewSh')}
@@ -105,8 +108,10 @@ export const GhCliHelpInstructions = ({
         {t('settings:integrations.github.cliSetup.help.manual.description')}{' '}
         <a
           href="https://cli.github.com/"
-          target="_blank"
-          rel="noreferrer"
+          onClick={(event) => {
+            event.preventDefault();
+            openExternalUrl(event.currentTarget.href);
+          }}
           className="underline"
         >
           {t('settings:integrations.github.cliSetup.help.manual.officialDocs')}

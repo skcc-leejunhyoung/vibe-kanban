@@ -22,6 +22,7 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { relayApi } from '@/shared/lib/api';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import {
   SettingsCard,
   SettingsCheckbox,
@@ -355,8 +356,10 @@ function LocalRelaySettingsSectionContent({
           headerAction={
             <a
               href={RELAY_REMOTE_CONTROL_DOCS_URL}
-              target="_blank"
-              rel="noreferrer"
+              onClick={(event) => {
+                event.preventDefault();
+                openExternalUrl(event.currentTarget.href);
+              }}
               className="text-sm text-brand hover:underline"
             >
               {t('settings.relay.docsLink', 'Read docs')}
@@ -591,8 +594,10 @@ function LocalRelaySettingsSectionContent({
           headerAction={
             <a
               href={RELAY_REMOTE_CONTROL_DOCS_URL}
-              target="_blank"
-              rel="noreferrer"
+              onClick={(event) => {
+                event.preventDefault();
+                openExternalUrl(event.currentTarget.href);
+              }}
               className="text-sm text-brand hover:underline"
             >
               {t('settings.relay.docsLink', 'Read docs')}
@@ -651,8 +656,10 @@ function RemoteRelaySettingsSectionContent({
       headerAction={
         <a
           href={RELAY_REMOTE_CONTROL_DOCS_URL}
-          target="_blank"
-          rel="noreferrer"
+          onClick={(event) => {
+            event.preventDefault();
+            openExternalUrl(event.currentTarget.href);
+          }}
           className="text-sm text-brand hover:underline"
         >
           {t('settings.relay.docsLink', 'Read docs')}

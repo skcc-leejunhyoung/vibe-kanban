@@ -20,6 +20,7 @@ import {
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { useEscapeToBlur } from '@/shared/keyboard/useEscapeToBlur';
 import { SPLIT_PANE_OPENED_EVENT } from '@/shared/lib/openInSplitPane';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import {
   type SplitPaneState,
   type SplitPreset,
@@ -712,7 +713,7 @@ function SplitScreenManager({ children }: { children: ReactNode }) {
             senderPaneId
           ) === 'overflow'
         ) {
-          window.open(message.url, '_blank', 'noopener,noreferrer');
+          openExternalUrl(message.url);
         } else {
           const currentState = useSplitScreenStore.getState();
           const targetPaneId =

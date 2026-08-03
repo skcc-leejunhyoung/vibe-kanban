@@ -16,6 +16,7 @@ import {
 } from "@remote/shared/lib/pkce";
 import { Input } from "@vibe/ui/components/Input";
 import { Label } from "@vibe/ui/components/Label";
+import { openExternalUrl } from "@vibe/ui/lib/open-url";
 
 export default function LoginPage() {
   const { next } = useSearch({ from: "/account" });
@@ -180,8 +181,10 @@ export default function LoginPage() {
             Need help getting started?{" "}
             <a
               href="https://www.vibekanban.com/docs"
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={(event) => {
+                event.preventDefault();
+                openExternalUrl(event.currentTarget.href);
+              }}
               className="text-normal underline decoration-border underline-offset-4 transition-colors hover:text-high"
             >
               Read the docs
