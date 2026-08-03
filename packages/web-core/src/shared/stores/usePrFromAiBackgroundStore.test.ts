@@ -53,7 +53,11 @@ const flushMicrotasks = async (times = 5) => {
   for (let i = 0; i < times; i++) await Promise.resolve();
 };
 
-const opts = { targetBranch: 'main', headBranch: null };
+const opts = {
+  targetBranch: 'main',
+  headBranch: null,
+  workBranch: 'vk/work-branch',
+};
 
 describe('usePrFromAiBackgroundStore', () => {
   beforeEach(() => {
@@ -146,6 +150,35 @@ describe('usePrFromAiBackgroundStore', () => {
         message: 'tasks:git.prFromAi.prAlreadyExists',
       })
     );
+  });
+
+  it('allows a PR when the repo only has an open PR from another feature branch', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            head_branch_name: 'feature-a',
+            pr_info: { number: 42, status: 'open' },
+          },
+        ],
+      },
+    ] as never);
+    generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
+    createPR.mockResolvedValue({ success: true, data: 'https://pr' });
+
+    const result = await usePrFromAiBackgroundStore
+      .getState()
+      .startCreateFromAi('ws-other-pr', 'repo1', {
+        ...opts,
+        headBranch: 'feature-b',
+      });
+
+    expect(result).toBe(true);
+    expect(generatePrDescription).toHaveBeenCalledOnce();
+    expect(createPR).toHaveBeenCalledOnce();
+    expect(errorDialogShow).not.toHaveBeenCalled();
   });
 
   it('does not ask the agent when the work branch has no commits to propose', async () => {

@@ -19,6 +19,7 @@ vi.mock('@/shared/lib/api', () => ({
     getVibeReviewStatus: vi.fn(),
   },
   workspacesApi: {
+    get: vi.fn(),
     getRepos: vi.fn(),
     getBranchStatus: vi.fn(),
     pushTargetBranch: vi.fn(),
@@ -66,6 +67,9 @@ describe('runReviewAndCreatePr', () => {
     vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
       phase: 'done',
     } as never);
+    vi.mocked(workspacesApi.get).mockResolvedValue({
+      branch: 'vk/work-branch',
+    } as never);
     vi.mocked(workspacesApi.getRepos).mockResolvedValue([
       {
         id: 'repo-1',
@@ -86,8 +90,9 @@ describe('runReviewAndCreatePr', () => {
         ],
       },
     ] as never);
+    const startCreateFromAi = vi.fn().mockResolvedValue(false);
     vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
-      startCreateFromAi: vi.fn().mockResolvedValue(false),
+      startCreateFromAi,
     } as never);
 
     await expect(
@@ -98,6 +103,12 @@ describe('runReviewAndCreatePr', () => {
       })
     ).resolves.toBe(false);
 
+    expect(startCreateFromAi).toHaveBeenCalledWith('workspace-1', 'repo-1', {
+      headBranch: 'feature',
+      targetBranch: 'develop',
+      workBranch: 'vk/work-branch',
+      hostId: undefined,
+    });
     expect(ErrorDialog.show).not.toHaveBeenCalled();
   });
 });

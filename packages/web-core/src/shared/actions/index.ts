@@ -1708,7 +1708,11 @@ export const Actions = {
 
       usePrFromAiBackgroundStore
         .getState()
-        .startCreateFromAi(workspaceId, repoId, { targetBranch, headBranch });
+        .startCreateFromAi(workspaceId, repoId, {
+          targetBranch,
+          headBranch,
+          workBranch: workspace.branch,
+        });
     },
   },
 

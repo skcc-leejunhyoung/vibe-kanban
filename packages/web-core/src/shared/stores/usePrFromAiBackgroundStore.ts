@@ -30,6 +30,9 @@ export interface PrFromAiOptions {
   targetBranch: string | null;
   // Head (source) branch. Null lets the backend default to the work branch.
   headBranch: string | null;
+  // The workspace's work branch, used to resolve a null head and to distinguish
+  // a legacy PR record with no stored head from a PR on another feature branch.
+  workBranch: string;
   hostId?: string | null;
 }
 
@@ -130,10 +133,12 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
       setStatus(workspaceId, repoId, 'generating');
 
       try {
-        // A PR already linked to this repo is a normal business condition, not
-        // an AI-generation failure. Check it before starting the detached agent
-        // so we neither spend a model response nor later surface the git-host's
-        // duplicate-PR failure as a generic internal error.
+        // A PR for this exact head is a normal business condition, not an
+        // AI-generation failure. Check it before starting the detached agent so
+        // we neither spend a model response nor later surface the git-host's
+        // duplicate-PR failure as a generic internal error. Other open PRs from
+        // this workspace can target different feature branches and must not
+        // block this one.
         const branchStatus = await workspacesApi.getBranchStatus(
           workspaceId,
           opts.hostId
@@ -141,8 +146,12 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
         const repoStatus = branchStatus.find(
           (status) => status.repo_id === repoId
         );
+        const effectiveHead = opts.headBranch?.trim() || opts.workBranch;
         const existingPr = repoStatus?.merges.find(
-          (merge) => merge.type === 'pr' && merge.pr_info.status === 'open'
+          (merge) =>
+            merge.type === 'pr' &&
+            merge.pr_info.status === 'open' &&
+            (merge.head_branch_name ?? opts.workBranch) === effectiveHead
         );
         if (existingPr?.type === 'pr') {
           clearStatus(workspaceId, repoId);

@@ -52,7 +52,8 @@ async function executeReviewAndCreatePr({
   onReviewSession?.(reviewSession.id);
 
   await waitForVibeReviewCompletion(reviewSession.id, hostId);
-  const [repos, branchStatuses] = await Promise.all([
+  const [workspace, repos, branchStatuses] = await Promise.all([
+    workspacesApi.get(workspaceId, hostId),
     workspacesApi.getRepos(workspaceId, hostId),
     workspacesApi.getBranchStatus(workspaceId, hostId),
   ]);
@@ -104,6 +105,7 @@ async function executeReviewAndCreatePr({
         targetBranch: featureBranch
           ? (repo.default_target_branch ?? repo.target_branch ?? null)
           : (repo.target_branch ?? null),
+        workBranch: workspace.branch,
         hostId,
       });
     if (!created) {
