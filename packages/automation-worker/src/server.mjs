@@ -21,6 +21,7 @@ import {
   withGithubIssueMarker,
   withoutGithubIssueMarker,
 } from './github-issue-sync.mjs';
+import { loadGithubProjectsMetadata } from './github-projects.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -1288,45 +1289,7 @@ async function githubGraphql(connector, query, variables = {}) {
 }
 
 async function githubProjectsMetadata(connector) {
-  if (connector.type !== 'github') throw new Error('connector is not github');
-  const owner = String(connector.config?.owner || '');
-  const data = await githubGraphql(
-    connector,
-    `query($owner:String!) {
-      repositoryOwner(login:$owner) {
-        projectsV2(first:50, orderBy:{field:UPDATED_AT,direction:DESC}) {
-          nodes {
-            id number title
-            fields(first:50) {
-              nodes {
-                ... on ProjectV2SingleSelectField {
-                  id name
-                  options { id name }
-                }
-              }
-            }
-          }
-        }
-      }
-    }`,
-    { owner }
-  );
-  const projects = data?.repositoryOwner?.projectsV2?.nodes || [];
-  return {
-    projects: projects.map((project) => {
-      const statusField = (project.fields?.nodes || []).find(
-        (field) => field && String(field.name).toLowerCase() === 'status'
-      );
-      return {
-        id: project.id,
-        number: project.number,
-        title: project.title,
-        statusField: statusField
-          ? { id: statusField.id, options: statusField.options || [] }
-          : null,
-      };
-    }),
-  };
+  return loadGithubProjectsMetadata(connector, githubGraphql);
 }
 
 function parseGithubIssueUrl(value) {

@@ -99,6 +99,7 @@ function GithubIssueSyncRuleEditor({
 }) {
   const config = asGithubSyncConfig(value);
   const [projects, setProjects] = useState<GithubProjectMetadata[]>([]);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [vibeStatuses, setVibeStatuses] = useState<ProjectStatus[]>([]);
   const githubConnectors = connectors.filter((item) => item.type === 'github');
   const vibeConnectors = connectors.filter(
@@ -115,12 +116,28 @@ function GithubIssueSyncRuleEditor({
   useEffect(() => {
     if (!config.githubConnectorId) {
       setProjects([]);
+      setProjectsError(null);
       return;
     }
+    let cancelled = false;
+    setProjectsError(null);
     machineClient
       .getGithubProjectsMetadata(config.githubConnectorId)
-      .then((result) => setProjects(result.projects))
-      .catch(() => setProjects([]));
+      .then((result) => {
+        if (!cancelled) setProjects(result.projects);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setProjects([]);
+        setProjectsError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to load GitHub Projects.'
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [config.githubConnectorId, machineClient]);
 
   useEffect(() => {
@@ -181,37 +198,44 @@ function GithubIssueSyncRuleEditor({
         </SettingsField>
       </div>
       <SettingsField label="GitHub Project">
-        <SettingsSelect
-          value={config.githubProjectId}
-          options={[
-            { value: '', label: 'Select a project' },
-            ...projects.map((project) => ({
-              value: project.id,
-              label: project.title,
-            })),
-          ]}
-          onChange={(githubProjectId) => {
-            const project = projects.find(
-              (item) => item.id === githubProjectId
-            );
-            const options = project?.statusField?.options ?? [];
-            const statusMappings = vibeStatuses.flatMap((status) => {
-              const option = options.find(
-                (item) =>
-                  item.name.trim().toLowerCase() ===
-                  status.name.trim().toLowerCase()
+        <div className="space-y-2">
+          <SettingsSelect
+            value={config.githubProjectId}
+            options={[
+              { value: '', label: 'Select a project' },
+              ...projects.map((project) => ({
+                value: project.id,
+                label: project.title,
+              })),
+            ]}
+            onChange={(githubProjectId) => {
+              const project = projects.find(
+                (item) => item.id === githubProjectId
               );
-              return option
-                ? [{ vibeStatusId: status.id, githubOptionId: option.id }]
-                : [];
-            });
-            update({
-              githubProjectId,
-              githubStatusFieldId: project?.statusField?.id ?? '',
-              statusMappings,
-            });
-          }}
-        />
+              const options = project?.statusField?.options ?? [];
+              const statusMappings = vibeStatuses.flatMap((status) => {
+                const option = options.find(
+                  (item) =>
+                    item.name.trim().toLowerCase() ===
+                    status.name.trim().toLowerCase()
+                );
+                return option
+                  ? [{ vibeStatusId: status.id, githubOptionId: option.id }]
+                  : [];
+              });
+              update({
+                githubProjectId,
+                githubStatusFieldId: project?.statusField?.id ?? '',
+                statusMappings,
+              });
+            }}
+          />
+          {projectsError && (
+            <p className="text-sm text-error">
+              Failed to load GitHub Projects: {projectsError}
+            </p>
+          )}
+        </div>
       </SettingsField>
       <SettingsField label="Status mapping">
         <div className="space-y-2">
