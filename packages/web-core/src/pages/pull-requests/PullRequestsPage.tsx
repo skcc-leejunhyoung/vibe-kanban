@@ -420,12 +420,9 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
             )?.issue.simple_id,
         });
         if (selected) {
-          appNavigation.goToProjectIssueWorkspace(
-            selected.project_id,
-            selected.issue_id,
-            selected.local_workspace_id,
-            { hostId: selected.host_id }
-          );
+          appNavigation.goToWorkspace(selected.local_workspace_id, {
+            hostId: selected.host_id,
+          });
         }
       } catch (error) {
         await ErrorDialog.show({
