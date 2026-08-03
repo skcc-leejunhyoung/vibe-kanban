@@ -72,7 +72,7 @@
     "copyUrl": "PR URL 복사",
     "viewDetails": "상세 보기",
     "unlink": "링크 해제",
-    "unlinkTitle": "PR 링크를 해제할까요?",
+    "unlinkTitle": "PR #{{number}} 링크를 해제할까요?",
     "unlinkMessage": "PR과 이 워크스페이스 간의 링크만 해제합니다. PR 자체는 영향을 받지 않습니다."
   },
   "createPrDialog": {

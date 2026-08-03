@@ -55,48 +55,53 @@ export function PrPanelContainer({
     for (const repo of repos) {
       const status = branchStatus.find((s) => s.repo_id === repo.id);
       if (!status?.merges) continue;
-      // Prefer an open PR; otherwise fall back to the most recent linked PR
-      // (merged/closed) so the panel keeps showing the PR after it's merged.
-      const pr =
-        status.merges.find(
-          (m: Merge) => m.type === 'pr' && m.pr_info.status === 'open'
-        ) ?? status.merges.find((m: Merge) => m.type === 'pr');
-      if (!pr || pr.type !== 'pr') continue;
+      // Show every PR linked to this repo — a repo can track more than one
+      // (e.g. an open PR plus older merged/closed ones, or a work-branch PR and
+      // a feature-branch PR in a three-branch flow). Open PRs first, then the
+      // rest in the branch-status order (most recent first).
+      const prMerges = status.merges.filter(
+        (m: Merge): m is Extract<Merge, { type: 'pr' }> => m.type === 'pr'
+      );
+      const orderedPrs = [
+        ...prMerges.filter((m) => m.pr_info.status === 'open'),
+        ...prMerges.filter((m) => m.pr_info.status !== 'open'),
+      ];
+      for (const pr of orderedPrs) {
+        const isOpen = pr.pr_info.status === 'open';
+        const headBranch =
+          pr.head_branch_name ?? selectedWorkspace?.branch ?? '(work)';
+        // In the three-branch flow the head IS the workspace's target branch, so
+        // the existing target-branch push/fetch and its origin status apply to the
+        // head directly. When the head is the work branch (two-branch flow) we
+        // read the work branch's own remote status and leave push to the ⋮ menu.
+        const headIsTarget = headBranch === repo.target_branch;
+        const headRemoteBehind = headIsTarget
+          ? (status.target_remote_commits_behind ?? 0)
+          : (status.remote_commits_behind ?? 0);
 
-      const isOpen = pr.pr_info.status === 'open';
-      const headBranch =
-        pr.head_branch_name ?? selectedWorkspace?.branch ?? '(work)';
-      // In the three-branch flow the head IS the workspace's target branch, so
-      // the existing target-branch push/fetch and its origin status apply to the
-      // head directly. When the head is the work branch (two-branch flow) we
-      // read the work branch's own remote status and leave push to the ⋮ menu.
-      const headIsTarget = headBranch === repo.target_branch;
-      const headRemoteBehind = headIsTarget
-        ? (status.target_remote_commits_behind ?? 0)
-        : (status.remote_commits_behind ?? 0);
-
-      list.push({
-        repoId: repo.id,
-        repoName: repo.display_name || repo.name,
-        prNumber: Number(pr.pr_info.number),
-        prUrl: pr.pr_info.url ?? undefined,
-        prStatus: pr.pr_info.status,
-        headBranch,
-        baseBranch: pr.target_branch_name,
-        headRemoteAhead: headIsTarget
-          ? (status.target_remote_commits_ahead ?? 0)
-          : (status.remote_commits_ahead ?? 0),
-        headRemoteBehind,
-        prAhead: pr.head_commits_ahead ?? undefined,
-        prBehind: pr.head_commits_behind ?? undefined,
-        // Push/pull only apply to an open PR whose head is the workspace target
-        // branch (three-branch case); merged/closed PRs are read-only.
-        canPush: isOpen && headIsTarget && !status.is_target_remote,
-        canPull: isOpen && headIsTarget && headRemoteBehind > 0,
-        isFetching: fetchStates[repo.id] === 'pending',
-        isPushing: pushStates[repo.id] === 'pending',
-        isPulling: pullStates[repo.id] === 'pending',
-      });
+        list.push({
+          repoId: repo.id,
+          repoName: repo.display_name || repo.name,
+          prNumber: Number(pr.pr_info.number),
+          prUrl: pr.pr_info.url ?? undefined,
+          prStatus: pr.pr_info.status,
+          headBranch,
+          baseBranch: pr.target_branch_name,
+          headRemoteAhead: headIsTarget
+            ? (status.target_remote_commits_ahead ?? 0)
+            : (status.remote_commits_ahead ?? 0),
+          headRemoteBehind,
+          prAhead: pr.head_commits_ahead ?? undefined,
+          prBehind: pr.head_commits_behind ?? undefined,
+          // Push/pull only apply to an open PR whose head is the workspace target
+          // branch (three-branch case); merged/closed PRs are read-only.
+          canPush: isOpen && headIsTarget && !status.is_target_remote,
+          canPull: isOpen && headIsTarget && headRemoteBehind > 0,
+          isFetching: fetchStates[repo.id] === 'pending',
+          isPushing: pushStates[repo.id] === 'pending',
+          isPulling: pullStates[repo.id] === 'pending',
+        });
+      }
     }
     return list;
   }, [
@@ -132,14 +137,20 @@ export function PrPanelContainer({
     async (pr: PrInfo) => {
       if (!workspaceId) return;
       const confirm = await ConfirmDialog.show({
-        title: t('prPanel.unlinkTitle'),
+        title: t('prPanel.unlinkTitle', { number: pr.prNumber }),
         message: t('prPanel.unlinkMessage'),
         confirmText: t('prPanel.unlink'),
         variant: 'destructive',
       });
       if (confirm !== 'confirmed') return;
       try {
-        await workspacesApi.unlinkPr(workspaceId, { repo_id: pr.repoId });
+        // Target this specific PR by its unique URL so repos tracking more than
+        // one PR unlink only the selected card. Fall back to repo-wide only if a
+        // URL is somehow missing.
+        await workspacesApi.unlinkPr(workspaceId, {
+          repo_id: pr.repoId,
+          pr_url: pr.prUrl ?? null,
+        });
         queryClient.invalidateQueries({
           queryKey: ['branchStatus', workspaceId],
         });

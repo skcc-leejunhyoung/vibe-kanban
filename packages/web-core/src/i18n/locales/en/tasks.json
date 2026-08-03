@@ -414,7 +414,7 @@
     "copyUrl": "Copy PR URL",
     "viewDetails": "View details",
     "unlink": "Unlink",
-    "unlinkTitle": "Unlink pull request?",
+    "unlinkTitle": "Unlink PR #{{number}}?",
     "unlinkMessage": "This removes the link between the pull request and this workspace. The pull request itself is not affected."
   },
   "createPrDialog": {

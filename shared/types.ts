@@ -648,7 +648,12 @@ export type AttachExistingPrRequest = { repo_id: string,
  */
 head_branch: string | null, };
 
-export type UnlinkPrRequest = { repo_id: string, };
+export type UnlinkPrRequest = { repo_id: string,
+/**
+ * The specific PR to unlink (its unique URL). When omitted, every PR tracked
+ * for the workspace/repo is unlinked.
+ */
+pr_url: string | null, };
 
 export type UnlinkPrResponse = {
 /**

@@ -303,6 +303,9 @@ pub struct AttachExistingPrRequest {
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct UnlinkPrRequest {
     pub repo_id: Uuid,
+    /// The specific PR to unlink (its unique URL). When omitted, every PR tracked
+    /// for the workspace/repo is unlinked.
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -1326,8 +1329,16 @@ pub async fn unlink_pr(
         .await?
         .ok_or(RepoError::NotFound)?;
 
-    let unlinked =
-        PullRequest::delete_by_workspace_and_repo(pool, workspace.id, request.repo_id).await?;
+    // A specific `pr_url` unlinks just that PR; otherwise every PR tracked for
+    // the workspace/repo is unlinked.
+    let unlinked = match request.pr_url.as_deref() {
+        Some(pr_url) => {
+            PullRequest::delete_by_workspace_and_url(pool, workspace.id, pr_url).await?
+        }
+        None => {
+            PullRequest::delete_by_workspace_and_repo(pool, workspace.id, request.repo_id).await?
+        }
+    };
 
     if unlinked > 0 {
         tracing::info!(

@@ -1895,8 +1895,66 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasLinkedPR,
     execute: async (ctx, workspaceId, repoId) => {
+      // A repo can track more than one PR, so gather them all and let the user
+      // pick which one to unlink (skipping the picker when there's only one).
+      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const prMerges =
+        branchStatus
+          .find((status) => status.repo_id === repoId)
+          ?.merges?.filter((merge: Merge) => merge.type === 'pr') ?? [];
+
+      if (prMerges.length === 0) {
+        await ConfirmDialog.show({
+          title: 'No Linked Pull Request',
+          message: 'There is no pull request linked to this repository.',
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'info',
+        });
+        return;
+      }
+
+      // Open PRs first, then merged/closed, matching the PR panel ordering.
+      const ordered = [
+        ...prMerges.filter(
+          (m: Merge) => m.type === 'pr' && m.pr_info.status === 'open'
+        ),
+        ...prMerges.filter(
+          (m: Merge) => m.type === 'pr' && m.pr_info.status !== 'open'
+        ),
+      ];
+
+      // Only PR merges with a URL can be unlinked by identity.
+      const unlinkable = ordered.flatMap((m) =>
+        m.type === 'pr' && m.pr_info.url
+          ? [
+              {
+                url: m.pr_info.url,
+                number: Number(m.pr_info.number),
+                status: m.pr_info.status,
+                headBranch: m.head_branch_name ?? '(work)',
+                baseBranch: m.target_branch_name,
+              },
+            ]
+          : []
+      );
+
+      let prUrl: string | undefined;
+      if (unlinkable.length === 1) {
+        prUrl = unlinkable[0].url;
+      } else {
+        const { selectPullRequestToUnlink } = await import(
+          '@/shared/dialogs/command-bar/selectPullRequestToUnlink'
+        );
+        prUrl = await selectPullRequestToUnlink(unlinkable);
+        if (!prUrl) return; // dismissed
+      }
+
+      if (!prUrl) return;
+      const prNumber = unlinkable.find((p) => p.url === prUrl)?.number;
+
       const confirm = await ConfirmDialog.show({
-        title: 'Unlink pull request?',
+        title: prNumber ? `Unlink PR #${prNumber}?` : 'Unlink pull request?',
         message:
           'This removes the link between the pull request and this workspace. The pull request itself is not affected.',
         confirmText: 'Unlink',
@@ -1904,24 +1962,15 @@ export const Actions = {
       });
       if (confirm !== 'confirmed') return;
 
-      const result = await workspacesApi.unlinkPr(workspaceId, {
+      await workspacesApi.unlinkPr(workspaceId, {
         repo_id: repoId,
+        pr_url: prUrl,
       });
 
       invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
       });
-
-      if (result.unlinked === 0) {
-        await ConfirmDialog.show({
-          title: 'No Linked Pull Request',
-          message: 'There was no pull request linked to this workspace.',
-          confirmText: 'OK',
-          showCancelButton: false,
-          variant: 'info',
-        });
-      }
     },
   },
 
