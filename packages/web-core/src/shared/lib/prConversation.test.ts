@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { PullRequestDetail, UnifiedPrComment } from 'shared/types';
-import { buildPrConversation } from './prConversation';
+import {
+  buildPrConversation,
+  getPrReviewActivityTone,
+  isReviewRequestText,
+} from './prConversation';
 
 const detail: PullRequestDetail = {
   number: 12n,
@@ -106,5 +110,47 @@ describe('buildPrConversation', () => {
     );
 
     expect(conversation.some((item) => item.kind === 'review')).toBe(false);
+  });
+
+  it('omits empty commented review activities', () => {
+    const conversation = buildPrConversation(
+      {
+        ...detail,
+        reviews: [
+          {
+            id: 'empty-commented-review',
+            author: 'reviewer',
+            state: 'COMMENTED',
+            body: '   ',
+            submitted_at: '2026-01-02T00:00:00Z',
+          },
+        ],
+      },
+      []
+    );
+
+    expect(conversation.some((item) => item.kind === 'review')).toBe(false);
+  });
+});
+
+describe('PR review activity presentation', () => {
+  it('uses the approved tone for approvals', () => {
+    expect(getPrReviewActivityTone(detail.reviews[0])).toBe('approved');
+  });
+
+  it('uses the error tone for requested and re-requested reviews', () => {
+    const requestedReview = {
+      ...detail.reviews[0],
+      state: 'COMMENTED',
+      body: '[author](https://github.com/author) requested a review from [reviewer](https://github.com/reviewer)',
+    };
+    const rerequestedReview = {
+      ...requestedReview,
+      body: '[author](https://github.com/author) re-requested a review from [reviewer](https://github.com/reviewer)',
+    };
+
+    expect(getPrReviewActivityTone(requestedReview)).toBe('review-requested');
+    expect(getPrReviewActivityTone(rerequestedReview)).toBe('review-requested');
+    expect(isReviewRequestText(rerequestedReview.body)).toBe(true);
   });
 });

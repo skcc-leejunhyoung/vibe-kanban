@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   getPullRequestDetailsNavigationTarget,
   groupNotifications,
+  selectUnseenPullRequestCommentNotificationIds,
   selectUnseenNotificationIdsForView,
 } from './notifications';
 import type { Notification, NotificationPayload } from 'shared/remote-types';
@@ -143,6 +144,49 @@ describe('selectUnseenNotificationIdsForView', () => {
     });
 
     expect(ids).toEqual(['a']);
+  });
+});
+
+describe('selectUnseenPullRequestCommentNotificationIds', () => {
+  it('selects only unseen comment notifications for the viewed PR', () => {
+    const notifications = [
+      createNotification({
+        id: 'matching',
+        notification_type: 'pull_request_comment_added',
+        payload: {
+          pull_request_url: 'https://github.com/acme/repo/pull/42/',
+        },
+      }),
+      createNotification({
+        id: 'seen',
+        notification_type: 'pull_request_comment_added',
+        seen: true,
+        payload: {
+          pull_request_url: 'https://github.com/acme/repo/pull/42',
+        },
+      }),
+      createNotification({
+        id: 'other-pr',
+        notification_type: 'pull_request_comment_added',
+        payload: {
+          pull_request_url: 'https://github.com/acme/repo/pull/43',
+        },
+      }),
+      createNotification({
+        id: 'issue-comment',
+        notification_type: 'issue_comment_added',
+        payload: {
+          pull_request_url: 'https://github.com/acme/repo/pull/42',
+        },
+      }),
+    ];
+
+    expect(
+      selectUnseenPullRequestCommentNotificationIds(
+        notifications,
+        'https://github.com/acme/repo/pull/42?tab=conversation'
+      )
+    ).toEqual(['matching']);
   });
 });
 

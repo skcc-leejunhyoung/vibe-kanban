@@ -44,8 +44,11 @@ import { PrCommentCard } from '@vibe/ui/components/pr-comment-card';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import {
   buildPrConversation,
+  getPrReviewActivityTone,
+  isReviewRequestText,
   type PrCommentThread,
 } from '@/shared/lib/prConversation';
+import { useMarkPullRequestNotificationsRead } from '@/shared/hooks/useMarkPullRequestNotificationsRead';
 import { cn } from '@/shared/lib/utils';
 
 export interface PrDetailsDialogProps {
@@ -76,6 +79,7 @@ function ConversationComment({
 }) {
   const { comment, replies } = thread;
   const isReview = comment.comment_type === 'review';
+  const isReviewRequest = isReviewRequestText(comment.body);
 
   return (
     <div
@@ -91,7 +95,10 @@ function ConversationComment({
             <MarkdownPreview
               content={comment.body}
               theme={theme}
-              className="min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words [&_a]:break-all [&_pre]:max-w-full [&_pre]:whitespace-pre-wrap"
+              className={cn(
+                'min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words [&_a]:break-all [&_pre]:max-w-full [&_pre]:whitespace-pre-wrap',
+                isReviewRequest && 'text-error [&_a]:text-error'
+              )}
             />
           }
           createdAt={comment.created_at}
@@ -227,6 +234,7 @@ export function PrDetailsContent({
   const scrollRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
+  useMarkPullRequestNotificationsRead(prUrl, active);
   const detailQuery = useQuery({
     queryKey: ['pr-detail', prUrl],
     queryFn: async () => {
@@ -484,6 +492,10 @@ export function PrDetailsContent({
                     );
                   }
 
+                  const reviewTone =
+                    item.kind === 'review'
+                      ? getPrReviewActivityTone(item.review)
+                      : null;
                   const Icon =
                     item.kind === 'commit'
                       ? GitCommitIcon
@@ -518,12 +530,25 @@ export function PrDetailsContent({
                             </code>
                           </div>
                         ) : item.kind === 'review' ? (
-                          <div className="min-w-0">
+                          <div
+                            className={cn(
+                              'min-w-0',
+                              reviewTone === 'review-requested' && 'text-error'
+                            )}
+                          >
                             <div className="flex flex-wrap items-center gap-half">
                               <span className="font-medium text-normal">
                                 {item.review.author || 'Unknown reviewer'}
                               </span>
-                              <span className="text-low">
+                              <span
+                                className={cn(
+                                  reviewTone === 'approved'
+                                    ? 'text-success'
+                                    : reviewTone === 'review-requested'
+                                      ? 'text-error'
+                                      : 'text-low'
+                                )}
+                              >
                                 {item.review.state
                                   .toLowerCase()
                                   .replaceAll('_', ' ')}
@@ -533,7 +558,11 @@ export function PrDetailsContent({
                               <MarkdownPreview
                                 content={item.review.body}
                                 theme={actualTheme}
-                                className="mt-base min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words"
+                                className={cn(
+                                  'mt-base min-w-0 overflow-hidden [overflow-wrap:anywhere] break-words',
+                                  reviewTone === 'review-requested' &&
+                                    'text-error [&_a]:text-error'
+                                )}
                               />
                             )}
                           </div>

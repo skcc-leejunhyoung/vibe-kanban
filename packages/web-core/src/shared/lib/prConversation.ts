@@ -37,6 +37,32 @@ export type PrConversationItem =
       createdAt: string;
     };
 
+export type PrReviewActivityTone = 'approved' | 'review-requested' | 'default';
+
+export function isReviewRequestText(value: string): boolean {
+  return /\b(?:re-?requested|requested) a review from\b/i.test(value);
+}
+
+export function getPrReviewActivityTone(
+  review: PullRequestReview
+): PrReviewActivityTone {
+  const state = review.state.toUpperCase().replaceAll('-', '_');
+  if (state === 'APPROVED') return 'approved';
+  if (
+    [
+      'REQUESTED',
+      'RE_REQUESTED',
+      'REREQUESTED',
+      'REVIEW_REQUESTED',
+      'REVIEW_REREQUESTED',
+    ].includes(state) ||
+    isReviewRequestText(review.body)
+  ) {
+    return 'review-requested';
+  }
+  return 'default';
+}
+
 function buildCommentThreads(comments: UnifiedPrComment[]): PrCommentThread[] {
   const nodes = new Map<string, PrCommentThread>();
   comments.forEach((comment) =>
@@ -95,6 +121,9 @@ export function buildPrConversation(
     // time that vote was submitted. Do not invent a position in the timeline
     // for those snapshots.
     if (!review.submitted_at) return;
+    if (review.state.toUpperCase() === 'COMMENTED' && !review.body.trim()) {
+      return;
+    }
 
     items.push({
       kind: 'review',

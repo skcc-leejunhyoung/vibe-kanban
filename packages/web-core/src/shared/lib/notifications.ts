@@ -341,3 +341,36 @@ export function selectUnseenNotificationIdsForView(
     })
     .map((notification) => notification.id);
 }
+
+function normalizePullRequestUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, '')}`;
+  } catch {
+    return value.replace(/\/$/, '');
+  }
+}
+
+/** Return unseen PR comment notifications for the PR currently being viewed. */
+export function selectUnseenPullRequestCommentNotificationIds(
+  notifications: Notification[],
+  prUrl: string
+): string[] {
+  const normalizedPrUrl = normalizePullRequestUrl(prUrl);
+
+  return notifications
+    .filter((notification) => {
+      if (
+        notification.seen ||
+        notification.notification_type !== 'pull_request_comment_added'
+      ) {
+        return false;
+      }
+      const notificationPrUrl = getPayload(notification).pull_request_url;
+      return (
+        notificationPrUrl != null &&
+        normalizePullRequestUrl(notificationPrUrl) === normalizedPrUrl
+      );
+    })
+    .map((notification) => notification.id);
+}
