@@ -355,6 +355,8 @@
       "openPr": "Open PR",
       "errorTitle": "Failed to create pull request",
       "errorGeneric": "Failed to create the pull request.",
+      "prAlreadyExists": "Pull request #{{number}} is already open for this repository.",
+      "noCommits": "There are no commits to include in a pull request.",
       "fallbackTitle": "Pull request"
     }
   },

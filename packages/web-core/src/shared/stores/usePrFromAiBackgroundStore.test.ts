@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Stub the API layer so no network call can fire; the store is the unit here.
 vi.mock('@/shared/lib/api', () => ({
   workspacesApi: {
+    getBranchStatus: vi.fn(),
     generatePrDescription: vi.fn(),
     createPR: vi.fn(),
   },
@@ -37,6 +38,7 @@ import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
 
 const generatePrDescription = vi.mocked(workspacesApi.generatePrDescription);
 const createPR = vi.mocked(workspacesApi.createPR);
+const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
 const invalidateQueries = vi.mocked(queryClient.invalidateQueries);
 const openPrUrl = vi.mocked(openExternalUrl);
 const confirmShow = vi.mocked(ConfirmDialog.show);
@@ -58,6 +60,7 @@ describe('usePrFromAiBackgroundStore', () => {
     vi.clearAllMocks();
     usePrFromAiBackgroundStore.setState({ byWorkspace: {} });
     confirmShow.mockResolvedValue('canceled');
+    getBranchStatus.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -106,14 +109,60 @@ describe('usePrFromAiBackgroundStore', () => {
     expect(openPrUrl).toHaveBeenCalledWith('https://pr');
   });
 
-  it('does not start a second run while one is in flight', () => {
+  it('does not start a second run while one is in flight', async () => {
     generatePrDescription.mockReturnValue(new Promise(() => {}));
 
     const store = usePrFromAiBackgroundStore.getState();
     store.startCreateFromAi('ws-dup', 'repo1', opts);
     store.startCreateFromAi('ws-dup', 'repo1', opts);
 
+    await flush();
+
     expect(generatePrDescription).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask the agent when the repo already has an open PR', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: { number: 42, status: 'open' },
+          },
+        ],
+      },
+    ] as never);
+
+    const result = await usePrFromAiBackgroundStore
+      .getState()
+      .startCreateFromAi('ws-existing-pr', 'repo1', opts);
+
+    expect(result).toBe(false);
+    expect(generatePrDescription).not.toHaveBeenCalled();
+    expect(createPR).not.toHaveBeenCalled();
+    expect(errorDialogShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'tasks:git.prFromAi.prAlreadyExists',
+      })
+    );
+  });
+
+  it('does not ask the agent when the work branch has no commits to propose', async () => {
+    getBranchStatus.mockResolvedValue([
+      { repo_id: 'repo1', commits_ahead: 0, merges: [] },
+    ] as never);
+
+    const result = await usePrFromAiBackgroundStore
+      .getState()
+      .startCreateFromAi('ws-no-commits', 'repo1', opts);
+
+    expect(result).toBe(false);
+    expect(generatePrDescription).not.toHaveBeenCalled();
+    expect(createPR).not.toHaveBeenCalled();
+    expect(errorDialogShow).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'tasks:git.prFromAi.noCommits' })
+    );
   });
 
   it('surfaces a generation failure as an error state with a dialog', async () => {
@@ -181,6 +230,7 @@ describe('usePrFromAiBackgroundStore', () => {
         hostId: 'remote-host',
       });
 
+    expect(getBranchStatus).toHaveBeenCalledWith('ws-remote', 'remote-host');
     expect(generatePrDescription).toHaveBeenCalledWith(
       'ws-remote',
       expect.objectContaining({ repo_id: 'repo1' }),

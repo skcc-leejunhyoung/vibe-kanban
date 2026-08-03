@@ -130,6 +130,38 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
       setStatus(workspaceId, repoId, 'generating');
 
       try {
+        // A PR already linked to this repo is a normal business condition, not
+        // an AI-generation failure. Check it before starting the detached agent
+        // so we neither spend a model response nor later surface the git-host's
+        // duplicate-PR failure as a generic internal error.
+        const branchStatus = await workspacesApi.getBranchStatus(
+          workspaceId,
+          opts.hostId
+        );
+        const repoStatus = branchStatus.find(
+          (status) => status.repo_id === repoId
+        );
+        const existingPr = repoStatus?.merges.find(
+          (merge) => merge.type === 'pr' && merge.pr_info.status === 'open'
+        );
+        if (existingPr?.type === 'pr') {
+          clearStatus(workspaceId, repoId);
+          showErrorDialog(
+            i18n.t('tasks:git.prFromAi.prAlreadyExists', {
+              number: existingPr.pr_info.number,
+            })
+          );
+          return false;
+        }
+        // The branch-status endpoint has already calculated this against the
+        // workspace target. It is only applicable when the work branch is the
+        // PR head; a three-branch flow can instead use a feature branch.
+        if (!opts.headBranch && repoStatus?.commits_ahead === 0) {
+          clearStatus(workspaceId, repoId);
+          showErrorDialog(i18n.t('tasks:git.prFromAi.noCommits'));
+          return false;
+        }
+
         // 1. Generate the PR title + description with the workspace's agent.
         const generated = await workspacesApi.generatePrDescription(
           workspaceId,

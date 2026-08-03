@@ -268,6 +268,8 @@
       "openPr": "PR 열기",
       "errorTitle": "풀 리퀘스트 생성 실패",
       "errorGeneric": "풀 리퀘스트를 생성하지 못했습니다.",
+      "prAlreadyExists": "이 저장소에는 이미 PR #{{number}}이(가) 열려 있습니다.",
+      "noCommits": "풀 리퀘스트에 포함할 커밋이 없습니다.",
       "fallbackTitle": "풀 리퀘스트"
     }
   },
