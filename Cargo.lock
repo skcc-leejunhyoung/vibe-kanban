@@ -9308,6 +9308,7 @@ dependencies = [
  "http 1.4.0",
  "local-deployment",
  "mime_guess",
+ "moka",
  "os_info",
  "preview-proxy",
  "rand 0.8.5",

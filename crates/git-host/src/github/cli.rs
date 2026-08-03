@@ -117,7 +117,8 @@ struct GhNamedTeam {
 
 #[derive(Deserialize)]
 struct GhReviewRequestEvent {
-    id: i64,
+    id: Option<i64>,
+    node_id: Option<String>,
     event: String,
     actor: Option<GhNamedUser>,
     requested_reviewer: Option<GhNamedUser>,
@@ -590,6 +591,9 @@ impl GhCli {
             let Some(created_at) = event.created_at else {
                 continue;
             };
+            let Some(id) = event.id.map(|id| id.to_string()).or(event.node_id) else {
+                continue;
+            };
             let action = if previously_requested.insert(target_key) {
                 PullRequestReviewRequestAction::Requested
             } else {
@@ -601,7 +605,7 @@ impl GhCli {
                 .map(|user| user.login)
                 .unwrap_or_default();
             review_requests.push(PullRequestReviewRequest {
-                id: event.id.to_string(),
+                id,
                 actor,
                 requested_reviewer: target_name,
                 action,
@@ -1097,6 +1101,11 @@ mod tests {
     fn parses_review_request_and_rerequest_timeline_events() {
         let events = GhCli::parse_pr_review_request_events(
             r#"[[
+                {
+                    "sha": "abc123",
+                    "node_id": "commit-node",
+                    "event": "committed"
+                },
                 {
                     "id": 1,
                     "event": "review_requested",

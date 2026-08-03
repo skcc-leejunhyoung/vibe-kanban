@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::OnceLock, time::Duration};
 
 use axum::{
     Router,
@@ -23,8 +23,31 @@ use uuid::Uuid;
 use crate::{
     DeploymentImpl,
     error::ApiError,
+    pull_request_cache::PullRequestCache,
     routes::workspaces::pr::{GetPrCommentsError, PrCommentsResponse},
 };
+
+const PULL_REQUEST_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct PullRequestSummariesCacheKey {
+    repo_path: PathBuf,
+    remote_url: String,
+    involves_me: bool,
+}
+
+type PullRequestSummariesCache =
+    PullRequestCache<PullRequestSummariesCacheKey, Vec<PullRequestSummary>>;
+
+fn pull_request_summaries_cache() -> &'static PullRequestSummariesCache {
+    static CACHE: OnceLock<PullRequestSummariesCache> = OnceLock::new();
+    CACHE.get_or_init(|| PullRequestCache::new(PULL_REQUEST_CACHE_TTL))
+}
+
+fn pull_request_detail_cache() -> &'static PullRequestCache<String, PullRequestDetail> {
+    static CACHE: OnceLock<PullRequestCache<String, PullRequestDetail>> = OnceLock::new();
+    CACHE.get_or_init(|| PullRequestCache::new(PULL_REQUEST_CACHE_TTL))
+}
 
 #[derive(serde::Deserialize)]
 pub struct OpenEditorRequest {
@@ -502,8 +525,17 @@ pub async fn list_involved_prs(
         )));
     }
     let provider = GitHubProvider::new()?;
-    match provider
-        .list_pull_request_summaries(&repo.path, &remote.url, query.involves_me)
+    let cache_key = PullRequestSummariesCacheKey {
+        repo_path: repo.path.clone(),
+        remote_url: remote.url.clone(),
+        involves_me: query.involves_me,
+    };
+    match pull_request_summaries_cache()
+        .get_or_try_init(cache_key, || async move {
+            provider
+                .list_pull_request_summaries(&repo.path, &remote.url, query.involves_me)
+                .await
+        })
         .await
     {
         Ok(prs) => Ok(ResponseJson(ApiResponse::success(prs))),
@@ -556,7 +588,14 @@ pub async fn get_pr_info(
         }
     };
 
-    match git_host.get_pr_status_with_activity(&query.url).await {
+    let pr_url = query.url;
+    let fetch_url = pr_url.clone();
+    match pull_request_detail_cache()
+        .get_or_try_init(pr_url.clone(), || async move {
+            git_host.get_pr_status_with_activity(&fetch_url).await
+        })
+        .await
+    {
         Ok(info) => Ok(ResponseJson(ApiResponse::success(info))),
         Err(GitHostError::CliNotInstalled { provider }) => Ok(ResponseJson(
             ApiResponse::error_with_data(ListPrsError::CliNotInstalled { provider }),
@@ -568,7 +607,7 @@ pub async fn get_pr_info(
             ListPrsError::UnsupportedProvider,
         ))),
         Err(e) => {
-            tracing::error!("Failed to get PR info for {}: {}", query.url, e);
+            tracing::error!("Failed to get PR info for {}: {}", pr_url, e);
             Ok(ResponseJson(ApiResponse::error(&e.to_string())))
         }
     }
