@@ -145,10 +145,18 @@ const PIERRE_DIFFS_THEME_CSS = `
     display: none;
   }
 
+  [data-header-content] {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
   [data-header-content] > slot[name='header-prefix'] {
     display: flex;
     flex: 1 1 auto;
     min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
   }
 
   [data-header-content] [data-prev-name],
@@ -158,6 +166,8 @@ const PIERRE_DIFFS_THEME_CSS = `
   }
 
   [data-diffs-header] [data-metadata] {
+    flex: 0 0 auto;
+    min-width: 0;
     font-family: inherit;
     font-size: 0.75rem;
     gap: 8px;
@@ -525,7 +535,7 @@ const DiffFileItem = memo(function DiffFileItem({
 
   const renderHeaderPrefix = useCallback(
     () => (
-      <span className="min-w-0 flex flex-1 items-center gap-2">
+      <span className="min-w-0 max-w-full flex flex-1 items-center gap-2 overflow-hidden">
         <FileIcon className="size-icon-base shrink-0" />
         <MiddleEllipsisPath path={filePath} className="text-xs leading-none" />
       </span>
