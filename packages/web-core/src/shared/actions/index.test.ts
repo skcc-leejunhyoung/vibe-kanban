@@ -182,6 +182,16 @@ describe('command palette navigation actions', () => {
     isInPlace: false,
   } as ActionVisibilityContext;
 
+  it('keeps pull request linking visible when the workspace has an open PR', () => {
+    expect(
+      isActionVisible(Actions.GitLinkPR, {
+        ...openWorkspaceContext,
+        hasGitRepos: true,
+        hasOpenPR: true,
+      })
+    ).toBe(true);
+  });
+
   it('exposes pull request linking from issue actions and targets one issue', async () => {
     const linkPullRequest = vi.fn();
     const { ctx } = makeCtx(

@@ -1828,7 +1828,7 @@ export const Actions = {
     label: 'Link Pull Request',
     icon: LinkIcon,
     requiresTarget: ActionTargetType.GIT,
-    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && !ctx.hasOpenPR,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
       // Search candidate head (source) branches for a linkable PR, in priority
       // order:
