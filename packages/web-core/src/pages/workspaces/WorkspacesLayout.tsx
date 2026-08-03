@@ -128,6 +128,9 @@ export function WorkspacesLayout({
   const isMobile = useIsMobile();
   const [mobileTab, setMobileTab] = useMobileActiveTab();
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
+  const [lastFocusedMainPanel, setLastFocusedMainPanel] = useState<
+    'chat' | 'changes'
+  >('chat');
 
   const handleScrollToBottom = useCallback(
     (behavior: 'auto' | 'smooth' = 'smooth') => {
@@ -152,6 +155,12 @@ export function WorkspacesLayout({
     setLeftMainPanelVisible,
     setRightMainPanelMode,
   } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
+
+  useEffect(() => {
+    if (rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.CHANGES) {
+      setLastFocusedMainPanel('changes');
+    }
+  }, [rightMainPanelMode]);
 
   const handleOpenCommit = useCallback(() => {
     if (isMobile) {
@@ -330,6 +339,7 @@ export function WorkspacesLayout({
                   isSessionsLoading={isSessionsLoading}
                   isNewSessionMode={isNewSessionMode}
                   onStartNewSession={startNewSession}
+                  autoFocus={mobileTab === 'chat'}
                 />
               )}
             </div>
@@ -436,19 +446,28 @@ export function WorkspacesLayout({
                     onWorkspaceCreated={handleWorkspaceCreated}
                   />
                 ) : (
-                  <WorkspacesMainContainer
-                    ref={mainContainerRef}
-                    selectedWorkspace={selectedWorkspace ?? null}
-                    selectedSession={selectedSession}
-                    selectedSessionId={selectedSessionId}
-                    sessions={sessions}
-                    repos={repos}
-                    onSelectSession={selectSession}
-                    isLoading={isLoading}
-                    isSessionsLoading={isSessionsLoading}
-                    isNewSessionMode={isNewSessionMode}
-                    onStartNewSession={startNewSession}
-                  />
+                  <div
+                    className="h-full"
+                    onFocusCapture={() => setLastFocusedMainPanel('chat')}
+                  >
+                    <WorkspacesMainContainer
+                      ref={mainContainerRef}
+                      selectedWorkspace={selectedWorkspace ?? null}
+                      selectedSession={selectedSession}
+                      selectedSessionId={selectedSessionId}
+                      sessions={sessions}
+                      repos={repos}
+                      onSelectSession={selectSession}
+                      isLoading={isLoading}
+                      isSessionsLoading={isSessionsLoading}
+                      isNewSessionMode={isNewSessionMode}
+                      onStartNewSession={startNewSession}
+                      autoFocus={
+                        lastFocusedMainPanel === 'chat' &&
+                        rightMainPanelMode !== RIGHT_MAIN_PANEL_MODES.CHANGES
+                      }
+                    />
+                  </div>
                 )}
               </Panel>
             )}
@@ -471,6 +490,8 @@ export function WorkspacesLayout({
                     <ChangesPanelContainer
                       className=""
                       workspaceId={selectedWorkspace.id}
+                      autoFocus={lastFocusedMainPanel === 'changes'}
+                      onPanelFocus={() => setLastFocusedMainPanel('changes')}
                     />
                   )}
                 {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.LOGS && (

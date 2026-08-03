@@ -36,6 +36,20 @@ describe('blurFocusedElementOnEscape', () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
 
+  it('leaves Escape to an element that handles it itself', () => {
+    const element = {
+      tagName: 'SECTION',
+      blur: vi.fn(),
+      closest: vi.fn(() => ({})),
+    } as unknown as Element & { blur: ReturnType<typeof vi.fn> };
+    const event = keyEvent('Escape');
+
+    blurFocusedElementOnEscape(event, element);
+
+    expect(element.blur).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+
   it.each(['BODY', 'HTML'])(
     'leaves Escape available when %s represents the unfocused document',
     (tagName) => {

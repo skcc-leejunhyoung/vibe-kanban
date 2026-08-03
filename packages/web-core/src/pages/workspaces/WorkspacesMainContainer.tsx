@@ -40,6 +40,7 @@ function ChatBoxWithDiffStats({
   onScrollToBottom,
   onScrollToUserMessage,
   getActiveTurnPatchKey,
+  autoFocus,
 }: {
   session: Session | undefined;
   workspaceId: string | undefined;
@@ -51,6 +52,7 @@ function ChatBoxWithDiffStats({
   onScrollToBottom: (behavior?: 'auto' | 'smooth') => void;
   onScrollToUserMessage: (patchKey: string) => void;
   getActiveTurnPatchKey: () => string | null;
+  autoFocus: boolean;
 }) {
   const diffStats = useDiffStats();
 
@@ -82,6 +84,7 @@ function ChatBoxWithDiffStats({
       onScrollToBottom={onScrollToBottom}
       onScrollToUserMessage={onScrollToUserMessage}
       getActiveTurnPatchKey={getActiveTurnPatchKey}
+      autoFocus={autoFocus}
     />
   );
 }
@@ -103,6 +106,7 @@ interface WorkspacesMainContainerProps {
   isSessionsLoading?: boolean;
   isNewSessionMode: boolean;
   onStartNewSession: () => void;
+  autoFocus?: boolean;
 }
 
 export const WorkspacesMainContainer = forwardRef<
@@ -120,6 +124,7 @@ export const WorkspacesMainContainer = forwardRef<
     isSessionsLoading: _isSessionsLoading,
     isNewSessionMode,
     onStartNewSession,
+    autoFocus = true,
   },
   ref
 ) {
@@ -241,6 +246,7 @@ export const WorkspacesMainContainer = forwardRef<
       onScrollToBottom={handleScrollToBottom}
       onScrollToUserMessage={handleScrollToUserMessage}
       getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
+      autoFocus={autoFocus}
     />
   );
 

@@ -653,11 +653,15 @@ const DiffFileItem = memo(function DiffFileItem({
 interface ChangesPanelContainerProps {
   className: string;
   workspaceId: string;
+  autoFocus?: boolean;
+  onPanelFocus?: () => void;
 }
 
 export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   className,
   workspaceId,
+  autoFocus = false,
+  onPanelFocus,
 }: ChangesPanelContainerProps) {
   const diffs = useDiffs();
   const { registerFileRequest, selectFile, selectedFilePath, selectedRepoId } =
@@ -679,6 +683,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   const showRepoHeaders = repos.length > 1 || groupedDiffs.length > 1;
   const panelRef = useRef<HTMLDivElement>(null);
   const diffPanelRef = useRef<HTMLElement>(null);
+  const fileListRef = useRef<HTMLDivElement>(null);
   const fileButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingDiffFocusKeyRef = useRef<string | null>(null);
   const pendingFileListFocusKeyRef = useRef<string | null>(null);
@@ -712,6 +717,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     () => resolveSelectedDiff(sortedDiffs, selectedKey),
     [selectedKey, sortedDiffs]
   );
+  const selectedDiffKey = selectedDiff ? getDiffKey(selectedDiff) : null;
 
   useEffect(() => {
     if (
@@ -734,6 +740,19 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
       fileButtonRefs.current.get(pendingKey)?.focus()
     );
   }, [isFileListCollapsed]);
+
+  useEffect(() => {
+    if (!autoFocus || !selectedDiffKey) return;
+
+    requestAnimationFrame(() => {
+      const selectedButton = fileButtonRefs.current.get(selectedDiffKey);
+      if (selectedButton) {
+        selectedButton.focus();
+      } else {
+        fileListRef.current?.focus();
+      }
+    });
+  }, [autoFocus, selectedDiffKey]);
 
   useEffect(() => {
     if (!selectedFilePath) return;
@@ -904,6 +923,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     >
       <div
         ref={panelRef}
+        onFocusCapture={onPanelFocus}
         className={`flex flex-col h-full min-h-0 bg-secondary ${className}`}
       >
         <CommitSelector workspaceId={workspaceId} />
@@ -955,7 +975,20 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
                 {sortedDiffs.length}
               </span>
             </button>
-            <div className="min-h-0 overflow-y-auto py-1">
+            <div
+              ref={fileListRef}
+              tabIndex={0}
+              aria-label="Changed files"
+              onFocus={(event) => {
+                if (event.target !== event.currentTarget) return;
+                const focusedDiff = selectedDiff ?? sortedDiffs[0];
+                if (!focusedDiff) return;
+                requestAnimationFrame(() =>
+                  fileButtonRefs.current.get(getDiffKey(focusedDiff))?.focus()
+                );
+              }}
+              className="min-h-0 overflow-y-auto py-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
+            >
               {groupedDiffs.map((group) => (
                 <div key={group.repoId ?? 'unknown'}>
                   {showRepoHeaders && (
@@ -1029,6 +1062,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
           <section
             ref={diffPanelRef}
             tabIndex={0}
+            data-escape-handled
             aria-label="Changed file diff"
             onKeyDown={handleDiffPanelKeyDown}
             className="flex-1 min-w-0 min-h-0 overflow-auto px-base pt-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"

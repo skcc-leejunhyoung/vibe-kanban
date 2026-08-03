@@ -7,6 +7,13 @@ export function blurFocusedElementOnEscape(
 ): void {
   if (event.key !== 'Escape' || !activeElement) return;
 
+  if (
+    typeof activeElement.closest === 'function' &&
+    activeElement.closest('[data-escape-handled]')
+  ) {
+    return;
+  }
+
   // BODY/HTML represent the unfocused document. Leave Escape available to
   // close the current panel when there is no real element to blur.
   if (activeElement.tagName === 'BODY' || activeElement.tagName === 'HTML') {

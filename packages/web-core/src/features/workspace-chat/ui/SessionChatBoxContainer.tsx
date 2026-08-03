@@ -100,6 +100,8 @@ function computeExecutionStatus(params: {
 
 /** Shared props across all modes */
 interface SharedProps {
+  /** Whether the chat editor should claim focus when it mounts. */
+  autoFocus?: boolean;
   /** Available sessions for this workspace */
   sessions: Session[];
   /** Number of files changed in current session */
@@ -210,6 +212,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     getActiveTurnPatchKey,
     disableViewCode = false,
     showOpenWorkspaceButton,
+    autoFocus = true,
   } = props;
 
   // Extract mode-specific values
@@ -1361,7 +1364,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         repoIds={repoIds}
         executor={executor}
         sessionId={sessionId}
-        autoFocus
+        autoFocus={autoFocus}
         onPasteFiles={onPasteFiles}
         localAttachments={localAttachments}
         sendShortcut={config?.send_message_shortcut}
