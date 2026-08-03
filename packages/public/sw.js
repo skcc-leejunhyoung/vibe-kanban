@@ -73,7 +73,15 @@ self.addEventListener('notificationclick', (event) => {
   // the installed app runs on http://vibe-kanban.localhost) still navigates
   // inside the app instead of failing client.navigate() / opening another origin.
   const src = new URL(deeplinkPath, self.location.origin);
-  const targetPath = src.pathname + src.search + src.hash;
+  const isRemotePullRequestPath =
+    src.origin !== self.location.origin &&
+    /^\/hosts\/[^/]+\/pull-requests$/.test(src.pathname);
+  // A paired local PWA receives pushes from the remote server. PR comment
+  // pushes use the remote-only host-scoped route, which local-web does not
+  // register. Keep the PR URL query while mapping it to local-web's route.
+  const targetPath = isRemotePullRequestPath
+    ? `/pull-requests${src.search}${src.hash}`
+    : src.pathname + src.search + src.hash;
   const targetUrl = new URL(targetPath, self.location.origin).href;
 
   event.waitUntil(
