@@ -1320,19 +1320,31 @@ impl ClaudeLogProcessor {
     }
 
     /// Build a `RateLimitInfo` entry from a `rate_limit_event`'s
-    /// `rate_limit_info` payload, but only when it represents a hard rejection
-    /// (the request was actually blocked). Informational "allowed" updates
-    /// return `None` so they don't trigger auto-resume.
+    /// `rate_limit_info` payload, but only when `status == "rejected"` (the
+    /// request was actually blocked). Informational "allowed" updates return
+    /// `None` so they don't trigger auto-resume.
     fn rate_limit_entry_from_event(info: Option<&serde_json::Value>) -> Option<NormalizedEntry> {
         let info = info?;
+        // `status` is the authoritative per-request outcome ("allowed" /
+        // "rejected"). `overageStatus` describes whether overage billing is
+        // permitted on the account and can be a static attribute, so it must
+        // not, on its own, be read as a limit hit — a genuine rejection always
+        // sets `status`, so gating on it cannot miss a real block while
+        // avoiding false positives on routine usage updates.
         let status = info.get("status").and_then(|v| v.as_str());
-        let overage = info.get("overageStatus").and_then(|v| v.as_str());
-        if status != Some("rejected") && overage != Some("rejected") {
+        if status != Some("rejected") {
             return None;
         }
-        let resets_at = info.get("resetsAt").and_then(Self::parse_reset_timestamp);
-        let scope = info
-            .get("rateLimitType")
+        // Accept either camelCase (`resetsAt`) or snake_case (`resets_at`); the
+        // exact casing the CLI emits has varied, and losing it silently downgrades
+        // an exact resume to the conservative multi-hour fallback.
+        let resets_at = ["resetsAt", "resets_at"]
+            .iter()
+            .find_map(|k| info.get(*k))
+            .and_then(Self::parse_reset_timestamp);
+        let scope = ["rateLimitType", "rate_limit_type"]
+            .iter()
+            .find_map(|k| info.get(*k))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         Some(NormalizedEntry {
@@ -4245,5 +4257,64 @@ mod tests {
             infos[0].resets_at.as_deref(),
             Some("2026-08-03T10:10:00+00:00")
         );
+    }
+
+    #[tokio::test]
+    async fn end_to_end_session_limit_surfaces_schedulable_entry() {
+        use std::sync::Arc;
+
+        use workspace_utils::log_msg::LogMsg;
+
+        // Drive the *real* production streaming path (raw stdout chunks ->
+        // line buffering -> ClaudeJson parse -> normalize -> MsgStore patches)
+        // with the exact lines captured from the live failure, then read the
+        // history the exit monitor's `rate_limit_reset_hint_from_msgs` consumes.
+        let msg_store = Arc::new(MsgStore::new());
+        msg_store.push_stdout(
+            "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"resetsAt\":1785751800,\"rateLimitType\":\"five_hour\",\"overageStatus\":\"rejected\",\"isUsingOverage\":false},\"session_id\":\"s\"}\n"
+                .to_string(),
+        );
+        msg_store.push_stdout(
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"api_error_status\":429,\"result\":\"You've hit your session limit \\u00b7 resets 7:10pm (Asia/Seoul)\",\"session_id\":\"s\"}\n"
+                .to_string(),
+        );
+        msg_store.push_finished();
+
+        // Await the handle instead of sleeping: push_finished is already in the
+        // replayed history, so the task drains and exits deterministically.
+        ClaudeLogProcessor::process_logs(
+            msg_store.clone(),
+            std::path::Path::new("/tmp/work"),
+            EntryIndexProvider::test_new(),
+            HistoryStrategy::Default,
+        )
+        .await
+        .unwrap();
+
+        let infos: Vec<_> = msg_store
+            .get_history()
+            .iter()
+            .filter_map(|m| match m {
+                LogMsg::JsonPatch(p) => extract_normalized_entry_from_patch(p),
+                _ => None,
+            })
+            .filter_map(|(_, e)| match e.entry_type {
+                NormalizedEntryType::RateLimitInfo(info) => Some(info),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            infos.len(),
+            1,
+            "the streaming path must surface exactly one schedulable limit entry"
+        );
+        assert!(infos[0].limit_reached);
+        assert_eq!(
+            infos[0].resets_at.as_deref(),
+            Some("2026-08-03T10:10:00+00:00"),
+            "the scheduler-visible entry must carry the exact reset time"
+        );
+        assert_eq!(infos[0].scope.as_deref(), Some("five_hour"));
     }
 }

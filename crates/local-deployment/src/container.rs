@@ -1265,15 +1265,7 @@ impl LocalContainerService {
             return Ok(false);
         };
 
-        // Prefer the agent-reported reset time when present and in the future;
-        // otherwise fall back to a conservative estimate.
-        let now = Utc::now();
-        let resume_at = reset_hint
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc) + chrono::Duration::seconds(60))
-            .filter(|dt| *dt > now)
-            .unwrap_or_else(|| now + chrono::Duration::seconds(Self::RATE_LIMIT_RESUME_DELAY_SECS));
+        let resume_at = Self::resume_at_from_hint(reset_hint.as_deref(), Utc::now());
 
         PendingRateLimitResume::upsert(
             &self.db.pool,
@@ -1292,6 +1284,20 @@ impl LocalContainerService {
             resume_at
         );
         Ok(true)
+    }
+
+    /// Pick the resume time: the agent-reported reset (as RFC3339) plus a 60s
+    /// margin when present and still in the future, otherwise a conservative
+    /// fallback. `now` is a parameter so the choice is unit-testable.
+    fn resume_at_from_hint(
+        reset_hint: Option<&str>,
+        now: chrono::DateTime<Utc>,
+    ) -> chrono::DateTime<Utc> {
+        reset_hint
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc) + chrono::Duration::seconds(60))
+            .filter(|dt| *dt > now)
+            .unwrap_or_else(|| now + chrono::Duration::seconds(Self::RATE_LIMIT_RESUME_DELAY_SECS))
     }
 
     fn rate_limit_reset_hint_from_msgs(msgs: &[LogMsg]) -> Option<Option<String>> {
@@ -3119,6 +3125,38 @@ mod tests {
         assert_eq!(
             LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
             None
+        );
+    }
+
+    #[test]
+    fn resume_at_uses_reported_reset_plus_margin() {
+        // The exact epoch from the live failure: resetsAt 1785751800.
+        let reset = "2026-08-03T10:10:00+00:00";
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T09:21:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let resume_at = LocalContainerService::resume_at_from_hint(Some(reset), now);
+        // reset + 60s margin, precisely — not the 5h fallback.
+        assert_eq!(resume_at.to_rfc3339(), "2026-08-03T10:11:00+00:00");
+    }
+
+    #[test]
+    fn resume_at_falls_back_when_reset_is_past_or_missing() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T12:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let fallback =
+            now + chrono::Duration::seconds(LocalContainerService::RATE_LIMIT_RESUME_DELAY_SECS);
+        // A reset already in the past is ignored in favor of the conservative
+        // window, so a stale hint can never schedule a resume in the past.
+        assert_eq!(
+            LocalContainerService::resume_at_from_hint(Some("2026-08-03T10:10:00+00:00"), now),
+            fallback
+        );
+        // No hint at all -> same conservative window.
+        assert_eq!(
+            LocalContainerService::resume_at_from_hint(None, now),
+            fallback
         );
     }
 
