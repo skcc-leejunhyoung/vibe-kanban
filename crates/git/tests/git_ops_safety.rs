@@ -685,6 +685,16 @@ fn merge_remote_into_branch_checkout_aborts_hidden_target_conflicts() {
             .is_empty(),
         "aborting the hidden merge must clear its conflict index"
     );
+    let worktrees = GitCli::new().list_worktrees(&local_path).unwrap();
+    assert_eq!(
+        worktrees.len(),
+        1,
+        "temporary target worktree must be removed"
+    );
+    assert_eq!(
+        Path::new(&worktrees[0].path).canonicalize().unwrap(),
+        local_path.canonicalize().unwrap()
+    );
 }
 
 #[test]
