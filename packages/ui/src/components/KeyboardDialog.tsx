@@ -6,6 +6,10 @@ import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 import {
+  findDialogPrimaryAction,
+  useDialogKeyboard,
+} from '../lib/dialog-keyboard';
+import {
   getKeyboardDialogMaxWidth,
   type KeyboardDialogSize,
 } from '../lib/keyboard-dialog-size';
@@ -63,31 +67,24 @@ const Dialog = React.forwardRef<
       [ref]
     );
 
-    // Close on Escape. We use a native document listener (bubble phase) instead
-    // of `useHotkeys` so Escape still fires while an input/textarea/contentEditable
-    // is focused — react-hotkeys-hook ignores form fields by default, which is why
-    // dialogs that autofocus an input used to swallow the first Escape entirely.
-    //
-    // Nested dismissable layers cooperate via the event: Radix popovers/selects/
-    // dropdowns handle Escape in the capture phase and `preventDefault()` when they
-    // dismiss, and custom dropdowns `stopPropagation()`, so an inner layer always
-    // gets first claim on the key and our handler then skips via `defaultPrevented`.
-    // For two stacked KeyboardDialogs both listening on `document`, the outer one's
-    // listener runs first (registered first), so we additionally gate on the
-    // open-dialog stack: only the top-most dialog closes, leaving Escape to peel
-    // dialogs off inner-first.
-    React.useEffect(() => {
-      if (!open || uncloseable) return;
-      const handleEscape = (event: KeyboardEvent) => {
-        if (event.key !== 'Escape' || event.defaultPrevented) return;
-        if (!onOpenChange) return;
-        if (!isTopLayer()) return;
-        event.preventDefault();
-        onOpenChange(false);
-      };
-      document.addEventListener('keydown', handleEscape);
-      return () => document.removeEventListener('keydown', handleEscape);
-    }, [open, uncloseable, onOpenChange, isTopLayer]);
+    // Escape (close), Cmd/Ctrl+Enter (primary action) and Tab (focus trap)
+    // via the shared dialog keyboard layer — native document listeners so
+    // they still fire while an input/textarea/contentEditable is focused
+    // (react-hotkeys-hook ignores form fields by default, which is why
+    // dialogs that autofocus an input used to swallow the first Escape).
+    // Stacked dialogs stay consistent through the open-dialog stack gate:
+    // only the top-most dialog reacts, so Escape peels dialogs inner-first.
+    const getContainer = React.useCallback(() => dialogRef.current, []);
+    const handleClose = React.useMemo(() => {
+      if (uncloseable || !onOpenChange) return null;
+      return () => onOpenChange(false);
+    }, [uncloseable, onOpenChange]);
+    useDialogKeyboard({
+      open: !!open,
+      getContainer,
+      isTopLayer,
+      onClose: handleClose,
+    });
 
     // Move focus into the dialog when it opens. KeyboardDialog is a custom (non-
     // Radix) implementation with no built-in focus management, so otherwise focus
@@ -135,25 +132,24 @@ const Dialog = React.forwardRef<
           return;
         }
 
-        const submitButton = container.querySelector(
-          'button[type="submit"]'
-        ) as HTMLButtonElement | null;
-        if (submitButton && !submitButton.disabled) {
-          e?.preventDefault();
-          submitButton.click();
-          return;
-        }
-
-        const buttons = Array.from(
-          container.querySelectorAll('button')
-        ) as HTMLButtonElement[];
-        const primaryButton = buttons.find(
-          (btn) =>
-            !btn.disabled &&
-            !btn.textContent?.toLowerCase().includes('cancel') &&
-            !btn.textContent?.toLowerCase().includes('close') &&
-            btn.type !== 'button'
-        );
+        // Structural resolution first (marker/submit/single button); legacy
+        // text heuristic only as a last resort for dialogs that predate
+        // explicit footer button types. The text match is English-only, so
+        // explicit types are the reliable path (ko labels never match).
+        const legacyPrimaryButton = () =>
+          (
+            Array.from(
+              container.querySelectorAll('button')
+            ) as HTMLButtonElement[]
+          ).find(
+            (btn) =>
+              !btn.disabled &&
+              !btn.textContent?.toLowerCase().includes('cancel') &&
+              !btn.textContent?.toLowerCase().includes('close') &&
+              btn.type !== 'button'
+          ) ?? null;
+        const primaryButton =
+          findDialogPrimaryAction(container) ?? legacyPrimaryButton();
 
         if (primaryButton) {
           e?.preventDefault();
@@ -184,6 +180,8 @@ const Dialog = React.forwardRef<
         <div
           ref={setDialogRef}
           tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
           className={cn(
             'relative z-[10000] flex flex-col w-full gap-4 bg-primary p-6 shadow-lg duration-200 sm:rounded-lg my-8 outline-none',
             className
@@ -193,7 +191,8 @@ const Dialog = React.forwardRef<
         >
           {!uncloseable && (
             <button
-              className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 z-10"
+              type="button"
+              className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 z-10"
               onClick={() => onOpenChange?.(false)}
             >
               <X className="h-4 w-4" />

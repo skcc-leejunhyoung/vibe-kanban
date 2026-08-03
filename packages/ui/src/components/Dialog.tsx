@@ -8,16 +8,26 @@ import {
   dialogContentBaseClasses,
 } from '../lib/dialog-centering';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
+import {
+  findDialogPrimaryAction,
+  isDialogConfirmKey,
+  markEscapeDeferred,
+} from '../lib/dialog-keyboard';
+
+// Shares the modal-stack top check with DialogContent so Escape/confirm only
+// react on the top-most dialog when Radix and KeyboardDialog stacks mix.
+const DialogLayerContext = React.createContext<(() => boolean) | null>(null);
 
 function Dialog({
   open,
   defaultOpen = false,
   onOpenChange,
+  children,
   ...props
 }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
   const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
   const isOpen = open ?? internalOpen;
-  useModalKeyboardLayer(isOpen);
+  const { isTopLayer } = useModalKeyboardLayer(isOpen);
 
   const handleOpenChange = React.useCallback(
     (nextOpen: boolean) => {
@@ -34,7 +44,11 @@ function Dialog({
       open={isOpen}
       onOpenChange={handleOpenChange}
       {...props}
-    />
+    >
+      <DialogLayerContext.Provider value={isTopLayer}>
+        {children}
+      </DialogLayerContext.Provider>
+    </DialogPrimitive.Root>
   );
 }
 
@@ -84,10 +98,46 @@ const DialogContent = React.forwardRef<
       children,
       hideCloseButton = false,
       wrapperZIndex = DIALOG_WRAPPER_Z_INDEX,
+      onKeyDown,
+      onEscapeKeyDown,
       ...props
     },
     ref
   ) => {
+    const isTopLayer = React.useContext(DialogLayerContext);
+
+    // Cmd/Ctrl+Enter activates the dialog's primary action. Radix keeps
+    // focus inside the content, so a listener on the content sees every
+    // keydown of this dialog — and only this dialog, since stacked dialogs
+    // are portaled as sibling trees.
+    const handleKeyDown = React.useCallback(
+      (event: React.KeyboardEvent<HTMLDivElement>) => {
+        onKeyDown?.(event);
+        if (event.defaultPrevented) return;
+        if (!isDialogConfirmKey(event.nativeEvent)) return;
+        const primary = findDialogPrimaryAction(event.currentTarget);
+        if (!primary) return;
+        event.preventDefault();
+        primary.click();
+      },
+      [onKeyDown]
+    );
+
+    // Radix only coordinates Escape among its own layers; gate on the shared
+    // modal stack so a KeyboardDialog stacked above doesn't close us too.
+    // preventDefault() is how Radix is told to skip its close, but the flag
+    // keeps the same keypress claimable by the top dialog's own listener.
+    const handleEscapeKeyDown = React.useCallback(
+      (event: KeyboardEvent) => {
+        onEscapeKeyDown?.(event);
+        if (isTopLayer && !isTopLayer()) {
+          event.preventDefault();
+          markEscapeDeferred(event);
+        }
+      },
+      [onEscapeKeyDown, isTopLayer]
+    );
+
     return (
       <DialogPortal>
         <DialogOverlay />
@@ -104,11 +154,16 @@ const DialogContent = React.forwardRef<
           <DialogPrimitive.Content
             ref={ref}
             className={cn(dialogContentBaseClasses, className)}
+            onKeyDown={handleKeyDown}
+            onEscapeKeyDown={handleEscapeKeyDown}
             {...props}
           >
             {children}
             {!hideCloseButton && (
-              <DialogPrimitive.Close className="absolute right-base top-base rounded-sm opacity-70 ring-offset-panel transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 disabled:pointer-events-none">
+              <DialogPrimitive.Close
+                type="button"
+                className="absolute right-base top-base rounded-sm opacity-70 transition-opacity hover:opacity-100 disabled:pointer-events-none"
+              >
                 <X className="h-4 w-4 text-normal" />
                 <span className="sr-only">Close</span>
               </DialogPrimitive.Close>

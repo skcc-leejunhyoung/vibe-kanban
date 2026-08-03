@@ -174,7 +174,7 @@ const ReconcileRemoteBranchDialogImpl =
             >
               {t('common:buttons.cancel')}
             </Button>
-            <Button type="button" onClick={handleMerge} disabled={isProcessing}>
+            <Button type="submit" onClick={handleMerge} disabled={isProcessing}>
               {isProcessing && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}

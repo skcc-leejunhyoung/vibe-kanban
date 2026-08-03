@@ -324,6 +324,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
               )}
               {isAuthMethodsError && (
                 <Button
+                  type="submit"
                   variant="outline"
                   className="w-full"
                   onClick={() => void refetchAuthMethods()}
@@ -362,7 +363,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
                     autoComplete="current-password"
                   />
                   <button
-                    type="button"
+                    type="submit"
                     className="relative flex h-10 w-full items-center overflow-hidden rounded-[4px] border border-[#dadce0] bg-[#f2f2f2] px-3 text-[14px] font-medium leading-5 tracking-[0.25px] text-[#1f1f1f] transition-colors duration-150 hover:bg-[#e8eaed] active:bg-[#e2e3e5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1a73e8]/40 disabled:cursor-not-allowed disabled:bg-[#ffffff61] disabled:text-[#1f1f1f]/40"
                     onClick={() => void handleLocalLogin()}
                     disabled={
@@ -401,7 +402,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
             </div>
 
             <DialogFooter>
-              <Button variant="ghost" onClick={handleClose}>
+              <Button type="button" variant="ghost" onClick={handleClose}>
                 {t('buttons.cancel')}
               </Button>
             </DialogFooter>
@@ -432,10 +433,10 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
             </div>
 
             <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="ghost" onClick={handleBack}>
+              <Button type="button" variant="ghost" onClick={handleBack}>
                 {t('oauth.back')}
               </Button>
-              <Button variant="ghost" onClick={handleClose}>
+              <Button type="button" variant="ghost" onClick={handleClose}>
                 {t('buttons.cancel')}
               </Button>
             </DialogFooter>
@@ -493,10 +494,10 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
             </div>
 
             <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="ghost" onClick={handleBack}>
+              <Button type="submit" variant="ghost" onClick={handleBack}>
                 {t('oauth.tryAgain')}
               </Button>
-              <Button variant="ghost" onClick={handleClose}>
+              <Button type="button" variant="ghost" onClick={handleClose}>
                 {t('buttons.close')}
               </Button>
             </DialogFooter>

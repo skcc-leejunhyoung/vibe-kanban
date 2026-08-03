@@ -100,11 +100,11 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
         : mode === 'updateTargetFromBase'
           ? t('branches.updateTargetFromBase.dialog.title')
           : repoDisplayName
-          ? t('commandBar.selectBranchFor', {
-              repoName: repoDisplayName,
-              ns: 'common',
-            })
-          : t('commandBar.selectBranch', { ns: 'common' });
+            ? t('commandBar.selectBranchFor', {
+                repoName: repoDisplayName,
+                ns: 'common',
+              })
+            : t('commandBar.selectBranch', { ns: 'common' });
 
     const description =
       mode === 'changeTarget'

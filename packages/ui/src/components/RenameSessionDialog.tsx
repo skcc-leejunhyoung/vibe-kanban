@@ -117,6 +117,7 @@ const RenameSessionDialogImpl = NiceModal.create<RenameSessionDialogProps>(
 
           <DialogFooter>
             <Button
+              type="button"
               variant="outline"
               onClick={handleCancel}
               disabled={isSubmitting}
@@ -124,6 +125,7 @@ const RenameSessionDialogImpl = NiceModal.create<RenameSessionDialogProps>(
               {t('common:buttons.cancel')}
             </Button>
             <Button
+              type="submit"
               onClick={() => void handleConfirm()}
               disabled={isSubmitting}
             >

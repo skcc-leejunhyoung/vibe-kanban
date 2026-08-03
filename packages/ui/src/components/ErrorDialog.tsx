@@ -47,7 +47,9 @@ const ErrorDialogImpl = NiceModal.create<ErrorDialogProps>((props) => {
         </DialogHeader>
 
         <div className="flex w-full justify-end">
-          <Button onClick={handleDismiss}>{buttonText}</Button>
+          <Button type="submit" onClick={handleDismiss}>
+            {buttonText}
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

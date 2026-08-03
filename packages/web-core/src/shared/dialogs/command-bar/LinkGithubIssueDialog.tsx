@@ -221,6 +221,7 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
         </div>
         <DialogFooter>
           <Button
+            type="button"
             variant="outline"
             onClick={() => modal.hide()}
             disabled={busy}
@@ -228,6 +229,7 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
             Cancel
           </Button>
           <Button
+            type="submit"
             onClick={submit}
             disabled={
               busy ||

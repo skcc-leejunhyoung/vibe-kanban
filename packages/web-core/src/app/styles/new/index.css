@@ -550,6 +550,22 @@ html {
   }
 }
 
+/* 4) ALWAYS-VISIBLE KEYBOARD FOCUS
+   Keyboard focus must be clearly visible everywhere. Intentionally NOT inside
+   @layer: unlayered rules stay at this source position (after the utilities
+   inserted at `@tailwind utilities`), and the `:not()` lifts specificity to
+   (0,2,0) — the same as `focus:outline-none`/`focus-visible:outline-none`
+   utilities, so this later rule wins the tie and the outline can never be
+   suppressed by a stray outline-none.
+   `outline` (not ring/box-shadow) so it never fights component ring styles
+   and never affects layout.
+   `[tabindex='-1']` is excluded: programmatic focus targets (dialog shells,
+   scroll regions, roving-focus menu items) manage their own indication. */
+*:focus-visible:not([tabindex='-1']) {
+  outline: 2px solid hsl(var(--brand));
+  outline-offset: 1px;
+}
+
 @config '../../../../../local-web/tailwind.new.config.js';
 
 /* Mobile-specific styles */

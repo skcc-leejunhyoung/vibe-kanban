@@ -120,6 +120,7 @@ const RebaseInProgressDialogImpl =
 
             <DialogFooter className="gap-2 sm:gap-0">
               <Button
+                type="button"
                 variant="outline"
                 onClick={handleCancel}
                 disabled={isSubmitting}
@@ -127,6 +128,7 @@ const RebaseInProgressDialogImpl =
                 {t('common:buttons.cancel')}
               </Button>
               <Button
+                type="button"
                 variant="destructive"
                 onClick={handleAbort}
                 disabled={isSubmitting}
@@ -135,7 +137,11 @@ const RebaseInProgressDialogImpl =
                   ? t('rebaseInProgress.dialog.aborting', 'Aborting...')
                   : t('rebaseInProgress.dialog.abort', 'Abort Rebase')}
               </Button>
-              <Button onClick={handleContinue} disabled={isSubmitting}>
+              <Button
+                type="submit"
+                onClick={handleContinue}
+                disabled={isSubmitting}
+              >
                 {isSubmitting
                   ? t('rebaseInProgress.dialog.continuing', 'Continuing...')
                   : t('rebaseInProgress.dialog.continue', 'Continue Rebase')}

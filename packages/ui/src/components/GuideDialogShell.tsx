@@ -1,7 +1,14 @@
-import { useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { CaretLeftIcon, XIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
+import { useDialogKeyboard } from '../lib/dialog-keyboard';
 
 export interface GuideDialogTopic {
   id: string;
@@ -24,9 +31,38 @@ export function GuideDialogShell({
   onClose,
   className,
 }: GuideDialogShellProps) {
-  useModalKeyboardLayer(true);
+  const { isTopLayer } = useModalKeyboardLayer(true);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mobileShowContent, setMobileShowContent] = useState(false);
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const getContainer = useCallback(() => containerRef.current, []);
+  useDialogKeyboard({
+    open: true,
+    getContainer,
+    isTopLayer,
+    onClose,
+  });
+
+  // Move focus into the dialog on open (there is no autofocused field here),
+  // restore it on close — same contract as KeyboardDialog.
+  useEffect(() => {
+    const active = document.activeElement as HTMLElement | null;
+    const previouslyFocused =
+      active && !containerRef.current?.contains(active) ? active : null;
+    const raf = requestAnimationFrame(() => {
+      const el = containerRef.current;
+      if (el && !el.contains(document.activeElement)) {
+        el.focus();
+      }
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus?.();
+      }
+    };
+  }, []);
 
   if (topics.length === 0) {
     return null;
@@ -43,8 +79,12 @@ export function GuideDialogShell({
       />
       {/* Dialog wrapper - handles positioning */}
       <div
+        ref={containerRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
         className={cn(
-          'fixed z-[9999]',
+          'fixed z-[9999] outline-none',
           // Mobile: full screen
           'inset-0',
           // Desktop: centered with fixed size
@@ -78,6 +118,7 @@ export function GuideDialogShell({
             <div className="p-3 flex items-center justify-between md:hidden">
               <span className="text-sm font-medium text-high">Topics</span>
               <button
+                type="button"
                 onClick={onClose}
                 className="p-1 rounded-sm hover:bg-secondary text-low hover:text-normal"
               >
@@ -88,6 +129,7 @@ export function GuideDialogShell({
               {topics.map((topic, idx) => (
                 <button
                   key={topic.id}
+                  type="button"
                   onClick={() => {
                     setSelectedIndex(idx);
                     setMobileShowContent(true);
@@ -117,6 +159,7 @@ export function GuideDialogShell({
             {/* Mobile header with back button */}
             <div className="flex items-center gap-2 p-3 border-b border-border/50 md:hidden">
               <button
+                type="button"
                 onClick={() => setMobileShowContent(false)}
                 className="p-1 rounded-sm hover:bg-secondary text-low hover:text-normal"
               >
@@ -124,6 +167,7 @@ export function GuideDialogShell({
               </button>
               <span className="text-sm font-medium text-high">Back</span>
               <button
+                type="button"
                 onClick={onClose}
                 className="ml-auto p-1 rounded-sm hover:bg-secondary text-low hover:text-normal"
               >
@@ -132,8 +176,9 @@ export function GuideDialogShell({
             </div>
             {/* Desktop close button */}
             <button
+              type="button"
               onClick={onClose}
-              className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-panel transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2 hidden md:block"
+              className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 hidden md:block"
             >
               <XIcon className="h-4 w-4 text-normal" />
               <span className="sr-only">{closeLabel}</span>
