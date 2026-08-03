@@ -788,6 +788,10 @@ pub struct ClaudeLogProcessor {
     main_model_name: Option<String>,
     main_model_context_window: u32,
     context_tokens_used: u32,
+    // Set once a rate-limit rejection has been surfaced this process so the
+    // Result-error fallback doesn't emit a second (time-less) entry on top of the
+    // structured `rate_limit_event` one.
+    rate_limit_reported: bool,
 }
 
 impl ClaudeLogProcessor {
@@ -807,6 +811,7 @@ impl ClaudeLogProcessor {
             last_assistant_message: None,
             main_model_context_window: DEFAULT_CLAUDE_CONTEXT_WINDOW,
             context_tokens_used: 0,
+            rate_limit_reported: false,
         }
     }
 
@@ -1312,6 +1317,59 @@ impl ClaudeLogProcessor {
                 }
             }
         }
+    }
+
+    /// Build a `RateLimitInfo` entry from a `rate_limit_event`'s
+    /// `rate_limit_info` payload, but only when it represents a hard rejection
+    /// (the request was actually blocked). Informational "allowed" updates
+    /// return `None` so they don't trigger auto-resume.
+    fn rate_limit_entry_from_event(info: Option<&serde_json::Value>) -> Option<NormalizedEntry> {
+        let info = info?;
+        let status = info.get("status").and_then(|v| v.as_str());
+        let overage = info.get("overageStatus").and_then(|v| v.as_str());
+        if status != Some("rejected") && overage != Some("rejected") {
+            return None;
+        }
+        let resets_at = info.get("resetsAt").and_then(Self::parse_reset_timestamp);
+        let scope = info
+            .get("rateLimitType")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        Some(NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::RateLimitInfo(crate::logs::RateLimitInfo {
+                limit_reached: true,
+                resets_at,
+                scope,
+            }),
+            content: "Usage rate limit reached".to_string(),
+            metadata: None,
+        })
+    }
+
+    /// Parse a rate-limit reset time that may arrive as an epoch (seconds or
+    /// milliseconds) or an RFC3339 string, normalizing to RFC3339.
+    fn parse_reset_timestamp(v: &serde_json::Value) -> Option<String> {
+        // Values past ~year 5138 in seconds are actually milliseconds.
+        let from_epoch = |n: i64| {
+            let secs = if n > 100_000_000_000 { n / 1000 } else { n };
+            chrono::DateTime::from_timestamp(secs, 0).map(|dt| dt.to_rfc3339())
+        };
+        if let Some(n) = v.as_i64() {
+            return from_epoch(n);
+        }
+        if let Some(f) = v.as_f64() {
+            return from_epoch(f as i64);
+        }
+        if let Some(s) = v.as_str() {
+            if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
+                return Some(s.to_string());
+            }
+            if let Ok(n) = s.parse::<i64>() {
+                return from_epoch(n);
+            }
+        }
+        None
     }
 
     /// Convert Claude JSON to normalized patches
@@ -1920,6 +1978,7 @@ impl ClaudeLogProcessor {
             },
             ClaudeJson::Result {
                 is_error,
+                api_error_status,
                 model_usage,
                 subtype,
                 result,
@@ -1936,20 +1995,25 @@ impl ClaudeLogProcessor {
                     patches.push(self.add_token_usage_entry(entry_index_provider));
                 }
 
-                // If the turn ended in an error that mentions a usage/rate
-                // limit, emit a normalized RateLimitInfo entry so the exit
-                // monitor can schedule an auto-resume once the limit resets.
-                if is_error.unwrap_or(false) {
+                // Fallback rate-limit detection for the terminating Result when
+                // the structured `rate_limit_event` was not seen (older CLI
+                // versions). A 429 is an authoritative machine signal; the text
+                // match is a last resort for CLIs that surface neither. When a
+                // structured event already reported the limit (and its exact
+                // reset time), skip this to avoid a second, time-less entry.
+                if is_error.unwrap_or(false) && !self.rate_limit_reported {
                     let haystack = result
                         .as_ref()
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| serde_json::to_string(claude_json).unwrap_or_default())
                         .to_lowercase();
-                    if haystack.contains("usage limit")
+                    let rate_limited = *api_error_status == Some(429)
+                        || haystack.contains("usage limit")
                         || haystack.contains("rate limit")
                         || haystack.contains("rate_limit")
-                    {
+                        || haystack.contains("session limit");
+                    if rate_limited {
                         let entry = NormalizedEntry {
                             timestamp: None,
                             entry_type: NormalizedEntryType::RateLimitInfo(
@@ -1964,6 +2028,7 @@ impl ClaudeLogProcessor {
                         };
                         let idx = entry_index_provider.next();
                         patches.push(ConversationPatch::add_normalized_entry(idx, entry));
+                        self.rate_limit_reported = true;
                     }
                 }
 
@@ -2117,10 +2182,22 @@ impl ClaudeLogProcessor {
                 let idx = entry_index_provider.next();
                 patches.push(ConversationPatch::add_normalized_entry(idx, entry));
             }
+            ClaudeJson::RateLimitEvent {
+                rate_limit_info, ..
+            } => {
+                // Authoritative, machine-readable rate-limit signal. When it
+                // reports a hard rejection, emit a RateLimitInfo entry carrying
+                // the exact reset time so the exit monitor schedules a precise
+                // resume instead of the conservative 5h fallback.
+                if let Some(entry) = Self::rate_limit_entry_from_event(rate_limit_info.as_ref()) {
+                    let idx = entry_index_provider.next();
+                    patches.push(ConversationPatch::add_normalized_entry(idx, entry));
+                    self.rate_limit_reported = true;
+                }
+            }
             ClaudeJson::ControlRequest { .. }
             | ClaudeJson::ControlResponse { .. }
-            | ClaudeJson::ControlCancelRequest { .. }
-            | ClaudeJson::RateLimitEvent { .. } => {}
+            | ClaudeJson::ControlCancelRequest { .. } => {}
         }
         patches
     }
@@ -2535,6 +2612,11 @@ pub enum ClaudeJson {
         subtype: Option<String>,
         #[serde(default, alias = "isError")]
         is_error: Option<bool>,
+        /// HTTP status of the terminating API error, when the turn ended on one.
+        /// `429` is an authoritative rate-limit signal independent of the
+        /// (localized, version-dependent) error text.
+        #[serde(default, alias = "apiErrorStatus")]
+        api_error_status: Option<u16>,
         #[serde(default, alias = "durationMs")]
         duration_ms: Option<u64>,
         #[serde(default)]
@@ -4071,5 +4153,97 @@ mod tests {
         let control_request_json = r#"{"type":"control_request","request_id":"f559d907-b139-475b-addd-79c05591eb99","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"./gradlew :web:testApi","timeout":300000,"description":"Run API tests"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"./gradlew :web:testApi:"}],"behavior":"allow","destination":"localSettings"}],"tool_use_id":"toolu_014PR3WXsJfiftSCbjcjEbeM"}}"#;
         let parsed: ClaudeJson = serde_json::from_str(control_request_json).unwrap();
         assert!(matches!(parsed, ClaudeJson::ControlRequest { .. }));
+    }
+
+    fn collect_rate_limit_infos(patches: &[json_patch::Patch]) -> Vec<crate::logs::RateLimitInfo> {
+        patches
+            .iter()
+            .filter_map(extract_normalized_entry_from_patch)
+            .filter_map(|(_, e)| match e.entry_type {
+                NormalizedEntryType::RateLimitInfo(info) => Some(info),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rate_limit_event_rejected_emits_entry_with_reset_time() {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        // resetsAt 1785751800 == 2026-08-03T10:10:00+00:00
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1785751800,"rateLimitType":"five_hour","overageStatus":"rejected"},"session_id":"s"}"#;
+        let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+        let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+        let infos = collect_rate_limit_infos(&patches);
+        assert_eq!(infos.len(), 1, "rejected event must surface a limit entry");
+        assert!(infos[0].limit_reached);
+        assert_eq!(
+            infos[0].resets_at.as_deref(),
+            Some("2026-08-03T10:10:00+00:00"),
+            "exact reset time from the structured event must be preserved"
+        );
+        assert_eq!(infos[0].scope.as_deref(), Some("five_hour"));
+    }
+
+    #[test]
+    fn rate_limit_event_allowed_does_not_trigger_resume() {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        // A routine "allowed" usage update must NOT be treated as a limit hit.
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1785751800,"rateLimitType":"five_hour","overageStatus":"allowed"},"session_id":"s"}"#;
+        let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+        let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+        assert!(
+            collect_rate_limit_infos(&patches).is_empty(),
+            "allowed usage updates must not schedule a resume"
+        );
+    }
+
+    #[test]
+    fn result_api_error_429_detected_without_matching_text() {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        // 429 is authoritative even when the message text matches no keyword.
+        let line = r#"{"type":"result","subtype":"error","is_error":true,"api_error_status":429,"result":"request could not be completed","session_id":"s"}"#;
+        let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+        let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+        let infos = collect_rate_limit_infos(&patches);
+        assert_eq!(infos.len(), 1, "HTTP 429 must be detected as a rate limit");
+        assert!(infos[0].limit_reached);
+    }
+
+    #[test]
+    fn result_session_limit_text_detected() {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        // The exact phrasing the CLI uses for a 5-hour session cap.
+        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your session limit · resets 7:10pm (Asia/Seoul)","session_id":"s"}"#;
+        let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+        let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+        let infos = collect_rate_limit_infos(&patches);
+        assert_eq!(infos.len(), 1, "\"session limit\" text must be detected");
+        assert!(infos[0].limit_reached);
+    }
+
+    #[test]
+    fn structured_event_suppresses_result_fallback_dup() {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        // Real ordering: the structured event arrives, then the terminating
+        // Result. Only one entry should be surfaced, and it must keep the exact
+        // reset time from the event (not the time-less Result fallback).
+        let event = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1785751800,"rateLimitType":"five_hour","overageStatus":"rejected"},"session_id":"s"}"#;
+        let result = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"result":"You've hit your session limit · resets 7:10pm (Asia/Seoul)","session_id":"s"}"#;
+        let mut infos = Vec::new();
+        for line in [event, result] {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            let patches = processor.normalize_entries(&parsed, "/tmp/work", &provider);
+            infos.extend(collect_rate_limit_infos(&patches));
+        }
+        assert_eq!(infos.len(), 1, "must not double-report the same limit hit");
+        assert_eq!(
+            infos[0].resets_at.as_deref(),
+            Some("2026-08-03T10:10:00+00:00")
+        );
     }
 }
