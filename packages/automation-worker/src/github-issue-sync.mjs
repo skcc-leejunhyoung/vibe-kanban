@@ -4,6 +4,43 @@ export function githubIssueMarker(issueId) {
   return `${MARKER_PREFIX}${issueId} -->`;
 }
 
+export function decideGithubParentSync({
+  baselineParentIssueId,
+  vibeParentIssueId,
+  githubParentIssueId,
+  vibeUpdatedAt,
+  githubUpdatedAt,
+}) {
+  const baseline = baselineParentIssueId || null;
+  const vibeParent = vibeParentIssueId || null;
+  const githubParent = githubParentIssueId || null;
+  if (vibeParent === githubParent) {
+    return { direction: 'none', parentIssueId: vibeParent };
+  }
+
+  const vibeChanged = vibeParent !== baseline;
+  const githubChanged = githubParent !== baseline;
+  if (vibeChanged && !githubChanged) {
+    return { direction: 'to_github', parentIssueId: vibeParent };
+  }
+  if (githubChanged && !vibeChanged) {
+    return { direction: 'to_vibe', parentIssueId: githubParent };
+  }
+  if (!vibeChanged && !githubChanged) {
+    return { direction: 'none', parentIssueId: baseline };
+  }
+
+  const githubTime = Date.parse(githubUpdatedAt || '');
+  const vibeTime = Date.parse(vibeUpdatedAt || '');
+  if (
+    Number.isFinite(githubTime) &&
+    (!Number.isFinite(vibeTime) || githubTime >= vibeTime)
+  ) {
+    return { direction: 'to_vibe', parentIssueId: githubParent };
+  }
+  return { direction: 'to_github', parentIssueId: vibeParent };
+}
+
 export function withGithubIssueMarker(body, issueId) {
   const marker = githubIssueMarker(issueId);
   const text = body == null ? '' : String(body);

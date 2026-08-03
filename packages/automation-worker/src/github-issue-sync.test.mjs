@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
+  decideGithubParentSync,
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueMarker,
@@ -15,6 +16,57 @@ import {
   withGithubIssueMarker,
   withoutGithubIssueMarker,
 } from './github-issue-sync.mjs';
+
+test('synchronizes parent creation, moves, removal, and concurrent changes', () => {
+  assert.deepEqual(
+    decideGithubParentSync({
+      baselineParentIssueId: null,
+      vibeParentIssueId: 'vibe-parent',
+      githubParentIssueId: null,
+      vibeUpdatedAt: '2026-08-03T01:00:00Z',
+      githubUpdatedAt: '2026-08-03T00:00:00Z',
+    }),
+    { direction: 'to_github', parentIssueId: 'vibe-parent' }
+  );
+  assert.deepEqual(
+    decideGithubParentSync({
+      baselineParentIssueId: 'old-parent',
+      vibeParentIssueId: 'old-parent',
+      githubParentIssueId: 'github-parent',
+      vibeUpdatedAt: '2026-08-03T01:00:00Z',
+      githubUpdatedAt: '2026-08-03T02:00:00Z',
+    }),
+    { direction: 'to_vibe', parentIssueId: 'github-parent' }
+  );
+  assert.deepEqual(
+    decideGithubParentSync({
+      baselineParentIssueId: 'old-parent',
+      vibeParentIssueId: null,
+      githubParentIssueId: 'old-parent',
+      vibeUpdatedAt: '2026-08-03T02:00:00Z',
+      githubUpdatedAt: '2026-08-03T01:00:00Z',
+    }),
+    { direction: 'to_github', parentIssueId: null }
+  );
+  assert.deepEqual(
+    decideGithubParentSync({
+      baselineParentIssueId: 'old-parent',
+      vibeParentIssueId: 'vibe-parent',
+      githubParentIssueId: 'github-parent',
+      vibeUpdatedAt: '2026-08-03T02:00:00Z',
+      githubUpdatedAt: '2026-08-03T03:00:00Z',
+    }),
+    { direction: 'to_vibe', parentIssueId: 'github-parent' }
+  );
+  assert.deepEqual(
+    decideGithubParentSync({
+      baselineParentIssueId: null,
+      vibeParentIssueId: 'same-parent',
+      githubParentIssueId: 'same-parent',
+    }),
+    { direction: 'none', parentIssueId: 'same-parent' }
+  );
+});
 
 test('rejects linking an issue outside the rule configured project', () => {
   assert.doesNotThrow(() =>

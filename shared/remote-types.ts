@@ -24,7 +24,7 @@ export type Tag = { id: string, project_id: string, name: string, color: string,
 
 export type Issue = { id: string, project_id: string, issue_number: number, simple_id: string, status_id: string, title: string, description: string | null, priority: IssuePriority | null, start_date: string | null, target_date: string | null, completed_at: string | null, sort_order: number, parent_issue_id: string | null, parent_issue_sort_order: number | null, extension_metadata: JsonValue, creator_user_id: string | null, created_at: string, updated_at: string, };
 
-export type GithubIssueLink = { id: string, project_id: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, created_at: string, updated_at: string, };
+export type GithubIssueLink = { id: string, project_id: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, created_at: string, updated_at: string, };
 
 export type IssueAssignee = { id: string, issue_id: string, user_id: string, assigned_at: string, project_id: string, };
 
@@ -69,9 +69,9 @@ export type CreatePullRequestIssueRequest = {
  */
 id?: string, issue_id: string, url: string, number: number, status: PullRequestStatus, merged_at: string | null, merge_commit_sha: string | null, target_branch_name: string, };
 
-export type CreateGithubIssueLinkRequest = { id?: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, };
+export type CreateGithubIssueLinkRequest = { id?: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, };
 
-export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, };
+export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id?: string | null | null, };
 
 export type SortDirection = "asc" | "desc";
 

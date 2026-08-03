@@ -22,6 +22,7 @@ pub struct GithubIssueLink {
     pub synced_description: Option<String>,
     pub synced_vibe_status_id: Option<Uuid>,
     pub synced_github_status_option_id: Option<String>,
+    pub synced_parent_issue_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -43,6 +44,7 @@ pub struct CreateGithubIssueLinkRequest {
     pub synced_description: Option<String>,
     pub synced_vibe_status_id: Option<Uuid>,
     pub synced_github_status_option_id: Option<String>,
+    pub synced_parent_issue_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -60,6 +62,12 @@ pub struct UpdateGithubIssueLinkRequest {
     pub synced_description: Option<Option<String>>,
     pub synced_vibe_status_id: Option<Uuid>,
     pub synced_github_status_option_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "some_if_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub synced_parent_issue_id: Option<Option<Uuid>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

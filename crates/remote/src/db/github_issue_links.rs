@@ -51,11 +51,11 @@ impl GithubIssueLinkRepository {
                 github_node_id, project_item_id, github_state,
                 github_updated_at, last_synced_vibe_updated_at,
                 synced_title, synced_description, synced_vibe_status_id,
-                synced_github_status_option_id
+                synced_github_status_option_id, synced_parent_issue_id
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15
+                $11, $12, $13, $14, $15, $16
             )
             RETURNING *
             "#,
@@ -75,6 +75,7 @@ impl GithubIssueLinkRepository {
         .bind(payload.synced_description)
         .bind(payload.synced_vibe_status_id)
         .bind(payload.synced_github_status_option_id)
+        .bind(payload.synced_parent_issue_id)
         .fetch_one(&mut **tx)
         .await
     }
@@ -86,6 +87,8 @@ impl GithubIssueLinkRepository {
     ) -> Result<GithubIssueLink, sqlx::Error> {
         let update_synced_description = payload.synced_description.is_some();
         let synced_description = payload.synced_description.flatten();
+        let update_synced_parent_issue_id = payload.synced_parent_issue_id.is_some();
+        let synced_parent_issue_id = payload.synced_parent_issue_id.flatten();
         sqlx::query_as::<_, GithubIssueLink>(
             r#"
             UPDATE github_issue_links
@@ -99,6 +102,8 @@ impl GithubIssueLinkRepository {
                 synced_vibe_status_id = COALESCE($9, synced_vibe_status_id),
                 synced_github_status_option_id =
                     COALESCE($10, synced_github_status_option_id),
+                synced_parent_issue_id =
+                    CASE WHEN $11 THEN $12 ELSE synced_parent_issue_id END,
                 updated_at = NOW()
             WHERE id = $1
             RETURNING *
@@ -114,6 +119,8 @@ impl GithubIssueLinkRepository {
         .bind(synced_description)
         .bind(payload.synced_vibe_status_id)
         .bind(payload.synced_github_status_option_id)
+        .bind(update_synced_parent_issue_id)
+        .bind(synced_parent_issue_id)
         .fetch_one(&mut **tx)
         .await
     }

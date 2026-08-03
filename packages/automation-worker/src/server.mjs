@@ -11,6 +11,7 @@ import {
 import {
   assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
+  decideGithubParentSync,
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueSyncVibeConnectorId,
@@ -22,6 +23,12 @@ import {
   withoutGithubIssueMarker,
 } from './github-issue-sync.mjs';
 import { loadGithubProjectsMetadata } from './github-projects.mjs';
+import {
+  fetchGithubIssueParent,
+  githubIssueLinkKey,
+  githubIssueRepository,
+  updateGithubIssueParent,
+} from './github-sub-issues.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -1618,6 +1625,7 @@ async function linkGithubIssueOnce(input, operationKey) {
     synced_github_status_option_id: shouldSyncGithubProjectStatus(config)
       ? statusMapping?.githubOptionId || null
       : null,
+    synced_parent_issue_id: null,
   });
   removeGithubIssueLinkOperation(operationKey);
   await persistState();
@@ -1717,6 +1725,12 @@ async function reconcileGithubIssueRules(githubConnector) {
       ])
     );
     const links = (linksBody && linksBody.github_issue_links) || [];
+    const linksByIssueId = new Map(
+      links.map((candidate) => [candidate.issue_id, candidate])
+    );
+    const linksByExternalKey = new Map(
+      links.map((candidate) => [githubIssueLinkKey(candidate), candidate])
+    );
     backfilled += await backfillGithubIssueMapLinks({
       rule,
       github: githubConnector,
@@ -1739,7 +1753,8 @@ async function reconcileGithubIssueRules(githubConnector) {
           githubConnector,
           vibe,
           link,
-          vibeIssue
+          vibeIssue,
+          { linksByIssueId, linksByExternalKey }
         );
         synced += 1;
       } catch (error) {
@@ -1755,7 +1770,81 @@ async function reconcileGithubIssueRules(githubConnector) {
   return { synced, recovered, backfilled };
 }
 
-async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
+async function reconcileGithubIssueParent({
+  github,
+  vibe,
+  apiBase,
+  link,
+  vibeIssue,
+  external,
+  linksByIssueId,
+  linksByExternalKey,
+}) {
+  const vibeParentLink = vibeIssue.parent_issue_id
+    ? linksByIssueId.get(vibeIssue.parent_issue_id)
+    : null;
+  if (vibeIssue.parent_issue_id && !vibeParentLink) return undefined;
+
+  const requestHeaders = githubHeaders(github.config.token);
+  const githubParent = await fetchGithubIssueParent({
+    fetchImpl: fetch,
+    apiBase,
+    link,
+    headers: requestHeaders,
+  });
+  const githubParentRepository = githubParent
+    ? githubIssueRepository(githubParent)
+    : null;
+  if (githubParent && !githubParentRepository) return undefined;
+  const githubParentLink = githubParent
+    ? linksByExternalKey.get(
+        githubIssueLinkKey({
+          repository: githubParentRepository,
+          number: githubParent.number,
+        })
+      )
+    : null;
+  if (githubParent && !githubParentLink) return undefined;
+
+  const decision = decideGithubParentSync({
+    baselineParentIssueId: link.synced_parent_issue_id,
+    vibeParentIssueId: vibeParentLink?.issue_id || null,
+    githubParentIssueId: githubParentLink?.issue_id || null,
+    vibeUpdatedAt: vibeIssue.updated_at,
+    githubUpdatedAt: external.updated_at,
+  });
+  if (decision.direction === 'to_github') {
+    const nextParentLink = decision.parentIssueId
+      ? linksByIssueId.get(decision.parentIssueId)
+      : null;
+    await updateGithubIssueParent({
+      fetchImpl: fetch,
+      apiBase,
+      child: external,
+      currentParent: githubParent,
+      nextParentLink,
+      headers: requestHeaders,
+    });
+  } else if (decision.direction === 'to_vibe') {
+    await vibeApi(
+      vibe,
+      'PATCH',
+      `/v1/issues/${encodeURIComponent(vibeIssue.id)}`,
+      { parent_issue_id: decision.parentIssueId }
+    );
+    vibeIssue.parent_issue_id = decision.parentIssueId;
+  }
+  return decision.parentIssueId;
+}
+
+async function reconcileGithubIssueLink(
+  rule,
+  github,
+  vibe,
+  link,
+  vibeIssue,
+  { linksByIssueId, linksByExternalKey }
+) {
   const config = rule.config || {};
   const syncTitle = config.fields?.title !== false;
   const syncDescription = config.fields?.description !== false;
@@ -1867,6 +1956,17 @@ async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
     }
   }
 
+  const syncedParentIssueId = await reconcileGithubIssueParent({
+    github,
+    vibe,
+    apiBase,
+    link,
+    vibeIssue,
+    external,
+    linksByIssueId,
+    linksByExternalKey,
+  });
+
   await vibeApi(
     vibe,
     'PATCH',
@@ -1880,6 +1980,9 @@ async function reconcileGithubIssueLink(rule, github, vibe, link, vibeIssue) {
       synced_description: syncDescription ? description : undefined,
       synced_vibe_status_id: vibeIssue.status_id,
       synced_github_status_option_id: githubStatusOption,
+      ...(syncedParentIssueId !== undefined
+        ? { synced_parent_issue_id: syncedParentIssueId }
+        : {}),
     }
   );
 }
