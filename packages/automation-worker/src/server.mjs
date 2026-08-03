@@ -25,6 +25,7 @@ import {
 } from './github-issue-sync.mjs';
 import { loadGithubProjectsMetadata } from './github-projects.mjs';
 import {
+  canConfirmGithubParentRemoval,
   fetchGithubIssueParent,
   githubIssueLinkKey,
   githubIssueRepository,
@@ -1797,6 +1798,19 @@ async function reconcileGithubIssueParent({
     link,
     headers: requestHeaders,
   });
+  if (!githubParent && link.synced_parent_issue_id) {
+    const previousParentLink = linksByIssueId.get(
+      link.synced_parent_issue_id
+    );
+    const canConfirmRemoval = await canConfirmGithubParentRemoval({
+      fetchImpl: fetch,
+      apiBase,
+      childLink: link,
+      previousParentLink,
+      headers: requestHeaders,
+    });
+    if (!canConfirmRemoval) return undefined;
+  }
   const githubParentRepository = githubParent
     ? githubIssueRepository(githubParent)
     : null;

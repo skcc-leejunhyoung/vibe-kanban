@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canConfirmGithubParentRemoval,
   fetchGithubIssueParent,
   githubIssueLinkKey,
   githubIssueRepositoriesShareOwner,
@@ -41,6 +42,62 @@ test('reads a GitHub parent and treats 404 as no parent', async () => {
       headers: {},
     }),
     null
+  );
+});
+
+test('confirms a missing cross-repository parent only when it remains readable', async () => {
+  const childLink = { repository: 'Org/Child', number: 8 };
+  const previousParentLink = { repository: 'Org/Parent', number: 7 };
+  const calls = [];
+  assert.equal(
+    await canConfirmGithubParentRemoval({
+      fetchImpl: async (...args) => {
+        calls.push(args);
+        return response(200);
+      },
+      apiBase: 'https://api.github.test',
+      childLink,
+      previousParentLink,
+      headers: { authorization: 'hidden' },
+    }),
+    true
+  );
+  assert.equal(
+    calls[0][0],
+    'https://api.github.test/repos/Org/Parent/issues/7'
+  );
+
+  assert.equal(
+    await canConfirmGithubParentRemoval({
+      fetchImpl: async () => response(404),
+      apiBase: 'https://api.github.test',
+      childLink,
+      previousParentLink,
+      headers: {},
+    }),
+    false
+  );
+  assert.equal(
+    await canConfirmGithubParentRemoval({
+      fetchImpl: async () => {
+        throw new Error('same-repository removal should not fetch again');
+      },
+      apiBase: 'https://api.github.test',
+      childLink,
+      previousParentLink: { repository: 'org/child', number: 7 },
+      headers: {},
+    }),
+    true
+  );
+  assert.equal(
+    await canConfirmGithubParentRemoval({
+      fetchImpl: async () => response(200),
+      apiBase: 'https://api.github.test',
+      childLink,
+      previousParentLink: null,
+      headers: {},
+    }),
+    false
   );
 });
 

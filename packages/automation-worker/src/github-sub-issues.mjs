@@ -36,6 +36,35 @@ export async function fetchGithubIssueParent({
   return JSON.parse(text);
 }
 
+export async function canConfirmGithubParentRemoval({
+  fetchImpl,
+  apiBase,
+  childLink,
+  previousParentLink,
+  headers,
+}) {
+  if (!previousParentLink) return false;
+  if (
+    String(childLink.repository).toLowerCase() ===
+    String(previousParentLink.repository).toLowerCase()
+  ) {
+    return true;
+  }
+
+  const response = await fetchImpl(
+    `${apiBase}/repos/${previousParentLink.repository}/issues/${previousParentLink.number}`,
+    { headers }
+  );
+  const text = await response.text();
+  if (response.status === 404) return false;
+  if (!response.ok) {
+    throw new Error(
+      `GitHub previous parent lookup error: ${response.status} ${text.slice(0, 200)}`
+    );
+  }
+  return true;
+}
+
 export async function updateGithubIssueParent({
   fetchImpl,
   apiBase,
