@@ -241,13 +241,16 @@
     },
     "reconcileRemote": {
       "title": "Sync with remote work branch",
+      "targetTitle": "Sync with remote target branch",
       "pullDescription": "The local and remote work branches have diverged. The local branch has {{ahead}} unique commit(s), and the remote has {{behind}}.",
+      "targetPullDescription": "The local and remote target branches have diverged. The local branch has {{ahead}} unique commit(s), and the remote has {{behind}}. This can happen after the target branch is force-pushed.",
       "pushDescription": "The remote work branch changed, so it cannot be pushed yet. Sync the local branch first, then run Push separately.",
       "note": "Merging preserves both histories. Replacing local with remote discards local work.",
       "mergeRemote": "Merge remote into local",
       "resetToRemote": "Replace local with remote",
       "resetConfirmTitle": "Discard local work?",
       "resetConfirmMessage": "Reset the local work branch to the remote branch. This deletes {{ahead}} local-only commit(s) and uncommitted changes to tracked files. Untracked files may also be deleted or overwritten when the remote commit tracks the same path. This may be difficult to undo.",
+      "targetResetConfirmMessage": "Reset the local target branch to the remote branch. This deletes {{ahead}} local-only commit(s) and uncommitted changes to tracked files. Untracked files may also be deleted or overwritten when the remote commit tracks the same path. This may be difficult to undo.",
       "error": "Failed to merge the remote branch into the local branch",
       "resetError": "Failed to restore the local branch from the remote"
     },

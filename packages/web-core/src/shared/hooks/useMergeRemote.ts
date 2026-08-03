@@ -17,7 +17,8 @@ class MergeRemoteErrorWithData extends Error {
 export function useMergeRemote(
   workspaceId?: string,
   onSuccess?: () => void,
-  onError?: (err: unknown, errorData?: GitOperationError) => void
+  onError?: (err: unknown, errorData?: GitOperationError) => void,
+  isTarget = false
 ) {
   const queryClient = useQueryClient();
   const hostId = useHostId();
@@ -25,7 +26,12 @@ export function useMergeRemote(
   return useMutation<void, unknown, PushWorkspaceRequest>({
     mutationFn: async (params) => {
       if (!workspaceId) return;
-      const result = await workspacesApi.mergeRemote(workspaceId, params);
+      const result = isTarget
+        ? await workspacesApi.mergeRemoteTargetBranch(
+            workspaceId,
+            params.repo_id
+          )
+        : await workspacesApi.mergeRemote(workspaceId, params);
       if (!result.success) {
         throw new MergeRemoteErrorWithData(
           result.message || 'Failed to merge remote branch',

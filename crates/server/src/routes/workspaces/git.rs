@@ -325,6 +325,14 @@ pub fn router() -> Router<DeploymentImpl> {
             "/target-branch/pull-and-push",
             post(pull_and_push_target_branch),
         )
+        .route(
+            "/target-branch/merge-remote",
+            post(merge_remote_target_branch),
+        )
+        .route(
+            "/target-branch/reset-to-remote",
+            post(reset_target_branch_to_remote),
+        )
         .route("/target-branch/pull", post(pull_target_branch))
         .route("/branch", axum::routing::put(rename_branch))
 }
@@ -1615,16 +1623,52 @@ pub async fn pull_and_push_target_branch(
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
+/// Merge the target branch's remote into its local checkout without pushing.
+/// This preserves both histories when a pull discovers divergence.
+#[axum::debug_handler]
+pub async fn merge_remote_target_branch(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<PullTargetBranchRequest>,
+) -> Result<ResponseJson<ApiResponse<(), GitOperationError>>, ApiError> {
+    let (repo, workspace_repo) =
+        load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
+    deployment
+        .git()
+        .merge_remote_into_branch_checkout(&repo.path, &workspace_repo.target_branch)?;
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+/// Discard local target-branch state and replace it with the latest remote tip.
+/// The explicit confirmation flag prevents accidental destructive calls.
+#[axum::debug_handler]
+pub async fn reset_target_branch_to_remote(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<ResetWorkspaceToRemoteRequest>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    if !request.confirm_discard {
+        return Err(ApiError::BadRequest(
+            "Explicit confirmation is required to discard local target-branch work".to_string(),
+        ));
+    }
+    let (repo, workspace_repo) =
+        load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
+    deployment
+        .git()
+        .reset_branch_checkout_to_remote(&repo.path, &workspace_repo.target_branch)?;
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
 /// Fetch, then fast-forward the workspace's target (base) branch to its
-/// counterpart on the repo's primary remote (`git pull --ff-only`), returning
-/// the updated ahead/behind status. Errors (as data) when the branch has
-/// diverged from origin so the UI can surface it without a 500.
+/// counterpart on the repo's primary remote (`git pull --ff-only`). Divergence
+/// is returned as an ordinary outcome so the UI can offer merge or reset.
 #[axum::debug_handler]
 pub async fn pull_target_branch(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<PullTargetBranchRequest>,
-) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus>>, ApiError> {
+) -> Result<ResponseJson<ApiResponse<PullWorkspaceResponse>>, ApiError> {
     let (repo, workspace_repo) =
         load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
     let git = deployment.git();
@@ -1655,12 +1699,17 @@ pub async fn pull_target_branch(
         &workspace_repo.target_branch,
         &remote,
     ) {
-        Ok(PullOutcome::Diverged { .. }) => {
-            return Ok(ResponseJson(ApiResponse::error(
-                "The target branch has diverged from origin; a fast-forward pull isn't possible.",
+        Ok(PullOutcome::Diverged { ahead, behind }) => {
+            return Ok(ResponseJson(ApiResponse::success(
+                PullWorkspaceResponse::Diverged { ahead, behind },
             )));
         }
-        Ok(_) => {}
+        Ok(PullOutcome::FastForwarded { commits, .. }) => {
+            return Ok(ResponseJson(ApiResponse::success(
+                PullWorkspaceResponse::FastForwarded { commits },
+            )));
+        }
+        Ok(PullOutcome::UpToDate) => {}
         Err(e) => {
             tracing::error!(
                 "Pull of target branch '{}' from '{remote}' for repo {} failed: {e}",
@@ -1671,9 +1720,9 @@ pub async fn pull_target_branch(
         }
     }
 
-    let status =
-        compute_target_branch_remote_status(&deployment, &repo, &workspace_repo.target_branch)?;
-    Ok(ResponseJson(ApiResponse::success(status)))
+    Ok(ResponseJson(ApiResponse::success(
+        PullWorkspaceResponse::UpToDate,
+    )))
 }
 
 #[axum::debug_handler]

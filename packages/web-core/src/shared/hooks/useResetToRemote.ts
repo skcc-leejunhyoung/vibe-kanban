@@ -7,7 +7,8 @@ import { workspaceCommitsKey } from './useWorkspaceCommits';
 export function useResetToRemote(
   workspaceId?: string,
   onSuccess?: () => void,
-  onError?: (err: unknown) => void
+  onError?: (err: unknown) => void,
+  isTarget = false
 ) {
   const queryClient = useQueryClient();
   const hostId = useHostId();
@@ -15,13 +16,17 @@ export function useResetToRemote(
   return useMutation<void, unknown, ResetWorkspaceToRemoteRequest>({
     mutationFn: async (params) => {
       if (!workspaceId) return;
-      await workspacesApi.resetToRemote(workspaceId, params);
+      if (isTarget) {
+        await workspacesApi.resetTargetBranchToRemote(workspaceId, params);
+      } else {
+        await workspacesApi.resetToRemote(workspaceId, params);
+      }
     },
     onSuccess: () => {
       onSuccess?.();
     },
     onError: (err) => {
-      console.error('Failed to reset work branch to remote:', err);
+      console.error('Failed to reset local branch to remote:', err);
       onError?.(err);
     },
     onSettled: () => {

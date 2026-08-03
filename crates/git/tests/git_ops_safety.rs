@@ -478,7 +478,7 @@ fn merge_remote_into_workspace_branch_reports_conflicts_without_losing_commits()
 }
 
 #[test]
-fn reset_workspace_branch_to_remote_preserves_nonconflicting_untracked_files() {
+fn reset_branch_checkout_to_remote_replaces_force_pushed_target() {
     let temp_dir = TempDir::new().unwrap();
     let remote_path = temp_dir.path().join("remote.git");
     Repository::init_bare(&remote_path).expect("init bare remote");
@@ -517,8 +517,8 @@ fn reset_workspace_branch_to_remote_preserves_nonconflicting_untracked_files() {
     push_ref(&updater_repo, "refs/heads/main", "refs/heads/main");
 
     let reset_oid = service
-        .reset_workspace_branch_to_remote(&local_path, "main")
-        .expect("reset to authoritative remote");
+        .reset_branch_checkout_to_remote(&local_path, "main")
+        .expect("reset target checkout to authoritative remote");
 
     let reset_repo = Repository::open(&local_path).unwrap();
     assert_eq!(reset_oid, remote_oid.to_string());

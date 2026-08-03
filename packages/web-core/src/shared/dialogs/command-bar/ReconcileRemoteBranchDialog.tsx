@@ -23,6 +23,7 @@ export interface ReconcileRemoteBranchDialogProps {
   ahead: number;
   behind: number;
   triggeredByPush?: boolean;
+  isTarget?: boolean;
 }
 
 export type ReconcileRemoteBranchDialogResult =
@@ -39,6 +40,7 @@ const ReconcileRemoteBranchDialogImpl =
       ahead,
       behind,
       triggeredByPush = false,
+      isTarget = false,
     } = props;
     const modal = useModal();
     const { t } = useTranslation(['tasks', 'common']);
@@ -62,7 +64,8 @@ const ReconcileRemoteBranchDialogImpl =
             ? err.message
             : t('tasks:git.reconcileRemote.error')
         );
-      }
+      },
+      isTarget
     );
     const resetToRemote = useResetToRemote(
       workspaceId,
@@ -73,7 +76,8 @@ const ReconcileRemoteBranchDialogImpl =
             ? err.message
             : t('tasks:git.reconcileRemote.resetError')
         );
-      }
+      },
+      isTarget
     );
 
     const handleMerge = async () => {
@@ -88,7 +92,12 @@ const ReconcileRemoteBranchDialogImpl =
     const handleReset = async () => {
       const confirmation = await ConfirmDialog.show({
         title: t('tasks:git.reconcileRemote.resetConfirmTitle'),
-        message: t('tasks:git.reconcileRemote.resetConfirmMessage', { ahead }),
+        message: t(
+          isTarget
+            ? 'tasks:git.reconcileRemote.targetResetConfirmMessage'
+            : 'tasks:git.reconcileRemote.resetConfirmMessage',
+          { ahead }
+        ),
         confirmText: t('tasks:git.reconcileRemote.resetToRemote'),
         variant: 'destructive',
       });
@@ -118,14 +127,22 @@ const ReconcileRemoteBranchDialogImpl =
           <DialogHeader>
             <div className="flex items-center gap-3">
               <ArrowDownToLine className="h-6 w-6 text-primary" />
-              <DialogTitle>{t('tasks:git.reconcileRemote.title')}</DialogTitle>
+              <DialogTitle>
+                {t(
+                  isTarget
+                    ? 'tasks:git.reconcileRemote.targetTitle'
+                    : 'tasks:git.reconcileRemote.title'
+                )}
+              </DialogTitle>
             </div>
             <DialogDescription className="space-y-2 pt-2 text-left">
               <p>
                 {t(
                   triggeredByPush
                     ? 'tasks:git.reconcileRemote.pushDescription'
-                    : 'tasks:git.reconcileRemote.pullDescription',
+                    : isTarget
+                      ? 'tasks:git.reconcileRemote.targetPullDescription'
+                      : 'tasks:git.reconcileRemote.pullDescription',
                   { ahead, behind }
                 )}
               </p>

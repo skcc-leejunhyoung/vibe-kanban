@@ -25,6 +25,7 @@ vi.mock('@/shared/lib/api', () => ({
     runCleanupScript: vi.fn(),
     runArchiveScript: vi.fn(),
     pull: vi.fn(),
+    pullTargetBranch: vi.fn(),
     push: vi.fn(),
     pushTargetBranch: vi.fn(),
   },
@@ -594,6 +595,26 @@ describe('diverged pull recovery', () => {
       behind: 3,
     });
     expect(showPullFirst).not.toHaveBeenCalled();
+  });
+
+  it('opens target reconciliation when Pull target branch detects a force-push divergence', async () => {
+    vi.mocked(workspacesApi.pullTargetBranch).mockResolvedValue({
+      type: 'diverged',
+      ahead: 4,
+      behind: 1,
+    });
+    showReconcileRemote.mockResolvedValue('canceled');
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitFetchTarget.execute(ctx, 'ws1', 'repo1');
+
+    expect(showReconcileRemote).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      repoId: 'repo1',
+      ahead: 4,
+      behind: 1,
+      isTarget: true,
+    });
   });
 });
 

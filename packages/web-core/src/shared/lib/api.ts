@@ -895,6 +895,34 @@ export const workspacesApi = {
     return handleApiResponse<void>(response);
   },
 
+  mergeRemoteTargetBranch: async (
+    workspaceId: string,
+    repoId: string
+  ): Promise<Result<void, GitOperationError>> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/merge-remote`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ repo_id: repoId }),
+      }
+    );
+    return handleApiResponseAsResult<void, GitOperationError>(response);
+  },
+
+  resetTargetBranchToRemote: async (
+    workspaceId: string,
+    data: ResetWorkspaceToRemoteRequest
+  ): Promise<void> => {
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/git/target-branch/reset-to-remote`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
+    return handleApiResponse<void>(response);
+  },
+
   /**
    * Target (base) branch counterpart of `pullAndPush`: fetch + merge the target
    * branch's own remote into it, then push. Non-destructive resolution for a
@@ -1039,11 +1067,11 @@ export const workspacesApi = {
     );
   },
 
-  /** Fetch, then fast-forward the target (base) branch from origin (ff-only). */
+  /** Fetch, then fast-forward the target branch, reporting divergence. */
   pullTargetBranch: async (
     workspaceId: string,
     repoId: string
-  ): Promise<TargetBranchRemoteStatus> => {
+  ): Promise<PullWorkspaceResponse> => {
     const payload: PullTargetBranchRequest = { repo_id: repoId };
     const response = await makeRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/pull`,
@@ -1052,7 +1080,7 @@ export const workspacesApi = {
         body: JSON.stringify(payload),
       }
     );
-    return handleApiResponse<TargetBranchRemoteStatus>(response);
+    return handleApiResponse<PullWorkspaceResponse>(response);
   },
 
   renameBranch: async (

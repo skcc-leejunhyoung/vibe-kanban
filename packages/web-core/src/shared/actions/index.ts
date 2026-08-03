@@ -2183,8 +2183,8 @@ export const Actions = {
     },
   },
 
-  // Preserve the legacy action id for saved command-bar preferences, but make
-  // the visible "Pull target branch" action perform a real ff-only pull.
+  // Preserve the legacy action id for saved command-bar preferences. A normal
+  // pull fast-forwards; divergence opens the same recovery choices as work pull.
   GitFetchTarget: {
     id: 'git-fetch-target',
     label: 'Pull target branch',
@@ -2192,7 +2192,7 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const status = await workspacesApi.pullTargetBranch(workspaceId, repoId);
+      const outcome = await workspacesApi.pullTargetBranch(workspaceId, repoId);
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
       });
@@ -2200,26 +2200,26 @@ export const Actions = {
         queryKey: ['targetBranchRemoteStatus', workspaceId, repoId],
       });
 
-      if (!status.remote_configured) {
-        await ConfirmDialog.show({
-          title: 'No remote configured',
-          message: 'This repository has no remote to fetch from.',
-          confirmText: 'OK',
-          showCancelButton: false,
-          variant: 'info',
+      if (outcome.type === 'diverged') {
+        await ReconcileRemoteBranchDialog.show({
+          workspaceId,
+          repoId,
+          ahead: outcome.ahead,
+          behind: outcome.behind,
+          isTarget: true,
         });
         return;
       }
 
-      const summary = status.remote_branch_exists
-        ? `"${status.target_branch}" is ${status.ahead} ahead / ${status.behind} behind ${status.remote}.`
-        : `"${status.target_branch}" has not been pushed to ${status.remote} yet.`;
+      const pulled = outcome.type === 'fast_forwarded';
       await ConfirmDialog.show({
-        title: 'Pull complete',
-        message: `Pulled from ${status.remote}. ${summary}`,
+        title: pulled ? 'Pull complete' : 'Already up to date',
+        message: pulled
+          ? `Fast-forwarded ${outcome.commits} commit${outcome.commits === 1 ? '' : 's'} from the remote.`
+          : 'The target branch already matches its remote.',
         confirmText: 'OK',
         showCancelButton: false,
-        variant: 'success',
+        variant: pulled ? 'success' : 'info',
       });
     },
   },

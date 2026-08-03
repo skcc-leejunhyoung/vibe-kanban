@@ -1500,6 +1500,24 @@ impl GitService {
         Ok(remote_head)
     }
 
+    /// Replace a local branch with its remote counterpart, locating the
+    /// worktree that owns the branch so its index and files remain consistent.
+    /// Used by target-branch pull recovery after the remote was force-pushed.
+    pub fn reset_branch_checkout_to_remote(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+    ) -> Result<String, GitServiceError> {
+        let checkout = self
+            .find_checkout_path_for_branch(repo_path, branch)?
+            .ok_or_else(|| {
+                GitServiceError::BranchNotFound(format!(
+                    "'{branch}' is not checked out in any worktree; check it out before resetting."
+                ))
+            })?;
+        self.reset_workspace_branch_to_remote(&checkout, branch)
+    }
+
     /// Integrate the work branch's own diverged remote into the local branch by
     /// merging the remote-tracking ref into the checked-out branch (the
     /// equivalent of `git pull` with the default merge strategy). This is the
