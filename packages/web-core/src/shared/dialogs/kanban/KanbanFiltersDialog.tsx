@@ -4,10 +4,11 @@ import {
   SortAscendingIcon,
   SortDescendingIcon,
   TagIcon,
+  FlagIcon,
   UsersIcon,
   XIcon,
 } from '@phosphor-icons/react';
-import type { IssuePriority, Tag } from 'shared/remote-types';
+import type { IssuePriority, ProjectMilestone, Tag } from 'shared/remote-types';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import { cn } from '@/shared/lib/utils';
 import {
@@ -52,6 +53,7 @@ interface KanbanFiltersDialogProps {
   projectId: string;
   currentUserId: string | null;
   tags: Tag[];
+  milestones: ProjectMilestone[];
   users: OrganizationMemberWithProfile[];
   filters: KanbanFilterState;
   showSubIssues: boolean;
@@ -59,6 +61,8 @@ interface KanbanFiltersDialogProps {
   onPrioritiesChange: (priorities: IssuePriority[]) => void;
   onAssigneesChange: (assigneeIds: string[]) => void;
   onTagsChange: (tagIds: string[]) => void;
+  onMilestonesChange: (milestoneIds: string[]) => void;
+  onOverdueChange: (overdue: boolean) => void;
   onSortChange: (
     sortField: KanbanSortField,
     sortDirection: 'asc' | 'desc'
@@ -77,6 +81,7 @@ export function KanbanFiltersDialog({
   projectId,
   currentUserId,
   tags,
+  milestones,
   users,
   filters,
   showSubIssues,
@@ -84,6 +89,8 @@ export function KanbanFiltersDialog({
   onPrioritiesChange,
   onAssigneesChange,
   onTagsChange,
+  onMilestonesChange,
+  onOverdueChange,
   onSortChange,
   onShowSubIssuesChange,
   onShowWorkspacesChange,
@@ -145,6 +152,15 @@ export function KanbanFiltersDialog({
         ),
       })),
     [tags]
+  );
+
+  const milestoneOptions: MultiSelectDropdownOption<string>[] = useMemo(
+    () =>
+      milestones.map((milestone) => ({
+        value: milestone.id,
+        label: milestone.name,
+      })),
+    [milestones]
   );
 
   const usersById = useMemo(() => {
@@ -253,6 +269,27 @@ export function KanbanFiltersDialog({
                 menuLabel={t('kanban.filterByTag', 'Filter by tag')}
               />
             )}
+
+            {milestones.length > 0 && (
+              <MultiSelectDropdown
+                values={filters.milestoneIds ?? []}
+                options={milestoneOptions}
+                onChange={onMilestonesChange}
+                icon={FlagIcon}
+                label={t('kanban.milestones', 'Milestones')}
+                menuLabel={t('kanban.filterByMilestone', 'Filter by milestone')}
+              />
+            )}
+
+            <div className="flex items-center gap-half rounded-sm bg-panel px-base py-half">
+              <span className="whitespace-nowrap text-sm text-normal">
+                {t('kanban.overdueFilterLabel', 'Overdue')}
+              </span>
+              <Switch
+                checked={filters.overdue ?? false}
+                onCheckedChange={onOverdueChange}
+              />
+            </div>
 
             <PropertyDropdown
               value={filters.sortField}

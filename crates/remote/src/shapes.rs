@@ -2,8 +2,8 @@
 
 use api_types::{
     GithubIssueLink, Issue, IssueAssignee, IssueComment, IssueCommentReaction, IssueFollower,
-    IssueRelationship, IssueTag, Notification, OrganizationMember, Project, ProjectStatus,
-    PullRequest, PullRequestIssue, Tag, User, Workspace,
+    IssueMilestone, IssueRelationship, IssueTag, Notification, OrganizationMember, Project,
+    ProjectMilestone, ProjectStatus, PullRequest, PullRequestIssue, Tag, User, Workspace,
 };
 
 use crate::shape_definition::ShapeDefinition;
@@ -55,6 +55,24 @@ pub const PROJECT_TAGS_SHAPE: ShapeDefinition<Tag> = crate::define_shape!(
     url: "/shape/project/{project_id}/tags",
     params: ["project_id"],
 );
+
+pub const PROJECT_MILESTONES_SHAPE: ShapeDefinition<ProjectMilestone> = ShapeDefinition {
+    name: "PROJECT_MILESTONES_SHAPE",
+    table: "project_milestones",
+    where_clause: r#""project_id" = $1"#,
+    params: &["project_id"],
+    url: "/shape/project/{project_id}/project_milestones",
+    _phantom: std::marker::PhantomData,
+};
+
+pub const PROJECT_ISSUE_MILESTONES_SHAPE: ShapeDefinition<IssueMilestone> = ShapeDefinition {
+    name: "PROJECT_ISSUE_MILESTONES_SHAPE",
+    table: "issue_milestones",
+    where_clause: r#""project_id" = $1"#,
+    params: &["project_id"],
+    url: "/shape/project/{project_id}/issue_milestones",
+    _phantom: std::marker::PhantomData,
+};
 
 pub const PROJECT_PROJECT_STATUSES_SHAPE: ShapeDefinition<ProjectStatus> = crate::define_shape!(
     name: "PROJECT_PROJECT_STATUSES_SHAPE",

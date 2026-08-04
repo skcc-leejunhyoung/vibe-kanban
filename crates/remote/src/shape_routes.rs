@@ -1,11 +1,12 @@
 //! All shape route declarations with authorization scope and REST fallback.
 
 use api_types::{
-    ListGithubIssueLinksResponse, ListIssueAssigneesResponse, ListIssueCommentReactionsResponse,
-    ListIssueCommentsResponse, ListIssueFollowersResponse, ListIssueRelationshipsResponse,
-    ListIssueTagsResponse, ListIssuesResponse, ListProjectStatusesResponse, ListProjectsResponse,
-    ListPullRequestIssuesResponse, ListPullRequestsResponse, ListTagsResponse, Notification,
-    OrganizationMember, SearchIssuesRequest, User, Workspace,
+    IssueMilestone, ListGithubIssueLinksResponse, ListIssueAssigneesResponse,
+    ListIssueCommentReactionsResponse, ListIssueCommentsResponse, ListIssueFollowersResponse,
+    ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse,
+    ListProjectStatusesResponse, ListProjectsResponse, ListPullRequestIssuesResponse,
+    ListPullRequestsResponse, ListTagsResponse, Notification, OrganizationMember, ProjectMilestone,
+    SearchIssuesRequest, User, Workspace,
 };
 use axum::{
     Json,
@@ -18,14 +19,23 @@ use crate::{
     AppState,
     auth::RequestContext,
     db::{
-        github_issue_links::GithubIssueLinkRepository, issue_assignees::IssueAssigneeRepository,
+        github_issue_links::GithubIssueLinkRepository,
+        issue_assignees::IssueAssigneeRepository,
         issue_comment_reactions::IssueCommentReactionRepository,
-        issue_comments::IssueCommentRepository, issue_followers::IssueFollowerRepository,
-        issue_relationships::IssueRelationshipRepository, issue_tags::IssueTagRepository,
-        issues::IssueRepository, notifications::NotificationRepository, organization_members,
-        project_statuses::ProjectStatusRepository, projects::ProjectRepository,
-        pull_request_issues::PullRequestIssueRepository, pull_requests::PullRequestRepository,
-        tags::TagRepository, workspaces::WorkspaceRepository,
+        issue_comments::IssueCommentRepository,
+        issue_followers::IssueFollowerRepository,
+        issue_relationships::IssueRelationshipRepository,
+        issue_tags::IssueTagRepository,
+        issues::IssueRepository,
+        milestones::{IssueMilestoneRepository, MilestoneRepository},
+        notifications::NotificationRepository,
+        organization_members,
+        project_statuses::ProjectStatusRepository,
+        projects::ProjectRepository,
+        pull_request_issues::PullRequestIssueRepository,
+        pull_requests::PullRequestRepository,
+        tags::TagRepository,
+        workspaces::WorkspaceRepository,
     },
     routes::{
         error::ErrorResponse,
@@ -60,6 +70,16 @@ struct ListUsersResponse {
 #[derive(Debug, Serialize)]
 struct ListWorkspacesResponse {
     workspaces: Vec<Workspace>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListProjectMilestonesResponse {
+    project_milestones: Vec<ProjectMilestone>,
+}
+
+#[derive(Debug, Serialize)]
+struct ListIssueMilestonesResponse {
+    issue_milestones: Vec<IssueMilestone>,
 }
 
 // =============================================================================
@@ -102,6 +122,18 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
             ShapeScope::Project,
             "/fallback/tags",
             fallback_list_tags,
+        ),
+        ShapeRoute::new(
+            &shapes::PROJECT_MILESTONES_SHAPE,
+            ShapeScope::Project,
+            "/fallback/project_milestones",
+            fallback_list_project_milestones,
+        ),
+        ShapeRoute::new(
+            &shapes::PROJECT_ISSUE_MILESTONES_SHAPE,
+            ShapeScope::Project,
+            "/fallback/issue_milestones",
+            fallback_list_issue_milestones,
         ),
         ShapeRoute::new(
             &shapes::PROJECT_PROJECT_STATUSES_SHAPE,
@@ -289,6 +321,36 @@ async fn fallback_list_tags(
         })?;
 
     Ok(Json(ListTagsResponse { tags }))
+}
+
+async fn fallback_list_project_milestones(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<ProjectFallbackQuery>,
+) -> Result<Json<ListProjectMilestonesResponse>, ErrorResponse> {
+    ensure_project_access(state.pool(), ctx.user.id, query.project_id).await?;
+    let project_milestones = MilestoneRepository::list(state.pool(), query.project_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, project_id = %query.project_id, "failed to list milestones (fallback)");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to list milestones")
+        })?;
+    Ok(Json(ListProjectMilestonesResponse { project_milestones }))
+}
+
+async fn fallback_list_issue_milestones(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<ProjectFallbackQuery>,
+) -> Result<Json<ListIssueMilestonesResponse>, ErrorResponse> {
+    ensure_project_access(state.pool(), ctx.user.id, query.project_id).await?;
+    let issue_milestones = IssueMilestoneRepository::list(state.pool(), query.project_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, project_id = %query.project_id, "failed to list issue milestones (fallback)");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to list issue milestones")
+        })?;
+    Ok(Json(ListIssueMilestonesResponse { issue_milestones }))
 }
 
 async fn fallback_list_project_statuses(

@@ -22,6 +22,10 @@ export type ProjectStatus = { id: string, project_id: string, name: string, colo
 
 export type Tag = { id: string, project_id: string, name: string, color: string, };
 
+export type ProjectMilestone = { id: string, project_id: string, name: string, start_date: string | null, target_date: string | null, completed_at: string | null, source_repository: string | null, source_number: number | null, created_at: string, updated_at: string, };
+
+export type IssueMilestone = { id: string, project_id: string, issue_id: string, milestone_id: string, };
+
 export type Issue = { id: string, project_id: string, issue_number: number, simple_id: string, status_id: string, title: string, description: string | null, priority: IssuePriority | null, start_date: string | null, target_date: string | null, completed_at: string | null, sort_order: number, parent_issue_id: string | null, parent_issue_sort_order: number | null, extension_metadata: JsonValue, creator_user_id: string | null, created_at: string, updated_at: string, };
 
 export type GithubIssueLink = { id: string, project_id: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, created_at: string, updated_at: string, };
@@ -125,6 +129,12 @@ export type CreateTagRequest = {
 id?: string, project_id: string, name: string, color: string, };
 
 export type UpdateTagRequest = { name: string | null, color: string | null, };
+
+export type CreateProjectMilestoneRequest = { id?: string, project_id: string, name: string, start_date: string | null, target_date: string | null, completed_at: string | null, source_repository: string | null, source_number: number | null, };
+
+export type UpdateProjectMilestoneRequest = { name: string | null, start_date: string | null | null, target_date: string | null | null, completed_at: string | null | null, };
+
+export type CreateIssueMilestoneRequest = { id?: string, issue_id: string, milestone_id: string, };
 
 export type CreateProjectStatusRequest = {
 /**
@@ -265,6 +275,20 @@ export const PROJECT_TAGS_SHAPE = defineShape<Tag>(
   '/v1/fallback/tags'
 );
 
+export const PROJECT_MILESTONES_SHAPE = defineShape<ProjectMilestone>(
+  'project_milestones',
+  ['project_id'] as const,
+  '/v1/shape/project/{project_id}/project_milestones',
+  '/v1/fallback/project_milestones'
+);
+
+export const PROJECT_ISSUE_MILESTONES_SHAPE = defineShape<IssueMilestone>(
+  'issue_milestones',
+  ['project_id'] as const,
+  '/v1/shape/project/{project_id}/issue_milestones',
+  '/v1/fallback/issue_milestones'
+);
+
 export const PROJECT_PROJECT_STATUSES_SHAPE = defineShape<ProjectStatus>(
   'project_statuses',
   ['project_id'] as const,
@@ -391,6 +415,16 @@ export const NOTIFICATION_MUTATION = defineMutation<Notification, unknown, Updat
 export const TAG_MUTATION = defineMutation<Tag, CreateTagRequest, UpdateTagRequest>(
   'Tag',
   '/v1/tags'
+);
+
+export const PROJECT_MILESTONE_MUTATION = defineMutation<ProjectMilestone, CreateProjectMilestoneRequest, UpdateProjectMilestoneRequest>(
+  'ProjectMilestone',
+  '/v1/project_milestones'
+);
+
+export const ISSUE_MILESTONE_MUTATION = defineMutation<IssueMilestone, CreateIssueMilestoneRequest, unknown>(
+  'IssueMilestone',
+  '/v1/issue_milestones'
 );
 
 export const PROJECT_STATUS_MUTATION = defineMutation<ProjectStatus, CreateProjectStatusRequest, UpdateProjectStatusRequest>(

@@ -9,6 +9,8 @@ import type {
   IssueRelationship,
   IssueTag,
   IssuePriority,
+  IssueMilestone,
+  ProjectMilestone,
 } from 'shared/remote-types';
 import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 
@@ -16,6 +18,8 @@ type UseKanbanFiltersParams = {
   issues: Issue[];
   issueAssignees: IssueAssignee[];
   issueTags: IssueTag[];
+  issueMilestones: IssueMilestone[];
+  milestones: ProjectMilestone[];
   issueRelationships: IssueRelationship[];
   issuesById: Map<string, Issue>;
   doneStatusIds: Set<string>;
@@ -51,10 +55,34 @@ export function matchesIssueSearch(
   );
 }
 
+export function matchesMilestoneFilters(
+  milestone:
+    | Pick<ProjectMilestone, 'id' | 'target_date' | 'completed_at'>
+    | undefined,
+  selectedIds: string[],
+  overdue: boolean,
+  now = Date.now()
+): boolean {
+  if (
+    selectedIds.length > 0 &&
+    (!milestone || !selectedIds.includes(milestone.id))
+  ) {
+    return false;
+  }
+  if (!overdue) return true;
+  return Boolean(
+    milestone?.target_date &&
+      !milestone.completed_at &&
+      Date.parse(milestone.target_date) < now
+  );
+}
+
 export function useKanbanFilters({
   issues,
   issueAssignees,
   issueTags,
+  issueMilestones,
+  milestones,
   issueRelationships,
   issuesById,
   doneStatusIds,
@@ -85,6 +113,18 @@ export function useKanbanFilters({
     }
     return map;
   }, [issueTags]);
+
+  const milestoneByIssue = useMemo(
+    () =>
+      new Map(
+        issueMilestones.map((item) => [item.issue_id, item.milestone_id])
+      ),
+    [issueMilestones]
+  );
+  const milestonesById = useMemo(
+    () => new Map(milestones.map((item) => [item.id, item])),
+    [milestones]
+  );
 
   // Filter issues
   const filteredIssues = useMemo(() => {
@@ -149,6 +189,20 @@ export function useKanbanFilters({
       });
     }
 
+    if ((filters.milestoneIds ?? []).length > 0 || filters.overdue) {
+      result = result.filter((issue) => {
+        const milestoneId = milestoneByIssue.get(issue.id);
+        const milestone = milestoneId
+          ? milestonesById.get(milestoneId)
+          : undefined;
+        return matchesMilestoneFilters(
+          milestone,
+          filters.milestoneIds ?? [],
+          filters.overdue ?? false
+        );
+      });
+    }
+
     // Hide blocked: filter out issues that are blocked by an unresolved issue
     if (hideBlocked) {
       result = result.filter((issue) => {
@@ -172,6 +226,8 @@ export function useKanbanFilters({
     filters,
     assigneesByIssue,
     tagsByIssue,
+    milestoneByIssue,
+    milestonesById,
     showSubIssues,
     hideBlocked,
     issueRelationships,

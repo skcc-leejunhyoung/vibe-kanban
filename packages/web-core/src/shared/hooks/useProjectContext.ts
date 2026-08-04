@@ -9,6 +9,8 @@ import type {
   IssueAssignee,
   IssueFollower,
   IssueTag,
+  ProjectMilestone,
+  IssueMilestone,
   IssueRelationship,
   PullRequest,
   PullRequestIssue,
@@ -23,6 +25,9 @@ import type {
   CreateIssueAssigneeRequest,
   CreateIssueFollowerRequest,
   CreateIssueTagRequest,
+  CreateProjectMilestoneRequest,
+  UpdateProjectMilestoneRequest,
+  CreateIssueMilestoneRequest,
   CreateIssueRelationshipRequest,
   CreatePullRequestIssueRequest,
   CreateGithubIssueLinkRequest,
@@ -54,6 +59,8 @@ export interface ProjectContextValue {
   issueAssignees: IssueAssignee[];
   issueFollowers: IssueFollower[];
   issueTags: IssueTag[];
+  milestones: ProjectMilestone[];
+  issueMilestones: IssueMilestone[];
   issueRelationships: IssueRelationship[];
   pullRequests: PullRequest[];
   pullRequestIssues: PullRequestIssue[];
@@ -104,6 +111,19 @@ export interface ProjectContextValue {
   insertIssueTag: (data: CreateIssueTagRequest) => InsertResult<IssueTag>;
   removeIssueTag: (id: string) => MutationResult;
 
+  insertMilestone: (
+    data: CreateProjectMilestoneRequest
+  ) => InsertResult<ProjectMilestone>;
+  updateMilestone: (
+    id: string,
+    changes: Partial<UpdateProjectMilestoneRequest>
+  ) => MutationResult;
+  removeMilestone: (id: string) => MutationResult;
+  setIssueMilestone: (
+    data: CreateIssueMilestoneRequest
+  ) => InsertResult<IssueMilestone>;
+  removeIssueMilestone: (id: string) => MutationResult;
+
   // IssueRelationship mutations
   insertIssueRelationship: (
     data: CreateIssueRelationshipRequest
@@ -132,6 +152,7 @@ export interface ProjectContextValue {
   getFollowersForIssue: (issueId: string) => IssueFollower[];
   getTagsForIssue: (issueId: string) => IssueTag[];
   getTagObjectsForIssue: (issueId: string) => Tag[];
+  getMilestoneForIssue: (issueId: string) => ProjectMilestone | undefined;
   getRelationshipsForIssue: (issueId: string) => IssueRelationship[];
   getStatus: (statusId: string) => ProjectStatus | undefined;
   getTag: (tagId: string) => Tag | undefined;

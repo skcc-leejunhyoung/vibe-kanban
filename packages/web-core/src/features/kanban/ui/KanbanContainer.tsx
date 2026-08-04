@@ -122,6 +122,10 @@ const areKanbanFiltersEqual = (
   if (!areStringSetsEqual(left.tagIds, right.tagIds)) {
     return false;
   }
+  if (!areStringSetsEqual(left.milestoneIds ?? [], right.milestoneIds ?? [])) {
+    return false;
+  }
+  if ((left.overdue ?? false) !== (right.overdue ?? false)) return false;
 
   return (
     left.sortField === right.sortField &&
@@ -159,8 +163,11 @@ export function KanbanContainer() {
     tags,
     issueAssignees,
     issueTags,
+    milestones,
+    issueMilestones,
     issueRelationships,
     getTagObjectsForIssue,
+    getMilestoneForIssue,
     getTagsForIssue,
     getPullRequestsForIssue,
     getWorkspacesForIssue,
@@ -364,6 +371,8 @@ export function KanbanContainer() {
     issues,
     issueAssignees,
     issueTags,
+    milestones,
+    issueMilestones,
     issueRelationships,
     issuesById,
     doneStatusIds,
@@ -390,6 +399,16 @@ export function KanbanContainer() {
 
   const setKanbanTags = useCallback(
     (tagIds: string[]) => updateActiveViewFilters({ tagIds }),
+    [updateActiveViewFilters]
+  );
+
+  const setKanbanMilestones = useCallback(
+    (milestoneIds: string[]) => updateActiveViewFilters({ milestoneIds }),
+    [updateActiveViewFilters]
+  );
+
+  const setKanbanOverdue = useCallback(
+    (overdue: boolean) => updateActiveViewFilters({ overdue }),
     [updateActiveViewFilters]
   );
 
@@ -1596,7 +1615,15 @@ export function KanbanContainer() {
             onClearFilters={clearKanbanFilters}
             onCreateIssue={handleAddTask}
             shouldAnimateCreateButton={shouldAnimateCreateButton}
-            renderFiltersDialog={(props) => <KanbanFiltersDialog {...props} />}
+            renderFiltersDialog={(props) => (
+              <KanbanFiltersDialog
+                {...props}
+                filters={kanbanFilters}
+                milestones={milestones}
+                onMilestonesChange={setKanbanMilestones}
+                onOverdueChange={setKanbanOverdue}
+              />
+            )}
             isMobile={isMobile}
             isSelectionMode={isSelectionMode}
             onToggleSelectionMode={
@@ -1699,6 +1726,17 @@ export function KanbanContainer() {
                               title={issue.title}
                               description={issue.description}
                               priority={issue.priority}
+                              milestone={(() => {
+                                const milestone = getMilestoneForIssue(
+                                  issue.id
+                                );
+                                return milestone
+                                  ? {
+                                      name: milestone.name,
+                                      targetDate: milestone.target_date,
+                                    }
+                                  : null;
+                              })()}
                               tags={getTagObjectsForIssue(issue.id)}
                               assignees={issueAssigneesMap[issue.id] ?? []}
                               pullRequests={issueCardPullRequests}
@@ -1806,6 +1844,12 @@ export function KanbanContainer() {
               issueMap={issueMap}
               issueAssigneesMap={issueAssigneesMap}
               getTagObjectsForIssue={getTagObjectsForIssue}
+              getMilestoneForIssue={(issueId) => {
+                const milestone = getMilestoneForIssue(issueId);
+                return milestone
+                  ? { name: milestone.name, targetDate: milestone.target_date }
+                  : undefined;
+              }}
               getResolvedRelationshipsForIssue={
                 getResolvedRelationshipsForIssue
               }

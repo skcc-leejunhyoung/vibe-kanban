@@ -110,6 +110,17 @@ export interface KanbanIssuePanelProps {
   // Options for dropdowns
   statuses: IssueStatus[];
   tags: KanbanIssueTag[];
+  milestones?: Array<{ id: string; name: string }>;
+  milestoneId?: string | null;
+  onMilestoneChange?: (milestoneId: string | null) => void;
+  onCreateMilestone?: () => void;
+  startDate?: string | null;
+  targetDate?: string | null;
+  completedAt?: string | null;
+  onDateChange?: (
+    field: 'start_date' | 'target_date' | 'completed_at',
+    value: string | null
+  ) => void;
   workspaceHosts?: WorkspaceHostOption[];
 
   // Resolved assignee profiles for avatar display
@@ -190,6 +201,14 @@ export function KanbanIssuePanel({
   onFormChange,
   statuses,
   tags,
+  milestones = [],
+  milestoneId,
+  onMilestoneChange,
+  onCreateMilestone,
+  startDate,
+  targetDate,
+  completedAt,
+  onDateChange,
   workspaceHosts = [],
   assigneeUsers,
   issueId,
@@ -451,6 +470,75 @@ export function KanbanIssuePanel({
             }
             disabled={isSubmitting}
           />
+          {!isCreateMode && (
+            <div className="mt-base flex flex-wrap items-center gap-base">
+              {onMilestoneChange && (
+                <Select
+                  value={milestoneId ?? '__none__'}
+                  onValueChange={(value) => {
+                    if (value === '__create__') onCreateMilestone?.();
+                    else onMilestoneChange(value === '__none__' ? null : value);
+                  }}
+                >
+                  <SelectTrigger className="w-auto min-w-40">
+                    <SelectValue placeholder={t('kanban.milestones', 'Milestone')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      {t('kanban.noMilestone', 'No milestone')}
+                    </SelectItem>
+                    {milestones.map((milestone) => (
+                      <SelectItem key={milestone.id} value={milestone.id}>
+                        {milestone.name}
+                      </SelectItem>
+                    ))}
+                    {onCreateMilestone && (
+                      <SelectItem value="__create__">
+                        {t('kanban.createMilestone', '+ Create milestone')}
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              )}
+              {onDateChange && (
+                <>
+                  <label className="flex items-center gap-half text-sm text-low">
+                    {t('kanban.startDate', 'Start')}
+                    <input
+                      type="date"
+                      value={startDate?.slice(0, 10) ?? ''}
+                      onChange={(event) =>
+                        onDateChange('start_date', event.target.value || null)
+                      }
+                      className="rounded-sm bg-panel px-base py-half text-normal"
+                    />
+                  </label>
+                  <label className="flex items-center gap-half text-sm text-low">
+                    {t('kanban.completedDate', 'Completed')}
+                    <input
+                      type="date"
+                      value={completedAt?.slice(0, 10) ?? ''}
+                      onChange={(event) =>
+                        onDateChange('completed_at', event.target.value || null)
+                      }
+                      className="rounded-sm bg-panel px-base py-half text-normal"
+                    />
+                  </label>
+                  <label className="flex items-center gap-half text-sm text-low">
+                    {t('kanban.targetDate', 'Target')}
+                    <input
+                      type="date"
+                      value={targetDate?.slice(0, 10) ?? ''}
+                      onChange={(event) =>
+                        onDateChange('target_date', event.target.value || null)
+                      }
+                      className="rounded-sm bg-panel px-base py-half text-normal"
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Tags Row */}

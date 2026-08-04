@@ -27,6 +27,7 @@ pub mod issue_followers;
 pub mod issue_relationships;
 pub mod issue_tags;
 pub mod issues;
+pub mod milestones;
 pub mod notifications;
 mod oauth;
 pub(crate) mod organization_members;
@@ -108,6 +109,7 @@ pub fn router(state: AppState) -> Router {
         .merge(electric_proxy::router())
         .merge(project_statuses::router())
         .merge(tags::router())
+        .merge(milestones::router())
         .merge(issue_comments::router())
         .merge(issue_comment_reactions::router())
         .merge(issues::router())
@@ -184,6 +186,8 @@ pub fn all_mutation_definitions() -> Vec<crate::mutation_definition::MutationDef
         projects::mutation().definition(),
         notifications::mutation().definition(),
         tags::mutation().definition(),
+        milestones::milestone_mutation().definition(),
+        milestones::issue_milestone_mutation().definition(),
         project_statuses::mutation().definition(),
         issues::mutation().definition(),
         issue_assignees::mutation().definition(),

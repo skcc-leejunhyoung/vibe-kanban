@@ -1405,6 +1405,15 @@ function compactGithubIssue(issue) {
     updated_at: issue.updated_at,
     title: issue.title,
     body: issue.body ?? null,
+    milestone: issue.milestone
+      ? {
+          number: issue.milestone.number,
+          title: issue.milestone.title,
+          due_on: issue.milestone.due_on ?? null,
+          state: issue.milestone.state,
+          closed_at: issue.milestone.closed_at ?? null,
+        }
+      : null,
     pull_request: issue.pull_request ? {} : undefined,
   };
 }
@@ -1497,6 +1506,100 @@ async function findGithubIssueLinkForIssue(vibe, issueId) {
     `/v1/github_issue_links?issue_id=${encodeURIComponent(issueId)}`
   );
   return body?.github_issue_links?.[0] || null;
+}
+
+async function syncGithubMilestone({
+  vibe,
+  projectId,
+  repository,
+  issueId,
+  githubMilestone,
+  milestones,
+  issueMilestones,
+}) {
+  const allMilestones =
+    milestones ??
+    (await vibeApi(
+      vibe,
+      'GET',
+      `/v1/project_milestones?project_id=${encodeURIComponent(projectId)}`
+    ));
+  const allIssueMilestones =
+    issueMilestones ??
+    (await vibeApi(
+      vibe,
+      'GET',
+      `/v1/issue_milestones?project_id=${encodeURIComponent(projectId)}`
+    ));
+  const currentLink = allIssueMilestones.find((item) => item.issue_id === issueId);
+
+  if (!githubMilestone) {
+    const currentMilestone = currentLink
+      ? allMilestones.find((item) => item.id === currentLink.milestone_id)
+      : null;
+    if (
+      currentLink &&
+      String(currentMilestone?.source_repository || '').toLowerCase() ===
+        repository.toLowerCase()
+    ) {
+      await vibeApi(
+        vibe,
+        'DELETE',
+        `/v1/issue_milestones/${encodeURIComponent(currentLink.id)}`
+      );
+      const index = allIssueMilestones.indexOf(currentLink);
+      if (index >= 0) allIssueMilestones.splice(index, 1);
+    }
+    return null;
+  }
+
+  let milestone = allMilestones.find(
+    (item) =>
+      String(item.source_repository || '').toLowerCase() ===
+        repository.toLowerCase() &&
+      item.source_number === githubMilestone.number
+  );
+  const completedAt =
+    githubMilestone.state === 'closed' ? githubMilestone.closed_at : null;
+  if (!milestone) {
+    const response = await vibeApi(vibe, 'POST', '/v1/project_milestones', {
+      project_id: projectId,
+      name: githubMilestone.title,
+      start_date: null,
+      target_date: githubMilestone.due_on,
+      completed_at: completedAt,
+      source_repository: repository,
+      source_number: githubMilestone.number,
+    });
+    milestone = response.data;
+    allMilestones.push(milestone);
+  } else if (
+    milestone.name !== githubMilestone.title ||
+    milestone.target_date !== githubMilestone.due_on ||
+    milestone.completed_at !== completedAt
+  ) {
+    const response = await vibeApi(
+      vibe,
+      'PATCH',
+      `/v1/project_milestones/${encodeURIComponent(milestone.id)}`,
+      {
+        name: githubMilestone.title,
+        target_date: githubMilestone.due_on,
+        completed_at: completedAt,
+      }
+    );
+    milestone = response.data;
+  }
+
+  if (currentLink?.milestone_id !== milestone.id) {
+    const response = await vibeApi(vibe, 'POST', '/v1/issue_milestones', {
+      issue_id: issueId,
+      milestone_id: milestone.id,
+    });
+    if (currentLink) Object.assign(currentLink, response.data);
+    else allIssueMilestones.push(response.data);
+  }
+  return milestone;
 }
 
 function removeGithubIssueLinkOperation(key) {
@@ -1643,6 +1746,13 @@ async function linkGithubIssueOnce(input, operationKey) {
       : null,
     synced_parent_issue_id: null,
   });
+  await syncGithubMilestone({
+    vibe,
+    projectId: vibe.config.projectId,
+    repository,
+    issueId: effectiveInput.issueId,
+    githubMilestone: issue.milestone,
+  });
   removeGithubIssueLinkOperation(operationKey);
   await persistState();
   await log('info', 'github issue linked', {
@@ -1771,7 +1881,7 @@ async function reconcileGithubIssueRules(githubConnector) {
     const config = rule.config || {};
     const vibe = findConnector(String(config.vibeConnectorId || ''));
     if (!vibe.enabled || !vibe.config?.projectId) continue;
-    const [linksBody, issuesBody] = await Promise.all([
+    const [linksBody, issuesBody, milestones, issueMilestones] = await Promise.all([
       vibeApi(
         vibe,
         'GET',
@@ -1781,6 +1891,16 @@ async function reconcileGithubIssueRules(githubConnector) {
         vibe,
         'GET',
         `/v1/issues?project_id=${encodeURIComponent(vibe.config.projectId)}`
+      ),
+      vibeApi(
+        vibe,
+        'GET',
+        `/v1/project_milestones?project_id=${encodeURIComponent(vibe.config.projectId)}`
+      ),
+      vibeApi(
+        vibe,
+        'GET',
+        `/v1/issue_milestones?project_id=${encodeURIComponent(vibe.config.projectId)}`
       ),
     ]);
     const issues = new Map(
@@ -1819,7 +1939,7 @@ async function reconcileGithubIssueRules(githubConnector) {
           vibe,
           link,
           vibeIssue,
-          { linksByIssueId, linksByExternalKey }
+          { linksByIssueId, linksByExternalKey, milestones, issueMilestones }
         );
         synced += 1;
       } catch (error) {
@@ -1930,7 +2050,7 @@ async function reconcileGithubIssueLink(
   vibe,
   link,
   vibeIssue,
-  { linksByIssueId, linksByExternalKey }
+  { linksByIssueId, linksByExternalKey, milestones, issueMilestones }
 ) {
   const config = rule.config || {};
   const syncTitle = config.fields?.title !== false;
@@ -1948,6 +2068,15 @@ async function reconcileGithubIssueLink(
       `GitHub issue lookup error: ${response.status} ${text.slice(0, 200)}`
     );
   const external = JSON.parse(text);
+  await syncGithubMilestone({
+    vibe,
+    projectId: vibe.config.projectId,
+    repository: link.repository,
+    issueId: link.issue_id,
+    githubMilestone: external.milestone,
+    milestones,
+    issueMilestones,
+  });
   const hasVibeMarker = String(external.body || '').includes(
     '<!-- vibe-kanban-issue:'
   );

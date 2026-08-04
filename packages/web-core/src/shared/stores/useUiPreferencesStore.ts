@@ -120,6 +120,8 @@ export type KanbanFilterState = {
   priorities: IssuePriority[];
   assigneeIds: string[]; // 'unassigned' or '__self__' or user IDs
   tagIds: string[];
+  milestoneIds: string[];
+  overdue: boolean;
   sortField: KanbanSortField;
   sortDirection: 'asc' | 'desc';
 };
@@ -129,6 +131,8 @@ export const DEFAULT_KANBAN_FILTER_STATE: KanbanFilterState = {
   priorities: [],
   assigneeIds: [],
   tagIds: [],
+  milestoneIds: [],
+  overdue: false,
   sortField: 'sort_order',
   sortDirection: 'asc',
 };
@@ -162,6 +166,8 @@ const cloneKanbanFilters = (filters: KanbanFilterState): KanbanFilterState => ({
   priorities: [...filters.priorities],
   assigneeIds: [...filters.assigneeIds],
   tagIds: [...filters.tagIds],
+  milestoneIds: [...(filters.milestoneIds ?? [])],
+  overdue: filters.overdue ?? false,
   sortField: filters.sortField,
   sortDirection: filters.sortDirection,
 });

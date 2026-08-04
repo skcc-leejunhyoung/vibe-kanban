@@ -127,6 +127,7 @@ export type KanbanCardContentProps<TTag extends KanbanTag = KanbanTag> = {
   title: string;
   description?: string | null;
   priority: PriorityLevel | null;
+  milestone?: { name: string; targetDate?: string | null } | null;
   tags: KanbanTag[];
   assignees: KanbanAssigneeUser[];
   pullRequests?: KanbanPullRequest[];
@@ -147,6 +148,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
   title,
   description,
   priority,
+  milestone,
   tags,
   assignees,
   pullRequests = [],
@@ -277,6 +279,22 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
         >
           {previewDescription}
         </p>
+      )}
+
+      {milestone && (
+        <div className="flex items-center gap-half text-sm min-w-0">
+          <KanbanBadge name={milestone.name} color="215 70% 55%" />
+          {milestone.targetDate && (
+            <span
+              className={cn(
+                'text-low whitespace-nowrap',
+                Date.parse(milestone.targetDate) < Date.now() && 'text-error'
+              )}
+            >
+              {new Date(milestone.targetDate).toLocaleDateString()}
+            </span>
+          )}
+        </div>
       )}
 
       {/* Row 4: Priority + Assignee */}

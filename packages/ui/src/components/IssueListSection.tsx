@@ -36,6 +36,9 @@ export interface IssueListSectionProps {
   issueMap: Record<string, IssueListRowIssue>;
   issueAssigneesMap: Record<string, KanbanAssigneeUser[]>;
   getTagObjectsForIssue: (issueId: string) => IssueListRowTag[];
+  getMilestoneForIssue?: (
+    issueId: string
+  ) => { name: string; targetDate?: string | null } | undefined;
   getResolvedRelationshipsForIssue?: (
     issueId: string
   ) => IssueListRowRelationship[];
@@ -84,6 +87,7 @@ export function IssueListSection({
   issueMap,
   issueAssigneesMap,
   getTagObjectsForIssue,
+  getMilestoneForIssue,
   getResolvedRelationshipsForIssue,
   onIssueClick,
   selectedIssueId,
@@ -159,6 +163,7 @@ export function IssueListSection({
                     tags={getTagObjectsForIssue(issue.id)}
                     relationships={getResolvedRelationshipsForIssue?.(issue.id)}
                     assignees={issueAssigneesMap[issue.id] ?? []}
+                    milestone={getMilestoneForIssue?.(issue.id)}
                     onClick={(e) => onIssueClick(issue.id, e)}
                     isSelected={selectedIssueId === issue.id}
                     isCursor={cursorIssueId === issue.id}

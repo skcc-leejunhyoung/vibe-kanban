@@ -4,6 +4,8 @@ import {
   PROJECT_ISSUES_SHAPE,
   PROJECT_PROJECT_STATUSES_SHAPE,
   PROJECT_TAGS_SHAPE,
+  PROJECT_MILESTONES_SHAPE,
+  PROJECT_ISSUE_MILESTONES_SHAPE,
   PROJECT_ISSUE_ASSIGNEES_SHAPE,
   PROJECT_ISSUE_FOLLOWERS_SHAPE,
   PROJECT_ISSUE_TAGS_SHAPE,
@@ -15,6 +17,8 @@ import {
   ISSUE_MUTATION,
   PROJECT_STATUS_MUTATION,
   TAG_MUTATION,
+  PROJECT_MILESTONE_MUTATION,
+  ISSUE_MILESTONE_MUTATION,
   ISSUE_ASSIGNEE_MUTATION,
   ISSUE_FOLLOWER_MUTATION,
   ISSUE_TAG_MUTATION,
@@ -24,6 +28,7 @@ import {
   type Issue,
   type ProjectStatus,
   type Tag,
+  type ProjectMilestone,
 } from 'shared/remote-types';
 import {
   ProjectContext,
@@ -52,6 +57,15 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     enabled,
     mutation: TAG_MUTATION,
   });
+  const milestonesResult = useShape(PROJECT_MILESTONES_SHAPE, params, {
+    enabled,
+    mutation: PROJECT_MILESTONE_MUTATION,
+  });
+  const issueMilestonesResult = useShape(
+    PROJECT_ISSUE_MILESTONES_SHAPE,
+    params,
+    { enabled, mutation: ISSUE_MILESTONE_MUTATION }
+  );
   const issueAssigneesResult = useShape(PROJECT_ISSUE_ASSIGNEES_SHAPE, params, {
     enabled,
     mutation: ISSUE_ASSIGNEE_MUTATION,
@@ -95,6 +109,8 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issuesResult.error ||
     statusesResult.error ||
     tagsResult.error ||
+    milestonesResult.error ||
+    issueMilestonesResult.error ||
     issueAssigneesResult.error ||
     issueFollowersResult.error ||
     issueTagsResult.error ||
@@ -110,6 +126,8 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issuesResult.retry();
     statusesResult.retry();
     tagsResult.retry();
+    milestonesResult.retry();
+    issueMilestonesResult.retry();
     issueAssigneesResult.retry();
     issueFollowersResult.retry();
     issueTagsResult.retry();
@@ -122,6 +140,8 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issuesResult,
     statusesResult,
     tagsResult,
+    milestonesResult,
+    issueMilestonesResult,
     issueAssigneesResult,
     issueFollowersResult,
     issueTagsResult,
@@ -156,6 +176,13 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     }
     return map;
   }, [tagsResult.data]);
+
+  const milestonesById = useMemo(() => {
+    const map = new Map<string, ProjectMilestone>();
+    for (const milestone of milestonesResult.data)
+      map.set(milestone.id, milestone);
+    return map;
+  }, [milestonesResult.data]);
 
   // Lookup helpers
   const getIssue = useCallback(
@@ -197,6 +224,16 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
         .filter((t): t is Tag => t !== undefined);
     },
     [issueTagsResult.data, tagsById]
+  );
+
+  const getMilestoneForIssue = useCallback(
+    (issueId: string) => {
+      const link = issueMilestonesResult.data.find(
+        (item) => item.issue_id === issueId
+      );
+      return link ? milestonesById.get(link.milestone_id) : undefined;
+    },
+    [issueMilestonesResult.data, milestonesById]
   );
 
   const getRelationshipsForIssue = useCallback(
@@ -245,6 +282,8 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       issueAssignees: issueAssigneesResult.data,
       issueFollowers: issueFollowersResult.data,
       issueTags: issueTagsResult.data,
+      milestones: milestonesResult.data,
+      issueMilestones: issueMilestonesResult.data,
       issueRelationships: issueRelationshipsResult.data,
       pullRequests: pullRequestsResult.data,
       pullRequestIssues: pullRequestIssuesResult.data,
@@ -283,6 +322,12 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       insertIssueTag: issueTagsResult.insert,
       removeIssueTag: issueTagsResult.remove,
 
+      insertMilestone: milestonesResult.insert,
+      updateMilestone: milestonesResult.update,
+      removeMilestone: milestonesResult.remove,
+      setIssueMilestone: issueMilestonesResult.insert,
+      removeIssueMilestone: issueMilestonesResult.remove,
+
       // IssueRelationship mutations
       insertIssueRelationship: issueRelationshipsResult.insert,
       removeIssueRelationship: issueRelationshipsResult.remove,
@@ -302,6 +347,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getFollowersForIssue,
       getTagsForIssue,
       getTagObjectsForIssue,
+      getMilestoneForIssue,
       getRelationshipsForIssue,
       getStatus,
       getTag,
@@ -321,6 +367,8 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       issueAssigneesResult,
       issueFollowersResult,
       issueTagsResult,
+      milestonesResult,
+      issueMilestonesResult,
       issueRelationshipsResult,
       pullRequestsResult,
       pullRequestIssuesResult,
@@ -335,6 +383,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getFollowersForIssue,
       getTagsForIssue,
       getTagObjectsForIssue,
+      getMilestoneForIssue,
       getRelationshipsForIssue,
       getStatus,
       getTag,

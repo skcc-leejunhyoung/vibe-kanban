@@ -71,6 +71,7 @@ export interface IssueListRowProps {
   tags: IssueListRowTag[];
   relationships?: IssueListRowRelationship[];
   assignees: KanbanAssigneeUser[];
+  milestone?: { name: string; targetDate?: string | null };
   onClick: (e: MouseEvent) => void;
   isSelected: boolean;
   /** Keyboard-navigation cursor highlight (distinct from opened/checked). */
@@ -95,6 +96,7 @@ export function IssueListRow({
   tags,
   relationships = [],
   assignees,
+  milestone,
   onClick,
   isSelected,
   isCursor = false,
@@ -184,6 +186,16 @@ export function IssueListRow({
 
             {/* Right side: Tags, Assignee, Age */}
             <div className="flex items-center gap-base shrink-0">
+              {milestone && (
+                <div className="flex items-center gap-half">
+                  <KanbanBadge name={milestone.name} color="215 70% 55%" />
+                  {milestone.targetDate && (
+                    <span className="text-xs text-low">
+                      {new Date(milestone.targetDate).toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+              )}
               {visibleTags.length > 0 && (
                 <div className="flex items-center gap-half">
                   {visibleTags.map((tag) => (
