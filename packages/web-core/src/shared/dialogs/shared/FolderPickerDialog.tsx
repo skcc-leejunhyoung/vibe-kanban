@@ -263,9 +263,9 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
                   </div>
                 ) : (
                   <div className="p-2">
-                    {filteredEntries.map((entry, index) => (
+                    {filteredEntries.map((entry) => (
                       <button
-                        key={index}
+                        key={entry.path}
                         type="button"
                         disabled={!entry.is_directory}
                         className={`flex w-full items-center space-x-2 p-2 rounded text-left cursor-pointer hover:bg-accent ${

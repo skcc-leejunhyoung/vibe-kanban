@@ -19,6 +19,7 @@ import {
 import { Input } from '@vibe/ui/components/Input';
 import type { GitBranch } from 'shared/types';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
+import { KEYBOARD_CURSOR_RING } from '@vibe/ui/lib/focus-ring';
 
 type Props = {
   branches: GitBranch[];
@@ -58,7 +59,7 @@ const BranchRow = memo(function BranchRow({
     (isSelected ? 'bg-accent text-accent-foreground ' : '') +
     (isDisabled ? 'opacity-50 cursor-not-allowed ' : '') +
     (!isSelected && isHighlighted
-      ? 'bg-accent/70 ring-2 ring-inset ring-brand '
+      ? `bg-accent/70 ${KEYBOARD_CURSOR_RING} `
       : '') +
     'transition-none';
 

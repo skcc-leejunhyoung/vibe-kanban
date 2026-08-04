@@ -2,6 +2,7 @@
 
 import type { MouseEvent } from 'react';
 import { cn } from '../lib/cn';
+import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { Draggable } from '@hello-pangea/dnd';
 import { DotsThreeIcon } from '@phosphor-icons/react';
 import { PriorityIcon, type PriorityLevel } from './PriorityIcon';
@@ -134,7 +135,7 @@ export function IssueListRow({
           className={cn(
             'group/row flex flex-col',
             'transition-colors cursor-pointer outline-none',
-            isCursor && 'ring-2 ring-inset ring-brand',
+            isCursor && KEYBOARD_CURSOR_RING,
             snapshot.isDragging && 'bg-secondary shadow-lg cursor-grabbing',
             className
           )}

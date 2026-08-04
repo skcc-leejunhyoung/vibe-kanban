@@ -1,6 +1,7 @@
 'use client';
 
 import { Card } from './Card';
+import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import {
   Tooltip,
   TooltipContent,
@@ -124,7 +125,7 @@ export const KanbanCard = ({
                 ? 'ring-2 ring-accent ring-inset bg-accent/5'
                 : isOpen
                   ? 'ring-2 ring-secondary-foreground ring-inset'
-                  : isFocused && 'ring-2 ring-brand ring-inset',
+                  : isFocused && KEYBOARD_CURSOR_RING,
               className
             )}
             ref={setRefs}

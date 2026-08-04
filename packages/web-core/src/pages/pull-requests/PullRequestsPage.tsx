@@ -689,17 +689,11 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         const focusInList =
           active instanceof HTMLElement &&
           active.hasAttribute('data-pull-request-primary');
-        const anchorIndex = Math.min(
+        const delta = !focusInList ? 0 : event.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = Math.min(
           filteredPullRequests.length - 1,
-          Math.max(0, selectedIndex)
+          Math.max(0, selectedIndex + delta)
         );
-        const direction = event.key === 'ArrowDown' ? 1 : -1;
-        const nextIndex = focusInList
-          ? Math.min(
-              filteredPullRequests.length - 1,
-              Math.max(0, anchorIndex + direction)
-            )
-          : anchorIndex;
         setSelectedIndex(nextIndex);
         focusRow(nextIndex);
       } else if (event.key === 'Enter') {

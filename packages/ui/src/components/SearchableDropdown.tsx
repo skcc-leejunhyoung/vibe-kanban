@@ -1,6 +1,7 @@
 import type { KeyboardEvent, ReactNode, RefObject } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { cn } from '../lib/cn';
+import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -116,7 +117,7 @@ export function SearchableDropdown<T>({
                   badge={getItemBadge?.(item)}
                   className={cn(
                     isSelected && 'bg-secondary',
-                    isHighlighted && 'bg-secondary ring-2 ring-inset ring-brand'
+                    isHighlighted && ['bg-secondary', KEYBOARD_CURSOR_RING]
                   )}
                 >
                   {getItemIcon?.(item)}

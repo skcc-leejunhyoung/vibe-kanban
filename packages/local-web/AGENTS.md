@@ -50,11 +50,21 @@ Uses a small radius by default (`--radius: 0.125rem`):
 ### Focus States
 
 Keyboard focus indication is global: `*:focus-visible:not([tabindex='-1'])`
-in `../web-core/src/app/styles/new/index.css` draws a 2px `brand` outline on
-every focus-visible element. Do NOT add `outline-none`/`focus:outline-none`
+(plus `html.kbd-nav *:focus` branches) in
+`../web-core/src/app/styles/new/index.css` draws a 2px inset `brand` outline
+on every focused element. Do NOT add `outline-none`/`focus:outline-none`
 or per-component focus rings (`focus:ring-*`, `focus-visible:ring-*`) — the
 global rule wins the specificity tie anyway, so a custom ring only renders a
 doubled indicator. Programmatic focus targets opt out via `tabindex="-1"`.
+
+Two sanctioned exceptions, both using `KEYBOARD_CURSOR_RING` from
+`@vibe/ui/lib/focus-ring` (never hand-written ring classes):
+- Virtual cursors (`isFocused`/`isCursor`/`highlightedIndex`/cmdk
+  `data-selected`) where real DOM focus sits elsewhere — the global rule
+  cannot see them.
+- Roving-focus items that keep `tabindex="-1"` while focused (e.g. the
+  SettingsDialog section nav) — excluded from the global rule, so they draw
+  their own `focus:` ring.
 
 ### Example Component Styling
 

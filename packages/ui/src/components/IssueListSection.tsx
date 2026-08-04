@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
+import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { Droppable } from '@hello-pangea/dnd';
 import { CaretDownIcon, PlusIcon } from '@phosphor-icons/react';
 import { StatusDot } from './StatusDot';
@@ -119,7 +120,7 @@ export function IssueListSection({
           'bg-panel border-y border-border',
           'cursor-pointer transition-colors outline-none',
           'hover:bg-secondary',
-          isFocused && 'ring-2 ring-inset ring-brand'
+          isFocused && KEYBOARD_CURSOR_RING
         )}
       >
         <div className="flex items-center gap-base">
@@ -260,7 +261,7 @@ function IssueListAddRow({
         className={cn(
           'group/add flex items-center gap-double px-double py-half outline-none',
           'text-low hover:bg-secondary hover:text-normal transition-colors',
-          isFocused && 'ring-2 ring-inset ring-brand text-normal'
+          isFocused && [KEYBOARD_CURSOR_RING, 'text-normal']
         )}
       >
         <span className="shrink-0 w-4 flex items-center justify-center">

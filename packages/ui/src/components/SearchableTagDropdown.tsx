@@ -1,6 +1,7 @@
 import type { RefObject } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { cn } from '../lib/cn';
+import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { useTranslation } from 'react-i18next';
 import { PlusIcon, CheckIcon } from '@phosphor-icons/react';
 import {
@@ -170,8 +171,10 @@ export function SearchableTagDropdown({
                           onMouseEnter={() => onHighlightedIndexChange(idx)}
                           className={cn(
                             'flex items-center gap-base w-full px-base py-half text-sm text-left transition-colors',
-                            isHighlighted &&
-                              'bg-secondary ring-2 ring-inset ring-brand',
+                            isHighlighted && [
+                              'bg-secondary',
+                              KEYBOARD_CURSOR_RING,
+                            ],
                             isSelected && 'text-normal'
                           )}
                         >
@@ -199,8 +202,10 @@ export function SearchableTagDropdown({
                       onClick={onStartCreate}
                       className={cn(
                         'flex items-center gap-base w-full px-base py-half text-sm text-brand hover:bg-secondary transition-colors',
-                        createOptionHighlighted &&
-                          'bg-secondary ring-2 ring-inset ring-brand'
+                        createOptionHighlighted && [
+                          'bg-secondary',
+                          KEYBOARD_CURSOR_RING,
+                        ]
                       )}
                     >
                       <PlusIcon className="size-icon-sm" weight="bold" />

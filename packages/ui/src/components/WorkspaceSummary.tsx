@@ -14,6 +14,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { MouseEvent, Ref } from 'react';
 import { cn } from '../lib/cn';
+import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { RunningDots } from './RunningDots';
 
 const formatRelativeElapsed = (dateString: string): string => {
@@ -139,7 +140,7 @@ export function WorkspaceSummary({
       className={cn(
         'group relative rounded-sm transition-all duration-100 overflow-hidden outline-none',
         isActive ? 'bg-tertiary' : '',
-        isFocused && 'ring-2 ring-inset ring-brand',
+        isFocused && KEYBOARD_CURSOR_RING,
         className
       )}
     >

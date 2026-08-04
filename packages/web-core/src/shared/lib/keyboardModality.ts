@@ -16,13 +16,20 @@
  */
 const KEYBOARD_NAV_CLASS = 'kbd-nav';
 
-let installed = false;
+// The install marker lives on window (not module scope) so a dev-server HMR
+// re-evaluation of this module can't lose track of listeners already attached
+// by the previous module instance and double-install.
+type TrackerWindow = Window & { __vibeKeyboardModalityUninstall?: () => void };
 
 export function installKeyboardModalityTracker(): () => void {
-  if (installed || typeof window === 'undefined') {
+  if (typeof window === 'undefined') {
     return () => {};
   }
-  installed = true;
+  const trackerWindow = window as TrackerWindow;
+  const existing = trackerWindow.__vibeKeyboardModalityUninstall;
+  if (existing) {
+    return existing;
+  }
 
   const root = document.documentElement;
 
@@ -42,16 +49,15 @@ export function installKeyboardModalityTracker(): () => void {
   };
 
   window.addEventListener('keydown', handleKeyDown, true);
+  // pointerdown covers mouse, touch, and pen in every supported browser.
   window.addEventListener('pointerdown', handlePointer, true);
-  window.addEventListener('mousedown', handlePointer, true);
-  window.addEventListener('touchstart', handlePointer, true);
 
-  return () => {
-    installed = false;
+  const uninstall = () => {
+    delete trackerWindow.__vibeKeyboardModalityUninstall;
     root.classList.remove(KEYBOARD_NAV_CLASS);
     window.removeEventListener('keydown', handleKeyDown, true);
     window.removeEventListener('pointerdown', handlePointer, true);
-    window.removeEventListener('mousedown', handlePointer, true);
-    window.removeEventListener('touchstart', handlePointer, true);
   };
+  trackerWindow.__vibeKeyboardModalityUninstall = uninstall;
+  return uninstall;
 }
