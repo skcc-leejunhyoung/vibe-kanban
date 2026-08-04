@@ -50,6 +50,38 @@ export function decideGithubParentSync({
   return { direction: 'to_github', parentIssueId: vibeParent };
 }
 
+export function decideGithubMilestoneSync({
+  baselineMilestoneId,
+  baselineGithubNumber,
+  vibeMilestoneId,
+  githubMilestoneNumber,
+  assignmentsMatch = false,
+  vibeUpdatedAt,
+  githubUpdatedAt,
+}) {
+  const baselineVibe = baselineMilestoneId || null;
+  const baselineGithub = baselineGithubNumber ?? null;
+  const vibe = vibeMilestoneId || null;
+  const github = githubMilestoneNumber ?? null;
+  if (
+    assignmentsMatch ||
+    (vibe === baselineVibe && github === baselineGithub)
+  ) {
+    return { direction: 'none' };
+  }
+  const vibeChanged = vibe !== baselineVibe;
+  const githubChanged = github !== baselineGithub;
+  if (vibeChanged && !githubChanged) return { direction: 'to_github' };
+  if (githubChanged && !vibeChanged) return { direction: 'to_vibe' };
+  if (!vibeChanged && !githubChanged) return { direction: 'none' };
+  const githubTime = Date.parse(githubUpdatedAt || '');
+  const vibeTime = Date.parse(vibeUpdatedAt || '');
+  return Number.isFinite(githubTime) &&
+    (!Number.isFinite(vibeTime) || githubTime >= vibeTime)
+    ? { direction: 'to_vibe' }
+    : { direction: 'to_github' };
+}
+
 export function withGithubIssueMarker(body, issueId) {
   const marker = githubIssueMarker(issueId);
   const text = body == null ? '' : String(body);

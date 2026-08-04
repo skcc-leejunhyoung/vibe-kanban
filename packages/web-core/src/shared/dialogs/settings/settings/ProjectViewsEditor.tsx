@@ -12,7 +12,7 @@ import {
 import { Switch } from '@vibe/ui/components/Switch';
 import { StatusDot } from '@vibe/ui/components/StatusDot';
 import { cn } from '@/shared/lib/utils';
-import type { IssuePriority } from 'shared/remote-types';
+import type { IssuePriority, ProjectMilestone } from 'shared/remote-types';
 import {
   useUiPreferencesStore,
   buildDefaultProjectViews,
@@ -34,6 +34,7 @@ interface ViewStatus {
 interface ProjectViewsEditorProps {
   projectId: string;
   statuses: ViewStatus[];
+  milestones: ProjectMilestone[];
 }
 
 const SORT_FIELDS: KanbanSortField[] = [
@@ -64,6 +65,7 @@ const PRIORITY_LABELS: Record<IssuePriority, string> = {
 export function ProjectViewsEditor({
   projectId,
   statuses,
+  milestones,
 }: ProjectViewsEditorProps) {
   const { t } = useTranslation('common');
   const storedViews = useUiPreferencesStore(
@@ -203,6 +205,7 @@ export function ProjectViewsEditor({
                 key={view.id}
                 view={view}
                 statuses={statuses}
+                milestones={milestones}
                 onChange={(patch) => updateView(view.id, patch)}
               />
             )}
@@ -229,10 +232,16 @@ export function ProjectViewsEditor({
 interface ViewEditorPanelProps {
   view: ProjectViewDefinition;
   statuses: ViewStatus[];
+  milestones: ProjectMilestone[];
   onChange: (patch: Partial<ProjectViewDefinition>) => void;
 }
 
-function ViewEditorPanel({ view, statuses, onChange }: ViewEditorPanelProps) {
+function ViewEditorPanel({
+  view,
+  statuses,
+  milestones,
+  onChange,
+}: ViewEditorPanelProps) {
   const { t } = useTranslation('common');
 
   // Local ordered/checked group state so unchecked statuses keep their place
@@ -504,6 +513,40 @@ function ViewEditorPanel({ view, statuses, onChange }: ViewEditorPanelProps) {
 
       {/* Toggles */}
       <div className="flex flex-col gap-half">
+        <label className="flex flex-col gap-half text-xs text-low">
+          {t('kanban.viewsEditor.milestoneFilter', 'Default milestone filter')}
+          <select
+            multiple
+            value={view.filters.milestoneIds}
+            onChange={(event) =>
+              onChange({
+                filters: {
+                  ...view.filters,
+                  milestoneIds: Array.from(
+                    event.currentTarget.selectedOptions
+                  ).map((option) => option.value),
+                },
+              })
+            }
+            className="min-h-20 rounded-sm border border-border bg-panel px-base py-half text-sm text-normal"
+          >
+            <option value="__no_milestone__">
+              {t('kanban.noMilestone', 'No milestone')}
+            </option>
+            {milestones.map((milestone) => (
+              <option key={milestone.id} value={milestone.id}>
+                {milestone.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <ToggleRow
+          label={t('kanban.overdueFilterLabel', 'Overdue')}
+          checked={view.filters.overdue}
+          onChange={(overdue) =>
+            onChange({ filters: { ...view.filters, overdue } })
+          }
+        />
         <ToggleRow
           label={t('kanban.viewsEditor.showSubIssues', 'Show sub-issues')}
           checked={view.showSubIssues}

@@ -23,6 +23,8 @@ pub struct GithubIssueLink {
     pub synced_vibe_status_id: Option<Uuid>,
     pub synced_github_status_option_id: Option<String>,
     pub synced_parent_issue_id: Option<Uuid>,
+    pub synced_milestone_id: Option<Uuid>,
+    pub synced_github_milestone_number: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -45,6 +47,8 @@ pub struct CreateGithubIssueLinkRequest {
     pub synced_vibe_status_id: Option<Uuid>,
     pub synced_github_status_option_id: Option<String>,
     pub synced_parent_issue_id: Option<Uuid>,
+    pub synced_milestone_id: Option<Uuid>,
+    pub synced_github_milestone_number: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -68,6 +72,18 @@ pub struct UpdateGithubIssueLinkRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub synced_parent_issue_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "some_if_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub synced_milestone_id: Option<Option<Uuid>>,
+    #[serde(
+        default,
+        deserialize_with = "some_if_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub synced_github_milestone_number: Option<Option<i32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

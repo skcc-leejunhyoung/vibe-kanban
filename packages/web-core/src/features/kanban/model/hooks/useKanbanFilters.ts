@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import {
   KANBAN_ASSIGNEE_FILTER_VALUES,
+  KANBAN_MILESTONE_FILTER_VALUES,
   type KanbanFilterState,
 } from '@/shared/stores/useUiPreferencesStore';
 import type {
@@ -63,9 +64,18 @@ export function matchesMilestoneFilters(
   overdue: boolean,
   now = Date.now()
 ): boolean {
+  const includeUnassigned = selectedIds.includes(
+    KANBAN_MILESTONE_FILTER_VALUES.NONE
+  );
+  const actualIds = selectedIds.filter(
+    (id) => id !== KANBAN_MILESTONE_FILTER_VALUES.NONE
+  );
   if (
     selectedIds.length > 0 &&
-    (!milestone || !selectedIds.includes(milestone.id))
+    !(
+      (!milestone && includeUnassigned) ||
+      (milestone && actualIds.includes(milestone.id))
+    )
   ) {
     return false;
   }

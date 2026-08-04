@@ -51,11 +51,12 @@ impl GithubIssueLinkRepository {
                 github_node_id, project_item_id, github_state,
                 github_updated_at, last_synced_vibe_updated_at,
                 synced_title, synced_description, synced_vibe_status_id,
-                synced_github_status_option_id, synced_parent_issue_id
+                synced_github_status_option_id, synced_parent_issue_id,
+                synced_milestone_id, synced_github_milestone_number
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16
+                $11, $12, $13, $14, $15, $16, $17, $18
             )
             RETURNING *
             "#,
@@ -76,6 +77,8 @@ impl GithubIssueLinkRepository {
         .bind(payload.synced_vibe_status_id)
         .bind(payload.synced_github_status_option_id)
         .bind(payload.synced_parent_issue_id)
+        .bind(payload.synced_milestone_id)
+        .bind(payload.synced_github_milestone_number)
         .fetch_one(&mut **tx)
         .await
     }
@@ -89,6 +92,11 @@ impl GithubIssueLinkRepository {
         let synced_description = payload.synced_description.flatten();
         let update_synced_parent_issue_id = payload.synced_parent_issue_id.is_some();
         let synced_parent_issue_id = payload.synced_parent_issue_id.flatten();
+        let update_synced_milestone_id = payload.synced_milestone_id.is_some();
+        let synced_milestone_id = payload.synced_milestone_id.flatten();
+        let update_synced_github_milestone_number =
+            payload.synced_github_milestone_number.is_some();
+        let synced_github_milestone_number = payload.synced_github_milestone_number.flatten();
         sqlx::query_as::<_, GithubIssueLink>(
             r#"
             UPDATE github_issue_links
@@ -104,6 +112,10 @@ impl GithubIssueLinkRepository {
                     COALESCE($10, synced_github_status_option_id),
                 synced_parent_issue_id =
                     CASE WHEN $11 THEN $12 ELSE synced_parent_issue_id END,
+                synced_milestone_id =
+                    CASE WHEN $13 THEN $14 ELSE synced_milestone_id END,
+                synced_github_milestone_number =
+                    CASE WHEN $15 THEN $16 ELSE synced_github_milestone_number END,
                 updated_at = NOW()
             WHERE id = $1
             RETURNING *
@@ -121,6 +133,10 @@ impl GithubIssueLinkRepository {
         .bind(payload.synced_github_status_option_id)
         .bind(update_synced_parent_issue_id)
         .bind(synced_parent_issue_id)
+        .bind(update_synced_milestone_id)
+        .bind(synced_milestone_id)
+        .bind(update_synced_github_milestone_number)
+        .bind(synced_github_milestone_number)
         .fetch_one(&mut **tx)
         .await
     }

@@ -142,6 +142,10 @@ export const KANBAN_ASSIGNEE_FILTER_VALUES = {
   SELF: '__self__',
 } as const;
 
+export const KANBAN_MILESTONE_FILTER_VALUES = {
+  NONE: '__no_milestone__',
+} as const;
+
 export const DEFAULT_KANBAN_SHOW_WORKSPACES = true;
 export const DEFAULT_KANBAN_HIDE_BLOCKED = false;
 

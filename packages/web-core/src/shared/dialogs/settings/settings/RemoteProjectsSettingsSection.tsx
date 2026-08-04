@@ -51,6 +51,7 @@ import {
   PROJECT_PROJECT_STATUSES_SHAPE,
   PROJECT_STATUS_MUTATION,
   PROJECT_ISSUES_SHAPE,
+  PROJECT_MILESTONES_SHAPE,
   type Project,
 } from 'shared/remote-types';
 import { getRandomPresetColor, PRESET_COLORS } from '@/shared/lib/colors';
@@ -457,6 +458,11 @@ export function RemoteProjectsSettingsSection({
     {
       enabled: !!selectedProjectId,
     }
+  );
+  const { data: projectMilestones } = useShape(
+    PROJECT_MILESTONES_SHAPE,
+    projectParams,
+    { enabled: !!selectedProjectId }
   );
 
   const issueCountByStatus = useMemo(() => {
@@ -1531,6 +1537,7 @@ export function RemoteProjectsSettingsSection({
         {selectedProjectId && (
           <ProjectViewsEditor
             projectId={selectedProjectId}
+            milestones={projectMilestones}
             statuses={sortedProjectStatuses.map((s) => ({
               id: s.id,
               name: s.name,

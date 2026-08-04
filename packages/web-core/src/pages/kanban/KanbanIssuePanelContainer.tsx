@@ -145,6 +145,7 @@ export function KanbanIssuePanelContainer({
     setIssueMilestone,
     removeIssueMilestone,
     insertMilestone,
+    updateMilestone,
     insertIssue,
     updateIssue,
     insertIssueAssignee,
@@ -291,6 +292,19 @@ export function KanbanIssuePanelContainer({
         })
       );
   }, [insertMilestone, projectId, selectedKanbanIssueId, setIssueMilestone, t]);
+
+  const handleMilestoneUpdate = useCallback(
+    (
+      field: 'start_date' | 'target_date' | 'completed_at',
+      value: string | null
+    ) => {
+      if (!selectedIssueMilestone) return;
+      updateMilestone(selectedIssueMilestone.milestone_id, {
+        [field]: value ? `${value}T00:00:00.000Z` : null,
+      });
+    },
+    [selectedIssueMilestone, updateMilestone]
+  );
 
   const creatorUserId = selectedIssue?.creator_user_id ?? null;
   const issueCreator = useMemo(() => {
@@ -1336,6 +1350,7 @@ export function KanbanIssuePanelContainer({
       milestoneId={selectedIssueMilestone?.milestone_id ?? null}
       onMilestoneChange={mode === 'edit' ? handleMilestoneChange : undefined}
       onCreateMilestone={mode === 'edit' ? handleCreateMilestone : undefined}
+      onMilestoneUpdate={mode === 'edit' ? handleMilestoneUpdate : undefined}
       startDate={selectedIssue?.start_date ?? null}
       targetDate={selectedIssue?.target_date ?? null}
       completedAt={selectedIssue?.completed_at ?? null}

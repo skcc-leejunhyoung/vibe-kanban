@@ -5,6 +5,7 @@ import {
   assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
   decideGithubParentSync,
+  decideGithubMilestoneSync,
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueMarker,
@@ -81,6 +82,48 @@ test('synchronizes parent creation, moves, removal, and concurrent changes', () 
   );
 });
 
+test('reconciles milestone assignment in both directions with latest-write conflicts', () => {
+  assert.deepEqual(
+    decideGithubMilestoneSync({
+      baselineMilestoneId: null,
+      baselineGithubNumber: null,
+      vibeMilestoneId: 'vibe-1',
+      githubMilestoneNumber: null,
+    }),
+    { direction: 'to_github' }
+  );
+  assert.deepEqual(
+    decideGithubMilestoneSync({
+      baselineMilestoneId: 'vibe-1',
+      baselineGithubNumber: 1,
+      vibeMilestoneId: 'vibe-1',
+      githubMilestoneNumber: 2,
+    }),
+    { direction: 'to_vibe' }
+  );
+  assert.deepEqual(
+    decideGithubMilestoneSync({
+      baselineMilestoneId: 'vibe-1',
+      baselineGithubNumber: 1,
+      vibeMilestoneId: null,
+      githubMilestoneNumber: 2,
+      vibeUpdatedAt: '2026-08-04T03:00:00Z',
+      githubUpdatedAt: '2026-08-04T02:00:00Z',
+    }),
+    { direction: 'to_github' }
+  );
+  assert.deepEqual(
+    decideGithubMilestoneSync({
+      baselineMilestoneId: null,
+      baselineGithubNumber: null,
+      vibeMilestoneId: 'vibe-1',
+      githubMilestoneNumber: 7,
+      assignmentsMatch: true,
+    }),
+    { direction: 'none' }
+  );
+});
+
 test('rejects linking an issue outside the rule configured project', () => {
   assert.doesNotThrow(() =>
     assertGithubIssueProject({ project_id: 'project-1' }, 'project-1')
@@ -107,10 +150,7 @@ test('scopes GitHub sync rules to their configured source and target connectors'
     shouldRunGithubIssueSyncRule(rule, { connectorId: 'github-2' }),
     true
   );
-  assert.equal(
-    githubIssueSyncVibeConnectorId(rule, 'vibe-default'),
-    'vibe-2'
-  );
+  assert.equal(githubIssueSyncVibeConnectorId(rule, 'vibe-default'), 'vibe-2');
   assert.equal(
     githubIssueSyncVibeConnectorId({ kind: 'script' }, 'vibe-default'),
     'vibe-default'

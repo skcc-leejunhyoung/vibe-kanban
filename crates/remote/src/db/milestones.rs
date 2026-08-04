@@ -66,12 +66,18 @@ impl MilestoneRepository {
         let target_date = payload.target_date.flatten();
         let set_completed = payload.completed_at.is_some();
         let completed_at = payload.completed_at.flatten();
+        let set_source_repository = payload.source_repository.is_some();
+        let source_repository = payload.source_repository.flatten();
+        let set_source_number = payload.source_number.is_some();
+        let source_number = payload.source_number.flatten();
         let data = sqlx::query_as(
             r#"UPDATE project_milestones SET
                name = COALESCE($2, name),
                start_date = CASE WHEN $3 THEN $4 ELSE start_date END,
                target_date = CASE WHEN $5 THEN $6 ELSE target_date END,
                completed_at = CASE WHEN $7 THEN $8 ELSE completed_at END,
+               source_repository = CASE WHEN $9 THEN $10 ELSE source_repository END,
+               source_number = CASE WHEN $11 THEN $12 ELSE source_number END,
                updated_at = NOW()
                WHERE id = $1 RETURNING *"#,
         )
@@ -83,6 +89,10 @@ impl MilestoneRepository {
         .bind(target_date)
         .bind(set_completed)
         .bind(completed_at)
+        .bind(set_source_repository)
+        .bind(source_repository)
+        .bind(set_source_number)
+        .bind(source_number)
         .fetch_one(&mut *tx)
         .await?;
         let txid = get_txid(&mut *tx).await?;

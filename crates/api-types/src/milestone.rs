@@ -42,6 +42,10 @@ pub struct UpdateProjectMilestoneRequest {
     pub target_date: Option<Option<DateTime<Utc>>>,
     #[serde(default, deserialize_with = "some_if_present")]
     pub completed_at: Option<Option<DateTime<Utc>>>,
+    #[serde(default, deserialize_with = "some_if_present")]
+    pub source_repository: Option<Option<String>>,
+    #[serde(default, deserialize_with = "some_if_present")]
+    pub source_number: Option<Option<i32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, sqlx::FromRow)]

@@ -13,6 +13,7 @@ import type { OrganizationMemberWithProfile } from 'shared/types';
 import { cn } from '@/shared/lib/utils';
 import {
   KANBAN_ASSIGNEE_FILTER_VALUES,
+  KANBAN_MILESTONE_FILTER_VALUES,
   type KanbanFilterState,
   type KanbanSortField,
 } from '@/shared/stores/useUiPreferencesStore';
@@ -155,12 +156,17 @@ export function KanbanFiltersDialog({
   );
 
   const milestoneOptions: MultiSelectDropdownOption<string>[] = useMemo(
-    () =>
-      milestones.map((milestone) => ({
+    () => [
+      {
+        value: KANBAN_MILESTONE_FILTER_VALUES.NONE,
+        label: t('kanban.noMilestone', 'No milestone'),
+      },
+      ...milestones.map((milestone) => ({
         value: milestone.id,
         label: milestone.name,
       })),
-    [milestones]
+    ],
+    [milestones, t]
   );
 
   const usersById = useMemo(() => {
@@ -270,16 +276,14 @@ export function KanbanFiltersDialog({
               />
             )}
 
-            {milestones.length > 0 && (
-              <MultiSelectDropdown
-                values={filters.milestoneIds ?? []}
-                options={milestoneOptions}
-                onChange={onMilestonesChange}
-                icon={FlagIcon}
-                label={t('kanban.milestones', 'Milestones')}
-                menuLabel={t('kanban.filterByMilestone', 'Filter by milestone')}
-              />
-            )}
+            <MultiSelectDropdown
+              values={filters.milestoneIds ?? []}
+              options={milestoneOptions}
+              onChange={onMilestonesChange}
+              icon={FlagIcon}
+              label={t('kanban.milestones', 'Milestones')}
+              menuLabel={t('kanban.filterByMilestone', 'Filter by milestone')}
+            />
 
             <div className="flex items-center gap-half rounded-sm bg-panel px-base py-half">
               <span className="whitespace-nowrap text-sm text-normal">

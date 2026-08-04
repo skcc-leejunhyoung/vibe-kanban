@@ -3,6 +3,7 @@ import {
   matchesIssueSearch,
   matchesMilestoneFilters,
 } from './useKanbanFilters';
+import { KANBAN_MILESTONE_FILTER_VALUES } from '@/shared/stores/useUiPreferencesStore';
 
 const issue = {
   title: '로그인 플로우 개선',
@@ -46,6 +47,23 @@ describe('matchesMilestoneFilters', () => {
         [],
         true,
         now
+      )
+    ).toBe(false);
+  });
+
+  it('filters issues without a milestone', () => {
+    expect(
+      matchesMilestoneFilters(
+        undefined,
+        [KANBAN_MILESTONE_FILTER_VALUES.NONE],
+        false
+      )
+    ).toBe(true);
+    expect(
+      matchesMilestoneFilters(
+        milestone,
+        [KANBAN_MILESTONE_FILTER_VALUES.NONE],
+        false
       )
     ).toBe(false);
   });
