@@ -646,7 +646,14 @@ export type AttachExistingPrRequest = { repo_id: string,
  * work branch when omitted. Set this to an intermediate "feature" branch to
  * link a feature -> base PR in a three-branch workflow.
  */
-head_branch: string | null, };
+head_branch: string | null,
+/**
+ * The candidate selected by the user. When absent, retains the legacy
+ * behavior of attaching the first available PR for the branch.
+ */
+pr_url: string | null, };
+
+export type ListAttachablePrsQuery = { repo_id: string, head_branch: string | null, };
 
 export type UnlinkPrRequest = { repo_id: string,
 /**

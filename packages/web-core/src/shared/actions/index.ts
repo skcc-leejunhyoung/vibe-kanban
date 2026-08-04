@@ -3,6 +3,7 @@ import type { Icon, IconProps } from '@phosphor-icons/react';
 import type {
   ExecutorConfig,
   Merge,
+  PullRequestDetail,
   RepoBranchStatus,
   Session,
   Workspace,
@@ -1850,18 +1851,57 @@ export const Actions = {
           !!branch && arr.indexOf(branch) === i
       );
 
-      let result:
-        | Awaited<ReturnType<typeof workspacesApi.attachPr>>
-        | undefined;
-      for (const head_branch of candidates) {
-        result = await workspacesApi.attachPr(workspaceId, {
-          repo_id: repoId,
-          head_branch,
+      const candidateResults = await Promise.all(
+        candidates.map(async (headBranch) => ({
+          headBranch,
+          result: await workspacesApi.listAttachablePrs(
+            workspaceId,
+            repoId,
+            headBranch
+          ),
+        }))
+      );
+      const failed = candidateResults.find(({ result }) => !result.success);
+      if (failed && !failed.result.success) {
+        throw new Error(
+          failed.result.message || 'Failed to list pull requests'
+        );
+      }
+      const availablePrs = Array.from(
+        new Map(
+          candidateResults
+            .flatMap(({ result }) =>
+              result.success ? result.data : ([] as PullRequestDetail[])
+            )
+            .map((pr) => [pr.url, pr])
+        ).values()
+      );
+      if (availablePrs.length === 0) {
+        await ConfirmDialog.show({
+          title: 'No Pull Request Found',
+          message:
+            'No unlinked pull request was found matching this workspace branch.',
+          confirmText: 'OK',
+          showCancelButton: false,
+          variant: 'info',
         });
-        if (!result.success || result.data.pr_attached) break;
+        return;
       }
 
-      if (!result) return;
+      const selectedPr = await (async () => {
+        if (availablePrs.length === 1) return availablePrs[0];
+        const { selectPullRequestToLink } = await import(
+          '@/shared/dialogs/command-bar/selectPullRequestToLink'
+        );
+        return selectPullRequestToLink(availablePrs);
+      })();
+      if (!selectedPr) return;
+
+      const result = await workspacesApi.attachPr(workspaceId, {
+        repo_id: repoId,
+        head_branch: selectedPr.head_branch,
+        pr_url: selectedPr.url,
+      });
 
       if (result.success && result.data.pr_attached && result.data.pr_number) {
         invalidateWorkspaceQueries(ctx.queryClient, workspaceId);

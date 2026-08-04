@@ -1239,6 +1239,20 @@ export const workspacesApi = {
   },
 
   /** Try to auto-attach a PR by matching the workspace branch */
+  listAttachablePrs: async (
+    workspaceId: string,
+    repoId: string,
+    headBranch?: string
+  ): Promise<Result<PullRequestDetail[], PrError>> => {
+    const params = new URLSearchParams({ repo_id: repoId });
+    if (headBranch) params.set('head_branch', headBranch);
+    const response = await makeRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/attach?${params}`
+    );
+    return handleApiResponseAsResult<PullRequestDetail[], PrError>(response);
+  },
+
+  /** Attach a selected PR that was returned by listAttachablePrs. */
   attachPr: async (
     workspaceId: string,
     data: AttachExistingPrRequest

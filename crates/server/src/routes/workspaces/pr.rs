@@ -29,8 +29,8 @@ use executors::profile::ExecutorConfig;
 use futures_util::FutureExt;
 use git::{GitCliError, GitRemote, GitServiceError};
 use git_host::{
-    CreatePrRequest, GitHostError, GitHostProvider, GitHostService, ProviderKind, UnifiedPrComment,
-    github::GhCli,
+    CreatePrRequest, GitHostError, GitHostProvider, GitHostService, ProviderKind,
+    PullRequestDetail, UnifiedPrComment, github::GhCli,
 };
 use serde::{Deserialize, Serialize};
 use services::services::{
@@ -297,6 +297,15 @@ pub struct AttachExistingPrRequest {
     /// The PR's head (source) branch to search for. Defaults to the workspace's
     /// work branch when omitted. Set this to an intermediate "feature" branch to
     /// link a feature -> base PR in a three-branch workflow.
+    pub head_branch: Option<String>,
+    /// The candidate selected by the user. When absent, retains the legacy
+    /// behavior of attaching the first available PR for the branch.
+    pub pr_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct ListAttachablePrsQuery {
+    pub repo_id: Uuid,
     pub head_branch: Option<String>,
 }
 
@@ -1132,37 +1141,25 @@ pub async fn create_pr(
     }
 }
 
-pub async fn attach_existing_pr(
-    Extension(workspace): Extension<Workspace>,
-    State(deployment): State<DeploymentImpl>,
-    Json(request): Json<AttachExistingPrRequest>,
-) -> Result<ResponseJson<ApiResponse<AttachPrResponse, PrError>>, ApiError> {
+async fn list_attachable_prs(
+    workspace: &Workspace,
+    deployment: &DeploymentImpl,
+    repo_id: Uuid,
+    requested_head_branch: Option<String>,
+) -> Result<Result<Vec<PullRequestDetail>, PrError>, ApiError> {
     let pool = &deployment.db().pool;
 
-    let workspace_repo =
-        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
-            .await?
-            .ok_or(RepoError::NotFound)?;
+    let workspace_repo = WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
 
     let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
         .await?
         .ok_or(RepoError::NotFound)?;
 
-    // Check if PR already attached for this repo
-    let merges = Merge::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id).await?;
-    if let Some(Merge::Pr(pr_merge)) = merges.into_iter().next() {
-        return Ok(ResponseJson(ApiResponse::success(AttachPrResponse {
-            pr_attached: true,
-            pr_url: Some(pr_merge.pr_info.url.clone()),
-            pr_number: Some(pr_merge.pr_info.number),
-            pr_status: Some(pr_merge.pr_info.status.clone()),
-        })));
-    }
-
     // The PR's head (source) branch to search for. Defaults to the work branch,
     // but can be an intermediate "feature" branch in a three-branch workflow.
-    let head_branch = request
-        .head_branch
+    let head_branch = requested_head_branch
         .as_deref()
         .map(str::trim)
         .filter(|b| !b.is_empty())
@@ -1188,14 +1185,10 @@ pub async fn attach_existing_pr(
     let git_host = match GitHostService::from_url(&remote.url) {
         Ok(host) => host,
         Err(GitHostError::UnsupportedProvider) => {
-            return Ok(ResponseJson(ApiResponse::error_with_data(
-                PrError::UnsupportedProvider,
-            )));
+            return Ok(Err(PrError::UnsupportedProvider));
         }
         Err(GitHostError::CliNotInstalled { provider }) => {
-            return Ok(ResponseJson(ApiResponse::error_with_data(
-                PrError::CliNotInstalled { provider },
-            )));
+            return Ok(Err(PrError::CliNotInstalled { provider }));
         }
         Err(e) => return Err(ApiError::GitHost(e)),
     };
@@ -1209,20 +1202,65 @@ pub async fn attach_existing_pr(
     {
         Ok(prs) => prs,
         Err(GitHostError::CliNotInstalled { provider }) => {
-            return Ok(ResponseJson(ApiResponse::error_with_data(
-                PrError::CliNotInstalled { provider },
-            )));
+            return Ok(Err(PrError::CliNotInstalled { provider }));
         }
         Err(GitHostError::AuthFailed(_)) => {
-            return Ok(ResponseJson(ApiResponse::error_with_data(
-                PrError::CliNotLoggedIn { provider },
-            )));
+            return Ok(Err(PrError::CliNotLoggedIn { provider }));
         }
         Err(e) => return Err(ApiError::GitHost(e)),
     };
 
-    // Take the first PR (prefer open, but also accept merged/closed)
-    if let Some(pr_info) = prs.into_iter().next() {
+    let linked_urls: HashSet<String> =
+        Merge::find_by_workspace_and_repo_id(pool, workspace.id, repo_id)
+            .await?
+            .into_iter()
+            .filter_map(|merge| match merge {
+                Merge::Pr(pr) => Some(pr.pr_info.url),
+                Merge::Direct(_) => None,
+            })
+            .collect();
+
+    Ok(Ok(prs
+        .into_iter()
+        .filter(|pr| !linked_urls.contains(&pr.url))
+        .collect()))
+}
+
+pub async fn list_attachable_prs_for_branch(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<ListAttachablePrsQuery>,
+) -> Result<ResponseJson<ApiResponse<Vec<PullRequestDetail>, PrError>>, ApiError> {
+    match list_attachable_prs(&workspace, &deployment, query.repo_id, query.head_branch).await? {
+        Ok(prs) => Ok(ResponseJson(ApiResponse::success(prs))),
+        Err(error) => Ok(ResponseJson(ApiResponse::error_with_data(error))),
+    }
+}
+
+pub async fn attach_existing_pr(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<AttachExistingPrRequest>,
+) -> Result<ResponseJson<ApiResponse<AttachPrResponse, PrError>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let prs = match list_attachable_prs(
+        &workspace,
+        &deployment,
+        request.repo_id,
+        request.head_branch,
+    )
+    .await?
+    {
+        Ok(prs) => prs,
+        Err(error) => return Ok(ResponseJson(ApiResponse::error_with_data(error))),
+    };
+
+    let pr_info = match request.pr_url {
+        Some(url) => prs.into_iter().find(|pr| pr.url == url),
+        None => prs.into_iter().next(),
+    };
+
+    if let Some(pr_info) = pr_info {
         // Save PR info locally. Use the PR's actual base/head from the host
         // rather than the workspace's target_branch — in a three-branch flow the
         // PR's base (e.g. `develop`) differs from the work branch's merge target
@@ -1230,7 +1268,7 @@ pub async fn attach_existing_pr(
         PullRequest::create_for_workspace(
             pool,
             workspace.id,
-            workspace_repo.repo_id,
+            request.repo_id,
             &pr_info.base_branch,
             pr_info.number,
             &pr_info.url,
@@ -1762,7 +1800,10 @@ pub fn router() -> Router<DeploymentImpl> {
             "/draft",
             get(get_pr_draft).put(put_pr_draft).delete(delete_pr_draft),
         )
-        .route("/attach", post(attach_existing_pr))
+        .route(
+            "/attach",
+            get(list_attachable_prs_for_branch).post(attach_existing_pr),
+        )
         .route("/unlink", post(unlink_pr))
         .route("/comments", get(get_pr_comments))
         .route("/comments/resolve", post(set_pr_review_thread_resolved))
