@@ -743,20 +743,30 @@ const DEFAULT_CLAUDE_CONTEXT_WINDOW: u32 = 200_000;
 /// This is only the placeholder shown until the CLI reports the real value in
 /// the result message's `modelUsage` (see the `Result` handler), which always
 /// wins. The heuristic just makes the pre-result display correct for models
-/// whose window differs from the 200K default:
+/// whose window differs from the 200K default (otherwise the whole turn shows
+/// 200K and only jumps to 1M once the final result arrives):
 /// - Fable / Mythos ship a 1M context window *by default* (no opt-in variant).
-/// - A `[1m]` suffix forces the 1M window explicitly. This is no longer offered
-///   in the model picker (modern Opus 4.7+ already runs at 1M on the Anthropic
-///   API and is auto-upgraded to 1M on Max/Team/Enterprise plans), but the
-///   suffix can still arrive via an `ANTHROPIC_DEFAULT_OPUS_MODEL='...[1m]'` pin.
+/// - A `[1m]` suffix forces the 1M window explicitly (e.g. via an
+///   `ANTHROPIC_DEFAULT_OPUS_MODEL='...[1m]'` pin; no longer in the picker).
+/// - Current-generation Opus (4.7+) and Sonnet 5 run at 1M by default on the
+///   Anthropic API, and Opus is auto-upgraded to 1M on Max/Team/Enterprise
+///   plans; the bare `opus`/`sonnet` aliases resolve to these. A rare 200K
+///   deployment (Pro tier, an LLM gateway, or `CLAUDE_CODE_DISABLE_1M_CONTEXT`)
+///   self-corrects downward from `modelUsage`.
 ///
-/// A plain `opus` session is usually 1M too on those tiers, but that depends on
-/// plan/access, so the placeholder stays at the conservative 200K default and
-/// self-corrects once the first result arrives — new 1M models need no code
-/// change here.
+/// Older Opus (≤4.6) and everything else fall back to the 200K default and
+/// self-correct once the first result arrives — new 1M models need no change.
 fn initial_context_window_for_model(model: &str) -> u32 {
     let model = model.to_ascii_lowercase();
-    if model.contains("fable") || model.contains("mythos") || model.contains("[1m]") {
+    const OPUS_1M_IDS: [&str; 2] = ["claude-opus-4-7", "claude-opus-4-8"];
+    let is_1m = model.contains("fable")
+        || model.contains("mythos")
+        || model.contains("[1m]")
+        || model == "opus"
+        || model == "sonnet"
+        || model.contains("claude-sonnet-5")
+        || OPUS_1M_IDS.iter().any(|id| model.contains(id));
+    if is_1m {
         1_000_000
     } else {
         DEFAULT_CLAUDE_CONTEXT_WINDOW
@@ -3132,9 +3142,22 @@ mod tests {
         );
         // An explicit `[1m]` suffix (e.g. from an env pin) still forces 1M.
         assert_eq!(initial_context_window_for_model("opus[1m]"), 1_000_000);
-        // Everything else falls back to the 200K default (result message corrects it).
+        // Current-gen Opus (4.7+) / Sonnet 5 and the bare aliases run at 1M by
+        // default — the init message reports the resolved full id.
+        assert_eq!(initial_context_window_for_model("opus"), 1_000_000);
+        assert_eq!(initial_context_window_for_model("sonnet"), 1_000_000);
         assert_eq!(
-            initial_context_window_for_model("opus"),
+            initial_context_window_for_model("claude-opus-4-8"),
+            1_000_000
+        );
+        assert_eq!(
+            initial_context_window_for_model("claude-sonnet-5"),
+            1_000_000
+        );
+        // Older Opus (≤4.6) and everything else fall back to the 200K default
+        // (result message corrects it).
+        assert_eq!(
+            initial_context_window_for_model("claude-opus-4-5"),
             DEFAULT_CLAUDE_CONTEXT_WINDOW
         );
         assert_eq!(
