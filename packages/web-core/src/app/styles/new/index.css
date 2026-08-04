@@ -560,15 +560,27 @@ html {
    `outline` (not ring/box-shadow) so it never fights component ring styles
    and never affects layout.
    `[tabindex='-1']` is excluded: programmatic focus targets (dialog shells,
-   scroll regions, roving-focus menu items) manage their own indication.
-   The `html.kbd-nav` branch (class set by shared/lib/keyboardModality.ts
-   while the keyboard is driving) uses plain `:focus`: lists that move focus
+   scroll regions) manage their own indication — except menu/listbox items
+   (third selector), which are roving-focus tabindex=-1 targets that should
+   still show the indicator.
+   The `html.kbd-nav` branches (class set by shared/lib/keyboardModality.ts
+   while the keyboard is driving) use plain `:focus`: lists that move focus
    programmatically on ArrowUp/Down don't reliably get `:focus-visible` from
    the browser heuristic on the first keypress after a mouse interaction. */
 *:focus-visible:not([tabindex='-1']),
-html.kbd-nav *:focus:not([tabindex='-1']) {
+html.kbd-nav *:focus:not([tabindex='-1']),
+html.kbd-nav
+  :is(
+    [role='menuitem'],
+    [role='menuitemcheckbox'],
+    [role='menuitemradio'],
+    [role='option']
+  ):focus {
   outline: 2px solid hsl(var(--brand));
-  outline-offset: 1px;
+  /* Drawn inside the box: an outline outside the box is clipped by overflow
+     ancestors (full-bleed list rows, overflow-hidden row wrappers), which
+     made focus invisible in those spots. Inside, it can never be clipped. */
+  outline-offset: -2px;
 }
 
 @config '../../../../../local-web/tailwind.new.config.js';

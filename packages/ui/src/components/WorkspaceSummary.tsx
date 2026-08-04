@@ -139,7 +139,7 @@ export function WorkspaceSummary({
       className={cn(
         'group relative rounded-sm transition-all duration-100 overflow-hidden outline-none',
         isActive ? 'bg-tertiary' : '',
-        isFocused && 'ring-1 ring-inset ring-brand',
+        isFocused && 'ring-2 ring-inset ring-brand',
         className
       )}
     >
