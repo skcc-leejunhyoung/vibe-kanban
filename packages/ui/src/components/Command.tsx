@@ -140,7 +140,11 @@ const CommandItem = React.forwardRef<
     ref={ref}
     className={cn(
       'relative flex cursor-pointer select-none items-center gap-base rounded-sm px-base py-half text-sm outline-none',
+      // cmdk keeps DOM focus on the input and marks the active item via
+      // data-selected — the ring is that item's keyboard-cursor indicator,
+      // matching the brand ring used by the app's other lists.
       'data-[selected=true]:bg-secondary data-[selected=true]:text-high',
+      'data-[selected=true]:ring-2 data-[selected=true]:ring-inset data-[selected=true]:ring-brand',
       'data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50',
       className
     )}
