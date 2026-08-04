@@ -999,7 +999,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
                   fileButtonRefs.current.get(getDiffKey(focusedDiff))?.focus()
                 );
               }}
-              className="min-h-0 overflow-y-auto py-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
+              className="min-h-0 overflow-y-auto py-1"
             >
               {groupedDiffs.map((group) => (
                 <div key={group.repoId ?? 'unknown'}>
@@ -1077,7 +1077,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
             data-escape-handled
             aria-label="Changed file diff"
             onKeyDown={handleDiffPanelKeyDown}
-            className="flex-1 min-w-0 min-h-0 overflow-auto px-base pt-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
+            className="flex-1 min-w-0 min-h-0 overflow-auto px-base pt-1"
           >
             {selectedDiff?.contentOmitted && (
               <div className="h-full min-h-48 flex flex-col items-center justify-center gap-2 text-center px-6">

@@ -682,11 +682,24 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
-        const direction = event.key === 'ArrowDown' ? 1 : -1;
-        const nextIndex = Math.min(
+        // First press with focus outside the list anchors on the currently
+        // highlighted row instead of advancing past it — otherwise the focus
+        // border appears one row below where the selection highlight sits.
+        const active = document.activeElement;
+        const focusInList =
+          active instanceof HTMLElement &&
+          active.hasAttribute('data-pull-request-primary');
+        const anchorIndex = Math.min(
           filteredPullRequests.length - 1,
-          Math.max(0, selectedIndex + direction)
+          Math.max(0, selectedIndex)
         );
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = focusInList
+          ? Math.min(
+              filteredPullRequests.length - 1,
+              Math.max(0, anchorIndex + direction)
+            )
+          : anchorIndex;
         setSelectedIndex(nextIndex);
         focusRow(nextIndex);
       } else if (event.key === 'Enter') {
@@ -853,7 +866,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                     void prefetchPullRequest(pr);
                   }}
                   onClick={() => openDetails(pr)}
-                  className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-brand"
+                  className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left"
                 >
                   <span className="mt-half">{statusIcon(pr.status)}</span>
                   <span className="min-w-0 flex-1">
