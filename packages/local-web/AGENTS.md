@@ -57,6 +57,11 @@ or per-component focus rings (`focus:ring-*`, `focus-visible:ring-*`) — the
 global rule wins the specificity tie anyway, so a custom ring only renders a
 doubled indicator. Programmatic focus targets opt out via `tabindex="-1"`.
 
+Text-entry fields (text `input`, `textarea`, `contenteditable`) are excluded
+from the global outline and have their UA outline suppressed — the caret is
+the focus indicator, so a border on a field you're typing in is redundant. Do
+NOT add focus rings to text fields. Checkbox/radio inputs keep the outline.
+
 Two sanctioned exceptions, both using `KEYBOARD_CURSOR_RING` from
 `@vibe/ui/lib/focus-ring` (never hand-written ring classes):
 - Virtual cursors (`isFocused`/`isCursor`/`highlightedIndex`/cmdk

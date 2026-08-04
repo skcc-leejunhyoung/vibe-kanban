@@ -566,9 +566,28 @@ html {
    The `html.kbd-nav` branches (class set by shared/lib/keyboardModality.ts
    while the keyboard is driving) use plain `:focus`: lists that move focus
    programmatically on ArrowUp/Down don't reliably get `:focus-visible` from
-   the browser heuristic on the first keypress after a mouse interaction. */
-*:focus-visible:not([tabindex='-1']),
-html.kbd-nav *:focus:not([tabindex='-1']),
+   the browser heuristic on the first keypress after a mouse interaction.
+   Text entry fields (text `input`/`textarea`/contenteditable) are excluded:
+   a focus outline on a field you're already typing into is redundant noise —
+   the caret is the indicator. Checkbox/radio inputs keep the outline (their
+   focus is not otherwise obvious). Wrapped in `:where()` so the exclusion
+   adds no specificity, keeping this selector at (0,2,0) so the `.bg-brand`
+   override below still wins on source order. */
+*:focus-visible:not([tabindex='-1']):not(
+    :where(
+      input:not([type='checkbox']):not([type='radio']),
+      textarea,
+      [contenteditable='true']
+    )
+  ),
+html.kbd-nav
+  *:focus:not([tabindex='-1']):not(
+    :where(
+      input:not([type='checkbox']):not([type='radio']),
+      textarea,
+      [contenteditable='true']
+    )
+  ),
 html.kbd-nav
   :is(
     [role='menuitem'],
@@ -591,6 +610,15 @@ html.kbd-nav
 html.kbd-nav .bg-brand:focus,
 html.kbd-nav .bg-brand-secondary:focus {
   outline-color: hsl(var(--text-on-brand));
+}
+
+/* Text-entry fields are excluded from the brand outline above; also suppress
+   the browser's default focus outline so they show no border at all — the
+   caret marks focus. Checkbox/radio keep their outline. */
+input:not([type='checkbox']):not([type='radio']):focus,
+textarea:focus,
+[contenteditable='true']:focus {
+  outline: none;
 }
 
 @config '../../../../../local-web/tailwind.new.config.js';
