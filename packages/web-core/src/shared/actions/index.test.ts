@@ -260,6 +260,77 @@ describe('command palette navigation actions', () => {
     ).toBe(false);
   });
 
+  it('shows go to mapped issue for a local workspace target', () => {
+    expect(
+      isActionVisible(Actions.GotoWorkspaceMappedIssue, {
+        ...openWorkspaceContext,
+        appRuntime: 'local',
+        layoutMode: 'workspaces',
+      })
+    ).toBe(true);
+    expect(
+      isActionVisible(Actions.GotoWorkspaceMappedIssue, {
+        ...openWorkspaceContext,
+        appRuntime: 'remote',
+      })
+    ).toBe(false);
+    expect(
+      isActionVisible(Actions.GotoWorkspaceMappedIssue, {
+        ...openWorkspaceContext,
+        appRuntime: 'local',
+        hasWorkspace: false,
+      })
+    ).toBe(false);
+  });
+
+  it('navigates to the mapped issue of the target workspace', () => {
+    const goToProjectIssue = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host-1',
+        appNavigation: { goToProjectIssue } as never,
+        remoteWorkspaces: [
+          {
+            id: 'remote-ws1',
+            local_workspace_id: 'ws1',
+            host_id: 'host-1',
+            project_id: 'project-1',
+            issue_id: 'issue-1',
+          },
+        ] as never,
+      }
+    );
+
+    Actions.GotoWorkspaceMappedIssue.execute(ctx, 'ws1', 'host-1');
+
+    expect(goToProjectIssue).toHaveBeenCalledWith('project-1', 'issue-1');
+  });
+
+  it('does not navigate when the target workspace has no mapped issue', () => {
+    const goToProjectIssue = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host-1',
+        appNavigation: { goToProjectIssue } as never,
+        remoteWorkspaces: [
+          {
+            id: 'remote-ws1',
+            local_workspace_id: 'ws1',
+            host_id: 'host-1',
+            project_id: 'project-1',
+            issue_id: null,
+          },
+        ] as never,
+      }
+    );
+
+    Actions.GotoWorkspaceMappedIssue.execute(ctx, 'ws1', 'host-1');
+
+    expect(goToProjectIssue).not.toHaveBeenCalled();
+  });
+
   it('only shows pull request repository selection on the pull requests page', () => {
     expect(
       isActionVisible(Actions.SelectPullRequestsRepository, {

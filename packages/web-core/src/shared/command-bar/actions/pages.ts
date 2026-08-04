@@ -38,6 +38,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.CreateWorkspaceFromPR },
           { type: 'action', action: Actions.OpenWorkspace },
           { type: 'action', action: Actions.OpenWorkspaceInNewTab },
+          { type: 'action', action: Actions.GotoWorkspaceMappedIssue },
           { type: 'action', action: Actions.OpenInIDE },
           { type: 'action', action: Actions.CopyWorkspacePath },
           { type: 'action', action: Actions.CopyRawLogs },

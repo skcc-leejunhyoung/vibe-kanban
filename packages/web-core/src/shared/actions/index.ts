@@ -1068,6 +1068,27 @@ export const Actions = {
     },
   } satisfies WorkspaceActionDefinition,
 
+  GotoWorkspaceMappedIssue: {
+    id: 'goto-workspace-mapped-issue',
+    label: 'Go to mapped issue',
+    icon: ArrowSquareOutIcon,
+    keywords: ['workspace', 'issue', 'mapped', 'linked', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
+    execute: (ctx, workspaceId, hostId) => {
+      const remoteWs = findRemoteWorkspaceByLocalIdentity(
+        ctx.remoteWorkspaces,
+        workspaceId,
+        hostId ?? null
+      );
+      if (!remoteWs?.issue_id) return;
+      ctx.appNavigation.goToProjectIssue(
+        remoteWs.project_id,
+        remoteWs.issue_id
+      );
+    },
+  } satisfies WorkspaceActionDefinition,
+
   GotoProjects: {
     id: 'goto-projects',
     label: 'Goto: Projects',
