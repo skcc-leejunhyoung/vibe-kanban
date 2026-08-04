@@ -60,7 +60,9 @@ doubled indicator. Programmatic focus targets opt out via `tabindex="-1"`.
 Text-entry fields (text `input`, `textarea`, `contenteditable`) are excluded
 from the global outline and have their UA outline suppressed — the caret is
 the focus indicator, so a border on a field you're typing in is redundant. Do
-NOT add focus rings to text fields. Checkbox/radio inputs keep the outline.
+NOT add focus rings to text fields. Non-text input types (checkbox, radio,
+`color`, `range`, `file`, buttons) keep the outline — they have no caret, so
+the carve-out only covers caret-bearing text inputs.
 
 Two sanctioned exceptions, both using `KEYBOARD_CURSOR_RING` from
 `@vibe/ui/lib/focus-ring` (never hand-written ring classes):

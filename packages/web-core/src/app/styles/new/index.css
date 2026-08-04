@@ -569,13 +569,19 @@ html {
    the browser heuristic on the first keypress after a mouse interaction.
    Text entry fields (text `input`/`textarea`/contenteditable) are excluded:
    a focus outline on a field you're already typing into is redundant noise —
-   the caret is the indicator. Checkbox/radio inputs keep the outline (their
-   focus is not otherwise obvious). Wrapped in `:where()` so the exclusion
+   the caret is the indicator. Only caret-bearing inputs are excluded: the
+   carve-out lists non-text input types (checkbox, radio, color, range, file,
+   buttons) that must KEEP the outline since they have no caret and their
+   focus is not otherwise obvious. Wrapped in `:where()` so the exclusion
    adds no specificity, keeping this selector at (0,2,0) so the `.bg-brand`
    override below still wins on source order. */
 *:focus-visible:not([tabindex='-1']):not(
     :where(
-      input:not([type='checkbox']):not([type='radio']),
+      input:not([type='checkbox']):not([type='radio']):not([type='color']):not(
+          [type='range']
+        ):not([type='file']):not([type='button']):not([type='submit']):not(
+          [type='reset']
+        ):not([type='image']),
       textarea,
       [contenteditable='true']
     )
@@ -583,7 +589,11 @@ html {
 html.kbd-nav
   *:focus:not([tabindex='-1']):not(
     :where(
-      input:not([type='checkbox']):not([type='radio']),
+      input:not([type='checkbox']):not([type='radio']):not([type='color']):not(
+          [type='range']
+        ):not([type='file']):not([type='button']):not([type='submit']):not(
+          [type='reset']
+        ):not([type='image']),
       textarea,
       [contenteditable='true']
     )
@@ -614,8 +624,13 @@ html.kbd-nav .bg-brand-secondary:focus {
 
 /* Text-entry fields are excluded from the brand outline above; also suppress
    the browser's default focus outline so they show no border at all — the
-   caret marks focus. Checkbox/radio keep their outline. */
-input:not([type='checkbox']):not([type='radio']):focus,
+   caret marks focus. Non-text input types (checkbox, radio, color, range,
+   file, buttons) keep their outline — same carve-out as the rule above. */
+input:not([type='checkbox']):not([type='radio']):not([type='color']):not(
+    [type='range']
+  ):not([type='file']):not([type='button']):not([type='submit']):not(
+    [type='reset']
+  ):not([type='image']):focus,
 textarea:focus,
 [contenteditable='true']:focus {
   outline: none;
