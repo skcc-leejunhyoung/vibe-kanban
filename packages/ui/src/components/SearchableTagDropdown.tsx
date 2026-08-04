@@ -170,7 +170,8 @@ export function SearchableTagDropdown({
                           onMouseEnter={() => onHighlightedIndexChange(idx)}
                           className={cn(
                             'flex items-center gap-base w-full px-base py-half text-sm text-left transition-colors',
-                            isHighlighted && 'bg-secondary',
+                            isHighlighted &&
+                              'bg-secondary ring-2 ring-inset ring-brand',
                             isSelected && 'text-normal'
                           )}
                         >
@@ -198,7 +199,8 @@ export function SearchableTagDropdown({
                       onClick={onStartCreate}
                       className={cn(
                         'flex items-center gap-base w-full px-base py-half text-sm text-brand hover:bg-secondary transition-colors',
-                        createOptionHighlighted && 'bg-secondary'
+                        createOptionHighlighted &&
+                          'bg-secondary ring-2 ring-inset ring-brand'
                       )}
                     >
                       <PlusIcon className="size-icon-sm" weight="bold" />

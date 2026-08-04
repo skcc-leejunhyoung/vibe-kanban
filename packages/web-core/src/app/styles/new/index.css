@@ -583,6 +583,16 @@ html.kbd-nav
   outline-offset: -2px;
 }
 
+/* On brand-colored surfaces (PrimaryButton etc.) a brand outline is
+   invisible — flip it to the on-brand text color. Same specificity as the
+   rules above, later in source, so it wins the tie. */
+.bg-brand:focus-visible,
+.bg-brand-secondary:focus-visible,
+html.kbd-nav .bg-brand:focus,
+html.kbd-nav .bg-brand-secondary:focus {
+  outline-color: hsl(var(--text-on-brand));
+}
+
 @config '../../../../../local-web/tailwind.new.config.js';
 
 /* Mobile-specific styles */

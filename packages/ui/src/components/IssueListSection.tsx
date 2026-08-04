@@ -119,7 +119,7 @@ export function IssueListSection({
           'bg-panel border-y border-border',
           'cursor-pointer transition-colors outline-none',
           'hover:bg-secondary',
-          isFocused && 'ring-1 ring-inset ring-brand'
+          isFocused && 'ring-2 ring-inset ring-brand'
         )}
       >
         <div className="flex items-center gap-base">
@@ -260,7 +260,7 @@ function IssueListAddRow({
         className={cn(
           'group/add flex items-center gap-double px-double py-half outline-none',
           'text-low hover:bg-secondary hover:text-normal transition-colors',
-          isFocused && 'ring-1 ring-inset ring-brand text-normal'
+          isFocused && 'ring-2 ring-inset ring-brand text-normal'
         )}
       >
         <span className="shrink-0 w-4 flex items-center justify-center">

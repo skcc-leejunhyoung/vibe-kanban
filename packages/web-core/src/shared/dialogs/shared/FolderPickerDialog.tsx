@@ -264,16 +264,16 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
                 ) : (
                   <div className="p-2">
                     {filteredEntries.map((entry, index) => (
-                      <div
+                      <button
                         key={index}
-                        className={`flex items-center space-x-2 p-2 rounded cursor-pointer hover:bg-accent ${
+                        type="button"
+                        disabled={!entry.is_directory}
+                        className={`flex w-full items-center space-x-2 p-2 rounded text-left cursor-pointer hover:bg-accent ${
                           !entry.is_directory
                             ? 'opacity-50 cursor-not-allowed'
                             : ''
                         }`}
-                        onClick={() =>
-                          entry.is_directory && handleFolderClick(entry)
-                        }
+                        onClick={() => handleFolderClick(entry)}
                         title={entry.name} // Show full name on hover
                       >
                         {entry.is_directory ? (
@@ -293,7 +293,7 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
                             {t('folderPicker.gitRepo')}
                           </span>
                         )}
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}

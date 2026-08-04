@@ -116,7 +116,7 @@ export function SearchableDropdown<T>({
                   badge={getItemBadge?.(item)}
                   className={cn(
                     isSelected && 'bg-secondary',
-                    isHighlighted && 'bg-secondary'
+                    isHighlighted && 'bg-secondary ring-2 ring-inset ring-brand'
                   )}
                 >
                   {getItemIcon?.(item)}

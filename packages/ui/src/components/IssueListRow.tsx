@@ -134,7 +134,7 @@ export function IssueListRow({
           className={cn(
             'group/row flex flex-col',
             'transition-colors cursor-pointer outline-none',
-            isCursor && 'ring-1 ring-inset ring-brand',
+            isCursor && 'ring-2 ring-inset ring-brand',
             snapshot.isDragging && 'bg-secondary shadow-lg cursor-grabbing',
             className
           )}
