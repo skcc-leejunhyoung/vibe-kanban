@@ -1817,7 +1817,7 @@ impl LocalContainerService {
                     .await;
                 let prompt =
                     vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
-                self.vibe_start_review_session(&ctx.workspace, &ctx.session, &prompt)
+                self.vibe_start_review_session(&ctx.workspace, &ctx.session, &prompt, None)
                     .await?;
             }
 
@@ -2024,16 +2024,22 @@ impl LocalContainerService {
         workspace: &Workspace,
         session: &Session,
         prompt: &str,
+        executor_config: Option<ExecutorConfig>,
     ) -> Result<Session, ContainerError> {
         // See `vibe_send_followup`: a missing profile must error, not no-op, so
-        // the run is not silently abandoned in a non-terminal phase. The review
-        // session inherits the source session's executor config.
-        let Some(executor_config) = self.vibe_executor_config(session.id).await else {
-            return Err(ContainerError::Other(anyhow!(
-                "vibe: no executor profile for session {}, cannot start review",
-                session.id
-            )));
+        // the run is not silently abandoned in a non-terminal phase. A manual
+        // review uses the chat selector config; automated reviews inherit the
+        // source session's executor config.
+        let mut executor_config = match executor_config {
+            Some(executor_config) => executor_config,
+            None => self.vibe_executor_config(session.id).await.ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "vibe: no executor profile for session {}, cannot start review",
+                    session.id
+                ))
+            })?,
         };
+        executor_config.permission_policy = Some(PermissionPolicy::Auto);
 
         let session_id = Uuid::new_v4();
         let create = CreateSession {
@@ -3041,6 +3047,7 @@ impl ContainerService for LocalContainerService {
         &self,
         workspace: &Workspace,
         session: &Session,
+        executor_config: Option<ExecutorConfig>,
     ) -> Result<Session, ContainerError> {
         let Some(task_id) = workspace.task_id else {
             return Err(ContainerError::Other(anyhow!(
@@ -3068,7 +3075,7 @@ impl ContainerService for LocalContainerService {
             .await;
 
         let prompt = vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
-        self.vibe_start_review_session(workspace, session, &prompt)
+        self.vibe_start_review_session(workspace, session, &prompt, executor_config)
             .await
     }
 }

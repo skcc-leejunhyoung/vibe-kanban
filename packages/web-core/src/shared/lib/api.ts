@@ -98,6 +98,7 @@ import {
   Session,
   Workspace,
   StartReviewRequest,
+  VibeReviewRequest,
   ReviewError,
   GitRemote,
   ListPrsError,
@@ -409,13 +410,19 @@ export const sessionsApi = {
    * the coding agent had reported `VIBE_RESULT: done`. Returns the new session. */
   vibeReview: async (
     sessionId: string,
-    hostId?: string | null
+    hostId?: string | null,
+    executorConfig?: ExecutorConfig | null
   ): Promise<Session> => {
     const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/vibe-review`,
       hostId,
       {
         method: 'POST',
+        body: JSON.stringify(
+          executorConfig
+            ? ({ executor_config: executorConfig } satisfies VibeReviewRequest)
+            : {}
+        ),
       }
     );
     return handleApiResponse<Session, ReviewError>(response);

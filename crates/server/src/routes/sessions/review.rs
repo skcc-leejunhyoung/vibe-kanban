@@ -33,6 +33,14 @@ pub struct StartReviewRequest {
     pub use_all_workspace_commits: bool,
 }
 
+/// The chat settings selected when manually starting an automated review.
+/// This is optional so callers that do not have an active chat selector retain
+/// the existing behavior of inheriting the source session's last-used config.
+#[derive(Debug, Default, Deserialize, Serialize, TS)]
+pub struct VibeReviewRequest {
+    pub executor_config: Option<ExecutorConfig>,
+}
+
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(tag = "type", rename_all = "snake_case")]
@@ -158,6 +166,7 @@ pub async fn start_review(
 pub async fn vibe_review(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
+    payload: Option<Json<VibeReviewRequest>>,
 ) -> Result<ResponseJson<ApiResponse<Session, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
 
@@ -188,7 +197,11 @@ pub async fn vibe_review(
 
     let review_session = deployment
         .container()
-        .vibe_manual_start_review(&workspace, &session)
+        .vibe_manual_start_review(
+            &workspace,
+            &session,
+            payload.and_then(|Json(request)| request.executor_config),
+        )
         .await?;
 
     Ok(ResponseJson(ApiResponse::success(review_session)))

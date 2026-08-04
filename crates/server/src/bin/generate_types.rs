@@ -135,6 +135,7 @@ fn generate_types_content() -> String {
         server::routes::workspaces::git::RenameBranchRequest::decl(),
         server::routes::workspaces::git::RenameBranchResponse::decl(),
         server::routes::sessions::review::StartReviewRequest::decl(),
+        server::routes::sessions::review::VibeReviewRequest::decl(),
         server::routes::sessions::review::ReviewError::decl(),
         server::routes::workspaces::integration::OpenEditorRequest::decl(),
         server::routes::workspaces::integration::OpenEditorResponse::decl(),

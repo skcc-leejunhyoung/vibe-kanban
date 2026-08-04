@@ -857,6 +857,7 @@ pub trait ContainerService {
         &self,
         workspace: &Workspace,
         session: &Session,
+        executor_config: Option<ExecutorConfig>,
     ) -> Result<Session, ContainerError>;
 
     async fn start_execution_inner(
