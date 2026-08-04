@@ -66,6 +66,9 @@ vi.mock('@/shared/lib/reviewAndCreatePr', () => ({
 vi.mock('@/shared/dialogs/tasks/PrDetailsDialog', () => ({
   PrDetailsDialog: { show: vi.fn() },
 }));
+vi.mock('@/shared/dialogs/command-bar/SelectionDialog', () => ({
+  SelectionDialog: { show: vi.fn() },
+}));
 
 import {
   Actions,
@@ -82,6 +85,7 @@ import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
+import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { getPageActions } from '@/shared/command-bar/actions/pages';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 
@@ -106,6 +110,7 @@ const openWorkspaceInSplitPane = vi.mocked(openInSplitPane);
 const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
 const showPrDetails = vi.mocked(PrDetailsDialog.show);
+const showSelection = vi.mocked(SelectionDialog.show);
 const reviewAndCreatePr = vi.mocked(runReviewAndCreatePr);
 
 // Build a minimal action context. Seeding the query cache with the workspace
@@ -1022,6 +1027,97 @@ describe('Actions.GitOpenPR', () => {
     expect(reservedWindow.close).toHaveBeenCalledOnce();
     expect(openPrUrl).not.toHaveBeenCalled();
   });
+
+  it('prompts for a selection when several open PRs are connected', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    openPrUrl.mockReturnValue(true);
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: { status: 'open', url: 'https://example.com/pull/41' },
+          },
+          {
+            type: 'pr',
+            pr_info: { status: 'open', url: 'https://example.com/pull/42' },
+          },
+        ],
+      },
+    ] as never);
+    // The user picks the second open PR (index 1).
+    showSelection.mockResolvedValue({ prIndex: 1 } as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitOpenPR.execute(ctx, 'ws1', 'repo1');
+
+    expect(showSelection).toHaveBeenCalledOnce();
+    expect(openPrUrl).toHaveBeenCalledWith(
+      'https://example.com/pull/42',
+      reservedWindow
+    );
+  });
+
+  it('ignores merged PRs and only offers open ones for selection', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    openPrUrl.mockReturnValue(true);
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: { status: 'merged', url: 'https://example.com/pull/40' },
+          },
+          {
+            type: 'pr',
+            pr_info: { status: 'open', url: 'https://example.com/pull/41' },
+          },
+        ],
+      },
+    ] as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitOpenPR.execute(ctx, 'ws1', 'repo1');
+
+    // Only one open PR remains after filtering, so no dialog is shown.
+    expect(showSelection).not.toHaveBeenCalled();
+    expect(openPrUrl).toHaveBeenCalledWith(
+      'https://example.com/pull/41',
+      reservedWindow
+    );
+  });
+
+  it('closes the reserved window when the selection dialog is dismissed', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: { status: 'open', url: 'https://example.com/pull/41' },
+          },
+          {
+            type: 'pr',
+            pr_info: { status: 'open', url: 'https://example.com/pull/42' },
+          },
+        ],
+      },
+    ] as never);
+    showSelection.mockResolvedValue(undefined as never);
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitOpenPR.execute(ctx, 'ws1', 'repo1');
+
+    expect(reservedWindow.close).toHaveBeenCalledOnce();
+    expect(openPrUrl).not.toHaveBeenCalled();
+    expect(showConfirm).not.toHaveBeenCalled();
+  });
 });
 
 describe('Actions.GitViewPRDetails', () => {
@@ -1122,7 +1218,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
     ).toBe(false);
   });
 
-  it('opens the linked PR on the pull requests page, preferring an open PR', async () => {
+  it('opens the only connected PR without prompting for a selection', async () => {
     getBranchStatus.mockResolvedValue([
       {
         repo_id: 'repo1',
@@ -1130,16 +1226,8 @@ describe('Actions.GitOpenPRInPullRequests', () => {
           {
             type: 'pr',
             pr_info: {
-              number: 41,
-              status: 'merged',
-              url: 'https://example.com/pull/41',
-            },
-          },
-          {
-            type: 'pr',
-            pr_info: {
               number: 42,
-              status: 'open',
+              status: 'merged',
               url: 'https://example.com/pull/42',
             },
           },
@@ -1158,10 +1246,96 @@ describe('Actions.GitOpenPRInPullRequests', () => {
 
     await Actions.GitOpenPRInPullRequests.execute(ctx, 'ws1', 'repo1');
 
+    expect(showSelection).not.toHaveBeenCalled();
     expect(goToPullRequests).toHaveBeenCalledWith(
       'https://example.com/pull/42',
       undefined
     );
+  });
+
+  it('prompts for a selection when several PRs are connected and opens the chosen one', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              number: 41,
+              status: 'open',
+              url: 'https://example.com/pull/41',
+            },
+          },
+          {
+            type: 'pr',
+            pr_info: {
+              number: 42,
+              status: 'merged',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    // The user picks the second connected PR (index 1).
+    showSelection.mockResolvedValue({ prIndex: 1 } as never);
+    const goToPullRequests = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        appRuntime: 'local',
+        currentHostId: null,
+        appNavigation: { goToPullRequests } as never,
+      }
+    );
+
+    await Actions.GitOpenPRInPullRequests.execute(ctx, 'ws1', 'repo1');
+
+    expect(showSelection).toHaveBeenCalledOnce();
+    expect(goToPullRequests).toHaveBeenCalledWith(
+      'https://example.com/pull/42',
+      undefined
+    );
+  });
+
+  it('does nothing when the selection dialog is dismissed', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              number: 41,
+              status: 'open',
+              url: 'https://example.com/pull/41',
+            },
+          },
+          {
+            type: 'pr',
+            pr_info: {
+              number: 42,
+              status: 'open',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    showSelection.mockResolvedValue(undefined as never);
+    const goToPullRequests = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        appRuntime: 'local',
+        currentHostId: null,
+        appNavigation: { goToPullRequests } as never,
+      }
+    );
+
+    await Actions.GitOpenPRInPullRequests.execute(ctx, 'ws1', 'repo1');
+
+    expect(goToPullRequests).not.toHaveBeenCalled();
   });
 
   it('forwards the selected host when opening on remote', async () => {

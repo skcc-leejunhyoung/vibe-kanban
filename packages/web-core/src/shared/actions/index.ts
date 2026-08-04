@@ -251,6 +251,90 @@ async function selectIssuePullRequest(
   );
 }
 
+type RepoPullRequest = { url: string; number: number; status: string };
+
+// 'none' = no matching PR is connected; 'cancelled' = the user dismissed the
+// selection dialog. Kept distinct so callers can show a "no PR" message only in
+// the former case and stay silent on an intentional cancel.
+type RepoPullRequestSelection =
+  | { kind: 'selected'; pullRequest: RepoPullRequest }
+  | { kind: 'none' }
+  | { kind: 'cancelled' };
+
+// Collect the pull requests connected to a workspace repo and, when more than
+// one matches, let the user pick one from a selection dialog (mirrors the issue
+// flow in `selectIssuePullRequest`).
+async function selectRepoPullRequest(
+  workspaceId: string,
+  repoId: string,
+  options: { openOnly: boolean }
+): Promise<RepoPullRequestSelection> {
+  const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+  const merges =
+    branchStatus.find((status) => status.repo_id === repoId)?.merges ?? [];
+  const pullRequests: RepoPullRequest[] = merges
+    .filter(
+      (merge): merge is Extract<Merge, { type: 'pr' }> =>
+        merge.type === 'pr' &&
+        Boolean(merge.pr_info.url) &&
+        (!options.openOnly || merge.pr_info.status === 'open')
+    )
+    .map((merge) => ({
+      url: merge.pr_info.url,
+      number: Number(merge.pr_info.number),
+      status: merge.pr_info.status,
+    }));
+
+  if (pullRequests.length === 0) return { kind: 'none' };
+  if (pullRequests.length === 1) {
+    return { kind: 'selected', pullRequest: pullRequests[0] };
+  }
+
+  const pages: Record<string, SelectionPage<{ prIndex: number }>> = {
+    selectPullRequest: {
+      id: 'selectPullRequest',
+      title: 'Select Pull Request',
+      buildGroups: () => [
+        {
+          label: 'Connected pull requests',
+          items: pullRequests.map((pullRequest, index) => ({
+            type: 'action' as const,
+            action: {
+              id: `select-repo-pull-request-${index}`,
+              label: `Pull Request #${pullRequest.number}`,
+              description: pullRequest.status,
+              icon: GitPullRequestIcon,
+              requiresTarget: ActionTargetType.NONE,
+              execute: () => {},
+            } satisfies GlobalActionDefinition,
+          })),
+        },
+      ],
+      onSelect: (item) => {
+        if (item.type !== 'action') {
+          return { type: 'complete', data: undefined as never };
+        }
+        const prIndex = Number(
+          item.action.id.replace('select-repo-pull-request-', '')
+        );
+        return { type: 'complete', data: { prIndex } };
+      },
+    },
+  };
+  const result = await SelectionDialog.show({
+    initialPageId: 'selectPullRequest',
+    pages,
+  });
+  if (!result || typeof result !== 'object' || !('prIndex' in result)) {
+    return { kind: 'cancelled' };
+  }
+  const { prIndex } = result as { prIndex: number };
+  const pullRequest = pullRequests[prIndex];
+  return pullRequest
+    ? { kind: 'selected', pullRequest }
+    : { kind: 'cancelled' };
+}
+
 async function getWorkspace(
   queryClient: QueryClient,
   workspaceId: string,
@@ -1748,16 +1832,19 @@ export const Actions = {
     execute: async (_ctx, workspaceId, repoId) => {
       const reservedWindow = reserveExternalWindow();
       try {
-        const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
-        const repoStatus = branchStatus.find(
-          (status) => status.repo_id === repoId
-        );
-        const openPr = repoStatus?.merges?.find(
-          (merge: Merge) =>
-            merge.type === 'pr' && merge.pr_info.status === 'open'
-        );
+        // Prefer the reserved popup so the browser keeps the user gesture; when
+        // several open PRs are connected the selection dialog runs while the
+        // popup waits blank, then we point it at the chosen PR.
+        const selection = await selectRepoPullRequest(workspaceId, repoId, {
+          openOnly: true,
+        });
 
-        if (openPr?.type !== 'pr') {
+        if (selection.kind === 'cancelled') {
+          reservedWindow?.close();
+          return;
+        }
+
+        if (selection.kind === 'none') {
           reservedWindow?.close();
           await ConfirmDialog.show({
             title: 'No Open Pull Request',
@@ -1770,7 +1857,7 @@ export const Actions = {
           return;
         }
 
-        if (!openExternalUrl(openPr.pr_info.url, reservedWindow)) {
+        if (!openExternalUrl(selection.pullRequest.url, reservedWindow)) {
           reservedWindow?.close();
         }
       } catch (error) {
@@ -1819,20 +1906,14 @@ export const Actions = {
       ctx.hasLinkedPR &&
       (ctx.appRuntime === 'local' || ctx.currentHostId !== null),
     execute: async (ctx, workspaceId, repoId) => {
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
-      const merges = branchStatus.find(
-        (status) => status.repo_id === repoId
-      )?.merges;
-      // Match the PR panel: prefer an open PR, then fall back to the most
-      // recently linked merged/closed PR.
-      const pullRequest =
-        merges?.find(
-          (merge: Merge) =>
-            merge.type === 'pr' && merge.pr_info.status === 'open'
-        ) ?? merges?.find((merge: Merge) => merge.type === 'pr');
-      if (pullRequest?.type !== 'pr' || !pullRequest.pr_info.url) return;
+      // Any connected PR (open, merged, or closed) can be opened on the PR page;
+      // when several are linked, let the user pick which one to open.
+      const selection = await selectRepoPullRequest(workspaceId, repoId, {
+        openOnly: false,
+      });
+      if (selection.kind !== 'selected') return;
       ctx.appNavigation.goToPullRequests(
-        pullRequest.pr_info.url,
+        selection.pullRequest.url,
         ctx.currentHostId ? { hostId: ctx.currentHostId } : undefined
       );
     },
