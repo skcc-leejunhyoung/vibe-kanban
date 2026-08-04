@@ -34,7 +34,7 @@ export async function selectPullRequestToUnlink(
               action: {
                 // The URL is the unlink identity, so key the item by it.
                 id: pr.url,
-                label: `PR #${pr.number}`,
+                label: `#${pr.number} PR`,
                 description: `${pr.headBranch} → ${pr.baseBranch} · ${pr.status}`,
                 icon: GitPullRequestIcon,
                 requiresTarget: ActionTargetType.NONE,

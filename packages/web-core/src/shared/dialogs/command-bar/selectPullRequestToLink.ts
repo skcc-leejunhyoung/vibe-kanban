@@ -20,7 +20,7 @@ export async function selectPullRequestToLink(
               type: 'action' as const,
               action: {
                 id: pr.url,
-                label: `PR #${pr.number}`,
+                label: `#${pr.number} ${pr.title}`,
                 description: `${pr.head_branch} → ${pr.base_branch} · ${pr.status}`,
                 icon: GitPullRequestIcon,
                 requiresTarget: ActionTargetType.NONE,
