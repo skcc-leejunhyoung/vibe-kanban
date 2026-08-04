@@ -900,6 +900,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         workspaceId,
         sessionId,
         hostId,
+        executorConfig,
         queryClient,
         onReviewSession: onSelectSession,
       });
@@ -925,6 +926,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isReviewing,
     workspaceId,
     hostId,
+    executorConfig,
     queryClient,
     onSelectSession,
     t,

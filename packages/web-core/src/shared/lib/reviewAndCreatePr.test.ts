@@ -4,6 +4,7 @@ import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
+import type { ExecutorConfig } from 'shared/types';
 import { runReviewAndCreatePr } from './reviewAndCreatePr';
 
 vi.mock('@vibe/ui/components/ErrorDialog', () => ({
@@ -47,6 +48,31 @@ beforeEach(() => {
 });
 
 describe('runReviewAndCreatePr', () => {
+  it('passes the composer executor config to the review session', async () => {
+    const executorConfig = {
+      executor: 'CLAUDE_CODE',
+      variant: 'default',
+      model_id: 'claude-sonnet',
+    } as ExecutorConfig;
+    vi.mocked(sessionsApi.vibeReview).mockRejectedValue(
+      new Error('Review could not be started')
+    );
+
+    await runReviewAndCreatePr({
+      workspaceId: 'workspace-1',
+      sessionId: 'session-1',
+      hostId: 'host-1',
+      executorConfig,
+      queryClient,
+    });
+
+    expect(sessionsApi.vibeReview).toHaveBeenCalledWith(
+      'session-1',
+      'host-1',
+      executorConfig
+    );
+  });
+
   it('shows a warning dialog when an intermediate step fails', async () => {
     vi.mocked(sessionsApi.vibeReview).mockRejectedValue(
       new Error('Review could not be started')

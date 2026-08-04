@@ -5,6 +5,7 @@ import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
+import type { ExecutorConfig } from 'shared/types';
 
 const VIBE_REVIEW_POLL_MS = 2000;
 const VIBE_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
@@ -31,6 +32,7 @@ export interface ReviewAndCreatePrOptions {
   workspaceId: string;
   sessionId: string;
   hostId?: string | null;
+  executorConfig?: ExecutorConfig | null;
   queryClient: QueryClient;
   onReviewSession?: (sessionId: string) => void;
 }
@@ -43,10 +45,15 @@ async function executeReviewAndCreatePr({
   workspaceId,
   sessionId,
   hostId,
+  executorConfig,
   queryClient,
   onReviewSession,
 }: ReviewAndCreatePrOptions): Promise<boolean> {
-  const reviewSession = await sessionsApi.vibeReview(sessionId, hostId);
+  const reviewSession = await sessionsApi.vibeReview(
+    sessionId,
+    hostId,
+    executorConfig
+  );
   await queryClient.invalidateQueries({
     queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
   });
