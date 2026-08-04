@@ -205,6 +205,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     queryKey: ['repos'],
     queryFn: () => repoApi.list(),
     staleTime: 5 * 60_000,
+    gcTime: 60 * 60_000,
   });
   const repositories = useMemo(
     () =>
@@ -257,6 +258,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     },
     enabled: filters.repository !== 'all',
     staleTime: 5 * 60_000,
+    gcTime: 60 * 60_000,
   });
   const refreshPullRequests = useMutation({
     mutationFn: async ({
