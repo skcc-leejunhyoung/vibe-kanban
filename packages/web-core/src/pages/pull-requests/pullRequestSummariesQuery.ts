@@ -1,0 +1,31 @@
+import { repoApi } from '@/shared/lib/api';
+
+export function pullRequestSummariesQueryKey(
+  repository: string,
+  involvesMe: boolean
+) {
+  return ['pull-request-summaries', repository, involvesMe] as const;
+}
+
+export async function fetchPullRequestSummaries(
+  repository: string,
+  involvesMe: boolean
+) {
+  const result = await repoApi.listPullRequestSummaries(repository, involvesMe);
+  if (!result.success) {
+    throw new Error(result.message || 'Failed to load pull requests');
+  }
+  return result.data;
+}
+
+export function pullRequestSummariesQueryOptions(
+  repository: string,
+  involvesMe: boolean
+) {
+  return {
+    queryKey: pullRequestSummariesQueryKey(repository, involvesMe),
+    queryFn: () => fetchPullRequestSummaries(repository, involvesMe),
+    staleTime: 5 * 60_000,
+    gcTime: 60 * 60_000,
+  };
+}

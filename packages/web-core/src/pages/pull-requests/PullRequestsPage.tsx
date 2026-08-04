@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Group, Panel, Separator } from 'react-resizable-panels';
+import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 import {
   ArrowClockwiseIcon,
   ArrowSquareOutIcon,
@@ -23,7 +23,11 @@ import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
-import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import {
+  PERSIST_KEYS,
+  usePaneSize,
+  useUiPreferencesStore,
+} from '@/shared/stores/useUiPreferencesStore';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { selectLinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
@@ -46,6 +50,7 @@ import {
   type PullRequestFilterState,
   type PullRequestUpdatedFilter,
 } from './pullRequestFilters';
+import { pullRequestSummariesQueryOptions } from './pullRequestSummariesQuery';
 import type { MergeStatus, PullRequestSummary } from 'shared/types';
 import type { Issue, PullRequestIssue, Workspace } from 'shared/remote-types';
 
@@ -190,6 +195,10 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     useState<PullRequestTarget | null>(() =>
       getPullRequestTargetFromUrl(initialPrUrl)
     );
+  const [detailPanelSize, setDetailPanelSize] = usePaneSize(
+    PERSIST_KEYS.pullRequestsDetailPanel,
+    35
+  );
   const previousDefaultFiltersRef = useRef(defaultFilters);
   const handledInitialPrUrlRef = useRef<string | undefined>(
     selectedPullRequest ? initialPrUrl : undefined
@@ -241,21 +250,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   }, [defaultFilters]);
 
   const pullRequestsQuery = useQuery({
-    queryKey: [
-      'pull-request-summaries',
-      filters.repository,
-      filters.involvesMe,
-    ],
-    queryFn: async () => {
-      const result = await repoApi.listPullRequestSummaries(
-        filters.repository,
-        filters.involvesMe
-      );
-      if (!result.success) {
-        throw new Error(result.message || 'Failed to load pull requests');
-      }
-      return result.data;
-    },
+    ...pullRequestSummariesQueryOptions(filters.repository, filters.involvesMe),
     enabled: filters.repository !== 'all',
     staleTime: 5 * 60_000,
     gcTime: 60 * 60_000,
@@ -280,7 +275,10 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     },
     onSuccess: (data, variables) => {
       queryClient.setQueryData(
-        ['pull-request-summaries', variables.repository, variables.involvesMe],
+        pullRequestSummariesQueryOptions(
+          variables.repository,
+          variables.involvesMe
+        ).queryKey,
         data
       );
     },
@@ -956,6 +954,26 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     />
   ) : null;
 
+  const pullRequestsDefaultLayout: Layout =
+    typeof detailPanelSize === 'number'
+      ? {
+          'pull-requests-list': 100 - detailPanelSize,
+          'pull-request-detail': detailPanelSize,
+        }
+      : {
+          'pull-requests-list': 65,
+          'pull-request-detail': 35,
+        };
+
+  const onPullRequestsLayoutChange = useCallback(
+    (layout: Layout) => {
+      if (selectedPullRequest) {
+        setDetailPanelSize(layout['pull-request-detail']);
+      }
+    },
+    [selectedPullRequest, setDetailPanelSize]
+  );
+
   return (
     <>
       {isMobile ? (
@@ -971,10 +989,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         <Group
           orientation="horizontal"
           className="h-full min-w-0 flex-1"
-          defaultLayout={{
-            'pull-requests-list': 65,
-            'pull-request-detail': 35,
-          }}
+          defaultLayout={pullRequestsDefaultLayout}
+          onLayoutChange={onPullRequestsLayoutChange}
         >
           <Panel
             id="pull-requests-list"

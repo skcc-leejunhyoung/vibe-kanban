@@ -412,6 +412,7 @@ export const PERSIST_KEYS = {
   // Panel sizes
   rightMainPanel: 'right-main-panel',
   kanbanLeftPanel: 'kanban-left-panel',
+  pullRequestsDetailPanel: 'pull-requests-detail-panel',
   // Kanban issue panel sections
   kanbanIssueSubIssues: 'kanban-issue-sub-issues',
   kanbanIssueRelationships: 'kanban-issue-relationships',
@@ -445,6 +446,7 @@ export type PersistKey =
   | typeof PERSIST_KEYS.rightPanelprocesses
   | typeof PERSIST_KEYS.rightPanelPreview
   | typeof PERSIST_KEYS.kanbanLeftPanel
+  | typeof PERSIST_KEYS.pullRequestsDetailPanel
   | typeof PERSIST_KEYS.kanbanIssueSubIssues
   | typeof PERSIST_KEYS.kanbanIssueRelationships
   | typeof PERSIST_KEYS.kanbanIssueAttachments

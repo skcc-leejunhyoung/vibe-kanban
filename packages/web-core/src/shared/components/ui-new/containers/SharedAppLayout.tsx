@@ -59,6 +59,7 @@ import {
 } from '@/shared/keyboard/registry';
 import { getCycledProjectId } from '@/shared/lib/projectCycle';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
+import { PullRequestsBackgroundPrefetch } from '@/pages/pull-requests/PullRequestsBackgroundPrefetch';
 
 export function SharedAppLayout() {
   const appNavigation = useAppNavigation();
@@ -300,6 +301,7 @@ export function SharedAppLayout() {
 
   return (
     <SyncErrorProvider>
+      <PullRequestsBackgroundPrefetch />
       <div
         className={cn(
           'bg-primary',

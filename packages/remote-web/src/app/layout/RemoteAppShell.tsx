@@ -58,6 +58,7 @@ import {
   resolveModifier,
 } from "@/shared/keyboard/registry";
 import { getCycledProjectId } from "@/shared/lib/projectCycle";
+import { PullRequestsBackgroundPrefetch } from "@/pages/pull-requests/PullRequestsBackgroundPrefetch";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -341,6 +342,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
         isMobile ? "fixed inset-0 pb-[env(safe-area-inset-bottom)]" : "h-dvh",
       )}
     >
+      <PullRequestsBackgroundPrefetch />
       <div className="flex min-h-0 flex-1">
         {!isMobile && isAppBarVisible && (
           <AppBar
