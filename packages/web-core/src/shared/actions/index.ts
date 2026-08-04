@@ -1807,6 +1807,37 @@ export const Actions = {
     },
   },
 
+  GitOpenPRInPullRequests: {
+    id: 'git-open-pr-in-pull-requests',
+    label: 'Open PR in Pull Requests',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'pr', 'pull requests', 'page', 'open'],
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) =>
+      ctx.hasWorkspace &&
+      ctx.hasGitRepos &&
+      ctx.hasLinkedPR &&
+      (ctx.appRuntime === 'local' || ctx.currentHostId !== null),
+    execute: async (ctx, workspaceId, repoId) => {
+      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const merges = branchStatus.find(
+        (status) => status.repo_id === repoId
+      )?.merges;
+      // Match the PR panel: prefer an open PR, then fall back to the most
+      // recently linked merged/closed PR.
+      const pullRequest =
+        merges?.find(
+          (merge: Merge) =>
+            merge.type === 'pr' && merge.pr_info.status === 'open'
+        ) ?? merges?.find((merge: Merge) => merge.type === 'pr');
+      if (pullRequest?.type !== 'pr' || !pullRequest.pr_info.url) return;
+      ctx.appNavigation.goToPullRequests(
+        pullRequest.pr_info.url,
+        ctx.currentHostId ? { hostId: ctx.currentHostId } : undefined
+      );
+    },
+  },
+
   IssueOpenPRInWeb: {
     id: 'issue-open-pr-in-web',
     label: 'Open PR in Web',
@@ -1842,6 +1873,27 @@ export const Actions = {
         prUrl: pullRequest.url,
         prNumber: pullRequest.number,
       });
+    },
+  } satisfies IssueActionDefinition,
+
+  IssueOpenPRInPullRequests: {
+    id: 'issue-open-pr-in-pull-requests',
+    label: 'Open PR in Pull Requests',
+    icon: GitPullRequestIcon,
+    keywords: ['pull request', 'pr', 'pull requests', 'page', 'open'],
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' &&
+      ctx.hasSelectedKanbanIssue &&
+      (ctx.appRuntime === 'local' || ctx.currentHostId !== null),
+    execute: async (ctx, _projectId, issueIds) => {
+      const pullRequest = await selectIssuePullRequest(ctx, issueIds);
+      if (!pullRequest) return;
+
+      ctx.appNavigation.goToPullRequests(
+        pullRequest.url,
+        ctx.currentHostId ? { hostId: ctx.currentHostId } : undefined
+      );
     },
   } satisfies IssueActionDefinition,
 

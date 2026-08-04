@@ -1097,6 +1097,108 @@ describe('Actions.GitViewPRDetails', () => {
   });
 });
 
+describe('Actions.GitOpenPRInPullRequests', () => {
+  it('is visible when a PR is linked and the pull requests page is reachable', () => {
+    expect(
+      Actions.GitOpenPRInPullRequests.isVisible?.({
+        hasWorkspace: true,
+        hasGitRepos: true,
+        hasLinkedPR: true,
+        appRuntime: 'local',
+        currentHostId: null,
+      } as ActionExecutorContext)
+    ).toBe(true);
+  });
+
+  it('is hidden on remote without a selected host', () => {
+    expect(
+      Actions.GitOpenPRInPullRequests.isVisible?.({
+        hasWorkspace: true,
+        hasGitRepos: true,
+        hasLinkedPR: true,
+        appRuntime: 'remote',
+        currentHostId: null,
+      } as ActionExecutorContext)
+    ).toBe(false);
+  });
+
+  it('opens the linked PR on the pull requests page, preferring an open PR', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              number: 41,
+              status: 'merged',
+              url: 'https://example.com/pull/41',
+            },
+          },
+          {
+            type: 'pr',
+            pr_info: {
+              number: 42,
+              status: 'open',
+              url: 'https://example.com/pull/42',
+            },
+          },
+        ],
+      },
+    ] as never);
+    const goToPullRequests = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        appRuntime: 'local',
+        currentHostId: null,
+        appNavigation: { goToPullRequests } as never,
+      }
+    );
+
+    await Actions.GitOpenPRInPullRequests.execute(ctx, 'ws1', 'repo1');
+
+    expect(goToPullRequests).toHaveBeenCalledWith(
+      'https://example.com/pull/42',
+      undefined
+    );
+  });
+
+  it('forwards the selected host when opening on remote', async () => {
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [
+          {
+            type: 'pr',
+            pr_info: {
+              number: 7,
+              status: 'open',
+              url: 'https://example.com/pull/7',
+            },
+          },
+        ],
+      },
+    ] as never);
+    const goToPullRequests = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        appRuntime: 'remote',
+        currentHostId: 'host-1',
+        appNavigation: { goToPullRequests } as never,
+      }
+    );
+
+    await Actions.GitOpenPRInPullRequests.execute(ctx, 'ws1', 'repo1');
+
+    expect(goToPullRequests).toHaveBeenCalledWith(
+      'https://example.com/pull/7',
+      { hostId: 'host-1' }
+    );
+  });
+});
+
 describe('issue pull request actions', () => {
   const issueActionContext = {
     layoutMode: 'kanban',
@@ -1166,6 +1268,47 @@ describe('issue pull request actions', () => {
       prUrl: linkedPullRequest.url,
       prNumber: linkedPullRequest.number,
     });
+  });
+
+  it('registers the pull requests page action for issues', () => {
+    expect(
+      Actions.IssueOpenPRInPullRequests.isVisible?.({
+        ...issueActionContext,
+        appRuntime: 'local',
+        currentHostId: null,
+      } as ActionVisibilityContext)
+    ).toBe(true);
+    expect(getPageActions('issueActions')).toEqual(
+      expect.arrayContaining([Actions.IssueOpenPRInPullRequests])
+    );
+  });
+
+  it('opens a pull request linked to the selected issue on the pull requests page', async () => {
+    const goToPullRequests = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        appRuntime: 'local',
+        currentHostId: null,
+        appNavigation: { goToPullRequests } as never,
+        projectMutations: {
+          removeIssue: vi.fn(),
+          duplicateIssue: vi.fn(),
+          getIssue: vi.fn(),
+          getAssigneesForIssue: vi.fn(() => []),
+          getPullRequestsForIssue: vi.fn(() => [linkedPullRequest]),
+        },
+      }
+    );
+
+    await Actions.IssueOpenPRInPullRequests.execute(ctx, 'project-1', [
+      'issue-1',
+    ]);
+
+    expect(goToPullRequests).toHaveBeenCalledWith(
+      linkedPullRequest.url,
+      undefined
+    );
   });
 });
 
