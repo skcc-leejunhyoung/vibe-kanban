@@ -8,8 +8,11 @@ import { useUiPreferencesScratch } from '@/shared/hooks/useUiPreferencesScratch'
 import { useServiceWorkerNavigation } from '@/shared/hooks/useServiceWorkerNavigation';
 import { useWebPushReconcile } from '@/shared/hooks/useWebPushReconcile';
 import { useApplyThemeVariant } from '@/shared/lib/themeVariant';
+import { installKeyboardModalityTracker } from '@/shared/lib/keyboardModality';
 import { UserProvider } from '@/shared/providers/remote/UserProvider';
 import '@/app/styles/new/index.css';
+
+installKeyboardModalityTracker();
 
 function RootRouteComponent() {
   const { config } = useUserSystem();

@@ -26,6 +26,7 @@ import {
   openLocalApiWebSocketViaWebRtc,
 } from "@remote/shared/lib/webrtc";
 import { installRelayResumeReconnect } from "@remote/shared/lib/relay/resumeReconnect";
+import { installKeyboardModalityTracker } from "@/shared/lib/keyboardModality";
 
 setRemoteApiBase(import.meta.env.VITE_API_BASE_URL || window.location.origin);
 setRelayApiBase(
@@ -42,6 +43,7 @@ setLocalApiTransport({
 // from suspension, so a stale signing session / dead data channel doesn't leave
 // the app spinning until a manual reload.
 installRelayResumeReconnect();
+installKeyboardModalityTracker();
 
 configureAuthRuntime({
   getToken,

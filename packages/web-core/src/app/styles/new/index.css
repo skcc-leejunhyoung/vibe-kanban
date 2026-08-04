@@ -560,8 +560,13 @@ html {
    `outline` (not ring/box-shadow) so it never fights component ring styles
    and never affects layout.
    `[tabindex='-1']` is excluded: programmatic focus targets (dialog shells,
-   scroll regions, roving-focus menu items) manage their own indication. */
-*:focus-visible:not([tabindex='-1']) {
+   scroll regions, roving-focus menu items) manage their own indication.
+   The `html.kbd-nav` branch (class set by shared/lib/keyboardModality.ts
+   while the keyboard is driving) uses plain `:focus`: lists that move focus
+   programmatically on ArrowUp/Down don't reliably get `:focus-visible` from
+   the browser heuristic on the first keypress after a mouse interaction. */
+*:focus-visible:not([tabindex='-1']),
+html.kbd-nav *:focus:not([tabindex='-1']) {
   outline: 2px solid hsl(var(--brand));
   outline-offset: 1px;
 }
