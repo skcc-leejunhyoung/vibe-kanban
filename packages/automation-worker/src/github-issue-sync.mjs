@@ -115,7 +115,10 @@ export function selectGithubPollCandidates({
     if (issue.pull_request && !issue.__reviewPr && !includePullRequests)
       continue;
     const seenKey = String(issue.id);
-    const batchKey = String(issue.number);
+    // Review PRs can come from other repos where numbers collide, so dedup them
+    // within the batch by identity (id), not number — mirroring how they are
+    // excluded from the cross-poll `seenNumbers` set below.
+    const batchKey = issue.__reviewPr ? String(issue.id) : String(issue.number);
     const numberKey = issue.__reviewPr ? null : String(issue.number);
     if (
       seen.has(seenKey) ||

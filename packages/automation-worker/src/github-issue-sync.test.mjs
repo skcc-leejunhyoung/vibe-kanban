@@ -202,6 +202,36 @@ test('never dedups review PRs by number (cross-repo numbers collide)', () => {
   assert.deepEqual(dropped.candidates, []);
 });
 
+test('keeps same-numbered review PRs from different repos in one batch', () => {
+  // Two review-requested PRs share number #7 but live in different repos, so
+  // both surface in a single poll with distinct ids. Within-batch dedup must key
+  // review PRs by id, not number, or one would be silently dropped.
+  const { candidates } = selectGithubPollCandidates({
+    items: [
+      {
+        id: 'PR_repo_a',
+        number: 7,
+        pull_request: {},
+        __reviewPr: true,
+        updated_at: '2026-08-04T00:00:00Z',
+      },
+      {
+        id: 'PR_repo_b',
+        number: 7,
+        pull_request: {},
+        __reviewPr: true,
+        updated_at: '2026-08-04T00:00:00Z',
+      },
+    ],
+    seen: new Set(),
+    seenNumbers: new Set(),
+  });
+  assert.deepEqual(
+    candidates.map((issue) => issue.id),
+    ['PR_repo_a', 'PR_repo_b']
+  );
+});
+
 test('treats same-day milestone dates as equal to avoid reconcile write churn', () => {
   // GitHub returns due_on at a fixed time-of-day; Vibe stores 00:00Z. Same day
   // must NOT count as a difference, or every reconcile would re-PATCH both sides.

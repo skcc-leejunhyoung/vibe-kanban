@@ -512,6 +512,7 @@ function safeEqual(a, b) {
 const RUNTIME_CONFIG_KEYS = [
   'cursorTs',
   'seenIds',
+  'seenNumbers',
   'issueMap',
   'tagMap',
   'githubIssueLinkBackfillSkipped',
@@ -1569,6 +1570,20 @@ async function syncGithubMilestone({
       'GET',
       `/v1/issue_milestones?project_id=${encodeURIComponent(projectId)}`
     ));
+  // Reflect a persisted milestone back into the shared `allMilestones` cache so
+  // another issue that shares this milestone later in the same reconcile reads
+  // the updated row (e.g. the source repo/number just written) instead of a
+  // stale copy — otherwise it would re-create the GitHub milestone (422) or
+  // re-issue redundant PATCHes.
+  const cacheMilestone = (updated) => {
+    const cached = allMilestones.find((item) => item.id === updated.id);
+    if (cached) {
+      Object.assign(cached, updated);
+      return cached;
+    }
+    allMilestones.push(updated);
+    return updated;
+  };
   const currentLink = allIssueMilestones.find(
     (item) => item.issue_id === issueId
   );
@@ -1646,7 +1661,7 @@ async function syncGithubMilestone({
         `/v1/project_milestones/${encodeURIComponent(currentMilestone.id)}`,
         { source_repository: repository, source_number: targetNumber }
       );
-      currentMilestone = response.data;
+      currentMilestone = cacheMilestone(response.data);
     }
     const issueResponse = await fetch(
       `${apiBase}/repos/${repository}/issues/${syncLink.number}`,
@@ -1695,8 +1710,7 @@ async function syncGithubMilestone({
         source_repository: repository,
         source_number: githubMilestone.number,
       });
-      milestone = response.data;
-      allMilestones.push(milestone);
+      milestone = cacheMilestone(response.data);
     } else if (githubMilestoneMetaDiffers(milestone, githubMilestone)) {
       const response = await vibeApi(
         vibe,
@@ -1708,7 +1722,7 @@ async function syncGithubMilestone({
           completed_at: completedAt,
         }
       );
-      milestone = response.data;
+      milestone = cacheMilestone(response.data);
     }
 
     if (currentLink?.milestone_id !== milestone.id) {
