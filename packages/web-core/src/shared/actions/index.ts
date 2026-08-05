@@ -1436,6 +1436,8 @@ export const Actions = {
         : 'Show App Bar',
     icon: SidebarSimpleIcon,
     requiresTarget: ActionTargetType.NONE,
+    // The App Bar is never rendered on mobile, so toggling it is a no-op there.
+    isVisible: (ctx) => !ctx.isMobile,
     execute: () => {
       useAppBarVisibilityStore.getState().toggle();
     },

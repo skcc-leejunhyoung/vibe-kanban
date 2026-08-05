@@ -175,6 +175,10 @@ export interface ActionVisibilityContext {
 
   // Auth state
   isSignedIn: boolean;
+
+  // Viewport state
+  /** Viewport is at or below the mobile breakpoint (App Bar is never shown). */
+  isMobile: boolean;
 }
 
 // Enum discriminant for action target types

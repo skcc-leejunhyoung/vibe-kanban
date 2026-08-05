@@ -25,6 +25,7 @@ import type {
 } from '@/shared/types/actions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useIsMobile } from '@/shared/hooks/useIsMobile';
 
 interface ActionVisibilityOptions {
   projectId?: string;
@@ -98,6 +99,7 @@ export function useActionVisibilityContext(
   const { isAttemptRunningVisible } = useExecutionProcessesContext();
   const { logsPanelContent } = useLogsPanel();
   const { isSignedIn } = useAuth();
+  const isMobile = useIsMobile();
 
   return useMemo(() => {
     // Compute dev server state
@@ -158,6 +160,7 @@ export function useActionVisibilityContext(
       hasSelectedKanbanIssueParent,
       isCreatingIssue: kanbanCreateMode,
       isSignedIn,
+      isMobile,
     };
   }, [
     appRuntime,
@@ -183,5 +186,6 @@ export function useActionVisibilityContext(
     hasSelectedKanbanIssueParent,
     kanbanCreateMode,
     isSignedIn,
+    isMobile,
   ]);
 }
