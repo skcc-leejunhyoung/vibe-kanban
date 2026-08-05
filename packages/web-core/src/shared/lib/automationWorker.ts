@@ -122,7 +122,7 @@ export const AUTOMATION_CONNECTOR_DEFAULTS: Record<
     repo: '',
     filter: 'assigned',
     state: 'open',
-    intervalSeconds: 120,
+    intervalSeconds: 60,
     cursorTs: '',
     seenIds: [],
     limit: 50,
