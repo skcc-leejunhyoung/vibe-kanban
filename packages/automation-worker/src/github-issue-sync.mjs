@@ -322,23 +322,70 @@ export async function backfillLegacyGithubIssueLinks({
   return result;
 }
 
+/**
+ * Re-attempt due pending github_issue_link operations.
+ *
+ * This queue used to retry every op on every poll forever with no attempt
+ * counter, no backoff, and no way out: `onFailure` only logged. An op whose
+ * Vibe issue had been deleted could never succeed, so it hammered the API each
+ * cycle and stayed in `state.json` permanently — a runaway import left 2157 of
+ * them behind, bloating the file to 13 MB. The policy now matches the sibling
+ * PR-link queue in pull-request-links.mjs (whose header already claimed to
+ * mirror this one): backoff between attempts, then drop as exhausted.
+ *
+ * @returns {Promise<{remaining: Array<object>, recovered: number, changed: boolean}>}
+ *   `remaining` replaces the caller's queue; `changed` is false when nothing
+ *   was attempted, so the caller can skip persisting.
+ */
 export async function retryPendingGithubIssueLinkOperations({
   operations,
   connectorId,
   linkIssue,
   onFailure,
+  onExhausted,
+  now,
+  retryDelay,
+  maxAttempts,
 }) {
+  const remaining = [];
   let recovered = 0;
+  let changed = false;
+
   for (const operation of operations) {
-    if (operation.githubConnectorId !== connectorId) continue;
+    // Other connectors' ops are carried forward untouched.
+    if (operation.githubConnectorId !== connectorId) {
+      remaining.push(operation);
+      continue;
+    }
+    // Respect backoff: not-due items are carried forward without an attempt.
+    if (operation.nextAttemptAt && operation.nextAttemptAt > now) {
+      remaining.push(operation);
+      continue;
+    }
+
     try {
       await linkIssue(operation.input);
       recovered += 1;
+      changed = true;
     } catch (error) {
-      await onFailure(operation, error);
+      changed = true;
+      operation.attempts = (operation.attempts || 0) + 1;
+      operation.updatedAt = now;
+      operation.lastError =
+        error && error.message ? error.message : String(error);
+      const cap = operation.maxAttempts || maxAttempts;
+      if (operation.attempts >= cap) {
+        // Give up. The issue can still be linked by hand from the issue panel.
+        if (onExhausted) await onExhausted(operation, error);
+      } else {
+        operation.nextAttemptAt = now + retryDelay(operation.attempts);
+        remaining.push(operation);
+        if (onFailure) await onFailure(operation, error);
+      }
     }
   }
-  return recovered;
+
+  return { remaining, recovered, changed };
 }
 
 export async function ensureGithubIssueForLink({

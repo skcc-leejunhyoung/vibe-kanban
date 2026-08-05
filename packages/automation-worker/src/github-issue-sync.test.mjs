@@ -461,26 +461,96 @@ test('poller backfill links issues, skips PRs, and leaves transient failures ret
   assert.deepEqual(failed, ['org/repo#3']);
 });
 
+const LINK_RETRY_POLICY = {
+  now: 1_000_000,
+  maxAttempts: 3,
+  retryDelay: (attempts) => attempts * 1000,
+};
+
 test('poller retries only pending operations for its GitHub connector', async () => {
   const retried = [];
   const failures = [];
-  const recovered = await retryPendingGithubIssueLinkOperations({
-    operations: [
-      { githubConnectorId: 'github-1', input: { issueId: 'vibe-1' } },
-      { githubConnectorId: 'github-2', input: { issueId: 'vibe-2' } },
-      { githubConnectorId: 'github-1', input: { issueId: 'vibe-3' } },
-    ],
-    connectorId: 'github-1',
-    linkIssue: async (input) => {
-      retried.push(input.issueId);
-      if (input.issueId === 'vibe-3') throw new Error('still unavailable');
-    },
-    onFailure: async (operation) => failures.push(operation.input.issueId),
-  });
+  const { remaining, recovered, changed } =
+    await retryPendingGithubIssueLinkOperations({
+      ...LINK_RETRY_POLICY,
+      operations: [
+        { githubConnectorId: 'github-1', input: { issueId: 'vibe-1' } },
+        { githubConnectorId: 'github-2', input: { issueId: 'vibe-2' } },
+        { githubConnectorId: 'github-1', input: { issueId: 'vibe-3' } },
+      ],
+      connectorId: 'github-1',
+      linkIssue: async (input) => {
+        retried.push(input.issueId);
+        if (input.issueId === 'vibe-3') throw new Error('still unavailable');
+      },
+      onFailure: async (operation) => failures.push(operation.input.issueId),
+    });
 
   assert.equal(recovered, 1);
+  assert.equal(changed, true);
   assert.deepEqual(retried, ['vibe-1', 'vibe-3']);
   assert.deepEqual(failures, ['vibe-3']);
+  // 성공한 op 는 빠지고, 다른 커넥터의 op 와 재시도 대기 op 만 남는다.
+  assert.deepEqual(
+    remaining.map((op) => op.input.issueId),
+    ['vibe-2', 'vibe-3']
+  );
+  const retryOp = remaining.find((op) => op.input.issueId === 'vibe-3');
+  assert.equal(retryOp.attempts, 1);
+  assert.equal(retryOp.nextAttemptAt, LINK_RETRY_POLICY.now + 1000);
+});
+
+test('pending github link waiting on backoff is not attempted again', async () => {
+  const retried = [];
+  const { remaining, recovered, changed } =
+    await retryPendingGithubIssueLinkOperations({
+      ...LINK_RETRY_POLICY,
+      operations: [
+        {
+          githubConnectorId: 'github-1',
+          input: { issueId: 'vibe-1' },
+          attempts: 1,
+          nextAttemptAt: LINK_RETRY_POLICY.now + 5000,
+        },
+      ],
+      connectorId: 'github-1',
+      linkIssue: async (input) => retried.push(input.issueId),
+      onFailure: async () => {},
+    });
+
+  assert.deepEqual(retried, []);
+  assert.equal(recovered, 0);
+  assert.equal(changed, false);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].attempts, 1);
+});
+
+test('permanently failing github link is dropped once attempts are exhausted', async () => {
+  // 삭제된 Vibe 이슈를 가리키는 op 는 절대 성공하지 못한다. 무한 보관하면 폴링마다
+  // 404 를 때리고 state.json 만 부풀린다.
+  const exhausted = [];
+  const failures = [];
+  const { remaining, changed } = await retryPendingGithubIssueLinkOperations({
+    ...LINK_RETRY_POLICY,
+    operations: [
+      {
+        githubConnectorId: 'github-1',
+        input: { issueId: 'vibe-gone' },
+        attempts: 2,
+      },
+    ],
+    connectorId: 'github-1',
+    linkIssue: async () => {
+      throw new Error('Vibe GET /v1/issues/vibe-gone failed: 404');
+    },
+    onFailure: async (op) => failures.push(op.input.issueId),
+    onExhausted: async (op) => exhausted.push(op.input.issueId),
+  });
+
+  assert.deepEqual(remaining, []);
+  assert.deepEqual(exhausted, ['vibe-gone']);
+  assert.deepEqual(failures, []);
+  assert.equal(changed, true);
 });
 
 const STATUS_MAPPINGS = [

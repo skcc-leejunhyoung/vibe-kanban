@@ -1991,18 +1991,45 @@ async function linkGithubIssueOnce(input, operationKey) {
 }
 
 async function retryPendingGithubIssueLinks(githubConnector) {
-  return retryPendingGithubIssueLinkOperations({
-    operations: [...(state.githubIssueLinkOperations || [])],
-    connectorId: githubConnector.id,
-    linkIssue: linkGithubIssue,
-    onFailure: async (operation, error) => {
-      await log('warn', 'pending github issue link retry failed', {
-        ruleId: operation.ruleId,
-        issueId: operation.input?.issueId,
-        error: errorMessage(error),
-      });
-    },
-  });
+  const operations = state.githubIssueLinkOperations || [];
+  if (!operations.length) return 0;
+  const snapshot = [...operations];
+  const { remaining, recovered, changed } =
+    await retryPendingGithubIssueLinkOperations({
+      operations: snapshot,
+      connectorId: githubConnector.id,
+      now: Date.now(),
+      maxAttempts: RETRY_MAX_ATTEMPTS,
+      retryDelay,
+      linkIssue: linkGithubIssue,
+      onFailure: async (operation, error) => {
+        await log('warn', 'pending github issue link retry failed', {
+          ruleId: operation.ruleId,
+          issueId: operation.input?.issueId,
+          attempts: operation.attempts,
+          error: errorMessage(error),
+        });
+      },
+      onExhausted: async (operation, error) => {
+        await log('error', 'pending github issue link retry exhausted', {
+          ruleId: operation.ruleId,
+          issueId: operation.input?.issueId,
+          attempts: operation.attempts,
+          error: errorMessage(error),
+        });
+      },
+    });
+  if (changed) {
+    // linkGithubIssue may have enqueued new ops while we were retrying; keep
+    // anything that was not part of this pass.
+    const seen = new Set(snapshot);
+    const added = (state.githubIssueLinkOperations || []).filter(
+      (operation) => !seen.has(operation)
+    );
+    state.githubIssueLinkOperations = [...remaining, ...added];
+    await persistState();
+  }
+  return recovered;
 }
 
 // Re-attempt structural PR→issue links whose create POST failed during issue
