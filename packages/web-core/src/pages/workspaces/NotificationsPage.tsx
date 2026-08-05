@@ -24,6 +24,7 @@ import {
   getPullRequestDetailsNavigationTarget,
 } from '@/shared/lib/notifications';
 import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
 import {
   getGroupedNotificationSegments,
   type MessageSegment,
@@ -323,6 +324,28 @@ export function NotificationsPage() {
     [markGroupSeen, runtime]
   );
 
+  // Keep the cursor store in sync so the "Open Notification in New Tab" command
+  // palette action can open the focused row exactly like a cmd+click. The
+  // handler is registered once and reads the latest focused group via a ref.
+  const setFocusedGroupId = useNotificationCursorStore(
+    (s) => s.setFocusedGroupId
+  );
+  const focusedGroupRef = useRef<GroupedNotification | null>(null);
+  const openGroupInNewTabRef = useRef(openGroupInNewTab);
+  openGroupInNewTabRef.current = openGroupInNewTab;
+  useEffect(() => {
+    const { registerOpenFocusedInNewTab, setFocusedGroupId: clearFocused } =
+      useNotificationCursorStore.getState();
+    registerOpenFocusedInNewTab(() => {
+      const group = focusedGroupRef.current;
+      if (group) openGroupInNewTabRef.current(group);
+    });
+    return () => {
+      registerOpenFocusedInNewTab(null);
+      clearFocused(null);
+    };
+  }, []);
+
   const handleClick = useCallback(
     (group: GroupedNotification) => {
       markGroupSeen(group);
@@ -482,6 +505,10 @@ export function NotificationsPage() {
                 data-notification-item
                 role="button"
                 tabIndex={0}
+                onFocus={() => {
+                  focusedGroupRef.current = group;
+                  setFocusedGroupId(group.id);
+                }}
                 onClick={(e) => {
                   if (e.metaKey || e.ctrlKey) {
                     e.preventDefault();

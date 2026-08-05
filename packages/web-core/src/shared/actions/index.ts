@@ -120,6 +120,7 @@ import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateSt
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
+import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import {
@@ -1280,16 +1281,19 @@ export const Actions = {
     execute: (ctx) => ctx.appNavigation.goToNotifications(),
   } satisfies GlobalActionDefinition,
 
-  OpenNotificationsInNewTab: {
-    id: 'open-notifications-in-new-tab',
-    label: 'Open Notifications in New Tab',
+  OpenNotificationInNewTab: {
+    id: 'open-notification-in-new-tab',
+    label: 'Open Notification in New Tab',
     icon: ArrowSquareOutIcon,
     keywords: ['notification', 'notifications', 'open', 'new tab'],
     requiresTarget: ActionTargetType.NONE,
     restoreFocusOnClose: false,
-    isEnabled: (ctx) => ctx.isSignedIn,
+    // Only meaningful while a notification row is focused; the handler and the
+    // focused id are supplied by the NotificationsPage via the cursor store.
+    isVisible: () =>
+      useNotificationCursorStore.getState().focusedGroupId !== null,
     execute: () => {
-      openInSplitPane('/notifications');
+      useNotificationCursorStore.getState().openFocusedInNewTab?.();
     },
   } satisfies GlobalActionDefinition,
 
