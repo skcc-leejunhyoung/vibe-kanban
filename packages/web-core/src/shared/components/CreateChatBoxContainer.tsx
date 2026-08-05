@@ -22,6 +22,7 @@ import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
 import { ReviewModeBanner } from './ReviewModeBanner';
+import { GithubLinkedBranchBanner } from './GithubLinkedBranchBanner';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 
 function getRepoDisplayName(repo: Repo) {
@@ -62,6 +63,7 @@ export function CreateChatBoxContainer({
     attachments: draftAttachments,
     setAttachments: setDraftAttachments,
     workingBranch,
+    setWorkingBranch,
   } = useCreateMode();
 
   const { createWorkspace, createWorkspaceOnly } = useCreateWorkspace();
@@ -147,6 +149,18 @@ export function CreateChatBoxContainer({
 
   const repoId = repos.length === 1 ? repos[0]?.id : undefined;
   const reviewMode = useReviewMode(linkedIssue, repoId);
+  // A GitHub-issue-linked, single-repo workspace can work on the issue's GitHub
+  // linked branch (reused or created at submit). Surfaced as a banner toggle,
+  // mutually exclusive with review mode (which checks out an open PR instead).
+  const githubLinkedBranchSource =
+    linkedIssue?.githubNodeId &&
+    linkedIssue?.githubRepository &&
+    repos.length === 1
+      ? {
+          nodeId: linkedIssue.githubNodeId,
+          repository: linkedIssue.githubRepository,
+        }
+      : null;
   const repoSummaryLabel = useMemo(() => {
     if (repos.length === 1) {
       const repo = repos[0];
@@ -455,6 +469,24 @@ export function CreateChatBoxContainer({
                   prNumber={reviewMode.prNumber}
                   enabled={reviewMode.enabled}
                   onEnabledChange={reviewMode.setEnabled}
+                />
+              )}
+
+              {!reviewMode.reviewTagPresent && githubLinkedBranchSource && (
+                <GithubLinkedBranchBanner
+                  repository={githubLinkedBranchSource.repository}
+                  enabled={workingBranch.mode === 'github_linked_branch'}
+                  onEnabledChange={(on) =>
+                    setWorkingBranch(
+                      on
+                        ? {
+                            mode: 'github_linked_branch',
+                            issue_node_id: githubLinkedBranchSource.nodeId,
+                            repository: githubLinkedBranchSource.repository,
+                          }
+                        : { mode: 'auto' }
+                    )
+                  }
                 />
               )}
 

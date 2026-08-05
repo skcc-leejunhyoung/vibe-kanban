@@ -574,6 +574,12 @@
       "setupHintDismiss": "Dismiss",
       "setupHintLink": "Configure in Settings"
     },
+    "githubLinkedBranch": {
+      "active": "GitHub linked branch",
+      "activeDetail": "{{repository}} · uses the issue's linked branch",
+      "disabled": "GitHub linked branch off — a new branch will be created",
+      "toggleLabel": "GitHub linked branch"
+    },
     "workingBranch": {
       "label": "Working branch",
       "modes": {

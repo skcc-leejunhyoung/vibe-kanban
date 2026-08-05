@@ -560,6 +560,12 @@
       "setupHintDismiss": "닫기",
       "setupHintLink": "Configure in Settings"
     },
+    "githubLinkedBranch": {
+      "active": "GitHub 연결 브랜치",
+      "activeDetail": "{{repository}} · 이슈 연결 브랜치 사용",
+      "disabled": "GitHub 연결 브랜치 끔 — 새 브랜치가 생성됩니다",
+      "toggleLabel": "GitHub 연결 브랜치"
+    },
     "workingBranch": {
       "label": "작업 브랜치",
       "modes": {
