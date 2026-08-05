@@ -505,6 +505,11 @@ async fn resolve_github_linked_branch(
                     .to_string()
             }
         };
+        // The base may be a remote-tracking selector (e.g. `origin/develop`),
+        // but GitHub's `git/ref/heads/{branch}` API expects a plain branch name
+        // (`develop`) — strip the remote prefix before resolving its tip.
+        let base = strip_remote_prefix(git, &repo.path, &base)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
         let oid = provider
             .resolve_remote_branch_oid(&remote.url, &repo.path, &base)
             .await
