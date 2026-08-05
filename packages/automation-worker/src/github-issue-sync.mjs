@@ -82,6 +82,62 @@ export function decideGithubMilestoneSync({
     : { direction: 'to_github' };
 }
 
+// Deduplicate a poll's fetched issues into a candidate list, advancing the
+// high-water cursor over every fetched item.
+//
+// The same GitHub issue can arrive from two sources with *different* identity
+// keys: the REST assigned-issues poll exposes `issue.id` as the numeric REST id,
+// while Project V2 items (loadGithubProjectIssues) expose `issue.id` as the
+// GraphQL node id. `seen` (persisted as `seenIds`) is keyed by `issue.id`, so a
+// project item imported under its node id would not be recognized when the same
+// issue later reappears via REST under its numeric id — creating a duplicate
+// Vibe issue. `seenNumbers` closes that gap: for repo-local issues (a connector
+// polls a single repo, where issue/PR numbers are unique) it dedups by
+// `issue.number`, which both sources agree on. Review PRs are excluded because
+// they can come from other repos where numbers collide. `seenNumbers` is
+// additive — it never relaxes the legacy `seen` check — so existing persisted
+// `seenIds` keep working across the upgrade, and skipping a project item via the
+// legacy `seen` set still records its number so the REST twin is caught.
+export function selectGithubPollCandidates({
+  items,
+  seen,
+  seenNumbers,
+  includePullRequests = false,
+  latest = '',
+}) {
+  const candidates = [];
+  const batchIds = new Set();
+  let cursor = latest;
+  for (const issue of Array.isArray(items) ? items : []) {
+    if (issue.updated_at && issue.updated_at > cursor) cursor = issue.updated_at;
+    // PRs from the assigned-issue query are dropped unless includePullRequests;
+    // PRs surfaced by the review-requested search are always kept.
+    if (issue.pull_request && !issue.__reviewPr && !includePullRequests)
+      continue;
+    const seenKey = String(issue.id);
+    const batchKey = String(issue.number);
+    const numberKey = issue.__reviewPr ? null : String(issue.number);
+    if (
+      seen.has(seenKey) ||
+      (numberKey && seenNumbers.has(numberKey)) ||
+      batchIds.has(batchKey)
+    ) {
+      if (numberKey) seenNumbers.add(numberKey);
+      continue;
+    }
+    batchIds.add(batchKey);
+    candidates.push(issue);
+  }
+  return { candidates, latest: cursor };
+}
+
+// Mark an imported/seeded issue in both dedup sets so subsequent polls skip it
+// regardless of which source (REST id vs GraphQL node id) surfaces it next.
+export function markGithubIssueSeen(issue, seen, seenNumbers) {
+  seen.add(String(issue.id));
+  if (!issue.__reviewPr) seenNumbers.add(String(issue.number));
+}
+
 export function withGithubIssueMarker(body, issueId) {
   const marker = githubIssueMarker(issueId);
   const text = body == null ? '' : String(body);

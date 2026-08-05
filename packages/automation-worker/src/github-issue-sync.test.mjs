@@ -10,9 +10,11 @@ import {
   githubIssueMapBackfillEntries,
   githubIssueMarker,
   githubIssueSyncVibeConnectorId,
+  markGithubIssueSeen,
   normalizeOptionalTimestamp,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
+  selectGithubPollCandidates,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withGithubIssueMarker,
@@ -122,6 +124,81 @@ test('reconciles milestone assignment in both directions with latest-write confl
     }),
     { direction: 'none' }
   );
+});
+
+test('dedups the same issue arriving as a Project item and a REST result across polls', () => {
+  // A Project V2 item exposes issue.id as the GraphQL node id; the REST
+  // assigned-issues poll exposes issue.id as the numeric REST id. Both agree on
+  // issue.number. The project item is prepended before REST results.
+  const projectItem = {
+    id: 'PVTI_node_7',
+    number: 7,
+    updated_at: '2026-08-04T00:00:00Z',
+    __projectItem: true,
+  };
+  const restIssue = {
+    id: 12345678,
+    number: 7,
+    updated_at: '2026-08-04T00:00:00Z',
+  };
+
+  // Poll 1: fresh sets. Only one candidate survives; the REST twin is folded in.
+  const seen = new Set();
+  const seenNumbers = new Set();
+  const first = selectGithubPollCandidates({
+    items: [projectItem, restIssue],
+    seen,
+    seenNumbers,
+  });
+  assert.deepEqual(
+    first.candidates.map((issue) => issue.id),
+    ['PVTI_node_7']
+  );
+  assert.ok(seenNumbers.has('7'));
+  // Import marks it seen in both sets (mirrors the poll's import loop).
+  markGithubIssueSeen(projectItem, seen, seenNumbers);
+
+  // Poll 2 after the issue is edited: the REST twin (numeric id, never in
+  // `seen`) must NOT re-import as a duplicate — `seenNumbers` catches it.
+  const editedRest = { ...restIssue, updated_at: '2026-08-05T00:00:00Z' };
+  const second = selectGithubPollCandidates({
+    items: [projectItem, editedRest],
+    seen,
+    seenNumbers,
+  });
+  assert.deepEqual(second.candidates, []);
+  assert.equal(second.latest, '2026-08-05T00:00:00Z');
+});
+
+test('never dedups review PRs by number (cross-repo numbers collide)', () => {
+  // A repo-local issue #7 was already seen by number.
+  const seen = new Set();
+  const seenNumbers = new Set(['7']);
+  // A review-requested PR #7 from a different repo shares the number but is a
+  // distinct entity; it must stay a candidate.
+  const reviewPr = {
+    id: 'PR_other_repo',
+    number: 7,
+    pull_request: {},
+    __reviewPr: true,
+    updated_at: '2026-08-04T00:00:00Z',
+  };
+  const { candidates } = selectGithubPollCandidates({
+    items: [reviewPr],
+    seen,
+    seenNumbers,
+  });
+  assert.deepEqual(
+    candidates.map((issue) => issue.id),
+    ['PR_other_repo']
+  );
+  // Assigned-query PRs are still dropped unless includePullRequests is set.
+  const dropped = selectGithubPollCandidates({
+    items: [{ id: 9, number: 8, pull_request: {} }],
+    seen: new Set(),
+    seenNumbers: new Set(),
+  });
+  assert.deepEqual(dropped.candidates, []);
 });
 
 test('rejects linking an issue outside the rule configured project', () => {

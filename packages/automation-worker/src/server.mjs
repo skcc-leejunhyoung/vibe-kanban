@@ -16,9 +16,11 @@ import {
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueSyncVibeConnectorId,
+  markGithubIssueSeen,
   normalizeOptionalTimestamp,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
+  selectGithubPollCandidates,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withGithubIssueMarker,
@@ -1174,6 +1176,7 @@ async function pollGithub(connector) {
   const seeding =
     !config.backfill && !config.cursorTs && (config.seenIds || []).length === 0;
   const seen = new Set(config.seenIds || []);
+  const seenNumbers = new Set(config.seenNumbers || []);
   let processed = 0;
   let latest = config.cursorTs || '';
 
@@ -1212,28 +1215,21 @@ async function pollGithub(connector) {
     ];
   }
 
-  const candidates = [];
-  const batchIds = new Set();
-  for (const issue of Array.isArray(items) ? items : []) {
-    if (issue.updated_at && issue.updated_at > latest)
-      latest = issue.updated_at;
-    // PRs from the assigned-issue query are dropped unless includePullRequests;
-    // PRs surfaced by the review-requested search are always kept.
-    if (issue.pull_request && !issue.__reviewPr && !config.includePullRequests)
-      continue;
-    const seenKey = String(issue.id);
-    const batchKey = String(issue.number);
-    if (seen.has(seenKey) || batchIds.has(batchKey)) continue;
-    batchIds.add(batchKey);
-    candidates.push(issue);
-  }
+  const { candidates, latest: candidateLatest } = selectGithubPollCandidates({
+    items,
+    seen,
+    seenNumbers,
+    includePullRequests: config.includePullRequests,
+    latest,
+  });
+  latest = candidateLatest;
 
   const importCandidates = seeding
     ? candidates.filter((issue) => issue.__projectItem)
     : candidates;
   if (seeding) {
     for (const issue of candidates.filter((issue) => !issue.__projectItem))
-      seen.add(String(issue.id));
+      markGithubIssueSeen(issue, seen, seenNumbers);
   }
   if (importCandidates.length) {
     // REST omits the parent link; GraphQL has it. Resolve each new issue's
@@ -1246,7 +1242,7 @@ async function pollGithub(connector) {
     for (const issue of importCandidates)
       issue.__parent = parentMap[issue.number] || null;
     for (const issue of orderByParent(importCandidates)) {
-      seen.add(String(issue.id));
+      markGithubIssueSeen(issue, seen, seenNumbers);
       let headRef = null;
       let baseRef = null;
       if (issue.pull_request) {
@@ -1288,6 +1284,7 @@ async function pollGithub(connector) {
   await retryPendingPullRequestLinks();
   connector.config.cursorTs = latest;
   connector.config.seenIds = Array.from(seen).slice(-1000);
+  connector.config.seenNumbers = Array.from(seenNumbers).slice(-1000);
   await persistState();
   if (seeding) {
     await log(
