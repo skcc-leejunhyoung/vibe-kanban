@@ -1196,6 +1196,19 @@ export const Actions = {
     execute: (ctx) => ctx.appNavigation.goToNotifications(),
   } satisfies GlobalActionDefinition,
 
+  OpenNotificationsInNewTab: {
+    id: 'open-notifications-in-new-tab',
+    label: 'Open Notifications in New Tab',
+    icon: ArrowSquareOutIcon,
+    keywords: ['notification', 'notifications', 'open', 'new tab'],
+    requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
+    isEnabled: (ctx) => ctx.isSignedIn,
+    execute: () => {
+      openInSplitPane('/notifications');
+    },
+  } satisfies GlobalActionDefinition,
+
   GotoPullRequests: {
     id: 'goto-pull-requests',
     label: 'Goto: Pull Requests',

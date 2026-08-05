@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildNotificationTabUrl,
   getPullRequestDetailsNavigationTarget,
   groupNotifications,
   selectUnseenPullRequestCommentNotificationIds,
   selectUnseenNotificationIdsForView,
 } from './notifications';
+import type { GroupedNotification } from './notifications';
 import type { Notification, NotificationPayload } from 'shared/remote-types';
 
 function createNotification(
@@ -258,5 +260,80 @@ describe('getPullRequestDetailsNavigationTarget', () => {
       prNumber: 42,
       prUrl: 'https://github.com/acme/repo/pull/42',
     });
+  });
+});
+
+describe('buildNotificationTabUrl', () => {
+  function createGroup(
+    latest: Notification,
+    deeplinkPath: string | null = null
+  ): GroupedNotification {
+    return {
+      id: latest.id,
+      kind: 'single',
+      latest,
+      seen: false,
+      deeplinkPath,
+      notificationIds: [latest.id],
+      notificationCount: 1,
+      unseenNotificationIds: [latest.id],
+      issueChangeCount: 0,
+    };
+  }
+
+  it('returns the deeplink path for a plain notification', () => {
+    const group = createGroup(createNotification(), '/projects/p1/issues/i1');
+    expect(buildNotificationTabUrl(group)).toBe('/projects/p1/issues/i1');
+  });
+
+  it('builds a host-scoped pull-requests URL from the payload host', () => {
+    const group = createGroup(
+      createNotification({
+        notification_type: 'pull_request_comment_added',
+        payload: {
+          host_id: 'host-1',
+          pull_request_number: 42,
+          pull_request_url: 'https://github.com/acme/repo/pull/42',
+        },
+      })
+    );
+    expect(buildNotificationTabUrl(group)).toBe(
+      '/hosts/host-1/pull-requests?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F42'
+    );
+  });
+
+  it('uses the supplied host when the payload has none', () => {
+    const group = createGroup(
+      createNotification({
+        notification_type: 'pull_request_comment_added',
+        payload: {
+          pull_request_number: 42,
+          pull_request_url: 'https://github.com/acme/repo/pull/42',
+        },
+      })
+    );
+    expect(buildNotificationTabUrl(group, { hostId: 'host-2' })).toBe(
+      '/hosts/host-2/pull-requests?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F42'
+    );
+  });
+
+  it('falls back to the local pull-requests route without a host', () => {
+    const group = createGroup(
+      createNotification({
+        notification_type: 'pull_request_comment_added',
+        payload: {
+          pull_request_number: 42,
+          pull_request_url: 'https://github.com/acme/repo/pull/42',
+        },
+      })
+    );
+    expect(buildNotificationTabUrl(group)).toBe(
+      '/pull-requests?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F42'
+    );
+  });
+
+  it('returns null when there is no navigation target', () => {
+    const group = createGroup(createNotification(), null);
+    expect(buildNotificationTabUrl(group)).toBeNull();
   });
 });

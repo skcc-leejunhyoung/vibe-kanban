@@ -19,9 +19,11 @@ import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
 import {
+  buildNotificationTabUrl,
   getPayload,
   getPullRequestDetailsNavigationTarget,
 } from '@/shared/lib/notifications';
+import { openInSplitPane } from '@/shared/lib/openInSplitPane';
 import {
   getGroupedNotificationSegments,
   type MessageSegment,
@@ -300,6 +302,27 @@ export function NotificationsPage() {
     [selectedNotificationIds, updateMany]
   );
 
+  // cmd/ctrl+click (or cmd/ctrl+Enter) opens the notification target in a new
+  // tab / split pane instead of navigating in-place, matching the workspace
+  // list behavior.
+  const openGroupInNewTab = useCallback(
+    (group: GroupedNotification) => {
+      markGroupSeen(group);
+      const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
+      if (prDetails && runtime === 'remote' && !prDetails.hostId) {
+        void selectWorkspaceHost().then((hostId) => {
+          if (!hostId) return;
+          const url = buildNotificationTabUrl(group, { hostId });
+          if (url) openInSplitPane(url);
+        });
+        return;
+      }
+      const url = buildNotificationTabUrl(group);
+      if (url) openInSplitPane(url);
+    },
+    [markGroupSeen, runtime]
+  );
+
   const handleClick = useCallback(
     (group: GroupedNotification) => {
       markGroupSeen(group);
@@ -459,11 +482,22 @@ export function NotificationsPage() {
                 data-notification-item
                 role="button"
                 tabIndex={0}
-                onClick={() => handleClick(group)}
+                onClick={(e) => {
+                  if (e.metaKey || e.ctrlKey) {
+                    e.preventDefault();
+                    openGroupInNewTab(group);
+                    return;
+                  }
+                  handleClick(group);
+                }}
                 onKeyDown={(e) => {
                   if (isNotificationActivationKey(e.key)) {
                     e.preventDefault();
-                    handleClick(group);
+                    if (e.metaKey || e.ctrlKey) {
+                      openGroupInNewTab(group);
+                    } else {
+                      handleClick(group);
+                    }
                   }
                 }}
                 className={cn(

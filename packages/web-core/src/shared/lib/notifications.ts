@@ -45,6 +45,31 @@ export function getPullRequestDetailsNavigationTarget(
   };
 }
 
+/**
+ * Resolve the relative URL a notification group points at, for opening in a new
+ * tab / split pane (cmd+click). Mirrors the in-place navigation performed by
+ * `NotificationsPage`, but returns a plain path instead of navigating.
+ *
+ * PR-comment notifications route to the pull-requests page. In remote runtime
+ * that route is host-scoped, so the caller must supply a `hostId` (from the
+ * payload or an explicit host pick) — without one the URL cannot be built and
+ * `null` is returned. In local runtime the plain `/pull-requests` route is used.
+ */
+export function buildNotificationTabUrl(
+  group: GroupedNotification,
+  options: { hostId?: string | null } = {}
+): string | null {
+  const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
+  if (prDetails) {
+    const hostId = prDetails.hostId ?? options.hostId ?? null;
+    const query = `?prUrl=${encodeURIComponent(prDetails.prUrl)}`;
+    return hostId
+      ? `/hosts/${encodeURIComponent(hostId)}/pull-requests${query}`
+      : `/pull-requests${query}`;
+  }
+  return group.deeplinkPath;
+}
+
 type IssueChangeField =
   | 'title'
   | 'description'
