@@ -10,6 +10,7 @@ import {
   githubIssueMapBackfillEntries,
   githubIssueMarker,
   githubIssueSyncVibeConnectorId,
+  githubMilestoneMetaDiffers,
   markGithubIssueSeen,
   normalizeOptionalTimestamp,
   runSingleFlight,
@@ -199,6 +200,40 @@ test('never dedups review PRs by number (cross-repo numbers collide)', () => {
     seenNumbers: new Set(),
   });
   assert.deepEqual(dropped.candidates, []);
+});
+
+test('treats same-day milestone dates as equal to avoid reconcile write churn', () => {
+  // GitHub returns due_on at a fixed time-of-day; Vibe stores 00:00Z. Same day
+  // must NOT count as a difference, or every reconcile would re-PATCH both sides.
+  assert.equal(
+    githubMilestoneMetaDiffers(
+      { name: 'M1', target_date: '2026-08-31T00:00:00.000Z', completed_at: null },
+      { title: 'M1', due_on: '2026-08-31T08:00:00Z', state: 'open' }
+    ),
+    false
+  );
+  // Real differences are still detected.
+  assert.equal(
+    githubMilestoneMetaDiffers(
+      { name: 'M1', target_date: '2026-08-31T00:00:00Z', completed_at: null },
+      { title: 'M1', due_on: '2026-09-01T08:00:00Z', state: 'open' }
+    ),
+    true
+  );
+  assert.equal(
+    githubMilestoneMetaDiffers(
+      { name: 'M1', target_date: null, completed_at: null },
+      { title: 'renamed', due_on: null, state: 'open' }
+    ),
+    true
+  );
+  assert.equal(
+    githubMilestoneMetaDiffers(
+      { name: 'M1', target_date: null, completed_at: '2026-08-31T00:00:00Z' },
+      { title: 'M1', due_on: null, state: 'open' }
+    ),
+    true
+  );
 });
 
 test('rejects linking an issue outside the rule configured project', () => {

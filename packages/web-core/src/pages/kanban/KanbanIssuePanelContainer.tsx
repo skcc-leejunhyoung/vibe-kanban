@@ -241,7 +241,13 @@ export function KanbanIssuePanelContainer({
     (milestoneId: string | null) => {
       if (!selectedKanbanIssueId) return;
       if (milestoneId) {
+        // Server upserts by issue_id; reuse the existing row id so the
+        // optimistic insert aligns with the row Electric streams back instead
+        // of briefly showing two milestone rows for one issue.
         setIssueMilestone({
+          ...(selectedIssueMilestone
+            ? { id: selectedIssueMilestone.id }
+            : {}),
           issue_id: selectedKanbanIssueId,
           milestone_id: milestoneId,
         });

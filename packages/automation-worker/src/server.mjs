@@ -16,6 +16,7 @@ import {
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueSyncVibeConnectorId,
+  githubMilestoneMetaDiffers,
   markGithubIssueSeen,
   normalizeOptionalTimestamp,
   runSingleFlight,
@@ -1696,11 +1697,7 @@ async function syncGithubMilestone({
       });
       milestone = response.data;
       allMilestones.push(milestone);
-    } else if (
-      milestone.name !== githubMilestone.title ||
-      milestone.target_date !== githubMilestone.due_on ||
-      milestone.completed_at !== completedAt
-    ) {
+    } else if (githubMilestoneMetaDiffers(milestone, githubMilestone)) {
       const response = await vibeApi(
         vibe,
         'PATCH',
@@ -1726,11 +1723,10 @@ async function syncGithubMilestone({
   }
 
   if (currentMilestone && githubMilestone) {
-    const metadataDiffers =
-      currentMilestone.name !== githubMilestone.title ||
-      currentMilestone.target_date !== githubMilestone.due_on ||
-      Boolean(currentMilestone.completed_at) !==
-        (githubMilestone.state === 'closed');
+    const metadataDiffers = githubMilestoneMetaDiffers(
+      currentMilestone,
+      githubMilestone
+    );
     if (metadataDiffers) {
       const localIsNewer =
         Date.parse(currentMilestone.updated_at || '') >

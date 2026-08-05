@@ -517,7 +517,7 @@ function ViewEditorPanel({
           {t('kanban.viewsEditor.milestoneFilter', 'Default milestone filter')}
           <select
             multiple
-            value={view.filters.milestoneIds}
+            value={view.filters.milestoneIds ?? []}
             onChange={(event) =>
               onChange({
                 filters: {
@@ -542,7 +542,7 @@ function ViewEditorPanel({
         </label>
         <ToggleRow
           label={t('kanban.overdueFilterLabel', 'Overdue')}
-          checked={view.filters.overdue}
+          checked={view.filters.overdue ?? false}
           onChange={(overdue) =>
             onChange({ filters: { ...view.filters, overdue } })
           }

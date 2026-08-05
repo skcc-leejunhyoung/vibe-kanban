@@ -138,6 +138,25 @@ export function markGithubIssueSeen(issue, seen, seenNumbers) {
   if (!issue.__reviewPr) seenNumbers.add(String(issue.number));
 }
 
+// GitHub normalizes a milestone's `due_on` to a fixed time-of-day (e.g. 08:00Z)
+// while Vibe stores user-picked dates at 00:00Z and Postgres may render its own
+// offset, so a raw ISO string compare treats the same calendar day as different
+// and drives a redundant milestone PATCH on GitHub *and* Vibe every reconcile.
+// Milestones are day-granular, so compare only the date portion.
+function sameMilestoneDay(a, b) {
+  const da = a ? String(a).slice(0, 10) : null;
+  const db = b ? String(b).slice(0, 10) : null;
+  return da === db;
+}
+
+export function githubMilestoneMetaDiffers(vibeMilestone, githubMilestone) {
+  return (
+    vibeMilestone.name !== githubMilestone.title ||
+    !sameMilestoneDay(vibeMilestone.target_date, githubMilestone.due_on) ||
+    Boolean(vibeMilestone.completed_at) !== (githubMilestone.state === 'closed')
+  );
+}
+
 export function withGithubIssueMarker(body, issueId) {
   const marker = githubIssueMarker(issueId);
   const text = body == null ? '' : String(body);
