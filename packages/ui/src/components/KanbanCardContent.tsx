@@ -10,6 +10,7 @@ import {
   PlusIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { withDisplayTimeZone } from '../lib/datetime';
 import { PriorityIcon, type PriorityLevel } from './PriorityIcon';
 import { KanbanBadge } from './KanbanBadge';
 import { KanbanAssignee, type KanbanAssigneeUser } from './KanbanAssignee';
@@ -291,7 +292,10 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
                 Date.parse(milestone.targetDate) < Date.now() && 'text-error'
               )}
             >
-              {new Date(milestone.targetDate).toLocaleDateString()}
+              {new Date(milestone.targetDate).toLocaleDateString(
+                undefined,
+                withDisplayTimeZone()
+              )}
             </span>
           )}
         </div>
