@@ -31,6 +31,7 @@ import {
   type KanbanViewMode,
   type KanbanProjectViewPreferences,
 } from '@/shared/stores/useUiPreferencesStore';
+import { areAdvancedFiltersEqual } from '@/shared/filters/filterTree';
 import { useProjectViewSwitcherStore } from '@/shared/stores/useProjectViewSwitcherStore';
 import {
   useKanbanFilters,
@@ -126,6 +127,15 @@ const areKanbanFiltersEqual = (
     return false;
   }
   if ((left.overdue ?? false) !== (right.overdue ?? false)) return false;
+
+  if (
+    !areAdvancedFiltersEqual(
+      left.advancedFilter ?? null,
+      right.advancedFilter ?? null
+    )
+  ) {
+    return false;
+  }
 
   return (
     left.sortField === right.sortField &&

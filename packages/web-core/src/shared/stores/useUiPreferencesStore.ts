@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import type { RepoAction } from '@vibe/ui/components/RepoCard';
 import type { IssuePriority } from 'shared/remote-types';
 import type { PreviewShortcutData } from 'shared/types';
+import type { AdvancedFilter } from '@/shared/filters/filterTree';
 import {
   BUILTIN_PRESET_IDS,
   DEFAULT_THEME_VARIANT,
@@ -124,6 +125,13 @@ export type KanbanFilterState = {
   overdue: boolean;
   sortField: KanbanSortField;
   sortDirection: 'asc' | 'desc';
+  /**
+   * Optional nested filter tree (AND/OR/NOT). When present the board is in
+   * "advanced" mode and this supersedes the flat fields above for filtering
+   * (sort still comes from `sortField`/`sortDirection`). Absent/null = the flat
+   * fields drive filtering as before, so existing saved views are unaffected.
+   */
+  advancedFilter?: AdvancedFilter | null;
 };
 
 export const DEFAULT_KANBAN_FILTER_STATE: KanbanFilterState = {
@@ -135,6 +143,7 @@ export const DEFAULT_KANBAN_FILTER_STATE: KanbanFilterState = {
   overdue: false,
   sortField: 'sort_order',
   sortDirection: 'asc',
+  advancedFilter: null,
 };
 
 export const KANBAN_ASSIGNEE_FILTER_VALUES = {
@@ -174,6 +183,9 @@ const cloneKanbanFilters = (filters: KanbanFilterState): KanbanFilterState => ({
   overdue: filters.overdue ?? false,
   sortField: filters.sortField,
   sortDirection: filters.sortDirection,
+  advancedFilter: filters.advancedFilter
+    ? (structuredClone(filters.advancedFilter) as AdvancedFilter)
+    : null,
 });
 
 // --- User-defined project views -------------------------------------------

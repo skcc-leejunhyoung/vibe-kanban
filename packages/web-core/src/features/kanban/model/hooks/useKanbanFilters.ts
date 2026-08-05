@@ -14,6 +14,10 @@ import type {
   ProjectMilestone,
 } from 'shared/remote-types';
 import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
+import {
+  evaluateNode,
+  type IssueFilterFacts,
+} from '@/shared/filters/filterTree';
 
 type UseKanbanFiltersParams = {
   issues: Issue[];
@@ -145,86 +149,131 @@ export function useKanbanFilters({
       result = result.filter((issue) => issue.parent_issue_id === null);
     }
 
-    // Text search (title + body + short ID)
-    const query = filters.searchQuery.trim();
-    if (query) {
-      result = result.filter((issue) => matchesIssueSearch(issue, query));
-    }
+    const advancedFilter = filters.advancedFilter ?? null;
 
-    // Priority filter (OR within)
-    if (filters.priorities.length > 0) {
-      result = result.filter(
-        (issue) =>
-          issue.priority !== null && filters.priorities.includes(issue.priority)
-      );
-    }
-
-    // Assignee filter (OR within)
-    if (filters.assigneeIds.length > 0) {
-      const includeUnassigned = filters.assigneeIds.includes(
-        KANBAN_ASSIGNEE_FILTER_VALUES.UNASSIGNED
-      );
-      const selectedAssigneeIds = new Set(
-        filters.assigneeIds.flatMap((assigneeId) => {
-          if (assigneeId === KANBAN_ASSIGNEE_FILTER_VALUES.SELF) {
-            return currentUserId ? [currentUserId] : [];
-          }
-          if (assigneeId === KANBAN_ASSIGNEE_FILTER_VALUES.UNASSIGNED) {
-            return [];
-          }
-          return [assigneeId];
-        })
-      );
-
-      result = result.filter((issue) => {
-        const issueAssigneeIds = assigneesByIssue[issue.id] ?? [];
-
-        // Check for 'unassigned' special case
-        if (includeUnassigned) {
-          if (issueAssigneeIds.length === 0) return true;
+    // Set of issue ids blocked by an unresolved (non-done) blocker. Shared by
+    // the `hideBlocked` toggle and the advanced `blocked` filter field.
+    const blockedIssueIds = new Set<string>();
+    if (hideBlocked || advancedFilter) {
+      for (const r of issueRelationships) {
+        if (r.relationship_type !== 'blocking') continue;
+        const blockingIssue = issuesById.get(r.issue_id);
+        if (blockingIssue == null) continue;
+        if (!doneStatusIds.has(blockingIssue.status_id)) {
+          blockedIssueIds.add(r.related_issue_id);
         }
-
-        // Check if any of the issue's assignees match the filter
-        return issueAssigneeIds.some((assigneeId) =>
-          selectedAssigneeIds.has(assigneeId)
-        );
-      });
+      }
     }
 
-    // Tags filter (OR within)
-    if (filters.tagIds.length > 0) {
-      result = result.filter((issue) => {
-        const issueTagIds = tagsByIssue[issue.id] ?? [];
-        return issueTagIds.some((tagId) => filters.tagIds.includes(tagId));
-      });
-    }
-
-    if ((filters.milestoneIds ?? []).length > 0 || filters.overdue) {
-      result = result.filter((issue) => {
-        const milestoneId = milestoneByIssue.get(issue.id);
+    if (advancedFilter) {
+      // Advanced mode: the nested tree supersedes the flat filter fields.
+      const now = Date.now();
+      const factsFor = (issue: Issue): IssueFilterFacts => {
+        const milestoneId = milestoneByIssue.get(issue.id) ?? null;
         const milestone = milestoneId
           ? milestonesById.get(milestoneId)
           : undefined;
-        return matchesMilestoneFilters(
-          milestone,
-          filters.milestoneIds ?? [],
-          filters.overdue ?? false
+        const isMilestoneOverdue = Boolean(
+          milestone?.target_date &&
+            !milestone.completed_at &&
+            Date.parse(milestone.target_date) < now
         );
-      });
+        return {
+          statusId: issue.status_id,
+          priority: issue.priority,
+          assigneeUserIds: assigneesByIssue[issue.id] ?? [],
+          tagIds: tagsByIssue[issue.id] ?? [],
+          milestoneId,
+          isMilestoneOverdue,
+          isBlocked: blockedIssueIds.has(issue.id),
+          text: {
+            title: issue.title,
+            description: issue.description,
+            simpleId: issue.simple_id,
+            issueNumber: issue.issue_number,
+          },
+        };
+      };
+      result = result.filter((issue) =>
+        evaluateNode(advancedFilter, factsFor(issue), { currentUserId })
+      );
+    } else {
+      // Simple mode: flat fields, AND across categories / OR within each.
+
+      // Text search (title + body + short ID)
+      const query = filters.searchQuery.trim();
+      if (query) {
+        result = result.filter((issue) => matchesIssueSearch(issue, query));
+      }
+
+      // Priority filter (OR within)
+      if (filters.priorities.length > 0) {
+        result = result.filter(
+          (issue) =>
+            issue.priority !== null &&
+            filters.priorities.includes(issue.priority)
+        );
+      }
+
+      // Assignee filter (OR within)
+      if (filters.assigneeIds.length > 0) {
+        const includeUnassigned = filters.assigneeIds.includes(
+          KANBAN_ASSIGNEE_FILTER_VALUES.UNASSIGNED
+        );
+        const selectedAssigneeIds = new Set(
+          filters.assigneeIds.flatMap((assigneeId) => {
+            if (assigneeId === KANBAN_ASSIGNEE_FILTER_VALUES.SELF) {
+              return currentUserId ? [currentUserId] : [];
+            }
+            if (assigneeId === KANBAN_ASSIGNEE_FILTER_VALUES.UNASSIGNED) {
+              return [];
+            }
+            return [assigneeId];
+          })
+        );
+
+        result = result.filter((issue) => {
+          const issueAssigneeIds = assigneesByIssue[issue.id] ?? [];
+
+          // Check for 'unassigned' special case
+          if (includeUnassigned) {
+            if (issueAssigneeIds.length === 0) return true;
+          }
+
+          // Check if any of the issue's assignees match the filter
+          return issueAssigneeIds.some((assigneeId) =>
+            selectedAssigneeIds.has(assigneeId)
+          );
+        });
+      }
+
+      // Tags filter (OR within)
+      if (filters.tagIds.length > 0) {
+        result = result.filter((issue) => {
+          const issueTagIds = tagsByIssue[issue.id] ?? [];
+          return issueTagIds.some((tagId) => filters.tagIds.includes(tagId));
+        });
+      }
+
+      if ((filters.milestoneIds ?? []).length > 0 || filters.overdue) {
+        result = result.filter((issue) => {
+          const milestoneId = milestoneByIssue.get(issue.id);
+          const milestone = milestoneId
+            ? milestonesById.get(milestoneId)
+            : undefined;
+          return matchesMilestoneFilters(
+            milestone,
+            filters.milestoneIds ?? [],
+            filters.overdue ?? false
+          );
+        });
+      }
     }
 
-    // Hide blocked: filter out issues that are blocked by an unresolved issue
+    // Hide blocked: filter out issues that are blocked by an unresolved issue.
+    // Applied in both modes as an orthogonal board toggle.
     if (hideBlocked) {
-      result = result.filter((issue) => {
-        return !issueRelationships.some((r) => {
-          if (r.relationship_type !== 'blocking') return false;
-          if (r.related_issue_id !== issue.id) return false;
-          const blockingIssue = issuesById.get(r.issue_id);
-          if (blockingIssue == null) return false;
-          // Blocker is resolved if it's in a done status
-          return !doneStatusIds.has(blockingIssue.status_id);
-        });
-      });
+      result = result.filter((issue) => !blockedIssueIds.has(issue.id));
     }
 
     // Note: Sorting is handled in KanbanContainer after grouping by status
