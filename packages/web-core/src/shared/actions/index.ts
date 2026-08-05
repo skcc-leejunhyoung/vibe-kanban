@@ -68,6 +68,7 @@ import {
   ArrowsOutIcon,
   SparkleIcon,
   FunnelIcon,
+  GithubLogoIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import {
@@ -82,7 +83,10 @@ import {
   repoApi,
   sessionsApi,
 } from '@/shared/lib/api';
-import { bulkUpdateIssues } from '@/shared/lib/remoteApi';
+import {
+  bulkUpdateIssues,
+  listGithubIssueLinksForIssue,
+} from '@/shared/lib/remoteApi';
 import { workspaceRecordKeys } from '@/shared/hooks/useWorkspaceRecord';
 import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
@@ -249,6 +253,39 @@ async function selectIssuePullRequest(
   return pullRequests.find(
     (pullRequest) => pullRequest.id === result.pullRequestId
   );
+}
+
+// Resolve the single GitHub issue mapped to a selected kanban issue (an issue
+// links to at most one GitHub issue). Mirrors `selectIssuePullRequest`'s guard
+// dialogs so callers stay symmetric with the pull request flow.
+async function selectIssueGithubLink(
+  ctx: ActionExecutorContext,
+  issueIds: string[]
+): Promise<{ url: string; number: number } | undefined> {
+  if (issueIds.length !== 1) {
+    await ConfirmDialog.show({
+      title: 'Select One Issue',
+      message: 'Select a single issue to open its linked GitHub issue.',
+      confirmText: 'OK',
+      showCancelButton: false,
+      variant: 'info',
+    });
+    return undefined;
+  }
+
+  const link = ctx.projectMutations?.getGithubIssueLinkForIssue(issueIds[0]);
+  if (!link) {
+    await ConfirmDialog.show({
+      title: 'No Linked GitHub Issue',
+      message: 'The selected issue does not have a linked GitHub issue.',
+      confirmText: 'OK',
+      showCancelButton: false,
+      variant: 'info',
+    });
+    return undefined;
+  }
+
+  return { url: link.url, number: link.number };
 }
 
 type RepoPullRequest = { url: string; number: number; status: string };
@@ -1173,6 +1210,53 @@ export const Actions = {
     },
   } satisfies WorkspaceActionDefinition,
 
+  WorkspaceOpenGithubIssueInWeb: {
+    id: 'workspace-open-github-issue-in-web',
+    label: 'Open GitHub Issue in Web',
+    icon: GithubLogoIcon,
+    keywords: ['github', 'issue', 'browser', 'web', 'mapped', 'linked'],
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.hasWorkspace,
+    execute: async (ctx, workspaceId, hostId) => {
+      // Reserve the popup up-front so the async lookup below keeps the user
+      // gesture (mirrors `GitOpenPR`). The project's Electric shape isn't
+      // mounted in the workspace view, so the GitHub link is fetched on demand.
+      const reservedWindow = reserveExternalWindow();
+      try {
+        const remoteWs = findRemoteWorkspaceByLocalIdentity(
+          ctx.remoteWorkspaces,
+          workspaceId,
+          hostId ?? null
+        );
+        const issueId = remoteWs?.issue_id;
+        const link = issueId
+          ? (await listGithubIssueLinksForIssue(issueId))[0]
+          : undefined;
+
+        if (!link) {
+          reservedWindow?.close();
+          await ConfirmDialog.show({
+            title: 'No Linked GitHub Issue',
+            message: issueId
+              ? 'The issue mapped to this workspace does not have a linked GitHub issue.'
+              : 'This workspace is not mapped to an issue.',
+            confirmText: 'OK',
+            showCancelButton: false,
+            variant: 'info',
+          });
+          return;
+        }
+
+        if (!openExternalUrl(link.url, reservedWindow)) {
+          reservedWindow?.close();
+        }
+      } catch (error) {
+        reservedWindow?.close();
+        throw error;
+      }
+    },
+  } satisfies WorkspaceActionDefinition,
+
   GotoProjects: {
     id: 'goto-projects',
     label: 'Goto: Projects',
@@ -1948,6 +2032,25 @@ export const Actions = {
 
       const reservedWindow = reserveExternalWindow();
       if (!openExternalUrl(pullRequest.url, reservedWindow)) {
+        reservedWindow?.close();
+      }
+    },
+  } satisfies IssueActionDefinition,
+
+  IssueOpenGithubIssueInWeb: {
+    id: 'issue-open-github-issue-in-web',
+    label: 'Open GitHub Issue in Web',
+    icon: GithubLogoIcon,
+    keywords: ['github', 'issue', 'browser', 'web'],
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (ctx, _projectId, issueIds) => {
+      const link = await selectIssueGithubLink(ctx, issueIds);
+      if (!link) return;
+
+      const reservedWindow = reserveExternalWindow();
+      if (!openExternalUrl(link.url, reservedWindow)) {
         reservedWindow?.close();
       }
     },

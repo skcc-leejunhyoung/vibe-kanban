@@ -38,6 +38,7 @@ vi.mock('@/shared/lib/api', () => ({
 }));
 vi.mock('@/shared/lib/remoteApi', () => ({
   bulkUpdateIssues: vi.fn(),
+  listGithubIssueLinksForIssue: vi.fn(),
 }));
 vi.mock('@vibe/ui/components/ConfirmDialog', () => ({
   ConfirmDialog: {
@@ -88,6 +89,7 @@ import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { getPageActions } from '@/shared/command-bar/actions/pages';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
 
 const update = vi.mocked(workspacesApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
@@ -112,6 +114,7 @@ const vibeReview = vi.mocked(sessionsApi.vibeReview);
 const showPrDetails = vi.mocked(PrDetailsDialog.show);
 const showSelection = vi.mocked(SelectionDialog.show);
 const reviewAndCreatePr = vi.mocked(runReviewAndCreatePr);
+const listGithubLinks = vi.mocked(listGithubIssueLinksForIssue);
 
 // Build a minimal action context. Seeding the query cache with the workspace
 // keeps `getWorkspace` off the (stubbed) network path. `currentWorkspaceId` and
@@ -1483,6 +1486,154 @@ describe('issue pull request actions', () => {
       linkedPullRequest.url,
       undefined
     );
+  });
+});
+
+describe('GitHub issue in web actions', () => {
+  const issueActionContext = {
+    layoutMode: 'kanban',
+    hasSelectedKanbanIssue: true,
+  } as ActionVisibilityContext;
+
+  const linkedGithubIssue = {
+    id: 'gh-1',
+    number: 7,
+    url: 'https://github.com/acme/repo/issues/7',
+  };
+
+  it('exposes the issue counterpart on the issue actions page', () => {
+    expect(
+      Actions.IssueOpenGithubIssueInWeb.isVisible?.(issueActionContext)
+    ).toBe(true);
+    expect(getPageActions('issueActions')).toEqual(
+      expect.arrayContaining([Actions.IssueOpenGithubIssueInWeb])
+    );
+  });
+
+  it('opens the GitHub issue linked to the selected issue in the browser', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    openPrUrl.mockReturnValue(true);
+    const getGithubIssueLinkForIssue = vi.fn(() => linkedGithubIssue);
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        projectMutations: {
+          removeIssue: vi.fn(),
+          duplicateIssue: vi.fn(),
+          getIssue: vi.fn(),
+          getAssigneesForIssue: vi.fn(() => []),
+          getPullRequestsForIssue: vi.fn(() => []),
+          getGithubIssueLinkForIssue,
+        },
+      }
+    );
+
+    await Actions.IssueOpenGithubIssueInWeb.execute(ctx, 'project-1', [
+      'issue-1',
+    ]);
+
+    expect(getGithubIssueLinkForIssue).toHaveBeenCalledWith('issue-1');
+    expect(openPrUrl).toHaveBeenCalledWith(
+      linkedGithubIssue.url,
+      reservedWindow
+    );
+  });
+
+  it('warns when the selected issue has no linked GitHub issue', async () => {
+    reservePrWindow.mockReturnValue({ close: vi.fn() } as unknown as Window);
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        projectMutations: {
+          removeIssue: vi.fn(),
+          duplicateIssue: vi.fn(),
+          getIssue: vi.fn(),
+          getAssigneesForIssue: vi.fn(() => []),
+          getPullRequestsForIssue: vi.fn(() => []),
+          getGithubIssueLinkForIssue: vi.fn(() => undefined),
+        },
+      }
+    );
+
+    await Actions.IssueOpenGithubIssueInWeb.execute(ctx, 'project-1', [
+      'issue-1',
+    ]);
+
+    expect(openPrUrl).not.toHaveBeenCalled();
+    expect(showConfirm).toHaveBeenCalled();
+  });
+
+  it('shows the workspace counterpart for a workspace target', () => {
+    expect(
+      isActionVisible(Actions.WorkspaceOpenGithubIssueInWeb, {
+        hasWorkspace: true,
+      } as ActionVisibilityContext)
+    ).toBe(true);
+    expect(
+      isActionVisible(Actions.WorkspaceOpenGithubIssueInWeb, {
+        hasWorkspace: false,
+      } as ActionVisibilityContext)
+    ).toBe(false);
+  });
+
+  it('opens the GitHub issue mapped to the target workspace in the browser', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    openPrUrl.mockReturnValue(true);
+    listGithubLinks.mockResolvedValue([
+      { url: 'https://github.com/acme/repo/issues/9', number: 9 },
+    ] as never);
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host-1',
+        remoteWorkspaces: [
+          {
+            id: 'remote-ws1',
+            local_workspace_id: 'ws1',
+            host_id: 'host-1',
+            project_id: 'project-1',
+            issue_id: 'issue-1',
+          },
+        ] as never,
+      }
+    );
+
+    await Actions.WorkspaceOpenGithubIssueInWeb.execute(ctx, 'ws1', 'host-1');
+
+    expect(listGithubLinks).toHaveBeenCalledWith('issue-1');
+    expect(openPrUrl).toHaveBeenCalledWith(
+      'https://github.com/acme/repo/issues/9',
+      reservedWindow
+    );
+  });
+
+  it('warns and skips the fetch when the workspace has no mapped issue', async () => {
+    const reservedWindow = { close: vi.fn() } as unknown as Window;
+    reservePrWindow.mockReturnValue(reservedWindow);
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'host-1',
+        remoteWorkspaces: [
+          {
+            id: 'remote-ws1',
+            local_workspace_id: 'ws1',
+            host_id: 'host-1',
+            project_id: 'project-1',
+            issue_id: null,
+          },
+        ] as never,
+      }
+    );
+
+    await Actions.WorkspaceOpenGithubIssueInWeb.execute(ctx, 'ws1', 'host-1');
+
+    expect(listGithubLinks).not.toHaveBeenCalled();
+    expect(openPrUrl).not.toHaveBeenCalled();
+    expect(reservedWindow.close).toHaveBeenCalled();
+    expect(showConfirm).toHaveBeenCalled();
   });
 });
 

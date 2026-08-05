@@ -157,6 +157,7 @@ export interface ProjectContextValue {
   getStatus: (statusId: string) => ProjectStatus | undefined;
   getTag: (tagId: string) => Tag | undefined;
   getPullRequestsForIssue: (issueId: string) => PullRequest[];
+  getGithubIssueLinkForIssue: (issueId: string) => GithubIssueLink | undefined;
   getWorkspacesForIssue: (issueId: string) => Workspace[];
 
   // Computed aggregations (Maps for O(1) lookup)

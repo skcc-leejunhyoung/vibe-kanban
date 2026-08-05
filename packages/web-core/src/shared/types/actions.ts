@@ -7,7 +7,7 @@ import type {
   PatchType,
 } from 'shared/types';
 import type { Workspace as RemoteWorkspace } from 'shared/remote-types';
-import type { PullRequest } from 'shared/remote-types';
+import type { GithubIssueLink, PullRequest } from 'shared/remote-types';
 import type { DiffViewMode } from '@/shared/stores/useDiffViewStore';
 import type { LayoutMode } from '@/shared/stores/useUiPreferencesStore';
 import { RIGHT_MAIN_PANEL_MODES } from '@/shared/stores/useUiPreferencesStore';
@@ -47,6 +47,7 @@ export interface ProjectMutations {
   getIssue: (issueId: string) => { simple_id: string } | undefined;
   getAssigneesForIssue: (issueId: string) => { user_id: string }[];
   getPullRequestsForIssue: (issueId: string) => PullRequest[];
+  getGithubIssueLinkForIssue: (issueId: string) => GithubIssueLink | undefined;
 }
 
 // Workspace type for sidebar (minimal subset needed for workspace selection)

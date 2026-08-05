@@ -265,6 +265,14 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     [pullRequestIssuesResult.data, pullRequestsResult.data]
   );
 
+  // An issue maps to at most one GitHub issue link (UNIQUE(issue_id)), so return
+  // the first match rather than a list.
+  const getGithubIssueLinkForIssue = useCallback(
+    (issueId: string) =>
+      githubIssueLinksResult.data.find((link) => link.issue_id === issueId),
+    [githubIssueLinksResult.data]
+  );
+
   const getWorkspacesForIssue = useCallback(
     (issueId: string) =>
       workspacesResult.data.filter((w) => w.issue_id === issueId),
@@ -352,6 +360,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getStatus,
       getTag,
       getPullRequestsForIssue,
+      getGithubIssueLinkForIssue,
       getWorkspacesForIssue,
 
       // Computed aggregations
@@ -388,6 +397,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getStatus,
       getTag,
       getPullRequestsForIssue,
+      getGithubIssueLinkForIssue,
       getWorkspacesForIssue,
       issuesById,
       statusesById,

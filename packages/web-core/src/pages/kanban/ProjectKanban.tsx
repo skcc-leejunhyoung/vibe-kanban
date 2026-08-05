@@ -43,6 +43,7 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
     getIssue,
     getAssigneesForIssue,
     getPullRequestsForIssue,
+    getGithubIssueLinkForIssue,
     issues,
   } = useProjectContext();
 
@@ -124,6 +125,7 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
       getIssue,
       getAssigneesForIssue,
       getPullRequestsForIssue,
+      getGithubIssueLinkForIssue,
     });
 
     return () => {
@@ -136,6 +138,7 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
     getIssue,
     getAssigneesForIssue,
     getPullRequestsForIssue,
+    getGithubIssueLinkForIssue,
     hosts,
     routeState.hostId,
     runtime,

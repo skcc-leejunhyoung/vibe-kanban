@@ -4,6 +4,7 @@ import type {
   CommitAttachmentsRequest,
   CommitAttachmentsResponse,
   ConfirmUploadRequest,
+  GithubIssueLink,
   InitUploadRequest,
   InitUploadResponse,
   ListRelayHostsResponse,
@@ -65,6 +66,27 @@ export async function listPullRequestIssueMappings(
     pull_request_issues: PullRequestIssue[];
   };
   return body.pull_request_issues;
+}
+
+// An issue maps to at most one GitHub issue link, but the endpoint returns a
+// list; callers pick the first. Used where the project's Electric shape isn't
+// mounted (e.g. the workspace view), so the mapping must be fetched on demand.
+export async function listGithubIssueLinksForIssue(
+  issueId: string
+): Promise<GithubIssueLink[]> {
+  const response = await makeRequest(
+    `/v1/github_issue_links?issue_id=${encodeURIComponent(issueId)}`
+  );
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to load linked GitHub issue'
+    );
+  }
+  const body = (await response.json()) as {
+    github_issue_links: GithubIssueLink[];
+  };
+  return body.github_issue_links;
 }
 
 export async function getRemoteIssue(issueId: string): Promise<Issue> {
