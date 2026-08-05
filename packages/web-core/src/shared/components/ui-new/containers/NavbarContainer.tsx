@@ -40,7 +40,10 @@ import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilitySto
 import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
-import { getProjectDestination } from '@/shared/lib/routes/appNavigation';
+import {
+  getProjectDestination,
+  isWorkspacesDestination,
+} from '@/shared/lib/routes/appNavigation';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { getRemoteAuthDegradedMessage } from '@/shared/lib/auth/remoteAuthDegraded';
@@ -144,6 +147,11 @@ export function NavbarContainer({
   const projectId = projectDestination?.projectId ?? null;
   const isOnProjectSubRoute =
     projectDestination !== null && projectDestination.kind !== 'project';
+  // Standalone pages (Notifications, Pull Requests, Export) are neither project
+  // nor workspace destinations. They render their own page headers, so the
+  // mobile workspace tabs (Chat/Diff/Logs…) and the workspace title bar are
+  // out of place there and must be suppressed.
+  const isWorkspacesDest = isWorkspacesDestination(destination);
   const [mobileActiveTab, setMobileActiveTab] = useMobileActiveTab();
   const workspaceHostId = useHostId();
 
@@ -209,13 +217,15 @@ export function NavbarContainer({
     ? 'Create Workspace'
     : isOnProjectPage
       ? orgName
-      : selectedWorkspace?.branch;
+      : isWorkspacesDest
+        ? selectedWorkspace?.branch
+        : undefined;
 
   // Breadcrumbs: Project / Issue / Workspace (only on workspace pages with linked project)
   const linkedProjectId = linkedRemoteWorkspace?.project_id ?? null;
   const linkedIssueId = linkedRemoteWorkspace?.issue_id ?? null;
   const shouldResolveBreadcrumbData =
-    !isOnProjectPage && !isCreateMode && !!linkedProjectId;
+    !isOnProjectPage && !isCreateMode && isWorkspacesDest && !!linkedProjectId;
   const shouldResolveIssueBreadcrumb =
     shouldResolveBreadcrumbData && !!linkedIssueId;
 
@@ -358,7 +368,9 @@ export function NavbarContainer({
       onOpenDrawer={onOpenDrawer}
       mobileActiveTab={mobileActiveTab as MobileTabId}
       onMobileTabChange={(tab) => setMobileActiveTab(tab)}
+      showMobileTabs={isWorkspacesDest}
       leftSlot={
+        isWorkspacesDest &&
         !breadcrumbs &&
         !isWaitingForBreadcrumbData &&
         linkedRemoteWorkspace?.issue_id ? (
