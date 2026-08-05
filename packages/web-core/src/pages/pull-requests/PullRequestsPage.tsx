@@ -113,15 +113,17 @@ function statusLabel(status: MergeStatus): string {
   return 'Unknown';
 }
 
-function statusIcon(status: MergeStatus) {
+function statusIcon(status: MergeStatus, isDraft: boolean) {
   if (status === 'merged') {
     return <GitMergeIcon className="size-icon-base text-brand" weight="bold" />;
   }
+  // Draft PRs are still "open" but rendered in a muted gray so they are
+  // clearly distinguishable from ready-for-review (green) pull requests.
   return (
     <GitPullRequestIcon
       className={cn(
         'size-icon-base',
-        status === 'open' ? 'text-success' : 'text-low'
+        status === 'open' ? (isDraft ? 'text-low' : 'text-success') : 'text-low'
       )}
       weight="bold"
     />
@@ -863,14 +865,20 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                   onClick={() => openDetails(pr)}
                   className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left"
                 >
-                  <span className="mt-half">{statusIcon(pr.status)}</span>
+                  <span className="mt-half">
+                    {statusIcon(pr.status, pr.is_draft)}
+                  </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-half">
                       <span className="truncate text-base font-medium text-high">
                         {pr.title}
                       </span>
                       {pr.is_draft && (
-                        <span className="rounded bg-secondary px-half py-0.5 text-xs text-low">
+                        <span className="inline-flex items-center gap-1 rounded bg-tertiary px-half py-0.5 text-xs text-low">
+                          <GitPullRequestIcon
+                            className="size-icon-xs"
+                            weight="bold"
+                          />
                           Draft
                         </span>
                       )}
