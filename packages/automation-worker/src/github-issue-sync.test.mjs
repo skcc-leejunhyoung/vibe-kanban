@@ -525,6 +525,35 @@ test('pending github link waiting on backoff is not attempted again', async () =
   assert.equal(remaining[0].attempts, 1);
 });
 
+test('pending github link is carried forward without spending an attempt while its target is disabled', async () => {
+  // 규칙/커넥터가 잠시 꺼져 있으면(예: 사용자가 토글 off) 시도를 소진하지 말고
+  // 그대로 보관해야 한다 — 그러지 않으면 몇 분 만에 5회 소진되어 유효한 링크가
+  // 영구 폐기되며, 이 큐가 막으려던 고아화가 재발한다.
+  const retried = [];
+  const { remaining, recovered, changed } =
+    await retryPendingGithubIssueLinkOperations({
+      ...LINK_RETRY_POLICY,
+      operations: [
+        {
+          githubConnectorId: 'github-1',
+          input: { issueId: 'vibe-1' },
+          attempts: 2,
+        },
+      ],
+      connectorId: 'github-1',
+      isAvailable: () => false,
+      linkIssue: async (input) => retried.push(input.issueId),
+      onFailure: async () => {},
+      onExhausted: async () => {},
+    });
+
+  assert.deepEqual(retried, []);
+  assert.equal(recovered, 0);
+  assert.equal(changed, false);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].attempts, 2);
+});
+
 test('permanently failing github link is dropped once attempts are exhausted', async () => {
   // 삭제된 Vibe 이슈를 가리키는 op 는 절대 성공하지 못한다. 무한 보관하면 폴링마다
   // 404 를 때리고 state.json 만 부풀린다.

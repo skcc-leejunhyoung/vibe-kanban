@@ -1208,16 +1208,31 @@ async function pollGithub(connector) {
     ),
   ];
   for (const projectId of projectIds) {
-    items = [
-      // Scoped exactly like the REST poll above — a Project board also holds
-      // other people's issues, which must never be imported or written to.
-      ...(await loadGithubProjectIssues(
+    let projectItems;
+    try {
+      projectItems = await loadGithubProjectIssues(
         connector,
         projectId,
         repository,
         githubGraphql,
         { login, filter, state: config.state || 'open' }
-      )),
+      );
+    } catch (error) {
+      // A deleted project, revoked `read:project` scope, or a transient GraphQL
+      // error must not wedge the whole connector poll — otherwise REST import,
+      // milestone/status reconcile, and cursor persistence would be skipped
+      // every cycle. Degrade to REST-only for this poll; recovers next cycle.
+      await log('warn', 'github project issues load failed', {
+        connectorId: connector.id,
+        projectId,
+        error: errorMessage(error),
+      });
+      continue;
+    }
+    items = [
+      // Scoped exactly like the REST poll above — a Project board also holds
+      // other people's issues, which must never be imported or written to.
+      ...projectItems,
       ...items,
     ];
   }
@@ -1990,6 +2005,28 @@ async function linkGithubIssueOnce(input, operationKey) {
   return created;
 }
 
+// Non-throwing mirror of linkGithubIssueOnce's rule/connector preconditions:
+// true only when the op's rule and both connectors still exist and are enabled.
+// A missing/disabled target must not spend a retry attempt (it recovers once the
+// target returns); permanent misconfigurations (wrong kind/type) still fall
+// through to linkIssue and exhaust normally.
+function githubIssueLinkTargetAvailable(operation) {
+  const rule = state.rules.find(
+    (item) => item.id === String(operation.ruleId || 'github-issue-to-vibe')
+  );
+  if (!rule || !rule.enabled) return false;
+  const config = rule.config || {};
+  const github = state.connectors.find(
+    (item) => item.id === String(config.githubConnectorId || '')
+  );
+  if (!github || !github.enabled) return false;
+  const vibe = state.connectors.find(
+    (item) => item.id === String(config.vibeConnectorId || '')
+  );
+  if (!vibe || !vibe.enabled) return false;
+  return true;
+}
+
 async function retryPendingGithubIssueLinks(githubConnector) {
   const operations = state.githubIssueLinkOperations || [];
   if (!operations.length) return 0;
@@ -2002,6 +2039,7 @@ async function retryPendingGithubIssueLinks(githubConnector) {
       maxAttempts: RETRY_MAX_ATTEMPTS,
       retryDelay,
       linkIssue: linkGithubIssue,
+      isAvailable: githubIssueLinkTargetAvailable,
       onFailure: async (operation, error) => {
         await log('warn', 'pending github issue link retry failed', {
           ruleId: operation.ruleId,

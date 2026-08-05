@@ -333,6 +333,12 @@ export async function backfillLegacyGithubIssueLinks({
  * PR-link queue in pull-request-links.mjs (whose header already claimed to
  * mirror this one): backoff between attempts, then drop as exhausted.
  *
+ * Like the sibling's `resolveConnector`, an optional `isAvailable(operation)`
+ * lets the caller carry an op forward *without* spending an attempt while its
+ * rule / connector is temporarily gone or disabled — otherwise a rule toggled
+ * off for a few minutes would burn all attempts and drop a still-valid link,
+ * re-introducing the orphaning this queue exists to prevent.
+ *
  * @returns {Promise<{remaining: Array<object>, recovered: number, changed: boolean}>}
  *   `remaining` replaces the caller's queue; `changed` is false when nothing
  *   was attempted, so the caller can skip persisting.
@@ -341,6 +347,7 @@ export async function retryPendingGithubIssueLinkOperations({
   operations,
   connectorId,
   linkIssue,
+  isAvailable,
   onFailure,
   onExhausted,
   now,
@@ -359,6 +366,13 @@ export async function retryPendingGithubIssueLinkOperations({
     }
     // Respect backoff: not-due items are carried forward without an attempt.
     if (operation.nextAttemptAt && operation.nextAttemptAt > now) {
+      remaining.push(operation);
+      continue;
+    }
+    // Can't link while the rule/connector is gone or disabled — keep the op
+    // without spending an attempt so it recovers once the target returns
+    // (mirrors resolveConnector in pull-request-links.mjs).
+    if (isAvailable && !isAvailable(operation)) {
       remaining.push(operation);
       continue;
     }
