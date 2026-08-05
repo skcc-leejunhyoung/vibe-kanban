@@ -6,7 +6,9 @@ import {
   backfillLegacyGithubIssueLinks,
   decideGithubParentSync,
   decideGithubMilestoneSync,
+  decideGithubProjectStatusSync,
   ensureGithubIssueForLink,
+  selectGithubImportCandidates,
   githubIssueMapBackfillEntries,
   githubIssueMarker,
   githubIssueSyncVibeConnectorId,
@@ -237,7 +239,11 @@ test('treats same-day milestone dates as equal to avoid reconcile write churn', 
   // must NOT count as a difference, or every reconcile would re-PATCH both sides.
   assert.equal(
     githubMilestoneMetaDiffers(
-      { name: 'M1', target_date: '2026-08-31T00:00:00.000Z', completed_at: null },
+      {
+        name: 'M1',
+        target_date: '2026-08-31T00:00:00.000Z',
+        completed_at: null,
+      },
       { title: 'M1', due_on: '2026-08-31T08:00:00Z', state: 'open' }
     ),
     false
@@ -475,4 +481,98 @@ test('poller retries only pending operations for its GitHub connector', async ()
   assert.equal(recovered, 1);
   assert.deepEqual(retried, ['vibe-1', 'vibe-3']);
   assert.deepEqual(failures, ['vibe-3']);
+});
+
+const STATUS_MAPPINGS = [
+  { vibeStatusId: 'vibe-todo', githubOptionId: 'gh-todo' },
+  { vibeStatusId: 'vibe-done', githubOptionId: 'gh-done' },
+];
+
+test('first status sync adopts the GitHub value instead of pushing', () => {
+  // 임포트 직후 링크는 synced_vibe_status_id 가 비어 있다. 이때 Vibe 기본 컬럼을
+  // 밀어넣으면 GitHub 프로젝트 보드가 통째로 덮인다(#5603 사고).
+  assert.deepEqual(
+    decideGithubProjectStatusSync({
+      statusMappings: STATUS_MAPPINGS,
+      vibeStatusId: 'vibe-todo',
+      syncedVibeStatusId: null,
+      githubOptionId: 'gh-done',
+      syncedGithubOptionId: null,
+    }),
+    { action: 'adopt', vibeStatusId: 'vibe-done', githubOptionId: 'gh-done' }
+  );
+});
+
+test('first status sync never overwrites an unmapped GitHub value', () => {
+  assert.deepEqual(
+    decideGithubProjectStatusSync({
+      statusMappings: STATUS_MAPPINGS,
+      vibeStatusId: 'vibe-todo',
+      syncedVibeStatusId: null,
+      githubOptionId: 'gh-unmapped',
+      syncedGithubOptionId: null,
+    }),
+    { action: 'none', vibeStatusId: 'vibe-todo', githubOptionId: 'gh-unmapped' }
+  );
+});
+
+test('first status sync pushes only when the project item has no status', () => {
+  assert.deepEqual(
+    decideGithubProjectStatusSync({
+      statusMappings: STATUS_MAPPINGS,
+      vibeStatusId: 'vibe-todo',
+      syncedVibeStatusId: null,
+      githubOptionId: null,
+      syncedGithubOptionId: null,
+    }),
+    { action: 'push', vibeStatusId: 'vibe-todo', githubOptionId: 'gh-todo' }
+  );
+});
+
+test('established links keep bidirectional status precedence', () => {
+  assert.deepEqual(
+    decideGithubProjectStatusSync({
+      statusMappings: STATUS_MAPPINGS,
+      vibeStatusId: 'vibe-done',
+      syncedVibeStatusId: 'vibe-todo',
+      githubOptionId: 'gh-todo',
+      syncedGithubOptionId: 'gh-todo',
+    }),
+    { action: 'push', vibeStatusId: 'vibe-done', githubOptionId: 'gh-done' }
+  );
+  assert.deepEqual(
+    decideGithubProjectStatusSync({
+      statusMappings: STATUS_MAPPINGS,
+      vibeStatusId: 'vibe-todo',
+      syncedVibeStatusId: 'vibe-todo',
+      githubOptionId: 'gh-done',
+      syncedGithubOptionId: 'gh-todo',
+    }),
+    { action: 'adopt', vibeStatusId: 'vibe-done', githubOptionId: 'gh-done' }
+  );
+  assert.deepEqual(
+    decideGithubProjectStatusSync({
+      statusMappings: STATUS_MAPPINGS,
+      vibeStatusId: 'vibe-todo',
+      syncedVibeStatusId: 'vibe-todo',
+      githubOptionId: 'gh-todo',
+      syncedGithubOptionId: 'gh-todo',
+    }),
+    { action: 'none', vibeStatusId: 'vibe-todo', githubOptionId: 'gh-todo' }
+  );
+});
+
+test('seeding poll imports nothing and seeds every source', () => {
+  const candidates = [{ number: 1 }, { number: 2, __projectItem: true }];
+  assert.deepEqual(
+    selectGithubImportCandidates({ candidates, seeding: true }),
+    {
+      importCandidates: [],
+      seedOnly: candidates,
+    }
+  );
+  assert.deepEqual(
+    selectGithubImportCandidates({ candidates, seeding: false }),
+    { importCandidates: candidates, seedOnly: [] }
+  );
 });

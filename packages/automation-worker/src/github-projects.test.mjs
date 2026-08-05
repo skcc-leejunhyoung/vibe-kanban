@@ -26,6 +26,8 @@ test('loads repository issues from every selected Project V2 item page', async (
                 body: null,
                 updatedAt: '2026-08-04T00:00:00Z',
                 repository: { nameWithOwner: 'acme/repo' },
+                author: { login: 'me' },
+                assignees: { nodes: [{ login: 'me' }] },
                 milestone: {
                   number: 2,
                   title: 'M2',
@@ -56,13 +58,110 @@ test('loads repository issues from every selected Project V2 item page', async (
     async (_connector, _query, variables) => {
       calls.push(variables);
       return pages.shift();
-    }
+    },
+    { login: 'me', filter: 'assigned', state: 'open' }
   );
   assert.equal(calls.length, 2);
   assert.equal(issues[0].number, 7);
   assert.equal(issues[0].milestone.number, 2);
   assert.equal(issues[0].__projectItem, true);
   assert.equal(issues[0].project_item_id, 'item-1');
+  assert.deepEqual(issues[0].assignees, [{ login: 'me' }]);
+  assert.deepEqual(issues[0].user, { login: 'me' });
+});
+
+function projectItemPage(nodes) {
+  return {
+    node: { items: { pageInfo: { hasNextPage: false }, nodes } },
+  };
+}
+
+function projectItem(number, overrides = {}) {
+  return {
+    id: `item-${number}`,
+    content: {
+      id: `issue-${number}`,
+      number,
+      title: `Issue ${number}`,
+      url: `https://github.test/acme/repo/issues/${number}`,
+      state: 'OPEN',
+      body: null,
+      updatedAt: '2026-08-04T00:00:00Z',
+      repository: { nameWithOwner: 'acme/repo' },
+      author: { login: 'someone-else' },
+      assignees: { nodes: [{ login: 'someone-else' }] },
+      milestone: null,
+      ...overrides,
+    },
+  };
+}
+
+test('imports only the connector user own project items', async () => {
+  // 프로젝트 아이템은 REST 폴링과 같은 소유자 술어로 좁힌다. 무스코프로 끌어오면
+  // 남의 이슈까지 보드로 들어와 상태 역푸시로 프로젝트 전체를 덮어쓴다(#5603 회귀).
+  const cases = [
+    { filter: 'assigned', mine: { assignees: { nodes: [{ login: 'me' }] } } },
+    { filter: 'created', mine: { author: { login: 'me' } } },
+    { filter: 'mentioned', mine: { author: { login: 'me' } } },
+  ];
+  for (const { filter, mine } of cases) {
+    const issues = await loadGithubProjectIssues(
+      { type: 'github' },
+      'project-1',
+      'acme/repo',
+      async () => projectItemPage([projectItem(1), projectItem(2, mine)]),
+      { login: 'me', filter, state: 'open' }
+    );
+    assert.deepEqual(
+      issues.map((issue) => issue.number),
+      [2],
+      `filter=${filter}`
+    );
+  }
+});
+
+test('imports no project items when the poll scope has no login', async () => {
+  const issues = await loadGithubProjectIssues(
+    { type: 'github' },
+    'project-1',
+    'acme/repo',
+    async () =>
+      projectItemPage([
+        projectItem(1, { assignees: { nodes: [{ login: 'me' }] } }),
+      ]),
+    { filter: 'assigned', state: 'open' }
+  );
+  assert.deepEqual(issues, []);
+});
+
+test('applies the connector state filter to project items', async () => {
+  const nodes = [
+    projectItem(1, {
+      state: 'CLOSED',
+      assignees: { nodes: [{ login: 'me' }] },
+    }),
+    projectItem(2, { assignees: { nodes: [{ login: 'me' }] } }),
+  ];
+  const load = (state) =>
+    loadGithubProjectIssues(
+      { type: 'github' },
+      'project-1',
+      'acme/repo',
+      async () => projectItemPage(nodes),
+      { login: 'me', filter: 'assigned', state }
+    );
+  assert.deepEqual(
+    (await load('open')).map((i) => i.number),
+    [2]
+  );
+  assert.deepEqual(
+    (await load('closed')).map((i) => i.number),
+    [1]
+  );
+  assert.deepEqual(
+    (await load('all')).map((i) => i.number),
+    [1, 2]
+  );
 });
 
 test('queries projects for both organization and user owners', async () => {

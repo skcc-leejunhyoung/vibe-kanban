@@ -109,7 +109,8 @@ export function selectGithubPollCandidates({
   const batchIds = new Set();
   let cursor = latest;
   for (const issue of Array.isArray(items) ? items : []) {
-    if (issue.updated_at && issue.updated_at > cursor) cursor = issue.updated_at;
+    if (issue.updated_at && issue.updated_at > cursor)
+      cursor = issue.updated_at;
     // PRs from the assigned-issue query are dropped unless includePullRequests;
     // PRs surfaced by the review-requested search are always kept.
     if (issue.pull_request && !issue.__reviewPr && !includePullRequests)
@@ -132,6 +133,71 @@ export function selectGithubPollCandidates({
     candidates.push(issue);
   }
   return { candidates, latest: cursor };
+}
+
+// The first poll only seeds the dedup sets so enabling a connector never floods
+// the board with an existing backlog. Project items are no exception: exempting
+// them made seeding import the entire board — the one moment the guard matters
+// most. Set `backfill:true` to import the backlog deliberately instead.
+export function selectGithubImportCandidates({ candidates, seeding }) {
+  const items = Array.isArray(candidates) ? candidates : [];
+  if (!seeding) return { importCandidates: items, seedOnly: [] };
+  return { importCandidates: [], seedOnly: items };
+}
+
+// Resolve which side of a project Status wins. A link that has never synced
+// (`syncedVibeStatusId == null`) adopts whatever GitHub already shows — pushing
+// the Vibe import column instead would overwrite the board for every imported
+// issue at once. Established links keep the existing last-writer precedence.
+export function decideGithubProjectStatusSync({
+  statusMappings = [],
+  vibeStatusId,
+  syncedVibeStatusId = null,
+  githubOptionId = null,
+  syncedGithubOptionId = null,
+}) {
+  const mappings = Array.isArray(statusMappings) ? statusMappings : [];
+  const vibeMapping = mappings.find((m) => m.vibeStatusId === vibeStatusId);
+  const githubMapping = mappings.find(
+    (m) => m.githubOptionId === githubOptionId
+  );
+  const unchanged = { action: 'none', vibeStatusId, githubOptionId };
+
+  if (syncedVibeStatusId == null) {
+    // Never overwrite a status the board already carries, mapped or not.
+    if (githubOptionId) {
+      return githubMapping
+        ? {
+            action: 'adopt',
+            vibeStatusId: githubMapping.vibeStatusId,
+            githubOptionId,
+          }
+        : unchanged;
+    }
+    return vibeMapping
+      ? {
+          action: 'push',
+          vibeStatusId,
+          githubOptionId: vibeMapping.githubOptionId,
+        }
+      : unchanged;
+  }
+
+  if (vibeMapping && vibeStatusId !== syncedVibeStatusId) {
+    return {
+      action: 'push',
+      vibeStatusId,
+      githubOptionId: vibeMapping.githubOptionId,
+    };
+  }
+  if (githubMapping && githubOptionId !== syncedGithubOptionId) {
+    return {
+      action: 'adopt',
+      vibeStatusId: githubMapping.vibeStatusId,
+      githubOptionId,
+    };
+  }
+  return unchanged;
 }
 
 // Mark an imported/seeded issue in both dedup sets so subsequent polls skip it

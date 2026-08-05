@@ -36,6 +36,8 @@ export const GITHUB_PROJECT_ITEMS_QUERY = `query($project:ID!,$after:String) {
             ... on Issue {
               id number title url state body updatedAt
               repository { nameWithOwner }
+              author { login }
+              assignees(first:20) { nodes { login } }
               milestone {
                 number title dueOn state closedAt updatedAt
               }
@@ -47,13 +49,39 @@ export const GITHUB_PROJECT_ITEMS_QUERY = `query($project:ID!,$after:String) {
   }
 }`;
 
+// A Project board holds the whole team's issues, so the project source must
+// reproduce the REST poll's ownership predicate. Without it a single poll
+// imports everyone's issues and the status sync pushes the importing user's
+// default column onto every board item.
+export function ownsGithubProjectIssue(issue, login, filter) {
+  const me = String(login || '').toLowerCase();
+  if (!me) return false;
+  const author = String(issue?.author?.login || '').toLowerCase();
+  const assignees = (issue?.assignees?.nodes || []).map((node) =>
+    String(node?.login || '').toLowerCase()
+  );
+  if (filter === 'created') return author === me;
+  // Project items carry no mention data, so `mentioned` cannot be reproduced.
+  // Narrow it to issues that are unambiguously the user's own instead of
+  // falling back to "import everything".
+  if (filter === 'mentioned') return author === me || assignees.includes(me);
+  // 'assigned' and any unknown filter — mirrors the REST default.
+  return assignees.includes(me);
+}
+
 export async function loadGithubProjectIssues(
   connector,
   projectId,
   repository,
-  requestGraphql
+  requestGraphql,
+  scope = {}
 ) {
   const expectedRepository = String(repository).toLowerCase();
+  const login = String(scope.login || '');
+  // Fail closed: an unscoped load would import other people's issues.
+  if (!login) return [];
+  const filter = String(scope.filter || 'assigned');
+  const stateFilter = String(scope.state || 'open').toLowerCase();
   const issues = [];
   let after = null;
   do {
@@ -71,6 +99,13 @@ export async function loadGithubProjectIssues(
       ) {
         continue;
       }
+      if (!ownsGithubProjectIssue(issue, login, filter)) continue;
+      if (
+        stateFilter !== 'all' &&
+        String(issue.state || '').toLowerCase() !== stateFilter
+      ) {
+        continue;
+      }
       issues.push({
         id: issue.id,
         node_id: issue.id,
@@ -80,7 +115,10 @@ export async function loadGithubProjectIssues(
         state: String(issue.state || '').toLowerCase(),
         body: issue.body ?? null,
         updated_at: issue.updatedAt,
-        assignees: [],
+        user: issue.author?.login ? { login: issue.author.login } : null,
+        assignees: (issue.assignees?.nodes || [])
+          .filter((node) => node?.login)
+          .map((node) => ({ login: node.login })),
         labels: [],
         milestone: issue.milestone
           ? {

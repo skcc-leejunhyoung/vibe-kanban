@@ -13,6 +13,7 @@ import {
   backfillLegacyGithubIssueLinks,
   decideGithubMilestoneSync,
   decideGithubParentSync,
+  decideGithubProjectStatusSync,
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
   githubIssueSyncVibeConnectorId,
@@ -21,6 +22,7 @@ import {
   normalizeOptionalTimestamp,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
+  selectGithubImportCandidates,
   selectGithubPollCandidates,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
@@ -1207,11 +1209,14 @@ async function pollGithub(connector) {
   ];
   for (const projectId of projectIds) {
     items = [
+      // Scoped exactly like the REST poll above — a Project board also holds
+      // other people's issues, which must never be imported or written to.
       ...(await loadGithubProjectIssues(
         connector,
         projectId,
         repository,
-        githubGraphql
+        githubGraphql,
+        { login, filter, state: config.state || 'open' }
       )),
       ...items,
     ];
@@ -1226,13 +1231,11 @@ async function pollGithub(connector) {
   });
   latest = candidateLatest;
 
-  const importCandidates = seeding
-    ? candidates.filter((issue) => issue.__projectItem)
-    : candidates;
-  if (seeding) {
-    for (const issue of candidates.filter((issue) => !issue.__projectItem))
-      markGithubIssueSeen(issue, seen, seenNumbers);
-  }
+  const { importCandidates, seedOnly } = selectGithubImportCandidates({
+    candidates,
+    seeding,
+  });
+  for (const issue of seedOnly) markGithubIssueSeen(issue, seen, seenNumbers);
   if (importCandidates.length) {
     // REST omits the parent link; GraphQL has it. Resolve each new issue's
     // parent, then import parents before children so a child can link to its
@@ -1892,16 +1895,44 @@ async function linkGithubIssueOnce(input, operationKey) {
     await persistState();
   }
   const projectItemId = operation.projectItemId || null;
-  const statusMapping = (config.statusMappings || []).find(
-    (mapping) => mapping.vibeStatusId === effectiveInput.statusId
-  );
-  if (shouldSyncGithubProjectStatus(config) && statusMapping && projectItemId) {
-    await updateGithubProjectStatus(
+  // A brand new link has no synced baseline, so the board's existing Status is
+  // the source of truth. Pushing the Vibe import column here is what rewrote a
+  // whole project to one column when the poll imported an existing backlog.
+  let syncedStatusOptionId = null;
+  let syncedVibeStatusId = effectiveInput.statusId || null;
+  if (shouldSyncGithubProjectStatus(config) && projectItemId) {
+    const currentOptionId = await githubProjectStatusOption(
       github,
-      config,
       projectItemId,
-      statusMapping.githubOptionId
+      config.githubStatusFieldId
     );
+    const decision = decideGithubProjectStatusSync({
+      statusMappings: config.statusMappings,
+      vibeStatusId: effectiveInput.statusId,
+      syncedVibeStatusId: null,
+      githubOptionId: currentOptionId,
+      syncedGithubOptionId: null,
+    });
+    if (decision.action === 'push') {
+      await updateGithubProjectStatus(
+        github,
+        config,
+        projectItemId,
+        decision.githubOptionId
+      );
+    } else if (
+      decision.action === 'adopt' &&
+      decision.vibeStatusId !== effectiveInput.statusId
+    ) {
+      await vibeApi(
+        vibe,
+        'PATCH',
+        `/v1/issues/${encodeURIComponent(effectiveInput.issueId)}`,
+        { status_id: decision.vibeStatusId }
+      );
+    }
+    syncedStatusOptionId = decision.githubOptionId;
+    syncedVibeStatusId = decision.vibeStatusId || null;
   }
 
   const repository = `${githubConfig.owner}/${githubConfig.repo}`;
@@ -1923,10 +1954,8 @@ async function linkGithubIssueOnce(input, operationKey) {
       effectiveInput.description == null
         ? null
         : String(effectiveInput.description),
-    synced_vibe_status_id: effectiveInput.statusId || null,
-    synced_github_status_option_id: shouldSyncGithubProjectStatus(config)
-      ? statusMapping?.githubOptionId || null
-      : null,
+    synced_vibe_status_id: syncedVibeStatusId,
+    synced_github_status_option_id: syncedStatusOptionId,
     synced_parent_issue_id: null,
     synced_milestone_id: null,
     synced_github_milestone_number: null,
@@ -2338,33 +2367,35 @@ async function reconcileGithubIssueLink(
       link.project_item_id,
       config.githubStatusFieldId
     );
-    const vibeMapping = (config.statusMappings || []).find(
-      (mapping) => mapping.vibeStatusId === vibeIssue.status_id
-    );
-    const githubMapping = (config.statusMappings || []).find(
-      (mapping) => mapping.githubOptionId === githubStatusOption
-    );
-    if (vibeMapping && vibeIssue.status_id !== link.synced_vibe_status_id) {
+    // Links written before a baseline existed (or by a legacy import) adopt the
+    // board value instead of pushing the Vibe column back over it.
+    const decision = decideGithubProjectStatusSync({
+      statusMappings: config.statusMappings,
+      vibeStatusId: vibeIssue.status_id,
+      syncedVibeStatusId: link.synced_vibe_status_id ?? null,
+      githubOptionId: githubStatusOption,
+      syncedGithubOptionId: link.synced_github_status_option_id ?? null,
+    });
+    if (decision.action === 'push') {
       await updateGithubProjectStatus(
         github,
         config,
         link.project_item_id,
-        vibeMapping.githubOptionId
+        decision.githubOptionId
       );
-      githubStatusOption = vibeMapping.githubOptionId;
-    } else if (
-      githubMapping &&
-      githubStatusOption !== link.synced_github_status_option_id
-    ) {
-      await vibeApi(
-        vibe,
-        'PATCH',
-        `/v1/issues/${encodeURIComponent(vibeIssue.id)}`,
-        {
-          status_id: githubMapping.vibeStatusId,
-        }
-      );
-      vibeIssue.status_id = githubMapping.vibeStatusId;
+      githubStatusOption = decision.githubOptionId;
+    } else if (decision.action === 'adopt') {
+      if (decision.vibeStatusId !== vibeIssue.status_id) {
+        await vibeApi(
+          vibe,
+          'PATCH',
+          `/v1/issues/${encodeURIComponent(vibeIssue.id)}`,
+          {
+            status_id: decision.vibeStatusId,
+          }
+        );
+      }
+      vibeIssue.status_id = decision.vibeStatusId;
     }
   }
 
