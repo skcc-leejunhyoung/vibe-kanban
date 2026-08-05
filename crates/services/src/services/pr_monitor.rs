@@ -43,6 +43,16 @@ impl PrMonitorError {
     }
 }
 
+/// Poll interval (seconds) for the PR monitor loop, overridable via
+/// `PR_MONITOR_POLL_INTERVAL_SECS` (defaults to 60).
+fn pr_monitor_poll_interval_secs() -> u64 {
+    std::env::var("PR_MONITOR_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(60)
+}
+
 /// Service to monitor PRs and update task status when they are merged
 pub struct PrMonitorService<C: ContainerService> {
     db: DBService,
@@ -61,7 +71,7 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
     ) -> tokio::task::JoinHandle<()> {
         let service = Self {
             db,
-            poll_interval: Duration::from_secs(60),
+            poll_interval: Duration::from_secs(pr_monitor_poll_interval_secs()),
             container,
             remote_client,
             sync_notify,

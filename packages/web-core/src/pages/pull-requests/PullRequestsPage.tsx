@@ -50,7 +50,10 @@ import {
   type PullRequestFilterState,
   type PullRequestUpdatedFilter,
 } from './pullRequestFilters';
-import { pullRequestSummariesQueryOptions } from './pullRequestSummariesQuery';
+import {
+  pullRequestSummariesQueryOptions,
+  PR_QUERY_STALE_TIME_MS,
+} from './pullRequestSummariesQuery';
 import type { MergeStatus, PullRequestSummary } from 'shared/types';
 import type { Issue, PullRequestIssue, Workspace } from 'shared/remote-types';
 
@@ -252,7 +255,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const pullRequestsQuery = useQuery({
     ...pullRequestSummariesQueryOptions(filters.repository, filters.involvesMe),
     enabled: filters.repository !== 'all',
-    staleTime: 5 * 60_000,
+    staleTime: PR_QUERY_STALE_TIME_MS,
     gcTime: 60 * 60_000,
   });
   const refreshPullRequests = useMutation({
@@ -363,7 +366,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
           }
           return result.data;
         },
-        staleTime: 5 * 60_000,
+        staleTime: PR_QUERY_STALE_TIME_MS,
         gcTime: 30 * 60_000,
       }),
     [queryClient]

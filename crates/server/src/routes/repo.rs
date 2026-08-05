@@ -27,7 +27,16 @@ use crate::{
     routes::workspaces::pr::{GetPrCommentsError, PrCommentsResponse},
 };
 
-const PULL_REQUEST_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+/// Cache TTL for PR list/detail lookups, overridable via
+/// `PULL_REQUEST_CACHE_TTL_SECS` (defaults to 60).
+fn pull_request_cache_ttl() -> Duration {
+    let secs = std::env::var("PULL_REQUEST_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(60);
+    Duration::from_secs(secs)
+}
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct PullRequestSummariesCacheKey {
@@ -41,12 +50,12 @@ type PullRequestSummariesCache =
 
 fn pull_request_summaries_cache() -> &'static PullRequestSummariesCache {
     static CACHE: OnceLock<PullRequestSummariesCache> = OnceLock::new();
-    CACHE.get_or_init(|| PullRequestCache::new(PULL_REQUEST_CACHE_TTL))
+    CACHE.get_or_init(|| PullRequestCache::new(pull_request_cache_ttl()))
 }
 
 fn pull_request_detail_cache() -> &'static PullRequestCache<String, PullRequestDetail> {
     static CACHE: OnceLock<PullRequestCache<String, PullRequestDetail>> = OnceLock::new();
-    CACHE.get_or_init(|| PullRequestCache::new(PULL_REQUEST_CACHE_TTL))
+    CACHE.get_or_init(|| PullRequestCache::new(pull_request_cache_ttl()))
 }
 
 #[derive(serde::Deserialize)]

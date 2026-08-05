@@ -178,7 +178,7 @@ const defaultState = {
         repo: '',
         filter: 'assigned',
         state: 'open',
-        intervalSeconds: 120,
+        intervalSeconds: 60,
         cursorTs: '',
         seenIds: [],
         limit: 50,
