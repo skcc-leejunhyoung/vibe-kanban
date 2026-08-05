@@ -161,11 +161,12 @@ export async function resolveCreateModeBootstrap({
     }
 
     if (scratchData.linked_issue) {
-      // The GitHub link (node id + repo) is persisted inside the
-      // `github_linked_branch` working-branch variant, not the linked_issue
-      // row — recover it here so the branch selector can offer the toggle even
-      // after the user switches away and back.
-      const githubLinkedBranch =
+      // Recover the GitHub link from the linked-issue row so the branch
+      // selector can offer the toggle regardless of the current working-branch
+      // mode (i.e. even after the user switched away to auto/new/existing).
+      // Fall back to the `github_linked_branch` variant for older drafts that
+      // predate persisting the link on the linked-issue row.
+      const legacyGithubLinkedBranch =
         scratchData.working_branch?.mode === 'github_linked_branch'
           ? scratchData.working_branch
           : null;
@@ -174,8 +175,14 @@ export async function resolveCreateModeBootstrap({
         simpleId: scratchData.linked_issue.simple_id || undefined,
         title: scratchData.linked_issue.title || undefined,
         remoteProjectId: scratchData.linked_issue.remote_project_id,
-        githubNodeId: githubLinkedBranch?.issue_node_id ?? null,
-        githubRepository: githubLinkedBranch?.repository ?? null,
+        githubNodeId:
+          scratchData.linked_issue.github_node_id ??
+          legacyGithubLinkedBranch?.issue_node_id ??
+          null,
+        githubRepository:
+          scratchData.linked_issue.github_repository ??
+          legacyGithubLinkedBranch?.repository ??
+          null,
       };
     }
 

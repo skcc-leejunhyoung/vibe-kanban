@@ -51,7 +51,14 @@ working_branch: WorkingBranchInput | null, };
 
 export type DraftWorkspaceAttachment = { id: string, file_path: string, original_name: string, mime_type: string | null, size_bytes: bigint, };
 
-export type DraftWorkspaceLinkedIssue = { issue_id: string, simple_id: string, title: string, remote_project_id: string, };
+export type DraftWorkspaceLinkedIssue = { issue_id: string, simple_id: string, title: string, remote_project_id: string,
+/**
+ * GitHub link (node id + `owner/repo`) when the issue is mapped to a
+ * GitHub issue. Persisted independently of the working-branch mode so the
+ * "GitHub linked branch" toggle survives switching to another mode and
+ * reloading the draft. Absent for older drafts / non-GitHub issues.
+ */
+github_node_id: string | null, github_repository: string | null, };
 
 export type DraftWorkspaceRepo = { repo_id: string, target_branch: string,
 /**

@@ -217,6 +217,14 @@ pub struct DraftWorkspaceLinkedIssue {
     pub simple_id: String,
     pub title: String,
     pub remote_project_id: String,
+    /// GitHub link (node id + `owner/repo`) when the issue is mapped to a
+    /// GitHub issue. Persisted independently of the working-branch mode so the
+    /// "GitHub linked branch" toggle survives switching to another mode and
+    /// reloading the draft. Absent for older drafts / non-GitHub issues.
+    #[serde(default)]
+    pub github_node_id: Option<String>,
+    #[serde(default)]
+    pub github_repository: Option<String>,
 }
 
 /// Uploaded attachment stored in a draft workspace

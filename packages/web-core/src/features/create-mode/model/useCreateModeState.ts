@@ -582,6 +582,10 @@ export function useCreateModeState({
             simple_id: state.linkedIssue.simpleId ?? '',
             title: state.linkedIssue.title ?? '',
             remote_project_id: state.linkedIssue.remoteProjectId,
+            // Keep the GitHub link on the linked-issue row so the linked-branch
+            // toggle can be restored regardless of the current working-branch mode.
+            github_node_id: state.linkedIssue.githubNodeId ?? null,
+            github_repository: state.linkedIssue.githubRepository ?? null,
           }
         : null,
       attachments: state.attachments,

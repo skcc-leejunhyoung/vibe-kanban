@@ -140,6 +140,10 @@ export function toDraftWorkspaceData(
           simple_id: linkedIssue.simpleId ?? '',
           title: linkedIssue.title ?? '',
           remote_project_id: linkedIssue.remoteProjectId,
+          // Persist the GitHub link independently of the working-branch mode so
+          // the "GitHub linked branch" toggle survives switching away + reload.
+          github_node_id: linkedIssue.githubNodeId ?? null,
+          github_repository: linkedIssue.githubRepository ?? null,
         }
       : null,
     attachments: [],

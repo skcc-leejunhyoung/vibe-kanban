@@ -87,6 +87,12 @@ describe('toDraftWorkspaceData', () => {
       issue_node_id: 'I_node_1',
       repository: 'skcc-ai/c2',
     });
+    // The link is also persisted on the linked-issue row so the toggle can be
+    // restored after switching to another working-branch mode and reloading.
+    expect(draft.linked_issue).toMatchObject({
+      github_node_id: 'I_node_1',
+      github_repository: 'skcc-ai/c2',
+    });
   });
 
   it('leaves the working branch unset (auto) without a GitHub link', () => {
