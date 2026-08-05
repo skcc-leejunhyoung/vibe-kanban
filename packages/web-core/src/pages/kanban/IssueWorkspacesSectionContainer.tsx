@@ -16,6 +16,7 @@ import {
   buildLocalWorkspaceIdSet,
   buildWorkspaceCreateInitialState,
   buildWorkspaceCreatePrompt,
+  resolveGithubLinkedBranchSource,
 } from '@/shared/lib/workspaceCreateState';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { DeleteWorkspaceDialog } from '@vibe/ui/components/DeleteWorkspaceDialog';
@@ -49,6 +50,7 @@ export function IssueWorkspacesSectionContainer({
     getIssue,
     getWorkspacesForIssue,
     issues,
+    githubIssueLinks,
     isLoading: projectLoading,
   } = useProjectContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
@@ -168,7 +170,11 @@ export function IssueWorkspacesSectionContainer({
     const createState = buildWorkspaceCreateInitialState({
       prompt: initialPrompt,
       defaults,
-      linkedIssue: buildLinkedIssueCreateState(issue, projectId),
+      linkedIssue: buildLinkedIssueCreateState(
+        issue,
+        projectId,
+        resolveGithubLinkedBranchSource(githubIssueLinks, issueId)
+      ),
     });
 
     const draftId = await openWorkspaceCreateFromState(createState, {
@@ -194,6 +200,7 @@ export function IssueWorkspacesSectionContainer({
     activeWorkspaces,
     archivedWorkspaces,
     workspaces,
+    githubIssueLinks,
     t,
   ]);
 

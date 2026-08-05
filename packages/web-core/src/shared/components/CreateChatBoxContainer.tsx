@@ -183,8 +183,10 @@ export function CreateChatBoxContainer({
 
   // `auto` is always fine; `existing` just needs a picked (non-empty) branch;
   // `new` needs a name that passes validation (which also rejects empty).
+  // `auto` and `github_linked_branch` carry no free-form name to validate.
   const isWorkingBranchValid =
-    workingBranch.mode === 'auto'
+    workingBranch.mode === 'auto' ||
+    workingBranch.mode === 'github_linked_branch'
       ? true
       : workingBranch.mode === 'existing'
         ? workingBranch.name.trim().length > 0

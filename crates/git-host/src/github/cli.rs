@@ -356,6 +356,70 @@ struct GhPageInfo {
     has_next_page: bool,
 }
 
+/// GraphQL response for `node(id) { ... on Issue { linkedBranches } }`.
+#[derive(Deserialize)]
+struct GhLinkedBranchesResponse {
+    data: GhLinkedBranchesData,
+}
+
+#[derive(Deserialize)]
+struct GhLinkedBranchesData {
+    node: Option<GhLinkedBranchesNode>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GhLinkedBranchesNode {
+    #[serde(default)]
+    linked_branches: GhLinkedBranchConnection,
+}
+
+#[derive(Deserialize, Default)]
+struct GhLinkedBranchConnection {
+    #[serde(default)]
+    nodes: Vec<GhLinkedBranchNode>,
+}
+
+#[derive(Deserialize)]
+struct GhLinkedBranchNode {
+    #[serde(rename = "ref")]
+    branch_ref: Option<GhBranchRef>,
+}
+
+#[derive(Deserialize)]
+struct GhBranchRef {
+    name: String,
+}
+
+/// GraphQL response for the `createLinkedBranch` mutation.
+#[derive(Deserialize)]
+struct GhCreateLinkedBranchResponse {
+    data: Option<GhCreateLinkedBranchData>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhCreateLinkedBranchData {
+    create_linked_branch: Option<GhCreateLinkedBranchPayload>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhCreateLinkedBranchPayload {
+    linked_branch: Option<GhLinkedBranchNode>,
+}
+
+/// REST response for `repos/{owner}/{repo}/git/ref/heads/{branch}`.
+#[derive(Deserialize)]
+struct GhRefObjectResponse {
+    object: GhRefObject,
+}
+
+#[derive(Deserialize)]
+struct GhRefObject {
+    sha: String,
+}
+
 #[derive(Debug, Error)]
 pub enum GhCliError {
     #[error("GitHub CLI (`gh`) executable not found or not runnable")]
@@ -907,6 +971,95 @@ impl GhCli {
         )?;
         Ok(())
     }
+
+    /// List the branch names linked to a GitHub issue's "Development" section,
+    /// looked up by the issue's GraphQL node id. Note: a linked branch that has
+    /// been turned into a PR no longer appears here (GitHub moves it to the
+    /// issue's timeline), so an empty result does not prove no branch was ever
+    /// linked.
+    pub fn list_issue_linked_branches(
+        &self,
+        issue_node_id: &str,
+        hostname: Option<&str>,
+    ) -> Result<Vec<String>, GhCliError> {
+        const QUERY: &str = r#"query($id:ID!){node(id:$id){... on Issue{linkedBranches(first:50){nodes{ref{name}}}}}}"#;
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={QUERY}"),
+            "-f".to_string(),
+            format!("id={issue_node_id}"),
+        ];
+        if let Some(host) = hostname {
+            args.push("--hostname".to_string());
+            args.push(host.to_string());
+        }
+        let raw = self.run(args, None)?;
+        Self::parse_issue_linked_branches(&raw)
+    }
+
+    /// Create a branch linked to a GitHub issue — the API equivalent of the
+    /// "Create a branch for this issue" button — forked from `oid`. Returns the
+    /// created branch's ref name. `name` overrides GitHub's default
+    /// `<number>-<title-slug>` name when supplied.
+    pub fn create_issue_linked_branch(
+        &self,
+        issue_node_id: &str,
+        oid: &str,
+        name: Option<&str>,
+        hostname: Option<&str>,
+    ) -> Result<String, GhCliError> {
+        // Two query shapes so an absent name is not sent as an explicit null.
+        const MUTATION_WITH_NAME: &str = r#"mutation($issueId:ID!,$oid:GitObjectID!,$name:String){createLinkedBranch(input:{issueId:$issueId,oid:$oid,name:$name}){linkedBranch{ref{name}}}}"#;
+        const MUTATION_NO_NAME: &str = r#"mutation($issueId:ID!,$oid:GitObjectID!){createLinkedBranch(input:{issueId:$issueId,oid:$oid}){linkedBranch{ref{name}}}}"#;
+
+        let query = if name.is_some() {
+            MUTATION_WITH_NAME
+        } else {
+            MUTATION_NO_NAME
+        };
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={query}"),
+            "-f".to_string(),
+            format!("issueId={issue_node_id}"),
+            "-f".to_string(),
+            format!("oid={oid}"),
+        ];
+        if let Some(name) = name {
+            args.push("-f".to_string());
+            args.push(format!("name={name}"));
+        }
+        if let Some(host) = hostname {
+            args.push("--hostname".to_string());
+            args.push(host.to_string());
+        }
+        let raw = self.run(args, None)?;
+        Self::parse_created_linked_branch(&raw)
+    }
+
+    /// Resolve the current tip commit SHA of `branch` on the remote (the base a
+    /// linked branch is forked from — i.e. "latest origin/<branch>") via the
+    /// REST git-refs API, without needing a local fetch first.
+    pub fn resolve_remote_branch_oid(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        hostname: Option<&str>,
+    ) -> Result<String, GhCliError> {
+        let endpoint = format!("repos/{owner}/{repo}/git/ref/heads/{branch}");
+        let mut args = vec!["api".to_string(), endpoint];
+        if let Some(host) = hostname {
+            args.push("--hostname".to_string());
+            args.push(host.to_string());
+        }
+        let raw = self.run(args, None)?;
+        Self::parse_ref_object_sha(&raw)
+    }
 }
 
 fn pull_request_list_metadata_query(owner: &str, name: &str, numbers: &[i64]) -> String {
@@ -1203,6 +1356,66 @@ mod tests {
         assert!(threads[0].is_resolved);
         assert!(!threads[0].is_outdated);
     }
+
+    #[test]
+    fn parses_issue_linked_branches() {
+        let branches = GhCli::parse_issue_linked_branches(
+            r#"{
+                "data": {
+                    "node": {
+                        "linkedBranches": {
+                            "nodes": [
+                                {"ref": {"name": "123-fix-the-thing"}},
+                                {"ref": {"name": "123-fix-the-thing-2"}}
+                            ]
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(branches, vec!["123-fix-the-thing", "123-fix-the-thing-2"]);
+    }
+
+    #[test]
+    fn parses_empty_issue_linked_branches_when_node_missing() {
+        let branches = GhCli::parse_issue_linked_branches(r#"{"data": {"node": null}}"#).unwrap();
+        assert!(branches.is_empty());
+    }
+
+    #[test]
+    fn parses_created_linked_branch_ref_name() {
+        let name = GhCli::parse_created_linked_branch(
+            r#"{
+                "data": {
+                    "createLinkedBranch": {
+                        "linkedBranch": {"ref": {"name": "42-new-linked-branch"}}
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(name, "42-new-linked-branch");
+    }
+
+    #[test]
+    fn errors_when_created_linked_branch_has_no_ref() {
+        let result = GhCli::parse_created_linked_branch(
+            r#"{"data": {"createLinkedBranch": {"linkedBranch": null}}}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_ref_object_sha() {
+        let sha = GhCli::parse_ref_object_sha(
+            r#"{"ref": "refs/heads/develop", "object": {"sha": "b6a466b91ddcde88", "type": "commit"}}"#,
+        )
+        .unwrap();
+        assert_eq!(sha, "b6a466b91ddcde88");
+    }
 }
 
 impl GhCli {
@@ -1426,5 +1639,52 @@ impl GhCli {
                 is_outdated: thread.is_outdated,
             })
             .collect())
+    }
+
+    fn parse_issue_linked_branches(raw: &str) -> Result<Vec<String>, GhCliError> {
+        let response: GhLinkedBranchesResponse =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse issue linked branches response: {err}; raw: {raw}"
+                ))
+            })?;
+        Ok(response
+            .data
+            .node
+            .unwrap_or_default()
+            .linked_branches
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.branch_ref.map(|r| r.name))
+            .collect())
+    }
+
+    fn parse_created_linked_branch(raw: &str) -> Result<String, GhCliError> {
+        let response: GhCreateLinkedBranchResponse =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse createLinkedBranch response: {err}; raw: {raw}"
+                ))
+            })?;
+        response
+            .data
+            .and_then(|data| data.create_linked_branch)
+            .and_then(|payload| payload.linked_branch)
+            .and_then(|branch| branch.branch_ref)
+            .map(|r| r.name)
+            .ok_or_else(|| {
+                GhCliError::UnexpectedOutput(format!(
+                    "createLinkedBranch did not return a branch ref; raw: {raw}"
+                ))
+            })
+    }
+
+    fn parse_ref_object_sha(raw: &str) -> Result<String, GhCliError> {
+        let response: GhRefObjectResponse = serde_json::from_str(raw.trim()).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!(
+                "Failed to parse git ref response: {err}; raw: {raw}"
+            ))
+        })?;
+        Ok(response.object.sha)
     }
 }

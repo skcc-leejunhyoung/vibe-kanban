@@ -7,13 +7,7 @@ import type {
 } from 'shared/types';
 import type { WorkingBranchSelection } from '@/features/create-mode/model/workingBranch';
 import type { TargetBranchMode } from '@/features/create-mode/model/targetBranch';
-
-interface LinkedIssue {
-  issueId: string;
-  simpleId?: string;
-  title?: string;
-  remoteProjectId: string;
-}
+import type { LinkedIssue } from '@/shared/types/createMode';
 
 export interface CreateModeContextValue {
   repos: Repo[];

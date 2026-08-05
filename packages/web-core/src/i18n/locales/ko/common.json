@@ -565,10 +565,12 @@
       "modes": {
         "auto": "자동 생성",
         "new": "직접 입력",
-        "existing": "기존 브랜치"
+        "existing": "기존 브랜치",
+        "github_linked_branch": "GitHub 연결 브랜치"
       },
       "autoPreviewPrefixed": "{{prefix}}/… (자동)",
       "autoPreviewPlain": "자동 생성",
+      "githubLinkedPreview": "{{repository}}의 이슈 연결 브랜치",
       "newPlaceholder": "예: feature/login",
       "singleRepoOnly": "(단일 레포)",
       "errors": {

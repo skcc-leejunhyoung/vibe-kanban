@@ -554,7 +554,18 @@ target_branch: string,
  */
 create_target_branch: boolean, };
 
-export type WorkingBranchInput = { "mode": "auto" } | { "mode": "new", name: string, } | { "mode": "existing", name: string, };
+export type WorkingBranchInput = { "mode": "auto" } | { "mode": "new", name: string, } | { "mode": "existing", name: string, } | { "mode": "github_linked_branch",
+/**
+ * The GitHub issue's GraphQL node id
+ * (`github_issue_links.github_node_id`).
+ */
+issue_node_id: string,
+/**
+ * The issue's GitHub repository in `owner/repo` form
+ * (`github_issue_links.repository`), used to confirm the local repo
+ * matches before touching its linked branches.
+ */
+repository: string, };
 
 export type PrReviewInput = {
 /**

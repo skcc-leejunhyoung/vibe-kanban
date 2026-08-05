@@ -15,6 +15,7 @@ use db::models::{
 use deployment::Deployment;
 use executors::model_selector::PermissionPolicy;
 use git::GitService;
+use git_host::github::GitHubProvider;
 use services::services::{container::ContainerService, issue_gating, vibe_orchestrator, vibe_tags};
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -236,6 +237,13 @@ async fn resolve_working_branch(
         WorkingBranchInput::Auto => return Ok(None),
         WorkingBranchInput::New { name } => (name, false),
         WorkingBranchInput::Existing { name } => (name, true),
+        // Resolved to an `Existing` selector by `resolve_github_linked_branch`
+        // before this point; never reaches here.
+        WorkingBranchInput::GithubLinkedBranch { .. } => {
+            return Err(ApiError::BadRequest(
+                "GitHub linked branch was not resolved before working-branch setup".to_string(),
+            ));
+        }
     };
 
     let branch = name.trim();
@@ -415,6 +423,120 @@ fn strip_remote_prefix(
     Ok(branch.to_string())
 }
 
+/// Resolve the working branch for a GitHub-issue-linked workspace. When the
+/// issue already has a linked branch, that branch is reused; otherwise a new
+/// branch is created on GitHub — the API equivalent of the "Create a branch for
+/// this issue" button — forked from the repo's target branch tip on the remote.
+/// The branch is then fetched locally and returned as a remote-tracking selector
+/// (`<remote>/<branch>`), which the [`WorkingBranchInput::Existing`] path
+/// materializes into a local working branch. Single-repo only; the repo must be
+/// a clone of the issue's GitHub repository.
+async fn resolve_github_linked_branch(
+    deployment: &DeploymentImpl,
+    repos: &[WorkspaceRepoInput],
+    issue_node_id: &str,
+    repository: &str,
+) -> Result<String, ApiError> {
+    if repos.len() != 1 {
+        return Err(ApiError::BadRequest(
+            "Using the GitHub linked branch is only supported for single-repo workspaces"
+                .to_string(),
+        ));
+    }
+    let repo_input = &repos[0];
+    let repo = Repo::find_by_id(&deployment.db().pool, repo_input.repo_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Repository not found".to_string()))?;
+
+    let git = deployment.git();
+    let remote = git.get_default_remote(&repo.path).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "Could not determine the default remote for '{}': {e}",
+            repo.name
+        ))
+    })?;
+
+    let provider = GitHubProvider::new().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Guard: the checkout must be the GitHub repo the issue lives in, otherwise
+    // the linked branch (and its base commit) would resolve against the wrong
+    // repository.
+    let actual_repo = provider
+        .repo_spec(&remote.url, &repo.path)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if !actual_repo.eq_ignore_ascii_case(repository.trim()) {
+        return Err(ApiError::BadRequest(format!(
+            "Repository '{}' is not a clone of the GitHub issue's repository '{}'",
+            actual_repo,
+            repository.trim()
+        )));
+    }
+
+    // Reuse an existing linked branch when the issue already has one.
+    let existing = provider
+        .list_issue_linked_branches(&remote.url, &repo.path, issue_node_id)
+        .await
+        .map_err(|e| {
+            ApiError::BadRequest(format!(
+                "Failed to query the issue's GitHub linked branches: {e}"
+            ))
+        })?;
+
+    let branch_name = if let Some(name) = existing.into_iter().next() {
+        tracing::info!("Reusing existing GitHub linked branch '{name}' for issue {issue_node_id}");
+        name
+    } else {
+        // Fork a new linked branch from the target branch's tip on the remote.
+        let base = {
+            let requested = repo_input.target_branch.trim();
+            if !requested.is_empty() {
+                requested.to_string()
+            } else {
+                repo.default_target_branch
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|b| !b.is_empty())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(
+                            "No base branch to fork the GitHub linked branch from".to_string(),
+                        )
+                    })?
+                    .to_string()
+            }
+        };
+        let oid = provider
+            .resolve_remote_branch_oid(&remote.url, &repo.path, &base)
+            .await
+            .map_err(|e| {
+                ApiError::BadRequest(format!(
+                    "Failed to resolve base branch '{base}' on the remote: {e}"
+                ))
+            })?;
+        let created = provider
+            .create_issue_linked_branch(&remote.url, &repo.path, issue_node_id, &oid, None)
+            .await
+            .map_err(|e| {
+                ApiError::BadRequest(format!("Failed to create the GitHub linked branch: {e}"))
+            })?;
+        tracing::info!(
+            "Created GitHub linked branch '{created}' for issue {issue_node_id} from {base}@{oid}"
+        );
+        created
+    };
+
+    // The branch now exists on the remote; fetch it so the remote-tracking ref
+    // is present for the Existing path to fork a local tracking branch from.
+    git.fetch_remote(&repo.path, &remote.name).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "Failed to fetch '{}' after resolving the linked branch: {e}",
+            remote.name
+        ))
+    })?;
+
+    Ok(format!("{}/{}", remote.name, branch_name))
+}
+
 async fn create_workspace_with_repos(
     deployment: &DeploymentImpl,
     name: Option<String>,
@@ -436,6 +558,24 @@ async fn create_workspace_with_repos(
         // Default: a working branch forked from each repo's selected target
         // branch — auto-named, or an explicit/existing name per `working_branch`.
         BranchSetup::NewWorktreeBranch => {
+            // A GitHub-issue-linked workspace resolves (or creates) the issue's
+            // linked branch on GitHub, then checks it out like a remote branch.
+            let working_branch = match working_branch {
+                WorkingBranchInput::GithubLinkedBranch {
+                    issue_node_id,
+                    repository,
+                } => {
+                    let selector = resolve_github_linked_branch(
+                        deployment,
+                        &repos,
+                        &issue_node_id,
+                        &repository,
+                    )
+                    .await?;
+                    WorkingBranchInput::Existing { name: selector }
+                }
+                other => other,
+            };
             let branch_override =
                 resolve_working_branch(deployment, &repos, working_branch).await?;
             let mut managed_workspace = deployment

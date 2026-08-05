@@ -5,6 +5,13 @@ export interface LinkedIssue {
   simpleId?: string;
   title?: string;
   remoteProjectId: string;
+  /**
+   * When the issue is mapped to a GitHub issue: the issue's GraphQL node id and
+   * its `owner/repo`. Present only for GitHub-linked issues; enables the
+   * "GitHub linked branch" working-branch mode in create mode.
+   */
+  githubNodeId?: string | null;
+  githubRepository?: string | null;
 }
 
 export interface CreateModeInitialState {

@@ -161,11 +161,21 @@ export async function resolveCreateModeBootstrap({
     }
 
     if (scratchData.linked_issue) {
+      // The GitHub link (node id + repo) is persisted inside the
+      // `github_linked_branch` working-branch variant, not the linked_issue
+      // row — recover it here so the branch selector can offer the toggle even
+      // after the user switches away and back.
+      const githubLinkedBranch =
+        scratchData.working_branch?.mode === 'github_linked_branch'
+          ? scratchData.working_branch
+          : null;
       data.linkedIssue = {
         issueId: scratchData.linked_issue.issue_id,
         simpleId: scratchData.linked_issue.simple_id || undefined,
         title: scratchData.linked_issue.title || undefined,
         remoteProjectId: scratchData.linked_issue.remote_project_id,
+        githubNodeId: githubLinkedBranch?.issue_node_id ?? null,
+        githubRepository: githubLinkedBranch?.repository ?? null,
       };
     }
 

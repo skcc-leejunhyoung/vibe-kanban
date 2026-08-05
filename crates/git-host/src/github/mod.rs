@@ -69,6 +69,91 @@ impl GitHubProvider {
             .map_err(Into::into)
     }
 
+    /// The repository's `owner/repo` spec, resolved from its remote URL. Used to
+    /// confirm a local checkout matches the GitHub repo a linked issue lives in.
+    pub async fn repo_spec(
+        &self,
+        remote_url: &str,
+        repo_path: &Path,
+    ) -> Result<String, GitHostError> {
+        Ok(self
+            .get_repo_info(remote_url, repo_path)
+            .await?
+            .search_repo_spec())
+    }
+
+    /// Branch names linked to a GitHub issue's Development section, by node id.
+    pub async fn list_issue_linked_branches(
+        &self,
+        remote_url: &str,
+        repo_path: &Path,
+        issue_node_id: &str,
+    ) -> Result<Vec<String>, GitHostError> {
+        let hostname = self.get_repo_info(remote_url, repo_path).await?.hostname;
+        let cli = self.gh_cli.clone();
+        let node_id = issue_node_id.to_string();
+        task::spawn_blocking(move || cli.list_issue_linked_branches(&node_id, hostname.as_deref()))
+            .await
+            .map_err(|err| {
+                GitHostError::PullRequest(format!(
+                    "Failed to execute GitHub CLI for listing issue linked branches: {err}"
+                ))
+            })?
+            .map_err(Into::into)
+    }
+
+    /// Create a branch linked to a GitHub issue (forked from `oid`) and return
+    /// its ref name. `name` overrides GitHub's default naming when supplied.
+    pub async fn create_issue_linked_branch(
+        &self,
+        remote_url: &str,
+        repo_path: &Path,
+        issue_node_id: &str,
+        oid: &str,
+        name: Option<String>,
+    ) -> Result<String, GitHostError> {
+        let hostname = self.get_repo_info(remote_url, repo_path).await?.hostname;
+        let cli = self.gh_cli.clone();
+        let node_id = issue_node_id.to_string();
+        let oid = oid.to_string();
+        task::spawn_blocking(move || {
+            cli.create_issue_linked_branch(&node_id, &oid, name.as_deref(), hostname.as_deref())
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::PullRequest(format!(
+                "Failed to execute GitHub CLI for creating issue linked branch: {err}"
+            ))
+        })?
+        .map_err(Into::into)
+    }
+
+    /// Current tip commit SHA of `branch` on the remote (the base to fork a
+    /// linked branch from — "latest origin/<branch>").
+    pub async fn resolve_remote_branch_oid(
+        &self,
+        remote_url: &str,
+        repo_path: &Path,
+        branch: &str,
+    ) -> Result<String, GitHostError> {
+        let repo_info = self.get_repo_info(remote_url, repo_path).await?;
+        let cli = self.gh_cli.clone();
+        let owner = repo_info.owner;
+        let repo_name = repo_info.repo_name;
+        let hostname = repo_info.hostname;
+        let branch = branch.to_string();
+        task::spawn_blocking(move || {
+            cli.resolve_remote_branch_oid(&owner, &repo_name, &branch, hostname.as_deref())
+        })
+        .await
+        .map_err(|err| {
+            GitHostError::Repository(format!(
+                "Failed to execute GitHub CLI for resolving remote branch oid: {err}"
+            ))
+        })?
+        .map_err(Into::into)
+    }
+
     async fn fetch_general_comments(
         &self,
         cli: &GhCli,

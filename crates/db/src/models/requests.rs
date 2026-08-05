@@ -73,6 +73,20 @@ pub enum WorkingBranchInput {
     /// Check out an existing branch with this name instead of creating one
     /// (continue work). Single-repo only; rejected if the branch is missing.
     Existing { name: String },
+    /// Use the GitHub linked branch for the issue mapped to this workspace's
+    /// repo. If the issue already has a linked branch it is checked out;
+    /// otherwise one is created on GitHub (the "Create a branch for this issue"
+    /// equivalent), forked from the repo's target branch tip on the remote.
+    /// Single-repo only; the repo must be a clone of the issue's GitHub repo.
+    GithubLinkedBranch {
+        /// The GitHub issue's GraphQL node id
+        /// (`github_issue_links.github_node_id`).
+        issue_node_id: String,
+        /// The issue's GitHub repository in `owner/repo` form
+        /// (`github_issue_links.repository`), used to confirm the local repo
+        /// matches before touching its linked branches.
+        repository: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

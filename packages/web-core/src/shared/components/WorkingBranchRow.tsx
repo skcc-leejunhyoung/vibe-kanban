@@ -36,27 +36,60 @@ export function WorkingBranchRow() {
   const prefix = config?.git_branch_prefix ?? '';
   const singleRepo = repos.length === 1;
 
+  // The issue's GitHub linked branch is only offered when the linked issue is
+  // mapped to a GitHub issue (node id + repo present) and the workspace is
+  // single-repo (the linked branch lives in one GitHub repo).
+  const githubRepository =
+    linkedIssue?.githubNodeId && linkedIssue?.githubRepository
+      ? linkedIssue.githubRepository
+      : null;
+  const canUseGithubLinkedBranch = Boolean(githubRepository) && singleRepo;
+
   // `auto` defers to the backend, which appends a uuid we can't know here, so
   // the preview is intentionally an approximation rather than the exact name.
   const autoPreview = prefix
     ? t('createMode.workingBranch.autoPreviewPrefixed', { prefix })
     : t('createMode.workingBranch.autoPreviewPlain');
 
-  // Existing-branch reuse is single-repo only. If the repo set grows past one
-  // while an existing branch is selected, fall back to auto so we never submit
-  // a request the backend would reject.
+  // Existing-branch reuse and the GitHub linked branch are single-repo only. If
+  // the repo set grows past one while either is selected, fall back to auto so
+  // we never submit a request the backend would reject. Likewise drop the
+  // GitHub linked branch if the linked-issue GitHub mapping goes away.
   useEffect(() => {
     if (workingBranch.mode === 'existing' && !singleRepo) {
       setWorkingBranch({ mode: 'auto' });
       setNameError(null);
     }
-  }, [singleRepo, workingBranch.mode, setWorkingBranch]);
+    if (
+      workingBranch.mode === 'github_linked_branch' &&
+      !canUseGithubLinkedBranch
+    ) {
+      setWorkingBranch({ mode: 'auto' });
+      setNameError(null);
+    }
+  }, [
+    singleRepo,
+    canUseGithubLinkedBranch,
+    workingBranch.mode,
+    setWorkingBranch,
+  ]);
 
   const selectAuto = useCallback(() => {
     setNameError(null);
     setPickError(null);
     setWorkingBranch({ mode: 'auto' });
   }, [setWorkingBranch]);
+
+  const selectGithubLinkedBranch = useCallback(() => {
+    if (!linkedIssue?.githubNodeId || !linkedIssue?.githubRepository) return;
+    setNameError(null);
+    setPickError(null);
+    setWorkingBranch({
+      mode: 'github_linked_branch',
+      issue_node_id: linkedIssue.githubNodeId,
+      repository: linkedIssue.githubRepository,
+    });
+  }, [setWorkingBranch, linkedIssue]);
 
   // Pre-fill the issue-template name as a suggestion so issue-based naming is
   // one click away, even though `auto` itself no longer applies the template.
@@ -133,6 +166,13 @@ export function WorkingBranchRow() {
               {workingBranch.name}
             </span>
           )}
+          {workingBranch.mode === 'github_linked_branch' && (
+            <span className="block truncate text-sm text-normal">
+              {t('createMode.workingBranch.githubLinkedPreview', {
+                repository: workingBranch.repository,
+              })}
+            </span>
+          )}
         </div>
 
         <DropdownMenu>
@@ -146,6 +186,19 @@ export function WorkingBranchRow() {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {githubRepository && (
+              <DropdownMenuItem
+                onClick={selectGithubLinkedBranch}
+                disabled={!canUseGithubLinkedBranch}
+              >
+                {t('createMode.workingBranch.modes.github_linked_branch')}
+                {!singleRepo && (
+                  <span className="ml-half text-xs text-low">
+                    {t('createMode.workingBranch.singleRepoOnly')}
+                  </span>
+                )}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={selectAuto}>
               {t('createMode.workingBranch.modes.auto')}
             </DropdownMenuItem>

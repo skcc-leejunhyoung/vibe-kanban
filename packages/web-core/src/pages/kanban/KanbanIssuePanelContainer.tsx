@@ -34,6 +34,7 @@ import {
   buildLinkedIssueCreateState,
   buildWorkspaceCreateInitialState,
   buildWorkspaceCreatePrompt,
+  resolveGithubLinkedBranchSource,
 } from '@/shared/lib/workspaceCreateState';
 import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import {
@@ -245,9 +246,7 @@ export function KanbanIssuePanelContainer({
         // optimistic insert aligns with the row Electric streams back instead
         // of briefly showing two milestone rows for one issue.
         setIssueMilestone({
-          ...(selectedIssueMilestone
-            ? { id: selectedIssueMilestone.id }
-            : {}),
+          ...(selectedIssueMilestone ? { id: selectedIssueMilestone.id } : {}),
           issue_id: selectedKanbanIssueId,
           milestone_id: milestoneId,
         });
@@ -1070,7 +1069,11 @@ export function KanbanIssuePanelContainer({
           const createState = buildWorkspaceCreateInitialState({
             prompt: initialPrompt,
             defaults,
-            linkedIssue: buildLinkedIssueCreateState(syncedIssue, projectId),
+            linkedIssue: buildLinkedIssueCreateState(
+              syncedIssue,
+              projectId,
+              resolveGithubLinkedBranchSource(githubIssueLinks, syncedIssue.id)
+            ),
           });
           const draftId = await openWorkspaceCreateFromState(createState, {
             issueId: syncedIssue.id,
@@ -1124,6 +1127,7 @@ export function KanbanIssuePanelContainer({
     clearAttachments,
     hasPendingAttachments,
     onExpectIssueOpen,
+    githubIssueLinks,
     t,
   ]);
 
@@ -1167,7 +1171,11 @@ export function KanbanIssuePanelContainer({
           : displayData.description
       ),
       defaults,
-      linkedIssue: buildLinkedIssueCreateState(selectedIssue, projectId),
+      linkedIssue: buildLinkedIssueCreateState(
+        selectedIssue,
+        projectId,
+        resolveGithubLinkedBranchSource(githubIssueLinks, selectedIssue.id)
+      ),
     });
     const draftId = await openWorkspaceCreateFromState(createState, {
       issueId: selectedIssue.id,
@@ -1196,6 +1204,7 @@ export function KanbanIssuePanelContainer({
     localWorkspaceIds,
     projectId,
     openWorkspaceCreateFromState,
+    githubIssueLinks,
     t,
   ]);
 

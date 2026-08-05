@@ -20,6 +20,34 @@ interface LinkedIssueSource {
   title: string;
 }
 
+/** The GitHub link fields needed to drive the GitHub linked-branch mode. */
+export interface GithubLinkedBranchSource {
+  githubNodeId: string;
+  repository: string;
+}
+
+interface GithubIssueLinkLike {
+  issue_id: string;
+  repository: string;
+  github_node_id: string | null;
+}
+
+/**
+ * Find the GitHub link for `issueId` (if any) and return the node id + repo
+ * needed to create/reuse its linked branch. Skips links without a node id
+ * (older rows synced before node ids were stored), which cannot be linked.
+ */
+export function resolveGithubLinkedBranchSource(
+  githubIssueLinks: GithubIssueLinkLike[] | null | undefined,
+  issueId: string
+): GithubLinkedBranchSource | null {
+  const link = githubIssueLinks?.find(
+    (candidate) => candidate.issue_id === issueId && candidate.github_node_id
+  );
+  if (!link?.github_node_id) return null;
+  return { githubNodeId: link.github_node_id, repository: link.repository };
+}
+
 export const DEFAULT_WORKSPACE_CREATE_DRAFT_ID =
   '00000000-0000-0000-0000-000000000001';
 
@@ -38,7 +66,8 @@ export function buildWorkspaceCreatePrompt(
 
 export function buildLinkedIssueCreateState(
   issue: LinkedIssueSource | null | undefined,
-  projectId: string
+  projectId: string,
+  githubLink?: GithubLinkedBranchSource | null
 ): NonNullable<CreateModeInitialState['linkedIssue']> | null {
   if (!issue) return null;
   return {
@@ -46,6 +75,8 @@ export function buildLinkedIssueCreateState(
     simpleId: issue.simple_id,
     title: issue.title,
     remoteProjectId: projectId,
+    githubNodeId: githubLink?.githubNodeId ?? null,
+    githubRepository: githubLink?.repository ?? null,
   };
 }
 
@@ -77,6 +108,22 @@ export function buildLocalWorkspaceIdSet(
 export function toDraftWorkspaceData(
   initialState: CreateModeInitialState
 ): DraftWorkspaceData {
+  const linkedIssue = initialState.linkedIssue;
+  // A GitHub-linked issue defaults to the "GitHub linked branch" mode: reuse the
+  // issue's linked branch, or create one (the "Create a branch for this issue"
+  // equivalent). The variant itself carries the node id + repo, so the draft
+  // persists everything the create route needs without extra fields. The user
+  // can still switch to auto/new/existing in the branch selector. Single-repo
+  // only; if the resolved repo set is larger, the selector falls back to auto.
+  const githubLinkedBranch =
+    linkedIssue?.githubNodeId && linkedIssue?.githubRepository
+      ? {
+          mode: 'github_linked_branch' as const,
+          issue_node_id: linkedIssue.githubNodeId,
+          repository: linkedIssue.githubRepository,
+        }
+      : null;
+
   return {
     message: initialState.initialPrompt ?? '',
     repos:
@@ -87,17 +134,16 @@ export function toDraftWorkspaceData(
         create_target_branch: false,
       })) ?? [],
     executor_config: initialState.executorConfig ?? null,
-    linked_issue: initialState.linkedIssue
+    linked_issue: linkedIssue
       ? {
-          issue_id: initialState.linkedIssue.issueId,
-          simple_id: initialState.linkedIssue.simpleId ?? '',
-          title: initialState.linkedIssue.title ?? '',
-          remote_project_id: initialState.linkedIssue.remoteProjectId,
+          issue_id: linkedIssue.issueId,
+          simple_id: linkedIssue.simpleId ?? '',
+          title: linkedIssue.title ?? '',
+          remote_project_id: linkedIssue.remoteProjectId,
         }
       : null,
     attachments: [],
-    // Seeded drafts always start on the auto working branch.
-    working_branch: null,
+    working_branch: githubLinkedBranch,
   };
 }
 
