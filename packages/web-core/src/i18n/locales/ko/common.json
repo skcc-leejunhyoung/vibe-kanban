@@ -632,6 +632,8 @@
       },
       "autoPreviewPrefixed": "{{prefix}}/… (자동)",
       "autoPreviewPlain": "자동 생성",
+      "githubLinkedPreview": "{{repository}}의 이슈 연결 브랜치",
+      "githubLinkedShort": "이슈 연결 브랜치",
       "newPlaceholder": "예: feature/login",
       "singleRepoOnly": "(단일 레포)",
       "locked": {

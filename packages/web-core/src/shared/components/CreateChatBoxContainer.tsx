@@ -1,6 +1,7 @@
 import { useMemo, useCallback, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
+import { LockIcon } from '@phosphor-icons/react';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { validateBranchName } from '@/features/create-mode/model/workingBranch';
 import { targetBranchModeCreates } from '@/features/create-mode/model/targetBranch';
@@ -177,9 +178,7 @@ export function CreateChatBoxContainer({
     }
     if (workingBranch.mode === 'github_linked_branch') {
       return {
-        label: t('createMode.workingBranch.githubLinkedPreview', {
-          repository: workingBranch.repository,
-        }),
+        label: t('createMode.workingBranch.githubLinkedShort'),
         toggleName: t(
           'createMode.githubLinkedBranch.toggleLabel',
           'GitHub linked branch'
@@ -189,10 +188,26 @@ export function CreateChatBoxContainer({
     return null;
   }, [reviewMode.prReviewPayload, reviewMode.headBranch, workingBranch, t]);
 
+  // The chat-box footer shows the branch the workspace will run on. When a
+  // toggle has locked the working branch, reflect that branch (with a lock
+  // marker) instead of the per-repo target branch, so the auto-selected branch
+  // is visible right in the chat input — not only on the repo-picker step.
   const repoSummaryLabel = useMemo(() => {
     if (repos.length === 1) {
       const repo = repos[0];
       if (!repo) return '0 repositories selected';
+      if (lockedWorkingBranch) {
+        return (
+          <span className="inline-flex min-w-0 items-center gap-half">
+            <LockIcon className="size-icon-2xs shrink-0" weight="bold" />
+            <span className="truncate">
+              {`${getRepoDisplayName(repo)} · ${truncateBranchLabel(
+                lockedWorkingBranch.label
+              )}`}
+            </span>
+          </span>
+        );
+      }
       const selectedBranch = targetBranches[repo.id];
       const branch = selectedBranch
         ? truncateBranchLabel(selectedBranch)
@@ -201,18 +216,22 @@ export function CreateChatBoxContainer({
     }
 
     return `${repos.length} repositories selected`;
-  }, [repos, targetBranches]);
+  }, [repos, targetBranches, lockedWorkingBranch]);
 
-  const repoSummaryTitle = useMemo(
-    () =>
-      repos
-        .map((repo) => {
-          const branch = targetBranches[repo.id] ?? 'Select branch';
-          return `${getRepoDisplayName(repo)} (${branch})`;
-        })
-        .join('\n'),
-    [repos, targetBranches]
-  );
+  const repoSummaryTitle = useMemo(() => {
+    if (repos.length === 1 && lockedWorkingBranch) {
+      const repo = repos[0];
+      if (repo) {
+        return `${getRepoDisplayName(repo)} (${lockedWorkingBranch.label})`;
+      }
+    }
+    return repos
+      .map((repo) => {
+        const branch = targetBranches[repo.id] ?? 'Select branch';
+        return `${getRepoDisplayName(repo)} (${branch})`;
+      })
+      .join('\n');
+  }, [repos, targetBranches, lockedWorkingBranch]);
 
   // Each repo needs a non-empty target branch; for the create modes
   // ("new"/"auto") the name must also pass branch-name validation.

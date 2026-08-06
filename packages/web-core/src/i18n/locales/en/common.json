@@ -646,6 +646,8 @@
       },
       "autoPreviewPrefixed": "{{prefix}}/… (auto)",
       "autoPreviewPlain": "Auto-generated",
+      "githubLinkedPreview": "Issue's linked branch on {{repository}}",
+      "githubLinkedShort": "Issue's linked branch",
       "newPlaceholder": "e.g. feature/login",
       "singleRepoOnly": "(single repo only)",
       "locked": {

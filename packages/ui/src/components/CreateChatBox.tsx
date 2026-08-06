@@ -81,7 +81,7 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   localAttachments?: LocalAttachmentMetadata[];
   dropzone?: DropzoneProps;
   onEditRepos: () => void;
-  repoSummaryLabel: string;
+  repoSummaryLabel: ReactNode;
   repoSummaryTitle: string;
   linkedIssue?: LinkedIssueBadgeProps | null;
   /** Hide the attach-file control (e.g. quick chat, which has no attachments). */
