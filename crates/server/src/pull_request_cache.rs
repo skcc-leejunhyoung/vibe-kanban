@@ -36,6 +36,19 @@ struct SwrSlot<V> {
     refreshing: AtomicBool,
 }
 
+/// RAII guard for a single-flight refresh claim. Dropping it releases the claim
+/// (`refreshing` flag), so a background refresh that panics mid-fetch can't
+/// leave the slot permanently wedged.
+pub struct RefreshClaim<V> {
+    slot: Arc<SwrSlot<V>>,
+}
+
+impl<V> Drop for RefreshClaim<V> {
+    fn drop(&mut self) {
+        self.slot.refreshing.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Stale-while-revalidate cache: reads never block on the fetch. A caller peeks
 /// the current value (fresh/stale/missing) and, when it's stale or missing,
 /// runs the fetch in the background so the tunnel-facing request returns
@@ -99,21 +112,21 @@ where
         });
     }
 
-    /// Claims the single background-refresh slot for `key`. Returns `true` when
-    /// the caller won the claim and should run the refresh; `false` when a
-    /// refresh is already in flight (skip — it will fill the cache).
-    pub async fn begin_refresh(&self, key: K) -> bool {
-        self.slot(key)
-            .await
-            .refreshing
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-    }
-
-    /// Releases the refresh claim once a background refresh finishes.
-    pub async fn end_refresh(&self, key: &K) {
-        if let Some(slot) = self.entries.get(key).await {
-            slot.refreshing.store(false, Ordering::SeqCst);
+    /// Claims the single background-refresh slot for `key`. Returns a
+    /// [`RefreshClaim`] guard when the caller won the claim (it should run the
+    /// refresh); `None` when a refresh is already in flight (skip — it will fill
+    /// the cache). The claim is released when the guard drops, so it is freed
+    /// even if the refreshing task panics mid-fetch.
+    pub async fn begin_refresh(&self, key: K) -> Option<RefreshClaim<V>> {
+        let slot = self.slot(key).await;
+        match slot.refreshing.compare_exchange(
+            false,
+            true,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => Some(RefreshClaim { slot }),
+            Err(_) => None,
         }
     }
 }
@@ -208,15 +221,34 @@ mod tests {
     #[tokio::test]
     async fn swr_refresh_claim_is_single_flight() {
         let cache = SwrCache::<&str, i32>::new(Duration::from_secs(60));
-        assert!(cache.begin_refresh("k").await, "first claim wins");
+        let claim = cache.begin_refresh("k").await;
+        assert!(claim.is_some(), "first claim wins");
         assert!(
-            !cache.begin_refresh("k").await,
+            cache.begin_refresh("k").await.is_none(),
             "second claim blocked while refreshing"
         );
-        cache.end_refresh(&"k").await;
+        drop(claim);
         assert!(
-            cache.begin_refresh("k").await,
+            cache.begin_refresh("k").await.is_some(),
             "claim reusable after release"
+        );
+    }
+
+    #[tokio::test]
+    async fn swr_refresh_claim_released_when_task_panics() {
+        let cache = SwrCache::<&str, i32>::new(Duration::from_secs(60));
+        let claim = cache.begin_refresh("k").await.expect("first claim wins");
+        // A background refresh holds the claim and panics mid-fetch.
+        let handle = tokio::spawn(async move {
+            let _claim = claim;
+            panic!("boom");
+        });
+        assert!(handle.await.is_err(), "task panicked");
+        // The guard's Drop must have released the claim during unwind, so the
+        // slot is not permanently wedged.
+        assert!(
+            cache.begin_refresh("k").await.is_some(),
+            "claim freed after a panicking task"
         );
     }
 }

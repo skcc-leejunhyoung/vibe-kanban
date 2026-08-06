@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::{
     DeploymentImpl,
     error::ApiError,
-    pull_request_cache::{Cached, PullRequestCache, SwrCache},
+    pull_request_cache::{Cached, PullRequestCache, RefreshClaim, SwrCache},
     routes::workspaces::pr::{GetPrCommentsError, PrCommentsResponse},
 };
 
@@ -581,15 +581,18 @@ fn spawn_summaries_refresh(
     repo_path: PathBuf,
     remote_url: String,
     involves_me: bool,
+    claim: RefreshClaim<Vec<PullRequestSummary>>,
 ) -> tokio::task::JoinHandle<Result<Vec<PullRequestSummary>, GitHostError>> {
     tokio::spawn(async move {
+        // Held for the task's lifetime; dropping it — on normal completion or a
+        // panic unwind — releases the single-flight claim so the slot can't wedge.
+        let _claim = claim;
         let result = provider
             .list_pull_request_summaries(&repo_path, &remote_url, involves_me)
             .await;
         if let Ok(ref prs) = result {
-            cache.store(key.clone(), prs.clone()).await;
+            cache.store(key, prs.clone()).await;
         }
-        cache.end_refresh(&key).await;
         result
     })
 }
@@ -642,7 +645,7 @@ pub async fn list_involved_prs(
         Cached::Fresh(prs) => Ok(summaries_response(prs, false)),
         // Stale — serve the old list immediately and refresh in the background.
         Cached::Stale(prs) => {
-            if cache.begin_refresh(cache_key.clone()).await {
+            if let Some(claim) = cache.begin_refresh(cache_key.clone()).await {
                 spawn_summaries_refresh(
                     cache,
                     cache_key,
@@ -650,6 +653,7 @@ pub async fn list_involved_prs(
                     repo.path.clone(),
                     remote.url.clone(),
                     query.involves_me,
+                    claim,
                 );
             }
             Ok(summaries_response(prs, true))
@@ -658,10 +662,10 @@ pub async fn list_involved_prs(
         // errors and fast repos return real data), then hand off to the
         // background and return an empty, warming list.
         Cached::Missing => {
-            if !cache.begin_refresh(cache_key.clone()).await {
+            let Some(claim) = cache.begin_refresh(cache_key.clone()).await else {
                 // Another cold request is already fetching; let it fill the cache.
                 return Ok(summaries_response(Vec::new(), true));
-            }
+            };
             let handle = spawn_summaries_refresh(
                 cache,
                 cache_key,
@@ -669,6 +673,7 @@ pub async fn list_involved_prs(
                 repo.path.clone(),
                 remote.url.clone(),
                 query.involves_me,
+                claim,
             );
             match tokio::time::timeout(SUMMARIES_COLD_WAIT, handle).await {
                 Ok(Ok(Ok(prs))) => Ok(summaries_response(prs, false)),
