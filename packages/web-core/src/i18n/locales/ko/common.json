@@ -623,6 +623,14 @@
       "disabled": "GitHub 연결 브랜치 끔 — 새 브랜치가 생성됩니다",
       "toggleLabel": "GitHub 연결 브랜치"
     },
+    "reviewMode": {
+      "resolving": "열린 PR 확인 중…",
+      "active": "리뷰 모드",
+      "activeDetail": "PR #{{number}} · {{branch}} 작업 중",
+      "disabled": "리뷰 모드 끔 — 새 브랜치가 생성됩니다",
+      "noPr": "이 이슈에 열린 PR이 없음 — 새 브랜치가 생성됩니다",
+      "toggleLabel": "리뷰 모드"
+    },
     "workingBranch": {
       "label": "작업 브랜치",
       "modes": {

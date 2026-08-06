@@ -637,6 +637,14 @@
       "disabled": "GitHub linked branch off — a new branch will be created",
       "toggleLabel": "GitHub linked branch"
     },
+    "reviewMode": {
+      "resolving": "Checking for an open PR…",
+      "active": "Review mode",
+      "activeDetail": "PR #{{number}} · working on {{branch}}",
+      "disabled": "Review mode off — a new branch will be created",
+      "noPr": "No open PR found for this issue — a new branch will be created",
+      "toggleLabel": "Review mode"
+    },
     "workingBranch": {
       "label": "Working branch",
       "modes": {
