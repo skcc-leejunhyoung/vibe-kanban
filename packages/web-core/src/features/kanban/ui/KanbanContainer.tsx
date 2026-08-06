@@ -64,7 +64,10 @@ import {
   type DropResult,
 } from '@vibe/ui/components/KanbanBoard';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
-import { KanbanCardContent } from '@vibe/ui/components/KanbanCardContent';
+import {
+  KanbanCardContent,
+  type KanbanGithubIssue,
+} from '@vibe/ui/components/KanbanCardContent';
 import {
   IssueWorkspaceCard,
   type WorkspaceWithStats,
@@ -199,6 +202,7 @@ export function KanbanContainer() {
     removeIssueTag,
     insertTag,
     pullRequests,
+    githubIssueLinks,
     isLoading: projectLoading,
   } = useProjectContext();
 
@@ -772,6 +776,21 @@ export function KanbanContainer() {
 
     return map;
   }, [pullRequests]);
+
+  const githubIssuesByIssueId = useMemo(() => {
+    const map = new Map<string, KanbanGithubIssue[]>();
+    for (const link of githubIssueLinks) {
+      const list = map.get(link.issue_id) ?? [];
+      list.push({
+        id: link.id,
+        number: link.number,
+        repository: link.repository,
+        url: link.url,
+      });
+      map.set(link.issue_id, list);
+    }
+    return map;
+  }, [githubIssueLinks]);
 
   const workspacesByIssueId = useMemo(() => {
     if (!showWorkspaces) {
@@ -1768,6 +1787,9 @@ export function KanbanContainer() {
                               tags={getTagObjectsForIssue(issue.id)}
                               assignees={issueAssigneesMap[issue.id] ?? []}
                               pullRequests={issueCardPullRequests}
+                              githubIssues={
+                                githubIssuesByIssueId.get(issue.id) ?? []
+                              }
                               relationships={resolveRelationshipsForIssue(
                                 issue.id,
                                 getRelationshipsForIssue(issue.id),

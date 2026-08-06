@@ -7,9 +7,11 @@ import {
   ArrowSquareOutIcon,
   CircleDashedIcon,
   DotsThreeIcon,
+  GithubLogoIcon,
   PlusIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { openExternalUrl } from '../lib/open-url';
 import { PriorityIcon, type PriorityLevel } from './PriorityIcon';
 import { KanbanBadge } from './KanbanBadge';
 import { KanbanAssignee, type KanbanAssigneeUser } from './KanbanAssignee';
@@ -37,6 +39,13 @@ export interface KanbanPullRequest {
   number: number;
   url: string;
   status: PrBadgeStatus;
+}
+
+export interface KanbanGithubIssue {
+  id: string;
+  number: number;
+  repository: string;
+  url: string;
 }
 
 export interface TagEditRenderProps<TTag extends KanbanTag = KanbanTag> {
@@ -131,6 +140,7 @@ export type KanbanCardContentProps<TTag extends KanbanTag = KanbanTag> = {
   tags: KanbanTag[];
   assignees: KanbanAssigneeUser[];
   pullRequests?: KanbanPullRequest[];
+  githubIssues?: KanbanGithubIssue[];
   relationships?: KanbanRelationship[];
   isSubIssue?: boolean;
   isLoading?: boolean;
@@ -152,6 +162,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
   tags,
   assignees,
   pullRequests = [],
+  githubIssues = [],
   relationships = [],
   isSubIssue,
   isLoading = false,
@@ -327,6 +338,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
       {(tags.length > 0 ||
         tagEditProps ||
         pullRequests.length > 0 ||
+        githubIssues.length > 0 ||
         relationships.length > 0) && (
         <div className="flex items-center gap-half flex-wrap min-w-0">
           {tagEditProps ? (
@@ -357,6 +369,25 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
           ))}
           {pullRequests.length > 2 && (
             <span className="text-sm text-low">+{pullRequests.length - 2}</span>
+          )}
+          {githubIssues.slice(0, 2).map((gh) => (
+            <a
+              key={gh.id}
+              href={gh.url}
+              title={`${gh.repository}#${gh.number}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                openExternalUrl(gh.url);
+              }}
+              className="inline-flex items-center gap-half rounded bg-secondary px-1.5 py-0.5 text-xs font-medium text-low transition-colors hover:underline"
+            >
+              <GithubLogoIcon className="size-icon-2xs" weight="bold" />
+              <span>#{gh.number}</span>
+            </a>
+          ))}
+          {githubIssues.length > 2 && (
+            <span className="text-sm text-low">+{githubIssues.length - 2}</span>
           )}
           {relationships.slice(0, 2).map((rel) => (
             <RelationshipBadge
