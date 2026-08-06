@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRouter } from '@tanstack/react-router';
 import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 import {
   ArrowClockwiseIcon,
+  ArrowLeftIcon,
   ArrowSquareOutIcon,
   ChatCircleIcon,
   CheckCircleIcon,
@@ -184,6 +186,7 @@ function getPullRequestTargetFromUrl(
 
 export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const isMobile = useIsMobile();
+  const router = useRouter();
   const appNavigation = useAppNavigation();
   const queryClient = useQueryClient();
   const { workspaces } = useUserContext();
@@ -727,14 +730,29 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const listContent = (
     <main className="flex h-full min-h-0 flex-col overflow-hidden">
       <header className="shrink-0 border-b border-border px-double py-base">
-        <div className="flex items-center justify-between gap-base">
-          <div>
-            <h1 className="text-xl font-semibold text-high">Pull Requests</h1>
-            <p className="mt-half text-sm text-low">
-              {filters.involvesMe
-                ? 'Pull requests involving you in the selected repository'
-                : 'Recently updated pull requests in the selected repository'}
-            </p>
+        <div className="flex flex-col gap-base sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-half">
+            <button
+              type="button"
+              onClick={() => router.history.back()}
+              className={cn(
+                'flex items-center justify-center rounded-sm p-half text-low transition-colors sm:hidden',
+                'hover:bg-secondary hover:text-normal',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
+              )}
+              aria-label="Go back"
+              title="Back"
+            >
+              <ArrowLeftIcon size={18} />
+            </button>
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold text-high">Pull Requests</h1>
+              <p className="mt-half text-sm text-low">
+                {filters.involvesMe
+                  ? 'Pull requests involving you in the selected repository'
+                  : 'Recently updated pull requests in the selected repository'}
+              </p>
+            </div>
           </div>
           <div className="flex items-center gap-half">
             <select
