@@ -176,14 +176,26 @@ export const addNodeToGroup = (
 
 // --- Activity & equality ---------------------------------------------------
 
-/** True when the tree contains at least one condition node (i.e. constrains). */
+/**
+ * A condition is "effective" only when it can actually constrain results: a
+ * nullary operator (is_empty, is_overdue, …) always is, while a value-taking
+ * operator needs at least one non-blank value. An ineffective condition is a
+ * half-built row and is ignored during evaluation so it never blanks the board.
+ */
+export const isConditionEffective = (condition: FilterCondition): boolean =>
+  !OPERATOR_NEEDS_VALUES[condition.operator] ||
+  condition.values.some((value) => value.trim() !== '');
+
+/** True when the tree contains at least one effective condition. */
 export const isAdvancedFilterActive = (
   filter: AdvancedFilter | null | undefined
 ): boolean => {
   if (!filter) return false;
-  const hasCondition = (node: FilterNode): boolean =>
-    node.kind === 'condition' ? true : node.children.some(hasCondition);
-  return filter.children.some(hasCondition);
+  const hasEffective = (node: FilterNode): boolean =>
+    node.kind === 'condition'
+      ? isConditionEffective(node)
+      : node.children.some(hasEffective);
+  return filter.children.some(hasEffective);
 };
 
 /** Strip volatile ids so two trees can be compared structurally. */
@@ -259,6 +271,11 @@ const evaluateCondition = (
   options: FilterEvalOptions
 ): boolean => {
   const { field, operator, values } = condition;
+
+  // A half-built condition (value-taking operator with no value yet) is
+  // ignored rather than excluding everything, matching the simple filter where
+  // an empty selection means "no constraint".
+  if (!isConditionEffective(condition)) return true;
 
   switch (field) {
     case 'text': {

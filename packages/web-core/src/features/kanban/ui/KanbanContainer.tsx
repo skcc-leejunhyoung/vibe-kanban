@@ -33,6 +33,7 @@ import {
 } from '@/shared/stores/useUiPreferencesStore';
 import {
   areAdvancedFiltersEqual,
+  isAdvancedFilterActive,
   type AdvancedFilter,
 } from '@/shared/filters/filterTree';
 import { useProjectViewSwitcherStore } from '@/shared/stores/useProjectViewSwitcherStore';
@@ -111,39 +112,45 @@ const areKanbanFiltersEqual = (
   left: KanbanFilterState,
   right: KanbanFilterState
 ): boolean => {
+  // Sort is orthogonal to filter mode and always applies.
+  if (
+    left.sortField !== right.sortField ||
+    left.sortDirection !== right.sortDirection
+  ) {
+    return false;
+  }
+
+  // An advanced tree only counts once it has an effective condition, so merely
+  // switching the Simple/Advanced toggle (empty tree) doesn't read as "filtered".
+  const leftAdvanced = isAdvancedFilterActive(left.advancedFilter)
+    ? (left.advancedFilter ?? null)
+    : null;
+  const rightAdvanced = isAdvancedFilterActive(right.advancedFilter)
+    ? (right.advancedFilter ?? null)
+    : null;
+
+  // When either side is in effective advanced mode, the tree is the sole filter
+  // identity — flat fields are superseded and must not affect equality.
+  if (leftAdvanced || rightAdvanced) {
+    return areAdvancedFiltersEqual(leftAdvanced, rightAdvanced);
+  }
+
   if (left.searchQuery.trim() !== right.searchQuery.trim()) {
     return false;
   }
-
   if (!areStringSetsEqual(left.priorities, right.priorities)) {
     return false;
   }
-
   if (!areStringSetsEqual(left.assigneeIds, right.assigneeIds)) {
     return false;
   }
-
   if (!areStringSetsEqual(left.tagIds, right.tagIds)) {
     return false;
   }
   if (!areStringSetsEqual(left.milestoneIds ?? [], right.milestoneIds ?? [])) {
     return false;
   }
-  if ((left.overdue ?? false) !== (right.overdue ?? false)) return false;
-
-  if (
-    !areAdvancedFiltersEqual(
-      left.advancedFilter ?? null,
-      right.advancedFilter ?? null
-    )
-  ) {
-    return false;
-  }
-
-  return (
-    left.sortField === right.sortField &&
-    left.sortDirection === right.sortDirection
-  );
+  return (left.overdue ?? false) === (right.overdue ?? false);
 };
 
 function LoadingState() {

@@ -29,6 +29,7 @@ import {
   OPERATOR_NEEDS_VALUES,
   addNodeToGroup,
   defaultOperatorForField,
+  isConditionEffective,
   newCondition,
   newGroup,
   removeNodeById,
@@ -226,6 +227,7 @@ export function FilterTreeEditor({
       }));
 
     const needsValues = OPERATOR_NEEDS_VALUES[node.operator];
+    const incomplete = !isConditionEffective(node);
 
     return (
       <div className="flex flex-wrap items-center gap-half">
@@ -273,6 +275,11 @@ export function FilterTreeEditor({
               label={t('kanban.filterValues', 'Values')}
             />
           ))}
+        {incomplete && (
+          <span className="text-xs text-low">
+            {t('kanban.filterNeedsValue', 'Pick a value (ignored until then)')}
+          </span>
+        )}
         <button
           type="button"
           onClick={() =>

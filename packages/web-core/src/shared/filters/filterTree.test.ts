@@ -7,6 +7,7 @@ import {
   buildTreeFromSimpleFilters,
   evaluateNode,
   isAdvancedFilterActive,
+  isConditionEffective,
   newCondition,
   newGroup,
   removeNodeById,
@@ -308,11 +309,71 @@ describe('tree editing helpers', () => {
   });
 });
 
+describe('isConditionEffective', () => {
+  it('nullary operators are always effective', () => {
+    expect(
+      isConditionEffective(
+        cond({ field: 'assignee', operator: 'is_empty', values: [] })
+      )
+    ).toBe(true);
+    expect(
+      isConditionEffective(
+        cond({ field: 'milestone', operator: 'is_overdue', values: [] })
+      )
+    ).toBe(true);
+  });
+
+  it('value operators need a non-blank value', () => {
+    expect(
+      isConditionEffective(
+        cond({ field: 'status', operator: 'any_of', values: [] })
+      )
+    ).toBe(false);
+    expect(
+      isConditionEffective(
+        cond({ field: 'text', operator: 'contains', values: ['   '] })
+      )
+    ).toBe(false);
+    expect(
+      isConditionEffective(
+        cond({ field: 'status', operator: 'any_of', values: ['s'] })
+      )
+    ).toBe(true);
+  });
+});
+
+describe('evaluateNode — incomplete conditions are ignored', () => {
+  it('a value operator with no values does not exclude issues', () => {
+    // status any_of [] would naively exclude everything; instead it is ignored.
+    expect(
+      evaluateNode(
+        cond({ field: 'status', operator: 'any_of', values: [] }),
+        facts(),
+        opts
+      )
+    ).toBe(true);
+    // inside an AND group it must not blank the result either
+    const tree = group('and', [
+      cond({ field: 'tag', operator: 'any_of', values: ['t-bug'] }),
+      cond({ field: 'status', operator: 'any_of', values: [] }),
+    ]);
+    expect(evaluateNode(tree, facts({ tagIds: ['t-bug'] }), opts)).toBe(true);
+  });
+});
+
 describe('isAdvancedFilterActive', () => {
-  it('false for null / empty tree, true once a condition exists', () => {
+  it('false for null / empty tree, true once an effective condition exists', () => {
     expect(isAdvancedFilterActive(null)).toBe(false);
     expect(isAdvancedFilterActive(newGroup('and'))).toBe(false);
     expect(isAdvancedFilterActive(group('and', [group('or', [])]))).toBe(false);
+    // a value condition with no values is not yet active
+    expect(
+      isAdvancedFilterActive(
+        group('and', [
+          cond({ field: 'status', operator: 'any_of', values: [] }),
+        ])
+      )
+    ).toBe(false);
     expect(
       isAdvancedFilterActive(
         group('and', [cond({ field: 'status', values: ['s'] })])
