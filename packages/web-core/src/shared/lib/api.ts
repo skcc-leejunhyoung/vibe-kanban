@@ -1475,6 +1475,12 @@ export const fileSystemApi = {
 };
 
 // Repo APIs
+export interface PullRequestSummaries {
+  summaries: PullRequestSummary[];
+  /** The list is stale/empty while a background `gh` refresh runs; poll until false. */
+  warming: boolean;
+}
+
 export const repoApi = {
   list: async (hostId?: string | null): Promise<Repo[]> => {
     const response = await makeHostAwareRequest('/api/repos', hostId);
@@ -1625,13 +1631,21 @@ export const repoApi = {
     repoId: string,
     involvesMe: boolean,
     refresh = false
-  ): Promise<Result<PullRequestSummary[], ListPrsError>> => {
+  ): Promise<Result<PullRequestSummaries, ListPrsError>> => {
     const response = await makeRequest(
       `/api/repos/${repoId}/pull-requests?involves_me=${involvesMe}&refresh=${refresh}`
     );
-    return handleApiResponseAsResult<PullRequestSummary[], ListPrsError>(
-      response
-    );
+    // The backend serves a stale/empty list immediately and refreshes `gh` in
+    // the background when this header is `true`; the caller polls until it clears.
+    const warming = response.headers.get('x-pull-requests-warming') === 'true';
+    const result = await handleApiResponseAsResult<
+      PullRequestSummary[],
+      ListPrsError
+    >(response);
+    if (!result.success) {
+      return result;
+    }
+    return { success: true, data: { summaries: result.data, warming } };
   },
 
   listRemotes: async (repoId: string): Promise<GitRemote[]> => {

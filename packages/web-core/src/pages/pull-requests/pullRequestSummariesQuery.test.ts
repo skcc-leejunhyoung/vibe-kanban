@@ -28,7 +28,7 @@ describe('pullRequestSummariesQueryOptions', () => {
   it('loads the configured repository without forcing a refresh', async () => {
     vi.mocked(repoApi.listPullRequestSummaries).mockResolvedValue({
       success: true,
-      data: [],
+      data: { summaries: [], warming: false },
     });
 
     await pullRequestSummariesQueryOptions('repo-1', false).queryFn();

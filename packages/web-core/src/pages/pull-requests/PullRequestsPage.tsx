@@ -53,6 +53,7 @@ import {
 import {
   pullRequestSummariesQueryOptions,
   PR_QUERY_STALE_TIME_MS,
+  PR_WARMING_POLL_MS,
 } from './pullRequestSummariesQuery';
 import type { MergeStatus, PullRequestSummary } from 'shared/types';
 import type { Issue, PullRequestIssue, Workspace } from 'shared/remote-types';
@@ -259,6 +260,11 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     enabled: filters.repository !== 'all',
     staleTime: PR_QUERY_STALE_TIME_MS,
     gcTime: 60 * 60_000,
+    // Cold/stale opens return an empty list immediately while the backend
+    // refreshes `gh`; poll until the warmed list arrives, then stop.
+    refetchInterval: (query) =>
+      query.state.data?.warming ? PR_WARMING_POLL_MS : false,
+    refetchIntervalInBackground: false,
   });
   const refreshPullRequests = useMutation({
     mutationFn: async ({
@@ -297,7 +303,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   });
 
   const pullRequests = useMemo(
-    () => pullRequestsQuery.data ?? [],
+    () => pullRequestsQuery.data?.summaries ?? [],
     [pullRequestsQuery.data]
   );
   const authors = useMemo(

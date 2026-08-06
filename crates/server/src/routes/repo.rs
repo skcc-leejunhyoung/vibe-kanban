@@ -3,8 +3,8 @@ use std::{path::PathBuf, sync::OnceLock, time::Duration};
 use axum::{
     Router,
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::Json as ResponseJson,
+    http::{HeaderValue, StatusCode},
+    response::{IntoResponse, Json as ResponseJson, Response},
     routing::{get, post},
 };
 use db::models::repo::{Repo, SearchResult, UpdateRepo};
@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::{
     DeploymentImpl,
     error::ApiError,
-    pull_request_cache::PullRequestCache,
+    pull_request_cache::{Cached, PullRequestCache, SwrCache},
     routes::workspaces::pr::{GetPrCommentsError, PrCommentsResponse},
 };
 
@@ -45,13 +45,19 @@ struct PullRequestSummariesCacheKey {
     involves_me: bool,
 }
 
-type PullRequestSummariesCache =
-    PullRequestCache<PullRequestSummariesCacheKey, Vec<PullRequestSummary>>;
+type PullRequestSummariesCache = SwrCache<PullRequestSummariesCacheKey, Vec<PullRequestSummary>>;
 
 fn pull_request_summaries_cache() -> &'static PullRequestSummariesCache {
     static CACHE: OnceLock<PullRequestSummariesCache> = OnceLock::new();
-    CACHE.get_or_init(|| PullRequestCache::new(pull_request_cache_ttl()))
+    CACHE.get_or_init(|| SwrCache::new(pull_request_cache_ttl()))
 }
+
+/// How long the cold-cache request will wait for `gh` before returning an empty
+/// list and finishing the fetch in the background. Kept well under the remote
+/// relay/WebRTC tunnel's 30s cap so a slow `gh` never surfaces as "Load failed"
+/// on remote web; fast failures (auth, `gh` not installed) still return inside
+/// this window and surface as real errors.
+const SUMMARIES_COLD_WAIT: Duration = Duration::from_secs(12);
 
 fn pull_request_detail_cache() -> &'static PullRequestCache<String, PullRequestDetail> {
     static CACHE: OnceLock<PullRequestCache<String, PullRequestDetail>> = OnceLock::new();
@@ -520,48 +526,159 @@ pub async fn list_open_prs(
     }
 }
 
+/// Signals the client that the returned list is stale/empty and a background
+/// refresh is in flight, so it should keep polling until the cache warms.
+const PR_WARMING_HEADER: &str = "x-pull-requests-warming";
+
+fn summaries_response(prs: Vec<PullRequestSummary>, warming: bool) -> Response {
+    let mut response =
+        ResponseJson(ApiResponse::<Vec<PullRequestSummary>, ListPrsError>::success(prs))
+            .into_response();
+    response.headers_mut().insert(
+        PR_WARMING_HEADER,
+        if warming {
+            HeaderValue::from_static("true")
+        } else {
+            HeaderValue::from_static("false")
+        },
+    );
+    response
+}
+
+fn summaries_error_response(error: GitHostError, repo_id: Uuid) -> Response {
+    match error {
+        GitHostError::CliNotInstalled { provider } => ResponseJson(ApiResponse::<
+            Vec<PullRequestSummary>,
+            ListPrsError,
+        >::error_with_data(
+            ListPrsError::CliNotInstalled { provider },
+        ))
+        .into_response(),
+        GitHostError::AuthFailed(message) => ResponseJson(ApiResponse::<
+            Vec<PullRequestSummary>,
+            ListPrsError,
+        >::error_with_data(
+            ListPrsError::AuthFailed { message }
+        ))
+        .into_response(),
+        error => {
+            tracing::error!("Failed to list pull requests for repo {repo_id}: {error}");
+            ResponseJson(ApiResponse::<Vec<PullRequestSummary>, ListPrsError>::error(
+                &error.to_string(),
+            ))
+            .into_response()
+        }
+    }
+}
+
+/// Spawns the `gh` fetch, storing the result in the cache and releasing the
+/// refresh claim when it finishes. The caller must have won `begin_refresh`.
+/// Returns the join handle so a cold request can optionally wait on it.
+fn spawn_summaries_refresh(
+    cache: &'static PullRequestSummariesCache,
+    key: PullRequestSummariesCacheKey,
+    provider: GitHubProvider,
+    repo_path: PathBuf,
+    remote_url: String,
+    involves_me: bool,
+) -> tokio::task::JoinHandle<Result<Vec<PullRequestSummary>, GitHostError>> {
+    tokio::spawn(async move {
+        let result = provider
+            .list_pull_request_summaries(&repo_path, &remote_url, involves_me)
+            .await;
+        if let Ok(ref prs) = result {
+            cache.store(key.clone(), prs.clone()).await;
+        }
+        cache.end_refresh(&key).await;
+        result
+    })
+}
+
 pub async fn list_involved_prs(
     State(deployment): State<DeploymentImpl>,
     Path(repo_id): Path<Uuid>,
     Query(query): Query<ListPullRequestSummariesQuery>,
-) -> Result<ResponseJson<ApiResponse<Vec<PullRequestSummary>, ListPrsError>>, ApiError> {
+) -> Result<Response, ApiError> {
     let repo = deployment
         .repo()
         .get_by_id(&deployment.db().pool, repo_id)
         .await?;
     let remote = deployment.git().get_default_remote(&repo.path)?;
     if GitHostService::from_url(&remote.url).is_err() {
-        return Ok(ResponseJson(ApiResponse::error_with_data(
-            ListPrsError::UnsupportedProvider,
-        )));
+        return Ok(ResponseJson(
+            ApiResponse::<Vec<PullRequestSummary>, ListPrsError>::error_with_data(
+                ListPrsError::UnsupportedProvider,
+            ),
+        )
+        .into_response());
     }
     let provider = GitHubProvider::new()?;
+    let cache = pull_request_summaries_cache();
     let cache_key = PullRequestSummariesCacheKey {
         repo_path: repo.path.clone(),
         remote_url: remote.url.clone(),
         involves_me: query.involves_me,
     };
+
+    // Explicit user refresh (the toolbar button): fetch synchronously so the
+    // caller sees the updated list. It's user-initiated and usually warm.
     if query.refresh {
-        pull_request_summaries_cache().invalidate(&cache_key).await;
-    }
-    match pull_request_summaries_cache()
-        .get_or_try_init(cache_key, || async move {
-            provider
+        return Ok(
+            match provider
                 .list_pull_request_summaries(&repo.path, &remote.url, query.involves_me)
                 .await
-        })
-        .await
-    {
-        Ok(prs) => Ok(ResponseJson(ApiResponse::success(prs))),
-        Err(GitHostError::CliNotInstalled { provider }) => Ok(ResponseJson(
-            ApiResponse::error_with_data(ListPrsError::CliNotInstalled { provider }),
-        )),
-        Err(GitHostError::AuthFailed(message)) => Ok(ResponseJson(ApiResponse::error_with_data(
-            ListPrsError::AuthFailed { message },
-        ))),
-        Err(e) => {
-            tracing::error!("Failed to list pull requests for repo {repo_id}: {e}");
-            Ok(ResponseJson(ApiResponse::error(&e.to_string())))
+            {
+                Ok(prs) => {
+                    cache.store(cache_key, prs.clone()).await;
+                    summaries_response(prs, false)
+                }
+                Err(error) => summaries_error_response(error, repo_id),
+            },
+        );
+    }
+
+    match cache.peek(&cache_key).await {
+        // Fresh within the TTL — serve directly, no fetch.
+        Cached::Fresh(prs) => Ok(summaries_response(prs, false)),
+        // Stale — serve the old list immediately and refresh in the background.
+        Cached::Stale(prs) => {
+            if cache.begin_refresh(cache_key.clone()).await {
+                spawn_summaries_refresh(
+                    cache,
+                    cache_key,
+                    provider,
+                    repo.path.clone(),
+                    remote.url.clone(),
+                    query.involves_me,
+                );
+            }
+            Ok(summaries_response(prs, true))
+        }
+        // Cold — wait briefly for `gh` (so quick failures still surface as
+        // errors and fast repos return real data), then hand off to the
+        // background and return an empty, warming list.
+        Cached::Missing => {
+            if !cache.begin_refresh(cache_key.clone()).await {
+                // Another cold request is already fetching; let it fill the cache.
+                return Ok(summaries_response(Vec::new(), true));
+            }
+            let handle = spawn_summaries_refresh(
+                cache,
+                cache_key,
+                provider,
+                repo.path.clone(),
+                remote.url.clone(),
+                query.involves_me,
+            );
+            match tokio::time::timeout(SUMMARIES_COLD_WAIT, handle).await {
+                Ok(Ok(Ok(prs))) => Ok(summaries_response(prs, false)),
+                Ok(Ok(Err(error))) => Ok(summaries_error_response(error, repo_id)),
+                // Task panicked — degrade to a warming empty list rather than 500.
+                Ok(Err(_join_error)) => Ok(summaries_response(Vec::new(), true)),
+                // Still running: it keeps going in the background and warms the
+                // cache; the client polls on the warming header.
+                Err(_elapsed) => Ok(summaries_response(Vec::new(), true)),
+            }
         }
     }
 }

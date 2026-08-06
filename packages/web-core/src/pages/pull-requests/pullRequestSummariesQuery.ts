@@ -4,6 +4,11 @@ import { repoApi } from '@/shared/lib/api';
 // backend PR cache TTL (see PULL_REQUEST_CACHE_TTL_SECS).
 export const PR_QUERY_STALE_TIME_MS = 60_000;
 
+// While the backend reports the list is warming (a background `gh` refresh is
+// running because the cache was cold/stale), poll at this cadence so the freshly
+// fetched list appears shortly after it lands, then polling stops.
+export const PR_WARMING_POLL_MS = 3_000;
+
 export function pullRequestSummariesQueryKey(
   repository: string,
   involvesMe: boolean

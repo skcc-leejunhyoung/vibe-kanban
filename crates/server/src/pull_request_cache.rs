@@ -1,10 +1,121 @@
-use std::{future::Future, hash::Hash, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    hash::Hash,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use moka::future::Cache;
 use tokio::sync::OnceCell;
 
 pub struct PullRequestCache<K, V> {
     entries: Cache<K, Arc<OnceCell<V>>>,
+}
+
+/// Result of peeking a [`SwrCache`] entry without triggering a fetch.
+pub enum Cached<V> {
+    /// A value fetched within the freshness TTL.
+    Fresh(V),
+    /// A value past the freshness TTL — safe to serve while a refresh runs.
+    Stale(V),
+    /// No value cached yet.
+    Missing,
+}
+
+struct Stamped<V> {
+    value: V,
+    stored_at: Instant,
+}
+
+struct SwrSlot<V> {
+    value: RwLock<Option<Stamped<V>>>,
+    /// Guards against spawning more than one background refresh per key.
+    refreshing: AtomicBool,
+}
+
+/// Stale-while-revalidate cache: reads never block on the fetch. A caller peeks
+/// the current value (fresh/stale/missing) and, when it's stale or missing,
+/// runs the fetch in the background so the tunnel-facing request returns
+/// immediately instead of hanging on a slow `gh` call.
+///
+/// Unlike [`PullRequestCache`], expired entries are kept (served as `Stale`)
+/// rather than evicted, so a refresh always has a prior value to fall back to.
+/// `time_to_idle` only bounds memory for keys nobody reads anymore.
+pub struct SwrCache<K, V> {
+    entries: Cache<K, Arc<SwrSlot<V>>>,
+    ttl: Duration,
+}
+
+impl<K, V> SwrCache<K, V>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            entries: Cache::builder()
+                .max_capacity(500)
+                .time_to_idle(Duration::from_secs(3600))
+                .build(),
+            ttl,
+        }
+    }
+
+    async fn slot(&self, key: K) -> Arc<SwrSlot<V>> {
+        self.entries
+            .get_with(key, async {
+                Arc::new(SwrSlot {
+                    value: RwLock::new(None),
+                    refreshing: AtomicBool::new(false),
+                })
+            })
+            .await
+    }
+
+    /// Returns the currently cached value and its freshness without fetching.
+    pub async fn peek(&self, key: &K) -> Cached<V> {
+        let Some(slot) = self.entries.get(key).await else {
+            return Cached::Missing;
+        };
+        let guard = slot.value.read().expect("swr cache lock poisoned");
+        match guard.as_ref() {
+            None => Cached::Missing,
+            Some(stamped) if stamped.stored_at.elapsed() < self.ttl => {
+                Cached::Fresh(stamped.value.clone())
+            }
+            Some(stamped) => Cached::Stale(stamped.value.clone()),
+        }
+    }
+
+    /// Stores a freshly fetched value, stamping it as fresh.
+    pub async fn store(&self, key: K, value: V) {
+        let slot = self.slot(key).await;
+        *slot.value.write().expect("swr cache lock poisoned") = Some(Stamped {
+            value,
+            stored_at: Instant::now(),
+        });
+    }
+
+    /// Claims the single background-refresh slot for `key`. Returns `true` when
+    /// the caller won the claim and should run the refresh; `false` when a
+    /// refresh is already in flight (skip — it will fill the cache).
+    pub async fn begin_refresh(&self, key: K) -> bool {
+        self.slot(key)
+            .await
+            .refreshing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Releases the refresh claim once a background refresh finishes.
+    pub async fn end_refresh(&self, key: &K) {
+        if let Some(slot) = self.entries.get(key).await {
+            slot.refreshing.store(false, Ordering::SeqCst);
+        }
+    }
 }
 
 impl<K, V> PullRequestCache<K, V>
@@ -28,10 +139,6 @@ where
             .get_with(key, async { Arc::new(OnceCell::new()) })
             .await;
         cell.get_or_try_init(init).await.cloned()
-    }
-
-    pub async fn invalidate(&self, key: &K) {
-        self.entries.invalidate(key).await;
     }
 }
 
@@ -85,17 +192,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetches_again_after_invalidation() {
-        let cache = PullRequestCache::new(Duration::from_secs(60));
-        let first = cache
-            .get_or_try_init("key", || async { Ok::<_, ()>(1) })
-            .await;
-        cache.invalidate(&"key").await;
-        let second = cache
-            .get_or_try_init("key", || async { Ok::<_, ()>(2) })
-            .await;
+    async fn swr_serves_stale_before_ttl_and_after() {
+        // ttl=0 makes every stored value immediately stale, so we can assert the
+        // fresh-vs-stale transition without sleeping.
+        let fresh = SwrCache::<&str, i32>::new(Duration::from_secs(60));
+        assert!(matches!(fresh.peek(&"k").await, Cached::Missing));
+        fresh.store("k", 1).await;
+        assert!(matches!(fresh.peek(&"k").await, Cached::Fresh(1)));
 
-        assert_eq!(first, Ok(1));
-        assert_eq!(second, Ok(2));
+        let stale = SwrCache::<&str, i32>::new(Duration::from_millis(0));
+        stale.store("k", 7).await;
+        assert!(matches!(stale.peek(&"k").await, Cached::Stale(7)));
+    }
+
+    #[tokio::test]
+    async fn swr_refresh_claim_is_single_flight() {
+        let cache = SwrCache::<&str, i32>::new(Duration::from_secs(60));
+        assert!(cache.begin_refresh("k").await, "first claim wins");
+        assert!(
+            !cache.begin_refresh("k").await,
+            "second claim blocked while refreshing"
+        );
+        cache.end_refresh(&"k").await;
+        assert!(
+            cache.begin_refresh("k").await,
+            "claim reusable after release"
+        );
     }
 }
