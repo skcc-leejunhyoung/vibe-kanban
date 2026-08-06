@@ -45,8 +45,48 @@ import {
   SelectTrigger,
   SelectValue,
 } from './Select';
+import { CollapsibleSectionHeader } from './CollapsibleSectionHeader';
 
 const LOCAL_WORKSPACE_HOST_VALUE = '__local__';
+
+// A labeled date row that shows an em-dash for unset dates and only reveals a
+// native date picker on click — so an empty schedule never renders today's
+// date (an empty <input type="date"> otherwise shows a today-ish placeholder).
+function ScheduleDateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string | null | undefined;
+  onChange: (value: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const date = value?.slice(0, 10) ?? '';
+  return (
+    <label className="flex items-center justify-between gap-base text-sm">
+      <span className="text-low">{label}</span>
+      {editing || date ? (
+        <input
+          type="date"
+          autoFocus={editing}
+          value={date}
+          onChange={(event) => onChange(event.target.value || null)}
+          onBlur={() => setEditing(false)}
+          className="rounded-sm bg-panel px-base py-half text-normal"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="rounded-sm px-base py-half text-low hover:text-normal"
+        >
+          —
+        </button>
+      )}
+    </label>
+  );
+}
 
 export type IssuePanelMode = 'create' | 'edit';
 type IssuePriority = IssuePropertyRowProps['priority'];
@@ -739,117 +779,106 @@ export function KanbanIssuePanel({
         )}
 
         {/* Issue Schedule Section (Edit mode only) */}
-        {!isCreateMode && issueId && (
-          <div className="border-t px-base py-base flex flex-col gap-base">
-            <div className="flex flex-wrap items-center gap-base">
-              <span className="text-xs font-medium text-low">
-                {t('kanban.issueSchedule', 'Issue schedule')}
-              </span>
-              {onMilestoneChange && (
-                <Select
-                  value={milestoneId ?? '__none__'}
-                  onValueChange={(value) => {
-                    if (value === '__create__') onCreateMilestone?.();
-                    else onMilestoneChange(value === '__none__' ? null : value);
-                  }}
-                >
-                  <SelectTrigger className="w-auto min-w-40">
-                    <SelectValue
-                      placeholder={t('kanban.milestones', 'Milestone')}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">
-                      {t('kanban.noMilestone', 'No milestone')}
-                    </SelectItem>
-                    {milestones.map((milestone) => (
-                      <SelectItem key={milestone.id} value={milestone.id}>
-                        {milestone.name}
-                      </SelectItem>
-                    ))}
-                    {onCreateMilestone && (
-                      <SelectItem value="__create__">
-                        {t('kanban.createMilestone', '+ Create milestone')}
-                      </SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
-              )}
-              {onDateChange && (
-                <>
-                  <label className="flex items-center gap-half text-sm text-low">
-                    {t('kanban.startDate', 'Start')}
-                    <input
-                      type="date"
-                      value={startDate?.slice(0, 10) ?? ''}
-                      onChange={(event) =>
-                        onDateChange('start_date', event.target.value || null)
-                      }
-                      className="rounded-sm bg-panel px-base py-half text-normal"
-                    />
-                  </label>
-                  <label className="flex items-center gap-half text-sm text-low">
-                    {t('kanban.completedDate', 'Completed')}
-                    <input
-                      type="date"
-                      value={completedAt?.slice(0, 10) ?? ''}
-                      onChange={(event) =>
-                        onDateChange('completed_at', event.target.value || null)
-                      }
-                      className="rounded-sm bg-panel px-base py-half text-normal"
-                    />
-                  </label>
-                  <label className="flex items-center gap-half text-sm text-low">
-                    {t('kanban.targetDate', 'Target')}
-                    <input
-                      type="date"
-                      value={targetDate?.slice(0, 10) ?? ''}
-                      onChange={(event) =>
-                        onDateChange('target_date', event.target.value || null)
-                      }
-                      className="rounded-sm bg-panel px-base py-half text-normal"
-                    />
-                  </label>
-                </>
-              )}
-            </div>
-            {milestoneId &&
-              onMilestoneUpdate &&
-              (() => {
-                const selectedMilestone = milestones.find(
-                  (milestone) => milestone.id === milestoneId
-                );
-                if (!selectedMilestone) return null;
-                return (
-                  <div className="flex flex-wrap items-center gap-base">
-                    <span className="text-xs font-medium text-low">
-                      {t('kanban.milestoneSchedule', 'Milestone schedule')}
+        {!isCreateMode && issueId && (onMilestoneChange || onDateChange) && (
+          <div className="border-t">
+            <CollapsibleSectionHeader
+              title={t('kanban.issueSchedule', 'Issue schedule')}
+              persistKey="kanban-issue-schedule"
+              defaultExpanded={true}
+            >
+              <div className="p-base flex flex-col gap-base border-t">
+                {onMilestoneChange && (
+                  <div className="flex items-center justify-between gap-base text-sm">
+                    <span className="text-low">
+                      {t('kanban.milestones', 'Milestone')}
                     </span>
-                    {(
-                      ['start_date', 'target_date', 'completed_at'] as const
-                    ).map((field) => (
-                      <label
-                        key={field}
-                        className="flex items-center gap-half text-sm text-low"
-                      >
-                        {field === 'start_date'
-                          ? t('kanban.startDate', 'Start')
-                          : field === 'target_date'
-                            ? t('kanban.targetDate', 'Target')
-                            : t('kanban.completedDate', 'Completed')}
-                        <input
-                          type="date"
-                          value={selectedMilestone[field]?.slice(0, 10) ?? ''}
-                          onChange={(event) =>
-                            onMilestoneUpdate(field, event.target.value || null)
-                          }
-                          className="rounded-sm bg-panel px-base py-half text-normal"
+                    <Select
+                      value={milestoneId ?? '__none__'}
+                      onValueChange={(value) => {
+                        if (value === '__create__') onCreateMilestone?.();
+                        else
+                          onMilestoneChange(
+                            value === '__none__' ? null : value
+                          );
+                      }}
+                    >
+                      <SelectTrigger className="w-auto min-w-40">
+                        <SelectValue
+                          placeholder={t('kanban.milestones', 'Milestone')}
                         />
-                      </label>
-                    ))}
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">
+                          {t('kanban.noMilestone', 'No milestone')}
+                        </SelectItem>
+                        {milestones.map((milestone) => (
+                          <SelectItem key={milestone.id} value={milestone.id}>
+                            {milestone.name}
+                          </SelectItem>
+                        ))}
+                        {onCreateMilestone && (
+                          <SelectItem value="__create__">
+                            {t('kanban.createMilestone', '+ Create milestone')}
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
                   </div>
-                );
-              })()}
+                )}
+                {onDateChange && (
+                  <>
+                    <ScheduleDateField
+                      label={t('kanban.startDate', 'Start')}
+                      value={startDate}
+                      onChange={(value) => onDateChange('start_date', value)}
+                    />
+                    <ScheduleDateField
+                      label={t('kanban.completedDate', 'Completed')}
+                      value={completedAt}
+                      onChange={(value) => onDateChange('completed_at', value)}
+                    />
+                    <ScheduleDateField
+                      label={t('kanban.targetDate', 'Target')}
+                      value={targetDate}
+                      onChange={(value) => onDateChange('target_date', value)}
+                    />
+                  </>
+                )}
+                {milestoneId &&
+                  onMilestoneUpdate &&
+                  (() => {
+                    const selectedMilestone = milestones.find(
+                      (milestone) => milestone.id === milestoneId
+                    );
+                    if (!selectedMilestone) return null;
+                    return (
+                      <div className="flex flex-col gap-base border-t pt-base">
+                        <span className="text-xs font-medium text-low">
+                          {t('kanban.milestoneSchedule', 'Milestone schedule')}
+                        </span>
+                        {(
+                          ['start_date', 'target_date', 'completed_at'] as const
+                        ).map((field) => (
+                          <ScheduleDateField
+                            key={field}
+                            label={
+                              field === 'start_date'
+                                ? t('kanban.startDate', 'Start')
+                                : field === 'target_date'
+                                  ? t('kanban.targetDate', 'Target')
+                                  : t('kanban.completedDate', 'Completed')
+                            }
+                            value={selectedMilestone[field]}
+                            onChange={(value) =>
+                              onMilestoneUpdate(field, value)
+                            }
+                          />
+                        ))}
+                      </div>
+                    );
+                  })()}
+              </div>
+            </CollapsibleSectionHeader>
           </div>
         )}
 
