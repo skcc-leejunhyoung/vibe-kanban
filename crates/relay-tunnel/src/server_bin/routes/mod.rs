@@ -72,6 +72,10 @@ pub fn build_router(state: RelayAppState) -> Router {
                     HeaderName::from_static("x-vk-resp-ts"),
                     HeaderName::from_static("x-vk-resp-nonce"),
                     HeaderName::from_static("x-vk-resp-signature"),
+                    // Forwarded verbatim from the host; the PR list uses it to
+                    // poll while a cold cache warms. Without exposing it here the
+                    // browser can't read it cross-origin and never polls.
+                    HeaderName::from_static("x-pull-requests-warming"),
                 ])),
         )
         .layer(TraceLayer::new_for_http())
