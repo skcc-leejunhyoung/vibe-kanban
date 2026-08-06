@@ -186,17 +186,20 @@ export const isConditionEffective = (condition: FilterCondition): boolean =>
   !OPERATOR_NEEDS_VALUES[condition.operator] ||
   condition.values.some((value) => value.trim() !== '');
 
+/**
+ * True when a node ultimately constrains the result: an effective condition, or
+ * a group with at least one effective descendant. A group with none (empty, or
+ * holding only half-built conditions) imposes no constraint.
+ */
+export const nodeHasEffectiveCondition = (node: FilterNode): boolean =>
+  node.kind === 'condition'
+    ? isConditionEffective(node)
+    : node.children.some(nodeHasEffectiveCondition);
+
 /** True when the tree contains at least one effective condition. */
 export const isAdvancedFilterActive = (
   filter: AdvancedFilter | null | undefined
-): boolean => {
-  if (!filter) return false;
-  const hasEffective = (node: FilterNode): boolean =>
-    node.kind === 'condition'
-      ? isConditionEffective(node)
-      : node.children.some(hasEffective);
-  return filter.children.some(hasEffective);
-};
+): boolean => !!filter && filter.children.some(nodeHasEffectiveCondition);
 
 /** Strip volatile ids so two trees can be compared structurally. */
 const stripIds = (node: FilterNode): unknown =>
@@ -343,9 +346,12 @@ const evaluateCondition = (
 };
 
 /**
- * Evaluate a filter node against a single issue's facts. Empty groups match
- * everything (so a half-built filter never hides all issues); an empty group
- * wrapped in `negate` therefore matches nothing.
+ * Evaluate a filter node against a single issue's facts. Only children that
+ * actually constrain the result participate: a group with no effective children
+ * — empty, or holding only half-built conditions — imposes no constraint and
+ * matches everything, even under `negate`. This keeps the "in-progress filter
+ * never blanks the board" invariant intact on the negated path too (toggling NOT
+ * on a group before picking a value must not exclude every issue).
  */
 export const evaluateNode = (
   node: FilterNode,
@@ -355,16 +361,12 @@ export const evaluateNode = (
   if (node.kind === 'condition') {
     return evaluateCondition(node, facts, options);
   }
-  let result: boolean;
-  if (node.children.length === 0) {
-    result = true;
-  } else if (node.combinator === 'and') {
-    result = node.children.every((child) =>
-      evaluateNode(child, facts, options)
-    );
-  } else {
-    result = node.children.some((child) => evaluateNode(child, facts, options));
-  }
+  const effective = node.children.filter(nodeHasEffectiveCondition);
+  if (effective.length === 0) return true;
+  const result =
+    node.combinator === 'and'
+      ? effective.every((child) => evaluateNode(child, facts, options))
+      : effective.some((child) => evaluateNode(child, facts, options));
   return node.negate ? !result : result;
 };
 

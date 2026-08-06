@@ -278,10 +278,13 @@ describe('evaluateNode — groups (AND / OR / NOT / nesting)', () => {
     ).toBe(false);
   });
 
-  it('empty group matches all; negated empty group matches none', () => {
+  it('empty group matches all, even when negated (no constraint to invert)', () => {
     expect(evaluateNode(group('and', []), facts(), opts)).toBe(true);
     expect(evaluateNode(group('or', []), facts(), opts)).toBe(true);
-    expect(evaluateNode(group('and', [], true), facts(), opts)).toBe(false);
+    // A NOT wrapped around nothing still imposes no constraint: an empty group
+    // can only exist mid-edit, and must never blank the board.
+    expect(evaluateNode(group('and', [], true), facts(), opts)).toBe(true);
+    expect(evaluateNode(group('or', [], true), facts(), opts)).toBe(true);
   });
 });
 
@@ -358,6 +361,44 @@ describe('evaluateNode — incomplete conditions are ignored', () => {
       cond({ field: 'status', operator: 'any_of', values: [] }),
     ]);
     expect(evaluateNode(tree, facts({ tagIds: ['t-bug'] }), opts)).toBe(true);
+  });
+
+  it('an incomplete condition inside a NOT group does not blank the board', () => {
+    // A negated group whose only child is half-built has no constraint to
+    // invert, so it passes through instead of excluding every issue.
+    const negatedIncomplete = group(
+      'and',
+      [cond({ field: 'status', operator: 'any_of', values: [] })],
+      true
+    );
+    expect(evaluateNode(negatedIncomplete, facts(), opts)).toBe(true);
+
+    // The real-world trigger: an active tree (a real status condition) with a
+    // sibling NOT group that is still being built. The board must filter by the
+    // real condition, not go empty.
+    const tree = group('and', [
+      cond({ field: 'tag', operator: 'any_of', values: ['t-bug'] }),
+      group(
+        'and',
+        [cond({ field: 'assignee', operator: 'any_of', values: [] })],
+        true
+      ),
+    ]);
+    expect(evaluateNode(tree, facts({ tagIds: ['t-bug'] }), opts)).toBe(true);
+    expect(evaluateNode(tree, facts({ tagIds: ['t-x'] }), opts)).toBe(false);
+
+    // Once the negated condition becomes effective it constrains again.
+    const complete = group(
+      'and',
+      [cond({ field: 'assignee', operator: 'any_of', values: ['u1'] })],
+      true
+    );
+    expect(
+      evaluateNode(complete, facts({ assigneeUserIds: ['u1'] }), opts)
+    ).toBe(false);
+    expect(
+      evaluateNode(complete, facts({ assigneeUserIds: ['u9'] }), opts)
+    ).toBe(true);
   });
 });
 
