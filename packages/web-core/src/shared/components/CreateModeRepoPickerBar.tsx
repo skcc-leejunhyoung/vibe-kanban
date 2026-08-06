@@ -44,7 +44,8 @@ import {
 } from '@/shared/dialogs/command-bar/selections/repoSelection';
 import {
   WorkingBranchRow,
-  type LockedWorkingBranch,
+  LockedBranchButton,
+  type LockedBranch,
 } from '@/shared/components/WorkingBranchRow';
 import { pickBranchForRepo } from '@/shared/lib/branchPicker';
 
@@ -79,8 +80,18 @@ const repoRowButtonClassName =
  * fork from (default), type a new feature branch, or auto-generate one from the
  * configured target-branch prefix + template. The "new"/"auto" modes create a
  * fresh branch off the repo's default branch on the backend.
+ *
+ * When `locked` is set, a toggle fixes this repo's target branch (the GitHub
+ * linked branch, or — in review mode — the PR head branch), so the control is
+ * shown read-only and points the user back at the toggle.
  */
-function RepoTargetBranchControl({ repo }: { repo: Repo }) {
+function RepoTargetBranchControl({
+  repo,
+  locked,
+}: {
+  repo: Repo;
+  locked?: LockedBranch | null;
+}) {
   const { t } = useTranslation('common');
   const { config } = useUserSystem();
   const {
@@ -148,6 +159,20 @@ function RepoTargetBranchControl({ repo }: { repo: Repo }) {
     },
     [repo.id, setTargetBranch]
   );
+
+  if (locked) {
+    return (
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-half">
+          <span className="flex min-w-0 flex-1 items-center gap-half text-sm text-normal">
+            <GitBranchIcon className="size-icon-xs shrink-0" weight="bold" />
+            <span className="truncate">{locked.label}</span>
+          </span>
+          <LockedBranchButton locked={locked} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-w-0 flex-1">
@@ -226,13 +251,19 @@ function RepoTargetBranchControl({ repo }: { repo: Repo }) {
 
 interface CreateModeRepoPickerBarProps {
   onContinueToPrompt: () => void;
-  /** When a toggle fixes the working branch, lock the working-branch selector. */
-  lockedWorkingBranch?: LockedWorkingBranch | null;
+  /** When a toggle fixes the working branch (review mode), lock its selector. */
+  lockedWorkingBranch?: LockedBranch | null;
+  /**
+   * When a toggle fixes the (single) repo's target branch — the GitHub linked
+   * branch, or the PR head branch in review mode — lock the target selector.
+   */
+  lockedTargetBranch?: LockedBranch | null;
 }
 
 export function CreateModeRepoPickerBar({
   onContinueToPrompt,
   lockedWorkingBranch,
+  lockedTargetBranch,
 }: CreateModeRepoPickerBarProps) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
@@ -390,7 +421,10 @@ export function CreateModeRepoPickerBar({
                       {repoDisplayName}
                     </span>
                     <span className="h-3 w-px shrink-0 bg-border/70" />
-                    <RepoTargetBranchControl repo={repo} />
+                    <RepoTargetBranchControl
+                      repo={repo}
+                      locked={repos.length === 1 ? lockedTargetBranch : null}
+                    />
                     <span className="h-3 w-px shrink-0 bg-border/70" />
                     <button
                       type="button"

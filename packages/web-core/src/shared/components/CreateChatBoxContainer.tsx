@@ -22,7 +22,7 @@ import type { BaseCodingAgent, Repo } from 'shared/types';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
-import type { LockedWorkingBranch } from './WorkingBranchRow';
+import type { LockedBranch } from './WorkingBranchRow';
 import { ReviewModeBanner } from './ReviewModeBanner';
 import { GithubLinkedBranchBanner } from './GithubLinkedBranchBanner';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
@@ -165,18 +165,32 @@ export function CreateChatBoxContainer({
           repository: linkedIssue.githubRepository,
         }
       : null;
-  // When a toggle has already chosen the working branch, surface it read-only in
-  // the working-branch selector so the user can see the branch and is warned
-  // (rather than silently overridden) if they try to change it. Review mode wins
-  // over the GitHub linked branch since the two banners are mutually exclusive.
-  const lockedWorkingBranch = useMemo<LockedWorkingBranch | null>(() => {
+  // Review mode fixes the working branch to the PR head branch, so surface it
+  // read-only in the working-branch selector (warn on change). The GitHub linked
+  // branch does NOT touch the working branch — it only redirects the target
+  // branch — so it is absent here.
+  const lockedWorkingBranch = useMemo<LockedBranch | null>(() => {
     if (reviewMode.prReviewPayload && reviewMode.headBranch) {
       return {
         label: reviewMode.headBranch,
         toggleName: t('createMode.reviewMode.toggleLabel', 'Review mode'),
       };
     }
-    if (workingBranch.mode === 'github_linked_branch') {
+    return null;
+  }, [reviewMode.prReviewPayload, reviewMode.headBranch, t]);
+
+  // A toggle can fix the (single) repo's target branch: the GitHub linked branch
+  // (created/reused at submit), or — in review mode, where both branches are the
+  // PR — the PR head branch. Reflected read-only in the target selector and the
+  // chat footer. Review wins; the two banners are mutually exclusive anyway.
+  const lockedTargetBranch = useMemo<LockedBranch | null>(() => {
+    if (reviewMode.prReviewPayload && reviewMode.headBranch) {
+      return {
+        label: reviewMode.headBranch,
+        toggleName: t('createMode.reviewMode.toggleLabel', 'Review mode'),
+      };
+    }
+    if (useGithubLinkedTarget && githubLinkedBranchSource) {
       return {
         label: t('createMode.workingBranch.githubLinkedShort'),
         toggleName: t(
@@ -186,23 +200,29 @@ export function CreateChatBoxContainer({
       };
     }
     return null;
-  }, [reviewMode.prReviewPayload, reviewMode.headBranch, workingBranch, t]);
+  }, [
+    reviewMode.prReviewPayload,
+    reviewMode.headBranch,
+    useGithubLinkedTarget,
+    githubLinkedBranchSource,
+    t,
+  ]);
 
-  // The chat-box footer shows the branch the workspace will run on. When a
-  // toggle has locked the working branch, reflect that branch (with a lock
-  // marker) instead of the per-repo target branch, so the auto-selected branch
-  // is visible right in the chat input — not only on the repo-picker step.
+  // The chat-box footer shows the branch the workspace targets. When a toggle
+  // has locked the target branch, reflect that branch (with a lock marker) so
+  // the auto-selected branch is visible right in the chat input — not only on
+  // the repo-picker step.
   const repoSummaryLabel = useMemo(() => {
     if (repos.length === 1) {
       const repo = repos[0];
       if (!repo) return '0 repositories selected';
-      if (lockedWorkingBranch) {
+      if (lockedTargetBranch) {
         return (
           <span className="inline-flex min-w-0 items-center gap-half">
             <LockIcon className="size-icon-2xs shrink-0" weight="bold" />
             <span className="truncate">
               {`${getRepoDisplayName(repo)} · ${truncateBranchLabel(
-                lockedWorkingBranch.label
+                lockedTargetBranch.label
               )}`}
             </span>
           </span>
@@ -216,13 +236,13 @@ export function CreateChatBoxContainer({
     }
 
     return `${repos.length} repositories selected`;
-  }, [repos, targetBranches, lockedWorkingBranch]);
+  }, [repos, targetBranches, lockedTargetBranch]);
 
   const repoSummaryTitle = useMemo(() => {
-    if (repos.length === 1 && lockedWorkingBranch) {
+    if (repos.length === 1 && lockedTargetBranch) {
       const repo = repos[0];
       if (repo) {
-        return `${getRepoDisplayName(repo)} (${lockedWorkingBranch.label})`;
+        return `${getRepoDisplayName(repo)} (${lockedTargetBranch.label})`;
       }
     }
     return repos
@@ -231,7 +251,7 @@ export function CreateChatBoxContainer({
         return `${getRepoDisplayName(repo)} (${branch})`;
       })
       .join('\n');
-  }, [repos, targetBranches, lockedWorkingBranch]);
+  }, [repos, targetBranches, lockedTargetBranch]);
 
   // Each repo needs a non-empty target branch; for the create modes
   // ("new"/"auto") the name must also pass branch-name validation.
@@ -514,6 +534,7 @@ export function CreateChatBoxContainer({
               <CreateModeRepoPickerBar
                 onContinueToPrompt={() => setIsSelectingRepos(false)}
                 lockedWorkingBranch={lockedWorkingBranch}
+                lockedTargetBranch={lockedTargetBranch}
               />
             </>
           )}

@@ -19,15 +19,48 @@ import {
 } from '@/features/create-mode/model/workingBranch';
 
 /**
- * A branch chosen for the workspace by an active toggle (GitHub linked branch
- * or review mode's PR head branch). When set, the working branch is fixed and
- * the selector becomes read-only.
+ * A branch fixed by an active toggle (review mode's PR head branch, or a
+ * GitHub-issue-linked target branch). When set, the matching selector shows the
+ * branch read-only instead of its editable control.
  */
-export interface LockedWorkingBranch {
+export interface LockedBranch {
   /** Branch name / preview to display. */
   label: string;
   /** Name of the toggle that owns the branch, shown in the warning dialog. */
   toggleName: string;
+}
+
+/**
+ * Read-only stand-in for a branch selector's control when a toggle owns the
+ * branch. Clicking explains — via a warning dialog — that the branch is
+ * toggle-controlled and can only be changed by turning the toggle off. Shared by
+ * the working-branch row and the per-repo target-branch control.
+ */
+export function LockedBranchButton({ locked }: { locked: LockedBranch }) {
+  const { t } = useTranslation('common');
+  const showWarning = useCallback(() => {
+    void ConfirmDialog.show({
+      title: t('createMode.workingBranch.locked.title'),
+      message: t('createMode.workingBranch.locked.message', {
+        toggle: locked.toggleName,
+      }),
+      variant: 'info',
+      showCancelButton: false,
+      confirmText: t('createMode.workingBranch.locked.button'),
+    });
+  }, [locked.toggleName, t]);
+
+  return (
+    <button
+      type="button"
+      onClick={showWarning}
+      title={locked.toggleName}
+      className="ml-auto inline-flex shrink-0 items-center gap-half rounded-sm px-half py-half text-sm text-low hover:text-high"
+    >
+      <LockIcon className="size-icon-2xs" weight="bold" />
+      <span className="max-w-[140px] truncate">{locked.toggleName}</span>
+    </button>
+  );
 }
 
 /**
@@ -36,15 +69,11 @@ export interface LockedWorkingBranch {
  * modes: auto (issue-template or `vk/…`), an explicit new name, or an existing
  * branch to continue on (single-repo only).
  *
- * When `locked` is set, a toggle (GitHub linked branch / review mode) has
- * already chosen the branch: it is shown read-only and changing it pops a
- * warning that points the user back at the toggle.
+ * When `locked` is set (review mode fixes the working branch to the PR head
+ * branch), it is shown read-only and changing it pops a warning that points the
+ * user back at the toggle.
  */
-export function WorkingBranchRow({
-  locked,
-}: {
-  locked?: LockedWorkingBranch | null;
-}) {
+export function WorkingBranchRow({ locked }: { locked?: LockedBranch | null }) {
   const { t } = useTranslation('common');
   const { repos, workingBranch, setWorkingBranch, linkedIssue } =
     useCreateMode();
@@ -118,19 +147,6 @@ export function WorkingBranchRow({
     [setWorkingBranch]
   );
 
-  const showLockedWarning = useCallback(() => {
-    if (!locked) return;
-    void ConfirmDialog.show({
-      title: t('createMode.workingBranch.locked.title'),
-      message: t('createMode.workingBranch.locked.message', {
-        toggle: locked.toggleName,
-      }),
-      variant: 'info',
-      showCancelButton: false,
-      confirmText: t('createMode.workingBranch.locked.button'),
-    });
-  }, [locked, t]);
-
   const modeLabel = t(`createMode.workingBranch.modes.${workingBranch.mode}`);
 
   if (repos.length === 0) return null;
@@ -152,15 +168,7 @@ export function WorkingBranchRow({
               {locked.label}
             </span>
           </div>
-          <button
-            type="button"
-            onClick={showLockedWarning}
-            title={locked.toggleName}
-            className="ml-auto inline-flex shrink-0 items-center gap-half rounded-sm px-half py-half text-sm text-low hover:text-high"
-          >
-            <LockIcon className="size-icon-2xs" weight="bold" />
-            <span className="max-w-[140px] truncate">{locked.toggleName}</span>
-          </button>
+          <LockedBranchButton locked={locked} />
         </div>
       </div>
     );
@@ -211,10 +219,6 @@ export function WorkingBranchRow({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {/* GitHub linked branch is enabled only via its banner toggle (which
-                self-locks this selector), so it is intentionally not offered
-                here — selecting it would lock the selector with no same-step way
-                back. */}
             <DropdownMenuItem onClick={selectAuto}>
               {t('createMode.workingBranch.modes.auto')}
             </DropdownMenuItem>
