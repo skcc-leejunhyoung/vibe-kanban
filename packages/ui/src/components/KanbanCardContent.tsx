@@ -229,6 +229,44 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
             {displayId}
           </span>
           {isLoading && <RunningDots />}
+          {(pullRequests.length > 0 || githubIssues.length > 0) && (
+            <div className="flex items-center gap-half shrink-0">
+              {pullRequests.slice(0, 2).map((pr) => (
+                <PrBadge
+                  key={pr.id}
+                  number={pr.number}
+                  url={pr.url}
+                  status={pr.status}
+                />
+              ))}
+              {pullRequests.length > 2 && (
+                <span className="text-sm text-low">
+                  +{pullRequests.length - 2}
+                </span>
+              )}
+              {githubIssues.slice(0, 2).map((gh) => (
+                <a
+                  key={gh.id}
+                  href={gh.url}
+                  title={`${gh.repository}#${gh.number}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    openExternalUrl(gh.url);
+                  }}
+                  className="inline-flex items-center gap-half rounded bg-secondary px-1.5 py-0.5 text-xs font-medium text-low transition-colors hover:underline"
+                >
+                  <GithubLogoIcon className="size-icon-2xs" weight="bold" />
+                  <span>#{gh.number}</span>
+                </a>
+              ))}
+              {githubIssues.length > 2 && (
+                <span className="text-sm text-low">
+                  +{githubIssues.length - 2}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         {(onOpenInNewTabClick || onMoreActionsClick) && (
           <div
@@ -334,12 +372,8 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
         )}
       </div>
 
-      {/* Row 5: Tags, PRs, Relationships (own row to prevent overflow) */}
-      {(tags.length > 0 ||
-        tagEditProps ||
-        pullRequests.length > 0 ||
-        githubIssues.length > 0 ||
-        relationships.length > 0) && (
+      {/* Row 5: Tags, Relationships (own row to prevent overflow) */}
+      {(tags.length > 0 || tagEditProps || relationships.length > 0) && (
         <div className="flex items-center gap-half flex-wrap min-w-0">
           {tagEditProps ? (
             (tagEditProps.renderTagEditor?.({
@@ -358,36 +392,6 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
                 <span className="text-sm text-low">+{tags.length - 2}</span>
               )}
             </>
-          )}
-          {pullRequests.slice(0, 2).map((pr) => (
-            <PrBadge
-              key={pr.id}
-              number={pr.number}
-              url={pr.url}
-              status={pr.status}
-            />
-          ))}
-          {pullRequests.length > 2 && (
-            <span className="text-sm text-low">+{pullRequests.length - 2}</span>
-          )}
-          {githubIssues.slice(0, 2).map((gh) => (
-            <a
-              key={gh.id}
-              href={gh.url}
-              title={`${gh.repository}#${gh.number}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                openExternalUrl(gh.url);
-              }}
-              className="inline-flex items-center gap-half rounded bg-secondary px-1.5 py-0.5 text-xs font-medium text-low transition-colors hover:underline"
-            >
-              <GithubLogoIcon className="size-icon-2xs" weight="bold" />
-              <span>#{gh.number}</span>
-            </a>
-          ))}
-          {githubIssues.length > 2 && (
-            <span className="text-sm text-low">+{githubIssues.length - 2}</span>
           )}
           {relationships.slice(0, 2).map((rel) => (
             <RelationshipBadge
