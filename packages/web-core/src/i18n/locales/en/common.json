@@ -642,12 +642,10 @@
       "modes": {
         "auto": "Auto",
         "new": "Custom name",
-        "existing": "Existing branch",
-        "github_linked_branch": "GitHub linked branch"
+        "existing": "Existing branch"
       },
       "autoPreviewPrefixed": "{{prefix}}/… (auto)",
       "autoPreviewPlain": "Auto-generated",
-      "githubLinkedPreview": "Issue's linked branch on {{repository}}",
       "newPlaceholder": "e.g. feature/login",
       "singleRepoOnly": "(single repo only)",
       "errors": {

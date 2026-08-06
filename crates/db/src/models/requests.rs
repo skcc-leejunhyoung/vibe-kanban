@@ -24,6 +24,25 @@ pub struct WorkspaceRepoInput {
     /// false (the legacy "existing branch" behavior) for older clients.
     #[serde(default)]
     pub create_target_branch: bool,
+    /// When set, the repo's effective `target_branch` becomes the GitHub issue's
+    /// linked branch: reused if the issue already has one, otherwise created on
+    /// GitHub (the "Create a branch for this issue" equivalent) forked from
+    /// `target_branch`'s tip. The working branch then forks from — and PRs merge
+    /// into — that linked branch. The incoming `target_branch` is used only as
+    /// the fork base.
+    #[ts(optional)]
+    #[serde(default)]
+    pub github_linked_branch: Option<GithubLinkedBranchInput>,
+}
+
+/// Identifies the GitHub issue whose linked branch should back a repo's target
+/// branch. `issue_node_id` is the issue's GraphQL node id
+/// (`github_issue_links.github_node_id`); `repository` is `owner/repo`
+/// (`github_issue_links.repository`), used to confirm the local checkout matches.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct GithubLinkedBranchInput {
+    pub issue_node_id: String,
+    pub repository: String,
 }
 
 /// Review-mode payload: when present on a create request, the workspace works
@@ -73,20 +92,6 @@ pub enum WorkingBranchInput {
     /// Check out an existing branch with this name instead of creating one
     /// (continue work). Single-repo only; rejected if the branch is missing.
     Existing { name: String },
-    /// Use the GitHub linked branch for the issue mapped to this workspace's
-    /// repo. If the issue already has a linked branch it is checked out;
-    /// otherwise one is created on GitHub (the "Create a branch for this issue"
-    /// equivalent), forked from the repo's target branch tip on the remote.
-    /// Single-repo only; the repo must be a clone of the issue's GitHub repo.
-    GithubLinkedBranch {
-        /// The GitHub issue's GraphQL node id
-        /// (`github_issue_links.github_node_id`).
-        issue_node_id: String,
-        /// The issue's GitHub repository in `owner/repo` form
-        /// (`github_issue_links.repository`), used to confirm the local repo
-        /// matches before touching its linked branches.
-        repository: String,
-    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

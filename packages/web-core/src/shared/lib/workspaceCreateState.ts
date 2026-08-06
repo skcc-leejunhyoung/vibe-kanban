@@ -109,21 +109,6 @@ export function toDraftWorkspaceData(
   initialState: CreateModeInitialState
 ): DraftWorkspaceData {
   const linkedIssue = initialState.linkedIssue;
-  // A GitHub-linked issue defaults to the "GitHub linked branch" mode: reuse the
-  // issue's linked branch, or create one (the "Create a branch for this issue"
-  // equivalent). The variant itself carries the node id + repo, so the draft
-  // persists everything the create route needs without extra fields. The user
-  // can still switch to auto/new/existing in the branch selector. Single-repo
-  // only; if the resolved repo set is larger, the selector falls back to auto.
-  const githubLinkedBranch =
-    linkedIssue?.githubNodeId && linkedIssue?.githubRepository
-      ? {
-          mode: 'github_linked_branch' as const,
-          issue_node_id: linkedIssue.githubNodeId,
-          repository: linkedIssue.githubRepository,
-        }
-      : null;
-
   return {
     message: initialState.initialPrompt ?? '',
     repos:
@@ -140,14 +125,15 @@ export function toDraftWorkspaceData(
           simple_id: linkedIssue.simpleId ?? '',
           title: linkedIssue.title ?? '',
           remote_project_id: linkedIssue.remoteProjectId,
-          // Persist the GitHub link independently of the working-branch mode so
-          // the "GitHub linked branch" toggle survives switching away + reload.
+          // Persist the GitHub link so the create route can offer the "GitHub
+          // linked branch" target toggle (banner) for this issue.
           github_node_id: linkedIssue.githubNodeId ?? null,
           github_repository: linkedIssue.githubRepository ?? null,
         }
       : null,
     attachments: [],
-    working_branch: githubLinkedBranch,
+    // Seeded drafts always start on the auto working branch.
+    working_branch: null,
   };
 }
 

@@ -63,7 +63,6 @@ export function CreateChatBoxContainer({
     attachments: draftAttachments,
     setAttachments: setDraftAttachments,
     workingBranch,
-    setWorkingBranch,
   } = useCreateMode();
 
   const { createWorkspace, createWorkspaceOnly } = useCreateWorkspace();
@@ -71,6 +70,9 @@ export function CreateChatBoxContainer({
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [hasInitializedStep, setHasInitializedStep] = useState(false);
   const [isSelectingRepos, setIsSelectingRepos] = useState(true);
+  // Whether a GitHub-linked issue's target branch should be its linked branch
+  // (default on; only takes effect when `githubLinkedBranchSource` is set).
+  const [useGithubLinkedTarget, setUseGithubLinkedTarget] = useState(true);
 
   useEffect(() => {
     if (!hasInitialValue || hasInitializedStep) return;
@@ -197,10 +199,8 @@ export function CreateChatBoxContainer({
 
   // `auto` is always fine; `existing` just needs a picked (non-empty) branch;
   // `new` needs a name that passes validation (which also rejects empty).
-  // `auto` and `github_linked_branch` carry no free-form name to validate.
   const isWorkingBranchValid =
-    workingBranch.mode === 'auto' ||
-    workingBranch.mode === 'github_linked_branch'
+    workingBranch.mode === 'auto'
       ? true
       : workingBranch.mode === 'existing'
         ? workingBranch.name.trim().length > 0
@@ -277,8 +277,25 @@ export function CreateChatBoxContainer({
         create_target_branch: targetBranchModeCreates(
           targetBranchModes[r.id] ?? 'existing'
         ),
+        // When on, the backend swaps this repo's target for the issue's GitHub
+        // linked branch (created/reused), forking from the target above. Only
+        // set for the matching single repo (source is null otherwise).
+        ...(useGithubLinkedTarget && githubLinkedBranchSource
+          ? {
+              github_linked_branch: {
+                issue_node_id: githubLinkedBranchSource.nodeId,
+                repository: githubLinkedBranchSource.repository,
+              },
+            }
+          : {}),
       })),
-    [repos, targetBranches, targetBranchModes]
+    [
+      repos,
+      targetBranches,
+      targetBranchModes,
+      useGithubLinkedTarget,
+      githubLinkedBranchSource,
+    ]
   );
 
   const getLinkedIssuePayload = useCallback(
@@ -475,18 +492,8 @@ export function CreateChatBoxContainer({
               {!reviewMode.reviewTagPresent && githubLinkedBranchSource && (
                 <GithubLinkedBranchBanner
                   repository={githubLinkedBranchSource.repository}
-                  enabled={workingBranch.mode === 'github_linked_branch'}
-                  onEnabledChange={(on) =>
-                    setWorkingBranch(
-                      on
-                        ? {
-                            mode: 'github_linked_branch',
-                            issue_node_id: githubLinkedBranchSource.nodeId,
-                            repository: githubLinkedBranchSource.repository,
-                          }
-                        : { mode: 'auto' }
-                    )
-                  }
+                  enabled={useGithubLinkedTarget}
+                  onEnabledChange={setUseGithubLinkedTarget}
                 />
               )}
 

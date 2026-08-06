@@ -84,6 +84,7 @@ mod tests {
             repo_id,
             target_branch: "main".to_string(),
             create_target_branch: false,
+            github_linked_branch: None,
         }
     }
 

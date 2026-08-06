@@ -158,6 +158,7 @@ fn generate_types_content() -> String {
         server::routes::attachments::AttachmentResponse::decl(),
         server::routes::attachments::AttachmentMetadata::decl(),
         db::models::requests::WorkspaceRepoInput::decl(),
+        db::models::requests::GithubLinkedBranchInput::decl(),
         db::models::requests::WorkingBranchInput::decl(),
         db::models::requests::PrReviewInput::decl(),
         server::routes::workspaces::integration::RunAgentSetupRequest::decl(),

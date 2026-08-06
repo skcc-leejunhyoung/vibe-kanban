@@ -55,6 +55,7 @@ pub async fn add_workspace_repo(
         target_branch: payload.target_branch,
         // Adding a repo to an existing workspace always uses an existing branch.
         create_target_branch: false,
+        github_linked_branch: None,
     };
 
     managed_workspace

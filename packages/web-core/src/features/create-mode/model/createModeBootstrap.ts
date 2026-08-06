@@ -161,28 +161,14 @@ export async function resolveCreateModeBootstrap({
     }
 
     if (scratchData.linked_issue) {
-      // Recover the GitHub link from the linked-issue row so the branch
-      // selector can offer the toggle regardless of the current working-branch
-      // mode (i.e. even after the user switched away to auto/new/existing).
-      // Fall back to the `github_linked_branch` variant for older drafts that
-      // predate persisting the link on the linked-issue row.
-      const legacyGithubLinkedBranch =
-        scratchData.working_branch?.mode === 'github_linked_branch'
-          ? scratchData.working_branch
-          : null;
       data.linkedIssue = {
         issueId: scratchData.linked_issue.issue_id,
         simpleId: scratchData.linked_issue.simple_id || undefined,
         title: scratchData.linked_issue.title || undefined,
         remoteProjectId: scratchData.linked_issue.remote_project_id,
-        githubNodeId:
-          scratchData.linked_issue.github_node_id ??
-          legacyGithubLinkedBranch?.issue_node_id ??
-          null,
-        githubRepository:
-          scratchData.linked_issue.github_repository ??
-          legacyGithubLinkedBranch?.repository ??
-          null,
+        // GitHub link drives the "GitHub linked branch" target toggle (banner).
+        githubNodeId: scratchData.linked_issue.github_node_id ?? null,
+        githubRepository: scratchData.linked_issue.github_repository ?? null,
       };
     }
 

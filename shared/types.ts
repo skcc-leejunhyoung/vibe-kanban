@@ -559,20 +559,20 @@ target_branch: string,
  * repo's `default_target_branch` when it doesn't exist yet. Defaults to
  * false (the legacy "existing branch" behavior) for older clients.
  */
-create_target_branch: boolean, };
+create_target_branch: boolean,
+/**
+ * When set, the repo's effective `target_branch` becomes the GitHub issue's
+ * linked branch: reused if the issue already has one, otherwise created on
+ * GitHub (the "Create a branch for this issue" equivalent) forked from
+ * `target_branch`'s tip. The working branch then forks from — and PRs merge
+ * into — that linked branch. The incoming `target_branch` is used only as
+ * the fork base.
+ */
+github_linked_branch?: GithubLinkedBranchInput, };
 
-export type WorkingBranchInput = { "mode": "auto" } | { "mode": "new", name: string, } | { "mode": "existing", name: string, } | { "mode": "github_linked_branch",
-/**
- * The GitHub issue's GraphQL node id
- * (`github_issue_links.github_node_id`).
- */
-issue_node_id: string,
-/**
- * The issue's GitHub repository in `owner/repo` form
- * (`github_issue_links.repository`), used to confirm the local repo
- * matches before touching its linked branches.
- */
-repository: string, };
+export type GithubLinkedBranchInput = { issue_node_id: string, repository: string, };
+
+export type WorkingBranchInput = { "mode": "auto" } | { "mode": "new", name: string, } | { "mode": "existing", name: string, };
 
 export type PrReviewInput = {
 /**

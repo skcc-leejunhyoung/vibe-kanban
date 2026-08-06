@@ -151,6 +151,7 @@ impl McpServer {
                 repo_id: r.repo_id,
                 target_branch: r.branch,
                 create_target_branch: false,
+                github_linked_branch: None,
             })
             .collect();
 

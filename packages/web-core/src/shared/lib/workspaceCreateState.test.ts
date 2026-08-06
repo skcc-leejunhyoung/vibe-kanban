@@ -72,7 +72,7 @@ describe('buildLinkedIssueCreateState', () => {
 });
 
 describe('toDraftWorkspaceData', () => {
-  it('defaults to the GitHub linked-branch mode for a GitHub-linked issue', () => {
+  it('persists the GitHub link on the linked-issue row (drives the target toggle)', () => {
     const draft = toDraftWorkspaceData({
       initialPrompt: 'do the thing',
       linkedIssue: {
@@ -82,20 +82,16 @@ describe('toDraftWorkspaceData', () => {
         githubRepository: 'skcc-ai/c2',
       },
     });
-    expect(draft.working_branch).toEqual({
-      mode: 'github_linked_branch',
-      issue_node_id: 'I_node_1',
-      repository: 'skcc-ai/c2',
-    });
-    // The link is also persisted on the linked-issue row so the toggle can be
-    // restored after switching to another working-branch mode and reloading.
+    // Working branch is unaffected — the linked branch is a target, not the
+    // working branch.
+    expect(draft.working_branch).toBeNull();
     expect(draft.linked_issue).toMatchObject({
       github_node_id: 'I_node_1',
       github_repository: 'skcc-ai/c2',
     });
   });
 
-  it('leaves the working branch unset (auto) without a GitHub link', () => {
+  it('leaves GitHub link null without a mapped GitHub issue', () => {
     const draft = toDraftWorkspaceData({
       initialPrompt: 'do the thing',
       linkedIssue: {
@@ -104,5 +100,9 @@ describe('toDraftWorkspaceData', () => {
       },
     });
     expect(draft.working_branch).toBeNull();
+    expect(draft.linked_issue).toMatchObject({
+      github_node_id: null,
+      github_repository: null,
+    });
   });
 });
