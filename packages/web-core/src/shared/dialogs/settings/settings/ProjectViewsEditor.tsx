@@ -12,7 +12,8 @@ import {
 import { Switch } from '@vibe/ui/components/Switch';
 import { StatusDot } from '@vibe/ui/components/StatusDot';
 import { cn } from '@/shared/lib/utils';
-import type { IssuePriority, ProjectMilestone } from 'shared/remote-types';
+import type { IssuePriority, ProjectMilestone, Tag } from 'shared/remote-types';
+import type { OrganizationMemberWithProfile } from 'shared/types';
 import {
   useUiPreferencesStore,
   buildDefaultProjectViews,
@@ -23,6 +24,11 @@ import {
   type ProjectViewLayout,
   type KanbanSortField,
 } from '@/shared/stores/useUiPreferencesStore';
+import {
+  buildTreeFromSimpleFilters,
+  type AdvancedFilter,
+} from '@/shared/filters/filterTree';
+import { FilterTreeEditor } from '@/shared/dialogs/kanban/FilterTreeEditor';
 
 interface ViewStatus {
   id: string;
@@ -35,6 +41,8 @@ interface ProjectViewsEditorProps {
   projectId: string;
   statuses: ViewStatus[];
   milestones: ProjectMilestone[];
+  tags: Tag[];
+  users: OrganizationMemberWithProfile[];
 }
 
 const SORT_FIELDS: KanbanSortField[] = [
@@ -66,6 +74,8 @@ export function ProjectViewsEditor({
   projectId,
   statuses,
   milestones,
+  tags,
+  users,
 }: ProjectViewsEditorProps) {
   const { t } = useTranslation('common');
   const storedViews = useUiPreferencesStore(
@@ -206,6 +216,8 @@ export function ProjectViewsEditor({
                 view={view}
                 statuses={statuses}
                 milestones={milestones}
+                tags={tags}
+                users={users}
                 onChange={(patch) => updateView(view.id, patch)}
               />
             )}
@@ -233,6 +245,8 @@ interface ViewEditorPanelProps {
   view: ProjectViewDefinition;
   statuses: ViewStatus[];
   milestones: ProjectMilestone[];
+  tags: Tag[];
+  users: OrganizationMemberWithProfile[];
   onChange: (patch: Partial<ProjectViewDefinition>) => void;
 }
 
@@ -240,9 +254,27 @@ function ViewEditorPanel({
   view,
   statuses,
   milestones,
+  tags,
+  users,
   onChange,
 }: ViewEditorPanelProps) {
   const { t } = useTranslation('common');
+
+  // Advanced mode is derived from the presence of a default filter tree.
+  // Toggling on seeds it from the view's flat defaults (loss-lessly); off
+  // clears it, revealing the flat default controls again.
+  const isAdvanced = view.filters.advancedFilter != null;
+  const setAdvancedMode = (advanced: boolean) => {
+    if (advanced === (view.filters.advancedFilter != null)) return;
+    onChange({
+      filters: {
+        ...view.filters,
+        advancedFilter: advanced
+          ? buildTreeFromSimpleFilters(view.filters)
+          : null,
+      },
+    });
+  };
 
   // Local ordered/checked group state so unchecked statuses keep their place
   // while editing. Seeded from the view; explicit groupStatusIds is derived on
@@ -487,66 +519,115 @@ function ViewEditorPanel({
         </div>
       </div>
 
-      {/* Default priority filter */}
+      {/* Default filter: simple fields or an advanced nested tree */}
       <div className="flex flex-col gap-half">
-        <span className="text-xs text-low">
-          {t('kanban.viewsEditor.priorityFilter', 'Default priority filter')}
-        </span>
-        <div className="flex flex-wrap gap-half">
-          {PRIORITIES.map((priority) => (
+        <div className="flex items-center gap-half">
+          <span className="text-xs text-low">
+            {t('kanban.viewsEditor.filter', 'Default filter')}
+          </span>
+          <div className="ml-auto inline-flex rounded-sm bg-panel p-[2px]">
             <button
-              key={priority}
               type="button"
-              onClick={() => togglePriority(priority)}
+              onClick={() => setAdvancedMode(false)}
               className={cn(
-                'px-base py-half rounded-sm border text-sm capitalize transition-colors',
-                view.filters.priorities.includes(priority)
-                  ? 'border-brand text-high bg-panel'
-                  : 'border-border text-low hover:text-normal'
+                'rounded-[4px] px-base py-half text-sm transition-colors',
+                !isAdvanced
+                  ? 'bg-secondary text-normal'
+                  : 'text-low hover:text-normal'
               )}
             >
-              {PRIORITY_LABELS[priority]}
+              {t('kanban.filterModeSimple', 'Simple')}
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={() => setAdvancedMode(true)}
+              className={cn(
+                'rounded-[4px] px-base py-half text-sm transition-colors',
+                isAdvanced
+                  ? 'bg-secondary text-normal'
+                  : 'text-low hover:text-normal'
+              )}
+            >
+              {t('kanban.filterModeAdvanced', 'Advanced')}
+            </button>
+          </div>
         </div>
-      </div>
 
-      {/* Toggles */}
-      <div className="flex flex-col gap-half">
-        <label className="flex flex-col gap-half text-xs text-low">
-          {t('kanban.viewsEditor.milestoneFilter', 'Default milestone filter')}
-          <select
-            multiple
-            value={view.filters.milestoneIds ?? []}
-            onChange={(event) =>
+        {isAdvanced ? (
+          <FilterTreeEditor
+            value={view.filters.advancedFilter as AdvancedFilter}
+            onChange={(next) =>
               onChange({
-                filters: {
-                  ...view.filters,
-                  milestoneIds: Array.from(
-                    event.currentTarget.selectedOptions
-                  ).map((option) => option.value),
-                },
+                filters: { ...view.filters, advancedFilter: next },
               })
             }
-            className="min-h-20 rounded-sm border border-border bg-panel px-base py-half text-sm text-normal"
-          >
-            <option value="__no_milestone__">
-              {t('kanban.noMilestone', 'No milestone')}
-            </option>
-            {milestones.map((milestone) => (
-              <option key={milestone.id} value={milestone.id}>
-                {milestone.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <ToggleRow
-          label={t('kanban.overdueFilterLabel', 'Overdue')}
-          checked={view.filters.overdue ?? false}
-          onChange={(overdue) =>
-            onChange({ filters: { ...view.filters, overdue } })
-          }
-        />
+            statuses={statuses}
+            tags={tags}
+            milestones={milestones}
+            users={users}
+          />
+        ) : (
+          <div className="flex flex-col gap-half">
+            <div className="flex flex-wrap gap-half">
+              {PRIORITIES.map((priority) => (
+                <button
+                  key={priority}
+                  type="button"
+                  onClick={() => togglePriority(priority)}
+                  className={cn(
+                    'px-base py-half rounded-sm border text-sm capitalize transition-colors',
+                    view.filters.priorities.includes(priority)
+                      ? 'border-brand text-high bg-panel'
+                      : 'border-border text-low hover:text-normal'
+                  )}
+                >
+                  {PRIORITY_LABELS[priority]}
+                </button>
+              ))}
+            </div>
+            <label className="flex flex-col gap-half text-xs text-low">
+              {t(
+                'kanban.viewsEditor.milestoneFilter',
+                'Default milestone filter'
+              )}
+              <select
+                multiple
+                value={view.filters.milestoneIds ?? []}
+                onChange={(event) =>
+                  onChange({
+                    filters: {
+                      ...view.filters,
+                      milestoneIds: Array.from(
+                        event.currentTarget.selectedOptions
+                      ).map((option) => option.value),
+                    },
+                  })
+                }
+                className="min-h-20 rounded-sm border border-border bg-panel px-base py-half text-sm text-normal"
+              >
+                <option value="__no_milestone__">
+                  {t('kanban.noMilestone', 'No milestone')}
+                </option>
+                {milestones.map((milestone) => (
+                  <option key={milestone.id} value={milestone.id}>
+                    {milestone.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <ToggleRow
+              label={t('kanban.overdueFilterLabel', 'Overdue')}
+              checked={view.filters.overdue ?? false}
+              onChange={(overdue) =>
+                onChange({ filters: { ...view.filters, overdue } })
+              }
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Board toggles (orthogonal to the filter mode) */}
+      <div className="flex flex-col gap-half">
         <ToggleRow
           label={t('kanban.viewsEditor.showSubIssues', 'Show sub-issues')}
           checked={view.showSubIssues}

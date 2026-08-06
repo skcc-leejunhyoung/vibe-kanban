@@ -461,6 +461,7 @@
       "sort": "Default sort",
       "ascending": "Ascending",
       "descending": "Descending",
+      "filter": "Default filter",
       "priorityFilter": "Default priority filter",
       "milestoneFilter": "Default milestone filter",
       "showSubIssues": "Show sub-issues",

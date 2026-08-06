@@ -52,8 +52,12 @@ import {
   PROJECT_STATUS_MUTATION,
   PROJECT_ISSUES_SHAPE,
   PROJECT_MILESTONES_SHAPE,
+  PROJECT_TAGS_SHAPE,
   type Project,
 } from 'shared/remote-types';
+import { useQuery } from '@tanstack/react-query';
+import { organizationsApi } from '@/shared/lib/api';
+import { organizationKeys } from '@/shared/hooks/organizationKeys';
 import { getRandomPresetColor, PRESET_COLORS } from '@/shared/lib/colors';
 import { InlineColorPicker } from '@vibe/ui/components/ColorPicker';
 import { cn } from '@/shared/lib/utils';
@@ -464,6 +468,17 @@ export function RemoteProjectsSettingsSection({
     projectParams,
     { enabled: !!selectedProjectId }
   );
+  // Tags (project-scoped) and members (org-scoped) power the advanced default
+  // filter builder in the views editor.
+  const { data: projectTags } = useShape(PROJECT_TAGS_SHAPE, projectParams, {
+    enabled: !!selectedProjectId,
+  });
+  const { data: orgMembers } = useQuery({
+    queryKey: organizationKeys.members(selectedOrgId || ''),
+    queryFn: () => organizationsApi.getMembers(selectedOrgId || ''),
+    enabled: !!selectedOrgId,
+    staleTime: 5 * 60 * 1000,
+  });
 
   const issueCountByStatus = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -1538,6 +1553,8 @@ export function RemoteProjectsSettingsSection({
           <ProjectViewsEditor
             projectId={selectedProjectId}
             milestones={projectMilestones}
+            tags={projectTags}
+            users={orgMembers ?? []}
             statuses={sortedProjectStatuses.map((s) => ({
               id: s.id,
               name: s.name,

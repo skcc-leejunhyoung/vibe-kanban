@@ -14,12 +14,7 @@ import {
   XIcon,
   type Icon,
 } from '@phosphor-icons/react';
-import type {
-  IssuePriority,
-  ProjectMilestone,
-  ProjectStatus,
-  Tag,
-} from 'shared/remote-types';
+import type { IssuePriority } from 'shared/remote-types';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import { cn } from '@/shared/lib/utils';
 import {
@@ -76,12 +71,18 @@ const FIELD_ICON: Record<FilterFieldKey, Icon> = {
   blocked: ProhibitIcon,
 };
 
+// Minimal option shapes so both the board dialog (ProjectStatus / Tag) and the
+// settings views editor (its lighter ViewStatus) can supply data unchanged.
+export type FilterStatusOption = { id: string; name: string; color: string };
+export type FilterTagOption = { id: string; name: string; color: string };
+export type FilterMilestoneOption = { id: string; name: string };
+
 export interface FilterTreeEditorProps {
   value: AdvancedFilter;
   onChange: (next: AdvancedFilter) => void;
-  statuses: ProjectStatus[];
-  tags: Tag[];
-  milestones: ProjectMilestone[];
+  statuses: FilterStatusOption[];
+  tags: FilterTagOption[];
+  milestones: FilterMilestoneOption[];
   users: OrganizationMemberWithProfile[];
 }
 
