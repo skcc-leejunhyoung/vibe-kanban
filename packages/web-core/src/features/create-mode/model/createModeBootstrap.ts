@@ -176,7 +176,14 @@ export async function resolveCreateModeBootstrap({
       data.attachments = scratchData.attachments;
     }
 
-    if (scratchData.working_branch) {
+    // Ignore working-branch modes no longer in the union (e.g. a persisted
+    // `github_linked_branch` draft from before it became a target-branch
+    // toggle): those shapes carry no `name`, and the branch selector would
+    // crash on `validateBranchName(undefined)`. Absent → auto.
+    if (
+      scratchData.working_branch &&
+      ['auto', 'new', 'existing'].includes(scratchData.working_branch.mode)
+    ) {
       data.workingBranch = scratchData.working_branch;
     }
 
