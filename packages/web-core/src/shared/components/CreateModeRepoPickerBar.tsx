@@ -42,7 +42,10 @@ import {
   buildRepoSelectionPages,
   type RepoSelectionResult,
 } from '@/shared/dialogs/command-bar/selections/repoSelection';
-import { WorkingBranchRow } from '@/shared/components/WorkingBranchRow';
+import {
+  WorkingBranchRow,
+  type LockedWorkingBranch,
+} from '@/shared/components/WorkingBranchRow';
 import { pickBranchForRepo } from '@/shared/lib/branchPicker';
 
 function toRepoItem(repo: Repo): RepoItem {
@@ -223,10 +226,13 @@ function RepoTargetBranchControl({ repo }: { repo: Repo }) {
 
 interface CreateModeRepoPickerBarProps {
   onContinueToPrompt: () => void;
+  /** When a toggle fixes the working branch, lock the working-branch selector. */
+  lockedWorkingBranch?: LockedWorkingBranch | null;
 }
 
 export function CreateModeRepoPickerBar({
   onContinueToPrompt,
+  lockedWorkingBranch,
 }: CreateModeRepoPickerBarProps) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
@@ -403,7 +409,7 @@ export function CreateModeRepoPickerBar({
           </div>
         )}
 
-        <WorkingBranchRow />
+        <WorkingBranchRow locked={lockedWorkingBranch} />
 
         <div className="mt-base flex flex-wrap items-center gap-half">
           <button

@@ -634,6 +634,11 @@
       "autoPreviewPlain": "자동 생성",
       "newPlaceholder": "예: feature/login",
       "singleRepoOnly": "(단일 레포)",
+      "locked": {
+        "title": "브랜치가 고정됨",
+        "message": "이 브랜치는 \"{{toggle}}\" 토글이 자동 선택합니다. 다른 브랜치를 고르려면 토글을 끄세요.",
+        "button": "확인"
+      },
       "errors": {
         "empty": "브랜치 이름을 입력하세요",
         "invalidChars": "사용할 수 없는 문자가 있습니다",

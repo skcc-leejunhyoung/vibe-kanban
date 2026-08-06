@@ -648,6 +648,11 @@
       "autoPreviewPlain": "Auto-generated",
       "newPlaceholder": "e.g. feature/login",
       "singleRepoOnly": "(single repo only)",
+      "locked": {
+        "title": "Branch is locked",
+        "message": "This branch is chosen by the \"{{toggle}}\" toggle. Turn it off to pick a different branch.",
+        "button": "Got it"
+      },
       "errors": {
         "empty": "Branch name is required",
         "invalidChars": "Contains invalid characters",

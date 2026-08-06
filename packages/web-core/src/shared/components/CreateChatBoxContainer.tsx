@@ -21,6 +21,7 @@ import type { BaseCodingAgent, Repo } from 'shared/types';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
+import type { LockedWorkingBranch } from './WorkingBranchRow';
 import { ReviewModeBanner } from './ReviewModeBanner';
 import { GithubLinkedBranchBanner } from './GithubLinkedBranchBanner';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
@@ -163,6 +164,31 @@ export function CreateChatBoxContainer({
           repository: linkedIssue.githubRepository,
         }
       : null;
+  // When a toggle has already chosen the working branch, surface it read-only in
+  // the working-branch selector so the user can see the branch and is warned
+  // (rather than silently overridden) if they try to change it. Review mode wins
+  // over the GitHub linked branch since the two banners are mutually exclusive.
+  const lockedWorkingBranch = useMemo<LockedWorkingBranch | null>(() => {
+    if (reviewMode.prReviewPayload && reviewMode.headBranch) {
+      return {
+        label: reviewMode.headBranch,
+        toggleName: t('createMode.reviewMode.toggleLabel', 'Review mode'),
+      };
+    }
+    if (workingBranch.mode === 'github_linked_branch') {
+      return {
+        label: t('createMode.workingBranch.githubLinkedPreview', {
+          repository: workingBranch.repository,
+        }),
+        toggleName: t(
+          'createMode.githubLinkedBranch.toggleLabel',
+          'GitHub linked branch'
+        ),
+      };
+    }
+    return null;
+  }, [reviewMode.prReviewPayload, reviewMode.headBranch, workingBranch, t]);
+
   const repoSummaryLabel = useMemo(() => {
     if (repos.length === 1) {
       const repo = repos[0];
@@ -468,6 +494,7 @@ export function CreateChatBoxContainer({
               </h2>
               <CreateModeRepoPickerBar
                 onContinueToPrompt={() => setIsSelectingRepos(false)}
+                lockedWorkingBranch={lockedWorkingBranch}
               />
             </>
           )}
