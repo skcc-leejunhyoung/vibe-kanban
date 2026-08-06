@@ -125,3 +125,27 @@ export function buildPullRequestLinkOperation({
     nextAttemptAt: now + retryDelay(1),
   };
 }
+
+/**
+ * Pick the connector's own PR→issue link from the rows returned by
+ * `GET /v1/pull_request_issues?url=…`.
+ *
+ * That endpoint returns every `pull_request_issues` row whose PR matches the
+ * url, across all of the user's projects. A github_issue_sync connector owns a
+ * single project, so we scope to it: a non-null result means the board already
+ * has an issue structurally linked to this PR and the worker must NOT create a
+ * second one. This is the destination-authoritative dedup that makes review-PR
+ * import idempotent regardless of the bounded `seenIds` cache — the board's
+ * join row is the durable source of truth, the `seen` set is only an
+ * optimization. Returns the matching link, or null when no issue is linked yet
+ * (safe to create).
+ *
+ * @param {Array<{project_id?: string, issue_id?: string}>} links Rows from the list endpoint.
+ * @param {string|null|undefined} projectId The connector's Vibe project id.
+ * @returns {object|null}
+ */
+export function selectPullRequestLinkForProject(links, projectId) {
+  const rows = Array.isArray(links) ? links : [];
+  if (!projectId) return rows[0] || null;
+  return rows.find((link) => link && link.project_id === projectId) || null;
+}

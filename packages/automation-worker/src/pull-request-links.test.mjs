@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildPullRequestLinkOperation,
   retryPendingPullRequestLinkOperations,
+  selectPullRequestLinkForProject,
 } from './pull-request-links.mjs';
 
 const enabled = () => ({ id: 'vibe', enabled: true });
@@ -199,4 +200,33 @@ test('buildPullRequestLinkOperation captures the payload and schedules the first
   assert.equal(op.maxAttempts, 5);
   assert.equal(op.lastError, 'down');
   assert.equal(op.nextAttemptAt, 1000 + 1 * 100);
+});
+
+test('selectPullRequestLinkForProject returns the connector-owned link so the PR is not re-imported', () => {
+  const links = [
+    { id: 'l1', issue_id: 'i-other', project_id: 'proj-other' },
+    { id: 'l2', issue_id: 'i-mine', project_id: 'proj-mine' },
+  ];
+  const link = selectPullRequestLinkForProject(links, 'proj-mine');
+  assert.equal(link?.issue_id, 'i-mine');
+});
+
+test('selectPullRequestLinkForProject returns null when no link belongs to the project (safe to create)', () => {
+  const links = [{ id: 'l1', issue_id: 'i-other', project_id: 'proj-other' }];
+  assert.equal(selectPullRequestLinkForProject(links, 'proj-mine'), null);
+});
+
+test('selectPullRequestLinkForProject treats empty/absent rows as no existing link', () => {
+  assert.equal(selectPullRequestLinkForProject([], 'proj'), null);
+  assert.equal(selectPullRequestLinkForProject(undefined, 'proj'), null);
+  assert.equal(selectPullRequestLinkForProject(null, 'proj'), null);
+});
+
+test('selectPullRequestLinkForProject without a projectId falls back to the first row', () => {
+  const links = [
+    { id: 'l1', issue_id: 'i1', project_id: 'p1' },
+    { id: 'l2', issue_id: 'i2', project_id: 'p2' },
+  ];
+  assert.equal(selectPullRequestLinkForProject(links, null)?.issue_id, 'i1');
+  assert.equal(selectPullRequestLinkForProject(links, undefined)?.issue_id, 'i1');
 });

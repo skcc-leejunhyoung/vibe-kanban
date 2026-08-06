@@ -44,6 +44,7 @@ import {
 import {
   buildPullRequestLinkOperation,
   retryPendingPullRequestLinkOperations,
+  selectPullRequestLinkForProject,
 } from './pull-request-links.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
@@ -516,6 +517,7 @@ const RUNTIME_CONFIG_KEYS = [
   'seenIds',
   'seenNumbers',
   'issueMap',
+  'reviewPrIssueMap',
   'tagMap',
   'githubIssueLinkBackfillSkipped',
 ];
@@ -1560,6 +1562,22 @@ async function findGithubIssueLinkForIssue(vibe, issueId) {
     `/v1/github_issue_links?issue_id=${encodeURIComponent(issueId)}`
   );
   return body?.github_issue_links?.[0] || null;
+}
+
+// Reverse-lookup: does the board already have an issue structurally linked to
+// this PR url? Used as an idempotency backstop before creating a review issue —
+// see selectPullRequestLinkForProject for why the `seen` cache alone is not
+// enough. Returns the connector-owned link, or null when no issue is linked yet.
+async function findPullRequestLinkByUrl(vibe, url, projectId) {
+  const body = await vibeApi(
+    vibe,
+    'GET',
+    `/v1/pull_request_issues?url=${encodeURIComponent(url)}`
+  );
+  return selectPullRequestLinkForProject(
+    body?.pull_request_issues || [],
+    projectId
+  );
 }
 
 async function syncGithubMilestone({
@@ -2746,6 +2764,61 @@ async function createVibeIssue(connectorId, input, event, rule) {
     throw new Error('Vibe baseUrl, projectId, and statusId are required');
   }
 
+  // Idempotency for review PRs. A review-requested PR is deduped in-poll only by
+  // `seenIds`, which is capped at the most-recent 1000 ids and never refreshes
+  // an entry's recency, so a PR that stays open while >1000 newer items churn
+  // through the connector is evicted and re-surfaced — the worker would then
+  // create a *second* `review` issue for the same PR. A DB unique constraint
+  // cannot prevent this: `pull_request_issues` is intentionally many-to-many and
+  // its row requires the issue to exist first, so the duplicate issue precedes
+  // any (rejected) link and would only be orphaned. So dedup here, in two layers:
+  if (event && event.type === 'pr' && event.url) {
+    // Layer 1 — durable, url-keyed local record written at creation (below).
+    // url is collision-free across repos (unlike sourceKey), survives `seenIds`
+    // eviction, and is independent of the pull_request_issues link, so a failed
+    // or dropped link-POST retry can't cause a re-import.
+    const reviewPrIssueMap = (connector.config.reviewPrIssueMap =
+      connector.config.reviewPrIssueMap || {});
+    if (reviewPrIssueMap[event.url]) {
+      await log('info', 'vibe PR already imported; skipping duplicate issue', {
+        connectorId: effectiveConnectorId,
+        prUrl: event.url,
+        issueId: reviewPrIssueMap[event.url],
+      });
+      return null;
+    }
+    // Layer 2 — ask the board itself, so a runtime-map reset (operator clears
+    // reviewPrIssueMap/seenIds from the JSON editor) still won't duplicate an
+    // issue that already exists and is linked. Heals the local map on a hit.
+    let existingLink = null;
+    try {
+      existingLink = await findPullRequestLinkByUrl(
+        connector,
+        event.url,
+        config.projectId
+      );
+    } catch (error) {
+      // A transient lookup failure must not block the connector's primary job
+      // (surfacing review PRs). Fall through and create — no worse than the
+      // pre-backstop behavior, and the next poll's lookup still converges.
+      await log('warn', 'vibe PR link lookup failed; creating anyway', {
+        connectorId: effectiveConnectorId,
+        prUrl: event.url,
+        error: errorMessage(error),
+      });
+    }
+    if (existingLink) {
+      reviewPrIssueMap[event.url] = existingLink.issue_id;
+      await persistState();
+      await log('info', 'vibe PR already linked; skipping duplicate issue', {
+        connectorId: effectiveConnectorId,
+        prUrl: event.url,
+        issueId: existingLink.issue_id,
+      });
+      return null;
+    }
+  }
+
   const payload = {
     project_id: config.projectId,
     status_id: config.statusId,
@@ -2781,6 +2854,14 @@ async function createVibeIssue(connectorId, input, event, rule) {
   const createdId = body && body.data && body.data.id;
   if (input.sourceKey && createdId) {
     issueMap[input.sourceKey] = createdId;
+    await persistState();
+  }
+  // Record the url-keyed idempotency entry the guard above reads. Written even
+  // if the pull_request_issues link POST below fails, so a re-surfaced PR is
+  // recognized regardless of link state.
+  if (event && event.type === 'pr' && event.url && createdId) {
+    (connector.config.reviewPrIssueMap =
+      connector.config.reviewPrIssueMap || {})[event.url] = createdId;
     await persistState();
   }
   const tags = Array.isArray(input.tags) ? input.tags.filter(Boolean) : [];
