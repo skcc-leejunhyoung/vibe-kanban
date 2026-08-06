@@ -8,7 +8,12 @@ import {
   UsersIcon,
   XIcon,
 } from '@phosphor-icons/react';
-import type { IssuePriority, ProjectMilestone, Tag } from 'shared/remote-types';
+import type {
+  IssuePriority,
+  ProjectMilestone,
+  ProjectStatus,
+  Tag,
+} from 'shared/remote-types';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import { cn } from '@/shared/lib/utils';
 import {
@@ -17,6 +22,11 @@ import {
   type KanbanFilterState,
   type KanbanSortField,
 } from '@/shared/stores/useUiPreferencesStore';
+import {
+  buildTreeFromSimpleFilters,
+  type AdvancedFilter,
+} from '@/shared/filters/filterTree';
+import { FilterTreeEditor } from '@/shared/dialogs/kanban/FilterTreeEditor';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { KanbanAssignee } from '@vibe/ui/components/KanbanAssignee';
 import { Badge } from '@vibe/ui/components/Badge';
@@ -54,12 +64,14 @@ interface KanbanFiltersDialogProps {
   projectId: string;
   currentUserId: string | null;
   tags: Tag[];
+  statuses: ProjectStatus[];
   milestones: ProjectMilestone[];
   users: OrganizationMemberWithProfile[];
   filters: KanbanFilterState;
   showSubIssues: boolean;
   showWorkspaces: boolean;
   onPrioritiesChange: (priorities: IssuePriority[]) => void;
+  onAdvancedFilterChange: (next: AdvancedFilter | null) => void;
   onAssigneesChange: (assigneeIds: string[]) => void;
   onTagsChange: (tagIds: string[]) => void;
   onMilestonesChange: (milestoneIds: string[]) => void;
@@ -82,12 +94,14 @@ export function KanbanFiltersDialog({
   projectId,
   currentUserId,
   tags,
+  statuses,
   milestones,
   users,
   filters,
   showSubIssues,
   showWorkspaces,
   onPrioritiesChange,
+  onAdvancedFilterChange,
   onAssigneesChange,
   onTagsChange,
   onMilestonesChange,
@@ -229,6 +243,20 @@ export function KanbanFiltersDialog({
     );
   }, [filters.sortDirection, filters.sortField, onSortChange]);
 
+  // Advanced mode is derived from the presence of a filter tree. Switching on
+  // seeds the tree from the current flat filters (loss-lessly), so the same
+  // result set carries over; switching off drops the tree back to null.
+  const isAdvanced = filters.advancedFilter != null;
+  const handleModeChange = useCallback(
+    (advanced: boolean) => {
+      if (advanced === (filters.advancedFilter != null)) return;
+      onAdvancedFilterChange(
+        advanced ? buildTreeFromSimpleFilters(filters) : null
+      );
+    },
+    [filters, onAdvancedFilterChange]
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[720px] p-0">
@@ -244,57 +272,99 @@ export function KanbanFiltersDialog({
           </DialogHeader>
         </div>
 
-        <div className="max-h-[72vh] overflow-y-auto px-double py-double">
-          <div className="flex flex-wrap items-center gap-base">
-            <PriorityFilterDropdown
-              values={filters.priorities}
-              onChange={onPrioritiesChange}
-            />
-
-            <button
-              type="button"
-              onClick={handleOpenAssigneeDialog}
-              className={cn(
-                'flex items-center gap-half rounded-sm bg-panel px-base py-half',
-                'text-sm text-normal transition-colors hover:bg-secondary'
-              )}
-            >
-              <UsersIcon className="size-icon-xs" weight="bold" />
-              <span>{t('kanban.assignee', 'Assignee')}</span>
-              {filters.assigneeIds.length > 0 &&
-                renderAssigneeBadge(filters.assigneeIds)}
-            </button>
-
-            {tags.length > 0 && (
-              <MultiSelectDropdown
-                values={filters.tagIds}
-                options={tagOptions}
-                onChange={onTagsChange}
-                icon={TagIcon}
-                label={t('kanban.tags', 'Tags')}
-                menuLabel={t('kanban.filterByTag', 'Filter by tag')}
-              />
-            )}
-
-            <MultiSelectDropdown
-              values={filters.milestoneIds ?? []}
-              options={milestoneOptions}
-              onChange={onMilestonesChange}
-              icon={FlagIcon}
-              label={t('kanban.milestones', 'Milestones')}
-              menuLabel={t('kanban.filterByMilestone', 'Filter by milestone')}
-            />
-
-            <div className="flex items-center gap-half rounded-sm bg-panel px-base py-half">
-              <span className="whitespace-nowrap text-sm text-normal">
-                {t('kanban.overdueFilterLabel', 'Overdue')}
-              </span>
-              <Switch
-                checked={filters.overdue ?? false}
-                onCheckedChange={onOverdueChange}
-              />
+        <div className="max-h-[72vh] space-y-double overflow-y-auto px-double py-double">
+          <div className="flex items-center gap-half">
+            <div className="inline-flex rounded-sm bg-panel p-[2px]">
+              <button
+                type="button"
+                onClick={() => handleModeChange(false)}
+                className={cn(
+                  'rounded-[4px] px-base py-half text-sm transition-colors',
+                  !isAdvanced
+                    ? 'bg-secondary text-normal'
+                    : 'text-low hover:text-normal'
+                )}
+              >
+                {t('kanban.filterModeSimple', 'Simple')}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleModeChange(true)}
+                className={cn(
+                  'rounded-[4px] px-base py-half text-sm transition-colors',
+                  isAdvanced
+                    ? 'bg-secondary text-normal'
+                    : 'text-low hover:text-normal'
+                )}
+              >
+                {t('kanban.filterModeAdvanced', 'Advanced')}
+              </button>
             </div>
+          </div>
 
+          {isAdvanced ? (
+            <FilterTreeEditor
+              value={filters.advancedFilter as AdvancedFilter}
+              onChange={onAdvancedFilterChange}
+              statuses={statuses}
+              tags={tags}
+              milestones={milestones}
+              users={users}
+            />
+          ) : (
+            <div className="flex flex-wrap items-center gap-base">
+              <PriorityFilterDropdown
+                values={filters.priorities}
+                onChange={onPrioritiesChange}
+              />
+
+              <button
+                type="button"
+                onClick={handleOpenAssigneeDialog}
+                className={cn(
+                  'flex items-center gap-half rounded-sm bg-panel px-base py-half',
+                  'text-sm text-normal transition-colors hover:bg-secondary'
+                )}
+              >
+                <UsersIcon className="size-icon-xs" weight="bold" />
+                <span>{t('kanban.assignee', 'Assignee')}</span>
+                {filters.assigneeIds.length > 0 &&
+                  renderAssigneeBadge(filters.assigneeIds)}
+              </button>
+
+              {tags.length > 0 && (
+                <MultiSelectDropdown
+                  values={filters.tagIds}
+                  options={tagOptions}
+                  onChange={onTagsChange}
+                  icon={TagIcon}
+                  label={t('kanban.tags', 'Tags')}
+                  menuLabel={t('kanban.filterByTag', 'Filter by tag')}
+                />
+              )}
+
+              <MultiSelectDropdown
+                values={filters.milestoneIds ?? []}
+                options={milestoneOptions}
+                onChange={onMilestonesChange}
+                icon={FlagIcon}
+                label={t('kanban.milestones', 'Milestones')}
+                menuLabel={t('kanban.filterByMilestone', 'Filter by milestone')}
+              />
+
+              <div className="flex items-center gap-half rounded-sm bg-panel px-base py-half">
+                <span className="whitespace-nowrap text-sm text-normal">
+                  {t('kanban.overdueFilterLabel', 'Overdue')}
+                </span>
+                <Switch
+                  checked={filters.overdue ?? false}
+                  onCheckedChange={onOverdueChange}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-base">
             <PropertyDropdown
               value={filters.sortField}
               options={SORT_OPTIONS}

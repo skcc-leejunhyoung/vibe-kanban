@@ -31,7 +31,10 @@ import {
   type KanbanViewMode,
   type KanbanProjectViewPreferences,
 } from '@/shared/stores/useUiPreferencesStore';
-import { areAdvancedFiltersEqual } from '@/shared/filters/filterTree';
+import {
+  areAdvancedFiltersEqual,
+  type AdvancedFilter,
+} from '@/shared/filters/filterTree';
 import { useProjectViewSwitcherStore } from '@/shared/stores/useProjectViewSwitcherStore';
 import {
   useKanbanFilters,
@@ -419,6 +422,12 @@ export function KanbanContainer() {
 
   const setKanbanOverdue = useCallback(
     (overdue: boolean) => updateActiveViewFilters({ overdue }),
+    [updateActiveViewFilters]
+  );
+
+  const setKanbanAdvancedFilter = useCallback(
+    (advancedFilter: AdvancedFilter | null) =>
+      updateActiveViewFilters({ advancedFilter }),
     [updateActiveViewFilters]
   );
 
@@ -1629,9 +1638,11 @@ export function KanbanContainer() {
               <KanbanFiltersDialog
                 {...props}
                 filters={kanbanFilters}
+                statuses={statuses}
                 milestones={milestones}
                 onMilestonesChange={setKanbanMilestones}
                 onOverdueChange={setKanbanOverdue}
+                onAdvancedFilterChange={setKanbanAdvancedFilter}
               />
             )}
             isMobile={isMobile}

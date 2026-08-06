@@ -526,6 +526,48 @@
     "assignee": "Assignee",
     "self": "Me",
     "priority": "Priority",
+    "filterModeSimple": "Simple",
+    "filterModeAdvanced": "Advanced",
+    "filterValues": "Values",
+    "filterTextPlaceholder": "Search text",
+    "filterAddCondition": "Add condition",
+    "filterAddGroup": "Add group",
+    "filterRemoveCondition": "Remove condition",
+    "filterRemoveGroup": "Remove group",
+    "filterEmptyGroup": "No conditions yet. Add one above.",
+    "filterNegate": "NOT",
+    "filterNegateHint": "Negate this group (NOT)",
+    "filterField": {
+      "text": "Text",
+      "status": "Status",
+      "priority": "Priority",
+      "assignee": "Assignee",
+      "tag": "Tag",
+      "milestone": "Milestone",
+      "blocked": "Blocked"
+    },
+    "filterOp": {
+      "anyOf": "is any of",
+      "noneOf": "is none of",
+      "allOf": "has all of",
+      "isEmpty": "is empty",
+      "isNotEmpty": "is not empty",
+      "contains": "contains",
+      "notContains": "does not contain",
+      "isOverdue": "is overdue",
+      "isTrue": "yes",
+      "isFalse": "no"
+    },
+    "filterCombinator": {
+      "and": "Match all",
+      "or": "Match any"
+    },
+    "priorities": {
+      "urgent": "Urgent",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
     "subIssuesFilterLabel": "Sub-issues",
     "workspacesFilterLabel": "Workspaces",
     "selectAssignees": "Select assignees...",

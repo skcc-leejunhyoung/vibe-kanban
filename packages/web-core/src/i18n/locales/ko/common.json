@@ -512,6 +512,48 @@
     "assignee": "Assignee",
     "self": "Me",
     "priority": "Priority",
+    "filterModeSimple": "간단",
+    "filterModeAdvanced": "고급",
+    "filterValues": "값",
+    "filterTextPlaceholder": "검색어",
+    "filterAddCondition": "조건 추가",
+    "filterAddGroup": "그룹 추가",
+    "filterRemoveCondition": "조건 제거",
+    "filterRemoveGroup": "그룹 제거",
+    "filterEmptyGroup": "아직 조건이 없습니다. 위에서 추가하세요.",
+    "filterNegate": "NOT",
+    "filterNegateHint": "이 그룹을 부정(NOT)",
+    "filterField": {
+      "text": "텍스트",
+      "status": "상태",
+      "priority": "우선순위",
+      "assignee": "담당자",
+      "tag": "태그",
+      "milestone": "마일스톤",
+      "blocked": "차단됨"
+    },
+    "filterOp": {
+      "anyOf": "다음 중 하나",
+      "noneOf": "다음 중 아님",
+      "allOf": "모두 포함",
+      "isEmpty": "없음",
+      "isNotEmpty": "있음",
+      "contains": "포함",
+      "notContains": "미포함",
+      "isOverdue": "기한 초과",
+      "isTrue": "예",
+      "isFalse": "아니오"
+    },
+    "filterCombinator": {
+      "and": "모두 충족(AND)",
+      "or": "하나 이상 충족(OR)"
+    },
+    "priorities": {
+      "urgent": "긴급",
+      "high": "높음",
+      "medium": "보통",
+      "low": "낮음"
+    },
     "subIssuesFilterLabel": "Sub-issues",
     "workspacesFilterLabel": "Workspaces",
     "selectAssignees": "Select assignees...",
