@@ -2,7 +2,6 @@
 
 import type { MouseEvent } from 'react';
 import { cn } from '../lib/cn';
-import { withDisplayTimeZone } from '../lib/datetime';
 import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { Draggable } from '@hello-pangea/dnd';
 import { DotsThreeIcon } from '@phosphor-icons/react';
@@ -190,14 +189,6 @@ export function IssueListRow({
               {milestone && (
                 <div className="flex items-center gap-half">
                   <KanbanBadge name={milestone.name} color="215 70% 55%" />
-                  {milestone.targetDate && (
-                    <span className="text-xs text-low">
-                      {new Date(milestone.targetDate).toLocaleDateString(
-                        undefined,
-                        withDisplayTimeZone()
-                      )}
-                    </span>
-                  )}
                 </div>
               )}
               {visibleTags.length > 0 && (

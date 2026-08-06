@@ -10,7 +10,6 @@ import {
   PlusIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
-import { withDisplayTimeZone } from '../lib/datetime';
 import { PriorityIcon, type PriorityLevel } from './PriorityIcon';
 import { KanbanBadge } from './KanbanBadge';
 import { KanbanAssignee, type KanbanAssigneeUser } from './KanbanAssignee';
@@ -285,19 +284,6 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
       {milestone && (
         <div className="flex items-center gap-half text-sm min-w-0">
           <KanbanBadge name={milestone.name} color="215 70% 55%" />
-          {milestone.targetDate && (
-            <span
-              className={cn(
-                'text-low whitespace-nowrap',
-                Date.parse(milestone.targetDate) < Date.now() && 'text-error'
-              )}
-            >
-              {new Date(milestone.targetDate).toLocaleDateString(
-                undefined,
-                withDisplayTimeZone()
-              )}
-            </span>
-          )}
         </div>
       )}
 
