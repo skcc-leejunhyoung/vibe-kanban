@@ -242,11 +242,13 @@ export function KanbanIssuePanelContainer({
     (milestoneId: string | null) => {
       if (!selectedKanbanIssueId) return;
       if (milestoneId) {
-        // Server upserts by issue_id; reuse the existing row id so the
-        // optimistic insert aligns with the row Electric streams back instead
-        // of briefly showing two milestone rows for one issue.
+        if (selectedIssueMilestone?.milestone_id === milestoneId) return;
+        // The server upserts by issue_id (ON CONFLICT DO UPDATE), so a plain
+        // insert replaces the existing milestone. Do NOT reuse the existing
+        // row id: the optimistic local insert (electric `insert` keeps a passed
+        // id) would collide with the existing row's primary key and throw,
+        // silently dropping the change — which blocked switching milestones.
         setIssueMilestone({
-          ...(selectedIssueMilestone ? { id: selectedIssueMilestone.id } : {}),
           issue_id: selectedKanbanIssueId,
           milestone_id: milestoneId,
         });
