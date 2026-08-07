@@ -8,6 +8,7 @@ import {
   type MouseEvent,
   type CSSProperties,
 } from 'react';
+import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 
 // --- Headless Compound Components ---
 
@@ -365,7 +366,9 @@ function TypeaheadMenuItemComponent({
     <div
       ref={ref}
       className={`px-base py-half rounded-sm cursor-pointer text-sm transition-colors ${
-        isSelected ? 'bg-secondary text-high' : 'hover:bg-secondary text-normal'
+        isSelected
+          ? `bg-secondary text-high ${KEYBOARD_CURSOR_RING}`
+          : 'hover:bg-secondary text-normal'
       }`}
       onMouseMove={handleMouseMove}
       onClick={onClick}
