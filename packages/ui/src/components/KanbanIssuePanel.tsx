@@ -825,25 +825,6 @@ export function KanbanIssuePanel({
                     </Select>
                   </div>
                 )}
-                {onDateChange && (
-                  <>
-                    <ScheduleDateField
-                      label={t('kanban.startDate', 'Start')}
-                      value={startDate}
-                      onChange={(value) => onDateChange('start_date', value)}
-                    />
-                    <ScheduleDateField
-                      label={t('kanban.completedDate', 'Completed')}
-                      value={completedAt}
-                      onChange={(value) => onDateChange('completed_at', value)}
-                    />
-                    <ScheduleDateField
-                      label={t('kanban.targetDate', 'Target')}
-                      value={targetDate}
-                      onChange={(value) => onDateChange('target_date', value)}
-                    />
-                  </>
-                )}
                 {milestoneId &&
                   onMilestoneUpdate &&
                   (() => {
@@ -877,6 +858,25 @@ export function KanbanIssuePanel({
                       </div>
                     );
                   })()}
+                {onDateChange && (
+                  <>
+                    <ScheduleDateField
+                      label={t('kanban.startDate', 'Start')}
+                      value={startDate}
+                      onChange={(value) => onDateChange('start_date', value)}
+                    />
+                    <ScheduleDateField
+                      label={t('kanban.completedDate', 'Completed')}
+                      value={completedAt}
+                      onChange={(value) => onDateChange('completed_at', value)}
+                    />
+                    <ScheduleDateField
+                      label={t('kanban.targetDate', 'Target')}
+                      value={targetDate}
+                      onChange={(value) => onDateChange('target_date', value)}
+                    />
+                  </>
+                )}
               </div>
             </CollapsibleSectionHeader>
           </div>
