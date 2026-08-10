@@ -37,6 +37,7 @@ export interface GithubIssueSyncRuleConfig {
     title: boolean;
     description: boolean;
     status: boolean;
+    comments: boolean;
   };
 }
 

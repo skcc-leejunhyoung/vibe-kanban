@@ -67,7 +67,7 @@ const EMPTY_GITHUB_SYNC_CONFIG: GithubIssueSyncRuleConfig = {
   githubProjectId: '',
   githubStatusFieldId: '',
   statusMappings: [],
-  fields: { title: true, description: true, status: true },
+  fields: { title: true, description: true, status: true, comments: true },
 };
 
 function asGithubSyncConfig(
@@ -306,6 +306,14 @@ function GithubIssueSyncRuleEditor({
             checked={config.fields.status}
             onChange={(status) =>
               update({ fields: { ...config.fields, status } })
+            }
+          />
+          <SettingsCheckbox
+            id="github-sync-comments"
+            label="Comments"
+            checked={config.fields.comments}
+            onChange={(comments) =>
+              update({ fields: { ...config.fields, comments } })
             }
           />
         </div>
