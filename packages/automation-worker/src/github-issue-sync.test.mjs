@@ -985,3 +985,101 @@ test('planCommentSync never references a comment outside the two issue pools it 
   assert.equal(plan.edits[0].vibe.id, 'v-mapped');
   assert.equal(plan.edits[0].direction, 'to_vibe');
 });
+
+test('planCommentSync reaches a fixpoint: re-running on the synced state is a no-op (no import/create loop)', () => {
+  const cutoff = '2026-08-10T00:00:00Z';
+
+  // Round 1: one new GitHub comment to import, one native vibe comment to push.
+  const round1 = planCommentSync({
+    githubComments: [
+      {
+        id: 'g1',
+        body: 'hi',
+        created_at: '2026-08-10T01:00:00Z',
+        updated_at: '2026-08-10T01:00:00Z',
+        user: { login: 'a' },
+      },
+    ],
+    vibeComments: [
+      {
+        id: 'v1',
+        message: 'yo',
+        created_at: '2026-08-10T02:00:00Z',
+        updated_at: '2026-08-10T02:00:00Z',
+        github_comment_id: null,
+        github_author_login: null,
+      },
+    ],
+    cutoff,
+  });
+  assert.deepEqual(
+    round1.imports.map((c) => c.id),
+    ['g1']
+  );
+  assert.deepEqual(
+    round1.pushes.map((c) => c.id),
+    ['v1']
+  );
+
+  // Apply exactly what the driver applies: import g1 into vibe (stores
+  // github_comment_id + author), push v1 to GitHub as g2 (marker-tagged) and
+  // store its id back on v1. Then re-run — the next poll must do nothing.
+  const round2 = planCommentSync({
+    githubComments: [
+      {
+        id: 'g1',
+        body: 'hi',
+        created_at: '2026-08-10T01:00:00Z',
+        updated_at: '2026-08-10T01:00:00Z',
+        user: { login: 'a' },
+      },
+      {
+        id: 'g2',
+        body: withCommentMarker('yo', 'v1'),
+        created_at: '2026-08-10T02:30:00Z',
+        updated_at: '2026-08-10T02:30:00Z',
+        user: { login: 'bot' },
+      },
+    ],
+    vibeComments: [
+      {
+        id: 'vi',
+        message: 'hi',
+        created_at: '2026-08-10T02:20:00Z',
+        updated_at: '2026-08-10T02:20:00Z',
+        github_comment_id: 'g1',
+        github_author_login: 'a',
+      },
+      {
+        id: 'v1',
+        message: 'yo',
+        created_at: '2026-08-10T02:00:00Z',
+        updated_at: '2026-08-10T02:00:00Z',
+        github_comment_id: 'g2',
+        github_author_login: null,
+      },
+    ],
+    cutoff,
+  });
+  assert.deepEqual(round2, {
+    imports: [],
+    pushes: [],
+    edits: [],
+    repairs: [],
+  });
+});
+
+test('decideCommentSync equal-content short-circuit blocks edit ping-pong even when updated_at flips', () => {
+  // After an adopt, the receiver's updated_at is newer than the sender's, which
+  // would flip the last-writer-wins winner — but equal content must win first,
+  // or the two sides would edit each other forever.
+  assert.equal(
+    decideCommentSync({
+      githubMessage: 'same',
+      vibeMessage: 'same',
+      githubUpdatedAt: '2026-08-10T01:00:00Z',
+      vibeUpdatedAt: '2026-08-10T09:00:00Z',
+    }).direction,
+    'none'
+  );
+});
