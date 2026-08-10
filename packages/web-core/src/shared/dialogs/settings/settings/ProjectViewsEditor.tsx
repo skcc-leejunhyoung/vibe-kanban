@@ -68,7 +68,8 @@ const PRIORITY_LABELS: Record<IssuePriority, string> = {
 /**
  * Per-project editor for user-defined views: add / rename / delete / reorder,
  * and per-view layout, group visibility+order, and default filters/sort.
- * Changes persist immediately to the UI-preferences scratch store.
+ * Edits accumulate in a local draft and persist to the UI-preferences scratch
+ * store as one batch on Save (Cancel discards them).
  */
 export function ProjectViewsEditor({
   projectId,
