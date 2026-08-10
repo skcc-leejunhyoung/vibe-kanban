@@ -241,6 +241,133 @@ export function withoutGithubIssueMarker(body) {
   return cleaned || null;
 }
 
+// --- Bidirectional comment sync ---------------------------------------------
+//
+// A comment's identity link lives on the vibe row (issue_comments.github_comment_id).
+// That id mapping alone prevents echo on the normal path; the marker below is a
+// repair backstop for the one gap the id can't cover: a vibe comment pushed to
+// GitHub whose id-store failed before it landed. On the next poll the pushed
+// GitHub comment still carries the marker, so import repairs the mapping instead
+// of creating a duplicate. Mirrors withGithubIssueMarker for issues.
+const COMMENT_MARKER_PREFIX = '<!-- vibe-kanban-comment:';
+
+export function commentMarker(commentId) {
+  return `${COMMENT_MARKER_PREFIX}${commentId} -->`;
+}
+
+export function withCommentMarker(message, commentId) {
+  const marker = commentMarker(commentId);
+  const text = message == null ? '' : String(message);
+  if (text.includes(marker)) return text;
+  return text ? `${text}\n\n${marker}` : marker;
+}
+
+export function withoutCommentMarker(body) {
+  if (body == null) return '';
+  return String(body)
+    .replace(/(?:\r?\n){0,2}<!-- vibe-kanban-comment:[^>]+ -->/g, '')
+    .trimEnd();
+}
+
+export function commentMarkerId(body) {
+  const match = String(body == null ? '' : body).match(
+    /<!-- vibe-kanban-comment:([^\s>]+) -->/
+  );
+  return match ? match[1] : null;
+}
+
+// Content-equality first (so a synced pair never churns), then last-writer-wins
+// by updated_at — same shape as the issue title/description reconcile.
+export function decideCommentSync({
+  githubMessage,
+  vibeMessage,
+  githubUpdatedAt,
+  vibeUpdatedAt,
+}) {
+  if (githubMessage === vibeMessage) return { direction: 'none' };
+  const githubTime = Date.parse(githubUpdatedAt || '');
+  const vibeTime = Date.parse(vibeUpdatedAt || '');
+  if (
+    Number.isFinite(githubTime) &&
+    (!Number.isFinite(vibeTime) || githubTime >= vibeTime)
+  ) {
+    return { direction: 'to_vibe' };
+  }
+  return { direction: 'to_github' };
+}
+
+// Decide, for one mapped issue, which comments to import (github→vibe), push
+// (vibe→github), edit-reconcile, or repair-map. The caller passes only comments
+// belonging to the mapped issue on each side, so the 1:1 link is already the
+// scope boundary. `cutoff` (link.comments_synced_after) is the seeding gate:
+// only comments created strictly after it ever cross over, so enabling sync
+// never back-posts pre-existing history in either direction.
+export function planCommentSync({ githubComments, vibeComments, cutoff }) {
+  const imports = [];
+  const pushes = [];
+  const edits = [];
+  const repairs = [];
+
+  const gh = Array.isArray(githubComments) ? githubComments : [];
+  const vibe = Array.isArray(vibeComments) ? vibeComments : [];
+  const cut = cutoff ? Date.parse(cutoff) : null;
+  const afterCutoff = (iso) => {
+    if (cut == null || !Number.isFinite(cut)) return false;
+    const t = Date.parse(iso || '');
+    return Number.isFinite(t) && t > cut;
+  };
+
+  const vibeByGithubId = new Map();
+  const vibeById = new Map();
+  for (const c of vibe) {
+    vibeById.set(String(c.id), c);
+    if (c.github_comment_id != null) {
+      vibeByGithubId.set(String(c.github_comment_id), c);
+    }
+  }
+
+  const repairedVibeIds = new Set();
+  for (const gc of gh) {
+    const gid = String(gc.id);
+    const stripped = withoutCommentMarker(gc.body);
+    const mapped = vibeByGithubId.get(gid);
+    if (mapped) {
+      const decision = decideCommentSync({
+        githubMessage: stripped,
+        vibeMessage: mapped.message,
+        githubUpdatedAt: gc.updated_at,
+        vibeUpdatedAt: mapped.updated_at,
+      });
+      if (decision.direction === 'to_vibe') {
+        edits.push({ direction: 'to_vibe', vibe: mapped, message: stripped });
+      } else if (decision.direction === 'to_github') {
+        edits.push({ direction: 'to_github', vibe: mapped, github: gc });
+      }
+      continue;
+    }
+    // Unmapped: if it carries our marker it is a vibe comment we already pushed
+    // whose id-store didn't land — repair the mapping, never duplicate.
+    const markerId = commentMarkerId(gc.body);
+    if (markerId && vibeById.has(String(markerId))) {
+      repairs.push({ vibeCommentId: String(markerId), githubCommentId: gid });
+      repairedVibeIds.add(String(markerId));
+      continue;
+    }
+    // Genuinely new GitHub comment: import only if created after the cutoff.
+    if (afterCutoff(gc.created_at)) imports.push(gc);
+  }
+
+  for (const vc of vibe) {
+    if (vc.github_comment_id != null) continue; // already mirrored
+    if (vc.github_author_login != null) continue; // came from github (never echo back)
+    if (repairedVibeIds.has(String(vc.id))) continue; // mapped this round
+    if (!afterCutoff(vc.created_at)) continue; // pre-cutoff native history stays put
+    pushes.push(vc);
+  }
+
+  return { imports, pushes, edits, repairs };
+}
+
 export function shouldSyncGithubProjectStatus(config) {
   return config?.fields?.status !== false;
 }

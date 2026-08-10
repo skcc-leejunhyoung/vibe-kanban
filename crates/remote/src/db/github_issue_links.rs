@@ -116,6 +116,8 @@ impl GithubIssueLinkRepository {
                     CASE WHEN $13 THEN $14 ELSE synced_milestone_id END,
                 synced_github_milestone_number =
                     CASE WHEN $15 THEN $16 ELSE synced_github_milestone_number END,
+                comments_synced_after =
+                    COALESCE($17, comments_synced_after),
                 updated_at = NOW()
             WHERE id = $1
             RETURNING *
@@ -137,6 +139,7 @@ impl GithubIssueLinkRepository {
         .bind(synced_milestone_id)
         .bind(update_synced_github_milestone_number)
         .bind(synced_github_milestone_number)
+        .bind(payload.comments_synced_after)
         .fetch_one(&mut **tx)
         .await
     }

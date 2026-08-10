@@ -28,6 +28,8 @@ impl IssueCommentRepository {
                 author_id   AS "author_id: Uuid",
                 parent_id   AS "parent_id: Uuid",
                 message     AS "message!",
+                github_comment_id   AS "github_comment_id: String",
+                github_author_login AS "github_author_login: String",
                 created_at  AS "created_at!: DateTime<Utc>",
                 updated_at  AS "updated_at!: DateTime<Utc>"
             FROM issue_comments
@@ -41,6 +43,7 @@ impl IssueCommentRepository {
         Ok(record)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         pool: &PgPool,
         id: Option<Uuid>,
@@ -48,6 +51,8 @@ impl IssueCommentRepository {
         author_id: Uuid,
         parent_id: Option<Uuid>,
         message: String,
+        github_comment_id: Option<String>,
+        github_author_login: Option<String>,
     ) -> Result<MutationResponse<IssueComment>, IssueCommentError> {
         let id = id.unwrap_or_else(Uuid::new_v4);
         let now = Utc::now();
@@ -55,14 +60,16 @@ impl IssueCommentRepository {
         let data = sqlx::query_as!(
             IssueComment,
             r#"
-            INSERT INTO issue_comments (id, issue_id, author_id, parent_id, message, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO issue_comments (id, issue_id, author_id, parent_id, message, github_comment_id, github_author_login, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING
                 id          AS "id!: Uuid",
                 issue_id    AS "issue_id!: Uuid",
                 author_id   AS "author_id: Uuid",
                 parent_id   AS "parent_id: Uuid",
                 message     AS "message!",
+                github_comment_id   AS "github_comment_id: String",
+                github_author_login AS "github_author_login: String",
                 created_at  AS "created_at!: DateTime<Utc>",
                 updated_at  AS "updated_at!: DateTime<Utc>"
             "#,
@@ -71,6 +78,8 @@ impl IssueCommentRepository {
             author_id,
             parent_id,
             message,
+            github_comment_id,
+            github_author_login,
             now,
             now
         )
@@ -88,6 +97,7 @@ impl IssueCommentRepository {
         pool: &PgPool,
         id: Uuid,
         message: Option<String>,
+        github_comment_id: Option<String>,
     ) -> Result<MutationResponse<IssueComment>, IssueCommentError> {
         let updated_at = Utc::now();
         let mut tx = super::begin_tx(pool).await?;
@@ -97,6 +107,7 @@ impl IssueCommentRepository {
             UPDATE issue_comments
             SET
                 message = COALESCE($1, message),
+                github_comment_id = COALESCE($4, github_comment_id),
                 updated_at = $2
             WHERE id = $3
             RETURNING
@@ -105,12 +116,15 @@ impl IssueCommentRepository {
                 author_id   AS "author_id: Uuid",
                 parent_id   AS "parent_id: Uuid",
                 message     AS "message!",
+                github_comment_id   AS "github_comment_id: String",
+                github_author_login AS "github_author_login: String",
                 created_at  AS "created_at!: DateTime<Utc>",
                 updated_at  AS "updated_at!: DateTime<Utc>"
             "#,
             message,
             updated_at,
-            id
+            id,
+            github_comment_id
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -143,6 +157,8 @@ impl IssueCommentRepository {
                 author_id   AS "author_id: Uuid",
                 parent_id   AS "parent_id: Uuid",
                 message     AS "message!",
+                github_comment_id   AS "github_comment_id: String",
+                github_author_login AS "github_author_login: String",
                 created_at  AS "created_at!: DateTime<Utc>",
                 updated_at  AS "updated_at!: DateTime<Utc>"
             FROM issue_comments

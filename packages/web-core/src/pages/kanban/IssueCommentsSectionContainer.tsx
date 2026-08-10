@@ -229,22 +229,28 @@ function IssueCommentsSectionContent({
         const author = comment.author_id
           ? membersWithProfilesById.get(comment.author_id)
           : undefined;
+        // Comments imported from GitHub are attributed to their real GitHub
+        // author (not the sync bot) and are owned by the sync, so they are not
+        // locally editable/deletable.
+        const githubLogin = comment.github_author_login ?? null;
         const isAuthor =
           comment.author_id !== null && comment.author_id === currentUserId;
-        const canModify = isAuthor || isCurrentUserAdmin;
+        const canModify = githubLogin ? false : isAuthor || isCurrentUserAdmin;
         return {
           id: comment.id,
           authorId: comment.author_id,
-          authorName: comment.author_id
-            ? author
-              ? `${author.first_name ?? ''} ${author.last_name ?? ''}`.trim() ||
-                author.email ||
-                t('kanban.unknownUser')
-              : t('kanban.unknownUser')
-            : t('kanban.deletedUser'),
+          authorName: githubLogin
+            ? githubLogin
+            : comment.author_id
+              ? author
+                ? `${author.first_name ?? ''} ${author.last_name ?? ''}`.trim() ||
+                  author.email ||
+                  t('kanban.unknownUser')
+                : t('kanban.unknownUser')
+              : t('kanban.deletedUser'),
           message: comment.message,
           createdAt: comment.created_at,
-          author: author ?? null,
+          author: githubLogin ? null : (author ?? null),
           canModify,
         };
       })

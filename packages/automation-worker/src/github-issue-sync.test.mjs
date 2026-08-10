@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
+  commentMarkerId,
+  decideCommentSync,
   decideGithubParentSync,
   decideGithubMilestoneSync,
   decideGithubProjectStatusSync,
@@ -15,12 +17,15 @@ import {
   githubMilestoneMetaDiffers,
   markGithubIssueSeen,
   normalizeOptionalTimestamp,
+  planCommentSync,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
   selectGithubPollCandidates,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
+  withCommentMarker,
   withGithubIssueMarker,
+  withoutCommentMarker,
   withoutGithubIssueMarker,
 } from './github-issue-sync.mjs';
 
@@ -674,4 +679,209 @@ test('seeding poll imports nothing and seeds every source', () => {
     selectGithubImportCandidates({ candidates, seeding: false }),
     { importCandidates: candidates, seedOnly: [] }
   );
+});
+
+test('comment marker round-trips and survives edited bodies', () => {
+  const marked = withCommentMarker('hello', 'vc-1');
+  assert.equal(marked, 'hello\n\n<!-- vibe-kanban-comment:vc-1 -->');
+  assert.equal(withoutCommentMarker(marked), 'hello');
+  assert.equal(commentMarkerId(marked), 'vc-1');
+  // Idempotent: never stacks a second marker.
+  assert.equal(withCommentMarker(marked, 'vc-1'), marked);
+  // A GitHub-edited body (text changed, marker kept) still strips clean.
+  assert.equal(
+    withoutCommentMarker('edited text\n\n<!-- vibe-kanban-comment:vc-1 -->'),
+    'edited text'
+  );
+  assert.equal(commentMarkerId('no marker here'), null);
+});
+
+test('decideCommentSync: equal is a no-op, else newest updated_at wins', () => {
+  assert.equal(
+    decideCommentSync({ githubMessage: 'x', vibeMessage: 'x' }).direction,
+    'none'
+  );
+  assert.equal(
+    decideCommentSync({
+      githubMessage: 'gh',
+      vibeMessage: 'vb',
+      githubUpdatedAt: '2026-08-10T02:00:00Z',
+      vibeUpdatedAt: '2026-08-10T01:00:00Z',
+    }).direction,
+    'to_vibe'
+  );
+  assert.equal(
+    decideCommentSync({
+      githubMessage: 'gh',
+      vibeMessage: 'vb',
+      githubUpdatedAt: '2026-08-10T01:00:00Z',
+      vibeUpdatedAt: '2026-08-10T02:00:00Z',
+    }).direction,
+    'to_github'
+  );
+});
+
+test('planCommentSync seeds silently when no cutoff is set', () => {
+  const plan = planCommentSync({
+    githubComments: [
+      {
+        id: 1,
+        body: 'old gh',
+        created_at: '2026-08-01T00:00:00Z',
+        user: { login: 'octo' },
+      },
+    ],
+    vibeComments: [
+      { id: 'v1', message: 'old vibe', created_at: '2026-08-01T00:00:00Z' },
+    ],
+    cutoff: null,
+  });
+  assert.deepEqual(plan, { imports: [], pushes: [], edits: [], repairs: [] });
+});
+
+test('planCommentSync only crosses comments created after the cutoff', () => {
+  const cutoff = '2026-08-10T00:00:00Z';
+  const plan = planCommentSync({
+    githubComments: [
+      // pre-cutoff GitHub comment: never imported
+      {
+        id: 1,
+        body: 'history',
+        created_at: '2026-08-09T00:00:00Z',
+        user: { login: 'octo' },
+      },
+      // post-cutoff new GitHub comment: imported
+      {
+        id: 2,
+        body: 'fresh gh',
+        created_at: '2026-08-10T01:00:00Z',
+        user: { login: 'octo' },
+      },
+    ],
+    vibeComments: [
+      // pre-cutoff native vibe comment: never pushed (no retroactive publish)
+      {
+        id: 'v-old',
+        message: 'internal history',
+        created_at: '2026-08-09T00:00:00Z',
+        github_comment_id: null,
+        github_author_login: null,
+      },
+      // post-cutoff native vibe comment: pushed
+      {
+        id: 'v-new',
+        message: 'reply',
+        created_at: '2026-08-10T02:00:00Z',
+        github_comment_id: null,
+        github_author_login: null,
+      },
+    ],
+    cutoff,
+  });
+  assert.deepEqual(
+    plan.imports.map((c) => c.id),
+    [2]
+  );
+  assert.deepEqual(
+    plan.pushes.map((c) => c.id),
+    ['v-new']
+  );
+  assert.deepEqual(plan.edits, []);
+  assert.deepEqual(plan.repairs, []);
+});
+
+test('planCommentSync never echoes: mapped and github-origin comments are not re-sent', () => {
+  const cutoff = '2026-08-10T00:00:00Z';
+  const plan = planCommentSync({
+    githubComments: [
+      {
+        id: 10,
+        body: 'mirrored',
+        created_at: '2026-08-10T01:00:00Z',
+        updated_at: '2026-08-10T01:00:00Z',
+        user: { login: 'octo' },
+      },
+    ],
+    vibeComments: [
+      // vibe comment already mapped to gh#10 with identical text → no-op
+      {
+        id: 'v10',
+        message: 'mirrored',
+        created_at: '2026-08-10T01:00:00Z',
+        updated_at: '2026-08-10T01:00:00Z',
+        github_comment_id: '10',
+        github_author_login: null,
+      },
+      // a comment imported FROM github → must never be pushed back
+      {
+        id: 'v11',
+        message: 'from gh',
+        created_at: '2026-08-10T03:00:00Z',
+        github_comment_id: '999',
+        github_author_login: 'octo',
+      },
+    ],
+    cutoff,
+  });
+  assert.deepEqual(plan, { imports: [], pushes: [], edits: [], repairs: [] });
+});
+
+test('planCommentSync repairs a lost mapping via the marker instead of duplicating', () => {
+  const cutoff = '2026-08-10T00:00:00Z';
+  const plan = planCommentSync({
+    githubComments: [
+      {
+        id: 20,
+        body: 'pushed\n\n<!-- vibe-kanban-comment:v20 -->',
+        created_at: '2026-08-10T01:00:00Z',
+        user: { login: 'octo' },
+      },
+    ],
+    vibeComments: [
+      // native comment we pushed, but the id-store never landed
+      {
+        id: 'v20',
+        message: 'pushed',
+        created_at: '2026-08-10T01:00:00Z',
+        github_comment_id: null,
+        github_author_login: null,
+      },
+    ],
+    cutoff,
+  });
+  assert.deepEqual(plan.repairs, [
+    { vibeCommentId: 'v20', githubCommentId: '20' },
+  ]);
+  // Not imported (would duplicate) and not pushed again (repaired this round).
+  assert.deepEqual(plan.imports, []);
+  assert.deepEqual(plan.pushes, []);
+});
+
+test('planCommentSync edit reconcile picks the newer side on a mapped pair', () => {
+  const cutoff = '2026-08-10T00:00:00Z';
+  const plan = planCommentSync({
+    githubComments: [
+      {
+        id: 30,
+        body: 'gh edit\n\n<!-- vibe-kanban-comment:v30 -->',
+        created_at: '2026-08-10T01:00:00Z',
+        updated_at: '2026-08-10T05:00:00Z',
+        user: { login: 'octo' },
+      },
+    ],
+    vibeComments: [
+      {
+        id: 'v30',
+        message: 'vibe old',
+        created_at: '2026-08-10T01:00:00Z',
+        updated_at: '2026-08-10T02:00:00Z',
+        github_comment_id: '30',
+        github_author_login: null,
+      },
+    ],
+    cutoff,
+  });
+  assert.equal(plan.edits.length, 1);
+  assert.equal(plan.edits[0].direction, 'to_vibe');
+  assert.equal(plan.edits[0].message, 'gh edit');
 });

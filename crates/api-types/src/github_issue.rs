@@ -25,6 +25,9 @@ pub struct GithubIssueLink {
     pub synced_parent_issue_id: Option<Uuid>,
     pub synced_milestone_id: Option<Uuid>,
     pub synced_github_milestone_number: Option<i32>,
+    /// Instant this link first ran comment sync; only comments created after it
+    /// ever cross over, so enabling sync never back-posts existing history.
+    pub comments_synced_after: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -84,6 +87,7 @@ pub struct UpdateGithubIssueLinkRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub synced_github_milestone_number: Option<Option<i32>>,
+    pub comments_synced_after: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

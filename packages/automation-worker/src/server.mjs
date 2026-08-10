@@ -20,13 +20,16 @@ import {
   githubMilestoneMetaDiffers,
   markGithubIssueSeen,
   normalizeOptionalTimestamp,
+  planCommentSync,
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
   selectGithubImportCandidates,
   selectGithubPollCandidates,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
+  withCommentMarker,
   withGithubIssueMarker,
+  withoutCommentMarker,
   withoutGithubIssueMarker,
 } from './github-issue-sync.mjs';
 import {
@@ -2513,6 +2516,169 @@ async function reconcileGithubIssueLink(
       synced_github_milestone_number: milestoneSync.githubNumber,
     }
   );
+
+  if (config.fields?.comments !== false) {
+    try {
+      await reconcileGithubIssueComments(github, vibe, link, external, apiBase);
+    } catch (error) {
+      // Comment sync is best-effort: a failure here must not undo the title/
+      // status/etc. reconcile that already persisted above.
+      await log('warn', 'github comment sync failed', {
+        ruleId: rule.id,
+        issueId: link.issue_id,
+        githubUrl: link.url,
+        error: errorMessage(error),
+      });
+    }
+  }
+}
+
+// Fetch every comment on a mapped GitHub issue. Capped at 20 pages.
+// ponytail: full scan, no ?since cursor — add github_issue_links.comments_synced_after
+// as a `since` if an issue ever exceeds ~2000 comments.
+async function fetchGithubIssueComments(apiBase, repository, number, token) {
+  const comments = [];
+  for (let page = 1; page <= 20; page += 1) {
+    const params = new URLSearchParams({ per_page: '100', page: String(page) });
+    const response = await fetch(
+      `${apiBase}/repos/${repository}/issues/${number}/comments?${params}`,
+      { headers: githubHeaders(token) }
+    );
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(
+        `GitHub issue comments error: ${response.status} ${text.slice(0, 200)}`
+      );
+    }
+    const batch = JSON.parse(text);
+    for (const comment of batch) comments.push(comment);
+    if (!Array.isArray(batch) || batch.length < 100) break;
+  }
+  return comments;
+}
+
+async function githubCreateIssueComment(apiBase, repository, number, token, body) {
+  const response = await fetch(
+    `${apiBase}/repos/${repository}/issues/${number}/comments`,
+    {
+      method: 'POST',
+      headers: githubHeaders(token),
+      body: JSON.stringify({ body }),
+    }
+  );
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `GitHub create comment error: ${response.status} ${text.slice(0, 200)}`
+    );
+  }
+  return JSON.parse(text);
+}
+
+async function githubUpdateIssueComment(apiBase, repository, token, commentId, body) {
+  const response = await fetch(
+    `${apiBase}/repos/${repository}/issues/comments/${commentId}`,
+    {
+      method: 'PATCH',
+      headers: githubHeaders(token),
+      body: JSON.stringify({ body }),
+    }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `GitHub update comment error: ${response.status} ${text.slice(0, 200)}`
+    );
+  }
+}
+
+// Bidirectional comment reconcile for one mapped issue. Scope is the 1:1 link
+// (its repository/number and issue_id); planCommentSync applies the seeding
+// cutoff and echo/native filters so nothing leaks in from — or out to —
+// unrelated issues, PRs, or pre-existing history.
+async function reconcileGithubIssueComments(github, vibe, link, external, apiBase) {
+  // G1: a link should only ever point at an issue, but never sync a PR's
+  // conversation as issue comments even if one slipped through.
+  if (external && external.pull_request) return;
+  const token = github.config.token;
+
+  // G0 seeding: on the link's first comment reconcile, only stamp the cutoff.
+  // Everything already on either side stays put; sync begins with the next
+  // comment created after this instant.
+  if (!link.comments_synced_after) {
+    await vibeApi(
+      vibe,
+      'PATCH',
+      `/v1/github_issue_links/${encodeURIComponent(link.id)}`,
+      { comments_synced_after: new Date().toISOString() }
+    );
+    return;
+  }
+
+  const [githubComments, vibeBody] = await Promise.all([
+    fetchGithubIssueComments(apiBase, link.repository, link.number, token),
+    vibeApi(
+      vibe,
+      'GET',
+      `/v1/issue_comments?issue_id=${encodeURIComponent(link.issue_id)}`
+    ),
+  ]);
+  const plan = planCommentSync({
+    githubComments,
+    vibeComments: (vibeBody && vibeBody.issue_comments) || [],
+    cutoff: link.comments_synced_after,
+  });
+
+  for (const repair of plan.repairs) {
+    await vibeApi(
+      vibe,
+      'PATCH',
+      `/v1/issue_comments/${encodeURIComponent(repair.vibeCommentId)}`,
+      { github_comment_id: repair.githubCommentId }
+    );
+  }
+  for (const gc of plan.imports) {
+    await vibeApi(vibe, 'POST', '/v1/issue_comments', {
+      issue_id: link.issue_id,
+      parent_id: null,
+      message: withoutCommentMarker(gc.body),
+      github_comment_id: String(gc.id),
+      github_author_login: gc.user?.login ?? null,
+    });
+  }
+  for (const vc of plan.pushes) {
+    const created = await githubCreateIssueComment(
+      apiBase,
+      link.repository,
+      link.number,
+      token,
+      withCommentMarker(vc.message, vc.id)
+    );
+    await vibeApi(
+      vibe,
+      'PATCH',
+      `/v1/issue_comments/${encodeURIComponent(vc.id)}`,
+      { github_comment_id: String(created.id) }
+    );
+  }
+  for (const edit of plan.edits) {
+    if (edit.direction === 'to_vibe') {
+      await vibeApi(
+        vibe,
+        'PATCH',
+        `/v1/issue_comments/${encodeURIComponent(edit.vibe.id)}`,
+        { message: edit.message }
+      );
+    } else {
+      await githubUpdateIssueComment(
+        apiBase,
+        link.repository,
+        token,
+        edit.github.id,
+        withCommentMarker(edit.vibe.message, edit.vibe.id)
+      );
+    }
+  }
 }
 
 async function slackPermalink(token, channel, messageTs) {

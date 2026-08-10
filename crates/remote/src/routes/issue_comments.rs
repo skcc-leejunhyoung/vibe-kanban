@@ -111,6 +111,8 @@ async fn create_issue_comment(
         ctx.user.id,
         payload.parent_id,
         payload.message,
+        payload.github_comment_id,
+        payload.github_author_login,
     )
     .await
     .map_err(|error| {
@@ -163,32 +165,44 @@ async fn update_issue_comment(
 
     let organization_id = ensure_issue_access(state.pool(), ctx.user.id, comment.issue_id).await?;
 
-    let is_author = comment
-        .author_id
-        .map(|id| id == ctx.user.id)
-        .unwrap_or(false);
-    let is_admin = check_user_role(state.pool(), organization_id, ctx.user.id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to check user role");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-        })?
-        .map(|role| role == MemberRole::Admin)
-        .unwrap_or(false);
+    // Editing a comment's message is author/admin-only. Setting github_comment_id
+    // is sync metadata, not content, so any member with issue access may set it —
+    // this lets the automation worker record the GitHub mapping on a native
+    // comment (authored by a real user) it just mirrored, without that user's
+    // authorship blocking the service.
+    if payload.message.is_some() {
+        let is_author = comment
+            .author_id
+            .map(|id| id == ctx.user.id)
+            .unwrap_or(false);
+        let is_admin = check_user_role(state.pool(), organization_id, ctx.user.id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to check user role");
+                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            })?
+            .map(|role| role == MemberRole::Admin)
+            .unwrap_or(false);
 
-    if !is_author && !is_admin {
-        return Err(ErrorResponse::new(
-            StatusCode::FORBIDDEN,
-            "you do not have permission to edit this comment",
-        ));
+        if !is_author && !is_admin {
+            return Err(ErrorResponse::new(
+                StatusCode::FORBIDDEN,
+                "you do not have permission to edit this comment",
+            ));
+        }
     }
 
-    let response = IssueCommentRepository::update(state.pool(), issue_comment_id, payload.message)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to update issue comment");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-        })?;
+    let response = IssueCommentRepository::update(
+        state.pool(),
+        issue_comment_id,
+        payload.message,
+        payload.github_comment_id,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(?error, "failed to update issue comment");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
 
     Ok(Json(response))
 }
