@@ -120,22 +120,28 @@ async fn create_issue_comment(
         db_error(error, "failed to create issue comment")
     })?;
 
+    // Imported GitHub comments (github_comment_id set) are visible in the panel
+    // but must not notify per comment — importing an issue's existing discussion
+    // would otherwise spam every subscriber with a burst of notifications.
+    let is_imported = response.data.github_comment_id.is_some();
     if let Ok(Some(issue)) = IssueRepository::find_by_id(state.pool(), response.data.issue_id).await
     {
-        let comment_preview = response.data.message.chars().take(100).collect::<String>();
-        notify_issue_subscribers(
-            state.pool(),
-            organization_id,
-            ctx.user.id,
-            &issue,
-            NotificationType::IssueCommentAdded,
-            NotificationPayload {
-                comment_preview: Some(comment_preview),
-                ..Default::default()
-            },
-            Some(response.data.id),
-        )
-        .await;
+        if !is_imported {
+            let comment_preview = response.data.message.chars().take(100).collect::<String>();
+            notify_issue_subscribers(
+                state.pool(),
+                organization_id,
+                ctx.user.id,
+                &issue,
+                NotificationType::IssueCommentAdded,
+                NotificationPayload {
+                    comment_preview: Some(comment_preview),
+                    ..Default::default()
+                },
+                Some(response.data.id),
+            )
+            .await;
+        }
     }
 
     Ok(Json(response))

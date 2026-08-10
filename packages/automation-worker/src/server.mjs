@@ -2602,17 +2602,19 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
   if (external && external.pull_request) return;
   const token = github.config.token;
 
-  // G0 seeding: on the link's first comment reconcile, only stamp the cutoff.
-  // Everything already on either side stays put; sync begins with the next
-  // comment created after this instant.
-  if (!link.comments_synced_after) {
+  // Push cutoff: stamped once on the link's first reconcile. It gates only the
+  // vibe→GitHub push, so pre-existing internal vibe comments are never
+  // retroactively published. Import is NOT gated — existing GitHub comments are
+  // pulled in this same pass so the issue's discussion is immediately visible.
+  let cutoff = link.comments_synced_after;
+  if (!cutoff) {
+    cutoff = new Date().toISOString();
     await vibeApi(
       vibe,
       'PATCH',
       `/v1/github_issue_links/${encodeURIComponent(link.id)}`,
-      { comments_synced_after: new Date().toISOString() }
+      { comments_synced_after: cutoff }
     );
-    return;
   }
 
   const [githubComments, vibeBody] = await Promise.all([
@@ -2626,7 +2628,7 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
   const plan = planCommentSync({
     githubComments,
     vibeComments: (vibeBody && vibeBody.issue_comments) || [],
-    cutoff: link.comments_synced_after,
+    cutoff,
   });
 
   for (const repair of plan.repairs) {

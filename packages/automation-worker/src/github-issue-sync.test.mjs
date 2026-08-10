@@ -721,29 +721,43 @@ test('decideCommentSync: equal is a no-op, else newest updated_at wins', () => {
   );
 });
 
-test('planCommentSync seeds silently when no cutoff is set', () => {
+test('planCommentSync imports GitHub comments even with no cutoff, but pushes nothing', () => {
   const plan = planCommentSync({
     githubComments: [
       {
         id: 1,
-        body: 'old gh',
+        body: 'existing gh discussion',
         created_at: '2026-08-01T00:00:00Z',
         user: { login: 'octo' },
       },
     ],
     vibeComments: [
-      { id: 'v1', message: 'old vibe', created_at: '2026-08-01T00:00:00Z' },
+      {
+        id: 'v1',
+        message: 'old vibe',
+        created_at: '2026-08-01T00:00:00Z',
+        github_comment_id: null,
+        github_author_login: null,
+      },
     ],
     cutoff: null,
   });
-  assert.deepEqual(plan, { imports: [], pushes: [], edits: [], repairs: [] });
+  // Existing GitHub comment is imported so the discussion is visible...
+  assert.deepEqual(
+    plan.imports.map((c) => c.id),
+    [1]
+  );
+  // ...but with no cutoff stamped yet, no native vibe comment is pushed out.
+  assert.deepEqual(plan.pushes, []);
+  assert.deepEqual(plan.edits, []);
+  assert.deepEqual(plan.repairs, []);
 });
 
-test('planCommentSync only crosses comments created after the cutoff', () => {
+test('planCommentSync imports all GitHub comments but pushes only native ones after the cutoff', () => {
   const cutoff = '2026-08-10T00:00:00Z';
   const plan = planCommentSync({
     githubComments: [
-      // pre-cutoff GitHub comment: never imported
+      // pre-cutoff GitHub comment: still imported (existing discussion visible)
       {
         id: 1,
         body: 'history',
@@ -778,10 +792,12 @@ test('planCommentSync only crosses comments created after the cutoff', () => {
     ],
     cutoff,
   });
+  // Import is not cutoff-gated: both GitHub comments come in.
   assert.deepEqual(
     plan.imports.map((c) => c.id),
-    [2]
+    [1, 2]
   );
+  // Push is cutoff-gated: only the post-cutoff native comment goes out.
   assert.deepEqual(
     plan.pushes.map((c) => c.id),
     ['v-new']
@@ -911,7 +927,7 @@ test('planCommentSync never references a comment outside the two issue pools it 
       created_at: '2026-08-10T01:00:00Z',
       user: { login: 'a' },
     },
-    // pre-cutoff → ignored
+    // pre-cutoff, unmapped, no marker → imported (import is not cutoff-gated)
     {
       id: 'g-old',
       body: 'old',
@@ -969,10 +985,11 @@ test('planCommentSync never references a comment outside the two issue pools it 
     assert.ok(ghIds.has(String(r.githubCommentId)));
   }
 
-  // And the concrete routing for this mixed batch:
+  // And the concrete routing for this mixed batch. Import is not cutoff-gated,
+  // so both the new and the pre-cutoff unmapped GitHub comments come in.
   assert.deepEqual(
     plan.imports.map((c) => c.id),
-    ['g-new']
+    ['g-new', 'g-old']
   );
   assert.deepEqual(
     plan.pushes.map((c) => c.id),

@@ -299,9 +299,10 @@ export function decideCommentSync({
 // Decide, for one mapped issue, which comments to import (github→vibe), push
 // (vibe→github), edit-reconcile, or repair-map. The caller passes only comments
 // belonging to the mapped issue on each side, so the 1:1 link is already the
-// scope boundary. `cutoff` (link.comments_synced_after) is the seeding gate:
-// only comments created strictly after it ever cross over, so enabling sync
-// never back-posts pre-existing history in either direction.
+// scope boundary. `cutoff` (link.comments_synced_after) gates the PUSH direction
+// only: a native vibe comment created at/before it is never published to GitHub,
+// so enabling sync never back-posts internal history. IMPORT is deliberately not
+// gated — the issue's existing GitHub discussion is pulled in so it is visible.
 export function planCommentSync({ githubComments, vibeComments, cutoff }) {
   const imports = [];
   const pushes = [];
@@ -353,8 +354,9 @@ export function planCommentSync({ githubComments, vibeComments, cutoff }) {
       repairedVibeIds.add(String(markerId));
       continue;
     }
-    // Genuinely new GitHub comment: import only if created after the cutoff.
-    if (afterCutoff(gc.created_at)) imports.push(gc);
+    // Genuinely new GitHub comment: import it. Not cutoff-gated — existing
+    // GitHub discussion must be visible in vibe, not just comments going forward.
+    imports.push(gc);
   }
 
   for (const vc of vibe) {
