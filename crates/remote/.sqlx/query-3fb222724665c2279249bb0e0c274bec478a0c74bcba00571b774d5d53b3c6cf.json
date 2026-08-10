@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id          AS \"id!: Uuid\",\n                issue_id    AS \"issue_id!: Uuid\",\n                author_id   AS \"author_id: Uuid\",\n                parent_id   AS \"parent_id: Uuid\",\n                message     AS \"message!\",\n                github_comment_id   AS \"github_comment_id: String\",\n                github_author_login AS \"github_author_login: String\",\n                created_at  AS \"created_at!: DateTime<Utc>\",\n                updated_at  AS \"updated_at!: DateTime<Utc>\"\n            FROM issue_comments\n            WHERE issue_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "issue_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "author_id: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "message!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "github_comment_id: String",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "github_author_login: String",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at!: DateTime<Utc>",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at!: DateTime<Utc>",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "3fb222724665c2279249bb0e0c274bec478a0c74bcba00571b774d5d53b3c6cf"
+}

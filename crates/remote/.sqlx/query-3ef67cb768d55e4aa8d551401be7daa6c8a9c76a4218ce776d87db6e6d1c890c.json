@@ -36,7 +36,8 @@
                 "issue_unassigned",
                 "issue_comment_reaction",
                 "issue_review_requested",
-                "workspace_task_completed"
+                "workspace_task_completed",
+                "pull_request_comment_added"
               ]
             }
           }
@@ -93,7 +94,8 @@
                 "issue_unassigned",
                 "issue_comment_reaction",
                 "issue_review_requested",
-                "workspace_task_completed"
+                "workspace_task_completed",
+                "pull_request_comment_added"
               ]
             }
           }

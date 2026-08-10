@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE issue_comments\n            SET\n                message = COALESCE($1, message),\n                github_comment_id = COALESCE($4, github_comment_id),\n                updated_at = $2\n            WHERE id = $3\n            RETURNING\n                id          AS \"id!: Uuid\",\n                issue_id    AS \"issue_id!: Uuid\",\n                author_id   AS \"author_id: Uuid\",\n                parent_id   AS \"parent_id: Uuid\",\n                message     AS \"message!\",\n                github_comment_id   AS \"github_comment_id: String\",\n                github_author_login AS \"github_author_login: String\",\n                created_at  AS \"created_at!: DateTime<Utc>\",\n                updated_at  AS \"updated_at!: DateTime<Utc>\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "issue_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "author_id: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "message!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "github_comment_id: String",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "github_author_login: String",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at!: DateTime<Utc>",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at!: DateTime<Utc>",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "334996412a560011996997ee0e7d5fff57f1f21e42007147143afeb4c2cfcc5e"
+}

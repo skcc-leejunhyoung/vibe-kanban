@@ -28,7 +28,12 @@ export type IssueMilestone = { id: string, project_id: string, issue_id: string,
 
 export type Issue = { id: string, project_id: string, issue_number: number, simple_id: string, status_id: string, title: string, description: string | null, priority: IssuePriority | null, start_date: string | null, target_date: string | null, completed_at: string | null, sort_order: number, parent_issue_id: string | null, parent_issue_sort_order: number | null, extension_metadata: JsonValue, creator_user_id: string | null, created_at: string, updated_at: string, };
 
-export type GithubIssueLink = { id: string, project_id: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, synced_milestone_id: string | null, synced_github_milestone_number: number | null, created_at: string, updated_at: string, };
+export type GithubIssueLink = { id: string, project_id: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, synced_milestone_id: string | null, synced_github_milestone_number: number | null,
+/**
+ * Instant this link first ran comment sync; only comments created after it
+ * ever cross over, so enabling sync never back-posts existing history.
+ */
+comments_synced_after: string | null, created_at: string, updated_at: string, };
 
 export type IssueAssignee = { id: string, issue_id: string, user_id: string, assigned_at: string, project_id: string, };
 
@@ -46,7 +51,16 @@ export type IssueRelationship = { id: string, issue_id: string, related_issue_id
 
 export type IssueRelationshipType = "blocking" | "related" | "has_duplicate";
 
-export type IssueComment = { id: string, issue_id: string, author_id: string | null, parent_id: string | null, message: string, created_at: string, updated_at: string, };
+export type IssueComment = { id: string, issue_id: string, author_id: string | null, parent_id: string | null, message: string,
+/**
+ * GitHub comment id this row mirrors (identity key, never non-null for a
+ * native vibe comment). Set by the automation worker's bidirectional sync.
+ */
+github_comment_id: string | null,
+/**
+ * Real GitHub author login, shown in place of the sync bot when set.
+ */
+github_author_login: string | null, created_at: string, updated_at: string, };
 
 export type IssueCommentReaction = { id: string, comment_id: string, user_id: string, emoji: string, created_at: string, };
 
@@ -75,7 +89,7 @@ id?: string, issue_id: string, url: string, number: number, status: PullRequestS
 
 export type CreateGithubIssueLinkRequest = { id?: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, synced_milestone_id: string | null, synced_github_milestone_number: number | null, };
 
-export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id?: string | null | null, synced_milestone_id?: string | null | null, synced_github_milestone_number?: number | null | null, };
+export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id?: string | null | null, synced_milestone_id?: string | null | null, synced_github_milestone_number?: number | null | null, comments_synced_after: string | null, };
 
 export type SortDirection = "asc" | "desc";
 
@@ -187,9 +201,18 @@ export type CreateIssueCommentRequest = {
  * Optional client-generated ID. If not provided, server generates one.
  * Using client-generated IDs enables stable optimistic updates.
  */
-id?: string, issue_id: string, message: string, parent_id: string | null, };
+id?: string, issue_id: string, message: string, parent_id: string | null,
+/**
+ * Sync-only: set by the automation worker when importing a GitHub comment.
+ */
+github_comment_id?: string, github_author_login?: string, };
 
-export type UpdateIssueCommentRequest = { message: string | null, parent_id: string | null | null, };
+export type UpdateIssueCommentRequest = { message: string | null, parent_id: string | null | null,
+/**
+ * Sync-only: set once when the worker mirrors a native comment to GitHub.
+ * Unlike `message`, this is not gated on comment authorship (see route).
+ */
+github_comment_id: string | null, };
 
 export type CreateIssueCommentReactionRequest = {
 /**
