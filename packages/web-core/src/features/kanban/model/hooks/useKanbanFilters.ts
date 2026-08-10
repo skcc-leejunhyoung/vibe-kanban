@@ -168,6 +168,20 @@ export function useKanbanFilters({
     if (advancedFilter) {
       // Advanced mode: the nested tree supersedes the flat filter fields.
       const now = Date.now();
+      // The "current" milestone: the not-yet-passed, uncompleted milestone with
+      // the nearest due date. ponytail: on a due-date tie the first wins; add a
+      // secondary sort key only if that ever bites.
+      let currentMilestoneId: string | null = null;
+      let currentMilestoneDue = Infinity;
+      for (const m of milestones) {
+        if (!m.target_date || m.completed_at) continue;
+        const due = Date.parse(m.target_date);
+        if (Number.isNaN(due) || due < now) continue;
+        if (due < currentMilestoneDue) {
+          currentMilestoneDue = due;
+          currentMilestoneId = m.id;
+        }
+      }
       const factsFor = (issue: Issue): IssueFilterFacts => {
         const milestoneId = milestoneByIssue.get(issue.id) ?? null;
         const milestone = milestoneId
@@ -185,6 +199,8 @@ export function useKanbanFilters({
           tagIds: tagsByIssue[issue.id] ?? [],
           milestoneId,
           isMilestoneOverdue,
+          isCurrentMilestone:
+            milestoneId !== null && milestoneId === currentMilestoneId,
           isBlocked: blockedIssueIds.has(issue.id),
           text: {
             title: issue.title,

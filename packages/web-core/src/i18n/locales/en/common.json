@@ -538,7 +538,7 @@
     "filterEmptyGroup": "No conditions yet. Add one above.",
     "filterNeedsValue": "Pick a value (ignored until then)",
     "filterNegate": "NOT",
-    "filterNegateHint": "Negate this group (NOT)",
+    "filterNegateHint": "Negate this condition (NOT)",
     "filterField": {
       "text": "Text",
       "status": "Status",
@@ -557,6 +557,7 @@
       "contains": "contains",
       "notContains": "does not contain",
       "isOverdue": "is overdue",
+      "isCurrent": "is in progress",
       "isTrue": "yes",
       "isFalse": "no"
     },

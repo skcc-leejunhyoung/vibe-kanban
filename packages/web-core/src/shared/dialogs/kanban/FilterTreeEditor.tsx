@@ -126,6 +126,7 @@ const operatorLabel = (
     contains: t('kanban.filterOp.contains', 'contains'),
     not_contains: t('kanban.filterOp.notContains', 'does not contain'),
     is_overdue: t('kanban.filterOp.isOverdue', 'is overdue'),
+    is_current: t('kanban.filterOp.isCurrent', 'is in progress'),
     is_true: t('kanban.filterOp.isTrue', 'yes'),
     is_false: t('kanban.filterOp.isFalse', 'no'),
   })[operator];
@@ -225,6 +226,20 @@ function ConditionRow({
 
   return (
     <div className="flex flex-wrap items-center gap-half">
+      <button
+        type="button"
+        onClick={() => patch({ negate: !node.negate })}
+        aria-pressed={!!node.negate}
+        className={cn(
+          'rounded-sm px-base py-half text-sm font-medium transition-colors',
+          node.negate
+            ? 'bg-brand text-white'
+            : 'bg-panel text-normal hover:bg-secondary'
+        )}
+        title={t('kanban.filterNegateHint', 'Negate this condition (NOT)')}
+      >
+        {t('kanban.filterNegate', 'NOT')}
+      </button>
       <PropertyDropdown
         value={node.field}
         options={fieldOptions}
@@ -330,20 +345,6 @@ function GroupEditor({
           icon={FunnelIcon}
           onChange={(combinator) => patch({ combinator })}
         />
-        <button
-          type="button"
-          onClick={() => patch({ negate: !node.negate })}
-          aria-pressed={node.negate}
-          className={cn(
-            'rounded-sm px-base py-half text-sm font-medium transition-colors',
-            node.negate
-              ? 'bg-brand text-white'
-              : 'bg-panel text-normal hover:bg-secondary'
-          )}
-          title={t('kanban.filterNegateHint', 'Negate this group (NOT)')}
-        >
-          {t('kanban.filterNegate', 'NOT')}
-        </button>
         <div className="ml-auto flex items-center gap-half">
           <button
             type="button"

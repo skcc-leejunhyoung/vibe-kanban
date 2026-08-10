@@ -524,7 +524,7 @@
     "filterEmptyGroup": "아직 조건이 없습니다. 위에서 추가하세요.",
     "filterNeedsValue": "값을 선택하세요 (선택 전까지 무시됨)",
     "filterNegate": "NOT",
-    "filterNegateHint": "이 그룹을 부정(NOT)",
+    "filterNegateHint": "이 조건을 부정(NOT)",
     "filterField": {
       "text": "텍스트",
       "status": "상태",
@@ -543,6 +543,7 @@
       "contains": "포함",
       "notContains": "미포함",
       "isOverdue": "기한 초과",
+      "isCurrent": "진행 중",
       "isTrue": "예",
       "isFalse": "아니오"
     },

@@ -38,6 +38,7 @@ export type FilterOperator =
   | 'contains' // text fuzzy match
   | 'not_contains'
   | 'is_overdue' // milestone target date passed and not completed
+  | 'is_current' // milestone with the nearest not-yet-passed due date
   | 'is_true' // boolean field (blocked)
   | 'is_false';
 
@@ -50,6 +51,8 @@ export type FilterCondition = {
   operator: FilterOperator;
   /** Selected ids / enum values / search text. Empty for nullary operators. */
   values: string[];
+  /** Negate (NOT) this single condition's result. */
+  negate?: boolean;
 };
 
 export type FilterGroup = {
@@ -89,7 +92,14 @@ export const OPERATORS_BY_FIELD: Record<FilterFieldKey, FilterOperator[]> = {
   priority: ['any_of', 'none_of'],
   assignee: ['any_of', 'none_of', 'all_of', 'is_empty', 'is_not_empty'],
   tag: ['any_of', 'none_of', 'all_of', 'is_empty', 'is_not_empty'],
-  milestone: ['any_of', 'none_of', 'is_empty', 'is_not_empty', 'is_overdue'],
+  milestone: [
+    'any_of',
+    'none_of',
+    'is_empty',
+    'is_not_empty',
+    'is_overdue',
+    'is_current',
+  ],
   blocked: ['is_true', 'is_false'],
 };
 
@@ -103,6 +113,7 @@ export const OPERATOR_NEEDS_VALUES: Record<FilterOperator, boolean> = {
   contains: true,
   not_contains: true,
   is_overdue: false,
+  is_current: false,
   is_true: false,
   is_false: false,
 };
@@ -123,6 +134,7 @@ export const newCondition = (
   field,
   operator: defaultOperatorForField(field),
   values: [],
+  negate: false,
 });
 
 export const newGroup = (
@@ -209,6 +221,7 @@ const stripIds = (node: FilterNode): unknown =>
         field: node.field,
         operator: node.operator,
         values: [...node.values].sort(),
+        negate: !!node.negate,
       }
     : {
         kind: 'group',
@@ -236,6 +249,8 @@ export type IssueFilterFacts = {
   tagIds: string[];
   milestoneId: string | null;
   isMilestoneOverdue: boolean;
+  /** True when this issue's milestone is the current one (nearest future due). */
+  isCurrentMilestone: boolean;
   isBlocked: boolean;
   text: {
     title: string;
@@ -277,9 +292,22 @@ const evaluateCondition = (
 
   // A half-built condition (value-taking operator with no value yet) is
   // ignored rather than excluding everything, matching the simple filter where
-  // an empty selection means "no constraint".
+  // an empty selection means "no constraint". The per-condition NOT is applied
+  // only to an effective condition, so toggling NOT on a blank row never blanks
+  // the board.
   if (!isConditionEffective(condition)) return true;
 
+  const matched = matchCondition(field, operator, values, facts, options);
+  return condition.negate ? !matched : matched;
+};
+
+const matchCondition = (
+  field: FilterFieldKey,
+  operator: FilterOperator,
+  values: string[],
+  facts: IssueFilterFacts,
+  options: FilterEvalOptions
+): boolean => {
   switch (field) {
     case 'text': {
       const query = values[0]?.trim() ?? '';
@@ -334,6 +362,7 @@ const evaluateCondition = (
       if (operator === 'is_empty') return facts.milestoneId === null;
       if (operator === 'is_not_empty') return facts.milestoneId !== null;
       if (operator === 'is_overdue') return facts.isMilestoneOverdue;
+      if (operator === 'is_current') return facts.isCurrentMilestone;
       const inSet =
         facts.milestoneId !== null && values.includes(facts.milestoneId);
       return operator === 'none_of' ? !inSet : inSet;

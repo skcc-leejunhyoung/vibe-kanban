@@ -24,6 +24,7 @@ const baseFacts: IssueFilterFacts = {
   tagIds: ['t-bug'],
   milestoneId: 'm1',
   isMilestoneOverdue: false,
+  isCurrentMilestone: false,
   isBlocked: false,
   text: {
     title: '로그인 플로우 개선',
@@ -160,7 +161,7 @@ describe('evaluateNode — single conditions', () => {
     ).toBe(false);
   });
 
-  it('milestone is_empty / is_overdue', () => {
+  it('milestone is_empty / is_overdue / is_current', () => {
     expect(
       evaluateNode(
         cond({ field: 'milestone', operator: 'is_empty', values: [] }),
@@ -172,6 +173,61 @@ describe('evaluateNode — single conditions', () => {
       evaluateNode(
         cond({ field: 'milestone', operator: 'is_overdue', values: [] }),
         facts({ isMilestoneOverdue: true }),
+        opts
+      )
+    ).toBe(true);
+    expect(
+      evaluateNode(
+        cond({ field: 'milestone', operator: 'is_current', values: [] }),
+        facts({ isCurrentMilestone: true }),
+        opts
+      )
+    ).toBe(true);
+    expect(
+      evaluateNode(
+        cond({ field: 'milestone', operator: 'is_current', values: [] }),
+        facts({ isCurrentMilestone: false }),
+        opts
+      )
+    ).toBe(false);
+  });
+
+  it('per-condition negate inverts an effective condition only', () => {
+    // NOT (status any_of s-todo) excludes matching issues.
+    expect(
+      evaluateNode(
+        cond({
+          field: 'status',
+          operator: 'any_of',
+          values: ['s-todo'],
+          negate: true,
+        }),
+        facts(),
+        opts
+      )
+    ).toBe(false);
+    expect(
+      evaluateNode(
+        cond({
+          field: 'status',
+          operator: 'any_of',
+          values: ['s-done'],
+          negate: true,
+        }),
+        facts(),
+        opts
+      )
+    ).toBe(true);
+    // A half-built negated condition imposes no constraint (never blanks board).
+    expect(
+      evaluateNode(
+        cond({
+          field: 'status',
+          operator: 'any_of',
+          values: [],
+          negate: true,
+        }),
+        facts(),
         opts
       )
     ).toBe(true);

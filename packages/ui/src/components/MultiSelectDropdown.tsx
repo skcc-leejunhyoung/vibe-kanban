@@ -83,6 +83,9 @@ export function MultiSelectDropdown<T extends string = string>({
           <DropdownMenuCheckboxItem
             key={option.value}
             checked={values.includes(option.value)}
+            // Keep the menu open on select so multiple items can be toggled in
+            // one pass; it closes only on explicit dismiss (outside click / Esc).
+            onSelect={(event) => event.preventDefault()}
             onCheckedChange={() => {
               const newValues = values.includes(option.value)
                 ? values.filter((v) => v !== option.value)

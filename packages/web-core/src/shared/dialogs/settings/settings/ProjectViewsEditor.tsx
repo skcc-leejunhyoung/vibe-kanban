@@ -93,38 +93,48 @@ export function ProjectViewsEditor({
 
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const persist = useCallback(
-    (next: ProjectViewDefinition[]) => setProjectViews(projectId, next),
-    [projectId, setProjectViews]
-  );
+  // Edits accumulate in a local draft so the whole batch (add/edit/delete/
+  // reorder) can be saved or cancelled as a unit. `null` means no pending
+  // changes and the stored views show through unchanged.
+  const [draft, setDraft] = useState<ProjectViewDefinition[] | null>(null);
+  useEffect(() => {
+    // Switching projects abandons any in-flight edits for the previous one.
+    setDraft(null);
+    setEditingId(null);
+  }, [projectId]);
+
+  const effectiveViews = draft ?? views;
+  const dirty = draft !== null;
 
   const updateView = useCallback(
     (id: string, patch: Partial<ProjectViewDefinition>) => {
-      persist(views.map((v) => (v.id === id ? { ...v, ...patch } : v)));
+      setDraft(
+        effectiveViews.map((v) => (v.id === id ? { ...v, ...patch } : v))
+      );
     },
-    [views, persist]
+    [effectiveViews]
   );
 
   const deleteView = useCallback(
     (id: string) => {
-      if (views.length <= 1) return; // keep at least one view
-      persist(views.filter((v) => v.id !== id));
+      if (effectiveViews.length <= 1) return; // keep at least one view
+      setDraft(effectiveViews.filter((v) => v.id !== id));
       if (editingId === id) setEditingId(null);
     },
-    [views, persist, editingId]
+    [effectiveViews, editingId]
   );
 
   const moveView = useCallback(
     (id: string, direction: -1 | 1) => {
-      const index = views.findIndex((v) => v.id === id);
+      const index = effectiveViews.findIndex((v) => v.id === id);
       const target = index + direction;
-      if (index < 0 || target < 0 || target >= views.length) return;
-      const next = [...views];
+      if (index < 0 || target < 0 || target >= effectiveViews.length) return;
+      const next = [...effectiveViews];
       const [moved] = next.splice(index, 1);
       next.splice(target, 0, moved);
-      persist(next);
+      setDraft(next);
     },
-    [views, persist]
+    [effectiveViews]
   );
 
   const addView = useCallback(() => {
@@ -139,9 +149,20 @@ export function ProjectViewsEditor({
       showWorkspaces: DEFAULT_KANBAN_SHOW_WORKSPACES,
       hideBlocked: DEFAULT_KANBAN_HIDE_BLOCKED,
     };
-    persist([...views, newView]);
+    setDraft([...effectiveViews, newView]);
     setEditingId(id);
-  }, [views, persist, t]);
+  }, [effectiveViews, t]);
+
+  const save = useCallback(() => {
+    if (draft) setProjectViews(projectId, draft);
+    setDraft(null);
+    setEditingId(null);
+  }, [draft, projectId, setProjectViews]);
+
+  const cancel = useCallback(() => {
+    setDraft(null);
+    setEditingId(null);
+  }, []);
 
   return (
     <div className="bg-secondary/50 border border-border rounded-sm p-4 space-y-base">
@@ -158,7 +179,7 @@ export function ProjectViewsEditor({
       </div>
 
       <div className="flex flex-col gap-half">
-        {views.map((view, index) => (
+        {effectiveViews.map((view, index) => (
           <div key={view.id} className="rounded-sm bg-secondary">
             <div className="flex items-center gap-base px-base py-half">
               <div className="flex flex-col">
@@ -174,7 +195,7 @@ export function ProjectViewsEditor({
                 <button
                   type="button"
                   onClick={() => moveView(view.id, 1)}
-                  disabled={index === views.length - 1}
+                  disabled={index === effectiveViews.length - 1}
                   className="text-low hover:text-normal disabled:opacity-30"
                   title={t('kanban.viewsEditor.moveDown', 'Move down')}
                 >
@@ -202,7 +223,7 @@ export function ProjectViewsEditor({
               <button
                 type="button"
                 onClick={() => deleteView(view.id)}
-                disabled={views.length <= 1}
+                disabled={effectiveViews.length <= 1}
                 className="flex items-center justify-center size-icon-sm text-low hover:text-normal disabled:opacity-30"
                 title={t('kanban.viewsEditor.delete', 'Delete view')}
               >
@@ -237,6 +258,25 @@ export function ProjectViewsEditor({
           {t('kanban.viewsEditor.addView', 'Add view')}
         </span>
       </button>
+
+      {dirty && (
+        <div className="flex items-center justify-end gap-half border-t border-border pt-base">
+          <button
+            type="button"
+            onClick={cancel}
+            className="rounded-sm border border-border px-base py-half text-sm text-low transition-colors hover:text-normal"
+          >
+            {t('buttons.cancel', 'Cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            className="rounded-sm bg-brand px-base py-half text-sm font-medium text-white transition-colors hover:opacity-90"
+          >
+            {t('buttons.save', 'Save')}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
