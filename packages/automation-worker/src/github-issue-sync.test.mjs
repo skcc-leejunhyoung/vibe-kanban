@@ -885,3 +885,103 @@ test('planCommentSync edit reconcile picks the newer side on a mapped pair', () 
   assert.equal(plan.edits[0].direction, 'to_vibe');
   assert.equal(plan.edits[0].message, 'gh edit');
 });
+
+test('planCommentSync never references a comment outside the two issue pools it was given', () => {
+  const cutoff = '2026-08-10T00:00:00Z';
+  const githubComments = [
+    // new → import
+    {
+      id: 'g-new',
+      body: 'new gh',
+      created_at: '2026-08-10T01:00:00Z',
+      user: { login: 'a' },
+    },
+    // mapped, github edited later → edit to_vibe
+    {
+      id: 'g-mapped',
+      body: 'x\n\n<!-- vibe-kanban-comment:v-mapped -->',
+      created_at: '2026-08-10T01:00:00Z',
+      updated_at: '2026-08-10T09:00:00Z',
+      user: { login: 'a' },
+    },
+    // carries our marker but unmapped → repair
+    {
+      id: 'g-repair',
+      body: 'r\n\n<!-- vibe-kanban-comment:v-repair -->',
+      created_at: '2026-08-10T01:00:00Z',
+      user: { login: 'a' },
+    },
+    // pre-cutoff → ignored
+    {
+      id: 'g-old',
+      body: 'old',
+      created_at: '2026-08-09T00:00:00Z',
+      user: { login: 'a' },
+    },
+  ];
+  const vibeComments = [
+    {
+      id: 'v-mapped',
+      message: 'y',
+      created_at: '2026-08-10T01:00:00Z',
+      updated_at: '2026-08-10T02:00:00Z',
+      github_comment_id: 'g-mapped',
+      github_author_login: null,
+    },
+    {
+      id: 'v-repair',
+      message: 'r',
+      created_at: '2026-08-10T01:00:00Z',
+      github_comment_id: null,
+      github_author_login: null,
+    },
+    {
+      id: 'v-push',
+      message: 'p',
+      created_at: '2026-08-10T03:00:00Z',
+      github_comment_id: null,
+      github_author_login: null,
+    },
+    // imported earlier; its github twin was deleted (not in this fetch) →
+    // must produce nothing (never pushed back, never edited against a stranger).
+    {
+      id: 'v-imported',
+      message: 'from gh',
+      created_at: '2026-08-10T03:00:00Z',
+      github_comment_id: 'g-deleted-elsewhere',
+      github_author_login: 'a',
+    },
+  ];
+  const plan = planCommentSync({ githubComments, vibeComments, cutoff });
+
+  // Invariant: every target the plan emits is a member of the pools it was
+  // handed — it can never fabricate an id belonging to some other issue.
+  const ghIds = new Set(githubComments.map((c) => String(c.id)));
+  const vbIds = new Set(vibeComments.map((c) => String(c.id)));
+  for (const gc of plan.imports) assert.ok(ghIds.has(String(gc.id)));
+  for (const vc of plan.pushes) assert.ok(vbIds.has(String(vc.id)));
+  for (const e of plan.edits) {
+    assert.ok(vbIds.has(String(e.vibe.id)));
+    if (e.direction === 'to_github') assert.ok(ghIds.has(String(e.github.id)));
+  }
+  for (const r of plan.repairs) {
+    assert.ok(vbIds.has(String(r.vibeCommentId)));
+    assert.ok(ghIds.has(String(r.githubCommentId)));
+  }
+
+  // And the concrete routing for this mixed batch:
+  assert.deepEqual(
+    plan.imports.map((c) => c.id),
+    ['g-new']
+  );
+  assert.deepEqual(
+    plan.pushes.map((c) => c.id),
+    ['v-push']
+  );
+  assert.deepEqual(plan.repairs, [
+    { vibeCommentId: 'v-repair', githubCommentId: 'g-repair' },
+  ]);
+  assert.equal(plan.edits.length, 1);
+  assert.equal(plan.edits[0].vibe.id, 'v-mapped');
+  assert.equal(plan.edits[0].direction, 'to_vibe');
+});
