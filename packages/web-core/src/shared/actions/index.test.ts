@@ -354,6 +354,19 @@ describe('command palette navigation actions', () => {
     ).toBe(false);
   });
 
+  it('exposes Open PR in Web in the palette only on the pull requests page', () => {
+    expect(getPageActions('root')).toContain(Actions.OpenPullRequestInWeb);
+    expect(
+      isActionVisible(Actions.OpenPullRequestInWeb, {
+        ...openWorkspaceContext,
+        layoutMode: 'pull-requests',
+      })
+    ).toBe(true);
+    expect(
+      isActionVisible(Actions.OpenPullRequestInWeb, openWorkspaceContext)
+    ).toBe(false);
+  });
+
   it('opens the project workspace in the workspace view', () => {
     const goToWorkspace = vi.fn();
     const { ctx } = makeCtx(

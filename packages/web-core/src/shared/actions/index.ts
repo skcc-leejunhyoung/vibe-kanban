@@ -137,6 +137,7 @@ import {
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
   PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
   PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
+  PULL_REQUESTS_OPEN_IN_WEB_EVENT,
 } from '@/pages/pull-requests/pullRequestFilters';
 
 // Mirrored sidebar icon for right sidebar toggle
@@ -1395,6 +1396,20 @@ export const Actions = {
       window.dispatchEvent(
         new Event(PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT)
       );
+    },
+  } satisfies GlobalActionDefinition,
+
+  OpenPullRequestInWeb: {
+    id: 'open-pull-request-in-web',
+    label: 'Pull Requests: Open PR in Web',
+    icon: ArrowSquareOutIcon,
+    keywords: ['pull request', 'pr', 'open', 'web', 'browser', 'github'],
+    requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
+    executeAfterClose: true,
+    isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
+    execute: () => {
+      window.dispatchEvent(new Event(PULL_REQUESTS_OPEN_IN_WEB_EVENT));
     },
   } satisfies GlobalActionDefinition,
 

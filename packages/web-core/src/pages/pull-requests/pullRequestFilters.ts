@@ -44,3 +44,4 @@ export const PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT =
   'vibe:pull-requests-goto-mapped-issue';
 export const PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT =
   'vibe:pull-requests-view-mapped-workspaces';
+export const PULL_REQUESTS_OPEN_IN_WEB_EVENT = 'vibe:pull-requests-open-in-web';

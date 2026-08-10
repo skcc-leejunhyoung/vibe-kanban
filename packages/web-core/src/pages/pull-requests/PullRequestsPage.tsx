@@ -34,6 +34,7 @@ import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { selectLinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { ActionTargetType } from '@/shared/types/actions';
 import { PullRequestDetailsPanel } from './PullRequestDetailsPanel';
 import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
@@ -48,6 +49,7 @@ import {
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
   PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
   PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
+  PULL_REQUESTS_OPEN_IN_WEB_EVENT,
   resolvePullRequestFiltersAfterDefaultsChange,
   type PullRequestFilterState,
   type PullRequestUpdatedFilter,
@@ -561,6 +563,10 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       const pullRequest = getSelectedPullRequest();
       if (pullRequest) void viewMappedWorkspaces(pullRequest);
     };
+    const openInWeb = () => {
+      const pullRequest = getSelectedPullRequest();
+      if (pullRequest) openExternalUrl(pullRequest.url);
+    };
     window.addEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
     window.addEventListener(PULL_REQUESTS_FOCUS_SEARCH_EVENT, focusSearch);
     window.addEventListener(
@@ -575,6 +581,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
       showMappedWorkspaces
     );
+    window.addEventListener(PULL_REQUESTS_OPEN_IN_WEB_EVENT, openInWeb);
     return () => {
       window.removeEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
       window.removeEventListener(PULL_REQUESTS_FOCUS_SEARCH_EVENT, focusSearch);
@@ -590,6 +597,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
         showMappedWorkspaces
       );
+      window.removeEventListener(PULL_REQUESTS_OPEN_IN_WEB_EVENT, openInWeb);
     };
   }, [
     filteredPullRequests,

@@ -12,7 +12,6 @@ import {
   CaretDownIcon,
   CaretRightIcon,
   CheckCircleIcon,
-  CopyIcon,
   FileCodeIcon,
   GitCommitIcon,
   GitMergeIcon,
@@ -364,25 +363,36 @@ export function PrDetailsContent({
               <span className="min-w-0 break-all text-sm text-low">
                 {detail.head_branch} → {detail.base_branch}
               </span>
-              {detail.review_decision && (
-                <span className="rounded bg-panel px-base py-half text-sm">
-                  {detail.review_decision.replaceAll('_', ' ')}
+              {/* Show the latest review state with color, matching the list.
+                  A pending review request supersedes a stale review_decision
+                  (e.g. CHANGES_REQUESTED) — detail.reviewers holds the
+                  currently-requested reviewers, so it doubles as the
+                  is_review_requested signal. */}
+              {detail.review_decision === 'APPROVED' && (
+                <span className="inline-flex items-center gap-half rounded bg-success/10 px-base py-half text-sm text-success">
+                  <CheckCircleIcon weight="fill" /> Approved
                 </span>
               )}
-              <div className="flex w-full gap-half @sm:ml-auto @sm:w-auto">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => navigator.clipboard?.writeText(prUrl)}
-                >
-                  <CopyIcon /> Copy URL
-                </Button>
+              {detail.reviewers.length > 0 && (
+                <span className="rounded bg-brand/10 px-base py-half text-sm text-brand">
+                  Review requested
+                </span>
+              )}
+              {detail.review_decision === 'CHANGES_REQUESTED' &&
+                detail.reviewers.length === 0 && (
+                  <span className="rounded bg-error/10 px-base py-half text-sm text-error">
+                    Changes requested
+                  </span>
+                )}
+              <div className="flex gap-half @sm:ml-auto">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => openExternalUrl(prUrl)}
+                  aria-label="Open pull request in web"
+                  title="Open in web"
                 >
-                  <ArrowSquareOutIcon /> Open
+                  <ArrowSquareOutIcon />
                 </Button>
               </div>
             </div>

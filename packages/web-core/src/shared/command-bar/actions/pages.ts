@@ -28,6 +28,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
             type: 'action',
             action: Actions.ViewPullRequestMappedWorkspaces,
           },
+          { type: 'action', action: Actions.OpenPullRequestInWeb },
         ],
       },
       {
