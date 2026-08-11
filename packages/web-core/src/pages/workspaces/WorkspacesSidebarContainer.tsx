@@ -50,6 +50,7 @@ import {
   categorizeWorkspaces,
   type WorkspacesSidebarPersistKeys,
 } from '@vibe/ui/components/WorkspacesSidebar';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { IconButton } from '@vibe/ui/components/IconButton';
 import {
   FunnelIcon,
@@ -627,6 +628,25 @@ export function WorkspacesSidebarContainer({
       archivedWorkspaces,
     ]
   ) as RefObject<HTMLDivElement>;
+
+  useHotkeys(
+    ['up', 'down'],
+    (event) => {
+      if (isModalKeyboardActive()) return;
+      const activeElement = document.activeElement;
+      if (
+        activeElement &&
+        activeElement.tagName !== 'BODY' &&
+        activeElement.tagName !== 'HTML'
+      ) {
+        return;
+      }
+      event.preventDefault();
+      moveWorkspaceFocus(event.key === 'ArrowDown' ? 1 : -1);
+    },
+    { enabled: isMobile && isListVisible },
+    [isMobile, isListVisible, moveWorkspaceFocus]
+  );
 
   // Hovering a row is the strongest pre-navigation signal we get; delegate on
   // the sidebar root (rows live in the presentational ui package) and resolve
