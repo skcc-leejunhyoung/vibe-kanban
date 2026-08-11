@@ -194,8 +194,7 @@ export function WorkspacesLayout({
   }, [setMobileTab]);
 
   useEscapeToClose(showMobileChat, {
-    enabled:
-      isMobile && mobileTab !== 'workspaces' && mobileTab !== 'chat',
+    enabled: isMobile && mobileTab !== 'workspaces' && mobileTab !== 'chat',
     scope: Scope.WORKSPACE,
   });
 
