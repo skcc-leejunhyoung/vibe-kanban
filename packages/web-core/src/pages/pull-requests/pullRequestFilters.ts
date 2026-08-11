@@ -39,7 +39,6 @@ export function resolvePullRequestFiltersAfterDefaultsChange(
   // when deciding whether the user diverged from the defaults — otherwise a
   // deep link that auto-selects a repo before the server-saved defaults finish
   // loading looks like a manual edit and blocks those defaults from applying.
-  // Always keep the current repository picks when defaults are (re)applied.
   const stillUsingPreviousDefaults = (
     Object.keys(previousDefaults) as Array<keyof PullRequestFilterState>
   ).every(
@@ -48,9 +47,18 @@ export function resolvePullRequestFiltersAfterDefaultsChange(
       filterValuesEqual(current[key], previousDefaults[key])
   );
 
-  return stillUsingPreviousDefaults
-    ? { ...nextDefaults, repositories: current.repositories }
-    : current;
+  if (!stillUsingPreviousDefaults) return current;
+
+  // Keep repositories already picked (deep link / manual selection); only fall
+  // back to the default repositories when nothing is selected yet, so the
+  // saved default repos apply on a fresh open even if they load late.
+  return {
+    ...nextDefaults,
+    repositories:
+      current.repositories.length > 0
+        ? current.repositories
+        : nextDefaults.repositories,
+  };
 }
 
 export const PULL_REQUESTS_OPEN_FILTERS_EVENT =

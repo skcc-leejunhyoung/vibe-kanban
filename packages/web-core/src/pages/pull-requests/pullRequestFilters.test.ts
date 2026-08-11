@@ -46,6 +46,30 @@ describe('resolvePullRequestFiltersAfterDefaultsChange', () => {
     ).toBe(current);
   });
 
+  it('applies the default repositories when none are selected yet', () => {
+    const previousDefaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      status: 'open' as const,
+      repositories: [],
+    };
+    const nextDefaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      status: 'open' as const,
+      repositories: ['repo-1'],
+    };
+    // Fresh open with nothing selected yet: the saved default repos apply even
+    // when they load after mount.
+    const untouched = { ...previousDefaults, repositories: [] };
+
+    expect(
+      resolvePullRequestFiltersAfterDefaultsChange(
+        untouched,
+        previousDefaults,
+        nextDefaults
+      )
+    ).toEqual(nextDefaults);
+  });
+
   it('applies new defaults while preserving the current repository picks', () => {
     const previousDefaults = {
       ...DEFAULT_PULL_REQUEST_FILTER_STATE,

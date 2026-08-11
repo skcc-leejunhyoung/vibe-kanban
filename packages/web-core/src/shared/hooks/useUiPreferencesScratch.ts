@@ -129,6 +129,32 @@ function storeToScratchData(state: {
 }
 
 /**
+ * Normalizes the saved PR default filters, migrating the legacy single
+ * `repository` string into the multi-select `repositories` array so defaults
+ * saved before multi-repo support still apply on load.
+ */
+function migratePullRequestDefaultFilters(
+  saved: unknown
+): PullRequestFilterState {
+  const legacy = (saved ?? {}) as Partial<PullRequestFilterState> & {
+    repository?: string;
+  };
+  const merged: PullRequestFilterState & { repository?: string } = {
+    ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+    ...legacy,
+  };
+  if (
+    merged.repositories.length === 0 &&
+    legacy.repository &&
+    legacy.repository !== 'all'
+  ) {
+    merged.repositories = [legacy.repository];
+  }
+  delete merged.repository;
+  return merged;
+}
+
+/**
  * Converts scratch data to store state format (snake_case to camelCase)
  */
 function scratchDataToStore(data: UiPreferencesData): {
@@ -243,10 +269,9 @@ function scratchDataToStore(data: UiPreferencesData): {
     createDraftWorkspaceByDefault:
       data.create_draft_workspace_by_default ??
       DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
-    pullRequestDefaultFilters: {
-      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
-      ...((data.pull_request_default_filters ?? {}) as PullRequestFilterState),
-    },
+    pullRequestDefaultFilters: migratePullRequestDefaultFilters(
+      data.pull_request_default_filters
+    ),
     kanbanProjectViewSelections: (data.kanban_project_view_selections ??
       {}) as Record<string, KanbanProjectViewSelection>,
     projectViewsById: (data.kanban_project_views ?? {}) as unknown as Record<
