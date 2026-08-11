@@ -18,6 +18,16 @@ export function isTauriApp(): boolean {
   return '__TAURI_INTERNALS__' in window;
 }
 
+// Installed PWA (macOS Safari Dock web app, iOS home-screen app, Chrome
+// installed app) — running as its own window rather than a browser tab.
+export function isStandalonePwa(): boolean {
+  const nav = navigator as Navigator & { standalone?: boolean };
+  return (
+    window.matchMedia?.('(display-mode: standalone)').matches === true ||
+    nav.standalone === true
+  );
+}
+
 export function isTauriMac(): boolean {
   return isTauriApp() && isMac();
 }

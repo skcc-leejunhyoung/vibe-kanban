@@ -27,6 +27,7 @@ import {
 } from "@remote/shared/lib/webrtc";
 import { installRelayResumeReconnect } from "@remote/shared/lib/relay/resumeReconnect";
 import { installKeyboardModalityTracker } from "@/shared/lib/keyboardModality";
+import { installAppZoom } from "@/shared/lib/zoom";
 
 setRemoteApiBase(import.meta.env.VITE_API_BASE_URL || window.location.origin);
 setRelayApiBase(
@@ -44,6 +45,7 @@ setLocalApiTransport({
 // the app spinning until a manual reload.
 installRelayResumeReconnect();
 installKeyboardModalityTracker();
+installAppZoom();
 
 configureAuthRuntime({
   getToken,
