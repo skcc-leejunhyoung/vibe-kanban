@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useRouter } from '@tanstack/react-router';
 import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 import {
@@ -215,7 +220,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     selectedPullRequest ? initialPrUrl : undefined
   );
   const resolvedInitialRepositoryRef = useRef<string | undefined>(undefined);
-  const previousRepositoryRef = useRef(filters.repository);
+  const repositoriesKey = filters.repositories.join(',');
+  const previousRepositoriesKeyRef = useRef(repositoriesKey);
   const skipNextRepositoryResetRef = useRef(false);
   const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -239,15 +245,14 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   );
 
   useEffect(() => {
-    if (
-      !reposQuery.isSuccess ||
-      filters.repository === 'all' ||
-      repositories.some((repository) => repository.value === filters.repository)
-    ) {
-      return;
-    }
-    setFilters((current) => ({ ...current, repository: 'all' }));
-  }, [filters.repository, reposQuery.isSuccess, repositories]);
+    if (!reposQuery.isSuccess) return;
+    const valid = new Set(repositories.map((repository) => repository.value));
+    if (filters.repositories.every((id) => valid.has(id))) return;
+    setFilters((current) => ({
+      ...current,
+      repositories: current.repositories.filter((id) => valid.has(id)),
+    }));
+  }, [repositoriesKey, reposQuery.isSuccess, repositories]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setFilters((current) =>
@@ -260,43 +265,65 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     previousDefaultFiltersRef.current = defaultFilters;
   }, [defaultFilters]);
 
-  const pullRequestsQuery = useQuery({
-    ...pullRequestSummariesQueryOptions(filters.repository, filters.involvesMe),
-    enabled: filters.repository !== 'all',
-    staleTime: PR_QUERY_STALE_TIME_MS,
-    gcTime: 60 * 60_000,
-    // Cold/stale opens return an empty list immediately while the backend
-    // refreshes `gh`; poll until the warmed list arrives, then stop.
-    refetchInterval: (query) =>
-      query.state.data?.warming ? PR_WARMING_POLL_MS : false,
-    refetchIntervalInBackground: false,
+  // One query per selected repository; the lists are merged below. Each query
+  // keeps its own cache entry (and warming poll) so a shared repo stays warm
+  // across single- and multi-select views.
+  const pullRequestQueries = useQueries({
+    queries: filters.repositories.map((repository) => ({
+      ...pullRequestSummariesQueryOptions(repository, filters.involvesMe),
+      staleTime: PR_QUERY_STALE_TIME_MS,
+      gcTime: 60 * 60_000,
+      // Cold/stale opens return an empty list immediately while the backend
+      // refreshes `gh`; poll until the warmed list arrives, then stop.
+      refetchInterval: (query: { state: { data?: { warming?: boolean } } }) =>
+        query.state.data?.warming ? PR_WARMING_POLL_MS : false,
+      refetchIntervalInBackground: false,
+    })),
   });
+  const hasRepositories = filters.repositories.length > 0;
+  const prsLoading =
+    hasRepositories && pullRequestQueries.every((query) => query.isLoading);
+  const prsError =
+    hasRepositories && pullRequestQueries.every((query) => query.isError);
+  const prsErrorMessage = pullRequestQueries.find((query) => query.isError)
+    ?.error?.message;
+  const prsFetching = pullRequestQueries.some((query) => query.isFetching);
+
   const refreshPullRequests = useMutation({
     mutationFn: async ({
-      repository,
+      repositories,
       involvesMe,
     }: {
-      repository: string;
+      repositories: string[];
       involvesMe: boolean;
     }) => {
-      const result = await repoApi.listPullRequestSummaries(
-        repository,
-        involvesMe,
-        true
+      const results = await Promise.all(
+        repositories.map(async (repository) => ({
+          repository,
+          result: await repoApi.listPullRequestSummaries(
+            repository,
+            involvesMe,
+            true
+          ),
+        }))
       );
-      if (!result.success) {
-        throw new Error(result.message || 'Failed to refresh pull requests');
+      const failed = results.find(({ result }) => !result.success);
+      if (failed && !failed.result.success) {
+        throw new Error(
+          failed.result.message || 'Failed to refresh pull requests'
+        );
       }
-      return result.data;
+      return results;
     },
-    onSuccess: (data, variables) => {
-      queryClient.setQueryData(
-        pullRequestSummariesQueryOptions(
-          variables.repository,
-          variables.involvesMe
-        ).queryKey,
-        data
-      );
+    onSuccess: (results, variables) => {
+      for (const { repository, result } of results) {
+        if (!result.success) continue;
+        queryClient.setQueryData(
+          pullRequestSummariesQueryOptions(repository, variables.involvesMe)
+            .queryKey,
+          result.data
+        );
+      }
     },
     onError: (error) =>
       ErrorDialog.show({
@@ -308,9 +335,27 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   });
 
   const pullRequests = useMemo(
-    () => pullRequestsQuery.data?.summaries ?? [],
-    [pullRequestsQuery.data]
+    () =>
+      pullRequestQueries
+        .flatMap((query) => query.data?.summaries ?? [])
+        .sort((a, b) => {
+          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+          return tb - ta;
+        }),
+    [pullRequestQueries]
   );
+
+  const repositoryLabel = useMemo(() => {
+    if (filters.repositories.length === 0) return 'Select repositories';
+    if (filters.repositories.length === 1) {
+      const repo = repositories.find(
+        (candidate) => candidate.value === filters.repositories[0]
+      );
+      return repo?.label ?? '1 repository';
+    }
+    return `${filters.repositories.length} repositories`;
+  }, [filters.repositories, repositories]);
   const authors = useMemo(
     () =>
       [
@@ -510,14 +555,14 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         candidate.label === repositoryName ||
         candidate.path.split('/').pop() === repositoryName
     );
-    if (repository && filters.repository !== repository.value) {
+    if (repository && !filters.repositories.includes(repository.value)) {
       skipNextRepositoryResetRef.current = true;
       setFilters((current) => ({
         ...current,
-        repository: repository.value,
+        repositories: [...current.repositories, repository.value],
       }));
     }
-  }, [filters.repository, initialPrUrl, repositories]);
+  }, [repositoriesKey, initialPrUrl, repositories]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!initialPrUrl) return;
@@ -534,8 +579,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   }, [filteredPullRequests.length]);
 
   useEffect(() => {
-    if (previousRepositoryRef.current === filters.repository) return;
-    previousRepositoryRef.current = filters.repository;
+    if (previousRepositoriesKeyRef.current === repositoriesKey) return;
+    previousRepositoriesKeyRef.current = repositoriesKey;
     if (skipNextRepositoryResetRef.current) {
       skipNextRepositoryResetRef.current = false;
       setSelectedIndex(0);
@@ -543,7 +588,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     }
     setSelectedPullRequest(null);
     setSelectedIndex(0);
-  }, [filters.repository]);
+  }, [repositoriesKey]);
 
   useEffect(() => {
     const openFilters = () => setFiltersOpen(true);
@@ -551,7 +596,11 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     const selectRepository = (event: Event) => {
       const repoId = (event as CustomEvent<{ repoId?: string }>).detail?.repoId;
       if (!repoId) return;
-      setFilters((current) => ({ ...current, repository: repoId }));
+      setFilters((current) =>
+        current.repositories.includes(repoId)
+          ? current
+          : { ...current, repositories: [...current.repositories, repoId] }
+      );
     };
     const getSelectedPullRequest = () =>
       selectedPullRequest ?? filteredPullRequests[selectedIndex] ?? null;
@@ -757,30 +806,21 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
               <h1 className="text-xl font-semibold text-high">Pull Requests</h1>
               <p className="mt-half text-sm text-low">
                 {filters.involvesMe
-                  ? 'Pull requests involving you in the selected repository'
-                  : 'Recently updated pull requests in the selected repository'}
+                  ? 'Pull requests involving you in the selected repositories'
+                  : 'Recently updated pull requests in the selected repositories'}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-half">
-            <select
-              value={filters.repository}
-              onChange={(event) =>
-                setFilters((current) => ({
-                  ...current,
-                  repository: event.target.value,
-                }))
-              }
-              className="h-9 max-w-64 rounded border border-border bg-secondary px-base text-sm text-normal focus:outline-none focus:ring-1 focus:ring-brand"
-              aria-label="Repository"
+            <button
+              type="button"
+              onClick={() => setFiltersOpen(true)}
+              className="flex h-9 max-w-64 items-center gap-half truncate rounded border border-border bg-secondary px-base text-sm text-normal hover:text-high focus:outline-none focus:ring-1 focus:ring-brand"
+              aria-label="Select repositories"
+              title="Select repositories"
             >
-              <option value="all">Select repository</option>
-              {repositories.map((repository) => (
-                <option key={repository.value} value={repository.value}>
-                  {repository.label}
-                </option>
-              ))}
-            </select>
+              <span className="truncate">{repositoryLabel}</span>
+            </button>
             <button
               type="button"
               onClick={() => setFiltersOpen(true)}
@@ -799,12 +839,12 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
               type="button"
               onClick={() =>
                 refreshPullRequests.mutate({
-                  repository: filters.repository,
+                  repositories: filters.repositories,
                   involvesMe: filters.involvesMe,
                 })
               }
               disabled={
-                pullRequestsQuery.isFetching || refreshPullRequests.isPending
+                !hasRepositories || prsFetching || refreshPullRequests.isPending
               }
               className="flex size-9 items-center justify-center rounded border border-border bg-secondary text-normal hover:text-high disabled:opacity-50"
               aria-label="Refresh pull requests"
@@ -813,8 +853,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
               <ArrowClockwiseIcon
                 className={cn(
                   'size-icon-sm',
-                  (pullRequestsQuery.isFetching ||
-                    refreshPullRequests.isPending) &&
+                  (prsFetching || refreshPullRequests.isPending) &&
                     'animate-spin'
                 )}
               />
@@ -843,23 +882,24 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
           <div className="flex flex-1 items-center justify-center px-double text-center text-sm text-low">
             Register a repository before viewing pull requests.
           </div>
-        ) : filters.repository === 'all' ? (
+        ) : !hasRepositories ? (
           <div className="flex flex-1 items-center justify-center px-double text-center text-sm text-low">
-            Select a repository to view its pull requests.
+            Open the filters to choose repositories and view their pull
+            requests.
           </div>
-        ) : pullRequestsQuery.isLoading ? (
+        ) : prsLoading ? (
           <div className="flex h-full items-center justify-center gap-half text-low">
             <SpinnerGapIcon className="size-icon-base animate-spin" />
             Loading pull requests…
           </div>
-        ) : pullRequestsQuery.isError ? (
+        ) : prsError ? (
           <div className="flex h-full flex-col items-center justify-center px-double text-center">
             <GitPullRequestIcon className="size-8 text-low" />
             <p className="mt-base text-base font-medium text-high">
               Could not load pull requests
             </p>
             <p className="mt-half max-w-lg text-sm text-low">
-              {pullRequestsQuery.error.message}
+              {prsErrorMessage}
             </p>
           </div>
         ) : filteredPullRequests.length === 0 ? (
@@ -1079,10 +1119,9 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         onReset={() =>
           setFilters({
             ...defaultFilters,
-            repository: filters.repository,
+            repositories: filters.repositories,
           })
         }
-        showRepository={false}
       />
     </>
   );

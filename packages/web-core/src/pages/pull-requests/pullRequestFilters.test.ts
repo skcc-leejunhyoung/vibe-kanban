@@ -45,4 +45,32 @@ describe('resolvePullRequestFiltersAfterDefaultsChange', () => {
       )
     ).toBe(current);
   });
+
+  it('compares the repositories array by value, not reference', () => {
+    const previousDefaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      repositories: ['repo-1'],
+    };
+    // A fresh array with the same contents still counts as "using defaults".
+    const untouched = { ...previousDefaults, repositories: ['repo-1'] };
+    const nextDefaults = { ...previousDefaults, repositories: ['repo-2'] };
+
+    expect(
+      resolvePullRequestFiltersAfterDefaultsChange(
+        untouched,
+        previousDefaults,
+        nextDefaults
+      )
+    ).toEqual(nextDefaults);
+
+    // A user who changed the repository selection keeps it.
+    const changed = { ...previousDefaults, repositories: ['repo-1', 'repo-3'] };
+    expect(
+      resolvePullRequestFiltersAfterDefaultsChange(
+        changed,
+        previousDefaults,
+        nextDefaults
+      )
+    ).toBe(changed);
+  });
 });

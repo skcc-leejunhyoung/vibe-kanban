@@ -20,7 +20,6 @@ interface PullRequestFiltersDialogProps {
   authors: string[];
   onChange: (filters: PullRequestFilterState) => void;
   onReset: () => void;
-  showRepository?: boolean;
   title?: string;
   description?: string;
 }
@@ -33,7 +32,6 @@ export function PullRequestFiltersDialog({
   authors,
   onChange,
   onReset,
-  showRepository = true,
   title = 'Pull request filters',
   description = 'Choose which pull requests appear in the list.',
 }: PullRequestFiltersDialogProps) {
@@ -53,42 +51,53 @@ export function PullRequestFiltersDialog({
         </div>
 
         <div className="grid grid-cols-2 gap-base p-double">
-          {showRepository && (
-            <label className="space-y-half text-sm text-low">
-              <span>Repository</span>
-              {repositories.length > 0 ? (
-                <select
-                  value={filters.repository}
-                  onChange={(event) => update('repository', event.target.value)}
-                  className={selectClassName}
+          <div className="col-span-2 space-y-half text-sm text-low">
+            <div className="flex items-center justify-between">
+              <span>Repositories</span>
+              {filters.repositories.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => update('repositories', [])}
+                  className="text-xs text-low hover:text-normal"
                 >
-                  <option value="all">Select a repository</option>
-                  {filters.repository !== 'all' &&
-                    !repositories.some(
-                      (repository) => repository.value === filters.repository
-                    ) && (
-                      <option value={filters.repository}>
-                        {filters.repository}
-                      </option>
-                    )}
-                  {repositories.map((repository) => (
-                    <option key={repository.value} value={repository.value}>
-                      {repository.label}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  value={filters.repository === 'all' ? '' : filters.repository}
-                  onChange={(event) =>
-                    update('repository', event.target.value || 'all')
-                  }
-                  placeholder="Repository ID"
-                  className={selectClassName}
-                />
+                  Clear
+                </button>
               )}
-            </label>
-          )}
+            </div>
+            {repositories.length > 0 ? (
+              <div className="max-h-48 space-y-half overflow-y-auto rounded border border-border bg-secondary p-base">
+                {repositories.map((repository) => {
+                  const checked = filters.repositories.includes(
+                    repository.value
+                  );
+                  return (
+                    <label
+                      key={repository.value}
+                      className="flex items-center gap-half text-normal"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) =>
+                          update(
+                            'repositories',
+                            event.target.checked
+                              ? [...filters.repositories, repository.value]
+                              : filters.repositories.filter(
+                                  (id) => id !== repository.value
+                                )
+                          )
+                        }
+                      />
+                      <span className="truncate">{repository.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-xs text-low">Register a repository first.</p>
+            )}
+          </div>
           <label className="space-y-half text-sm text-low">
             <span>Status</span>
             <select

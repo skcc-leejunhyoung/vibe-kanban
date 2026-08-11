@@ -10,20 +10,25 @@ export function PullRequestsBackgroundPrefetch() {
     (state) => state.pullRequestDefaultFilters
   );
 
+  const repositoriesKey = defaultFilters.repositories.join(',');
+
   useEffect(() => {
-    if (defaultFilters.repository === 'all') return;
+    if (defaultFilters.repositories.length === 0) return;
 
     const timer = window.setTimeout(() => {
-      void queryClient.prefetchQuery(
-        pullRequestSummariesQueryOptions(
-          defaultFilters.repository,
-          defaultFilters.involvesMe
-        )
-      );
+      for (const repository of defaultFilters.repositories) {
+        void queryClient.prefetchQuery(
+          pullRequestSummariesQueryOptions(
+            repository,
+            defaultFilters.involvesMe
+          )
+        );
+      }
     }, 200);
 
     return () => window.clearTimeout(timer);
-  }, [defaultFilters.involvesMe, defaultFilters.repository, queryClient]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultFilters.involvesMe, repositoriesKey, queryClient]);
 
   return null;
 }

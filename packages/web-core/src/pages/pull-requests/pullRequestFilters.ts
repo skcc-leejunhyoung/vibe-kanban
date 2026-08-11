@@ -5,7 +5,7 @@ export type PullRequestDraftFilter = 'all' | 'draft' | 'ready';
 export type PullRequestUpdatedFilter = 'all' | 'day' | 'week' | 'month';
 
 export type PullRequestFilterState = {
-  repository: string;
+  repositories: string[];
   status: PullRequestStatusFilter;
   author: string;
   draft: PullRequestDraftFilter;
@@ -14,13 +14,20 @@ export type PullRequestFilterState = {
 };
 
 export const DEFAULT_PULL_REQUEST_FILTER_STATE: PullRequestFilterState = {
-  repository: 'all',
+  repositories: [],
   status: 'all',
   author: 'all',
   draft: 'all',
   updated: 'all',
   involvesMe: false,
 };
+
+function filterValuesEqual(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((value, i) => value === b[i]);
+  }
+  return a === b;
+}
 
 export function resolvePullRequestFiltersAfterDefaultsChange(
   current: PullRequestFilterState,
@@ -29,7 +36,7 @@ export function resolvePullRequestFiltersAfterDefaultsChange(
 ): PullRequestFilterState {
   const stillUsingPreviousDefaults = (
     Object.keys(previousDefaults) as Array<keyof PullRequestFilterState>
-  ).every((key) => current[key] === previousDefaults[key]);
+  ).every((key) => filterValuesEqual(current[key], previousDefaults[key]));
 
   return stillUsingPreviousDefaults ? { ...nextDefaults } : current;
 }
