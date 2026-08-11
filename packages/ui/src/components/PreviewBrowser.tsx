@@ -80,7 +80,7 @@ interface PreviewBrowserProps {
   onOpenInNewTab: () => void;
   shortcuts?: PreviewBrowserShortcut[];
   activeShortcutId?: string | null;
-  onAddShortcut?: () => void;
+  onAddShortcut?: (url?: string) => void;
   onRemoveShortcut?: (id: string) => void;
   onOpenShortcut?: (url: string) => void;
   onOpenShortcutInNewTab?: (url: string) => void;
@@ -258,7 +258,7 @@ export function PreviewBrowser({
               <IconButtonGroup>
                 <IconButtonGroupItem
                   icon={PlusIcon}
-                  onClick={onAddShortcut}
+                  onClick={() => onAddShortcut?.(urlInputValue)}
                   disabled={!isServerRunning || !urlInputValue.trim()}
                   aria-label={t('preview.toolbar.addShortcut')}
                   title={t('preview.toolbar.addShortcut')}

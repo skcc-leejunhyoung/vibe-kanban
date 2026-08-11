@@ -936,17 +936,23 @@ export function PreviewBrowserContainer({
     );
   }, [displayedPreviewUrl, shortcuts]);
 
-  const handleAddShortcut = useCallback(async () => {
-    if (!displayedPreviewUrl) return;
+  const handleAddShortcut = useCallback(
+    async (url = displayedPreviewUrl ?? undefined) => {
+      if (!url) return;
 
-    const normalizedUrl = normalizePreviewUrl(displayedPreviewUrl);
-    if (!normalizedUrl) return;
+      const normalizedUrl = normalizePreviewUrl(
+        url,
+        displayedPreviewUrl ?? undefined
+      );
+      if (!normalizedUrl) return;
 
-    await addShortcut({
-      label: formatShortcutLabel(normalizedUrl),
-      url: normalizedUrl,
-    });
-  }, [addShortcut, displayedPreviewUrl]);
+      await addShortcut({
+        label: formatShortcutLabel(normalizedUrl),
+        url: normalizedUrl,
+      });
+    },
+    [addShortcut, displayedPreviewUrl]
+  );
 
   const handleRemoveShortcut = useCallback(
     async (id: string) => {
