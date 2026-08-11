@@ -171,13 +171,21 @@ export function WorkspacesLayout({
   }, [isMobile, setMobileTab, setRightMainPanelMode]);
 
   // Keep the chat pane open while closing the desktop's secondary panel.
-  // Mobile uses tabs rather than a second pane, so Escape must not switch it.
   const closeRightMainPanel = useCallback(() => {
     setRightMainPanelMode(null);
   }, [setRightMainPanelMode]);
 
   useEscapeToClose(closeRightMainPanel, {
     enabled: !isMobile && rightMainPanelMode !== null,
+    scope: Scope.WORKSPACE,
+  });
+
+  const showMobileWorkspaceList = useCallback(() => {
+    setMobileTab('workspaces');
+  }, [setMobileTab]);
+
+  useEscapeToClose(showMobileWorkspaceList, {
+    enabled: isMobile && mobileTab === 'chat',
     scope: Scope.WORKSPACE,
   });
 
@@ -317,6 +325,7 @@ export function WorkspacesLayout({
 
             {/* Chat tab */}
             <div
+              data-escape-handled
               className={cn(
                 'flex-1 min-h-0 overflow-hidden',
                 mobileTab !== 'chat' && 'hidden'
