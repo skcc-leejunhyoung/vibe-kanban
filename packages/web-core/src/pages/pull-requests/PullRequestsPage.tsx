@@ -153,9 +153,9 @@ function shouldIgnoreListKeyboardNavigation(
 
   return Boolean(
     target.isContentEditable ||
-      target.closest(
-        'input, textarea, select, button, a, [role="button"], [role="dialog"]'
-      )
+    target.closest(
+      'input, textarea, select, button, a, [role="button"], [role="dialog"]'
+    )
   );
 }
 
@@ -928,6 +928,14 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                           Review requested
                         </span>
                       )}
+                      {/* A pending review request supersedes a stale
+                          CHANGES_REQUESTED, matching the details panel. */}
+                      {pr.review_decision === 'CHANGES_REQUESTED' &&
+                        !pr.is_review_requested && (
+                          <span className="rounded bg-error/10 px-half py-0.5 text-xs text-error">
+                            Changes requested
+                          </span>
+                        )}
                       {pr.labels.map((label) => (
                         <span
                           key={label}
