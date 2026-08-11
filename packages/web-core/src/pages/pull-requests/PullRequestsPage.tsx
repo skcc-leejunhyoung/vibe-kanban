@@ -153,9 +153,9 @@ function shouldIgnoreListKeyboardNavigation(
 
   return Boolean(
     target.isContentEditable ||
-    target.closest(
-      'input, textarea, select, button, a, [role="button"], [role="dialog"]'
-    )
+      target.closest(
+        'input, textarea, select, button, a, [role="button"], [role="dialog"]'
+      )
   );
 }
 
