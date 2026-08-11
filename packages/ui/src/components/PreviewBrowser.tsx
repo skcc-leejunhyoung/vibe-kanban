@@ -21,6 +21,7 @@ import {
   StarIcon,
   CaretDownIcon,
   DotsThreeIcon,
+  TrashIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
@@ -309,6 +310,17 @@ export function PreviewBrowser({
                   ))}
                 </select>
                 <IconButtonGroup>
+                  <IconButtonGroupItem
+                    icon={TrashIcon}
+                    onClick={() => {
+                      if (selectedShortcutId) {
+                        onRemoveShortcut?.(selectedShortcutId);
+                      }
+                    }}
+                    disabled={!isServerRunning || !selectedShortcutId}
+                    aria-label={t('preview.toolbar.removeShortcut')}
+                    title={t('preview.toolbar.removeShortcut')}
+                  />
                   <IconButtonGroupItem
                     icon={ArrowSquareOutIcon}
                     onClick={() => {

@@ -31,6 +31,7 @@ import { PreviewDevToolsBridge } from '@/shared/lib/previewDevToolsBridge';
 import { useInspectModeStore } from '@/features/workspace-chat/model/store/useInspectModeStore';
 import type { PreviewDevToolsMessage } from '@/shared/types/previewDevTools';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
+import { getTargetDevPort } from './previewUrl';
 
 const MIN_RESPONSIVE_WIDTH = 320;
 const MIN_RESPONSIVE_HEIGHT = 480;
@@ -156,25 +157,6 @@ function transformProxyUrlToDevUrl(
   } catch {
     return null;
   }
-}
-
-function getTargetDevPort(url: URL, previewProxyPort?: number): string {
-  const hostnameParts = url.hostname.split('.');
-  const hasLocalhostSuffix =
-    hostnameParts.length >= 2 &&
-    hostnameParts.slice(1).join('.').startsWith('localhost');
-
-  if (
-    hasLocalhostSuffix &&
-    (!previewProxyPort || url.port === String(previewProxyPort))
-  ) {
-    const tokenPort = hostnameParts[0]?.split('--')[0];
-    if (tokenPort && /^\d+$/.test(tokenPort)) {
-      return tokenPort;
-    }
-  }
-
-  return url.port || (url.protocol === 'https:' ? '443' : '80');
 }
 
 interface PreviewBrowserContainerProps {
@@ -761,7 +743,8 @@ export function PreviewBrowserContainer({
       const normalizedInput = normalizedInputUrl.toString();
       const normalizedInputDevPort = getTargetDevPort(
         normalizedInputUrl,
-        previewProxyPort ?? undefined
+        previewProxyPort ?? undefined,
+        (import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? '').trim()
       );
       const normalizedInputDevUrl =
         transformProxyUrlToDevUrl(normalizedInput, normalizedInputDevPort) ??
