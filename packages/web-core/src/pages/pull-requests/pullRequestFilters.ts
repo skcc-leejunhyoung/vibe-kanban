@@ -34,11 +34,23 @@ export function resolvePullRequestFiltersAfterDefaultsChange(
   previousDefaults: PullRequestFilterState,
   nextDefaults: PullRequestFilterState
 ): PullRequestFilterState {
+  // Repository selection is driven by the page itself (deep links to a PR,
+  // pruning removed repos), not by the default "refinement" filters. Ignore it
+  // when deciding whether the user diverged from the defaults — otherwise a
+  // deep link that auto-selects a repo before the server-saved defaults finish
+  // loading looks like a manual edit and blocks those defaults from applying.
+  // Always keep the current repository picks when defaults are (re)applied.
   const stillUsingPreviousDefaults = (
     Object.keys(previousDefaults) as Array<keyof PullRequestFilterState>
-  ).every((key) => filterValuesEqual(current[key], previousDefaults[key]));
+  ).every(
+    (key) =>
+      key === 'repositories' ||
+      filterValuesEqual(current[key], previousDefaults[key])
+  );
 
-  return stillUsingPreviousDefaults ? { ...nextDefaults } : current;
+  return stillUsingPreviousDefaults
+    ? { ...nextDefaults, repositories: current.repositories }
+    : current;
 }
 
 export const PULL_REQUESTS_OPEN_FILTERS_EVENT =

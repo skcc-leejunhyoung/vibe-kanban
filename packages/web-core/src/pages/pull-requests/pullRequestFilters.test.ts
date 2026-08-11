@@ -46,31 +46,53 @@ describe('resolvePullRequestFiltersAfterDefaultsChange', () => {
     ).toBe(current);
   });
 
-  it('compares the repositories array by value, not reference', () => {
+  it('applies new defaults while preserving the current repository picks', () => {
     const previousDefaults = {
       ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      status: 'open' as const,
       repositories: ['repo-1'],
     };
-    // A fresh array with the same contents still counts as "using defaults".
-    const untouched = { ...previousDefaults, repositories: ['repo-1'] };
-    const nextDefaults = { ...previousDefaults, repositories: ['repo-2'] };
+    const nextDefaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      status: 'merged' as const,
+      repositories: ['repo-2'],
+    };
+    // A repo auto-selected by a deep link is not a manual refinement edit, so
+    // the freshly loaded defaults still apply — but the current repos survive.
+    const onlyReposChanged = {
+      ...previousDefaults,
+      repositories: ['repo-1', 'repo-3'],
+    };
 
     expect(
       resolvePullRequestFiltersAfterDefaultsChange(
-        untouched,
+        onlyReposChanged,
         previousDefaults,
         nextDefaults
       )
-    ).toEqual(nextDefaults);
+    ).toEqual({ ...nextDefaults, repositories: ['repo-1', 'repo-3'] });
+  });
 
-    // A user who changed the repository selection keeps it.
-    const changed = { ...previousDefaults, repositories: ['repo-1', 'repo-3'] };
+  it('preserves state when a refinement filter was changed', () => {
+    const previousDefaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      status: 'open' as const,
+    };
+    const nextDefaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      status: 'merged' as const,
+    };
+    const refinementChanged = {
+      ...previousDefaults,
+      status: 'closed' as const,
+    };
+
     expect(
       resolvePullRequestFiltersAfterDefaultsChange(
-        changed,
+        refinementChanged,
         previousDefaults,
         nextDefaults
       )
-    ).toBe(changed);
+    ).toBe(refinementChanged);
   });
 });

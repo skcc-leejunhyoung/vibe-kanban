@@ -346,16 +346,6 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     [pullRequestQueries]
   );
 
-  const repositoryLabel = useMemo(() => {
-    if (filters.repositories.length === 0) return 'Select repositories';
-    if (filters.repositories.length === 1) {
-      const repo = repositories.find(
-        (candidate) => candidate.value === filters.repositories[0]
-      );
-      return repo?.label ?? '1 repository';
-    }
-    return `${filters.repositories.length} repositories`;
-  }, [filters.repositories, repositories]);
   const authors = useMemo(
     () =>
       [
@@ -822,15 +812,6 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
               className="h-9 w-full rounded border border-border bg-secondary pl-10 pr-base text-sm text-normal placeholder:text-low focus:outline-none focus:ring-1 focus:ring-brand"
             />
           </div>
-          <button
-            type="button"
-            onClick={() => setFiltersOpen(true)}
-            className="flex h-9 max-w-48 shrink-0 items-center gap-half truncate rounded border border-border bg-secondary px-base text-sm text-normal hover:text-high focus:outline-none focus:ring-1 focus:ring-brand"
-            aria-label="Select repositories"
-            title="Select repositories"
-          >
-            <span className="truncate">{repositoryLabel}</span>
-          </button>
           <button
             type="button"
             onClick={() => setFiltersOpen(true)}
