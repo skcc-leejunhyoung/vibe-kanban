@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useRef,
-  type RefObject,
   type MouseEvent,
   type KeyboardEvent,
 } from 'react';
@@ -581,17 +580,29 @@ export function WorkspacesSidebarContainer({
   const isListVisible =
     isStandalonePage || !isMobile || mobileActiveTab === 'workspaces';
 
-  // Arrow-key navigation is scoped to the sidebar via the ref returned by
-  // useHotkeys: it only fires while keyboard focus is inside this container.
+  const keyboardNavRef = useRef<HTMLDivElement>(null);
+
+  // Arrow-key navigation only fires while keyboard focus is inside this
+  // container, or while the visible mobile list has no focused control.
   // Clicking the inner button or arrow-navigating (which moves DOM focus onto
   // the row container) keeps focus inside the sidebar; this leaves arrow-key
   // scrolling intact when the user is working in the main/right panels.
-  // enableOnFormTags:false additionally exempts the search input. The cast
-  // aligns react-hotkeys-hook's RefObject<T | null> return (React 19 ref
-  // typing) with the RefObject<T> shape @types/react 18 expects.
-  const keyboardNavRef = useHotkeys<HTMLDivElement>(
+  // enableOnFormTags:false additionally exempts the search input.
+  useHotkeys(
     ['up', 'down', 'enter'],
     (e) => {
+      if (isModalKeyboardActive()) return;
+      const activeElement = document.activeElement;
+      const isSidebarFocused =
+        activeElement !== null &&
+        keyboardNavRef.current?.contains(activeElement);
+      const isUnfocusedMobileList =
+        isMobile &&
+        (!activeElement ||
+          activeElement === document.body ||
+          activeElement === document.documentElement);
+      if (!isSidebarFocused && !isUnfocusedMobileList) return;
+
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         moveWorkspaceFocus(-1);
@@ -599,7 +610,7 @@ export function WorkspacesSidebarContainer({
         e.preventDefault();
         moveWorkspaceFocus(1);
       } else if (e.key === 'Enter') {
-        if (!focusedWorkspaceId) return;
+        if (!isSidebarFocused || !focusedWorkspaceId) return;
         // The focused row is a non-interactive container (focus lives on it,
         // not the inner button), so this hotkey is the only Enter handler.
         // handleSelectWorkspace already no-ops into a scroll-to-bottom when the
@@ -624,28 +635,10 @@ export function WorkspacesSidebarContainer({
       focusedWorkspaceId,
       handleSelectWorkspace,
       isListVisible,
+      isMobile,
       activeWorkspaces,
       archivedWorkspaces,
     ]
-  ) as RefObject<HTMLDivElement>;
-
-  useHotkeys(
-    ['up', 'down'],
-    (event) => {
-      if (isModalKeyboardActive()) return;
-      const activeElement = document.activeElement;
-      if (
-        activeElement &&
-        activeElement.tagName !== 'BODY' &&
-        activeElement.tagName !== 'HTML'
-      ) {
-        return;
-      }
-      event.preventDefault();
-      moveWorkspaceFocus(event.key === 'ArrowDown' ? 1 : -1);
-    },
-    { enabled: isMobile && isListVisible },
-    [isMobile, isListVisible, moveWorkspaceFocus]
   );
 
   // Hovering a row is the strongest pre-navigation signal we get; delegate on
