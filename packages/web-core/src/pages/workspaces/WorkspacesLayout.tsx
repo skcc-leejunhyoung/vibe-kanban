@@ -189,6 +189,16 @@ export function WorkspacesLayout({
     scope: Scope.WORKSPACE,
   });
 
+  const showMobileChat = useCallback(() => {
+    setMobileTab('chat');
+  }, [setMobileTab]);
+
+  useEscapeToClose(showMobileChat, {
+    enabled:
+      isMobile && mobileTab !== 'workspaces' && mobileTab !== 'chat',
+    scope: Scope.WORKSPACE,
+  });
+
   useEffect(() => {
     const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
