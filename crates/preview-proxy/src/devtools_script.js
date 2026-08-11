@@ -235,7 +235,6 @@
           navStack.push(payload.url);
           navIndex = navStack.length - 1;
           saveNavState();
-          sendNavigation();
           location.href = payload.url;
         }
         break;

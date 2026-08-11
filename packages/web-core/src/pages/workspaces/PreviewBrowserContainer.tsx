@@ -790,13 +790,11 @@ export function PreviewBrowserContainer({
       // Bridge SPA navigation only works when the proxy injects devtools_script.js
       // into the iframe. Non-loopback URLs bypass the proxy entirely, so the bridge
       // isn't available — fall through to setOverrideUrl for a full iframe reload.
-      const remotePreviewSuffix = (
-        import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? ''
-      ).trim();
       if (
         showIframe &&
         iframeRef.current?.contentWindow &&
         isLoopbackPreview &&
+        iframeUrl &&
         devServerPort != null &&
         normalizedInputDevPort === devServerPort
       ) {
@@ -804,20 +802,8 @@ export function PreviewBrowserContainer({
           normalizedInputDevParsed.pathname +
           normalizedInputDevParsed.search +
           normalizedInputDevParsed.hash;
-        let proxyUrl: string | null = null;
-        if (remotePreviewSuffix && hostId != null) {
-          proxyUrl = `https://${normalizedInputDevPort}--${hostId}.${remotePreviewSuffix}${proxyPath}`;
-        } else if (previewProxyPort) {
-          const hostToken =
-            hostId != null
-              ? `${normalizedInputDevPort}--${hostId}`
-              : normalizedInputDevPort;
-          proxyUrl = `http://${hostToken}.localhost:${previewProxyPort}${proxyPath}`;
-        }
-        if (proxyUrl) {
-          bridgeRef.current?.navigateTo(proxyUrl);
-          return true;
-        }
+        bridgeRef.current?.navigateTo(new URL(proxyPath, iframeUrl).toString());
+        return true;
       }
 
       setOverrideUrl(normalizedInputDevUrl);
@@ -827,7 +813,7 @@ export function PreviewBrowserContainer({
     [
       devServerPort,
       displayedPreviewUrl,
-      hostId,
+      iframeUrl,
       isLoopbackPreview,
       hasOverride,
       showIframe,

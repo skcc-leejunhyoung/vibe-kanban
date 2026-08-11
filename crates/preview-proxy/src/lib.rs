@@ -1643,4 +1643,14 @@ mod tests {
         service.remember_upstream_scheme(3000, UpstreamScheme::Http);
         assert_eq!(service.cached_upstream_scheme(3000), UpstreamScheme::Http);
     }
+
+    #[test]
+    fn goto_does_not_report_the_previous_url() {
+        let goto = DEVTOOLS_SCRIPT
+            .split("case 'goto':")
+            .nth(1)
+            .expect("goto handler");
+
+        assert!(!goto.contains("sendNavigation();\n          location.href"));
+    }
 }
