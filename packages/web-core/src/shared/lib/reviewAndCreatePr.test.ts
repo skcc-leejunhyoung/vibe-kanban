@@ -5,7 +5,10 @@ import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import type { ExecutorConfig } from 'shared/types';
-import { runReviewAndCreatePr } from './reviewAndCreatePr';
+import {
+  resumeReviewAndCreatePr,
+  runReviewAndCreatePr,
+} from './reviewAndCreatePr';
 
 vi.mock('@vibe/ui/components/ErrorDialog', () => ({
   ErrorDialog: { show: vi.fn() },
@@ -41,9 +44,17 @@ vi.mock('@/shared/stores/usePrFromAiBackgroundStore', () => ({
 const queryClient = {
   invalidateQueries: vi.fn(),
 } as unknown as QueryClient;
+const storage = new Map<string, string>();
+
+vi.stubGlobal('localStorage', {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => storage.set(key, value),
+  clear: () => storage.clear(),
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(confirmUnpushedWorkBranchPush).mockResolvedValue(true);
 });
 
@@ -182,5 +193,55 @@ describe('runReviewAndCreatePr', () => {
     ).resolves.toBe(false);
 
     expect(startCreateFromAi).not.toHaveBeenCalled();
+  });
+
+  it('resumes the push and PR steps without starting another review', async () => {
+    localStorage.setItem(
+      'vibe-review-and-create-pr',
+      JSON.stringify({
+        'local:workspace-1': {
+          workspaceId: 'workspace-1',
+          reviewSessionId: 'review-session-1',
+          hostId: null,
+        },
+      })
+    );
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      phase: 'done',
+    } as never);
+    vi.mocked(workspacesApi.get).mockResolvedValue({
+      branch: 'vk/work-branch',
+    } as never);
+    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
+      {
+        id: 'repo-1',
+        name: 'repo-1',
+        target_branch: 'feature',
+        default_target_branch: 'develop',
+      },
+    ] as never);
+    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
+      {
+        repo_id: 'repo-1',
+        is_target_remote: false,
+        merges: [{ type: 'direct', target_branch_name: 'feature' }],
+      },
+    ] as never);
+    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
+      success: true,
+    } as never);
+    const startCreateFromAi = vi.fn().mockResolvedValue(true);
+    vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
+      startCreateFromAi,
+    } as never);
+
+    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
+      true
+    );
+
+    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
+    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledOnce();
+    expect(startCreateFromAi).toHaveBeenCalledOnce();
+    expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
   });
 });

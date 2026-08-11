@@ -75,7 +75,10 @@ import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import type { TurnNavigationItem } from '@vibe/ui/components/TurnNavigationPopup';
-import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import {
+  resumeReviewAndCreatePr,
+  runReviewAndCreatePr,
+} from '@/shared/lib/reviewAndCreatePr';
 
 /** Compute execution status from boolean flags */
 function computeExecutionStatus(params: {
@@ -237,6 +240,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const hostId = useHostId();
   const { t } = useTranslation('tasks');
   const [isReviewing, setIsReviewing] = useState(false);
+  useEffect(() => {
+    if (workspaceId) {
+      void resumeReviewAndCreatePr(workspaceId, hostId);
+    }
+  }, [workspaceId, hostId]);
   // Only issue-linked workspaces can enter the automated vibe review workflow;
   // gate the review button on a linked issue so it never advertises a call that
   // the backend is guaranteed to reject.
