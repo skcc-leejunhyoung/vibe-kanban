@@ -221,6 +221,12 @@ const CLICK_TO_COMPONENT_SCRIPT: &str = include_str!("click_to_component_script.
 /// and listens for toggle commands from parent window.
 const ERUDA_INIT: &str = include_str!("eruda_init.js");
 
+/// Auth bridge injected after <head> (before app scripts). Converts
+/// OAuth-style cookie sessions to `Authorization: Bearer` inside preview
+/// iframes, where Safari drops cookies for `<port>.vibe-kanban.localhost`
+/// as a cross-site third party. Disable with VK_PREVIEW_DISABLE_AUTH_BRIDGE.
+const AUTH_BRIDGE_SCRIPT: &str = include_str!("auth_bridge.js");
+
 /// Collect response headers to forward to the iframe response.
 /// Keeps duplicate headers (e.g. `Set-Cookie`) by preserving each entry.
 fn collect_response_headers(
@@ -829,10 +835,19 @@ async fn http_proxy_handler(
             Ok(body_bytes) => {
                 let mut html = String::from_utf8_lossy(&body_bytes).to_string();
 
-                // Inject bippy bundle after <head> (must load before React)
+                // Inject bippy bundle after <head> (must load before React).
+                // Auth bridge rides along — it must patch fetch/XHR before
+                // the app's own scripts capture references to them.
                 if let Some(pos) = html.to_lowercase().find("<head>") {
                     let head_end = pos + "<head>".len();
-                    let bippy_tag = format!("<script>{}</script>", BIPPY_BUNDLE);
+                    let bippy_tag = if env_flag_enabled("VK_PREVIEW_DISABLE_AUTH_BRIDGE") {
+                        format!("<script>{}</script>", BIPPY_BUNDLE)
+                    } else {
+                        format!(
+                            "<script>{}</script><script>{}</script>",
+                            BIPPY_BUNDLE, AUTH_BRIDGE_SCRIPT
+                        )
+                    };
                     html.insert_str(head_end, &bippy_tag);
                 }
 
