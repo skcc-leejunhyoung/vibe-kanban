@@ -11,6 +11,8 @@ const VIBE_REVIEW_POLL_MS = 2000;
 const VIBE_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
 const STORAGE_KEY = 'vibe-review-and-create-pr';
 
+class VibeReviewBlockedError extends Error {}
+
 interface PendingReviewAndCreatePr {
   workspaceId: string;
   reviewSessionId: string;
@@ -64,7 +66,9 @@ async function waitForVibeReviewCompletion(
     const { phase } = await sessionsApi.getVibeReviewStatus(sessionId, hostId);
     if (phase === 'done') return;
     if (phase === 'blocked') {
-      throw new Error('The automated review was blocked before merge.');
+      throw new VibeReviewBlockedError(
+        'The automated review was blocked before merge.'
+      );
     }
     await new Promise((resolve) =>
       window.setTimeout(resolve, VIBE_REVIEW_POLL_MS)
@@ -205,6 +209,9 @@ export async function runReviewAndCreatePr(
     clearPending(options.workspaceId, options.hostId);
     return completed;
   } catch (error) {
+    if (error instanceof VibeReviewBlockedError) {
+      clearPending(options.workspaceId, options.hostId);
+    }
     void ErrorDialog.show({
       title: 'Review and create PR from ai failed',
       message:
@@ -240,6 +247,9 @@ export async function resumeReviewAndCreatePr(
     clearPending(workspaceId, hostId);
     return completed;
   } catch (error) {
+    if (error instanceof VibeReviewBlockedError) {
+      clearPending(workspaceId, hostId);
+    }
     void ErrorDialog.show({
       title: 'Review and create PR from ai failed',
       message:

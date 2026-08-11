@@ -244,4 +244,28 @@ describe('runReviewAndCreatePr', () => {
     expect(startCreateFromAi).toHaveBeenCalledOnce();
     expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
   });
+
+  it('clears a blocked review so reopening the workspace does not retry it', async () => {
+    localStorage.setItem(
+      'vibe-review-and-create-pr',
+      JSON.stringify({
+        'local:workspace-1': {
+          workspaceId: 'workspace-1',
+          reviewSessionId: 'review-session-1',
+          hostId: null,
+        },
+      })
+    );
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      phase: 'blocked',
+    } as never);
+
+    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
+      false
+    );
+
+    expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
+    await resumeReviewAndCreatePr('workspace-1', null);
+    expect(sessionsApi.getVibeReviewStatus).toHaveBeenCalledOnce();
+  });
 });
