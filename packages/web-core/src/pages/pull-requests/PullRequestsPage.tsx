@@ -1094,12 +1094,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         repositories={repositories}
         authors={authors}
         onChange={setFilters}
-        onReset={() =>
-          setFilters({
-            ...defaultFilters,
-            repositories: filters.repositories,
-          })
-        }
+        onReset={() => setFilters({ ...defaultFilters })}
       />
     </>
   );
