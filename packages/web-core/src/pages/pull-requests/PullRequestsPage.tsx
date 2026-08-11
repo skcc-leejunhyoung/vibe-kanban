@@ -787,89 +787,86 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const listContent = (
     <main className="flex h-full min-h-0 flex-col overflow-hidden">
       <header className="shrink-0 border-b border-border px-double py-base">
-        <div className="flex flex-col gap-base sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-half">
-            <button
-              type="button"
-              onClick={() => router.history.back()}
-              className={cn(
-                'flex items-center justify-center rounded-sm p-half text-low transition-colors sm:hidden',
-                'hover:bg-secondary hover:text-normal',
-                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
-              )}
-              aria-label="Go back"
-              title="Back"
-            >
-              <ArrowLeftIcon size={18} />
-            </button>
-            <div className="min-w-0">
-              <h1 className="text-xl font-semibold text-high">Pull Requests</h1>
-              <p className="mt-half text-sm text-low">
-                {filters.involvesMe
-                  ? 'Pull requests involving you in the selected repositories'
-                  : 'Recently updated pull requests in the selected repositories'}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-half">
-            <button
-              type="button"
-              onClick={() => setFiltersOpen(true)}
-              className="flex h-9 max-w-64 items-center gap-half truncate rounded border border-border bg-secondary px-base text-sm text-normal hover:text-high focus:outline-none focus:ring-1 focus:ring-brand"
-              aria-label="Select repositories"
-              title="Select repositories"
-            >
-              <span className="truncate">{repositoryLabel}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setFiltersOpen(true)}
-              className="relative flex size-9 items-center justify-center rounded border border-border bg-secondary text-normal hover:text-high"
-              aria-label="Filter pull requests"
-              title="Filter pull requests"
-            >
-              <FunnelIcon className="size-icon-sm" />
-              {activeFilterCount(filters) > 0 && (
-                <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-brand text-[10px] text-white">
-                  {activeFilterCount(filters)}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                refreshPullRequests.mutate({
-                  repositories: filters.repositories,
-                  involvesMe: filters.involvesMe,
-                })
-              }
-              disabled={
-                !hasRepositories || prsFetching || refreshPullRequests.isPending
-              }
-              className="flex size-9 items-center justify-center rounded border border-border bg-secondary text-normal hover:text-high disabled:opacity-50"
-              aria-label="Refresh pull requests"
-              title="Refresh pull requests"
-            >
-              <ArrowClockwiseIcon
-                className={cn(
-                  'size-icon-sm',
-                  (prsFetching || refreshPullRequests.isPending) &&
-                    'animate-spin'
-                )}
-              />
-            </button>
+        <div className="flex min-w-0 items-center gap-half">
+          <button
+            type="button"
+            onClick={() => router.history.back()}
+            className={cn(
+              'flex items-center justify-center rounded-sm p-half text-low transition-colors sm:hidden',
+              'hover:bg-secondary hover:text-normal',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
+            )}
+            aria-label="Go back"
+            title="Back"
+          >
+            <ArrowLeftIcon size={18} />
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold text-high">Pull Requests</h1>
+            <p className="mt-half text-sm text-low">
+              {filters.involvesMe
+                ? 'Pull requests involving you in the selected repositories'
+                : 'Recently updated pull requests in the selected repositories'}
+            </p>
           </div>
         </div>
 
-        <div className="relative mt-base">
-          <MagnifyingGlassIcon className="pointer-events-none absolute left-base top-1/2 size-icon-sm -translate-y-1/2 text-low" />
-          <input
-            ref={searchInputRef}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search title, repository, author, label…"
-            className="h-9 w-full rounded border border-border bg-secondary pl-10 pr-base text-sm text-normal placeholder:text-low focus:outline-none focus:ring-1 focus:ring-brand"
-          />
+        <div className="mt-base flex items-center gap-half">
+          <div className="relative min-w-0 flex-1">
+            <MagnifyingGlassIcon className="pointer-events-none absolute left-base top-1/2 size-icon-sm -translate-y-1/2 text-low" />
+            <input
+              ref={searchInputRef}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search title, repository, author, label…"
+              className="h-9 w-full rounded border border-border bg-secondary pl-10 pr-base text-sm text-normal placeholder:text-low focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setFiltersOpen(true)}
+            className="flex h-9 max-w-48 shrink-0 items-center gap-half truncate rounded border border-border bg-secondary px-base text-sm text-normal hover:text-high focus:outline-none focus:ring-1 focus:ring-brand"
+            aria-label="Select repositories"
+            title="Select repositories"
+          >
+            <span className="truncate">{repositoryLabel}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setFiltersOpen(true)}
+            className="relative flex size-9 shrink-0 items-center justify-center rounded border border-border bg-secondary text-normal hover:text-high"
+            aria-label="Filter pull requests"
+            title="Filter pull requests"
+          >
+            <FunnelIcon className="size-icon-sm" />
+            {activeFilterCount(filters) > 0 && (
+              <span className="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-brand text-[10px] text-white">
+                {activeFilterCount(filters)}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              refreshPullRequests.mutate({
+                repositories: filters.repositories,
+                involvesMe: filters.involvesMe,
+              })
+            }
+            disabled={
+              !hasRepositories || prsFetching || refreshPullRequests.isPending
+            }
+            className="flex size-9 shrink-0 items-center justify-center rounded border border-border bg-secondary text-normal hover:text-high disabled:opacity-50"
+            aria-label="Refresh pull requests"
+            title="Refresh pull requests"
+          >
+            <ArrowClockwiseIcon
+              className={cn(
+                'size-icon-sm',
+                (prsFetching || refreshPullRequests.isPending) && 'animate-spin'
+              )}
+            />
+          </button>
         </div>
       </header>
 
