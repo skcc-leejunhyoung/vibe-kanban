@@ -468,6 +468,9 @@ export function CreateChatBoxContainer({
       repos: workspaceRepos,
       linked_issue: getLinkedIssuePayload(),
       attachment_ids: getAttachmentIds(),
+      // Same branch pinning as create-and-start: in review mode, check out the
+      // linked PR's head branch instead of a fresh `vk/` branch. Null otherwise.
+      pr_review: reviewMode.prReviewPayload,
       working_branch: workingBranch,
     };
 
@@ -494,6 +497,7 @@ export function CreateChatBoxContainer({
     getAttachmentIds,
     getLinkToIssue,
     finishWorkspaceCreated,
+    reviewMode.prReviewPayload,
   ]);
 
   const creationError = createWorkspace.error ?? createWorkspaceOnly.error;

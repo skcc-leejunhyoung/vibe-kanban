@@ -648,6 +648,7 @@ pub async fn create_workspace_without_starting(
         repos,
         linked_issue,
         attachment_ids,
+        pr_review,
         working_branch,
     } = payload;
 
@@ -657,7 +658,7 @@ pub async fn create_workspace_without_starting(
         repos,
         linked_issue.as_ref(),
         attachment_ids,
-        None,
+        pr_review.as_ref(),
         working_branch,
     )
     .await?;

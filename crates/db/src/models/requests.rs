@@ -167,6 +167,12 @@ pub struct CreateWorkspaceWithoutStartingRequest {
     pub repos: Vec<WorkspaceRepoInput>,
     pub linked_issue: Option<LinkedIssueInfo>,
     pub attachment_ids: Option<Vec<Uuid>>,
+    /// When set, work directly on an existing PR's head branch (review mode)
+    /// instead of creating a new `vk/` worktree branch — same branch pinning as
+    /// the create-and-start path. `null` for normal creation; `#[serde(default)]`
+    /// so older clients that omit it keep working.
+    #[serde(default)]
+    pub pr_review: Option<PrReviewInput>,
     /// Working branch setup (auto / new name / existing branch). Defaults to
     /// `Auto` when omitted by older clients.
     #[serde(default)]
