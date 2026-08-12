@@ -34,7 +34,7 @@ import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostIdentity';
-import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { resolveUnfocusedChatKeyAction } from '@/pages/workspaces/workspaceChatKeyboard';
@@ -152,6 +152,7 @@ function WorkspaceSessionPanel({
   // Escape-to-close is handled once at the container level (see
   // ProjectRightSidebarContainer) so every right panel closes identically.
   const appNavigation = useAppNavigation();
+  const openInSplitPane = useOpenInSplitPane();
   const { projectId, getIssue } = useProjectContext();
   const routeState = useCurrentKanbanRouteState();
   const { workspaces: remoteWorkspaces } = useUserContext();
@@ -214,7 +215,7 @@ function WorkspaceSessionPanel({
 
   const handleOpenWorkspaceInNewTab = useCallback(() => {
     openInSplitPane(buildWorkspacePath(workspaceId, routeState.hostId));
-  }, [routeState.hostId, workspaceId]);
+  }, [openInSplitPane, routeState.hostId, workspaceId]);
 
   const breadcrumbButtonClass =
     'min-w-0 text-sm text-normal truncate rounded-sm px-1 py-0.5 hover:bg-panel hover:text-high transition-colors';

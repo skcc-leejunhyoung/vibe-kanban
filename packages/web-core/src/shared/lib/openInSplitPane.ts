@@ -1,89 +1,65 @@
-import {
-  type SplitPresetLayout,
-  type SplitPreset,
-  useSplitScreenStore,
-} from '@/shared/stores/useSplitScreenStore';
+import { useCallback } from 'react';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useAppRuntime, type AppRuntime } from '@/shared/hooks/useAppRuntime';
+import { isMobileViewport } from '@/shared/hooks/useIsMobile';
+import {
+  isWorkspacesDestination,
+  type AppNavigation,
+} from '@/shared/lib/routes/appNavigation';
+import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 
-const MESSAGE_TYPE = 'vk-split-pane';
-const EMBED_PARAM = 'vk_split_embed';
-const WINDOW_NAME_PREFIX = 'vk-split-pane:';
-export const SPLIT_PANE_OPENED_EVENT = 'vk-split-pane-opened';
-
-function isEmbeddedPane(): boolean {
-  return (
-    new URLSearchParams(window.location.search).get(EMBED_PARAM) === '1' ||
-    window.name.startsWith(WINDOW_NAME_PREFIX)
-  );
-}
-
-function currentRelativeUrl(): string {
-  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
-}
-
-export function openInSplitPane(url: string): void {
-  if (isEmbeddedPane()) {
-    window.parent.postMessage(
-      {
-        type: MESSAGE_TYPE,
-        event: 'open-pane',
-        url,
-        sourceUrl: currentRelativeUrl(),
-      },
-      window.location.origin
-    );
-    return;
+/**
+ * Set the visible pane count and make sure the pane grid (the workspaces
+ * page) is on screen when more than one pane was requested.
+ */
+export function applyWorkspacePaneCount(
+  total: number,
+  appNavigation: AppNavigation
+): void {
+  useWorkspacePanesStore.getState().setPaneCount(total);
+  if (total <= 1) return;
+  const current = appNavigation.resolveFromPath(window.location.pathname);
+  if (!isWorkspacesDestination(current)) {
+    appNavigation.goToWorkspaces();
   }
+}
 
-  const result = useSplitScreenStore
-    .getState()
-    .openPane(url, currentRelativeUrl());
-  if (result === 'overflow') {
+/**
+ * Open an app URL "to the side": workspace URLs go to an in-document split
+ * pane on the workspaces page; anything else (or unsupported surfaces —
+ * remote web, mobile) falls back to a new browser tab/window.
+ */
+export function openUrlInSplitPane(
+  url: string,
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime
+): void {
+  const target = appNavigation.resolveFromPath(url);
+  const { maxPanes, openWorkspacePane } = useWorkspacePanesStore.getState();
+  if (
+    appRuntime !== 'local' ||
+    isMobileViewport() ||
+    maxPanes < 2 ||
+    target?.kind !== 'workspace'
+  ) {
     openExternalUrl(url);
     return;
   }
 
-  const state = useSplitScreenStore.getState();
-  window.dispatchEvent(
-    new CustomEvent(SPLIT_PANE_OPENED_EVENT, {
-      detail: {
-        paneId: state.presets[state.preset].activePaneId,
-        url,
-      },
-    })
+  openWorkspacePane(target.workspaceId, target.hostId ?? null);
+  const current = appNavigation.resolveFromPath(window.location.pathname);
+  if (!isWorkspacesDestination(current)) {
+    appNavigation.goToWorkspaces();
+  }
+}
+
+export function useOpenInSplitPane(): (url: string) => void {
+  const appRuntime = useAppRuntime();
+  const appNavigation = useAppNavigation();
+
+  return useCallback(
+    (url: string) => openUrlInSplitPane(url, appNavigation, appRuntime),
+    [appRuntime, appNavigation]
   );
-}
-
-export function activateSplitPreset(preset: SplitPreset): void {
-  if (isEmbeddedPane()) {
-    window.parent.postMessage(
-      { type: MESSAGE_TYPE, event: 'preset', preset },
-      window.location.origin
-    );
-    return;
-  }
-  useSplitScreenStore.getState().setPreset(preset, currentRelativeUrl());
-}
-
-export function updateMaxSplitPanes(maxPanes: SplitPreset): void {
-  useSplitScreenStore.getState().setMaxPanes(maxPanes);
-  if (isEmbeddedPane()) {
-    window.parent.postMessage(
-      { type: MESSAGE_TYPE, event: 'max-panes', maxPanes },
-      window.location.origin
-    );
-  }
-}
-
-export function updateSplitPresetLayout(
-  preset: SplitPreset,
-  layout: SplitPresetLayout
-): void {
-  useSplitScreenStore.getState().setPresetLayout(preset, layout);
-  if (isEmbeddedPane()) {
-    window.parent.postMessage(
-      { type: MESSAGE_TYPE, event: 'preset-layout', preset, layout },
-      window.location.origin
-    );
-  }
 }

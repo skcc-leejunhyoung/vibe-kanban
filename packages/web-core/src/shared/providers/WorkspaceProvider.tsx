@@ -1,5 +1,11 @@
-import { ReactNode, useMemo, useCallback, useEffect, useRef } from 'react';
-import { useParams } from '@tanstack/react-router';
+import {
+  ReactNode,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   getHostWorkspaceKey,
@@ -14,7 +20,10 @@ import { useGitHubComments } from '@/shared/hooks/useGitHubComments';
 import { useDiffStream } from '@/shared/hooks/useDiffStream';
 import { useCommitDiff } from '@/shared/hooks/useCommitDiff';
 import { workspacesApi } from '@/shared/lib/api';
-import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
+import {
+  createWorkspaceDiffStore,
+  WorkspaceDiffStoreProvider,
+} from '@/shared/stores/useWorkspaceDiffStore';
 import { useSelectedCommit } from '@/shared/stores/useChangesCommitStore';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { Diff, DiffStats, WorkspaceSummary } from 'shared/types';
@@ -25,17 +34,32 @@ import { WorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 
 interface WorkspaceProviderProps {
   children: ReactNode;
+  /**
+   * Reuse the workspace list streams of an enclosing WorkspaceProvider
+   * instead of mounting a new stream source. Split panes pass true — the
+   * document-level provider already streams every host's workspace list, and
+   * one source per document is the point of in-document panes.
+   */
+  inheritStreams?: boolean;
 }
 
 // Stable reference so an empty commit-diff result doesn't churn downstream memos.
 const EMPTY_DIFFS: Diff[] = [];
 
 function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
-  const { workspaceId } = useParams({ strict: false });
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   const queryClient = useQueryClient();
   const hostId = useHostId();
+  // Derived from the destination (not router params) so split panes can scope
+  // this provider by overriding the destination for their subtree.
+  const workspaceId =
+    currentDestination && 'workspaceId' in currentDestination
+      ? currentDestination.workspaceId
+      : undefined;
+  // One diff store per provider instance so coexisting panes don't clobber
+  // each other's diff data.
+  const [diffStore] = useState(createWorkspaceDiffStore);
 
   const isCreateMode = currentDestination?.kind === 'workspaces-create';
 
@@ -173,9 +197,7 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
         batchCountRef.current = 0;
-        useWorkspaceDiffStore
-          .getState()
-          .setWorkspaceDiffData(latestDiffDataRef.current);
+        diffStore.getState().setWorkspaceDiffData(latestDiffDataRef.current);
       });
     }
     return () => {
@@ -185,6 +207,7 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
       }
     };
   }, [
+    diffStore,
     diffs,
     diffPaths,
     diffStats,
@@ -199,19 +222,13 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
     getFirstCommentLineForFile,
   ]);
 
-  useEffect(() => {
-    return () => {
-      useWorkspaceDiffStore.getState().clearWorkspaceDiffData();
-    };
-  }, []);
-
   const isLoading = isLoadingList || isLoadingWorkspace;
 
   useEffect(() => {
     if (!workspaceId || isCreateMode) return;
 
     workspacesApi
-      .markSeen(workspaceId)
+      .markSeen(workspaceId, hostId)
       .then(async () => {
         // Patch the summary caches in place instead of invalidating them:
         // invalidation refetched BOTH summary lists on every navigation, and
@@ -302,13 +319,21 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
   );
 
   return (
-    <WorkspaceContext.Provider value={coreValue}>
-      {children}
-    </WorkspaceContext.Provider>
+    <WorkspaceDiffStoreProvider value={diffStore}>
+      <WorkspaceContext.Provider value={coreValue}>
+        {children}
+      </WorkspaceContext.Provider>
+    </WorkspaceDiffStoreProvider>
   );
 }
 
-export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
+export function WorkspaceProvider({
+  children,
+  inheritStreams = false,
+}: WorkspaceProviderProps) {
+  if (inheritStreams) {
+    return <WorkspaceProviderContent>{children}</WorkspaceProviderContent>;
+  }
   return (
     <UnifiedWorkspaceStreamsProvider>
       <WorkspaceProviderContent>{children}</WorkspaceProviderContent>

@@ -1398,10 +1398,15 @@ export const workspacesApi = {
   },
 
   /** Mark all coding agent turns for a workspace as seen */
-  markSeen: async (workspaceId: string): Promise<void> => {
-    const response = await makeRequest(`/api/workspaces/${workspaceId}/seen`, {
-      method: 'PUT',
-    });
+  markSeen: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/seen`,
+      hostId,
+      { method: 'PUT' }
+    );
     return handleApiResponse<void>(response);
   },
 

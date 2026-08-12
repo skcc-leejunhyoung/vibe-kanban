@@ -23,9 +23,9 @@ import {
 import { isMac, getModifierKey } from '@/shared/lib/platform';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import {
-  SPLIT_PRESETS,
-  useSplitScreenStore,
-} from '@/shared/stores/useSplitScreenStore';
+  WORKSPACE_PANE_COUNTS,
+  useWorkspacePanesStore,
+} from '@/shared/stores/useWorkspacePanesStore';
 import { Tooltip } from '@vibe/ui/components/Tooltip';
 
 interface ShortcutItem {
@@ -45,7 +45,7 @@ function useShortcutGroups(): ShortcutGroup[] {
   const { t } = useTranslation('common');
   const sendShortcut = config?.send_message_shortcut ?? 'ModifierEnter';
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
-  const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
+  const maxSplitPanes = useWorkspacePanesStore((state) => state.maxPanes);
 
   return useMemo(() => {
     const mod = getModifierKey();
@@ -107,7 +107,7 @@ function useShortcutGroups(): ShortcutGroup[] {
           ),
           description: t('shortcuts.actions.previousSplitPane'),
         },
-        ...SPLIT_PRESETS.slice(0, maxSplitPanes).map((preset) => ({
+        ...WORKSPACE_PANE_COUNTS.slice(0, maxSplitPanes).map((preset) => ({
           keys: chips(
             resolveModifier(SPLIT_PRESET_BINDING_IDS[preset], overrides)
           ),

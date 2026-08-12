@@ -59,7 +59,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
-import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
@@ -85,6 +85,7 @@ export function KanbanIssuePanelContainer({
 }: KanbanIssuePanelContainerProps) {
   const { t } = useTranslation('common');
   const appNavigation = useAppNavigation();
+  const openInSplitPane = useOpenInSplitPane();
   const routeState = useCurrentKanbanRouteState();
   const runtime = useAppRuntime();
   const { hosts: availableWorkspaceHosts } = useWorkspaceHostOptions();
@@ -1244,7 +1245,7 @@ export function KanbanIssuePanelContainer({
     openInSplitPane(
       `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(selectedKanbanIssueId)}`
     );
-  }, [projectId, selectedKanbanIssueId]);
+  }, [openInSplitPane, projectId, selectedKanbanIssueId]);
 
   // More actions callback - opens command bar with issue actions
   const handleMoreActions = useCallback(async () => {

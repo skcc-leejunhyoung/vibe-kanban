@@ -31,6 +31,7 @@ import {
   useKeyShowHelp,
   Scope,
 } from "@/shared/keyboard";
+import { useEscapeToBlur } from "@/shared/keyboard/useEscapeToBlur";
 import { KeyboardShortcutsDialog } from "@/shared/dialogs/shared/KeyboardShortcutsDialog";
 import {
   createRemoteHostAppNavigation,
@@ -42,11 +43,6 @@ import {
   isWorkspacesDestination,
 } from "@/shared/lib/routes/appNavigation";
 import NotFoundPage from "../pages/NotFoundPage";
-import { useIsMobile } from "@/shared/hooks/useIsMobile";
-import {
-  isSplitScreenEmbed,
-  SplitScreenSurface,
-} from "@/shared/components/SplitScreenSurface";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -78,6 +74,7 @@ function GlobalKeyboardShortcuts() {
     },
     { scope: Scope.GLOBAL },
   );
+  useEscapeToBlur();
   return null;
 }
 
@@ -115,7 +112,6 @@ function RootLayout() {
   // Inject the selected theme variant ("skin") CSS. The selection + presets
   // come from config (synced via useConfigPreferenceSync), matching local web.
   useApplyThemeVariant();
-  const isMobile = useIsMobile();
   const location = useLocation();
   const { hostId } = useParams({ strict: false });
   const routeHostId = hostId ?? null;
@@ -145,19 +141,13 @@ function RootLayout() {
       <Outlet />
     </RemoteAppShell>
   );
-  const splitAppShell =
-    isMobile && !isSplitScreenEmbed() ? (
-      appShell
-    ) : (
-      <SplitScreenSurface>{appShell}</SplitScreenSurface>
-    );
   const pageContent = isStandaloneRoute ? (
     <Outlet />
   ) : (
     <SequenceTrackerProvider>
       <SequenceIndicator />
       <GlobalKeyboardShortcuts />
-      {splitAppShell}
+      {appShell}
     </SequenceTrackerProvider>
   );
 

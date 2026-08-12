@@ -24,7 +24,19 @@ export function useHostId(): string | null {
   return useContext(HostIdContext);
 }
 
-export function HostIdProvider({ children }: { children: ReactNode }) {
+export function HostIdProvider({
+  children,
+  global = true,
+}: {
+  children: ReactNode;
+  /**
+   * When false, this instance only scopes its React subtree and leaves the
+   * module-level hostId (read by the API transport fallback) to the
+   * document-level provider. Split panes pass false so several panes can
+   * coexist without clobbering the document's host scope.
+   */
+  global?: boolean;
+}) {
   const destination = useCurrentAppDestination();
   const routeHostId = useMemo(
     () => getDestinationHostId(destination),
@@ -43,11 +55,12 @@ export function HostIdProvider({ children }: { children: ReactNode }) {
   );
 
   useLayoutEffect(() => {
+    if (!global) return;
     _hostId = hostId;
     return () => {
       _hostId = null;
     };
-  }, [hostId]);
+  }, [hostId, global]);
 
   return (
     <HostIdContext.Provider value={hostId}>{children}</HostIdContext.Provider>

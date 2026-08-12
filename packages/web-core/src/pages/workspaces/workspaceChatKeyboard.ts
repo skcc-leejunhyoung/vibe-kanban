@@ -1,3 +1,6 @@
+import { useEffect, type RefObject } from 'react';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
+
 type WorkspaceChatKeyEvent = Pick<
   KeyboardEvent,
   | 'key'
@@ -31,4 +34,54 @@ export function resolveUnfocusedChatKeyAction(
   if (event.key === 'ArrowDown') return { type: 'scroll', delta: 80 };
   if (event.key === 'Enter') return { type: 'focus-composer' };
   return null;
+}
+
+interface UnfocusedChatKeyTarget {
+  scrollConversationBy: (delta: number) => boolean;
+  focusComposer: () => boolean;
+}
+
+/**
+ * Window-level ArrowUp/ArrowDown/Enter handling for the chat while no control
+ * is focused. `enabled` must fold in every caller-side condition (visible
+ * chat, active pane, mobile tab), since panes register one listener each.
+ */
+export function useUnfocusedChatKeys(
+  targetRef: RefObject<UnfocusedChatKeyTarget | null>,
+  enabled: boolean
+) {
+  useEffect(() => {
+    if (!enabled) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
+
+      const activeElement = document.activeElement;
+      const hasNoFocusedControl =
+        activeElement === null ||
+        activeElement === document.body ||
+        activeElement === document.documentElement;
+      if (!hasNoFocusedControl) return;
+
+      const action = resolveUnfocusedChatKeyAction(event);
+      if (action?.type === 'scroll') {
+        if (targetRef.current?.scrollConversationBy(action.delta)) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (
+        action?.type === 'focus-composer' &&
+        targetRef.current?.focusComposer()
+      ) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [enabled, targetRef]);
 }

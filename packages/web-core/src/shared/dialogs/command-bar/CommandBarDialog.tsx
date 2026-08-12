@@ -27,7 +27,7 @@ import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 import { KanbanIcon, StackIcon } from '@phosphor-icons/react';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 import { splitPresetActions } from '@/shared/actions/splitPresetActions';
-import { useSplitScreenStore } from '@/shared/stores/useSplitScreenStore';
+import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { resolveCommandBarIssueIds } from './commandBar/resolveCommandBarIssueIds';
 import { resolveWorkspaceNavigationTargets } from './commandBar/workspaceNavigationTargets';
 
@@ -65,7 +65,7 @@ function CommandBarContent({
   const { workspaceId: contextWorkspaceId, repos } = useWorkspaceContext();
   // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
-  const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
+  const maxSplitPanes = useWorkspacePanesStore((state) => state.maxPanes);
 
   // Get issue context from props, multi-selection store, or route params
   const { projectId: routeProjectId, issueId: routeIssueId } = useParams({

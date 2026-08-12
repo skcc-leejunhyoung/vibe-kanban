@@ -5,7 +5,6 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Workspace } from 'shared/types';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
@@ -34,6 +33,7 @@ import { useLogStream } from '@/shared/hooks/useLogStream';
 import { ActionsContext } from '@/shared/hooks/useActions';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 
 interface ActionsProviderProps {
   children: ReactNode;
@@ -42,7 +42,13 @@ interface ActionsProviderProps {
 export function ActionsProvider({ children }: ActionsProviderProps) {
   const appRuntime = useAppRuntime();
   const appNavigation = useAppNavigation();
-  const { projectId } = useParams({ strict: false });
+  const currentDestination = useCurrentAppDestination();
+  // Derived from the destination (not router params) so split panes can scope
+  // this provider by overriding the destination for their subtree.
+  const projectId =
+    currentDestination && 'projectId' in currentDestination
+      ? currentDestination.projectId
+      : undefined;
   const hostId = useHostId();
   const queryClient = useQueryClient();
   // Get selected organization ID from store (for kanban context)

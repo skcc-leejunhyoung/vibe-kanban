@@ -23,7 +23,7 @@ import {
   getPayload,
   getPullRequestDetailsNavigationTarget,
 } from '@/shared/lib/notifications';
-import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
 import {
   getGroupedNotificationSegments,
@@ -167,6 +167,7 @@ function WebPushToggle() {
 export function NotificationsPage() {
   const router = useRouter();
   const appNavigation = useAppNavigation();
+  const openInSplitPane = useOpenInSplitPane();
   const runtime = useAppRuntime();
   const notificationListRef = useRef<HTMLDivElement>(null);
   const {
@@ -321,7 +322,7 @@ export function NotificationsPage() {
       const url = buildNotificationTabUrl(group);
       if (url) openInSplitPane(url);
     },
-    [markGroupSeen, runtime]
+    [markGroupSeen, openInSplitPane, runtime]
   );
 
   // Keep the cursor store in sync so the "Open Notification in New Tab" command

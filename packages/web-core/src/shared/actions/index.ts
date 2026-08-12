@@ -127,7 +127,7 @@ import {
   COMMAND_PALETTE_EVENT,
   dispatchCommandPaletteEvent,
 } from '@/shared/lib/commandPaletteEvents';
-import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { openUrlInSplitPane } from '@/shared/lib/openInSplitPane';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
@@ -1182,11 +1182,13 @@ export const Actions = {
     restoreFocusOnClose: false,
     isVisible: (ctx) => ctx.hasWorkspace,
     execute: (ctx, workspaceId, hostId) => {
-      openInSplitPane(
+      openUrlInSplitPane(
         buildWorkspacePath(
           workspaceId,
           hostId === undefined ? ctx.currentHostId : hostId
-        )
+        ),
+        ctx.appNavigation,
+        ctx.appRuntime
       );
     },
   } satisfies WorkspaceActionDefinition,

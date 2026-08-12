@@ -1,22 +1,5 @@
 import { useEffect } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import {
-  getSplitScreenNotificationNavigationTarget,
-  isSplitScreenEmbed,
-  SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT,
-} from '@/shared/components/SplitScreenSurface';
-import {
-  type SplitPreset,
-  useSplitScreenStore,
-} from '@/shared/stores/useSplitScreenStore';
-
-export function getServiceWorkerNavigationTarget(
-  isEmbedded: boolean,
-  preset: SplitPreset
-): 'parent' | 'active-pane' | 'router' {
-  if (isEmbedded) return 'parent';
-  return getSplitScreenNotificationNavigationTarget(preset);
-}
 
 /**
  * Navigate client-side when the service worker asks us to.
@@ -43,36 +26,6 @@ export function useServiceWorkerNavigation() {
         typeof data.path !== 'string' ||
         !data.path.startsWith('/')
       ) {
-        return;
-      }
-
-      // Every split pane is a controlled service-worker client. Relay a
-      // notification received by any iframe to its parent so it can choose the
-      // last active pane, rather than letting the arbitrary receiving iframe
-      // navigate itself.
-      const target = getServiceWorkerNavigationTarget(
-        isSplitScreenEmbed(),
-        useSplitScreenStore.getState().preset
-      );
-
-      if (target === 'parent') {
-        window.parent.postMessage(
-          {
-            type: 'vk-split-pane',
-            event: 'service-worker-navigate',
-            url: data.path,
-          },
-          window.location.origin
-        );
-        return;
-      }
-
-      if (target === 'active-pane') {
-        window.dispatchEvent(
-          new CustomEvent(SPLIT_PANE_NOTIFICATION_NAVIGATION_EVENT, {
-            detail: { url: data.path },
-          })
-        );
         return;
       }
 

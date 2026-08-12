@@ -119,12 +119,10 @@ where
     /// even if the refreshing task panics mid-fetch.
     pub async fn begin_refresh(&self, key: K) -> Option<RefreshClaim<V>> {
         let slot = self.slot(key).await;
-        match slot.refreshing.compare_exchange(
-            false,
-            true,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
+        match slot
+            .refreshing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        {
             Ok(_) => Some(RefreshClaim { slot }),
             Err(_) => None,
         }

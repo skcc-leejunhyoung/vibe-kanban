@@ -7,7 +7,6 @@ import {
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Group, Layout, Panel, Separator } from 'react-resizable-panels';
 import type { CreateModeInitialState } from '@/shared/types/createMode';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
@@ -34,18 +33,14 @@ import { CreateChatBoxContainer } from '@/shared/components/CreateChatBoxContain
 import { PreviewBrowserContainer } from './PreviewBrowserContainer';
 import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDialog';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
-
-import {
-  PERSIST_KEYS,
-  usePaneSize,
-  useWorkspacePanelState,
-  RIGHT_MAIN_PANEL_MODES,
-} from '@/shared/stores/useUiPreferencesStore';
+import { useWorkspacePanelState } from '@/shared/stores/useUiPreferencesStore';
+import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { Scope } from '@/shared/keyboard/registry';
-import { resolveUnfocusedChatKeyAction } from './workspaceChatKeyboard';
-import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
+import { useUnfocusedChatKeys } from './workspaceChatKeyboard';
+import { WorkspaceDetail, type WorkspaceDetailHandle } from './WorkspaceDetail';
+import { WorkspacePaneGrid } from './WorkspacePaneGrid';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
@@ -127,58 +122,31 @@ export function WorkspacesLayout({
 
   const isMobile = useIsMobile();
   const [mobileTab, setMobileTab] = useMobileActiveTab();
-  const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
-  const [lastFocusedMainPanel, setLastFocusedMainPanel] = useState<
-    'chat' | 'changes'
-  >('chat');
+  const mobileMainRef = useRef<WorkspacesMainContainerHandle>(null);
+  const detailRef = useRef<WorkspaceDetailHandle>(null);
 
   const handleScrollToBottom = useCallback(
     (behavior: 'auto' | 'smooth' = 'smooth') => {
-      mainContainerRef.current?.scrollToBottom(behavior);
+      mobileMainRef.current?.scrollToBottom(behavior);
+      detailRef.current?.scrollToBottom(behavior);
     },
     []
   );
 
   const handleWorkspaceCreated = useCallback(
-    (workspaceId: string) => {
-      appNavigation.goToWorkspace(workspaceId);
+    (createdWorkspaceId: string) => {
+      appNavigation.goToWorkspace(createdWorkspaceId);
     },
     [appNavigation]
   );
 
   // Use workspace-specific panel state (pass undefined when in create mode)
-  const {
-    isLeftSidebarVisible,
-    isLeftMainPanelVisible,
-    isRightSidebarVisible,
-    rightMainPanelMode,
-    setLeftMainPanelVisible,
-    setRightMainPanelMode,
-  } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
-
-  useEffect(() => {
-    if (rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.CHANGES) {
-      setLastFocusedMainPanel('changes');
-    }
-  }, [rightMainPanelMode]);
+  const { isLeftSidebarVisible, isLeftMainPanelVisible, rightMainPanelMode } =
+    useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
 
   const handleOpenCommit = useCallback(() => {
-    if (isMobile) {
-      setMobileTab('changes');
-    } else {
-      setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
-    }
-  }, [isMobile, setMobileTab, setRightMainPanelMode]);
-
-  // Keep the chat pane open while closing the desktop's secondary panel.
-  const closeRightMainPanel = useCallback(() => {
-    setRightMainPanelMode(null);
-  }, [setRightMainPanelMode]);
-
-  useEscapeToClose(closeRightMainPanel, {
-    enabled: !isMobile && rightMainPanelMode !== null,
-    scope: Scope.WORKSPACE,
-  });
+    setMobileTab('changes');
+  }, [setMobileTab]);
 
   const showMobileWorkspaceList = useCallback(() => {
     setMobileTab('workspaces');
@@ -198,52 +166,14 @@ export function WorkspacesLayout({
     scope: Scope.WORKSPACE,
   });
 
-  useEffect(() => {
-    const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
-      if (isModalKeyboardActive()) return;
-      if (
-        isCreateMode ||
-        !selectedWorkspace ||
-        !isLeftMainPanelVisible ||
-        (isMobile && mobileTab !== 'chat')
-      ) {
-        return;
-      }
-
-      const activeElement = document.activeElement;
-      const hasNoFocusedControl =
-        activeElement === null ||
-        activeElement === document.body ||
-        activeElement === document.documentElement;
-      if (!hasNoFocusedControl) return;
-
-      const action = resolveUnfocusedChatKeyAction(event);
-      if (action?.type === 'scroll') {
-        if (mainContainerRef.current?.scrollConversationBy(action.delta)) {
-          event.preventDefault();
-        }
-        return;
-      }
-
-      if (
-        action?.type === 'focus-composer' &&
-        mainContainerRef.current?.focusComposer()
-      ) {
-        event.preventDefault();
-      }
-    };
-
-    window.addEventListener('keydown', handleUnfocusedChatKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleUnfocusedChatKeyDown);
-    };
-  }, [
-    isCreateMode,
-    isLeftMainPanelVisible,
-    isMobile,
-    mobileTab,
-    selectedWorkspace,
-  ]);
+  useUnfocusedChatKeys(
+    mobileMainRef,
+    isMobile &&
+      mobileTab === 'chat' &&
+      !isCreateMode &&
+      !!selectedWorkspace &&
+      isLeftMainPanelVisible
+  );
 
   const {
     config,
@@ -268,49 +198,9 @@ export function WorkspacesLayout({
     WorkspacesGuideDialog.show().finally(() => WorkspacesGuideDialog.hide());
   }, [configLoading, config, updateAndSaveConfig]);
 
-  // Ensure the left main panel stays visible when the right main panel is
-  // hidden, so the layout always has visible content. The left sidebar's
-  // open/closed state is intentionally left untouched here — it is a global
-  // preference, not workspace layout, so it must persist across workspace
-  // switches rather than being forced open when a workspace has no right panel.
-  useEffect(() => {
-    if (rightMainPanelMode === null && !isLeftMainPanelVisible) {
-      setLeftMainPanelVisible(true);
-    }
-  }, [isLeftMainPanelVisible, rightMainPanelMode, setLeftMainPanelVisible]);
-
-  const [rightMainPanelSize, setRightMainPanelSize] = usePaneSize(
-    PERSIST_KEYS.rightMainPanel,
-    50
-  );
-
-  const defaultLayout: Layout =
-    typeof rightMainPanelSize === 'number'
-      ? {
-          'left-main': 100 - rightMainPanelSize,
-          'right-main': rightMainPanelSize,
-        }
-      : { 'left-main': 50, 'right-main': 50 };
-
-  const layoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (layoutTimerRef.current) clearTimeout(layoutTimerRef.current);
-    };
-  }, []);
-
-  const onLayoutChange = useCallback(
-    (layout: Layout) => {
-      if (isLeftMainPanelVisible && rightMainPanelMode !== null) {
-        if (layoutTimerRef.current) clearTimeout(layoutTimerRef.current);
-        layoutTimerRef.current = setTimeout(() => {
-          setRightMainPanelSize(layout['right-main']);
-        }, 150);
-      }
-    },
-    [isLeftMainPanelVisible, rightMainPanelMode, setRightMainPanelSize]
-  );
+  const secondaryPaneCount = useWorkspacePanesStore((s) => s.panes.length);
+  const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
+  const isPrimaryPaneActive = secondaryPaneCount === 0 || activePaneId === null;
 
   // ── Mobile layout ──────────────────────────────────────────────────
   // Uses `hidden` CSS class (NOT conditional rendering) to preserve
@@ -345,7 +235,7 @@ export function WorkspacesLayout({
                 />
               ) : (
                 <WorkspacesMainContainer
-                  ref={mainContainerRef}
+                  ref={mobileMainRef}
                   selectedWorkspace={selectedWorkspace ?? null}
                   selectedSession={selectedSession}
                   selectedSessionId={selectedSessionId}
@@ -442,102 +332,21 @@ export function WorkspacesLayout({
     );
   }
 
-  const mainContent = (
-    <ReviewProvider workspaceId={selectedWorkspace?.id}>
-      <ChangesViewProvider>
-        <div className="flex h-full">
-          <Group
-            orientation="horizontal"
-            className="flex-1 min-w-0 h-full"
-            defaultLayout={defaultLayout}
-            onLayoutChange={onLayoutChange}
-          >
-            {isLeftMainPanelVisible && (
-              <Panel
-                id="left-main"
-                minSize="20%"
-                className="min-w-0 h-full overflow-hidden"
-              >
-                {isCreateMode ? (
-                  <CreateChatBoxContainer
-                    onWorkspaceCreated={handleWorkspaceCreated}
-                  />
-                ) : (
-                  <div
-                    className="h-full"
-                    onFocusCapture={() => setLastFocusedMainPanel('chat')}
-                  >
-                    <WorkspacesMainContainer
-                      ref={mainContainerRef}
-                      selectedWorkspace={selectedWorkspace ?? null}
-                      selectedSession={selectedSession}
-                      selectedSessionId={selectedSessionId}
-                      sessions={sessions}
-                      repos={repos}
-                      onSelectSession={selectSession}
-                      isLoading={isLoading}
-                      isSessionsLoading={isSessionsLoading}
-                      isNewSessionMode={isNewSessionMode}
-                      onStartNewSession={startNewSession}
-                      autoFocus={
-                        lastFocusedMainPanel === 'chat' &&
-                        rightMainPanelMode !== RIGHT_MAIN_PANEL_MODES.CHANGES
-                      }
-                    />
-                  </div>
-                )}
-              </Panel>
-            )}
+  const primaryDetail = (
+    <WorkspaceDetail ref={detailRef} hotkeysEnabled={isPrimaryPaneActive} />
+  );
 
-            {isLeftMainPanelVisible && rightMainPanelMode !== null && (
-              <Separator
-                id="main-separator"
-                className="w-1 bg-transparent hover:bg-brand/50 transition-colors cursor-col-resize"
-              />
-            )}
-
-            {rightMainPanelMode !== null && (
-              <Panel
-                id="right-main"
-                minSize="20%"
-                className="min-w-0 h-full overflow-hidden"
-              >
-                {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.CHANGES &&
-                  selectedWorkspace?.id && (
-                    <ChangesPanelContainer
-                      className=""
-                      workspaceId={selectedWorkspace.id}
-                      autoFocus={lastFocusedMainPanel === 'changes'}
-                      onPanelFocus={() => setLastFocusedMainPanel('changes')}
-                    />
-                  )}
-                {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.LOGS && (
-                  <LogsContentContainer className="" />
-                )}
-                {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.PREVIEW &&
-                  selectedWorkspace?.id && (
-                    <PreviewBrowserContainer
-                      workspaceId={selectedWorkspace.id}
-                      className=""
-                    />
-                  )}
-              </Panel>
-            )}
-          </Group>
-
-          {isRightSidebarVisible && !isCreateMode && (
-            <div className="w-[300px] shrink-0 h-full overflow-hidden">
-              <RightSidebar
-                rightMainPanelMode={rightMainPanelMode}
-                selectedWorkspace={selectedWorkspace}
-                repos={repos}
-                onOpenCommit={handleOpenCommit}
-              />
-            </div>
-          )}
-        </div>
-      </ChangesViewProvider>
-    </ReviewProvider>
+  const primaryContent = detailUnavailable ? (
+    detailUnavailable
+  ) : isCreateMode ? (
+    <CreateModeProvider
+      key={createModeProviderKey}
+      initialState={createModeSeed.state}
+    >
+      {primaryDetail}
+    </CreateModeProvider>
+  ) : (
+    primaryDetail
   );
 
   return (
@@ -549,18 +358,7 @@ export function WorkspacesLayout({
       )}
 
       <div className="flex-1 min-w-0 h-full">
-        {detailUnavailable ? (
-          detailUnavailable
-        ) : isCreateMode ? (
-          <CreateModeProvider
-            key={createModeProviderKey}
-            initialState={createModeSeed.state}
-          >
-            {mainContent}
-          </CreateModeProvider>
-        ) : (
-          mainContent
-        )}
+        <WorkspacePaneGrid primary={primaryContent} />
       </div>
     </div>
   );

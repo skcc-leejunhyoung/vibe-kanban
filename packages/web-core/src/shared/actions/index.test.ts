@@ -59,7 +59,7 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
   reserveExternalWindow: vi.fn(),
 }));
 vi.mock('@/shared/lib/openInSplitPane', () => ({
-  openInSplitPane: vi.fn(),
+  openUrlInSplitPane: vi.fn(),
 }));
 vi.mock('@/shared/lib/reviewAndCreatePr', () => ({
   runReviewAndCreatePr: vi.fn(),
@@ -84,7 +84,7 @@ import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
-import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { openUrlInSplitPane } from '@/shared/lib/openInSplitPane';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { getPageActions } from '@/shared/command-bar/actions/pages';
@@ -108,7 +108,7 @@ const showReconcileRemote = vi.mocked(ReconcileRemoteBranchDialog.show);
 const showForcePush = vi.mocked(ForcePushDialog.show);
 const openPrUrl = vi.mocked(openExternalUrl);
 const reservePrWindow = vi.mocked(reserveExternalWindow);
-const openWorkspaceInSplitPane = vi.mocked(openInSplitPane);
+const openWorkspaceInSplitPane = vi.mocked(openUrlInSplitPane);
 const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
 const showPrDetails = vi.mocked(PrDetailsDialog.show);
@@ -392,7 +392,7 @@ describe('command palette navigation actions', () => {
 
     Actions.OpenWorkspaceInNewTab.execute(ctx, 'workspace/id');
 
-    expect(openWorkspaceInSplitPane).toHaveBeenCalledWith(
+    expect(openWorkspaceInSplitPane.mock.calls[0]?.[0]).toBe(
       '/hosts/host%2Fid/workspaces/workspace%2Fid'
     );
     expect(Actions.OpenWorkspaceInNewTab.restoreFocusOnClose).toBe(false);

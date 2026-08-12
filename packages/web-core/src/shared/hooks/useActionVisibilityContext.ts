@@ -1,5 +1,4 @@
 import { useMemo } from 'react';
-import { useLocation, useParams } from '@tanstack/react-router';
 import {
   useWorkspacePanelState,
   type LayoutMode,
@@ -50,12 +49,15 @@ export function useActionVisibilityContext(
   const diffPathsSet = useDiffPaths();
   const diffViewMode = useDiffViewMode();
 
-  // Derive kanban state from URL (URL is single source of truth)
-  const { projectId: routeProjectId, issueId: routeIssueId } = useParams({
-    strict: false,
-  });
+  // Derive kanban state from the current destination (single source of
+  // truth; split panes override it for their subtree).
   const destination = useCurrentAppDestination();
-  const location = useLocation();
+  const routeProjectId =
+    destination && 'projectId' in destination
+      ? destination.projectId
+      : undefined;
+  const routeIssueId =
+    destination && 'issueId' in destination ? destination.issueId : undefined;
   const { isCreateMode: kanbanCreateMode } = useCurrentKanbanRouteState();
   const effectiveProjectId = options?.projectId ?? routeProjectId;
   const optionIssueIds = options?.issueIds;
@@ -86,12 +88,13 @@ export function useActionVisibilityContext(
     return !!selectedIssue?.parent_issue_id;
   }, [shouldResolveSelectedIssueParent, projectIssues, effectiveIssueIds]);
 
-  // Derive layoutMode from current route instead of persisted state
-  const layoutMode: LayoutMode = location.pathname.endsWith('/pull-requests')
-    ? 'pull-requests'
-    : isProjectDestination(destination)
-      ? 'kanban'
-      : 'workspaces';
+  // Derive layoutMode from current destination instead of persisted state
+  const layoutMode: LayoutMode =
+    destination?.kind === 'pull-requests'
+      ? 'pull-requests'
+      : isProjectDestination(destination)
+        ? 'kanban'
+        : 'workspaces';
   const { config } = useUserSystem();
   const { isStarting, isStopping, runningDevServers } =
     useDevServer(workspaceId);

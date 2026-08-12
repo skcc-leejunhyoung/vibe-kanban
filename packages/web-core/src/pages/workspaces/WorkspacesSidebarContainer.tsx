@@ -66,7 +66,7 @@ import {
 } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { getCycledWorkspaceKey } from './workspaceCycle';
-import { openInSplitPane } from '@/shared/lib/openInSplitPane';
+import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import {
   ALL_WORKSPACE_HOSTS_ID,
   useWorkspaceHostSelectionStore,
@@ -119,6 +119,7 @@ export function WorkspacesSidebarContainer({
 
   const isMobile = useIsMobile();
   const runtime = useAppRuntime();
+  const openInSplitPane = useOpenInSplitPane();
   const { hosts: workspaceHosts } = useWorkspaceHostOptions();
   const workspaceHostIds = useMemo(
     () => [
@@ -414,6 +415,7 @@ export function WorkspacesSidebarContainer({
     },
     [
       onSelectWorkspaceOverride,
+      openInSplitPane,
       selectedWorkspaceId,
       routeHostId,
       selectWorkspace,

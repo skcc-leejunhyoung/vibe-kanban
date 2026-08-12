@@ -75,15 +75,9 @@ import {
 import { useSettingsDirty } from './SettingsDirtyContext';
 import { WorkspaceStatusListEditor } from './WorkspaceStatusListEditor';
 import {
-  getSplitPresetLayoutOptions,
-  SPLIT_PRESETS,
-  type SplitPreset,
-  useSplitScreenStore,
-} from '@/shared/stores/useSplitScreenStore';
-import {
-  updateMaxSplitPanes,
-  updateSplitPresetLayout,
-} from '@/shared/lib/openInSplitPane';
+  WORKSPACE_PANE_COUNTS,
+  useWorkspacePanesStore,
+} from '@/shared/stores/useWorkspacePanesStore';
 import { RightSidebarSectionOrderEditor } from './RightSidebarSectionOrderEditor';
 import { PullRequestDefaultsSettings } from './PullRequestDefaultsSettings';
 import {
@@ -110,8 +104,8 @@ export function GeneralSettingsSection() {
   const setRightSidebarSectionOrder = useUiPreferencesStore(
     (state) => state.setRightSidebarSectionOrder
   );
-  const maxSplitPanes = useSplitScreenStore((state) => state.maxPanes);
-  const splitPresetStates = useSplitScreenStore((state) => state.presets);
+  const maxSplitPanes = useWorkspacePanesStore((state) => state.maxPanes);
+  const setMaxSplitPanes = useWorkspacePanesStore((state) => state.setMaxPanes);
   const diffViewMode = useDiffViewStore((state) => state.mode);
   const setDiffViewMode = useDiffViewStore((state) => state.setMode);
   const languageOptions = getLanguageOptions(
@@ -1187,50 +1181,13 @@ export function GeneralSettingsSection() {
         >
           <SettingsSelect
             value={String(maxSplitPanes)}
-            options={SPLIT_PRESETS.map((value) => ({
+            options={WORKSPACE_PANE_COUNTS.map((value) => ({
               value: String(value),
               label: String(value),
             }))}
-            onChange={(value) =>
-              updateMaxSplitPanes(Number(value) as SplitPreset)
-            }
+            onChange={(value) => setMaxSplitPanes(Number(value))}
           />
         </SettingsField>
-        {SPLIT_PRESETS.filter(
-          (preset) => preset > 1 && preset <= maxSplitPanes
-        ).map((preset) => {
-          const options = getSplitPresetLayoutOptions(preset);
-          const layout = splitPresetStates[preset].layout;
-          return (
-            <SettingsField
-              key={preset}
-              label={t('settings.general.splitScreen.presetLayout', {
-                defaultValue: '{{count}} pane layout',
-                count: preset,
-              })}
-            >
-              <SettingsSelect
-                value={`${layout.rows}x${layout.columns}`}
-                options={options.map((option) => ({
-                  value: `${option.rows}x${option.columns}`,
-                  label: t('settings.general.splitScreen.rowsColumns', {
-                    defaultValue: '{{rows}} rows × {{columns}} columns',
-                    rows: option.rows,
-                    columns: option.columns,
-                  }),
-                }))}
-                onChange={(value) => {
-                  const nextLayout = options.find(
-                    (option) => `${option.rows}x${option.columns}` === value
-                  );
-                  if (nextLayout) {
-                    updateSplitPresetLayout(preset, nextLayout);
-                  }
-                }}
-              />
-            </SettingsField>
-          );
-        })}
       </SettingsCard>
 
       {/* Task Templates */}
