@@ -1565,7 +1565,7 @@ pub fn normalize_logs(
         let mut processed_lines: usize = 0;
         while let Some(Ok(line)) = stdout_lines.next().await {
             processed_lines += 1;
-            if processed_lines % 256 == 0 {
+            if processed_lines.is_multiple_of(256) {
                 tokio::task::yield_now().await;
             }
             if let Ok(rate_limit) = serde_json::from_str::<RateLimit>(&line) {
