@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
@@ -9,10 +9,12 @@ import {
   sameDestination,
   useActivePaneWorkspace,
   useWorkspacePanesStore,
+  type WorkspacePaneDestination,
 } from '@/shared/stores/useWorkspacePanesStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { WorkspacesSidebarContainer } from './WorkspacesSidebarContainer';
 import { WorkspacePaneGrid } from './WorkspacePaneGrid';
+import { shouldAdoptDocumentDestination } from './workspacePaneNavigation';
 
 /**
  * The desktop-local pane surface: the shared workspace list next to the pane
@@ -37,6 +39,16 @@ export function WorkspacePanesScreen() {
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
   const activeDestination =
     panes.find((pane) => pane.id === activePaneId)?.destination ?? null;
+  const previousActiveDestinationRef = useRef<
+    WorkspacePaneDestination | null | undefined
+  >(undefined);
+  const shouldAdoptDocument =
+    isPaneRenderableDestination(documentDestination) &&
+    shouldAdoptDocumentDestination(
+      documentDestination,
+      activeDestination,
+      previousActiveDestinationRef.current
+    );
 
   // Boot: the grid always shows at least one pane.
   useEffect(() => {
@@ -47,16 +59,13 @@ export function WorkspacePanesScreen() {
   // mirror effect so a deep link wins over the persisted active pane on mount.
   useEffect(() => {
     if (!isPaneRenderableDestination(documentDestination)) return;
-    const state = useWorkspacePanesStore.getState();
-    const active =
-      state.panes.find((pane) => pane.id === state.activePaneId)?.destination ??
-      null;
-    if (sameDestination(documentDestination, active)) return;
+    if (!shouldAdoptDocument) return;
     adoptRouteDestination(documentDestination);
-  }, [documentDestination, adoptRouteDestination]);
+  }, [documentDestination, shouldAdoptDocument, adoptRouteDestination]);
 
   // Store → URL: mirror the active pane into the address bar (replace-only).
   useEffect(() => {
+    if (shouldAdoptDocument) return;
     if (!activeDestination) return;
     const urlDestination = appNavigation.resolveFromPath(
       window.location.pathname
@@ -68,7 +77,11 @@ export function WorkspacePanesScreen() {
       return;
     }
     navigateDocumentTo(activeDestination, appNavigation, { replace: true });
-  }, [activeDestination, appNavigation]);
+  }, [activeDestination, appNavigation, shouldAdoptDocument]);
+
+  useEffect(() => {
+    previousActiveDestinationRef.current = activeDestination;
+  }, [activeDestination]);
 
   // Page title follows the active pane's workspace.
   const activePaneWorkspace = useActivePaneWorkspace();

@@ -49,7 +49,10 @@ export function openWorkspacesForActivePane(
   }
   const { activePaneId, clearPaneDestination } =
     useWorkspacePanesStore.getState();
-  if (activePaneId !== null) clearPaneDestination(activePaneId);
+  if (activePaneId !== null) {
+    clearPaneDestination(activePaneId);
+    appNavigation.goToWorkspaces();
+  }
 }
 
 /** Close the focused pane — only while the grid is actually on screen. */
