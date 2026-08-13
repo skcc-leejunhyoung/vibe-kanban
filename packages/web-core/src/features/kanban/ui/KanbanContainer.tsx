@@ -1763,7 +1763,7 @@ export function KanbanContainer() {
                             id={issue.id}
                             name={issue.title}
                             index={index}
-                            className="group"
+                            className="group scroll-mt-10"
                             onClick={(e) => handleCardClick(issue.id, e)}
                             isOpen={selectedKanbanIssueId === issue.id}
                             isMobile={isMobile}
