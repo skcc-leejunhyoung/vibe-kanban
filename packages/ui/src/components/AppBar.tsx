@@ -4,7 +4,7 @@ import {
   Droppable,
   type DropResult,
 } from '@hello-pangea/dnd';
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import {
   LayoutIcon,
   PlusIcon,
@@ -38,12 +38,15 @@ function getProjectInitials(name: string): string {
 interface AppBarProps {
   projects: AppBarProject[];
   onCreateProject: () => void;
-  onWorkspacesClick: () => void;
-  onPullRequestsClick?: () => void;
+  onWorkspacesClick: (event: MouseEvent<HTMLButtonElement>) => void;
+  onPullRequestsClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   /** Opens the Quick chat launcher. When omitted, the entry is hidden. */
   onQuickChatClick?: () => void;
   showWorkspacesButton?: boolean;
-  onProjectClick: (projectId: string) => void;
+  onProjectClick: (
+    projectId: string,
+    event: MouseEvent<HTMLButtonElement>
+  ) => void;
   onProjectsDragEnd: (result: DropResult) => void;
   isSavingProjectOrder?: boolean;
   isWorkspacesActive: boolean;
@@ -111,7 +114,7 @@ type AppBarSectionItem =
       label: string;
       icon: Icon;
       isActive?: boolean;
-      onClick?: () => void;
+      onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
       className?: string;
       wrapperClassName?: string;
     }
@@ -139,7 +142,10 @@ type AppBarSectionItem =
       projects: AppBarProject[];
       activeProjectId: string | null;
       isSavingProjectOrder?: boolean;
-      onProjectClick: (projectId: string) => void;
+      onProjectClick: (
+        projectId: string,
+        event: MouseEvent<HTMLButtonElement>
+      ) => void;
       onProjectsDragEnd: (result: DropResult) => void;
     };
 
@@ -423,7 +429,9 @@ export function AppBar({
                           <Tooltip content={project.name} side="right">
                             <button
                               type="button"
-                              onClick={() => item.onProjectClick(project.id)}
+                              onClick={(event) =>
+                                item.onProjectClick(project.id, event)
+                              }
                               className={cn(
                                 appBarItemBaseClassName,
                                 'cursor-grab',

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react';
 import type { DropResult } from '@hello-pangea/dnd';
 import { Outlet, useLocation, useNavigate } from '@tanstack/react-router';
 import {
@@ -28,7 +35,10 @@ import { useAppUpdateStore } from '@/shared/stores/useAppUpdateStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
-import { openDestinationForActivePane } from '@/shared/lib/openInSplitPane';
+import {
+  openDestinationForActivePane,
+  openUrlInSplitPane,
+} from '@/shared/lib/openInSplitPane';
 import {
   getProjectDestination,
   isLocalWorkspacesDestination,
@@ -232,14 +242,29 @@ export function SharedAppLayout() {
     }
   }, [activeProjectId, setSelectedProjectId]);
 
-  const handleWorkspacesClick = useCallback(() => {
-    void navigate({ to: '/workspaces' });
-  }, [navigate]);
+  const handleWorkspacesClick = useCallback(
+    (event?: MouseEvent<HTMLButtonElement>) => {
+      if (event?.metaKey || event?.ctrlKey) {
+        openUrlInSplitPane('/workspaces', appNavigation, appRuntime);
+        return;
+      }
+      void navigate({ to: '/workspaces' });
+    },
+    [appNavigation, appRuntime, navigate]
+  );
 
   // Open project/PR pages in the focused split pane when one is selected,
   // otherwise navigate the document as usual.
   const handleProjectClick = useCallback(
-    (projectId: string) => {
+    (projectId: string, event?: MouseEvent<HTMLButtonElement>) => {
+      if (event?.metaKey || event?.ctrlKey) {
+        openUrlInSplitPane(
+          `/projects/${encodeURIComponent(projectId)}`,
+          appNavigation,
+          appRuntime
+        );
+        return;
+      }
       openDestinationForActivePane(
         { kind: 'project', projectId },
         appNavigation,
@@ -250,15 +275,22 @@ export function SharedAppLayout() {
     [appNavigation, appRuntime]
   );
 
-  const handlePullRequestsClick = useCallback(() => {
-    openDestinationForActivePane(
-      { kind: 'pull-requests' },
-      appNavigation,
-      appRuntime,
-      () =>
-        void navigate({ to: '/pull-requests', search: { prUrl: undefined } })
-    );
-  }, [appNavigation, appRuntime, navigate]);
+  const handlePullRequestsClick = useCallback(
+    (event?: MouseEvent<HTMLButtonElement>) => {
+      if (event?.metaKey || event?.ctrlKey) {
+        openUrlInSplitPane('/pull-requests', appNavigation, appRuntime);
+        return;
+      }
+      openDestinationForActivePane(
+        { kind: 'pull-requests' },
+        appNavigation,
+        appRuntime,
+        () =>
+          void navigate({ to: '/pull-requests', search: { prUrl: undefined } })
+      );
+    },
+    [appNavigation, appRuntime, navigate]
+  );
 
   const handleProjectsDragEnd = useCallback(
     async ({ source, destination }: DropResult) => {

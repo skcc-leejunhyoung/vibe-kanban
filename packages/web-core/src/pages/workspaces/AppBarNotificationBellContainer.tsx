@@ -1,3 +1,4 @@
+import type { MouseEvent } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { BellIcon } from '@phosphor-icons/react';
 import { cn } from '@vibe/ui/lib/cn';
@@ -5,7 +6,10 @@ import { Tooltip } from '@vibe/ui/components/Tooltip';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
-import { openDestinationForActivePane } from '@/shared/lib/openInSplitPane';
+import {
+  openDestinationForActivePane,
+  openUrlInSplitPane,
+} from '@/shared/lib/openInSplitPane';
 
 export function AppBarNotificationBellContainer() {
   const navigate = useNavigate();
@@ -15,7 +19,11 @@ export function AppBarNotificationBellContainer() {
 
   if (!enabled) return null;
 
-  const handleClick = () => {
+  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
+    if (event.metaKey || event.ctrlKey) {
+      openUrlInSplitPane('/notifications', appNavigation, appRuntime);
+      return;
+    }
     // Open in the focused split pane when one is selected, else navigate.
     openDestinationForActivePane(
       { kind: 'notifications' },
