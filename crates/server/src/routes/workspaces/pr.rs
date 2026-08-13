@@ -1261,6 +1261,48 @@ async fn resolve_pr_by_url(url: &str) -> Result<Result<PullRequestDetail, PrErro
     }
 }
 
+fn normalized_repo_key(url: &str) -> String {
+    let mut normalized = if let Ok(url) = url::Url::parse(url.trim()) {
+        format!(
+            "{}/{}",
+            url.host_str().unwrap_or_default().to_ascii_lowercase(),
+            url.path().trim_matches('/')
+        )
+    } else if let Some((host, path)) = url.trim().split_once(':') {
+        format!(
+            "{}/{}",
+            host.rsplit('@').next().unwrap_or(host).to_ascii_lowercase(),
+            path.trim_matches('/')
+        )
+    } else {
+        url.trim_matches('/').to_string()
+    };
+    if let Some(path) = normalized.strip_prefix("ssh.dev.azure.com/v3/") {
+        let mut parts = path.split('/');
+        if let (Some(org), Some(project), Some(repo)) = (parts.next(), parts.next(), parts.next()) {
+            normalized = format!("dev.azure.com/{org}/{project}/_git/{repo}");
+        }
+    } else if let Some(path) = normalized.strip_prefix("vs-ssh.visualstudio.com/v3/") {
+        let mut parts = path.split('/');
+        if let (Some(org), Some(project), Some(repo)) = (parts.next(), parts.next(), parts.next()) {
+            normalized = format!("{org}.visualstudio.com/{project}/_git/{repo}");
+        }
+    }
+    normalized
+        .strip_suffix(".git")
+        .unwrap_or(&normalized)
+        .to_ascii_lowercase()
+}
+
+fn pr_repo_key(url: &str) -> Option<String> {
+    let normalized = normalized_repo_key(url);
+    ["/pull/", "/pullrequest/"].into_iter().find_map(|marker| {
+        normalized
+            .rsplit_once(marker)
+            .map(|(repo, _)| repo.to_string())
+    })
+}
+
 pub async fn attach_existing_pr(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
@@ -1269,11 +1311,28 @@ pub async fn attach_existing_pr(
     let pool = &deployment.db().pool;
     let pr_info = match request.pr_url.as_deref() {
         Some(url) => {
-            WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+            let workspace_repo =
+                WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+                    .await?
+                    .ok_or(RepoError::NotFound)?;
+            let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
                 .await?
                 .ok_or(RepoError::NotFound)?;
+            let remote = deployment
+                .git()
+                .resolve_remote_for_branch(&repo.path, &workspace_repo.target_branch)?;
             match resolve_pr_by_url(url).await? {
-                Ok(pr) => Some(pr),
+                Ok(pr)
+                    if pr_repo_key(&pr.url).as_deref()
+                        == Some(normalized_repo_key(&remote.url).as_str()) =>
+                {
+                    Some(pr)
+                }
+                Ok(_) => {
+                    return Err(ApiError::BadRequest(
+                        "Pull request does not belong to this repository".to_string(),
+                    ));
+                }
                 Err(error) => return Ok(ResponseJson(ApiResponse::error_with_data(error))),
             }
         }
@@ -1850,9 +1909,34 @@ mod tests {
     use super::{
         PR_GENERATE_FINISHED_JOB_TTL, PR_GENERATE_RUNNING_JOB_TTL, PrDescriptionGenerationJob,
         PrDescriptionGenerationStatus, PrDraft, PrGenerationAdmissionError, PrGenerationScheduler,
-        build_pr_generation_prompt, parse_pr_description, prune_pr_description_generation_jobs,
-        save_pr_draft,
+        build_pr_generation_prompt, normalized_repo_key, parse_pr_description, pr_repo_key,
+        prune_pr_description_generation_jobs, save_pr_draft,
     };
+
+    #[test]
+    fn pr_urls_match_https_and_ssh_repository_remotes() {
+        assert_eq!(
+            pr_repo_key("https://github.com/Acme/Widgets/pull/42").as_deref(),
+            Some(normalized_repo_key("git@github.com:acme/widgets.git").as_str())
+        );
+        assert_eq!(
+            pr_repo_key("https://dev.azure.com/acme/project/_git/widgets/pullrequest/42")
+                .as_deref(),
+            Some(normalized_repo_key("git@ssh.dev.azure.com:v3/acme/project/widgets").as_str())
+        );
+        assert_eq!(
+            pr_repo_key("https://acme.visualstudio.com/project/_git/widgets/pullrequest/42")
+                .as_deref(),
+            Some(
+                normalized_repo_key("acme@vs-ssh.visualstudio.com:v3/acme/project/widgets")
+                    .as_str()
+            )
+        );
+        assert_ne!(
+            pr_repo_key("https://github.com/acme/other/pull/42").as_deref(),
+            Some(normalized_repo_key("https://github.com/acme/widgets").as_str())
+        );
+    }
 
     #[test]
     fn pr_generation_scheduler_allows_only_one_job_per_workspace() {
