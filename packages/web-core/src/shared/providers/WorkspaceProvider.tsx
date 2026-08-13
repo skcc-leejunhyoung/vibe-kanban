@@ -89,18 +89,19 @@ function WorkspaceProviderContent({
     isLoading: isLoadingList,
   } = lists;
 
-  const { data: workspace, isLoading: isLoadingWorkspace } = useWorkspaceRecord(
-    workspaceId,
-    {
-      enabled: !!workspaceId && !isCreateMode,
-      // The list stream usually already has this workspace's row; serving it
-      // as placeholder paints the page instantly instead of a full-pane
-      // spinner while the record query fetches.
-      placeholderData: workspaceId
-        ? workspaceRecordsById[getHostWorkspaceKey(workspaceId, hostId)]
-        : undefined,
-    }
-  );
+  const {
+    data: workspace,
+    isLoading: isLoadingWorkspace,
+    isError: isWorkspaceLoadError,
+  } = useWorkspaceRecord(workspaceId, {
+    enabled: !!workspaceId && !isCreateMode,
+    // The list stream usually already has this workspace's row; serving it
+    // as placeholder paints the page instantly instead of a full-pane
+    // spinner while the record query fetches.
+    placeholderData: workspaceId
+      ? workspaceRecordsById[getHostWorkspaceKey(workspaceId, hostId)]
+      : undefined,
+  });
 
   const {
     sessions,
@@ -315,6 +316,7 @@ function WorkspaceProviderContent({
       archivedWorkspaces,
       isWorkspacesListLoading: isLoadingList,
       isLoading,
+      isWorkspaceLoadError,
       isCreateMode,
       reloadWorkspace,
       selectWorkspace,
@@ -337,6 +339,7 @@ function WorkspaceProviderContent({
       archivedWorkspaces,
       isLoadingList,
       isLoading,
+      isWorkspaceLoadError,
       isCreateMode,
       reloadWorkspace,
       selectWorkspace,

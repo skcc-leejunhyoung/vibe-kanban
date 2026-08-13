@@ -67,6 +67,7 @@ export const WorkspaceDetail = forwardRef<
     workspaceId,
     workspace: selectedWorkspace,
     isLoading,
+    isWorkspaceLoadError,
     isCreateMode,
     reloadWorkspace,
     selectedSession,
@@ -222,7 +223,12 @@ export const WorkspaceDetail = forwardRef<
 
   // A transient fetch failure would otherwise leave the pane blank with no
   // way to recover short of switching workspaces.
-  if (!isCreateMode && workspaceId && !isLoading && !selectedWorkspace) {
+  if (
+    !isCreateMode &&
+    workspaceId &&
+    isWorkspaceLoadError &&
+    !selectedWorkspace
+  ) {
     return (
       <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 bg-primary px-double text-center">
         <p className="text-sm text-low">

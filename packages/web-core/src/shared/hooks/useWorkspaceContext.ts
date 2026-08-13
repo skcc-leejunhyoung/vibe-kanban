@@ -35,6 +35,7 @@ export interface WorkspaceContextValue {
   archivedWorkspaces: SidebarWorkspace[];
   isWorkspacesListLoading: boolean;
   isLoading: boolean;
+  isWorkspaceLoadError: boolean;
   isCreateMode: boolean;
   /** Refetch the workspace record/sessions/repos after a failed load. */
   reloadWorkspace: () => void;
