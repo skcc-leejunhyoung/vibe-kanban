@@ -16,6 +16,9 @@ vi.stubGlobal('localStorage', {
 const {
   getAdjacentWorkspacePaneId,
   getActivePaneWorkspace,
+  layoutAfterClose,
+  layoutAfterSplit,
+  sameDestination,
   useWorkspacePanesStore,
 } = await import('./useWorkspacePanesStore');
 
@@ -40,29 +43,43 @@ function reset() {
 
 beforeEach(reset);
 
-describe('setPaneCount', () => {
-  it('adds empty secondary panes up to the requested total', () => {
-    store.getState().setPaneCount(3);
+describe('ensurePane / setPaneCount', () => {
+  it('creates a single empty pane on boot', () => {
+    store.getState().ensurePane();
     expect(store.getState().panes).toEqual([
       { id: 'pane-1', destination: null },
-      { id: 'pane-2', destination: null },
     ]);
+    expect(store.getState().activePaneId).toBe('pane-1');
+    expect(store.getState().layout['pane-1']).toBe(100);
   });
 
-  it('clamps to maxPanes and trims from the end', () => {
-    store.getState().setPaneCount(9);
+  it('sets the total pane count, clamped to maxPanes and at least one', () => {
+    store.getState().ensurePane();
+    store.getState().setPaneCount(3);
     expect(store.getState().panes).toHaveLength(3);
 
+    store.getState().setPaneCount(9);
+    expect(store.getState().panes).toHaveLength(4); // maxPanes
+
+    store.getState().setPaneCount(0);
+    expect(store.getState().panes).toHaveLength(1);
+  });
+
+  it('keeps the active pane when still present after trimming', () => {
+    store.getState().ensurePane();
+    store.getState().setPaneCount(3);
     store.getState().setActivePane('pane-3');
     store.getState().setPaneCount(2);
-    expect(store.getState().panes).toHaveLength(1);
-    // The active pane was trimmed → focus falls back to the primary pane.
-    expect(store.getState().activePaneId).toBeNull();
+    expect(store.getState().activePaneId).toBe('pane-2');
   });
 });
 
 describe('openPaneForDestination', () => {
-  it('appends a new pane and activates it', () => {
+  beforeEach(() => {
+    store.getState().ensurePane();
+  });
+
+  it('fills the empty boot pane first', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     expect(store.getState().panes).toEqual([
       { id: 'pane-1', destination: ws('ws-a') },
@@ -70,14 +87,24 @@ describe('openPaneForDestination', () => {
     expect(store.getState().activePaneId).toBe('pane-1');
   });
 
+  it('splits the active pane for a new destination', () => {
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    expect(store.getState().panes).toHaveLength(2);
+    expect(store.getState().activePaneId).toBe('pane-2');
+    // New pane takes half of the reference pane's width.
+    expect(store.getState().layout['pane-1']).toBeCloseTo(50);
+    expect(store.getState().layout['pane-2']).toBeCloseTo(50);
+  });
+
   it('activates an existing pane showing the same workspace', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b', 'host-1'));
-    store.getState().setActivePane(null);
+    store.getState().setActivePane('pane-1');
 
-    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b', 'host-1'));
     expect(store.getState().panes).toHaveLength(2);
-    expect(store.getState().activePaneId).toBe('pane-1');
+    expect(store.getState().activePaneId).toBe('pane-2');
   });
 
   it('dedupes project destinations per project and adopts sub-navigation', () => {
@@ -97,91 +124,122 @@ describe('openPaneForDestination', () => {
     });
   });
 
-  it('fills an empty pane before appending', () => {
-    store.getState().setPaneCount(2);
-    store.getState().openPaneForDestination(ws('ws-a'));
-    expect(store.getState().panes).toEqual([
-      { id: 'pane-1', destination: ws('ws-a') },
-    ]);
-  });
-
   it('replaces the pane after the active one when the grid is full', () => {
-    store.getState().openPaneForDestination(ws('ws-a'));
-    store.getState().openPaneForDestination(ws('ws-b'));
-    store.getState().openPaneForDestination(ws('ws-c'));
-    expect(store.getState().panes).toHaveLength(3);
+    for (const id of ['ws-a', 'ws-b', 'ws-c', 'ws-d']) {
+      store.getState().openPaneForDestination(ws(id));
+    }
+    expect(store.getState().panes).toHaveLength(4);
 
     store.getState().setActivePane('pane-1');
-    store.getState().openPaneForDestination(ws('ws-d'));
-    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
-      ws('ws-a'),
-      ws('ws-d'),
-      ws('ws-c'),
-    ]);
+    store.getState().openPaneForDestination(ws('ws-e'));
+    expect(store.getState().panes).toHaveLength(4);
+    expect(
+      store.getState().panes.map((pane) => pane.destination?.workspaceId)
+    ).toEqual(['ws-a', 'ws-e', 'ws-c', 'ws-d']);
     expect(store.getState().activePaneId).toBe('pane-2');
   });
+});
 
-  it('treats the same workspace on different hosts as different panes', () => {
+describe('adoptRouteDestination', () => {
+  beforeEach(() => {
+    store.getState().ensurePane();
+  });
+
+  it('replaces the active pane content without changing the structure', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
-    store.getState().openPaneForDestination(ws('ws-a', 'host-1'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().adoptRouteDestination(ws('ws-c'));
+    expect(store.getState().panes).toHaveLength(2);
+    expect(store.getState().panes[1].destination).toEqual(ws('ws-c'));
+  });
+
+  it('activates the pane already showing the destination', () => {
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().adoptRouteDestination(ws('ws-a'));
+    expect(store.getState().activePaneId).toBe('pane-1');
     expect(store.getState().panes).toHaveLength(2);
   });
 });
 
-describe('closePane / setMaxPanes / syncUser', () => {
-  it('closing the active pane focuses the primary pane', () => {
-    store.getState().openPaneForDestination(ws('ws-a'));
-    store.getState().closePane('pane-1');
-    expect(store.getState().panes).toEqual([]);
-    expect(store.getState().activePaneId).toBeNull();
+describe('closePane', () => {
+  beforeEach(() => {
+    store.getState().ensurePane();
   });
 
-  it('lowering maxPanes trims overflowing panes', () => {
+  it('clears the last pane instead of removing it', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
-    store.getState().openPaneForDestination(ws('ws-b'));
-    store.getState().setMaxPanes(2);
-    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
-      ws('ws-a'),
+    store.getState().closePane('pane-1');
+    expect(store.getState().panes).toEqual([
+      { id: 'pane-1', destination: null },
     ]);
   });
 
-  it('switching users resets panes but keeps maxPanes', () => {
-    store.getState().setMaxPanes(6);
+  it('gives the closed width to the left neighbour and refocuses it', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
-    store.getState().syncUser('user-1');
-    expect(store.getState().panes).toEqual([]);
-    expect(store.getState().maxPanes).toBe(6);
-
-    // Same user again is a no-op.
     store.getState().openPaneForDestination(ws('ws-b'));
-    store.getState().syncUser('user-1');
-    expect(store.getState().panes).toHaveLength(1);
+    store.getState().openPaneForDestination(ws('ws-c'));
+    // pane-1: 50, pane-2: 25, pane-3: 25
+    store.getState().closePane('pane-3');
+    expect(store.getState().panes.map((pane) => pane.id)).toEqual([
+      'pane-1',
+      'pane-2',
+    ]);
+    expect(store.getState().layout['pane-2']).toBeCloseTo(50);
+    expect(store.getState().activePaneId).toBe('pane-2');
   });
 });
 
-describe('active pane helpers', () => {
-  it('cycles through primary and secondary panes in order', () => {
-    store.getState().openPaneForDestination(ws('ws-a'));
-    store.getState().openPaneForDestination(ws('ws-b'));
-    const panes = store.getState().panes;
+describe('layout math', () => {
+  const panes = (...ids: string[]) =>
+    ids.map((id) => ({ id, destination: null }));
 
-    expect(getAdjacentWorkspacePaneId(panes, null, 'next')).toBe('pane-1');
-    expect(getAdjacentWorkspacePaneId(panes, 'pane-2', 'next')).toBeNull();
-    expect(getAdjacentWorkspacePaneId(panes, null, 'previous')).toBe('pane-2');
+  it('layoutAfterSplit halves the reference pane only', () => {
+    const layout = layoutAfterSplit(
+      panes('a', 'b', 'new'),
+      { a: 60, b: 40 },
+      'a',
+      'new'
+    );
+    expect(layout.a).toBeCloseTo(30);
+    expect(layout.new).toBeCloseTo(30);
+    expect(layout.b).toBeCloseTo(40);
   });
 
-  it('cycleActivePane bumps focusSerial for keyboard focus handoff', () => {
-    store.getState().cycleActivePane('next');
-    expect(store.getState().focusSerial).toBe(0); // no panes → no-op
+  it('layoutAfterClose returns the width to the left neighbour', () => {
+    const layout = layoutAfterClose(
+      panes('a', 'b', 'c'),
+      {
+        a: 20,
+        b: 30,
+        c: 50,
+      },
+      'c'
+    );
+    expect(layout.a).toBeCloseTo(20);
+    expect(layout.b).toBeCloseTo(80);
+  });
+});
 
+describe('helpers', () => {
+  it('cycles across panes and reports focus serial', () => {
+    store.getState().ensurePane();
     store.getState().openPaneForDestination(ws('ws-a'));
-    store.getState().setActivePane(null);
+    store.getState().openPaneForDestination(ws('ws-b'));
+    const allPanes = store.getState().panes;
+    expect(getAdjacentWorkspacePaneId(allPanes, 'pane-2', 'next')).toBe(
+      'pane-1'
+    );
+    expect(getAdjacentWorkspacePaneId(allPanes, 'pane-1', 'previous')).toBe(
+      'pane-2'
+    );
+
     store.getState().cycleActivePane('next');
-    expect(store.getState().activePaneId).toBe('pane-1');
     expect(store.getState().focusSerial).toBe(1);
   });
 
   it('getActivePaneWorkspace only reports workspace destinations', () => {
+    store.getState().ensurePane();
     store.getState().openPaneForDestination(ws('ws-a', 'host-1'));
     expect(getActivePaneWorkspace(store.getState())).toEqual({
       workspaceId: 'ws-a',
@@ -190,8 +248,21 @@ describe('active pane helpers', () => {
 
     store.getState().openPaneForDestination({ kind: 'notifications' });
     expect(getActivePaneWorkspace(store.getState())).toBeNull();
+  });
 
-    store.getState().setActivePane(null);
-    expect(getActivePaneWorkspace(store.getState())).toBeNull();
+  it('sameDestination folds hostId null/undefined', () => {
+    expect(
+      sameDestination(
+        { kind: 'workspace', workspaceId: 'w' },
+        { kind: 'workspace', workspaceId: 'w', hostId: null }
+      )
+    ).toBe(true);
+    expect(
+      sameDestination(
+        { kind: 'workspace', workspaceId: 'w', hostId: 'h' },
+        { kind: 'workspace', workspaceId: 'w' }
+      )
+    ).toBe(false);
+    expect(sameDestination({ kind: 'pull-requests' }, null)).toBe(false);
   });
 });

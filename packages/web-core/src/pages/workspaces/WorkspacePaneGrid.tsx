@@ -9,12 +9,10 @@ import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
 import { XIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/shared/lib/utils';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
-import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { WorkspacePaneScope } from '@/shared/components/workspace-panes/WorkspacePaneScope';
+import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidthContext';
 import {
-  PRIMARY_PANE_ID,
   useWorkspacePanesStore,
   type WorkspacePane,
   type WorkspacePaneDestination,
@@ -222,7 +220,7 @@ function EmptyPane({
   );
 }
 
-function SecondaryWorkspacePane({
+function WorkspacePaneView({
   pane,
   active,
   showActiveRing,
@@ -262,10 +260,12 @@ function SecondaryWorkspacePane({
               onClose={() => closePane(pane.id)}
             />
             <div className="min-h-0 flex-1">
-              <PaneOutlet
-                destination={pane.destination}
-                isPaneActive={active}
-              />
+              <PaneWidthProvider>
+                <PaneOutlet
+                  destination={pane.destination}
+                  isPaneActive={active}
+                />
+              </PaneWidthProvider>
             </div>
           </div>
         </WorkspacePaneScope>
@@ -277,67 +277,53 @@ function SecondaryWorkspacePane({
 }
 
 /**
- * In-document split grid for the workspaces page: the routed primary view
- * plus zero or more panes (workspace, kanban, pull requests, notifications)
- * side by side. With no secondary panes (or on unsupported surfaces) it
- * renders the primary view untouched.
+ * The in-document pane grid: every pane (workspace, kanban, pull requests,
+ * notifications) is a store-owned equal — there is no route-bound primary.
+ * Structural changes get their layout from the store (VS Code split
+ * semantics); onLayoutChange persists user drags.
  */
 // ponytail: single-row split only; add row wrapping if >4 panes sees real use.
-export function WorkspacePaneGrid({ primary }: { primary: ReactNode }) {
-  const appRuntime = useAppRuntime();
-  const isMobile = useIsMobile();
+export function WorkspacePaneGrid() {
   const panes = useWorkspacePanesStore((s) => s.panes);
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
   const storedLayout = useWorkspacePanesStore((s) => s.layout);
   const setLayout = useWorkspacePanesStore((s) => s.setLayout);
-  const setActivePane = useWorkspacePanesStore((s) => s.setActivePane);
 
   const handleLayoutChange = useCallback(
     (layout: Layout) => setLayout(layout),
     [setLayout]
   );
 
-  if (appRuntime !== 'local' || isMobile || panes.length === 0) {
-    return <>{primary}</>;
-  }
+  if (panes.length === 0) return null;
 
-  const slotIds = [PRIMARY_PANE_ID, ...panes.map((pane) => pane.id)];
+  const fallbackSize = 100 / panes.length;
   const defaultLayout: Layout = Object.fromEntries(
-    slotIds.map((id) => [id, storedLayout[id] ?? 100 / slotIds.length])
+    panes.map((pane) => [pane.id, storedLayout[pane.id] ?? fallbackSize])
   );
+  const showActiveRing = panes.length > 1;
 
   return (
     <Group
+      // Remount on structural change so the store-computed layout applies
+      // exactly instead of the library redistributing every pane.
+      key={panes.map((pane) => pane.id).join(',')}
       orientation="horizontal"
       className="h-full min-h-0"
       defaultLayout={defaultLayout}
       onLayoutChange={handleLayoutChange}
     >
-      <Panel
-        id={PRIMARY_PANE_ID}
-        minSize={15}
-        className="min-w-0 h-full overflow-hidden"
-      >
-        <PaneChrome
-          active={activePaneId === null}
-          showActiveRing
-          onActivate={() => setActivePane(null)}
-        >
-          {primary}
-        </PaneChrome>
-      </Panel>
-      {panes.map((pane) => (
+      {panes.map((pane, index) => (
         <Fragment key={pane.id}>
-          {paneSeparator}
+          {index > 0 && paneSeparator}
           <Panel
             id={pane.id}
-            minSize={15}
+            minSize={10}
             className="min-w-0 h-full overflow-hidden"
           >
-            <SecondaryWorkspacePane
+            <WorkspacePaneView
               pane={pane}
               active={activePaneId === pane.id}
-              showActiveRing
+              showActiveRing={showActiveRing}
             />
           </Panel>
         </Fragment>

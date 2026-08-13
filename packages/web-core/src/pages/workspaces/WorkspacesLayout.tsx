@@ -34,13 +34,11 @@ import { PreviewBrowserContainer } from './PreviewBrowserContainer';
 import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDialog';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useWorkspacePanelState } from '@/shared/stores/useUiPreferencesStore';
-import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { Scope } from '@/shared/keyboard/registry';
 import { useUnfocusedChatKeys } from './workspaceChatKeyboard';
 import { WorkspaceDetail, type WorkspaceDetailHandle } from './WorkspaceDetail';
-import { WorkspacePaneGrid } from './WorkspacePaneGrid';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
@@ -198,10 +196,6 @@ export function WorkspacesLayout({
     WorkspacesGuideDialog.show().finally(() => WorkspacesGuideDialog.hide());
   }, [configLoading, config, updateAndSaveConfig]);
 
-  const secondaryPaneCount = useWorkspacePanesStore((s) => s.panes.length);
-  const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
-  const isPrimaryPaneActive = secondaryPaneCount === 0 || activePaneId === null;
-
   // ── Mobile layout ──────────────────────────────────────────────────
   // Uses `hidden` CSS class (NOT conditional rendering) to preserve
   // WebSocket connections and scroll positions across tab switches.
@@ -332,9 +326,10 @@ export function WorkspacesLayout({
     );
   }
 
-  const primaryDetail = (
-    <WorkspaceDetail ref={detailRef} isPaneActive={isPrimaryPaneActive} />
-  );
+  // Desktop here serves only the flows without the pane grid: local create
+  // mode and the remote web (including detailUnavailable). Normal desktop
+  // local navigation renders WorkspacePanesScreen from the app shell instead.
+  const primaryDetail = <WorkspaceDetail ref={detailRef} />;
 
   const primaryContent = detailUnavailable ? (
     detailUnavailable
@@ -357,9 +352,7 @@ export function WorkspacesLayout({
         </div>
       )}
 
-      <div className="flex-1 min-w-0 h-full">
-        <WorkspacePaneGrid primary={primaryContent} />
-      </div>
+      <div className="flex-1 min-w-0 h-full">{primaryContent}</div>
     </div>
   );
 }

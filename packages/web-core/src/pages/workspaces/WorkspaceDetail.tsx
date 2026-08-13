@@ -28,6 +28,7 @@ import {
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { Scope } from '@/shared/keyboard/registry';
+import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useUnfocusedChatKeys } from './workspaceChatKeyboard';
 
 export interface WorkspaceDetailHandle {
@@ -138,6 +139,21 @@ export const WorkspaceDetail = forwardRef<
     }
   }, [isLeftMainPanelVisible, rightMainPanelMode, setLeftMainPanelVisible]);
 
+  // Width-based adaptation: in a narrow pane the chat and the secondary panel
+  // stack (one at a time, toggled via the existing panel mode), and the right
+  // sidebar yields entirely. Falls back to viewport width outside the grid.
+  const isNarrow = usePaneNarrowerThan(640);
+  const isCompact = usePaneNarrowerThan(880);
+  const showChatPanel = isCreateMode
+    ? true
+    : isNarrow
+      ? rightMainPanelMode === null
+      : isLeftMainPanelVisible;
+  const showRightMainPanel =
+    !isCreateMode &&
+    rightMainPanelMode !== null &&
+    !(isNarrow && showChatPanel);
+
   const [rightMainPanelSize, setRightMainPanelSize] = usePaneSize(
     PERSIST_KEYS.rightMainPanel,
     50
@@ -181,7 +197,7 @@ export const WorkspaceDetail = forwardRef<
             defaultLayout={defaultLayout}
             onLayoutChange={onLayoutChange}
           >
-            {isLeftMainPanelVisible && (
+            {showChatPanel && (
               <Panel
                 id="left-main"
                 minSize="20%"
@@ -219,14 +235,14 @@ export const WorkspaceDetail = forwardRef<
               </Panel>
             )}
 
-            {isLeftMainPanelVisible && rightMainPanelMode !== null && (
+            {showChatPanel && showRightMainPanel && (
               <Separator
                 id="main-separator"
                 className="w-1 bg-transparent hover:bg-brand/50 transition-colors cursor-col-resize"
               />
             )}
 
-            {rightMainPanelMode !== null && (
+            {showRightMainPanel && (
               <Panel
                 id="right-main"
                 minSize="20%"
@@ -259,17 +275,21 @@ export const WorkspaceDetail = forwardRef<
 
           {/* Right-sidebar visibility is a global preference, so in a split
               only the active pane renders it — toggling it from the navbar
-              affects the selected pane rather than every pane at once. */}
-          {isRightSidebarVisible && isPaneActive && !isCreateMode && (
-            <div className="w-[300px] shrink-0 h-full overflow-hidden">
-              <RightSidebar
-                rightMainPanelMode={rightMainPanelMode}
-                selectedWorkspace={selectedWorkspace}
-                repos={repos}
-                onOpenCommit={handleOpenCommit}
-              />
-            </div>
-          )}
+              affects the selected pane rather than every pane at once. Narrow
+              panes drop it entirely regardless of the preference. */}
+          {isRightSidebarVisible &&
+            isPaneActive &&
+            !isCreateMode &&
+            !isCompact && (
+              <div className="w-[300px] shrink-0 h-full overflow-hidden">
+                <RightSidebar
+                  rightMainPanelMode={rightMainPanelMode}
+                  selectedWorkspace={selectedWorkspace}
+                  repos={repos}
+                  onOpenCommit={handleOpenCommit}
+                />
+              </div>
+            )}
         </div>
       </ChangesViewProvider>
     </ReviewProvider>

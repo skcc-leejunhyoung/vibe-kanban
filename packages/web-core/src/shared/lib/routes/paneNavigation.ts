@@ -17,6 +17,50 @@ export interface PaneNavigationController {
 }
 
 /**
+ * Navigate the document router to a pane destination. Used to mirror the
+ * active pane into the URL (replace) and to fall back to full-page navigation
+ * on surfaces without the grid.
+ */
+export function navigateDocumentTo(
+  destination: WorkspacePaneDestination,
+  appNavigation: AppNavigation,
+  transition?: NavigationTransition
+): void {
+  switch (destination.kind) {
+    case 'workspace':
+      appNavigation.goToWorkspace(destination.workspaceId, {
+        ...transition,
+        hostId: destination.hostId ?? null,
+      });
+      return;
+    case 'project':
+      appNavigation.goToProject(destination.projectId, transition);
+      return;
+    case 'project-issue':
+      appNavigation.goToProjectIssue(
+        destination.projectId,
+        destination.issueId,
+        transition
+      );
+      return;
+    case 'project-issue-workspace':
+      appNavigation.goToProjectIssueWorkspace(
+        destination.projectId,
+        destination.issueId,
+        destination.workspaceId,
+        { ...transition, hostId: destination.hostId ?? null }
+      );
+      return;
+    case 'pull-requests':
+      appNavigation.goToPullRequests(undefined, transition);
+      return;
+    case 'notifications':
+      appNavigation.goToNotifications(transition);
+      return;
+  }
+}
+
+/**
  * AppNavigation implementation for a split pane. Destinations the pane can
  * render itself (workspace, kanban, pull requests, notifications) stay inside
  * the pane; everything else delegates to the document-level navigation.

@@ -8,29 +8,25 @@ import {
 } from '@/shared/hooks/useCurrentAppDestination';
 import { isMobileViewport, useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
-  isWorkspacesDestination,
   type AppDestination,
   type AppNavigation,
 } from '@/shared/lib/routes/appNavigation';
 import {
   getActivePaneWorkspace,
+  isPaneGridDestination,
   isPaneRenderableDestination,
   useWorkspacePanesStore,
   type WorkspacePaneDestination,
 } from '@/shared/stores/useWorkspacePanesStore';
 
 function paneGridAvailable(appRuntime: AppRuntime): boolean {
-  return (
-    appRuntime === 'local' &&
-    !isMobileViewport() &&
-    useWorkspacePanesStore.getState().maxPanes >= 2
-  );
+  return appRuntime === 'local' && !isMobileViewport();
 }
 
-/** Make sure the pane grid (the workspaces page) is on screen. */
+/** Make sure the pane grid is on screen. */
 function ensurePaneGridVisible(appNavigation: AppNavigation): void {
   const current = appNavigation.resolveFromPath(window.location.pathname);
-  if (!isWorkspacesDestination(current)) {
+  if (!isPaneGridDestination(current)) {
     appNavigation.goToWorkspaces();
   }
 }
@@ -59,7 +55,7 @@ function isActivePaneTargeted(
 ): boolean {
   if (useWorkspacePanesStore.getState().activePaneId === null) return false;
   if (!paneGridAvailable(appRuntime)) return false;
-  return isWorkspacesDestination(
+  return isPaneGridDestination(
     appNavigation.resolveFromPath(window.location.pathname)
   );
 }
@@ -107,25 +103,33 @@ export function getChromeTargetWorkspace(
  * destination document chrome should reflect and act on. Null → chrome
  * behaves as without splits (routed primary).
  */
-export function useChromeTargetDestination(): WorkspacePaneDestination | null {
+/**
+ * True while the pane grid is the visible surface and this hook runs in
+ * document scope — i.e. chrome and the workspace list should target the
+ * active pane (even one showing the empty picker).
+ */
+export function useIsPaneGridTargeted(): boolean {
   const appRuntime = useAppRuntime();
   const isMobile = useIsMobile();
   const hasDestinationOverride = useHasAppDestinationOverride();
   const destination = useCurrentAppDestination();
-  const maxPanes = useWorkspacePanesStore((s) => s.maxPanes);
+  const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
+
+  return (
+    !hasDestinationOverride &&
+    appRuntime === 'local' &&
+    !isMobile &&
+    activePaneId !== null &&
+    isPaneGridDestination(destination)
+  );
+}
+
+export function useChromeTargetDestination(): WorkspacePaneDestination | null {
+  const targeted = useIsPaneGridTargeted();
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
   const panes = useWorkspacePanesStore((s) => s.panes);
 
-  if (
-    hasDestinationOverride ||
-    appRuntime !== 'local' ||
-    isMobile ||
-    maxPanes < 2 ||
-    activePaneId === null ||
-    !isWorkspacesDestination(destination)
-  ) {
-    return null;
-  }
+  if (!targeted) return null;
   return panes.find((pane) => pane.id === activePaneId)?.destination ?? null;
 }
 

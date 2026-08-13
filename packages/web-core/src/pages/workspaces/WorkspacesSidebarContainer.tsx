@@ -66,7 +66,10 @@ import {
 } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { getCycledWorkspaceKey } from './workspaceCycle';
-import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
+import {
+  useIsPaneGridTargeted,
+  useOpenInSplitPane,
+} from '@/shared/lib/openInSplitPane';
 import {
   useActivePaneWorkspace,
   useWorkspacePanesStore,
@@ -138,9 +141,13 @@ export function WorkspacesSidebarContainer({
   const hostPrimaryColors = useHostPrimaryColors(workspaceHostIds);
   const { hostId: routeHostId } = useParams({ strict: false });
   const queryClient = useQueryClient();
-  // While a secondary split pane is focused, the list mirrors and targets that
-  // pane's workspace instead of the routed (primary) one.
-  const activePaneWorkspace = useActivePaneWorkspace();
+  // While the pane grid is on screen, the list mirrors and targets the
+  // active pane's workspace instead of the routed one.
+  const isPaneGridTargeted = useIsPaneGridTargeted();
+  const rawActivePaneWorkspace = useActivePaneWorkspace();
+  const activePaneWorkspace = isPaneGridTargeted
+    ? rawActivePaneWorkspace
+    : null;
   const effectiveSelectedWorkspaceId =
     activePaneWorkspace?.workspaceId ?? selectedWorkspaceId;
   const effectiveSelectedHostId = activePaneWorkspace
@@ -405,10 +412,9 @@ export function WorkspacesSidebarContainer({
         openInSplitPane(path);
         return;
       }
-      // A focused secondary pane receives list selections instead of the
-      // routed primary view.
+      // On the pane grid, list selections go to the active pane.
       const panesState = useWorkspacePanesStore.getState();
-      if (panesState.activePaneId !== null) {
+      if (isPaneGridTargeted && panesState.activePaneId !== null) {
         panesState.setPaneDestination(panesState.activePaneId, {
           kind: 'workspace',
           workspaceId: id,
@@ -439,6 +445,7 @@ export function WorkspacesSidebarContainer({
     [
       onSelectWorkspaceOverride,
       openInSplitPane,
+      isPaneGridTargeted,
       selectedWorkspaceId,
       routeHostId,
       selectWorkspace,

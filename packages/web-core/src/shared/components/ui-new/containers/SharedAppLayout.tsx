@@ -50,6 +50,8 @@ import {
   type Project as RemoteProject,
 } from 'shared/remote-types';
 import { AppBarNotificationBellContainer } from '@/pages/workspaces/AppBarNotificationBellContainer';
+import { WorkspacePanesScreen } from '@/pages/workspaces/WorkspacePanesScreen';
+import { isPaneGridDestination } from '@/shared/stores/useWorkspacePanesStore';
 import { WorkspaceSidebarHoverPreview } from './WorkspaceSidebarHoverPreview';
 import { useActions } from '@/shared/hooks/useActions';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
@@ -384,7 +386,11 @@ export function SharedAppLayout() {
                 onUpdateClick={restartForUpdate ?? undefined}
               />
             )}
-            {/* Desktop content. */}
+            {/* Desktop content. On grid destinations the pane surface is
+                mounted here — above the router outlet — so switching between
+                grid routes (workspace ↔ project ↔ PRs) never remounts the
+                panes. Non-grid routes (create, export, onboarding) fall back
+                to the routed page. */}
             <div className="relative flex min-h-0 min-w-0 flex-col overflow-hidden pb-base">
               <WorkspaceSidebarHoverPreview
                 enabled={isWorkspaceSidebarPreviewEnabled}
@@ -392,7 +398,12 @@ export function SharedAppLayout() {
               />
 
               <div className="min-h-0 flex-1 overflow-hidden">
-                <Outlet />
+                {appRuntime === 'local' &&
+                isPaneGridDestination(currentDestination) ? (
+                  <WorkspacePanesScreen />
+                ) : (
+                  <Outlet />
+                )}
               </div>
             </div>
           </>
