@@ -106,12 +106,6 @@ export function getChromeTargetWorkspace(
 }
 
 /**
- * The active secondary pane's destination while the pane grid is on screen
- * and this hook runs in document scope (no destination override) — i.e. the
- * destination document chrome should reflect and act on. Null → chrome
- * behaves as without splits (routed primary).
- */
-/**
  * True while the pane grid is the visible surface and this hook runs in
  * document scope — i.e. chrome and the workspace list should target the
  * active pane (even one showing the empty picker).
@@ -132,6 +126,11 @@ export function useIsPaneGridTargeted(): boolean {
   );
 }
 
+/**
+ * The active pane's destination while the pane grid is on screen and this
+ * hook runs in document scope — what document chrome should reflect and act
+ * on. Null → chrome behaves as without the grid.
+ */
 export function useChromeTargetDestination(): WorkspacePaneDestination | null {
   const targeted = useIsPaneGridTargeted();
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
