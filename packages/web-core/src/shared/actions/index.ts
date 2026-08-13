@@ -116,7 +116,10 @@ import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
-import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
+import {
+  buildWorkspaceCreateInitialState,
+  persistWorkspaceCreateDraft,
+} from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
@@ -1021,16 +1024,38 @@ export const Actions = {
     shortcut: 'G N',
     requiresTarget: ActionTargetType.NONE,
     execute: async (ctx) => {
+      let hostId: string | null | undefined;
       if (ctx.appRuntime === 'remote') {
         const { selectWorkspaceHost } = await import(
           '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog'
         );
-        const hostId = await selectWorkspaceHost();
+        hostId = await selectWorkspaceHost();
         if (hostId === undefined) return;
-        ctx.appNavigation.goToWorkspacesCreate({ hostId });
+      }
+
+      if (ctx.kanbanProjectId) {
+        const draftId = crypto.randomUUID();
+        const persistedDraftId = await persistWorkspaceCreateDraft(
+          buildWorkspaceCreateInitialState({
+            prompt: null,
+            defaults: { project_id: ctx.kanbanProjectId },
+          }),
+          draftId,
+          ctx.appRuntime,
+          hostId,
+          ctx.userId
+        );
+        if (persistedDraftId) {
+          ctx.appNavigation.goToProjectWorkspaceCreate(
+            ctx.kanbanProjectId,
+            persistedDraftId,
+            { hostId }
+          );
+        }
         return;
       }
-      ctx.appNavigation.goToWorkspacesCreate();
+
+      ctx.appNavigation.goToWorkspacesCreate({ hostId });
     },
   },
 

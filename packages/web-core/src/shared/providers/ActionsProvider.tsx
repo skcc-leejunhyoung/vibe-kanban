@@ -35,6 +35,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
+import { useAuth } from '@/shared/hooks/auth/useAuth';
 
 interface ActionsProviderProps {
   children: ReactNode;
@@ -42,6 +43,7 @@ interface ActionsProviderProps {
 
 export function ActionsProvider({ children }: ActionsProviderProps) {
   const appRuntime = useAppRuntime();
+  const { userId } = useAuth();
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   // Derived from the destination (not router params) so split panes can scope
@@ -231,6 +233,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
   const executorContext = useMemo<ActionExecutorContext>(() => {
     return {
       appRuntime,
+      userId,
       currentHostId: hostId,
       appNavigation,
       queryClient,
@@ -270,6 +273,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
     };
   }, [
     appRuntime,
+    userId,
     hostId,
     queryClient,
     selectWorkspace,

@@ -24,6 +24,7 @@ import {
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { useAppNavigation } from "@/shared/hooks/useAppNavigation";
 import { useAppRuntime } from "@/shared/hooks/useAppRuntime";
+import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
 import {
   buildKanbanIssueComposerKey,
@@ -47,6 +48,7 @@ export function RemoteActionsProvider({
   children,
 }: RemoteActionsProviderProps) {
   const appRuntime = useAppRuntime();
+  const { userId } = useAuth();
   const appNavigation = useAppNavigation();
   const queryClient = useQueryClient();
   const { projectId, hostId } = useParams({ strict: false });
@@ -107,6 +109,7 @@ export function RemoteActionsProvider({
   const executorContext = useMemo<ActionExecutorContext>(
     () => ({
       appRuntime,
+      userId,
       currentHostId: hostId ?? null,
       appNavigation,
       queryClient,
@@ -149,6 +152,7 @@ export function RemoteActionsProvider({
     }),
     [
       appRuntime,
+      userId,
       hostId,
       queryClient,
       openStatusSelection,

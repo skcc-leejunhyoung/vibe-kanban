@@ -13,6 +13,7 @@ import {
 // layer so no network call can fire.
 vi.mock('virtual:executor-schemas', () => ({ default: {} }));
 vi.mock('@/shared/lib/api', () => ({
+  scratchApi: { update: vi.fn() },
   workspacesApi: {
     update: vi.fn(),
     get: vi.fn(),
@@ -762,6 +763,29 @@ describe('remote workspace action scoping', () => {
     expect(runSetupScript).toHaveBeenCalledWith('remote-ws', 'host-2');
     expect(runCleanupScript).toHaveBeenCalledWith('remote-ws', 'host-2');
     expect(runArchiveScript).toHaveBeenCalledWith('remote-ws', 'host-2');
+  });
+});
+
+describe('Actions.NewWorkspace', () => {
+  it('opens workspace creation in the project panel when invoked from a project', async () => {
+    const goToProjectWorkspaceCreate = vi.fn();
+    const { ctx } = makeCtx(
+      {},
+      {
+        appRuntime: 'local',
+        userId: null,
+        kanbanProjectId: 'project-1',
+        appNavigation: { goToProjectWorkspaceCreate } as never,
+      }
+    );
+
+    await Actions.NewWorkspace.execute(ctx);
+
+    expect(goToProjectWorkspaceCreate).toHaveBeenCalledWith(
+      'project-1',
+      expect.any(String),
+      { hostId: undefined }
+    );
   });
 });
 

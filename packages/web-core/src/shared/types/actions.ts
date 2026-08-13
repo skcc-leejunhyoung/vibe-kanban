@@ -70,6 +70,7 @@ export interface NavigationProject {
 // Context provided to action executors (from React hooks)
 export interface ActionExecutorContext {
   appRuntime: AppRuntime;
+  userId: string | null;
   currentHostId: string | null;
   appNavigation: AppNavigation;
   queryClient: QueryClient;
