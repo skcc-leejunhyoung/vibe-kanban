@@ -185,8 +185,21 @@ function paneTitle(
   }
 }
 
-function EmptyPane() {
-  return <WorkspacesSidebarContainer isStandalonePage forceMobile />;
+function EmptyPane({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation('common');
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-primary">
+      <PaneHeaderShell
+        title={t('workspacePanes.emptyPaneTitle', {
+          defaultValue: 'New pane',
+        })}
+        onClose={onClose}
+      />
+      <div className="min-h-0 flex-1">
+        <WorkspacesSidebarContainer isStandalonePage forceMobile />
+      </div>
+    </div>
+  );
 }
 
 function WorkspacePaneView({
@@ -240,7 +253,7 @@ function WorkspacePaneView({
           </div>
         </WorkspacePaneScope>
       ) : (
-        <EmptyPane />
+        <EmptyPane onClose={() => closePane(pane.id)} />
       )}
     </PaneChrome>
   );
