@@ -1398,6 +1398,9 @@ export function KanbanContainer() {
           activeElement === null ||
           activeElement.tagName === 'BODY' ||
           activeElement.tagName === 'HTML',
+        isPaneFocused:
+          activeElement instanceof HTMLElement &&
+          activeElement.hasAttribute('data-workspace-pane'),
         isTextEditing:
           activeElement instanceof HTMLElement &&
           (activeElement.isContentEditable ||

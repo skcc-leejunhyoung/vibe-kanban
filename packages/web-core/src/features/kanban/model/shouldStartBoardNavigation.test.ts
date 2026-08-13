@@ -7,6 +7,7 @@ describe('shouldStartBoardNavigation', () => {
       shouldStartBoardNavigation({
         isBoardFocused: true,
         isDocumentUnfocused: false,
+        isPaneFocused: false,
         isTextEditing: false,
       })
     ).toBe(true);
@@ -17,6 +18,7 @@ describe('shouldStartBoardNavigation', () => {
       shouldStartBoardNavigation({
         isBoardFocused: false,
         isDocumentUnfocused: true,
+        isPaneFocused: false,
         isTextEditing: false,
       })
     ).toBe(true);
@@ -27,6 +29,7 @@ describe('shouldStartBoardNavigation', () => {
       shouldStartBoardNavigation({
         isBoardFocused: false,
         isDocumentUnfocused: false,
+        isPaneFocused: false,
         isTextEditing: false,
       })
     ).toBe(false);
@@ -37,8 +40,20 @@ describe('shouldStartBoardNavigation', () => {
       shouldStartBoardNavigation({
         isBoardFocused: true,
         isDocumentUnfocused: false,
+        isPaneFocused: false,
         isTextEditing: true,
       })
     ).toBe(false);
+  });
+
+  it('starts navigation when keyboard pane switching focused the pane shell', () => {
+    expect(
+      shouldStartBoardNavigation({
+        isBoardFocused: false,
+        isDocumentUnfocused: false,
+        isPaneFocused: true,
+        isTextEditing: false,
+      })
+    ).toBe(true);
   });
 });

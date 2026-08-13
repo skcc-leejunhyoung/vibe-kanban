@@ -71,6 +71,7 @@ function PaneChrome({
     <div
       ref={containerRef}
       tabIndex={-1}
+      data-workspace-pane
       className="relative flex h-full min-h-0 flex-col overflow-hidden outline-none"
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
