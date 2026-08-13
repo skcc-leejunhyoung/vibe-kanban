@@ -234,7 +234,6 @@ describe('layout math', () => {
     const layout = layoutAfterSplit(
       panes('a', 'b', 'new'),
       { a: 60, b: 40 },
-      'a',
       'new'
     );
     expect(layout.a).toBeCloseTo(40);

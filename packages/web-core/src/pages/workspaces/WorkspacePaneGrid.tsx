@@ -185,12 +185,7 @@ function paneTitle(
   }
 }
 
-function EmptyPane({
-  onPick: _onPick,
-}: {
-  onClose: () => void;
-  onPick: (destination: WorkspacePaneDestination) => void;
-}) {
+function EmptyPane() {
   return <WorkspacesSidebarContainer isStandalonePage forceMobile />;
 }
 
@@ -245,7 +240,7 @@ function WorkspacePaneView({
           </div>
         </WorkspacePaneScope>
       ) : (
-        <EmptyPane onClose={() => closePane(pane.id)} onPick={handleNavigate} />
+        <EmptyPane />
       )}
     </PaneChrome>
   );

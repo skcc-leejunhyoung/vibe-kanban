@@ -217,7 +217,6 @@ function normalizedLayout(
 export function layoutAfterSplit(
   panes: WorkspacePane[],
   layout: Record<string, number>,
-  _referencePaneId: string | null,
   newPaneId: string
 ): Record<string, number> {
   const existing = panes.filter((pane) => pane.id !== newPaneId);
@@ -338,7 +337,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             panes,
             nextPaneId: state.nextPaneId + 1,
             activePaneId: id,
-            layout: layoutAfterSplit(panes, state.layout, reference, id),
+            layout: layoutAfterSplit(panes, state.layout, id),
             focusSerial: state.focusSerial + 1,
           };
         }),
@@ -388,7 +387,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
               panes,
               nextPaneId: state.nextPaneId + 1,
               activePaneId: id,
-              layout: layoutAfterSplit(panes, state.layout, reference, id),
+              layout: layoutAfterSplit(panes, state.layout, id),
             };
           }
 
