@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useNavigate } from '@tanstack/react-router';
+import { parseNotificationNavigationPath } from '@/shared/lib/notificationNavigation';
 
 /**
  * Navigate client-side when the service worker asks us to.
@@ -29,7 +30,8 @@ export function useServiceWorkerNavigation() {
         return;
       }
 
-      void navigate({ to: data.path as '/', replace: false });
+      const { pathname, search } = parseNotificationNavigationPath(data.path);
+      void navigate({ to: pathname as '/', search, replace: false });
     };
 
     navigator.serviceWorker.addEventListener('message', handler);

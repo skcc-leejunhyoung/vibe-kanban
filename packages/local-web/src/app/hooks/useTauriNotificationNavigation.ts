@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { isTauriApp } from '@/shared/lib/platform';
+import { parseNotificationNavigationPath } from '@/shared/lib/notificationNavigation';
 import { router } from '@web/app/router';
 
 /**
@@ -24,7 +25,8 @@ export function useTauriNotificationNavigation() {
             return;
           }
 
-          router.navigate({ to: path as '/' });
+          const { pathname, search } = parseNotificationNavigationPath(path);
+          void router.navigate({ to: pathname as '/', search });
         }
       );
     }
