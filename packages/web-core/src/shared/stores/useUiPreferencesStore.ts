@@ -786,7 +786,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       },
       isLeftSidebarVisible: isCurrentlyActive
         ? true
-        : isWideScreen()
+        : mode !== RIGHT_MAIN_PANEL_MODES.PREVIEW || isWideScreen()
           ? state.isLeftSidebarVisible
           : false,
       ...(isMobile &&
@@ -808,7 +808,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
           rightMainPanelMode: mode,
         },
       },
-      ...(mode !== null && {
+      ...(mode === RIGHT_MAIN_PANEL_MODES.PREVIEW && {
         isLeftSidebarVisible: isWideScreen()
           ? state.isLeftSidebarVisible
           : false,
