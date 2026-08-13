@@ -1285,8 +1285,11 @@ fn normalized_repo_key(url: &str) -> String {
     } else if let Some(path) = normalized.strip_prefix("vs-ssh.visualstudio.com/v3/") {
         let mut parts = path.split('/');
         if let (Some(org), Some(project), Some(repo)) = (parts.next(), parts.next(), parts.next()) {
-            normalized = format!("{org}.visualstudio.com/{project}/_git/{repo}");
+            normalized = format!("dev.azure.com/{org}/{project}/_git/{repo}");
         }
+    }
+    if let Some((org, path)) = normalized.split_once(".visualstudio.com/") {
+        normalized = format!("dev.azure.com/{org}/{path}");
     }
     normalized
         .strip_suffix(".git")
@@ -1925,12 +1928,17 @@ mod tests {
             Some(normalized_repo_key("git@ssh.dev.azure.com:v3/acme/project/widgets").as_str())
         );
         assert_eq!(
-            pr_repo_key("https://acme.visualstudio.com/project/_git/widgets/pullrequest/42")
+            pr_repo_key("https://dev.azure.com/acme/project/_git/widgets/pullrequest/42")
                 .as_deref(),
             Some(
                 normalized_repo_key("acme@vs-ssh.visualstudio.com:v3/acme/project/widgets")
                     .as_str()
             )
+        );
+        assert_eq!(
+            pr_repo_key("https://acme.visualstudio.com/project/_git/widgets/pullrequest/42")
+                .as_deref(),
+            Some(normalized_repo_key("https://dev.azure.com/acme/project/_git/widgets").as_str())
         );
         assert_ne!(
             pr_repo_key("https://github.com/acme/other/pull/42").as_deref(),
