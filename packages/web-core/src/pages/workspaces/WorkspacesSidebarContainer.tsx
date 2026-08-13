@@ -106,6 +106,8 @@ interface WorkspacesSidebarContainerProps {
   ) => void;
   /** Override the add-workspace action (remote mobile routes to create). */
   onAddWorkspaceOverride?: () => void;
+  /** Render the touch-sized mobile list inside an empty desktop pane. */
+  forceMobile?: boolean;
 }
 
 export function WorkspacesSidebarContainer({
@@ -113,6 +115,7 @@ export function WorkspacesSidebarContainer({
   isStandalonePage = false,
   onSelectWorkspaceOverride,
   onAddWorkspaceOverride,
+  forceMobile = false,
 }: WorkspacesSidebarContainerProps) {
   const {
     workspaceId: selectedWorkspaceId,
@@ -124,7 +127,7 @@ export function WorkspacesSidebarContainer({
     navigateToCreate,
   } = useWorkspaceContext();
 
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile() || forceMobile;
   const runtime = useAppRuntime();
   const openInSplitPane = useOpenInSplitPane();
   const { hosts: workspaceHosts } = useWorkspaceHostOptions();

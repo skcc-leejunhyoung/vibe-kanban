@@ -67,10 +67,10 @@ describe('ensurePane / insertPaneAfterActive / focusPaneAt', () => {
       'pane-2',
     ]);
     expect(store.getState().activePaneId).toBe('pane-3');
-    // Split halves the active pane's width only.
-    expect(store.getState().layout['pane-1']).toBeCloseTo(25);
-    expect(store.getState().layout['pane-3']).toBeCloseTo(25);
-    expect(store.getState().layout['pane-2']).toBeCloseTo(50);
+    // Every existing pane makes equal room, preserving their prior ratio.
+    expect(store.getState().layout['pane-1']).toBeCloseTo(100 / 3);
+    expect(store.getState().layout['pane-3']).toBeCloseTo(100 / 3);
+    expect(store.getState().layout['pane-2']).toBeCloseTo(100 / 3);
     expect(store.getState().focusSerial).toBe(1);
   });
 
@@ -200,13 +200,13 @@ describe('closePane', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));
     store.getState().openPaneForDestination(ws('ws-c'));
-    // pane-1: 50, pane-2: 25, pane-3: 25
+    // All three panes have equal width; the closed third goes to pane-2.
     store.getState().closePane('pane-3');
     expect(store.getState().panes.map((pane) => pane.id)).toEqual([
       'pane-1',
       'pane-2',
     ]);
-    expect(store.getState().layout['pane-2']).toBeCloseTo(50);
+    expect(store.getState().layout['pane-2']).toBeCloseTo(200 / 3);
     expect(store.getState().activePaneId).toBe('pane-2');
   });
 });
@@ -230,16 +230,16 @@ describe('layout math', () => {
   const panes = (...ids: string[]) =>
     ids.map((id) => ({ id, destination: null }));
 
-  it('layoutAfterSplit halves the reference pane only', () => {
+  it('layoutAfterSplit preserves existing ratios and gives the new pane an equal share', () => {
     const layout = layoutAfterSplit(
       panes('a', 'b', 'new'),
       { a: 60, b: 40 },
       'a',
       'new'
     );
-    expect(layout.a).toBeCloseTo(30);
-    expect(layout.new).toBeCloseTo(30);
-    expect(layout.b).toBeCloseTo(40);
+    expect(layout.a).toBeCloseTo(40);
+    expect(layout.new).toBeCloseTo(100 / 3);
+    expect(layout.b).toBeCloseTo(80 / 3);
   });
 
   it('layoutAfterClose returns the width to the left neighbour', () => {

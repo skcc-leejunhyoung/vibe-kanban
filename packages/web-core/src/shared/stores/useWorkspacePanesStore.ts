@@ -213,21 +213,23 @@ function normalizedLayout(
   );
 }
 
-/** New pane takes half of the reference pane's width; others untouched. */
+/** Existing pane ratios stay intact while all make equal room for the new pane. */
 export function layoutAfterSplit(
   panes: WorkspacePane[],
   layout: Record<string, number>,
-  referencePaneId: string | null,
+  _referencePaneId: string | null,
   newPaneId: string
 ): Record<string, number> {
   const existing = panes.filter((pane) => pane.id !== newPaneId);
   const base = normalizedLayout(existing, layout);
-  const referenceId = base[referencePaneId ?? '']
-    ? referencePaneId!
-    : (existing[existing.length - 1]?.id ?? null);
-  if (referenceId === null) return { [newPaneId]: 100 };
-  const half = base[referenceId] / 2;
-  return { ...base, [referenceId]: half, [newPaneId]: half };
+  const newSize = 100 / panes.length;
+  const scale = (100 - newSize) / 100;
+  return {
+    ...Object.fromEntries(
+      Object.entries(base).map(([id, size]) => [id, size * scale])
+    ),
+    [newPaneId]: newSize,
+  };
 }
 
 /** A closed pane's width goes to its left neighbour (right for the first). */

@@ -30,6 +30,7 @@ import { useIssueShortcuts } from '@/shared/keyboard/useIssueShortcuts';
 import { useWorkspaceShortcuts } from '@/shared/keyboard/useWorkspaceShortcuts';
 import { NotificationsPage } from './NotificationsPage';
 import { WorkspaceDetail } from './WorkspaceDetail';
+import { WorkspacesSidebarContainer } from './WorkspacesSidebarContainer';
 
 /**
  * Pane-scoped keyboard registrations: they read the pane's context (workspace,
@@ -68,7 +69,11 @@ function PaneChrome({
   // for pointer activation — that would steal focus from the clicked control.
   useEffect(() => {
     if (focusSerial > 0 && active) {
-      containerRef.current?.focus({ preventScroll: true });
+      const target =
+        containerRef.current?.querySelector<HTMLElement>(
+          '[data-workspace-selector]'
+        ) ?? containerRef.current;
+      target?.focus({ preventScroll: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusSerial]);
@@ -181,51 +186,12 @@ function paneTitle(
 }
 
 function EmptyPane({
-  onClose,
-  onPick,
+  onPick: _onPick,
 }: {
   onClose: () => void;
   onPick: (destination: WorkspacePaneDestination) => void;
 }) {
-  // Document-scope context: the workspace list shared with the sidebar.
-  const { activeWorkspaces } = useWorkspaceContext();
-  const { t } = useTranslation('common');
-
-  return (
-    <div className="flex h-full min-h-0 flex-col bg-primary">
-      <PaneHeaderShell
-        title={
-          <span className="text-low">
-            {t('workspacePanes.emptyPaneTitle', { defaultValue: 'New pane' })}
-          </span>
-        }
-        onClose={onClose}
-      />
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        <p className="px-2 py-1 text-xs text-low">
-          {t('workspacePanes.pickWorkspace', {
-            defaultValue: 'Choose a workspace for this pane',
-          })}
-        </p>
-        {activeWorkspaces.map((workspace) => (
-          <button
-            key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
-            type="button"
-            onClick={() =>
-              onPick({
-                kind: 'workspace',
-                workspaceId: workspace.id,
-                hostId: workspace.hostId ?? null,
-              })
-            }
-            className="block w-full truncate rounded-sm px-2 py-1.5 text-left text-sm text-normal hover:bg-secondary cursor-pointer"
-          >
-            {workspace.name}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+  return <WorkspacesSidebarContainer isStandalonePage forceMobile />;
 }
 
 function WorkspacePaneView({
