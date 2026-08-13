@@ -23,6 +23,7 @@ import {
   PERSIST_KEYS,
   usePaneSize,
   useWorkspacePanelState,
+  useUiPreferencesStore,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
@@ -31,7 +32,10 @@ import { Scope } from '@/shared/keyboard/registry';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useUnfocusedChatKeys } from './workspaceChatKeyboard';
 import { cn } from '@/shared/lib/utils';
-import { shouldShowWorkspacePaneSidebar } from './workspacePaneSidebar';
+import {
+  shouldCloseWorkspacePaneSidebarOnEscape,
+  shouldShowWorkspacePaneSidebar,
+} from './workspacePaneSidebar';
 
 export interface WorkspaceDetailHandle {
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
@@ -117,6 +121,9 @@ export const WorkspaceDetail = forwardRef<
 
   const isNarrow = usePaneNarrowerThan(640);
   const isCompact = usePaneNarrowerThan(880);
+  const toggleRightSidebar = useUiPreferencesStore(
+    (state) => state.toggleRightSidebar
+  );
 
   // Keep the chat pane open while closing the desktop's secondary panel.
   const closeRightMainPanel = useCallback(() => {
@@ -126,6 +133,16 @@ export const WorkspaceDetail = forwardRef<
 
   useEscapeToClose(closeRightMainPanel, {
     enabled: isPaneActive && rightMainPanelMode !== null,
+    scope: Scope.WORKSPACE,
+  });
+
+  useEscapeToClose(toggleRightSidebar, {
+    enabled: shouldCloseWorkspacePaneSidebarOnEscape({
+      isVisible: isRightSidebarVisible,
+      isPaneActive,
+      isCompact,
+      rightMainPanelOpen: rightMainPanelMode !== null,
+    }),
     scope: Scope.WORKSPACE,
   });
 
