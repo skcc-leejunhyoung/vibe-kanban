@@ -1665,16 +1665,15 @@ export const Actions = {
 
   ToggleRightSidebar: {
     id: 'toggle-right-sidebar',
-    label: () =>
-      useUiPreferencesStore.getState().isRightSidebarVisible
-        ? 'Hide Right Sidebar'
-        : 'Show Right Sidebar',
+    label: 'Toggle Right Sidebar',
     icon: RightSidebarIcon,
     shortcut: 'V R',
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) => ctx.layoutMode === 'workspaces',
     isActive: (ctx) => ctx.isRightSidebarVisible,
-    execute: () => {
+    getLabel: (ctx) =>
+      ctx.isRightSidebarVisible ? 'Hide Right Sidebar' : 'Show Right Sidebar',
+    execute: (ctx) => {
       const store = useUiPreferencesStore.getState();
       if (window.matchMedia('(max-width: 767px)').matches) {
         store.setMobileActiveTab(
@@ -1682,7 +1681,8 @@ export const Actions = {
         );
         return;
       }
-      store.toggleRightSidebar();
+      // Per-workspace toggle so each split pane's sidebar is independent.
+      store.toggleRightSidebar(chromePanelWorkspaceId(ctx));
     },
   },
 

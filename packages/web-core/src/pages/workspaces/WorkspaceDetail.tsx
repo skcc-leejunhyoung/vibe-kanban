@@ -24,7 +24,6 @@ import {
   PERSIST_KEYS,
   usePaneSize,
   useWorkspacePanelState,
-  useUiPreferencesStore,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
@@ -110,6 +109,7 @@ export const WorkspaceDetail = forwardRef<
     rightMainPanelMode,
     setLeftMainPanelVisible,
     setRightMainPanelMode,
+    toggleRightSidebar,
   } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
 
   useEffect(() => {
@@ -124,9 +124,6 @@ export const WorkspaceDetail = forwardRef<
 
   const isNarrow = usePaneNarrowerThan(640);
   const isCompact = usePaneNarrowerThan(880);
-  const toggleRightSidebar = useUiPreferencesStore(
-    (state) => state.toggleRightSidebar
-  );
 
   // Keep the chat pane open while closing the desktop's secondary panel.
   const closeRightMainPanel = useCallback(() => {

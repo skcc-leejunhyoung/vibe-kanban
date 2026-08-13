@@ -101,6 +101,12 @@ export type ContextBarPosition =
 export type WorkspacePanelState = {
   rightMainPanelMode: RightMainPanelMode | null;
   isLeftMainPanelVisible: boolean;
+  /**
+   * Per-workspace override of the right (git) sidebar. Undefined → follow the
+   * global preference, so untouched workspaces keep the legacy behaviour
+   * while each pane toggles independently once used.
+   */
+  isRightSidebarVisible?: boolean;
 };
 
 const DEFAULT_WORKSPACE_PANEL_STATE: WorkspacePanelState = {
@@ -573,7 +579,7 @@ type State = {
   toggleLayoutMode: () => void;
   toggleLeftSidebar: () => void;
   toggleLeftMainPanel: (workspaceId?: string) => void;
-  toggleRightSidebar: () => void;
+  toggleRightSidebar: (workspaceId?: string) => void;
   toggleTerminal: () => void;
   setTerminalVisible: (value: boolean) => void;
   setRightSidebarSectionOrder: (order: RightSidebarSectionId[]) => void;
@@ -757,8 +763,23 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     });
   },
 
-  toggleRightSidebar: () =>
-    set((s) => ({ isRightSidebarVisible: !s.isRightSidebarVisible })),
+  toggleRightSidebar: (workspaceId) =>
+    set((state) => {
+      if (!workspaceId) {
+        return { isRightSidebarVisible: !state.isRightSidebarVisible };
+      }
+      const wsState =
+        state.workspacePanelStates[workspaceId] ??
+        DEFAULT_WORKSPACE_PANEL_STATE;
+      const current =
+        wsState.isRightSidebarVisible ?? state.isRightSidebarVisible;
+      return {
+        workspacePanelStates: {
+          ...state.workspacePanelStates,
+          [workspaceId]: { ...wsState, isRightSidebarVisible: !current },
+        },
+      };
+    }),
 
   toggleTerminal: () =>
     set((s) => ({ isTerminalVisible: !s.isTerminalVisible })),
@@ -1301,20 +1322,29 @@ export function useWorkspacePanelState(workspaceId: string | undefined) {
     [setLeftMainPanelVisible, workspaceId]
   );
 
+  const toggleRightSidebar = useUiPreferencesStore((s) => s.toggleRightSidebar);
+  const toggleRightSidebarForWorkspace = useCallback(
+    () => toggleRightSidebar(workspaceId),
+    [toggleRightSidebar, workspaceId]
+  );
+
   return {
     // Workspace-specific state
     rightMainPanelMode: wsState.rightMainPanelMode,
     isLeftMainPanelVisible: wsState.isLeftMainPanelVisible,
 
-    // Global state (sidebars and terminal)
+    // Global state (sidebars and terminal); the right sidebar honours a
+    // per-workspace override so split panes act independently.
     isLeftSidebarVisible,
-    isRightSidebarVisible,
+    isRightSidebarVisible:
+      wsState.isRightSidebarVisible ?? isRightSidebarVisible,
     isTerminalVisible,
 
     // Workspace-specific actions
     toggleRightMainPanelMode: toggleRightMainPanelModeForWorkspace,
     setRightMainPanelMode: setRightMainPanelModeForWorkspace,
     setLeftMainPanelVisible: setLeftMainPanelVisibleForWorkspace,
+    toggleRightSidebar: toggleRightSidebarForWorkspace,
 
     // Global actions
     setLeftSidebarVisible,
