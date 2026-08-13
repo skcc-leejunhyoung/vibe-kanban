@@ -16,6 +16,7 @@ import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useWorkspaceHostMap } from '@/shared/hooks/useWorkspaceHostMap';
 import { useIsMobile, useIsTouchDevice } from '@/shared/hooks/useIsMobile';
+import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { cn } from '@/shared/lib/utils';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import {
@@ -170,7 +171,9 @@ function LoadingState() {
  * Must be rendered within both OrgProvider and ProjectProvider.
  */
 export function KanbanContainer() {
-  const isMobile = useIsMobile();
+  const isMobileViewport = useIsMobile();
+  const isNarrowPane = usePaneNarrowerThan(768);
+  const isMobile = isMobileViewport || isNarrowPane;
   // Touch devices (incl. iPadOS, which can spoof a desktop UA/viewport) need the
   // explicit multi-select toggle since there is no Cmd/Shift+Click affordance.
   const isTouch = useIsTouchDevice();
@@ -1860,6 +1863,7 @@ export function KanbanContainer() {
                                     showOwner={false}
                                     showStatusBadge={false}
                                     showNoPrText={false}
+                                    compact={isMobile}
                                   />
                                 ))}
                               </div>

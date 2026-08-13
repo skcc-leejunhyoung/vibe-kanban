@@ -31,6 +31,7 @@ import {
 } from '@/shared/lib/notificationMessage';
 import { formatRelativeTime } from '@/shared/lib/date';
 import { cn } from '@/shared/lib/utils';
+import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import {
   disableWebPush,
   enableWebPush,
@@ -88,7 +89,7 @@ function NotificationMessage({
   );
 }
 
-function WebPushToggle() {
+function WebPushToggle({ compact }: { compact: boolean }) {
   const runtime = useAppRuntime();
   const [status, setStatus] = useState<WebPushStatus>('unsupported');
   const [pending, setPending] = useState(false);
@@ -153,7 +154,7 @@ function WebPushToggle() {
       title={label}
     >
       <BellRingingIcon size={16} />
-      <span className="hidden sm:inline">{pending ? 'Saving...' : label}</span>
+      {!compact && <span>{pending ? 'Saving...' : label}</span>}
       <Switch
         checked={checked}
         disabled={disabled}
@@ -165,6 +166,7 @@ function WebPushToggle() {
 }
 
 export function NotificationsPage() {
+  const isNarrow = usePaneNarrowerThan(768);
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const openInSplitPane = useOpenInSplitPane();
@@ -407,7 +409,8 @@ export function NotificationsPage() {
             type="button"
             onClick={() => router.history.back()}
             className={cn(
-              'flex sm:hidden items-center justify-center rounded-sm p-half text-low transition-colors',
+              'items-center justify-center rounded-sm p-half text-low transition-colors',
+              isNarrow ? 'flex' : 'hidden',
               'hover:bg-secondary hover:text-normal',
               'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
             )}
@@ -421,7 +424,7 @@ export function NotificationsPage() {
           </h1>
         </div>
         <div className="flex items-center gap-half">
-          <WebPushToggle />
+          <WebPushToggle compact={isNarrow} />
           {view === 'inbox' && unseenCount > 0 && selectedCount === 0 && (
             <button
               type="button"
@@ -463,9 +466,7 @@ export function NotificationsPage() {
             />
             {selectedCount > 0 ? (
               <>
-                <span className="hidden sm:inline">
-                  {selectedCount} selected
-                </span>
+                {!isNarrow && <span>{selectedCount} selected</span>}
                 <button
                   type="button"
                   onClick={() => updateSelectedSeen(true)}
@@ -482,7 +483,7 @@ export function NotificationsPage() {
                 </button>
               </>
             ) : (
-              <span className="hidden sm:inline">Select</span>
+              !isNarrow && <span>Select</span>
             )}
           </div>
         )}
@@ -584,7 +585,7 @@ export function NotificationsPage() {
                     title="Mark as read"
                   >
                     <CheckIcon size={14} weight="bold" />
-                    <span className="hidden sm:inline">Mark as read</span>
+                    {!isNarrow && <span>Mark as read</span>}
                   </button>
                 )}
               </div>

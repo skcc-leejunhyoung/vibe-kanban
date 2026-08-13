@@ -63,6 +63,7 @@ export interface IssueWorkspaceCardProps {
   showOwner?: boolean;
   showStatusBadge?: boolean;
   showNoPrText?: boolean;
+  compact?: boolean;
   className?: string;
 }
 
@@ -125,6 +126,7 @@ export function IssueWorkspaceCard({
   showOwner = true,
   showStatusBadge = true,
   showNoPrText = true,
+  compact = false,
   className,
 }: IssueWorkspaceCardProps) {
   const { t } = useTranslation('common');
@@ -231,7 +233,12 @@ export function IssueWorkspaceCard({
 
       {/* Row 2: Live status + stats (left), PR buttons (right) */}
       <div className="flex items-center justify-between gap-half min-w-0">
-        <div className="flex items-center flex-wrap sm:flex-nowrap gap-half text-sm text-low min-w-0 flex-1 overflow-hidden">
+        <div
+          className={cn(
+            'flex items-center flex-wrap gap-half text-sm text-low min-w-0 flex-1 overflow-hidden',
+            !compact && 'sm:flex-nowrap'
+          )}
+        >
           <div className="flex items-center gap-half shrink-0">
             {hasRunningDevServer && (
               <PlayIcon
@@ -326,7 +333,12 @@ export function IssueWorkspaceCard({
           )}
         </div>
 
-        <div className="hidden sm:flex items-center gap-half shrink-0">
+        <div
+          className={cn(
+            'hidden items-center gap-half shrink-0',
+            !compact && 'sm:flex'
+          )}
+        >
           {workspace.prs.length > 0 ? (
             workspace.prs.map((pr) => (
               <a

@@ -15,6 +15,7 @@ import {
 import { usePreviewDevServer } from '@/features/workspace/model/hooks/usePreviewDevServer';
 import { usePreviewUrl } from '@/shared/hooks/usePreviewUrl';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
+import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import {
   usePreviewSettings,
   type ScreenSize,
@@ -173,7 +174,9 @@ export function PreviewBrowserContainer({
   // URL auto-detection, and preview settings (override URL, screen size).
 
   const previewRefreshKey = useUiPreferencesStore((s) => s.previewRefreshKey);
-  const isMobile = useIsMobile();
+  const isMobileViewport = useIsMobile();
+  const isNarrowPane = usePaneNarrowerThan(768);
+  const isMobile = isMobileViewport || isNarrowPane;
   const [mobileUrlExpanded, setMobileUrlExpanded] = useState(false);
   const triggerPreviewRefresh = useUiPreferencesStore(
     (s) => s.triggerPreviewRefresh

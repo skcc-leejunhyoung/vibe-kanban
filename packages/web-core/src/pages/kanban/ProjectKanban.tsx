@@ -9,6 +9,7 @@ import { useActions } from '@/shared/hooks/useActions';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
 import { KanbanContainer } from '@/features/kanban/ui/KanbanContainer';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
+import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { ProjectRightSidebarContainer } from './ProjectRightSidebarContainer';
 import { LoginRequiredPrompt } from '@/shared/dialogs/shared/LoginRequiredPrompt';
 import {
@@ -160,6 +161,7 @@ function ProjectKanbanBoard() {
 function ProjectKanbanLayout({ projectName }: { projectName: string }) {
   const { issueId, isPanelOpen } = useCurrentKanbanRouteState();
   const isMobile = useIsMobile();
+  const isNarrow = usePaneNarrowerThan(768);
   const { getIssue } = useProjectContext();
   const issue = issueId ? getIssue(issueId) : undefined;
   usePageTitle(issue?.title, projectName);
@@ -170,7 +172,7 @@ function ProjectKanbanLayout({ projectName }: { projectName: string }) {
 
   const isRightPanelOpen = isPanelOpen;
 
-  if (isMobile) {
+  if (isMobile || isNarrow) {
     return isRightPanelOpen ? (
       <div className="h-full w-full overflow-hidden bg-secondary">
         <ProjectRightSidebarContainer />
