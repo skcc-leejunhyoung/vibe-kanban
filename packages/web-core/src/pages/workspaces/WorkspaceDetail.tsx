@@ -31,6 +31,7 @@ import { Scope } from '@/shared/keyboard/registry';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useUnfocusedChatKeys } from './workspaceChatKeyboard';
 import { cn } from '@/shared/lib/utils';
+import { shouldShowWorkspacePaneSidebar } from './workspacePaneSidebar';
 
 export interface WorkspaceDetailHandle {
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
@@ -162,8 +163,12 @@ export const WorkspaceDetail = forwardRef<
     !isCreateMode &&
     rightMainPanelMode !== null &&
     !(isNarrow && showChatPanel);
-  const showRightSidebar =
-    isRightSidebarVisible && isPaneActive && !isCreateMode;
+  const showRightSidebar = shouldShowWorkspacePaneSidebar({
+    isVisible: isRightSidebarVisible,
+    isPaneActive,
+    isCompact,
+    isCreateMode,
+  });
 
   const [rightMainPanelSize, setRightMainPanelSize] = usePaneSize(
     PERSIST_KEYS.rightMainPanel,
@@ -288,9 +293,8 @@ export const WorkspaceDetail = forwardRef<
             )}
           </Group>
 
-          {/* Right-sidebar visibility is a global preference, so in a split
-              only the active pane renders it. Compact panes show it as the
-              sole view instead of squeezing it beside the main content. */}
+          {/* Wide panes keep their sidebar mounted across focus changes.
+              Compact panes show it only while active, as the sole view. */}
           {showRightSidebar && (
             <div
               className={cn(
