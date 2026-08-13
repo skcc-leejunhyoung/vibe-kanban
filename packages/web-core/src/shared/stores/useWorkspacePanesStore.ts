@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { AppDestination } from '@/shared/lib/routes/appNavigation';
 
 export const MAX_WORKSPACE_PANES = 9;
 export const DEFAULT_MAX_WORKSPACE_PANES = 4;
@@ -8,11 +9,60 @@ export const WORKSPACE_PANE_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 /** Panel id of the primary (route-driven) slot in the pane grid. */
 export const PRIMARY_PANE_ID = 'primary';
 
+/** Destinations a secondary pane can render in-document. */
+export type WorkspacePaneDestination = Extract<
+  AppDestination,
+  {
+    kind:
+      | 'workspace'
+      | 'project'
+      | 'project-issue'
+      | 'project-issue-workspace'
+      | 'pull-requests'
+      | 'notifications';
+  }
+>;
+
+export function isPaneRenderableDestination(
+  destination: AppDestination | null
+): destination is WorkspacePaneDestination {
+  switch (destination?.kind) {
+    case 'workspace':
+    case 'project':
+    case 'project-issue':
+    case 'project-issue-workspace':
+    case 'pull-requests':
+    case 'notifications':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Identity key used to dedupe panes showing the same destination. */
+export function paneDestinationKey(
+  destination: WorkspacePaneDestination
+): string {
+  switch (destination.kind) {
+    case 'workspace':
+      return `workspace:${destination.hostId ?? ''}:${destination.workspaceId}`;
+    case 'project':
+    case 'project-issue':
+    case 'project-issue-workspace':
+      // One pane per project: issue/workspace sub-navigation swaps content
+      // within that pane instead of spawning siblings of the same board.
+      return `project:${destination.projectId}`;
+    case 'pull-requests':
+      return 'pull-requests';
+    case 'notifications':
+      return 'notifications';
+  }
+}
+
 export interface WorkspacePane {
   id: string;
   /** null → empty pane showing the workspace picker. */
-  workspaceId: string | null;
-  hostId: string | null;
+  destination: WorkspacePaneDestination | null;
 }
 
 interface WorkspacePanesState {
@@ -35,12 +85,11 @@ interface WorkspacePanesState {
   setMaxPanes: (maxPanes: number) => void;
   /** Set the total visible pane count (primary included). */
   setPaneCount: (total: number) => void;
-  /** Show a workspace in a secondary pane (dedupe → empty → append → replace). */
-  openWorkspacePane: (workspaceId: string, hostId: string | null) => void;
-  setPaneWorkspace: (
+  /** Show a destination in a secondary pane (dedupe → empty → append → replace). */
+  openPaneForDestination: (destination: WorkspacePaneDestination) => void;
+  setPaneDestination: (
     paneId: string,
-    workspaceId: string,
-    hostId: string | null
+    destination: WorkspacePaneDestination
   ) => void;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string | null) => void;
@@ -61,8 +110,42 @@ export function getAdjacentWorkspacePaneId(
   return order[(startIndex + offset + order.length) % order.length];
 }
 
+/**
+ * The workspace shown by the active secondary pane, or null when the primary
+ * pane is active (or the active pane shows non-workspace content). Document
+ * chrome (navbar toggles, sidebar clicks) targets this workspace when set.
+ */
+export function getActivePaneWorkspace(
+  state: Pick<WorkspacePanesState, 'panes' | 'activePaneId'>
+): { workspaceId: string; hostId: string | null } | null {
+  if (state.activePaneId === null) return null;
+  const destination = state.panes.find(
+    (pane) => pane.id === state.activePaneId
+  )?.destination;
+  if (destination?.kind !== 'workspace') return null;
+  return {
+    workspaceId: destination.workspaceId,
+    hostId: destination.hostId ?? null,
+  };
+}
+
+export function useActivePaneWorkspace(): {
+  workspaceId: string;
+  hostId: string | null;
+} | null {
+  const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
+  const panes = useWorkspacePanesStore((s) => s.panes);
+  return getActivePaneWorkspace({ panes, activePaneId });
+}
+
 const clampPaneCount = (value: number, maxPanes: number) =>
   Math.max(1, Math.min(value, maxPanes));
+
+interface PersistedPaneV1 {
+  id: string;
+  workspaceId: string | null;
+  hostId: string | null;
+}
 
 export const useWorkspacePanesStore = create<WorkspacePanesState>()(
   persist(
@@ -112,28 +195,34 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
           let nextPaneId = state.nextPaneId;
           const panes = [...state.panes];
           while (panes.length < secondaryCount) {
-            panes.push({
-              id: `pane-${nextPaneId++}`,
-              workspaceId: null,
-              hostId: null,
-            });
+            panes.push({ id: `pane-${nextPaneId++}`, destination: null });
           }
           return { panes, nextPaneId };
         }),
-      openWorkspacePane: (workspaceId, hostId) =>
+      openPaneForDestination: (destination) =>
         set((state) => {
+          const key = paneDestinationKey(destination);
           const existing = state.panes.find(
-            (pane) => pane.workspaceId === workspaceId && pane.hostId === hostId
+            (pane) =>
+              pane.destination !== null &&
+              paneDestinationKey(pane.destination) === key
           );
           if (existing) {
-            return { activePaneId: existing.id };
+            // Same identity (e.g. the pane's project) — adopt the more
+            // specific destination (issue/workspace sub-navigation) too.
+            return {
+              panes: state.panes.map((pane) =>
+                pane.id === existing.id ? { ...pane, destination } : pane
+              ),
+              activePaneId: existing.id,
+            };
           }
 
-          const empty = state.panes.find((pane) => pane.workspaceId === null);
+          const empty = state.panes.find((pane) => pane.destination === null);
           if (empty) {
             return {
               panes: state.panes.map((pane) =>
-                pane.id === empty.id ? { ...pane, workspaceId, hostId } : pane
+                pane.id === empty.id ? { ...pane, destination } : pane
               ),
               activePaneId: empty.id,
             };
@@ -142,7 +231,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
           if (state.panes.length < state.maxPanes - 1) {
             const id = `pane-${state.nextPaneId}`;
             return {
-              panes: [...state.panes, { id, workspaceId, hostId }],
+              panes: [...state.panes, { id, destination }],
               nextPaneId: state.nextPaneId + 1,
               activePaneId: id,
             };
@@ -160,15 +249,15 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             state.panes[0];
           return {
             panes: state.panes.map((pane) =>
-              pane.id === target.id ? { ...pane, workspaceId, hostId } : pane
+              pane.id === target.id ? { ...pane, destination } : pane
             ),
             activePaneId: target.id,
           };
         }),
-      setPaneWorkspace: (paneId, workspaceId, hostId) =>
+      setPaneDestination: (paneId, destination) =>
         set((state) => ({
           panes: state.panes.map((pane) =>
-            pane.id === paneId ? { ...pane, workspaceId, hostId } : pane
+            pane.id === paneId ? { ...pane, destination } : pane
           ),
         })),
       closePane: (paneId) =>
@@ -194,7 +283,30 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
     }),
     {
       name: 'vk-workspace-panes-v1',
-      version: 1,
+      version: 2,
+      migrate: (persisted, version) => {
+        const state = persisted as Partial<WorkspacePanesState> & {
+          panes?: unknown[];
+        };
+        if (version >= 2) return state as WorkspacePanesState;
+        // v1 panes carried {workspaceId, hostId} instead of a destination.
+        return {
+          ...state,
+          panes: (state.panes ?? []).map((raw) => {
+            const pane = raw as unknown as PersistedPaneV1;
+            return {
+              id: pane.id,
+              destination: pane.workspaceId
+                ? {
+                    kind: 'workspace' as const,
+                    workspaceId: pane.workspaceId,
+                    hostId: pane.hostId,
+                  }
+                : null,
+            };
+          }),
+        } as WorkspacePanesState;
+      },
       partialize: ({ activeUserId, maxPanes, nextPaneId, panes, layout }) => ({
         activeUserId,
         maxPanes,

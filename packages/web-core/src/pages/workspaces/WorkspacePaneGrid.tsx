@@ -17,7 +17,11 @@ import {
   PRIMARY_PANE_ID,
   useWorkspacePanesStore,
   type WorkspacePane,
+  type WorkspacePaneDestination,
 } from '@/shared/stores/useWorkspacePanesStore';
+import { ProjectKanban } from '@/pages/kanban/ProjectKanban';
+import { PullRequestsPage } from '@/pages/pull-requests/PullRequestsPage';
+import { NotificationsPage } from './NotificationsPage';
 import { WorkspaceDetail } from './WorkspaceDetail';
 
 const paneSeparator = (
@@ -67,14 +71,18 @@ function PaneChrome({
   );
 }
 
-function SecondaryPaneHeader({ onClose }: { onClose: () => void }) {
-  const { workspace } = useWorkspaceContext();
+function PaneHeaderShell({
+  title,
+  onClose,
+}: {
+  title: ReactNode;
+  onClose: () => void;
+}) {
   const { t } = useTranslation('common');
-
   return (
     <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-secondary px-2">
       <span className="min-w-0 flex-1 truncate text-xs text-normal">
-        {workspace?.name ?? '…'}
+        {title}
       </span>
       <button
         type="button"
@@ -90,12 +98,61 @@ function SecondaryPaneHeader({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Header title for workspace panes — reads the pane-scoped context. */
+function WorkspacePaneTitle() {
+  const { workspace } = useWorkspaceContext();
+  return <>{workspace?.name ?? '…'}</>;
+}
+
+function PaneOutlet({
+  destination,
+  isPaneActive,
+}: {
+  destination: WorkspacePaneDestination;
+  isPaneActive: boolean;
+}) {
+  switch (destination.kind) {
+    case 'workspace':
+      return <WorkspaceDetail isPaneActive={isPaneActive} />;
+    case 'project':
+    case 'project-issue':
+    case 'project-issue-workspace':
+      return <ProjectKanban />;
+    case 'pull-requests':
+      return <PullRequestsPage />;
+    case 'notifications':
+      return <NotificationsPage />;
+  }
+}
+
+function paneTitle(
+  destination: WorkspacePaneDestination,
+  t: (key: string, options: { defaultValue: string }) => string
+): ReactNode {
+  switch (destination.kind) {
+    case 'workspace':
+      return <WorkspacePaneTitle />;
+    case 'project':
+    case 'project-issue':
+    case 'project-issue-workspace':
+      return t('workspacePanes.projectPane', { defaultValue: 'Project' });
+    case 'pull-requests':
+      return t('workspacePanes.pullRequestsPane', {
+        defaultValue: 'Pull requests',
+      });
+    case 'notifications':
+      return t('workspacePanes.notificationsPane', {
+        defaultValue: 'Notifications',
+      });
+  }
+}
+
 function EmptyPane({
   onClose,
   onPick,
 }: {
   onClose: () => void;
-  onPick: (workspaceId: string, hostId: string | null) => void;
+  onPick: (destination: WorkspacePaneDestination) => void;
 }) {
   // Document-scope context: the workspace list shared with the sidebar.
   const { activeWorkspaces } = useWorkspaceContext();
@@ -103,21 +160,14 @@ function EmptyPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-primary">
-      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-secondary px-2">
-        <span className="min-w-0 flex-1 truncate text-xs text-low">
-          {t('workspacePanes.emptyPaneTitle', { defaultValue: 'New pane' })}
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t('workspacePanes.closePane', {
-            defaultValue: 'Close pane',
-          })}
-          className="rounded-sm p-0.5 text-low hover:text-normal cursor-pointer"
-        >
-          <XIcon className="h-3.5 w-3.5" weight="bold" />
-        </button>
-      </div>
+      <PaneHeaderShell
+        title={
+          <span className="text-low">
+            {t('workspacePanes.emptyPaneTitle', { defaultValue: 'New pane' })}
+          </span>
+        }
+        onClose={onClose}
+      />
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         <p className="px-2 py-1 text-xs text-low">
           {t('workspacePanes.pickWorkspace', {
@@ -128,7 +178,13 @@ function EmptyPane({
           <button
             key={`${workspace.hostId ?? 'local'}:${workspace.id}`}
             type="button"
-            onClick={() => onPick(workspace.id, workspace.hostId ?? null)}
+            onClick={() =>
+              onPick({
+                kind: 'workspace',
+                workspaceId: workspace.id,
+                hostId: workspace.hostId ?? null,
+              })
+            }
             className="block w-full truncate rounded-sm px-2 py-1.5 text-left text-sm text-normal hover:bg-secondary cursor-pointer"
           >
             {workspace.name}
@@ -148,15 +204,18 @@ function SecondaryWorkspacePane({
   active: boolean;
   showActiveRing: boolean;
 }) {
+  const { t } = useTranslation('common');
   const setActivePane = useWorkspacePanesStore((s) => s.setActivePane);
-  const setPaneWorkspace = useWorkspacePanesStore((s) => s.setPaneWorkspace);
+  const setPaneDestination = useWorkspacePanesStore(
+    (s) => s.setPaneDestination
+  );
   const closePane = useWorkspacePanesStore((s) => s.closePane);
 
-  const handleNavigateWorkspace = useCallback(
-    (workspaceId: string, hostId: string | null) => {
-      setPaneWorkspace(pane.id, workspaceId, hostId);
+  const handleNavigate = useCallback(
+    (destination: WorkspacePaneDestination) => {
+      setPaneDestination(pane.id, destination);
     },
-    [pane.id, setPaneWorkspace]
+    [pane.id, setPaneDestination]
   );
 
   return (
@@ -165,24 +224,26 @@ function SecondaryWorkspacePane({
       showActiveRing={showActiveRing}
       onActivate={() => setActivePane(pane.id)}
     >
-      {pane.workspaceId ? (
+      {pane.destination ? (
         <WorkspacePaneScope
-          workspaceId={pane.workspaceId}
-          hostId={pane.hostId}
-          onNavigateWorkspace={handleNavigateWorkspace}
+          destination={pane.destination}
+          onNavigate={handleNavigate}
         >
           <div className="flex h-full min-h-0 flex-col bg-primary">
-            <SecondaryPaneHeader onClose={() => closePane(pane.id)} />
+            <PaneHeaderShell
+              title={paneTitle(pane.destination, t)}
+              onClose={() => closePane(pane.id)}
+            />
             <div className="min-h-0 flex-1">
-              <WorkspaceDetail hotkeysEnabled={active} />
+              <PaneOutlet
+                destination={pane.destination}
+                isPaneActive={active}
+              />
             </div>
           </div>
         </WorkspacePaneScope>
       ) : (
-        <EmptyPane
-          onClose={() => closePane(pane.id)}
-          onPick={handleNavigateWorkspace}
-        />
+        <EmptyPane onClose={() => closePane(pane.id)} onPick={handleNavigate} />
       )}
     </PaneChrome>
   );
@@ -190,8 +251,9 @@ function SecondaryWorkspacePane({
 
 /**
  * In-document split grid for the workspaces page: the routed primary view
- * plus zero or more workspace panes, side by side. With no secondary panes
- * (or on unsupported surfaces) it renders the primary view untouched.
+ * plus zero or more panes (workspace, kanban, pull requests, notifications)
+ * side by side. With no secondary panes (or on unsupported surfaces) it
+ * renders the primary view untouched.
  */
 // ponytail: single-row split only; add row wrapping if >4 panes sees real use.
 export function WorkspacePaneGrid({ primary }: { primary: ReactNode }) {

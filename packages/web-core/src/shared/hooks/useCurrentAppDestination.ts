@@ -36,3 +36,12 @@ export function useCurrentAppDestination(): AppDestination | null {
     [override, appNavigation, location.pathname]
   );
 }
+
+/**
+ * True inside a split-pane scope (a destination override is present). Chrome
+ * hooks use this to distinguish "document chrome targeting the active pane"
+ * from a pane's own subtree, which must stay scoped to itself.
+ */
+export function useHasAppDestinationOverride(): boolean {
+  return useContext(AppDestinationOverrideContext) !== null;
+}

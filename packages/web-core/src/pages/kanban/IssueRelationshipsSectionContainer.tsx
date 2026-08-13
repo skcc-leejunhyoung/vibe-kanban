@@ -1,5 +1,4 @@
 import { useMemo, useCallback } from 'react';
-import { useParams } from '@tanstack/react-router';
 import {
   PlusIcon,
   ArrowBendUpRightIcon,
@@ -10,6 +9,7 @@ import {
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useActions } from '@/shared/hooks/useActions';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { resolveRelationshipsForIssue } from '@/shared/lib/resolveRelationships';
 import { IssueRelationshipsSection } from '@vibe/ui/components/IssueRelationshipsSection';
 import {
@@ -26,7 +26,13 @@ interface IssueRelationshipsSectionContainerProps {
 export function IssueRelationshipsSectionContainer({
   issueId,
 }: IssueRelationshipsSectionContainerProps) {
-  const { projectId } = useParams({ strict: false });
+  const destination = useCurrentAppDestination();
+  // Destination-derived (not router params) so split panes can scope this
+  // section by overriding the destination for their subtree.
+  const projectId =
+    destination && 'projectId' in destination
+      ? destination.projectId
+      : undefined;
   const appNavigation = useAppNavigation();
   const { openRelationshipSelection } = useActions();
 

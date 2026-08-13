@@ -333,7 +333,7 @@ export function WorkspacesLayout({
   }
 
   const primaryDetail = (
-    <WorkspaceDetail ref={detailRef} hotkeysEnabled={isPrimaryPaneActive} />
+    <WorkspaceDetail ref={detailRef} isPaneActive={isPrimaryPaneActive} />
   );
 
   const primaryContent = detailUnavailable ? (

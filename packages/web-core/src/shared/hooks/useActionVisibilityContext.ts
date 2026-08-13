@@ -25,6 +25,7 @@ import type {
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
+import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
 
 interface ActionVisibilityOptions {
   projectId?: string;
@@ -42,9 +43,14 @@ export function useActionVisibilityContext(
   const appRuntime = useAppRuntime();
   const currentHostId = useHostId();
   const { workspace, workspaceId, isCreateMode, repos } = useWorkspaceContext();
-  // Use workspace-specific panel state (pass undefined when in create mode)
+  // Per-workspace panel state. Document chrome (navbar, command bar) reflects
+  // the active split pane's workspace when one is focused, so its toggle
+  // indicators match the pane those toggles act on; pane subtrees stay scoped
+  // to themselves via the destination override.
+  const chromeTargetWorkspace = useChromeTargetWorkspace();
   const panelState = useWorkspacePanelState(
-    isCreateMode ? undefined : workspaceId
+    chromeTargetWorkspace?.workspaceId ??
+      (isCreateMode ? undefined : workspaceId)
   );
   const diffPathsSet = useDiffPaths();
   const diffViewMode = useDiffViewMode();

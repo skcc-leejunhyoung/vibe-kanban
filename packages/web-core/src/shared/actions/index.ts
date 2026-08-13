@@ -127,7 +127,10 @@ import {
   COMMAND_PALETTE_EVENT,
   dispatchCommandPaletteEvent,
 } from '@/shared/lib/commandPaletteEvents';
-import { openUrlInSplitPane } from '@/shared/lib/openInSplitPane';
+import {
+  getChromeTargetWorkspace,
+  openUrlInSplitPane,
+} from '@/shared/lib/openInSplitPane';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
@@ -161,6 +164,21 @@ import type {
 } from '@/shared/types/actions';
 import { ActionTargetType, NavbarDivider } from '@/shared/types/actions';
 import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostIdentity';
+
+/**
+ * Per-workspace panel toggles fired from document chrome (navbar buttons,
+ * V-sequences) act on the active split pane's workspace when one is focused,
+ * falling back to the routed workspace.
+ */
+function chromePanelWorkspaceId(
+  ctx: ActionExecutorContext
+): string | undefined {
+  return (
+    getChromeTargetWorkspace(ctx.appNavigation, ctx.appRuntime)?.workspaceId ??
+    ctx.currentWorkspaceId ??
+    undefined
+  );
+}
 
 async function resolveLinkedIssue(
   workspaceId: string,
@@ -1590,7 +1608,7 @@ export const Actions = {
       }
       useUiPreferencesStore
         .getState()
-        .toggleLeftMainPanel(ctx.currentWorkspaceId ?? undefined);
+        .toggleLeftMainPanel(chromePanelWorkspaceId(ctx));
     },
   },
 
@@ -1643,7 +1661,7 @@ export const Actions = {
         .getState()
         .toggleRightMainPanelMode(
           RIGHT_MAIN_PANEL_MODES.CHANGES,
-          ctx.currentWorkspaceId ?? undefined
+          chromePanelWorkspaceId(ctx)
         );
     },
   },
@@ -1673,7 +1691,7 @@ export const Actions = {
         .getState()
         .toggleRightMainPanelMode(
           RIGHT_MAIN_PANEL_MODES.LOGS,
-          ctx.currentWorkspaceId ?? undefined
+          chromePanelWorkspaceId(ctx)
         );
     },
   },
@@ -1704,7 +1722,7 @@ export const Actions = {
         .getState()
         .toggleRightMainPanelMode(
           RIGHT_MAIN_PANEL_MODES.PREVIEW,
-          ctx.currentWorkspaceId ?? undefined
+          chromePanelWorkspaceId(ctx)
         );
     },
   },

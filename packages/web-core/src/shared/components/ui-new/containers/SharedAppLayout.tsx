@@ -26,7 +26,9 @@ import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useAppUpdateStore } from '@/shared/stores/useAppUpdateStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
+import { openDestinationForActivePane } from '@/shared/lib/openInSplitPane';
 import {
   getProjectDestination,
   isLocalWorkspacesDestination,
@@ -63,6 +65,7 @@ import { PullRequestsBackgroundPrefetch } from '@/pages/pull-requests/PullReques
 
 export function SharedAppLayout() {
   const appNavigation = useAppNavigation();
+  const appRuntime = useAppRuntime();
   const currentDestination = useCurrentAppDestination();
   const isMobile = useIsMobile();
   const mobileFontScale = useUiPreferencesStore((s) => s.mobileFontScale);
@@ -231,12 +234,29 @@ export function SharedAppLayout() {
     void navigate({ to: '/workspaces' });
   }, [navigate]);
 
+  // Open project/PR pages in the focused split pane when one is selected,
+  // otherwise navigate the document as usual.
   const handleProjectClick = useCallback(
     (projectId: string) => {
-      appNavigation.goToProject(projectId);
+      openDestinationForActivePane(
+        { kind: 'project', projectId },
+        appNavigation,
+        appRuntime,
+        () => appNavigation.goToProject(projectId)
+      );
     },
-    [appNavigation]
+    [appNavigation, appRuntime]
   );
+
+  const handlePullRequestsClick = useCallback(() => {
+    openDestinationForActivePane(
+      { kind: 'pull-requests' },
+      appNavigation,
+      appRuntime,
+      () =>
+        void navigate({ to: '/pull-requests', search: { prUrl: undefined } })
+    );
+  }, [appNavigation, appRuntime, navigate]);
 
   const handleProjectsDragEnd = useCallback(
     async ({ source, destination }: DropResult) => {
@@ -336,12 +356,7 @@ export function SharedAppLayout() {
                 projects={orderedProjects}
                 onCreateProject={handleCreateProject}
                 onWorkspacesClick={handleWorkspacesClick}
-                onPullRequestsClick={() =>
-                  void navigate({
-                    to: '/pull-requests',
-                    search: { prUrl: undefined },
-                  })
-                }
+                onPullRequestsClick={handlePullRequestsClick}
                 onQuickChatClick={() => void QuickChatDialog.show()}
                 onProjectClick={handleProjectClick}
                 onProjectsDragEnd={handleProjectsDragEnd}
@@ -449,10 +464,7 @@ export function SharedAppLayout() {
             <button
               type="button"
               onClick={() => {
-                void navigate({
-                  to: '/pull-requests',
-                  search: { prUrl: undefined },
-                });
+                handlePullRequestsClick();
                 setIsDrawerOpen(false);
               }}
               className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"

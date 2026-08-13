@@ -46,6 +46,7 @@ import {
 } from '@/shared/lib/routes/appNavigation';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
+import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
 import { getRemoteAuthDegradedMessage } from '@/shared/lib/auth/remoteAuthDegraded';
 
 /**
@@ -179,16 +180,27 @@ export function NavbarContainer({
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const isAppBarVisible = useAppBarVisibilityStore((s) => s.isVisible);
 
-  // Action handler - all actions go through the standard executeAction
+  // Action handler - all actions go through the standard executeAction.
+  // Workspace-targeted actions act on the active split pane's workspace when
+  // one is focused, falling back to the routed workspace.
+  const chromeTargetWorkspace = useChromeTargetWorkspace();
+  const targetWorkspaceId =
+    chromeTargetWorkspace?.workspaceId ?? selectedWorkspace?.id;
   const handleExecuteAction = useCallback(
     (action: ActionDefinition) => {
-      if (action.requiresTarget && selectedWorkspace?.id) {
-        executeAction(action, selectedWorkspace.id);
+      if (action.requiresTarget && targetWorkspaceId) {
+        executeAction(
+          action,
+          targetWorkspaceId,
+          undefined,
+          undefined,
+          chromeTargetWorkspace ? chromeTargetWorkspace.hostId : undefined
+        );
       } else {
         executeAction(action);
       }
     },
-    [executeAction, selectedWorkspace?.id]
+    [executeAction, targetWorkspaceId, chromeTargetWorkspace]
   );
 
   const leftItems = useMemo(

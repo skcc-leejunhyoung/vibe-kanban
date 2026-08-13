@@ -68,6 +68,10 @@ import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { getCycledWorkspaceKey } from './workspaceCycle';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import {
+  useActivePaneWorkspace,
+  useWorkspacePanesStore,
+} from '@/shared/stores/useWorkspacePanesStore';
+import {
   ALL_WORKSPACE_HOSTS_ID,
   useWorkspaceHostSelectionStore,
 } from '@/shared/stores/useWorkspaceHostSelectionStore';
@@ -134,6 +138,14 @@ export function WorkspacesSidebarContainer({
   const hostPrimaryColors = useHostPrimaryColors(workspaceHostIds);
   const { hostId: routeHostId } = useParams({ strict: false });
   const queryClient = useQueryClient();
+  // While a secondary split pane is focused, the list mirrors and targets that
+  // pane's workspace instead of the routed (primary) one.
+  const activePaneWorkspace = useActivePaneWorkspace();
+  const effectiveSelectedWorkspaceId =
+    activePaneWorkspace?.workspaceId ?? selectedWorkspaceId;
+  const effectiveSelectedHostId = activePaneWorkspace
+    ? activePaneWorkspace.hostId
+    : (routeHostId ?? null);
 
   // Warm the queries a workspace open waits on (sessions gate the whole
   // conversation waterfall) once intent shows — a row dwelled on or the
@@ -393,6 +405,17 @@ export function WorkspacesSidebarContainer({
         openInSplitPane(path);
         return;
       }
+      // A focused secondary pane receives list selections instead of the
+      // routed primary view.
+      const panesState = useWorkspacePanesStore.getState();
+      if (panesState.activePaneId !== null) {
+        panesState.setPaneDestination(panesState.activePaneId, {
+          kind: 'workspace',
+          workspaceId: id,
+          hostId: workspaceHostId ?? null,
+        });
+        return;
+      }
       // The host selector is a user-controlled list filter, not a mirror of the
       // open workspace's route. Opening a workspace on another host must not
       // reset an "All hosts" (or any) selection — that is the whole point of the
@@ -502,8 +525,11 @@ export function WorkspacesSidebarContainer({
   const cycleWorkspace = useCallback(
     (direction: 1 | -1) => {
       if (displayedWorkspaceIds.length === 0) return;
-      const selectedWorkspaceKey = selectedWorkspaceId
-        ? getHostWorkspaceKey(selectedWorkspaceId, routeHostId ?? null)
+      const selectedWorkspaceKey = effectiveSelectedWorkspaceId
+        ? getHostWorkspaceKey(
+            effectiveSelectedWorkspaceId,
+            effectiveSelectedHostId
+          )
         : null;
       const nextWorkspaceKey = getCycledWorkspaceKey(
         displayedWorkspaceIds,
@@ -521,8 +547,8 @@ export function WorkspacesSidebarContainer({
     },
     [
       displayedWorkspaceIds,
-      selectedWorkspaceId,
-      routeHostId,
+      effectiveSelectedWorkspaceId,
+      effectiveSelectedHostId,
       activeWorkspaces,
       archivedWorkspaces,
       handleSelectWorkspace,
@@ -555,8 +581,11 @@ export function WorkspacesSidebarContainer({
       // end depending on direction.
       const current =
         focusedWorkspaceId ??
-        (selectedWorkspaceId
-          ? getHostWorkspaceKey(selectedWorkspaceId, routeHostId ?? null)
+        (effectiveSelectedWorkspaceId
+          ? getHostWorkspaceKey(
+              effectiveSelectedWorkspaceId,
+              effectiveSelectedHostId
+            )
           : null);
       const currentIndex = current ? ids.indexOf(current) : -1;
       const nextIndex =
@@ -571,8 +600,8 @@ export function WorkspacesSidebarContainer({
     [
       displayedWorkspaceIds,
       focusedWorkspaceId,
-      selectedWorkspaceId,
-      routeHostId,
+      effectiveSelectedWorkspaceId,
+      effectiveSelectedHostId,
     ]
   );
 
@@ -814,8 +843,8 @@ export function WorkspacesSidebarContainer({
       totalWorkspacesCount={activeWorkspaces.length}
       archivedWorkspaces={paginatedArchivedWorkspaces}
       isLoading={isWorkspacesListLoading}
-      selectedWorkspaceId={selectedWorkspaceId ?? null}
-      selectedWorkspaceOwnerHostId={routeHostId ?? null}
+      selectedWorkspaceId={effectiveSelectedWorkspaceId ?? null}
+      selectedWorkspaceOwnerHostId={effectiveSelectedHostId}
       onSelectWorkspace={handleSelectWorkspace}
       searchQuery={searchQuery}
       onSearchChange={setSearchQuery}

@@ -2,23 +2,34 @@ import { useCallback } from 'react';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime, type AppRuntime } from '@/shared/hooks/useAppRuntime';
-import { isMobileViewport } from '@/shared/hooks/useIsMobile';
+import {
+  useCurrentAppDestination,
+  useHasAppDestinationOverride,
+} from '@/shared/hooks/useCurrentAppDestination';
+import { isMobileViewport, useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
   isWorkspacesDestination,
+  type AppDestination,
   type AppNavigation,
 } from '@/shared/lib/routes/appNavigation';
-import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
+import {
+  getActivePaneWorkspace,
+  isPaneRenderableDestination,
+  useActivePaneWorkspace,
+  useWorkspacePanesStore,
+  type WorkspacePaneDestination,
+} from '@/shared/stores/useWorkspacePanesStore';
 
-/**
- * Set the visible pane count and make sure the pane grid (the workspaces
- * page) is on screen when more than one pane was requested.
- */
-export function applyWorkspacePaneCount(
-  total: number,
-  appNavigation: AppNavigation
-): void {
-  useWorkspacePanesStore.getState().setPaneCount(total);
-  if (total <= 1) return;
+function paneGridAvailable(appRuntime: AppRuntime): boolean {
+  return (
+    appRuntime === 'local' &&
+    !isMobileViewport() &&
+    useWorkspacePanesStore.getState().maxPanes >= 2
+  );
+}
+
+/** Make sure the pane grid (the workspaces page) is on screen. */
+function ensurePaneGridVisible(appNavigation: AppNavigation): void {
   const current = appNavigation.resolveFromPath(window.location.pathname);
   if (!isWorkspacesDestination(current)) {
     appNavigation.goToWorkspaces();
@@ -26,32 +37,114 @@ export function applyWorkspacePaneCount(
 }
 
 /**
- * Open an app URL "to the side": workspace URLs go to an in-document split
- * pane on the workspaces page; anything else (or unsupported surfaces —
- * remote web, mobile) falls back to a new browser tab/window.
+ * Set the visible pane count and make sure the pane grid is on screen when
+ * more than one pane was requested.
+ */
+export function applyWorkspacePaneCount(
+  total: number,
+  appNavigation: AppNavigation
+): void {
+  useWorkspacePanesStore.getState().setPaneCount(total);
+  if (total <= 1) return;
+  ensurePaneGridVisible(appNavigation);
+}
+
+/**
+ * True when the pane grid is on screen right now (workspaces destination on a
+ * supported surface) and a secondary pane is focused. Chrome interactions
+ * target that pane; anything else behaves exactly as without splits.
+ */
+function isActivePaneTargeted(
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime
+): boolean {
+  if (useWorkspacePanesStore.getState().activePaneId === null) return false;
+  if (!paneGridAvailable(appRuntime)) return false;
+  return isWorkspacesDestination(
+    appNavigation.resolveFromPath(window.location.pathname)
+  );
+}
+
+/**
+ * Route a destination to the active secondary pane when one is focused on the
+ * visible pane grid; otherwise navigate the document. Used by app chrome
+ * (app bar, notification bell) so "open project / pull requests /
+ * notifications" lands in the selected pane.
+ */
+export function openDestinationForActivePane(
+  destination: WorkspacePaneDestination,
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime,
+  navigateDocument: () => void
+): void {
+  const { activePaneId, setPaneDestination } =
+    useWorkspacePanesStore.getState();
+  if (
+    activePaneId !== null &&
+    isActivePaneTargeted(appNavigation, appRuntime)
+  ) {
+    setPaneDestination(activePaneId, destination);
+    return;
+  }
+  navigateDocument();
+}
+
+/**
+ * The workspace document chrome should act on: the active secondary pane's
+ * workspace while the pane grid is on screen, else null (act on the routed
+ * primary as usual). Plain variant for action `execute` bodies.
+ */
+export function getChromeTargetWorkspace(
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime
+): { workspaceId: string; hostId: string | null } | null {
+  if (!isActivePaneTargeted(appNavigation, appRuntime)) return null;
+  return getActivePaneWorkspace(useWorkspacePanesStore.getState());
+}
+
+/** Reactive variant of {@link getChromeTargetWorkspace} for chrome components. */
+export function useChromeTargetWorkspace(): {
+  workspaceId: string;
+  hostId: string | null;
+} | null {
+  const appRuntime = useAppRuntime();
+  const isMobile = useIsMobile();
+  const hasDestinationOverride = useHasAppDestinationOverride();
+  const destination = useCurrentAppDestination();
+  const maxPanes = useWorkspacePanesStore((s) => s.maxPanes);
+  const activePaneWorkspace = useActivePaneWorkspace();
+
+  if (
+    hasDestinationOverride ||
+    appRuntime !== 'local' ||
+    isMobile ||
+    maxPanes < 2 ||
+    !isWorkspacesDestination(destination)
+  ) {
+    return null;
+  }
+  return activePaneWorkspace;
+}
+
+/**
+ * Open an app URL "to the side": pane-renderable URLs (workspace, kanban,
+ * pull requests, notifications) go to an in-document split pane on the
+ * workspaces page; anything else (or unsupported surfaces — remote web,
+ * mobile) falls back to a new browser tab/window.
  */
 export function openUrlInSplitPane(
   url: string,
   appNavigation: AppNavigation,
   appRuntime: AppRuntime
 ): void {
-  const target = appNavigation.resolveFromPath(url);
-  const { maxPanes, openWorkspacePane } = useWorkspacePanesStore.getState();
-  if (
-    appRuntime !== 'local' ||
-    isMobileViewport() ||
-    maxPanes < 2 ||
-    target?.kind !== 'workspace'
-  ) {
+  const target: AppDestination | null = appNavigation.resolveFromPath(url);
+  if (!paneGridAvailable(appRuntime) || !isPaneRenderableDestination(target)) {
     openExternalUrl(url);
     return;
   }
 
-  openWorkspacePane(target.workspaceId, target.hostId ?? null);
-  const current = appNavigation.resolveFromPath(window.location.pathname);
-  if (!isWorkspacesDestination(current)) {
-    appNavigation.goToWorkspaces();
-  }
+  useWorkspacePanesStore.getState().openPaneForDestination(target);
+  ensurePaneGridVisible(appNavigation);
 }
 
 export function useOpenInSplitPane(): (url: string) => void {

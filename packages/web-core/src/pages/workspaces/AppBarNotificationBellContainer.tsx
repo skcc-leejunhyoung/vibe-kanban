@@ -3,18 +3,33 @@ import { BellIcon } from '@phosphor-icons/react';
 import { cn } from '@vibe/ui/lib/cn';
 import { Tooltip } from '@vibe/ui/components/Tooltip';
 import { useNotifications } from '@/shared/hooks/useNotifications';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { openDestinationForActivePane } from '@/shared/lib/openInSplitPane';
 
 export function AppBarNotificationBellContainer() {
   const navigate = useNavigate();
+  const appNavigation = useAppNavigation();
+  const appRuntime = useAppRuntime();
   const { unseenCount, enabled } = useNotifications();
 
   if (!enabled) return null;
+
+  const handleClick = () => {
+    // Open in the focused split pane when one is selected, else navigate.
+    openDestinationForActivePane(
+      { kind: 'notifications' },
+      appNavigation,
+      appRuntime,
+      () => void navigate({ to: '/notifications' })
+    );
+  };
 
   return (
     <Tooltip content="Notifications" side="right">
       <button
         type="button"
-        onClick={() => navigate({ to: '/notifications' })}
+        onClick={handleClick}
         className={cn(
           'relative flex items-center justify-center w-10 h-10 rounded-lg',
           'text-sm font-medium transition-colors cursor-pointer',

@@ -36,11 +36,13 @@ export interface WorkspaceDetailHandle {
 
 interface WorkspaceDetailProps {
   /**
-   * Window-level keyboard behaviour (Esc closes the right panel, unfocused
-   * arrow keys scroll the chat). The active pane passes true; inactive panes
-   * must pass false so several detail views can coexist in one document.
+   * Whether this detail view is the active pane. Inactive panes must pass
+   * false so several detail views can coexist in one document: it gates
+   * window-level keyboard behaviour (Esc closes the right panel, unfocused
+   * arrow keys scroll the chat), autofocus, and — since right-sidebar
+   * visibility is a global preference — which pane renders the right sidebar.
    */
-  hotkeysEnabled?: boolean;
+  isPaneActive?: boolean;
 }
 
 /**
@@ -52,7 +54,7 @@ interface WorkspaceDetailProps {
 export const WorkspaceDetail = forwardRef<
   WorkspaceDetailHandle,
   WorkspaceDetailProps
->(function WorkspaceDetail({ hotkeysEnabled = true }, ref) {
+>(function WorkspaceDetail({ isPaneActive = true }, ref) {
   const appNavigation = useAppNavigation();
   const {
     workspaceId,
@@ -116,13 +118,13 @@ export const WorkspaceDetail = forwardRef<
   }, [setRightMainPanelMode]);
 
   useEscapeToClose(closeRightMainPanel, {
-    enabled: hotkeysEnabled && rightMainPanelMode !== null,
+    enabled: isPaneActive && rightMainPanelMode !== null,
     scope: Scope.WORKSPACE,
   });
 
   useUnfocusedChatKeys(
     mainContainerRef,
-    hotkeysEnabled &&
+    isPaneActive &&
       !isCreateMode &&
       !!selectedWorkspace &&
       isLeftMainPanelVisible
@@ -207,7 +209,7 @@ export const WorkspaceDetail = forwardRef<
                       isNewSessionMode={isNewSessionMode}
                       onStartNewSession={startNewSession}
                       autoFocus={
-                        hotkeysEnabled &&
+                        isPaneActive &&
                         lastFocusedMainPanel === 'chat' &&
                         rightMainPanelMode !== RIGHT_MAIN_PANEL_MODES.CHANGES
                       }
@@ -236,7 +238,7 @@ export const WorkspaceDetail = forwardRef<
                       className=""
                       workspaceId={selectedWorkspace.id}
                       autoFocus={
-                        hotkeysEnabled && lastFocusedMainPanel === 'changes'
+                        isPaneActive && lastFocusedMainPanel === 'changes'
                       }
                       onPanelFocus={() => setLastFocusedMainPanel('changes')}
                     />
@@ -255,7 +257,10 @@ export const WorkspaceDetail = forwardRef<
             )}
           </Group>
 
-          {isRightSidebarVisible && !isCreateMode && (
+          {/* Right-sidebar visibility is a global preference, so in a split
+              only the active pane renders it — toggling it from the navbar
+              affects the selected pane rather than every pane at once. */}
+          {isRightSidebarVisible && isPaneActive && !isCreateMode && (
             <div className="w-[300px] shrink-0 h-full overflow-hidden">
               <RightSidebar
                 rightMainPanelMode={rightMainPanelMode}

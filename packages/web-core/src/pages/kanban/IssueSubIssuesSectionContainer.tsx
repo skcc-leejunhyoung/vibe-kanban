@@ -1,10 +1,10 @@
 import { useMemo, useCallback, useState } from 'react';
-import { useParams } from '@tanstack/react-router';
 import { DragDropContext, type DropResult } from '@hello-pangea/dnd';
 import { PlusIcon, LinkIcon } from '@phosphor-icons/react';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useOrgContext } from '@/shared/hooks/useOrgContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useActions } from '@/shared/hooks/useActions';
 import { Actions } from '@/shared/actions';
 import { bulkUpdateIssues } from '@/shared/lib/remoteApi';
@@ -27,7 +27,13 @@ interface IssueSubIssuesSectionContainerProps {
 export function IssueSubIssuesSectionContainer({
   issueId,
 }: IssueSubIssuesSectionContainerProps) {
-  const { projectId } = useParams({ strict: false });
+  const destination = useCurrentAppDestination();
+  // Destination-derived (not router params) so split panes can scope this
+  // section by overriding the destination for their subtree.
+  const projectId =
+    destination && 'projectId' in destination
+      ? destination.projectId
+      : undefined;
   const appNavigation = useAppNavigation();
   const {
     executeAction,
