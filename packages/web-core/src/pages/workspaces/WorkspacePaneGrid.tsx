@@ -13,6 +13,7 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { WorkspacePaneScope } from '@/shared/components/workspace-panes/WorkspacePaneScope';
 import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidthContext';
 import {
+  paneDestinationKey,
   useWorkspacePanesStore,
   type WorkspacePane,
   type WorkspacePaneDestination,
@@ -251,6 +252,7 @@ function WorkspacePaneView({
     >
       {pane.destination ? (
         <WorkspacePaneScope
+          key={paneDestinationKey(pane.destination)}
           destination={pane.destination}
           onNavigate={handleNavigate}
         >

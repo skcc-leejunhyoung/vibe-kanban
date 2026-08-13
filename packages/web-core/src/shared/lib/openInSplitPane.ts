@@ -37,6 +37,21 @@ export function openNewPane(appNavigation: AppNavigation): void {
   ensurePaneGridVisible(appNavigation);
 }
 
+/** Show the workspace picker in the active pane, or navigate normally. */
+export function openWorkspacesForActivePane(
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime,
+  navigateDocument: () => void
+): void {
+  if (!isActivePaneTargeted(appNavigation, appRuntime)) {
+    navigateDocument();
+    return;
+  }
+  const { activePaneId, clearPaneDestination } =
+    useWorkspacePanesStore.getState();
+  if (activePaneId !== null) clearPaneDestination(activePaneId);
+}
+
 /** Close the focused pane — only while the grid is actually on screen. */
 export function closeActivePane(appNavigation: AppNavigation): void {
   const current = appNavigation.resolveFromPath(window.location.pathname);

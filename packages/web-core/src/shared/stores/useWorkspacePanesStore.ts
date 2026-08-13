@@ -147,6 +147,7 @@ interface WorkspacePanesState {
     paneId: string,
     destination: WorkspacePaneDestination
   ) => void;
+  clearPaneDestination: (paneId: string) => void;
   /** Close a pane; the last pane is cleared instead of removed. */
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
@@ -443,6 +444,12 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         set((state) => ({
           panes: state.panes.map((pane) =>
             pane.id === paneId ? { ...pane, destination } : pane
+          ),
+        })),
+      clearPaneDestination: (paneId) =>
+        set((state) => ({
+          panes: state.panes.map((pane) =>
+            pane.id === paneId ? { ...pane, destination: null } : pane
           ),
         })),
       closePane: (paneId) =>

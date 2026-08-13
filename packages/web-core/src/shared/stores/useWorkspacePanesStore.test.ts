@@ -18,6 +18,7 @@ const {
   getActivePaneWorkspace,
   layoutAfterClose,
   layoutAfterSplit,
+  paneDestinationKey,
   sameDestination,
   useWorkspacePanesStore,
 } = await import('./useWorkspacePanesStore');
@@ -210,6 +211,21 @@ describe('closePane', () => {
   });
 });
 
+describe('clearPaneDestination', () => {
+  it('shows the picker without changing the pane structure', () => {
+    store.getState().ensurePane();
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination({ kind: 'pull-requests' });
+
+    store.getState().clearPaneDestination('pane-2');
+
+    expect(store.getState().panes).toEqual([
+      { id: 'pane-1', destination: ws('ws-a') },
+      { id: 'pane-2', destination: null },
+    ]);
+  });
+});
+
 describe('layout math', () => {
   const panes = (...ids: string[]) =>
     ids.map((id) => ({ id, destination: null }));
@@ -242,6 +258,12 @@ describe('layout math', () => {
 });
 
 describe('helpers', () => {
+  it('gives workspace and pull requests distinct render identities', () => {
+    expect(paneDestinationKey(ws('ws-a'))).not.toBe(
+      paneDestinationKey({ kind: 'pull-requests' })
+    );
+  });
+
   it('cycles across panes and reports focus serial', () => {
     store.getState().ensurePane();
     store.getState().openPaneForDestination(ws('ws-a'));

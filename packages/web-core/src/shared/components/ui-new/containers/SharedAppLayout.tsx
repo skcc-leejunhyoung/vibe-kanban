@@ -37,6 +37,8 @@ import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import {
   openDestinationForActivePane,
+  openNewPane,
+  openWorkspacesForActivePane,
   openUrlInSplitPane,
 } from '@/shared/lib/openInSplitPane';
 import {
@@ -245,10 +247,14 @@ export function SharedAppLayout() {
   const handleWorkspacesClick = useCallback(
     (event?: MouseEvent<HTMLButtonElement>) => {
       if (event?.metaKey || event?.ctrlKey) {
-        openUrlInSplitPane('/workspaces', appNavigation, appRuntime);
+        openNewPane(appNavigation);
         return;
       }
-      void navigate({ to: '/workspaces' });
+      openWorkspacesForActivePane(
+        appNavigation,
+        appRuntime,
+        () => void navigate({ to: '/workspaces' })
+      );
     },
     [appNavigation, appRuntime, navigate]
   );
