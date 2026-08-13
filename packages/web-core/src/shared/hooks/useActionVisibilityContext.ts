@@ -26,6 +26,8 @@ import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
+import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
+import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 
 interface ActionVisibilityOptions {
   projectId?: string;
@@ -42,15 +44,36 @@ export function useActionVisibilityContext(
 ): ActionVisibilityContext {
   const appRuntime = useAppRuntime();
   const currentHostId = useHostId();
-  const { workspace, workspaceId, isCreateMode, repos } = useWorkspaceContext();
-  // Per-workspace panel state. Document chrome (navbar, command bar) reflects
-  // the active split pane's workspace when one is focused, so its toggle
-  // indicators match the pane those toggles act on; pane subtrees stay scoped
-  // to themselves via the destination override.
+  const {
+    workspace: contextWorkspace,
+    workspaceId: contextWorkspaceId,
+    isCreateMode: contextIsCreateMode,
+    repos: contextRepos,
+  } = useWorkspaceContext();
+  // Document chrome (navbar, command bar) reflects the active split pane's
+  // workspace when one is focused, so its indicators and targets match the
+  // pane those actions act on; pane subtrees stay scoped to themselves via
+  // the destination override (the chrome target is null there).
   const chromeTargetWorkspace = useChromeTargetWorkspace();
+  const workspaceId = chromeTargetWorkspace?.workspaceId ?? contextWorkspaceId;
+  const isCreateMode = chromeTargetWorkspace ? false : contextIsCreateMode;
+  const { data: chromeTargetRecord } = useWorkspaceRecord(
+    chromeTargetWorkspace?.workspaceId,
+    {
+      enabled: !!chromeTargetWorkspace,
+      hostId: chromeTargetWorkspace ? chromeTargetWorkspace.hostId : undefined,
+    }
+  );
+  const workspace = chromeTargetWorkspace
+    ? chromeTargetRecord
+    : contextWorkspace;
+  const { repos: chromeTargetRepos } = useWorkspaceRepo(
+    chromeTargetWorkspace?.workspaceId,
+    { enabled: !!chromeTargetWorkspace }
+  );
+  const repos = chromeTargetWorkspace ? chromeTargetRepos : contextRepos;
   const panelState = useWorkspacePanelState(
-    chromeTargetWorkspace?.workspaceId ??
-      (isCreateMode ? undefined : workspaceId)
+    isCreateMode ? undefined : workspaceId
   );
   const diffPathsSet = useDiffPaths();
   const diffViewMode = useDiffViewMode();

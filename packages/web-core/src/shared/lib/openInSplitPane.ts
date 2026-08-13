@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime, type AppRuntime } from '@/shared/hooks/useAppRuntime';
@@ -15,7 +15,6 @@ import {
 import {
   getActivePaneWorkspace,
   isPaneRenderableDestination,
-  useActivePaneWorkspace,
   useWorkspacePanesStore,
   type WorkspacePaneDestination,
 } from '@/shared/stores/useWorkspacePanesStore';
@@ -102,28 +101,47 @@ export function getChromeTargetWorkspace(
   return getActivePaneWorkspace(useWorkspacePanesStore.getState());
 }
 
-/** Reactive variant of {@link getChromeTargetWorkspace} for chrome components. */
-export function useChromeTargetWorkspace(): {
-  workspaceId: string;
-  hostId: string | null;
-} | null {
+/**
+ * The active secondary pane's destination while the pane grid is on screen
+ * and this hook runs in document scope (no destination override) — i.e. the
+ * destination document chrome should reflect and act on. Null → chrome
+ * behaves as without splits (routed primary).
+ */
+export function useChromeTargetDestination(): WorkspacePaneDestination | null {
   const appRuntime = useAppRuntime();
   const isMobile = useIsMobile();
   const hasDestinationOverride = useHasAppDestinationOverride();
   const destination = useCurrentAppDestination();
   const maxPanes = useWorkspacePanesStore((s) => s.maxPanes);
-  const activePaneWorkspace = useActivePaneWorkspace();
+  const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
+  const panes = useWorkspacePanesStore((s) => s.panes);
 
   if (
     hasDestinationOverride ||
     appRuntime !== 'local' ||
     isMobile ||
     maxPanes < 2 ||
+    activePaneId === null ||
     !isWorkspacesDestination(destination)
   ) {
     return null;
   }
-  return activePaneWorkspace;
+  return panes.find((pane) => pane.id === activePaneId)?.destination ?? null;
+}
+
+/** Reactive variant of {@link getChromeTargetWorkspace} for chrome components. */
+export function useChromeTargetWorkspace(): {
+  workspaceId: string;
+  hostId: string | null;
+} | null {
+  const destination = useChromeTargetDestination();
+  return useMemo(() => {
+    if (destination?.kind !== 'workspace') return null;
+    return {
+      workspaceId: destination.workspaceId,
+      hostId: destination.hostId ?? null,
+    };
+  }, [destination]);
 }
 
 /**

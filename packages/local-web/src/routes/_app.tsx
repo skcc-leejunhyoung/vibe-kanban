@@ -20,6 +20,7 @@ import { SharedAppLayout } from '@/shared/components/ui-new/containers/SharedApp
 import { HostUserSystemProvider } from '@web/app/providers/HostUserSystemProvider';
 import { useWorkspacePaneShortcuts } from '@/shared/keyboard/useWorkspacePaneShortcuts';
 import { useEscapeToBlur } from '@/shared/keyboard/useEscapeToBlur';
+import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
 
 function KeyboardShortcutsHandler() {
   useKeyShowHelp(
@@ -28,7 +29,10 @@ function KeyboardShortcutsHandler() {
     },
     { scope: Scope.GLOBAL }
   );
-  useWorkspaceShortcuts();
+  // While a secondary workspace pane is focused, that pane's own
+  // useWorkspaceShortcuts instance answers the sequences instead.
+  const chromeTargetWorkspace = useChromeTargetWorkspace();
+  useWorkspaceShortcuts({ enabled: chromeTargetWorkspace === null });
   useIssueShortcuts();
   useWorkspacePaneShortcuts();
   useEscapeToBlur();

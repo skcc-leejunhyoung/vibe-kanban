@@ -17,10 +17,20 @@ const OPTIONS = {
   sequenceTimeout: SEQUENCE_TIMEOUT_MS,
 } as const;
 
-export function useWorkspaceShortcuts() {
+interface UseWorkspaceShortcutsOptions {
+  /**
+   * Gate for split panes: the document instance passes false while a
+   * secondary workspace pane is focused (that pane mounts its own instance),
+   * so exactly one registration answers each sequence.
+   */
+  enabled?: boolean;
+}
+
+export function useWorkspaceShortcuts(options?: UseWorkspaceShortcutsOptions) {
   const { executeAction } = useActions();
   const { workspaceId, repos, startNewSession } = useWorkspaceContext();
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const hotkeyOptions = { ...OPTIONS, enabled: options?.enabled ?? true };
 
   const workspaceIdRef = useRef(workspaceId);
   const reposRef = useRef(repos);
@@ -61,169 +71,169 @@ export function useWorkspaceShortcuts() {
   useReboundHotkey(
     seq('seq-go-settings'),
     () => execute(Actions.Settings),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-go-new-workspace'),
     () => execute(Actions.NewWorkspace),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-go-quick-chat'),
     () => execute(Actions.QuickChat),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
 
   useReboundHotkey(
     seq('seq-workspace-new-session'),
     () => startNewSessionRef.current(),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-workspace-duplicate'),
     () => execute(Actions.DuplicateWorkspace),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-workspace-rename'),
     () => execute(Actions.RenameWorkspace),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-workspace-pin'),
     () => execute(Actions.PinWorkspace),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-workspace-archive'),
     () => execute(Actions.ArchiveWorkspace),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-workspace-delete'),
     () => execute(Actions.DeleteWorkspace),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
 
   useReboundHotkey(
     seq('seq-view-changes'),
     () => execute(Actions.ToggleChangesMode),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-view-logs'),
     () => execute(Actions.ToggleLogsMode),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-view-preview'),
     () => execute(Actions.TogglePreviewMode),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-view-sidebar'),
     () => execute(Actions.ToggleLeftSidebar),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-view-right-sidebar'),
     () => execute(Actions.ToggleRightSidebar),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-view-chat'),
     () => execute(Actions.ToggleLeftMainPanel),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
 
   useReboundHotkey(
     seq('seq-git-pr'),
     () => execute(Actions.GitCreatePR),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-git-merge'),
     () => execute(Actions.GitMerge),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-git-commit'),
     () => execute(Actions.GitCommit),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-git-rebase'),
     () => execute(Actions.GitRebase),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-git-push'),
     () => execute(Actions.GitPush),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
 
   useReboundHotkey(
     seq('seq-yank-path'),
     () => execute(Actions.CopyWorkspacePath),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-yank-logs'),
     () => execute(Actions.CopyRawLogs),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
 
   useReboundHotkey(
     seq('seq-toggle-dev-server'),
     () => execute(Actions.ToggleDevServer),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-toggle-wrap'),
     () => execute(Actions.ToggleWrapLines),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
 
   useReboundHotkey(
     seq('seq-run-setup'),
     () => execute(Actions.RunSetupScript),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-run-cleanup'),
     () => execute(Actions.RunCleanupScript),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
   useReboundHotkey(
     seq('seq-run-archive'),
     () => execute(Actions.RunArchiveScript),
-    OPTIONS,
+    hotkeyOptions,
     [overrides]
   );
 }

@@ -34,6 +34,7 @@ import { ActionsContext } from '@/shared/hooks/useActions';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
+import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
 
 interface ActionsProviderProps {
   children: ReactNode;
@@ -67,8 +68,13 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
   // Get remote workspaces (optional — not available on all routes)
   const userCtx = useContext(UserContext);
   const projectCtx = useContext(ProjectContext);
-  // Get dev server state
-  const { start, stop, runningDevServers } = useDevServer(workspaceId);
+  // Dev server controls act on the active split pane's workspace when the
+  // document chrome (navbar button, command bar) targets one; pane-scoped
+  // provider instances see a null chrome target and use their own workspace.
+  const chromeTargetWorkspace = useChromeTargetWorkspace();
+  const { start, stop, runningDevServers } = useDevServer(
+    chromeTargetWorkspace?.workspaceId ?? workspaceId
+  );
 
   // Default status for issue creation based on current kanban tab
   const [defaultCreateStatusId, setDefaultCreateStatusId] = useState<

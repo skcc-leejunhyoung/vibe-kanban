@@ -1,5 +1,4 @@
 import { useCallback, useRef, useEffect, useMemo } from 'react';
-import { useParams } from '@tanstack/react-router';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useActions } from '@/shared/hooks/useActions';
 import { Actions } from '@/shared/actions';
@@ -35,14 +34,30 @@ const I_GROUP_BINDING_IDS = sequentialBindings
   .filter((b) => b.keys[0] === 'i')
   .map((b) => b.id);
 
-export function useIssueShortcuts() {
+interface UseIssueShortcutsOptions {
+  /**
+   * Extra gate on top of the kanban-destination check. Split panes pass their
+   * active flag so only the focused pane's kanban answers issue shortcuts.
+   */
+  enabled?: boolean;
+}
+
+export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
   const { executeAction } = useActions();
-  const { projectId, issueId } = useParams({ strict: false });
   const destination = useCurrentAppDestination();
+  // Destination-derived (not router params) so a split pane's kanban can
+  // scope these shortcuts via its destination override.
+  const projectId =
+    destination && 'projectId' in destination
+      ? destination.projectId
+      : undefined;
+  const issueId =
+    destination && 'issueId' in destination ? destination.issueId : undefined;
   const { isCreateMode: isCreatingIssue } = useCurrentKanbanRouteState();
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
 
-  const isKanban = isProjectDestination(destination);
+  const isKanban =
+    isProjectDestination(destination) && (options?.enabled ?? true);
 
   // Multi-selection support
   const multiSelectedIssueIds = useIssueSelectionStore(

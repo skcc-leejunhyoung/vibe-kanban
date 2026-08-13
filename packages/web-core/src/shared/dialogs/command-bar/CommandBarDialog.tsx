@@ -1,5 +1,4 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react';
-import { useParams } from '@tanstack/react-router';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
 import { CommandDialog } from '@vibe/ui/components/Command';
@@ -10,6 +9,12 @@ import {
 import { useActions } from '@/shared/hooks/useActions';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
+import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
+import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
+import {
+  useChromeTargetDestination,
+  useChromeTargetWorkspace,
+} from '@/shared/lib/openInSplitPane';
 import { IdeIcon } from '@/shared/components/IdeIcon';
 import type { PageId, ResolvedGroupItem } from '@/shared/types/commandBar';
 import {
@@ -45,7 +50,7 @@ export interface CommandBarDialogProps {
 function CommandBarContent({
   page,
   workspaceId,
-  hostId,
+  hostId: hostIdProp,
   initialRepoId,
   propProjectId,
   propIssueIds,
@@ -62,15 +67,45 @@ function CommandBarContent({
   const restoreFocusOnCloseRef = useRef(true);
   const pendingAfterCloseRef = useRef<(() => void) | null>(null);
   const { executeAction, getLabel, executorContext } = useActions();
-  const { workspaceId: contextWorkspaceId, repos } = useWorkspaceContext();
+  const { workspaceId: contextRouteWorkspaceId, repos: contextRepos } =
+    useWorkspaceContext();
   // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const maxSplitPanes = useWorkspacePanesStore((state) => state.maxPanes);
 
-  // Get issue context from props, multi-selection store, or route params
-  const { projectId: routeProjectId, issueId: routeIssueId } = useParams({
-    strict: false,
-  });
+  // The command bar acts on the active split pane when one is focused: its
+  // workspace becomes the implicit target and its destination supplies the
+  // kanban issue context.
+  const chromeTargetDestination = useChromeTargetDestination();
+  const chromeTargetWorkspace = useChromeTargetWorkspace();
+  const contextWorkspaceId =
+    chromeTargetWorkspace?.workspaceId ?? contextRouteWorkspaceId;
+  // An explicit prop (three-dot menu target) wins; otherwise workspace props
+  // follow the active pane so its host scoping stays correct.
+  const hostId =
+    workspaceId !== undefined || hostIdProp !== undefined
+      ? hostIdProp
+      : chromeTargetWorkspace
+        ? chromeTargetWorkspace.hostId
+        : undefined;
+  const { repos: chromeTargetRepos } = useWorkspaceRepo(
+    chromeTargetWorkspace?.workspaceId,
+    { enabled: !!chromeTargetWorkspace }
+  );
+  const repos = chromeTargetWorkspace ? chromeTargetRepos : contextRepos;
+
+  // Issue context from the effective destination (active pane or document
+  // route), not router params, so a focused kanban pane supplies it too.
+  const documentDestination = useCurrentAppDestination();
+  const effectiveDestination = chromeTargetDestination ?? documentDestination;
+  const routeProjectId =
+    effectiveDestination && 'projectId' in effectiveDestination
+      ? effectiveDestination.projectId
+      : undefined;
+  const routeIssueId =
+    effectiveDestination && 'issueId' in effectiveDestination
+      ? effectiveDestination.issueId
+      : undefined;
   const multiSelectedIssueIds = useIssueSelectionStore(
     (s) => s.selectedIssueIds
   );

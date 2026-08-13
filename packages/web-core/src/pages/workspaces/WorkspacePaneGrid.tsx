@@ -21,8 +21,25 @@ import {
 } from '@/shared/stores/useWorkspacePanesStore';
 import { ProjectKanban } from '@/pages/kanban/ProjectKanban';
 import { PullRequestsPage } from '@/pages/pull-requests/PullRequestsPage';
+import { useIssueShortcuts } from '@/shared/keyboard/useIssueShortcuts';
+import { useWorkspaceShortcuts } from '@/shared/keyboard/useWorkspaceShortcuts';
 import { NotificationsPage } from './NotificationsPage';
 import { WorkspaceDetail } from './WorkspaceDetail';
+
+/**
+ * Pane-scoped keyboard registrations: they read the pane's context (workspace,
+ * repos, sessions, actions), so sequences act on the pane — the document-level
+ * instances are gated off / inert while this pane is focused.
+ */
+function WorkspacePaneShortcuts({ enabled }: { enabled: boolean }) {
+  useWorkspaceShortcuts({ enabled });
+  return null;
+}
+
+function KanbanPaneShortcuts({ enabled }: { enabled: boolean }) {
+  useIssueShortcuts({ enabled });
+  return null;
+}
 
 const paneSeparator = (
   <Separator className="relative z-10 w-1 shrink-0 bg-border/60 transition-colors hover:bg-brand data-[resize-handle-active]:bg-brand" />
@@ -113,11 +130,21 @@ function PaneOutlet({
 }) {
   switch (destination.kind) {
     case 'workspace':
-      return <WorkspaceDetail isPaneActive={isPaneActive} />;
+      return (
+        <>
+          <WorkspacePaneShortcuts enabled={isPaneActive} />
+          <WorkspaceDetail isPaneActive={isPaneActive} />
+        </>
+      );
     case 'project':
     case 'project-issue':
     case 'project-issue-workspace':
-      return <ProjectKanban />;
+      return (
+        <>
+          <KanbanPaneShortcuts enabled={isPaneActive} />
+          <ProjectKanban />
+        </>
+      );
     case 'pull-requests':
       return <PullRequestsPage />;
     case 'notifications':

@@ -45,8 +45,13 @@ import {
   isWorkspacesDestination,
 } from '@/shared/lib/routes/appNavigation';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
-import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
+import {
+  openDestinationForActivePane,
+  useChromeTargetWorkspace,
+} from '@/shared/lib/openInSplitPane';
+import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { getRemoteAuthDegradedMessage } from '@/shared/lib/auth/remoteAuthDegraded';
 
 /**
@@ -134,7 +139,23 @@ export function NavbarContainer({
 }) {
   const { t } = useTranslation('common');
   const { executeAction } = useActions();
-  const { workspace: selectedWorkspace, isCreateMode } = useWorkspaceContext();
+  const appRuntime = useAppRuntime();
+  const { workspace: contextWorkspace, isCreateMode: contextIsCreateMode } =
+    useWorkspaceContext();
+  // The navbar mirrors and acts on the active split pane's workspace when one
+  // is focused, falling back to the routed workspace.
+  const chromeTargetWorkspace = useChromeTargetWorkspace();
+  const { data: chromeTargetRecord } = useWorkspaceRecord(
+    chromeTargetWorkspace?.workspaceId,
+    {
+      enabled: !!chromeTargetWorkspace,
+      hostId: chromeTargetWorkspace ? chromeTargetWorkspace.hostId : undefined,
+    }
+  );
+  const selectedWorkspace = chromeTargetWorkspace
+    ? chromeTargetRecord
+    : contextWorkspace;
+  const isCreateMode = chromeTargetWorkspace ? false : contextIsCreateMode;
   const { workspaces } = useUserContext();
   const syncErrorContext = useSyncErrorContext();
   const { remoteAuthDegraded } = useUserSystem();
@@ -157,16 +178,19 @@ export function NavbarContainer({
   const workspaceHostId = useHostId();
 
   // Find remote workspace linked to current local workspace
+  const effectiveWorkspaceHostId = chromeTargetWorkspace
+    ? chromeTargetWorkspace.hostId
+    : workspaceHostId;
   const linkedRemoteWorkspace = useMemo(() => {
     if (!selectedWorkspace?.id) return null;
     return (
       findRemoteWorkspaceByLocalIdentity(
         workspaces,
         selectedWorkspace.id,
-        workspaceHostId
+        effectiveWorkspaceHostId
       ) ?? null
     );
-  }, [workspaces, selectedWorkspace?.id, workspaceHostId]);
+  }, [workspaces, selectedWorkspace?.id, effectiveWorkspaceHostId]);
 
   const { data: orgsData } = useUserOrganizations();
   const selectedOrgId = useOrganizationStore((s) => s.selectedOrgId);
@@ -183,7 +207,6 @@ export function NavbarContainer({
   // Action handler - all actions go through the standard executeAction.
   // Workspace-targeted actions act on the active split pane's workspace when
   // one is focused, falling back to the routed workspace.
-  const chromeTargetWorkspace = useChromeTargetWorkspace();
   const targetWorkspaceId =
     chromeTargetWorkspace?.workspaceId ?? selectedWorkspace?.id;
   const handleExecuteAction = useCallback(
@@ -273,7 +296,13 @@ export function NavbarContainer({
     const items: NavbarBreadcrumbItem[] = [
       {
         label: project.name,
-        onClick: () => appNavigation.goToProject(linkedProjectId),
+        onClick: () =>
+          openDestinationForActivePane(
+            { kind: 'project', projectId: linkedProjectId },
+            appNavigation,
+            appRuntime,
+            () => appNavigation.goToProject(linkedProjectId)
+          ),
       },
     ];
 
@@ -283,7 +312,17 @@ export function NavbarContainer({
         items.push({
           label: issue.simple_id,
           onClick: () =>
-            appNavigation.goToProjectIssue(linkedProjectId, linkedIssueId),
+            openDestinationForActivePane(
+              {
+                kind: 'project-issue',
+                projectId: linkedProjectId,
+                issueId: linkedIssueId,
+              },
+              appNavigation,
+              appRuntime,
+              () =>
+                appNavigation.goToProjectIssue(linkedProjectId, linkedIssueId)
+            ),
         });
       }
     }
@@ -305,6 +344,7 @@ export function NavbarContainer({
     selectedWorkspace?.name,
     selectedWorkspace?.branch,
     appNavigation,
+    appRuntime,
   ]);
 
   // Mobile-specific callbacks
