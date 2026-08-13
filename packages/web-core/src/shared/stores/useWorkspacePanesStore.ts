@@ -231,23 +231,16 @@ export function layoutAfterSplit(
   };
 }
 
-/** A closed pane's width goes to its left neighbour (right for the first). */
+/** Remaining panes preserve their ratios while expanding into the closed space. */
 export function layoutAfterClose(
   panes: WorkspacePane[],
   layout: Record<string, number>,
   closedPaneId: string
 ): Record<string, number> {
   const base = normalizedLayout(panes, layout);
-  const index = panes.findIndex((pane) => pane.id === closedPaneId);
-  if (index < 0) return base;
+  if (!panes.some((pane) => pane.id === closedPaneId)) return base;
   const remaining = panes.filter((pane) => pane.id !== closedPaneId);
-  const neighbour = panes[index - 1] ?? panes[index + 1];
-  const next = { ...base };
-  if (neighbour) {
-    next[neighbour.id] = base[neighbour.id] + base[closedPaneId];
-  }
-  delete next[closedPaneId];
-  return normalizedLayout(remaining, next);
+  return normalizedLayout(remaining, base);
 }
 
 interface PersistedPaneV1 {

@@ -196,17 +196,18 @@ describe('closePane', () => {
     ]);
   });
 
-  it('gives the closed width to the left neighbour and refocuses it', () => {
+  it('preserves remaining pane ratios and refocuses the left neighbour', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));
     store.getState().openPaneForDestination(ws('ws-c'));
-    // All three panes have equal width; the closed third goes to pane-2.
+    // Equal remaining panes expand equally.
     store.getState().closePane('pane-3');
     expect(store.getState().panes.map((pane) => pane.id)).toEqual([
       'pane-1',
       'pane-2',
     ]);
-    expect(store.getState().layout['pane-2']).toBeCloseTo(200 / 3);
+    expect(store.getState().layout['pane-1']).toBeCloseTo(50);
+    expect(store.getState().layout['pane-2']).toBeCloseTo(50);
     expect(store.getState().activePaneId).toBe('pane-2');
   });
 });
@@ -241,7 +242,7 @@ describe('layout math', () => {
     expect(layout.b).toBeCloseTo(80 / 3);
   });
 
-  it('layoutAfterClose returns the width to the left neighbour', () => {
+  it('layoutAfterClose preserves remaining ratios', () => {
     const layout = layoutAfterClose(
       panes('a', 'b', 'c'),
       {
@@ -251,8 +252,8 @@ describe('layout math', () => {
       },
       'c'
     );
-    expect(layout.a).toBeCloseTo(20);
-    expect(layout.b).toBeCloseTo(80);
+    expect(layout.a).toBeCloseTo(40);
+    expect(layout.b).toBeCloseTo(60);
   });
 });
 
