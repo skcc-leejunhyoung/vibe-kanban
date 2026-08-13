@@ -10,7 +10,7 @@ import {
 
 function makeRemoteWorkspace(
   overrides: Partial<RemoteWorkspace> = {}
-): LinkedWorkspace {
+): RemoteWorkspace & LinkedWorkspace {
   return {
     id: 'remote-workspace',
     project_id: 'project',

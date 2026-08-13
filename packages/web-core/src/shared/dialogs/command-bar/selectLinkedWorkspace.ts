@@ -1,13 +1,17 @@
 import { StackIcon } from '@phosphor-icons/react';
-import type { Workspace as RemoteWorkspace } from 'shared/remote-types';
 import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 import { getLinkedWorkspaceDescription } from '@/shared/lib/linkedWorkspaceDescription';
 import { ActionTargetType } from '@/shared/types/actions';
 import { SelectionDialog } from './SelectionDialog';
 
-export type LinkedWorkspace = RemoteWorkspace & {
+export interface LinkedWorkspace {
+  id: string;
+  host_id: string | null;
   local_workspace_id: string;
-};
+  name: string | null;
+  archived: boolean;
+  updated_at: string;
+}
 
 export interface LinkedWorkspaceSummary {
   id: string;

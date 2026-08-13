@@ -39,6 +39,7 @@ import {
 } from '@/shared/stores/useUiPreferencesStore';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { selectLinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
+import type { LinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
@@ -50,6 +51,7 @@ import {
   getRepositoryNameFromPrUrl,
 } from './pullRequestUrl';
 import { handlePullRequestDetailsEscape } from './pullRequestDetailsEscape';
+import { findLocalPullRequestWorkspaces } from './localPullRequestWorkspaces';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
@@ -492,17 +494,47 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
             workspace.local_workspace_id !== null &&
             issueIds.has(workspace.issue_id)
         );
-        if (mappedWorkspaces.length === 0) {
+        const linkedWorkspaces = new Map<string, LinkedWorkspace>();
+        for (const workspace of mappedWorkspaces) {
+          linkedWorkspaces.set(
+            `${workspace.host_id}:${workspace.local_workspace_id}`,
+            workspace
+          );
+        }
+        for (const workspace of findLocalPullRequestWorkspaces(
+          pullRequest.url,
+          workspaceSummaries
+        )) {
+          const hostId = workspace.hostId ?? null;
+          const key = `${hostId}:${workspace.id}`;
+          if (!linkedWorkspaces.has(key)) {
+            linkedWorkspaces.set(key, {
+              id: key,
+              host_id: hostId,
+              local_workspace_id: workspace.id,
+              name: workspace.name,
+              archived: workspace.isArchived ?? false,
+              updated_at: workspace.updatedAt,
+            });
+          }
+        }
+        const mappedAndLocalWorkspaces = [...linkedWorkspaces.values()];
+        if (mappedAndLocalWorkspaces.length === 0) {
           await showEmptyMapping('This pull request has no mapped workspaces.');
           return;
         }
         const selected = await selectLinkedWorkspace({
           title: 'Mapped workspaces',
-          workspaces: mappedWorkspaces,
+          workspaces: mappedAndLocalWorkspaces,
           workspaceSummaries,
           getDescriptionPrefix: (workspace) =>
             mappedIssues.find(
-              ({ link }) => link.issue_id === workspace.issue_id
+              ({ link }) =>
+                mappedWorkspaces.find(
+                  (mappedWorkspace) =>
+                    mappedWorkspace.id === workspace.id &&
+                    mappedWorkspace.issue_id === link.issue_id
+                ) !== undefined
             )?.issue.simple_id,
         });
         if (selected) {
