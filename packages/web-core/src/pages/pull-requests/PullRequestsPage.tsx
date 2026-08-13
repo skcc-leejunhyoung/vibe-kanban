@@ -16,6 +16,7 @@ import {
   FunnelIcon,
   GitMergeIcon,
   GitPullRequestIcon,
+  GlobeIcon,
   MagnifyingGlassIcon,
   SpinnerGapIcon,
   StackIcon,
@@ -1005,6 +1006,18 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                     title="View mapped workspaces"
                   >
                     <StackIcon className="size-icon-sm" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openExternalUrl(pr.url);
+                    }}
+                    className="flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high"
+                    aria-label={`Open pull request #${String(pr.number)} in web`}
+                    title="Open in web"
+                  >
+                    <GlobeIcon className="size-icon-sm" />
                   </button>
                 </span>
               </div>
