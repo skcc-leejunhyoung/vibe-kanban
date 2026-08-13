@@ -2,13 +2,19 @@ import { useCallback } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import {
+  CLOSE_PANE_BINDING_ID,
+  NEW_PANE_BINDING_ID,
   NEXT_SPLIT_PANE_BINDING_ID,
   PREVIOUS_SPLIT_PANE_BINDING_ID,
   SPLIT_PRESET_BINDING_IDS,
   resolveModifier,
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
-import { applyWorkspacePaneCount } from '@/shared/lib/openInSplitPane';
+import {
+  closeActivePane,
+  focusPaneAt,
+  openNewPane,
+} from '@/shared/lib/openInSplitPane';
 import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 
 function hotkeyOptions(keys: string) {
@@ -22,8 +28,10 @@ function hotkeyOptions(keys: string) {
 }
 
 /**
- * Global split-pane shortcuts: mod+alt+shift+N sets the visible pane count,
- * alt+tab / shift+alt+tab cycle pane focus. Mounted once per document.
+ * Global split-pane shortcuts, VS Code style: mod+alt+shift+N focuses the
+ * pane at that position (never creates one), mod+t opens a new pane next to
+ * the active one, mod+w closes the focused pane, and alt+tab / shift+alt+tab
+ * cycle pane focus. Mounted once per document.
  */
 export function useWorkspacePaneShortcuts() {
   const appNavigation = useAppNavigation();
@@ -33,10 +41,10 @@ export function useWorkspacePaneShortcuts() {
     (state) => state.cycleActivePane
   );
 
-  const setCount = useCallback(
-    (total: number) => (event: KeyboardEvent) => {
+  const focusAt = useCallback(
+    (index: number) => (event: KeyboardEvent) => {
       event.preventDefault();
-      applyWorkspacePaneCount(total, appNavigation);
+      focusPaneAt(index, appNavigation);
     },
     [appNavigation]
   );
@@ -54,42 +62,64 @@ export function useWorkspacePaneShortcuts() {
   const seven = bind(7);
   const eight = bind(8);
   const nine = bind(9);
-  useHotkeys(one || 'unidentified', setCount(1), hotkeyOptions(one), [
+  useHotkeys(one || 'unidentified', focusAt(0), hotkeyOptions(one), [
     one,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(two || 'unidentified', setCount(2), hotkeyOptions(two), [
+  useHotkeys(two || 'unidentified', focusAt(1), hotkeyOptions(two), [
     two,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(three || 'unidentified', setCount(3), hotkeyOptions(three), [
+  useHotkeys(three || 'unidentified', focusAt(2), hotkeyOptions(three), [
     three,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(four || 'unidentified', setCount(4), hotkeyOptions(four), [
+  useHotkeys(four || 'unidentified', focusAt(3), hotkeyOptions(four), [
     four,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(five || 'unidentified', setCount(5), hotkeyOptions(five), [
+  useHotkeys(five || 'unidentified', focusAt(4), hotkeyOptions(five), [
     five,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(six || 'unidentified', setCount(6), hotkeyOptions(six), [
+  useHotkeys(six || 'unidentified', focusAt(5), hotkeyOptions(six), [
     six,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(seven || 'unidentified', setCount(7), hotkeyOptions(seven), [
+  useHotkeys(seven || 'unidentified', focusAt(6), hotkeyOptions(seven), [
     seven,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(eight || 'unidentified', setCount(8), hotkeyOptions(eight), [
+  useHotkeys(eight || 'unidentified', focusAt(7), hotkeyOptions(eight), [
     eight,
-    setCount,
+    focusAt,
   ]);
-  useHotkeys(nine || 'unidentified', setCount(9), hotkeyOptions(nine), [
+  useHotkeys(nine || 'unidentified', focusAt(8), hotkeyOptions(nine), [
     nine,
-    setCount,
+    focusAt,
   ]);
+
+  const newPaneKeys = resolveModifier(NEW_PANE_BINDING_ID, overrides);
+  useHotkeys(
+    newPaneKeys || 'unidentified',
+    (event) => {
+      event.preventDefault();
+      openNewPane(appNavigation);
+    },
+    hotkeyOptions(newPaneKeys),
+    [newPaneKeys, appNavigation]
+  );
+
+  const closePaneKeys = resolveModifier(CLOSE_PANE_BINDING_ID, overrides);
+  useHotkeys(
+    closePaneKeys || 'unidentified',
+    (event) => {
+      event.preventDefault();
+      closeActivePane(appNavigation);
+    },
+    hotkeyOptions(closePaneKeys),
+    [closePaneKeys, appNavigation]
+  );
 
   const nextKeys = resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, overrides);
   const previousKeys = resolveModifier(

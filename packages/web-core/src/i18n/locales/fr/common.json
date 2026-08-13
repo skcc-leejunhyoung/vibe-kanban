@@ -49,8 +49,8 @@
     "subagent": {
       "defaultType": "Sous-agent"
     },
-    "loadingEarlierMessages": "Chargement des messages pr\u00e9c\u00e9dents",
-    "backgroundWaiting": "En attente de la fin des t\u00e2ches en arri\u00e8re-plan"
+    "loadingEarlierMessages": "Chargement des messages précédents",
+    "backgroundWaiting": "En attente de la fin des tâches en arrière-plan"
   },
   "folderPicker": {
     "legend": "Cliquez sur les noms de dossiers pour naviguer • Utilisez les boutons d'action pour sélectionner",
@@ -302,10 +302,12 @@
       "openCommandBar": "Ouvrir la barre de commandes",
       "nextSplitPane": "Activer le panneau divisé suivant",
       "previousSplitPane": "Activer le panneau divisé précédent",
-      "splitPreset1": "Disposition à un panneau",
-      "splitPreset2": "Disposition à deux panneaux",
-      "splitPreset3": "Disposition à trois panneaux",
-      "splitPreset4": "Disposition à quatre panneaux",
+      "newPane": "Nouveau panneau",
+      "closePane": "Fermer le panneau",
+      "focusPane1": "Focus panneau 1",
+      "focusPane2": "Focus panneau 2",
+      "focusPane3": "Focus panneau 3",
+      "focusPane4": "Focus panneau 4",
       "formatInlineCode": "Format inline code",
       "sendMessage": "Envoyer le message",
       "settings": "Aller aux Paramètres",

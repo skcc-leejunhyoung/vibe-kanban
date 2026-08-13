@@ -24,24 +24,32 @@ function paneGridAvailable(appRuntime: AppRuntime): boolean {
 }
 
 /** Make sure the pane grid is on screen. */
-function ensurePaneGridVisible(appNavigation: AppNavigation): void {
+export function ensurePaneGridVisible(appNavigation: AppNavigation): void {
   const current = appNavigation.resolveFromPath(window.location.pathname);
   if (!isPaneGridDestination(current)) {
     appNavigation.goToWorkspaces();
   }
 }
 
-/**
- * Set the visible pane count and make sure the pane grid is on screen when
- * more than one pane was requested.
- */
-export function applyWorkspacePaneCount(
-  total: number,
-  appNavigation: AppNavigation
-): void {
-  useWorkspacePanesStore.getState().setPaneCount(total);
-  if (total <= 1) return;
+/** Split: a new empty pane next to the active one, on a visible grid. */
+export function openNewPane(appNavigation: AppNavigation): void {
+  useWorkspacePanesStore.getState().insertPaneAfterActive();
   ensurePaneGridVisible(appNavigation);
+}
+
+/** Close the focused pane — only while the grid is actually on screen. */
+export function closeActivePane(appNavigation: AppNavigation): void {
+  const current = appNavigation.resolveFromPath(window.location.pathname);
+  if (!isPaneGridDestination(current)) return;
+  const { activePaneId, closePane } = useWorkspacePanesStore.getState();
+  if (activePaneId !== null) closePane(activePaneId);
+}
+
+/** Focus the pane at a position (0-based) — only while the grid is visible. */
+export function focusPaneAt(index: number, appNavigation: AppNavigation): void {
+  const current = appNavigation.resolveFromPath(window.location.pathname);
+  if (!isPaneGridDestination(current)) return;
+  useWorkspacePanesStore.getState().focusPaneAt(index);
 }
 
 /**

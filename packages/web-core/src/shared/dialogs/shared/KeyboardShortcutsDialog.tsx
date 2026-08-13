@@ -17,6 +17,8 @@ import {
   PREVIOUS_WORKSPACE_BINDING_ID,
   NEXT_SPLIT_PANE_BINDING_ID,
   PREVIOUS_SPLIT_PANE_BINDING_ID,
+  NEW_PANE_BINDING_ID,
+  CLOSE_PANE_BINDING_ID,
   SPLIT_PRESET_BINDING_IDS,
   Scope,
 } from '@/shared/keyboard/registry';
@@ -107,12 +109,24 @@ function useShortcutGroups(): ShortcutGroup[] {
           ),
           description: t('shortcuts.actions.previousSplitPane'),
         },
+        {
+          keys: chips(resolveModifier(NEW_PANE_BINDING_ID, overrides)),
+          description: t('shortcuts.actions.newPane', {
+            defaultValue: 'New pane',
+          }),
+        },
+        {
+          keys: chips(resolveModifier(CLOSE_PANE_BINDING_ID, overrides)),
+          description: t('shortcuts.actions.closePane', {
+            defaultValue: 'Close pane',
+          }),
+        },
         ...WORKSPACE_PANE_COUNTS.slice(0, maxSplitPanes).map((preset) => ({
           keys: chips(
             resolveModifier(SPLIT_PRESET_BINDING_IDS[preset], overrides)
           ),
-          description: t(`shortcuts.actions.splitPreset${preset}`, {
-            defaultValue: `${preset}-pane layout`,
+          description: t(`shortcuts.actions.focusPane${preset}`, {
+            defaultValue: `Focus pane ${preset}`,
           }),
         })),
         {

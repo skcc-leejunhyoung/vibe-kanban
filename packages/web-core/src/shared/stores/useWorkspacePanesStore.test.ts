@@ -43,7 +43,7 @@ function reset() {
 
 beforeEach(reset);
 
-describe('ensurePane / setPaneCount', () => {
+describe('ensurePane / insertPaneAfterActive / focusPaneAt', () => {
   it('creates a single empty pane on boot', () => {
     store.getState().ensurePane();
     expect(store.getState().panes).toEqual([
@@ -53,24 +53,44 @@ describe('ensurePane / setPaneCount', () => {
     expect(store.getState().layout['pane-1']).toBe(100);
   });
 
-  it('sets the total pane count, clamped to maxPanes and at least one', () => {
+  it('inserts an empty pane right of the active one and focuses it', () => {
     store.getState().ensurePane();
-    store.getState().setPaneCount(3);
-    expect(store.getState().panes).toHaveLength(3);
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().setActivePane('pane-1');
 
-    store.getState().setPaneCount(9);
-    expect(store.getState().panes).toHaveLength(4); // maxPanes
-
-    store.getState().setPaneCount(0);
-    expect(store.getState().panes).toHaveLength(1);
+    store.getState().insertPaneAfterActive();
+    expect(store.getState().panes.map((pane) => pane.id)).toEqual([
+      'pane-1',
+      'pane-3',
+      'pane-2',
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-3');
+    // Split halves the active pane's width only.
+    expect(store.getState().layout['pane-1']).toBeCloseTo(25);
+    expect(store.getState().layout['pane-3']).toBeCloseTo(25);
+    expect(store.getState().layout['pane-2']).toBeCloseTo(50);
+    expect(store.getState().focusSerial).toBe(1);
   });
 
-  it('keeps the active pane when still present after trimming', () => {
+  it('caps inserts at maxPanes', () => {
     store.getState().ensurePane();
-    store.getState().setPaneCount(3);
-    store.getState().setActivePane('pane-3');
-    store.getState().setPaneCount(2);
-    expect(store.getState().activePaneId).toBe('pane-2');
+    for (let i = 0; i < 5; i += 1) store.getState().insertPaneAfterActive();
+    expect(store.getState().panes).toHaveLength(4); // maxPanes
+  });
+
+  it('focusPaneAt focuses existing panes only and requests DOM focus', () => {
+    store.getState().ensurePane();
+    store.getState().insertPaneAfterActive();
+    const serial = store.getState().focusSerial;
+
+    store.getState().focusPaneAt(0);
+    expect(store.getState().activePaneId).toBe('pane-1');
+    expect(store.getState().focusSerial).toBe(serial + 1);
+
+    store.getState().focusPaneAt(5);
+    expect(store.getState().activePaneId).toBe('pane-1');
+    expect(store.getState().focusSerial).toBe(serial + 1);
   });
 });
 

@@ -241,7 +241,10 @@ function CommandBarContent({
     if (currentPage !== 'root') return pageWithNavigationMatches;
     const query = state.search.trim().toLowerCase();
     const items = splitPresetActions
-      .slice(0, maxSplitPanes)
+      .filter((action) => {
+        const focusMatch = /^focusPane(\d)$/.exec(action.id);
+        return !focusMatch || Number(focusMatch[1]) <= maxSplitPanes;
+      })
       .filter(
         (action) =>
           !query ||

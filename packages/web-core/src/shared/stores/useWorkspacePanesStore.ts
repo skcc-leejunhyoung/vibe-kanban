@@ -131,8 +131,10 @@ interface WorkspacePanesState {
   setMaxPanes: (maxPanes: number) => void;
   /** Make sure at least one pane exists (boot). */
   ensurePane: () => void;
-  /** Set the total visible pane count. */
-  setPaneCount: (total: number) => void;
+  /** Split: insert an empty pane right of the active one and focus it. */
+  insertPaneAfterActive: () => void;
+  /** Focus the pane at a position (0-based); no-op when absent. */
+  focusPaneAt: (index: number) => void;
   /** Show a destination in some pane (dedupe → empty → split → replace). */
   openPaneForDestination: (destination: WorkspacePaneDestination) => void;
   /**
@@ -246,9 +248,6 @@ export function layoutAfterClose(
   return normalizedLayout(remaining, next);
 }
 
-const clampPaneCount = (value: number, maxPanes: number) =>
-  Math.max(1, Math.min(value, maxPanes));
-
 interface PersistedPaneV1 {
   id: string;
   workspaceId: string | null;
@@ -305,36 +304,49 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             layout: { [id]: 100 },
           };
         }),
-      setPaneCount: (total) =>
+      insertPaneAfterActive: () =>
         set((state) => {
-          const target = clampPaneCount(total, state.maxPanes);
-          if (target === state.panes.length) return state;
-          if (target < state.panes.length) {
-            let panes = state.panes;
-            let layout = state.layout;
-            while (panes.length > target) {
-              const closed = panes[panes.length - 1];
-              layout = layoutAfterClose(panes, layout, closed.id);
-              panes = panes.slice(0, -1);
-            }
+          if (state.panes.length >= state.maxPanes) return state;
+          if (state.panes.length === 0) {
+            const id = `pane-${state.nextPaneId}`;
             return {
-              panes,
-              layout,
-              activePaneId: panes.some((pane) => pane.id === state.activePaneId)
-                ? state.activePaneId
-                : (panes[panes.length - 1]?.id ?? null),
+              panes: [{ id, destination: null }],
+              nextPaneId: state.nextPaneId + 1,
+              activePaneId: id,
+              layout: { [id]: 100 },
+              focusSerial: state.focusSerial + 1,
             };
           }
-          let nextPaneId = state.nextPaneId;
-          let panes = [...state.panes];
-          let layout = state.layout;
-          while (panes.length < target) {
-            const id = `pane-${nextPaneId++}`;
-            const reference = panes[panes.length - 1]?.id ?? null;
-            panes = [...panes, { id, destination: null }];
-            layout = layoutAfterSplit(panes, layout, reference, id);
-          }
-          return { panes, nextPaneId, layout };
+          const activeIndex = state.panes.findIndex(
+            (pane) => pane.id === state.activePaneId
+          );
+          const insertAt =
+            activeIndex >= 0 ? activeIndex + 1 : state.panes.length;
+          const reference =
+            state.panes[activeIndex >= 0 ? activeIndex : state.panes.length - 1]
+              .id;
+          const id = `pane-${state.nextPaneId}`;
+          const panes = [
+            ...state.panes.slice(0, insertAt),
+            { id, destination: null },
+            ...state.panes.slice(insertAt),
+          ];
+          return {
+            panes,
+            nextPaneId: state.nextPaneId + 1,
+            activePaneId: id,
+            layout: layoutAfterSplit(panes, state.layout, reference, id),
+            focusSerial: state.focusSerial + 1,
+          };
+        }),
+      focusPaneAt: (index) =>
+        set((state) => {
+          const pane = state.panes[index];
+          if (!pane) return state;
+          return {
+            activePaneId: pane.id,
+            focusSerial: state.focusSerial + 1,
+          };
         }),
       openPaneForDestination: (destination) =>
         set((state) => {

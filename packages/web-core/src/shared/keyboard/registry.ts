@@ -551,6 +551,8 @@ export const NEXT_WORKSPACE_BINDING_ID = 'next-workspace';
 export const PREVIOUS_WORKSPACE_BINDING_ID = 'previous-workspace';
 export const NEXT_SPLIT_PANE_BINDING_ID = 'next-split-pane';
 export const PREVIOUS_SPLIT_PANE_BINDING_ID = 'previous-split-pane';
+export const NEW_PANE_BINDING_ID = 'new-pane';
+export const CLOSE_PANE_BINDING_ID = 'close-pane';
 export const SPLIT_PRESET_BINDING_IDS = {
   1: 'split-preset-1',
   2: 'split-preset-2',
@@ -603,10 +605,25 @@ export const modifierBindings: ModifierBinding[] = [
     actionId: 'previousSplitPane',
     group: 'Modifiers',
   },
+  {
+    id: NEW_PANE_BINDING_ID,
+    keys: 'mod+t',
+    actionId: 'newPane',
+    group: 'Modifiers',
+  },
+  {
+    id: CLOSE_PANE_BINDING_ID,
+    keys: 'mod+w',
+    actionId: 'closePane',
+    group: 'Modifiers',
+  },
+  // VS Code-style: number shortcuts focus the pane at that position and never
+  // create panes. Binding ids keep the legacy 'split-preset-*' names so
+  // existing user rebinds carry over.
   ...([1, 2, 3, 4, 5, 6, 7, 8, 9] as const).map((preset) => ({
     id: SPLIT_PRESET_BINDING_IDS[preset],
     keys: `mod+alt+shift+${preset}`,
-    actionId: `splitPreset${preset}`,
+    actionId: `focusPane${preset}`,
     group: 'Modifiers',
   })),
 ];
