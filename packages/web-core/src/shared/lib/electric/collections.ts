@@ -13,6 +13,7 @@ type SourceMode = 'electric' | 'fallback';
 type SourceRuntime = {
   mode: SourceMode;
   fallbackLocked: boolean;
+  fallbackLockedAt: number | null;
   refreshers: Set<() => Promise<void>>;
   fallbackSwitchers: Set<() => void>;
 };
@@ -69,8 +70,13 @@ type SyncConfigLike = {
 };
 
 const DEFAULT_GC_TIME_MS = 5 * 60 * 1000;
-const ELECTRIC_READY_TIMEOUT_MS = 3000;
+// Wall-clock timer: heavy renders (e.g. several panes remounting) can delay
+// ready-processing of a healthy stream, so keep this generous.
+const ELECTRIC_READY_TIMEOUT_MS = 10_000;
 const FALLBACK_REFRESH_INTERVAL_MS = 30 * 1000;
+// A fallback-locked source retries Electric on the next sync session once
+// this cooldown has passed, instead of staying degraded for the whole tab.
+const FALLBACK_RETRY_COOLDOWN_MS = 60 * 1000;
 
 const collectionCache = new Map<string, ReturnType<typeof createCollection>>();
 const sourceRuntimes = new Map<string, SourceRuntime>();
@@ -190,6 +196,7 @@ function getOrCreateSourceRuntime(sourceKey: string): SourceRuntime {
   const created: SourceRuntime = {
     mode: 'electric',
     fallbackLocked: false,
+    fallbackLockedAt: null,
     refreshers: new Set(),
     fallbackSwitchers: new Set(),
   };
@@ -202,6 +209,7 @@ function lockSourceToFallback(sourceKey: string): void {
   if (runtime.fallbackLocked) return;
 
   runtime.fallbackLocked = true;
+  runtime.fallbackLockedAt = Date.now();
   runtime.mode = 'fallback';
 
   const switchers = Array.from(runtime.fallbackSwitchers);
@@ -538,7 +546,13 @@ function createHybridSync(args: {
   return (syncParams: SyncParams): SyncResult => {
     const runtime = getOrCreateSourceRuntime(args.sourceKey);
     if (runtime.fallbackLocked) {
-      return fallbackSync(syncParams);
+      const lockedAt = runtime.fallbackLockedAt ?? 0;
+      if (Date.now() - lockedAt < FALLBACK_RETRY_COOLDOWN_MS) {
+        return fallbackSync(syncParams);
+      }
+      // Cooldown over: give Electric another chance on this fresh session.
+      runtime.fallbackLocked = false;
+      runtime.fallbackLockedAt = null;
     }
 
     runtime.mode = 'electric';

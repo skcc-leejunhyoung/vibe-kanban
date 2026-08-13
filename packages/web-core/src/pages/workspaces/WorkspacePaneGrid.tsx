@@ -5,7 +5,13 @@ import {
   useRef,
   type ReactNode,
 } from 'react';
-import { Group, Panel, Separator, type Layout } from 'react-resizable-panels';
+import {
+  Group,
+  Panel,
+  Separator,
+  useGroupCallbackRef,
+  type Layout,
+} from 'react-resizable-panels';
 import { XIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/shared/lib/utils';
@@ -291,9 +297,38 @@ export function WorkspacePaneGrid() {
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
   const storedLayout = useWorkspacePanesStore((s) => s.layout);
   const setLayout = useWorkspacePanesStore((s) => s.setLayout);
+  const [groupHandle, setGroupHandle] = useGroupCallbackRef();
+
+  // Structural changes (pane added/closed) must apply the store-computed
+  // layout without remounting the Group — a keyed remount would tear down
+  // every pane's streams and providers. The library redistributes sizes when
+  // panels mount/unmount; we suppress persisting that echo (flag set during
+  // render, before child effects) and then impose the store layout.
+  const paneIdsSignature = panes.map((pane) => pane.id).join(',');
+  const lastSignatureRef = useRef(paneIdsSignature);
+  const structuralPendingRef = useRef(false);
+  if (lastSignatureRef.current !== paneIdsSignature) {
+    lastSignatureRef.current = paneIdsSignature;
+    structuralPendingRef.current = true;
+  }
+
+  useEffect(() => {
+    if (!structuralPendingRef.current || !groupHandle) return;
+    const state = useWorkspacePanesStore.getState();
+    const fallback = 100 / Math.max(state.panes.length, 1);
+    groupHandle.setLayout(
+      Object.fromEntries(
+        state.panes.map((pane) => [pane.id, state.layout[pane.id] ?? fallback])
+      )
+    );
+    structuralPendingRef.current = false;
+  }, [paneIdsSignature, groupHandle]);
 
   const handleLayoutChange = useCallback(
-    (layout: Layout) => setLayout(layout),
+    (layout: Layout) => {
+      if (structuralPendingRef.current) return;
+      setLayout(layout);
+    },
     [setLayout]
   );
 
@@ -307,9 +342,7 @@ export function WorkspacePaneGrid() {
 
   return (
     <Group
-      // Remount on structural change so the store-computed layout applies
-      // exactly instead of the library redistributing every pane.
-      key={panes.map((pane) => pane.id).join(',')}
+      groupRef={setGroupHandle}
       orientation="horizontal"
       className="h-full min-h-0"
       defaultLayout={defaultLayout}

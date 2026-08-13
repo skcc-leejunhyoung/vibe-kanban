@@ -52,6 +52,7 @@ import {
   useChromeTargetWorkspace,
 } from '@/shared/lib/openInSplitPane';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
+import { useSettledValue } from '@/shared/hooks/useSettledValue';
 import { getRemoteAuthDegradedMessage } from '@/shared/lib/auth/remoteAuthDegraded';
 
 /**
@@ -261,8 +262,14 @@ export function NavbarContainer({
   const linkedIssueId = linkedRemoteWorkspace?.issue_id ?? null;
   const shouldResolveBreadcrumbData =
     !isOnProjectPage && !isCreateMode && isWorkspacesDest && !!linkedProjectId;
+  // The issue lookup opens an Electric stream per linked project. Pane focus
+  // hops change the linked project rapidly, so only subscribe once the value
+  // has settled — otherwise every hop cold-starts a new stream (and trips the
+  // Electric ready timeout under load).
+  const settledLinkedProjectId = useSettledValue(linkedProjectId, 600);
+  const isLinkedProjectSettled = settledLinkedProjectId === linkedProjectId;
   const shouldResolveIssueBreadcrumb =
-    shouldResolveBreadcrumbData && !!linkedIssueId;
+    shouldResolveBreadcrumbData && !!linkedIssueId && isLinkedProjectSettled;
 
   const { data: allProjects, isLoading: isProjectsLoading } =
     useAllOrganizationProjects({
@@ -277,7 +284,9 @@ export function NavbarContainer({
   const isWaitingForProjectBreadcrumb =
     shouldResolveBreadcrumbData && !linkedProject && isProjectsLoading;
   const isWaitingForIssueBreadcrumb =
-    shouldResolveIssueBreadcrumb && isProjectIssuesLoading;
+    shouldResolveBreadcrumbData &&
+    !!linkedIssueId &&
+    (!isLinkedProjectSettled || isProjectIssuesLoading);
   const isWaitingForBreadcrumbData =
     isWaitingForProjectBreadcrumb || isWaitingForIssueBreadcrumb;
 

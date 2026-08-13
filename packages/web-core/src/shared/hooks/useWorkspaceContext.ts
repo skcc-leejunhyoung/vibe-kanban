@@ -36,6 +36,8 @@ export interface WorkspaceContextValue {
   isWorkspacesListLoading: boolean;
   isLoading: boolean;
   isCreateMode: boolean;
+  /** Refetch the workspace record/sessions/repos after a failed load. */
+  reloadWorkspace: () => void;
   selectWorkspace: (id: string, hostId?: string | null) => void;
   navigateToCreate: (hostId?: string | null) => void;
   /** Sessions for the current workspace */

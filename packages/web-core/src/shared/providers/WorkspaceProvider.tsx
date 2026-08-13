@@ -13,8 +13,15 @@ import {
   useUnifiedWorkspaces,
 } from '@/shared/hooks/useWorkspaces';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
-import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
-import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
+import {
+  useWorkspaceRecord,
+  workspaceRecordKeys,
+} from '@/shared/hooks/useWorkspaceRecord';
+import {
+  useWorkspaceRepo,
+  workspaceRepoKeys,
+} from '@/shared/hooks/useWorkspaceRepo';
+import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceSessions } from '@/shared/hooks/useWorkspaceSessions';
 import { useGitHubComments } from '@/shared/hooks/useGitHubComments';
 import { useDiffStream } from '@/shared/hooks/useDiffStream';
@@ -278,6 +285,21 @@ function WorkspaceProviderContent({
     [appNavigation]
   );
 
+  // Recovery path when a transient failure left the pane without data (the
+  // record/session queries have no visible retry otherwise).
+  const reloadWorkspace = useCallback(() => {
+    if (!workspaceId) return;
+    void queryClient.invalidateQueries({
+      queryKey: workspaceRecordKeys.byId(workspaceId, hostId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),
+    });
+  }, [queryClient, workspaceId, hostId]);
+
   const navigateToCreate = useMemo(
     () => (destinationHostId?: string | null) => {
       appNavigation.goToWorkspacesCreate({ hostId: destinationHostId });
@@ -294,6 +316,7 @@ function WorkspaceProviderContent({
       isWorkspacesListLoading: isLoadingList,
       isLoading,
       isCreateMode,
+      reloadWorkspace,
       selectWorkspace,
       navigateToCreate,
       sessions,
@@ -315,6 +338,7 @@ function WorkspaceProviderContent({
       isLoadingList,
       isLoading,
       isCreateMode,
+      reloadWorkspace,
       selectWorkspace,
       navigateToCreate,
       sessions,

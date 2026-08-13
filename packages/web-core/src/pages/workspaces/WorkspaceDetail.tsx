@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 import { Group, Layout, Panel, Separator } from 'react-resizable-panels';
+import { useTranslation } from 'react-i18next';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { ReviewProvider } from '@/shared/hooks/ReviewProvider';
 import { ChangesViewProvider } from '@/shared/hooks/ChangesViewProvider';
@@ -68,6 +69,7 @@ export const WorkspaceDetail = forwardRef<
     workspace: selectedWorkspace,
     isLoading,
     isCreateMode,
+    reloadWorkspace,
     selectedSession,
     selectedSessionId,
     sessions,
@@ -77,6 +79,7 @@ export const WorkspaceDetail = forwardRef<
     isNewSessionMode,
     startNewSession,
   } = useWorkspaceContext();
+  const { t } = useTranslation('common');
 
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
   const [lastFocusedMainPanel, setLastFocusedMainPanel] = useState<
@@ -219,6 +222,29 @@ export const WorkspaceDetail = forwardRef<
     },
     [isLeftMainPanelVisible, rightMainPanelMode, setRightMainPanelSize]
   );
+
+  // A transient fetch failure would otherwise leave the pane blank with no
+  // way to recover short of switching workspaces.
+  if (!isCreateMode && workspaceId && !isLoading && !selectedWorkspace) {
+    return (
+      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 bg-primary px-double text-center">
+        <p className="text-sm text-low">
+          {t('workspacePanes.workspaceLoadFailed', {
+            defaultValue: "Couldn't load this workspace.",
+          })}
+        </p>
+        <button
+          type="button"
+          onClick={reloadWorkspace}
+          className="rounded-md bg-secondary px-3 py-1.5 text-sm text-normal hover:bg-panel cursor-pointer"
+        >
+          {t('workspacePanes.retryWorkspaceLoad', {
+            defaultValue: 'Retry',
+          })}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <ReviewProvider workspaceId={selectedWorkspace?.id}>
