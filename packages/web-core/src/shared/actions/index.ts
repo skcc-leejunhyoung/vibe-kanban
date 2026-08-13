@@ -425,6 +425,57 @@ function invalidateWorkspaceQueries(
   queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
 }
 
+async function attachPrAndReport(
+  ctx: ActionExecutorContext,
+  workspaceId: string,
+  repoId: string,
+  request: { head_branch: string | null; pr_url: string | null }
+) {
+  const result = await workspacesApi.attachPr(workspaceId, {
+    repo_id: repoId,
+    ...request,
+  });
+
+  if (result.success && result.data.pr_attached && result.data.pr_number) {
+    invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+    ctx.queryClient.invalidateQueries({ queryKey: ['branch-status'] });
+    await ConfirmDialog.show({
+      title: 'Pull Request Linked',
+      message: `Linked PR #${result.data.pr_number}${result.data.pr_url ? ` — ${result.data.pr_url}` : ''}`,
+      confirmText: 'OK',
+      showCancelButton: false,
+      variant: 'success',
+    });
+  } else if (result.success && !result.data.pr_attached) {
+    await ConfirmDialog.show({
+      title: 'No Pull Request Found',
+      message:
+        'No pull request was found matching this branch. Make sure a PR exists for this branch on the remote.',
+      confirmText: 'OK',
+      showCancelButton: false,
+      variant: 'info',
+    });
+  } else if (!result.success) {
+    throw new Error(result.message || 'Failed to attach PR');
+  }
+}
+
+async function linkPrByUrl(
+  ctx: ActionExecutorContext,
+  workspaceId: string,
+  repoId: string
+) {
+  const { LinkPrByUrlDialog } = await import(
+    '@/shared/dialogs/command-bar/LinkPrByUrlDialog'
+  );
+  const prUrl = await LinkPrByUrlDialog.show();
+  if (!prUrl) return;
+  await attachPrAndReport(ctx, workspaceId, repoId, {
+    head_branch: null,
+    pr_url: prUrl,
+  });
+}
+
 // Helper to find the next workspace to navigate to when removing current workspace
 function getNextWorkspaceId(
   activeWorkspaces: { id: string; isRunning?: boolean }[],
@@ -2187,59 +2238,6 @@ export const Actions = {
             .map((pr) => [pr.url, pr])
         ).values()
       );
-      // Attach a PR (a picked branch-matched candidate, or a URL pasted in the
-      // manual fallback) and report the outcome. Shared by both paths.
-      const attachAndReport = async (request: {
-        head_branch: string | null;
-        pr_url: string | null;
-      }) => {
-        const result = await workspacesApi.attachPr(workspaceId, {
-          repo_id: repoId,
-          ...request,
-        });
-
-        if (
-          result.success &&
-          result.data.pr_attached &&
-          result.data.pr_number
-        ) {
-          invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
-          ctx.queryClient.invalidateQueries({
-            queryKey: ['branch-status'],
-          });
-
-          await ConfirmDialog.show({
-            title: 'Pull Request Linked',
-            message: `Linked PR #${result.data.pr_number}${result.data.pr_url ? ` — ${result.data.pr_url}` : ''}`,
-            confirmText: 'OK',
-            showCancelButton: false,
-            variant: 'success',
-          });
-        } else if (result.success && !result.data.pr_attached) {
-          await ConfirmDialog.show({
-            title: 'No Pull Request Found',
-            message:
-              'No pull request was found matching this branch. Make sure a PR exists for this branch on the remote.',
-            confirmText: 'OK',
-            showCancelButton: false,
-            variant: 'info',
-          });
-        } else if (!result.success) {
-          throw new Error(result.message || 'Failed to attach PR');
-        }
-      };
-
-      // Manual fallback: let the user paste a PR URL to map when branch-based
-      // auto-matching found nothing to link.
-      const linkByUrl = async () => {
-        const { LinkPrByUrlDialog } = await import(
-          '@/shared/dialogs/command-bar/LinkPrByUrlDialog'
-        );
-        const prUrl = await LinkPrByUrlDialog.show();
-        if (!prUrl) return;
-        await attachAndReport({ head_branch: null, pr_url: prUrl });
-      };
-
       if (availablePrs.length === 0) {
         const choice = await ConfirmDialog.show({
           title: 'No Pull Request Found',
@@ -2249,7 +2247,7 @@ export const Actions = {
           cancelText: 'Close',
           variant: 'info',
         });
-        if (choice === 'confirmed') await linkByUrl();
+        if (choice === 'confirmed') await linkPrByUrl(ctx, workspaceId, repoId);
         return;
       }
 
@@ -2262,11 +2260,21 @@ export const Actions = {
       })();
       if (!selectedPr) return;
 
-      await attachAndReport({
+      await attachPrAndReport(ctx, workspaceId, repoId, {
         head_branch: selectedPr.head_branch,
         pr_url: selectedPr.url,
       });
     },
+  },
+
+  GitLinkPRByUrl: {
+    id: 'git-link-pr-by-url',
+    label: 'Link Pull Request with Link',
+    icon: LinkIcon,
+    keywords: ['pull request', 'link', 'url', 'pr'],
+    requiresTarget: ActionTargetType.GIT,
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
+    execute: linkPrByUrl,
   },
 
   GitUnlinkPR: {

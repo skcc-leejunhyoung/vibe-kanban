@@ -28,6 +28,7 @@ vi.mock('@/shared/lib/api', () => ({
     pullTargetBranch: vi.fn(),
     push: vi.fn(),
     pushTargetBranch: vi.fn(),
+    attachPr: vi.fn(),
   },
   relayApi: {},
   repoApi: {},
@@ -70,6 +71,9 @@ vi.mock('@/shared/dialogs/tasks/PrDetailsDialog', () => ({
 vi.mock('@/shared/dialogs/command-bar/SelectionDialog', () => ({
   SelectionDialog: { show: vi.fn() },
 }));
+vi.mock('@/shared/dialogs/command-bar/LinkPrByUrlDialog', () => ({
+  LinkPrByUrlDialog: { show: vi.fn() },
+}));
 
 import {
   Actions,
@@ -87,6 +91,7 @@ import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { openUrlInSplitPane } from '@/shared/lib/openInSplitPane';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
+import { LinkPrByUrlDialog } from '@/shared/dialogs/command-bar/LinkPrByUrlDialog';
 import { getPageActions } from '@/shared/command-bar/actions/pages';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
@@ -113,6 +118,8 @@ const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
 const showPrDetails = vi.mocked(PrDetailsDialog.show);
 const showSelection = vi.mocked(SelectionDialog.show);
+const showLinkPrByUrl = vi.mocked(LinkPrByUrlDialog.show);
+const attachPr = vi.mocked(workspacesApi.attachPr);
 const reviewAndCreatePr = vi.mocked(runReviewAndCreatePr);
 const listGithubLinks = vi.mocked(listGithubIssueLinksForIssue);
 
@@ -198,6 +205,42 @@ describe('command palette navigation actions', () => {
         hasOpenPR: true,
       })
     ).toBe(true);
+  });
+
+  it('allows both pull request link actions in quick chat', () => {
+    const quickChatContext = {
+      ...openWorkspaceContext,
+      hasGitRepos: true,
+      isInPlace: true,
+    };
+
+    expect(isActionVisible(Actions.GitLinkPR, quickChatContext)).toBe(true);
+    expect(isActionVisible(Actions.GitLinkPRByUrl, quickChatContext)).toBe(
+      true
+    );
+    expect(getPageActions('repoActions')).toContain(Actions.GitLinkPRByUrl);
+  });
+
+  it('links a pull request by URL without listing branch matches', async () => {
+    showLinkPrByUrl.mockResolvedValue('https://github.com/acme/repo/pull/42');
+    attachPr.mockResolvedValue({
+      success: true,
+      data: {
+        pr_attached: true,
+        pr_url: 'https://github.com/acme/repo/pull/42',
+        pr_number: 42n,
+        pr_status: 'open',
+      },
+    });
+    const { ctx } = makeCtx({ id: 'ws1' });
+
+    await Actions.GitLinkPRByUrl.execute(ctx, 'ws1', 'repo1');
+
+    expect(attachPr).toHaveBeenCalledWith('ws1', {
+      repo_id: 'repo1',
+      head_branch: null,
+      pr_url: 'https://github.com/acme/repo/pull/42',
+    });
   });
 
   it('exposes pull request linking from issue actions and targets one issue', async () => {

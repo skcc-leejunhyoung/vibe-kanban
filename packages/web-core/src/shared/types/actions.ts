@@ -279,13 +279,11 @@ export function isSpecialIcon(icon: ActionIcon): icon is SpecialIconType {
 // Branch-integration actions hidden for in-place ("quick chat") workspaces: they
 // run directly on the user's existing branch (branch == target, no `vk/`
 // worktree), so opening a PR (head == base), merging, or rebasing onto itself is
-// meaningless. Remote-sync actions (pull / push / update-from-base / change
-// target), commit, and repo-utility actions (open in IDE, settings) stay
-// available — they operate normally on the existing branch.
+// meaningless. Linking an existing PR is metadata-only, so it remains available
+// alongside remote-sync, commit, and repo-utility actions.
 const IN_PLACE_HIDDEN_ACTION_IDS = new Set<string>([
   'git-create-pr',
   'git-create-pr-from-ai',
-  'git-link-pr',
   'git-merge',
   'git-rebase',
 ]);
