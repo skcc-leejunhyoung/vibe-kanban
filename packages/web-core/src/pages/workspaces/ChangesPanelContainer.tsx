@@ -656,6 +656,7 @@ interface ChangesPanelContainerProps {
   workspaceId: string;
   autoFocus?: boolean;
   onPanelFocus?: () => void;
+  onEscape?: () => void;
 }
 
 export const ChangesPanelContainer = memo(function ChangesPanelContainer({
@@ -663,6 +664,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   workspaceId,
   autoFocus = false,
   onPanelFocus,
+  onEscape,
 }: ChangesPanelContainerProps) {
   const diffs = useDiffs();
   const { registerFileRequest, selectFile, selectedFilePath, selectedRepoId } =
@@ -935,7 +937,14 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
     >
       <div
         ref={panelRef}
+        data-escape-handled={onEscape ? true : undefined}
         onFocusCapture={onPanelFocus}
+        onKeyDownCapture={(event) => {
+          if (event.key !== 'Escape' || !onEscape) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onEscape();
+        }}
         className={`flex flex-col h-full min-h-0 bg-secondary ${className}`}
       >
         <CommitSelector workspaceId={workspaceId} />

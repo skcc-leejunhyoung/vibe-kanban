@@ -361,6 +361,7 @@ export function WorkspacesSidebar({
   return (
     <div
       ref={keyboardNavRef}
+      data-workspace-selector
       // tabIndex=-1 lets a click on empty sidebar space (not a row) focus this
       // container, turning on arrow-key navigation: the useHotkeys ref only
       // fires while keyboard focus is inside here. It stays out of the Tab

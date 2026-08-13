@@ -14,7 +14,8 @@ type WorkspaceChatKeyEvent = Pick<
 
 export type WorkspaceChatKeyAction =
   | { type: 'scroll'; delta: number }
-  | { type: 'focus-composer' };
+  | { type: 'focus-composer' }
+  | { type: 'focus-workspaces' };
 
 export function resolveUnfocusedChatKeyAction(
   event: WorkspaceChatKeyEvent
@@ -33,6 +34,7 @@ export function resolveUnfocusedChatKeyAction(
   if (event.key === 'ArrowUp') return { type: 'scroll', delta: -80 };
   if (event.key === 'ArrowDown') return { type: 'scroll', delta: 80 };
   if (event.key === 'Enter') return { type: 'focus-composer' };
+  if (event.key === 'Escape') return { type: 'focus-workspaces' };
   return null;
 }
 
@@ -48,7 +50,8 @@ interface UnfocusedChatKeyTarget {
  */
 export function useUnfocusedChatKeys(
   targetRef: RefObject<UnfocusedChatKeyTarget | null>,
-  enabled: boolean
+  enabled: boolean,
+  onEscape?: () => void
 ) {
   useEffect(() => {
     if (!enabled) return;
@@ -77,11 +80,16 @@ export function useUnfocusedChatKeys(
       ) {
         event.preventDefault();
       }
+
+      if (action?.type === 'focus-workspaces' && onEscape) {
+        event.preventDefault();
+        onEscape();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [enabled, targetRef]);
+  }, [enabled, onEscape, targetRef]);
 }

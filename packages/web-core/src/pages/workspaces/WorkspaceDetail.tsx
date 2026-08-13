@@ -114,10 +114,14 @@ export const WorkspaceDetail = forwardRef<
     setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
   }, [setRightMainPanelMode]);
 
+  const isNarrow = usePaneNarrowerThan(640);
+  const isCompact = usePaneNarrowerThan(880);
+
   // Keep the chat pane open while closing the desktop's secondary panel.
   const closeRightMainPanel = useCallback(() => {
+    if (isNarrow) setLastFocusedMainPanel('chat');
     setRightMainPanelMode(null);
-  }, [setRightMainPanelMode]);
+  }, [isNarrow, setRightMainPanelMode]);
 
   useEscapeToClose(closeRightMainPanel, {
     enabled: isPaneActive && rightMainPanelMode !== null,
@@ -129,7 +133,13 @@ export const WorkspaceDetail = forwardRef<
     isPaneActive &&
       !isCreateMode &&
       !!selectedWorkspace &&
-      isLeftMainPanelVisible
+      isLeftMainPanelVisible,
+    isNarrow
+      ? () =>
+          document
+            .querySelector<HTMLElement>('[data-workspace-selector]')
+            ?.focus()
+      : undefined
   );
 
   // Ensure the left main panel stays visible when the right main panel is
@@ -143,8 +153,6 @@ export const WorkspaceDetail = forwardRef<
   // Width-based adaptation: in a narrow pane the chat and the secondary panel
   // stack (one at a time, toggled via the existing panel mode), including the
   // right sidebar. Falls back to viewport width outside the grid.
-  const isNarrow = usePaneNarrowerThan(640);
-  const isCompact = usePaneNarrowerThan(880);
   const showChatPanel = isCreateMode
     ? true
     : isNarrow
@@ -263,6 +271,7 @@ export const WorkspaceDetail = forwardRef<
                         isPaneActive && lastFocusedMainPanel === 'changes'
                       }
                       onPanelFocus={() => setLastFocusedMainPanel('changes')}
+                      onEscape={isNarrow ? closeRightMainPanel : undefined}
                     />
                   )}
                 {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.LOGS && (
