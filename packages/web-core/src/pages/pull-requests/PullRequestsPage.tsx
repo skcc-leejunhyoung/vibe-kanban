@@ -28,6 +28,7 @@ import {
 } from '@/shared/lib/remoteApi';
 import { cn } from '@/shared/lib/utils';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
+import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -194,6 +195,7 @@ function getPullRequestTargetFromUrl(
 
 export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const isMobile = useIsMobile();
+  const isNarrow = usePaneNarrowerThan(768);
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const queryClient = useQueryClient();
@@ -783,7 +785,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
             type="button"
             onClick={() => router.history.back()}
             className={cn(
-              'flex items-center justify-center rounded-sm p-half text-low transition-colors sm:hidden',
+              'flex items-center justify-center rounded-sm p-half text-low transition-colors',
+              !(isMobile || isNarrow) && 'sm:hidden',
               'hover:bg-secondary hover:text-normal',
               'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
             )}
@@ -1058,7 +1061,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
 
   return (
     <>
-      {isMobile ? (
+      {isMobile || isNarrow ? (
         <div
           className={cn(
             'h-full min-h-0 w-full overflow-hidden',

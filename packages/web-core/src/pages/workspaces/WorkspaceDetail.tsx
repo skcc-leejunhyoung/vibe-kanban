@@ -30,6 +30,7 @@ import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { Scope } from '@/shared/keyboard/registry';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useUnfocusedChatKeys } from './workspaceChatKeyboard';
+import { cn } from '@/shared/lib/utils';
 
 export interface WorkspaceDetailHandle {
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
@@ -140,8 +141,8 @@ export const WorkspaceDetail = forwardRef<
   }, [isLeftMainPanelVisible, rightMainPanelMode, setLeftMainPanelVisible]);
 
   // Width-based adaptation: in a narrow pane the chat and the secondary panel
-  // stack (one at a time, toggled via the existing panel mode), and the right
-  // sidebar yields entirely. Falls back to viewport width outside the grid.
+  // stack (one at a time, toggled via the existing panel mode), including the
+  // right sidebar. Falls back to viewport width outside the grid.
   const isNarrow = usePaneNarrowerThan(640);
   const isCompact = usePaneNarrowerThan(880);
   const showChatPanel = isCreateMode
@@ -153,6 +154,8 @@ export const WorkspaceDetail = forwardRef<
     !isCreateMode &&
     rightMainPanelMode !== null &&
     !(isNarrow && showChatPanel);
+  const showRightSidebar =
+    isRightSidebarVisible && isPaneActive && !isCreateMode;
 
   const [rightMainPanelSize, setRightMainPanelSize] = usePaneSize(
     PERSIST_KEYS.rightMainPanel,
@@ -193,7 +196,10 @@ export const WorkspaceDetail = forwardRef<
         <div className="flex h-full">
           <Group
             orientation="horizontal"
-            className="flex-1 min-w-0 h-full"
+            className={cn(
+              'flex-1 min-w-0 h-full',
+              isCompact && showRightSidebar && 'hidden'
+            )}
             defaultLayout={defaultLayout}
             onLayoutChange={onLayoutChange}
           >
@@ -274,22 +280,23 @@ export const WorkspaceDetail = forwardRef<
           </Group>
 
           {/* Right-sidebar visibility is a global preference, so in a split
-              only the active pane renders it — toggling it from the navbar
-              affects the selected pane rather than every pane at once. Narrow
-              panes drop it entirely regardless of the preference. */}
-          {isRightSidebarVisible &&
-            isPaneActive &&
-            !isCreateMode &&
-            !isCompact && (
-              <div className="w-[300px] shrink-0 h-full overflow-hidden">
-                <RightSidebar
-                  rightMainPanelMode={rightMainPanelMode}
-                  selectedWorkspace={selectedWorkspace}
-                  repos={repos}
-                  onOpenCommit={handleOpenCommit}
-                />
-              </div>
-            )}
+              only the active pane renders it. Compact panes show it as the
+              sole view instead of squeezing it beside the main content. */}
+          {showRightSidebar && (
+            <div
+              className={cn(
+                'shrink-0 h-full overflow-hidden',
+                isCompact ? 'w-full' : 'w-[300px]'
+              )}
+            >
+              <RightSidebar
+                rightMainPanelMode={rightMainPanelMode}
+                selectedWorkspace={selectedWorkspace}
+                repos={repos}
+                onOpenCommit={handleOpenCommit}
+              />
+            </div>
+          )}
         </div>
       </ChangesViewProvider>
     </ReviewProvider>
