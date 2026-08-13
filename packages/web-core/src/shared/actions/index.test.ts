@@ -82,7 +82,7 @@ import {
   getSessionCommandLabel,
 } from './index';
 import { formatDateShortWithTime } from '@/shared/lib/date';
-import { sessionsApi, workspacesApi } from '@/shared/lib/api';
+import { scratchApi, sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
@@ -98,6 +98,7 @@ import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
 
 const update = vi.mocked(workspacesApi.update);
+const updateScratch = vi.mocked(scratchApi.update);
 const getBranchStatus = vi.mocked(workspacesApi.getBranchStatus);
 const merge = vi.mocked(workspacesApi.merge);
 const getFirstUserMessage = vi.mocked(workspacesApi.getFirstUserMessage);
@@ -785,6 +786,34 @@ describe('Actions.NewWorkspace', () => {
       'project-1',
       expect.any(String),
       { hostId: undefined }
+    );
+  });
+
+  it('persists a local project draft on the current remote host', async () => {
+    const goToProjectWorkspaceCreate = vi.fn();
+    const { ctx } = makeCtx(
+      {},
+      {
+        appRuntime: 'local',
+        userId: null,
+        currentHostId: 'host-2',
+        kanbanProjectId: 'project-1',
+        appNavigation: { goToProjectWorkspaceCreate } as never,
+      }
+    );
+
+    await Actions.NewWorkspace.execute(ctx);
+
+    expect(updateScratch).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(String),
+      expect.anything(),
+      'host-2'
+    );
+    expect(goToProjectWorkspaceCreate).toHaveBeenCalledWith(
+      'project-1',
+      expect.any(String),
+      { hostId: 'host-2' }
     );
   });
 });

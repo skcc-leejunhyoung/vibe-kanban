@@ -1024,7 +1024,7 @@ export const Actions = {
     shortcut: 'G N',
     requiresTarget: ActionTargetType.NONE,
     execute: async (ctx) => {
-      let hostId: string | null | undefined;
+      let hostId: string | null | undefined = ctx.currentHostId;
       if (ctx.appRuntime === 'remote') {
         const { selectWorkspaceHost } = await import(
           '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog'
