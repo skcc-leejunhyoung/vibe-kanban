@@ -324,9 +324,6 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
           );
           const insertAt =
             activeIndex >= 0 ? activeIndex + 1 : state.panes.length;
-          const reference =
-            state.panes[activeIndex >= 0 ? activeIndex : state.panes.length - 1]
-              .id;
           const id = `pane-${state.nextPaneId}`;
           const panes = [
             ...state.panes.slice(0, insertAt),
@@ -381,7 +378,6 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
 
           if (state.panes.length < state.maxPanes) {
             const id = `pane-${state.nextPaneId}`;
-            const reference = state.activePaneId;
             const panes = [...state.panes, { id, destination }];
             return {
               panes,
