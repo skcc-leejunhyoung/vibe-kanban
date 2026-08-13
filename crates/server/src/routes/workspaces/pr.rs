@@ -298,7 +298,7 @@ pub struct AttachExistingPrRequest {
     /// work branch when omitted. Set this to an intermediate "feature" branch to
     /// link a feature -> base PR in a three-branch workflow.
     pub head_branch: Option<String>,
-    /// The candidate selected by the user. When absent, retains the legacy
+    /// An explicit PR URL to resolve and attach. When absent, retains the legacy
     /// behavior of attaching the first available PR for the branch.
     pub pr_url: Option<String>,
 }
@@ -1237,27 +1237,57 @@ pub async fn list_attachable_prs_for_branch(
     }
 }
 
+/// Resolve a PR's detail straight from its URL for the manual "map by link"
+/// path, mapping git-host failures onto [`PrError`] the same way the branch
+/// listing does. Used when branch-based matching can't find the PR the user
+/// wants to link.
+async fn resolve_pr_by_url(url: &str) -> Result<Result<PullRequestDetail, PrError>, ApiError> {
+    let git_host = match GitHostService::from_url(url) {
+        Ok(host) => host,
+        Err(GitHostError::UnsupportedProvider) => return Ok(Err(PrError::UnsupportedProvider)),
+        Err(GitHostError::CliNotInstalled { provider }) => {
+            return Ok(Err(PrError::CliNotInstalled { provider }));
+        }
+        Err(e) => return Err(ApiError::GitHost(e)),
+    };
+    let provider = git_host.provider_kind();
+    match git_host.get_pr_status(url).await {
+        Ok(pr) => Ok(Ok(pr)),
+        Err(GitHostError::CliNotInstalled { provider }) => {
+            Ok(Err(PrError::CliNotInstalled { provider }))
+        }
+        Err(GitHostError::AuthFailed(_)) => Ok(Err(PrError::CliNotLoggedIn { provider })),
+        Err(e) => Err(ApiError::GitHost(e)),
+    }
+}
+
 pub async fn attach_existing_pr(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<AttachExistingPrRequest>,
 ) -> Result<ResponseJson<ApiResponse<AttachPrResponse, PrError>>, ApiError> {
     let pool = &deployment.db().pool;
-    let prs = match list_attachable_prs(
-        &workspace,
-        &deployment,
-        request.repo_id,
-        request.head_branch,
-    )
-    .await?
-    {
-        Ok(prs) => prs,
-        Err(error) => return Ok(ResponseJson(ApiResponse::error_with_data(error))),
-    };
-
-    let pr_info = match request.pr_url {
-        Some(url) => prs.into_iter().find(|pr| pr.url == url),
-        None => prs.into_iter().next(),
+    let pr_info = match request.pr_url.as_deref() {
+        Some(url) => {
+            WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+                .await?
+                .ok_or(RepoError::NotFound)?;
+            match resolve_pr_by_url(url).await? {
+                Ok(pr) => Some(pr),
+                Err(error) => return Ok(ResponseJson(ApiResponse::error_with_data(error))),
+            }
+        }
+        None => match list_attachable_prs(
+            &workspace,
+            &deployment,
+            request.repo_id,
+            request.head_branch,
+        )
+        .await?
+        {
+            Ok(prs) => prs.into_iter().next(),
+            Err(error) => return Ok(ResponseJson(ApiResponse::error_with_data(error))),
+        },
     };
 
     if let Some(pr_info) = pr_info {

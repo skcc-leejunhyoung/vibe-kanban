@@ -1259,7 +1259,7 @@ export const workspacesApi = {
     return handleApiResponseAsResult<PullRequestDetail[], PrError>(response);
   },
 
-  /** Attach a selected PR that was returned by listAttachablePrs. */
+  /** Attach a branch-matched PR, or resolve and attach an explicitly supplied URL. */
   attachPr: async (
     workspaceId: string,
     data: AttachExistingPrRequest

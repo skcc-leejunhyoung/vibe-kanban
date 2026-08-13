@@ -668,7 +668,7 @@ export type AttachExistingPrRequest = { repo_id: string,
  */
 head_branch: string | null,
 /**
- * The candidate selected by the user. When absent, retains the legacy
+ * An explicit PR URL to resolve and attach. When absent, retains the legacy
  * behavior of attaching the first available PR for the branch.
  */
 pr_url: string | null, };

@@ -2187,15 +2187,69 @@ export const Actions = {
             .map((pr) => [pr.url, pr])
         ).values()
       );
+      // Attach a PR (a picked branch-matched candidate, or a URL pasted in the
+      // manual fallback) and report the outcome. Shared by both paths.
+      const attachAndReport = async (request: {
+        head_branch: string | null;
+        pr_url: string | null;
+      }) => {
+        const result = await workspacesApi.attachPr(workspaceId, {
+          repo_id: repoId,
+          ...request,
+        });
+
+        if (
+          result.success &&
+          result.data.pr_attached &&
+          result.data.pr_number
+        ) {
+          invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+          ctx.queryClient.invalidateQueries({
+            queryKey: ['branch-status'],
+          });
+
+          await ConfirmDialog.show({
+            title: 'Pull Request Linked',
+            message: `Linked PR #${result.data.pr_number}${result.data.pr_url ? ` — ${result.data.pr_url}` : ''}`,
+            confirmText: 'OK',
+            showCancelButton: false,
+            variant: 'success',
+          });
+        } else if (result.success && !result.data.pr_attached) {
+          await ConfirmDialog.show({
+            title: 'No Pull Request Found',
+            message:
+              'No pull request was found matching this branch. Make sure a PR exists for this branch on the remote.',
+            confirmText: 'OK',
+            showCancelButton: false,
+            variant: 'info',
+          });
+        } else if (!result.success) {
+          throw new Error(result.message || 'Failed to attach PR');
+        }
+      };
+
+      // Manual fallback: let the user paste a PR URL to map when branch-based
+      // auto-matching found nothing to link.
+      const linkByUrl = async () => {
+        const { LinkPrByUrlDialog } = await import(
+          '@/shared/dialogs/command-bar/LinkPrByUrlDialog'
+        );
+        const prUrl = await LinkPrByUrlDialog.show();
+        if (!prUrl) return;
+        await attachAndReport({ head_branch: null, pr_url: prUrl });
+      };
+
       if (availablePrs.length === 0) {
-        await ConfirmDialog.show({
+        const choice = await ConfirmDialog.show({
           title: 'No Pull Request Found',
           message:
-            'No unlinked pull request was found matching this workspace branch.',
-          confirmText: 'OK',
-          showCancelButton: false,
+            'No unlinked pull request was found matching this workspace branch. You can map one manually by pasting its link.',
+          confirmText: 'Enter Link Manually',
+          cancelText: 'Close',
           variant: 'info',
         });
+        if (choice === 'confirmed') await linkByUrl();
         return;
       }
 
@@ -2208,37 +2262,10 @@ export const Actions = {
       })();
       if (!selectedPr) return;
 
-      const result = await workspacesApi.attachPr(workspaceId, {
-        repo_id: repoId,
+      await attachAndReport({
         head_branch: selectedPr.head_branch,
         pr_url: selectedPr.url,
       });
-
-      if (result.success && result.data.pr_attached && result.data.pr_number) {
-        invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
-        ctx.queryClient.invalidateQueries({
-          queryKey: ['branch-status'],
-        });
-
-        await ConfirmDialog.show({
-          title: 'Pull Request Linked',
-          message: `Linked PR #${result.data.pr_number}${result.data.pr_url ? ` — ${result.data.pr_url}` : ''}`,
-          confirmText: 'OK',
-          showCancelButton: false,
-          variant: 'success',
-        });
-      } else if (result.success && !result.data.pr_attached) {
-        await ConfirmDialog.show({
-          title: 'No Pull Request Found',
-          message:
-            'No open pull request was found matching this branch. Make sure a PR exists for this branch on the remote.',
-          confirmText: 'OK',
-          showCancelButton: false,
-          variant: 'info',
-        });
-      } else if (!result.success) {
-        throw new Error(result.message || 'Failed to attach PR');
-      }
     },
   },
 
