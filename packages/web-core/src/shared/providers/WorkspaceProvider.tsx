@@ -30,7 +30,10 @@ import type { Diff, DiffStats, WorkspaceSummary } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 
-import { WorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
+import {
+  WorkspaceContext,
+  useWorkspaceContext,
+} from '@/shared/hooks/useWorkspaceContext';
 
 interface WorkspaceProviderProps {
   children: ReactNode;
@@ -45,8 +48,17 @@ interface WorkspaceProviderProps {
 
 // Stable reference so an empty commit-diff result doesn't churn downstream memos.
 const EMPTY_DIFFS: Diff[] = [];
+const EMPTY_WORKSPACE_RECORDS = {};
 
-function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
+type WorkspaceLists = Pick<
+  ReturnType<typeof useUnifiedWorkspaces>,
+  'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById' | 'isLoading'
+>;
+
+function WorkspaceProviderContent({
+  children,
+  lists,
+}: WorkspaceProviderProps & { lists: WorkspaceLists }) {
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   const queryClient = useQueryClient();
@@ -68,7 +80,7 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
     archivedWorkspaces,
     workspaceRecordsById,
     isLoading: isLoadingList,
-  } = useUnifiedWorkspaces();
+  } = lists;
 
   const { data: workspace, isLoading: isLoadingWorkspace } = useWorkspaceRecord(
     workspaceId,
@@ -327,16 +339,61 @@ function WorkspaceProviderContent({ children }: WorkspaceProviderProps) {
   );
 }
 
+function WorkspaceProviderWithOwnStreams({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const lists = useUnifiedWorkspaces();
+  return (
+    <WorkspaceProviderContent lists={lists}>
+      {children}
+    </WorkspaceProviderContent>
+  );
+}
+
+function WorkspaceProviderWithInheritedStreams({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const parent = useWorkspaceContext();
+  const lists = useMemo<WorkspaceLists>(
+    () => ({
+      workspaces: parent.activeWorkspaces,
+      archivedWorkspaces: parent.archivedWorkspaces,
+      workspaceRecordsById: EMPTY_WORKSPACE_RECORDS,
+      isLoading: parent.isWorkspacesListLoading,
+    }),
+    [
+      parent.activeWorkspaces,
+      parent.archivedWorkspaces,
+      parent.isWorkspacesListLoading,
+    ]
+  );
+  return (
+    <WorkspaceProviderContent lists={lists}>
+      {children}
+    </WorkspaceProviderContent>
+  );
+}
+
 export function WorkspaceProvider({
   children,
   inheritStreams = false,
 }: WorkspaceProviderProps) {
   if (inheritStreams) {
-    return <WorkspaceProviderContent>{children}</WorkspaceProviderContent>;
+    return (
+      <WorkspaceProviderWithInheritedStreams>
+        {children}
+      </WorkspaceProviderWithInheritedStreams>
+    );
   }
   return (
     <UnifiedWorkspaceStreamsProvider>
-      <WorkspaceProviderContent>{children}</WorkspaceProviderContent>
+      <WorkspaceProviderWithOwnStreams>
+        {children}
+      </WorkspaceProviderWithOwnStreams>
     </UnifiedWorkspaceStreamsProvider>
   );
 }
