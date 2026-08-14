@@ -103,6 +103,7 @@ import { shouldStartBoardNavigation } from '../model/shouldStartBoardNavigation'
 import { isWorkspaceVisibleOnIssueCard } from '../model/isWorkspaceVisibleOnIssueCard';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { COMMAND_PALETTE_EVENT } from '@/shared/lib/commandPaletteEvents';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -172,6 +173,7 @@ function LoadingState() {
  * Must be rendered within both OrgProvider and ProjectProvider.
  */
 export function KanbanContainer() {
+  const isActivePane = useIsActivePane();
   const isMobileViewport = useIsMobile();
   const isNarrowPane = usePaneNarrowerThan(768);
   const isMobile = isMobileViewport || isNarrowPane;
@@ -1400,6 +1402,7 @@ export function KanbanContainer() {
       const activeElement =
         typeof document === 'undefined' ? null : document.activeElement;
       const shouldNavigate = shouldStartBoardNavigation({
+        isActivePane,
         isBoardFocused,
         isDocumentUnfocused:
           activeElement === null ||
@@ -1419,7 +1422,13 @@ export function KanbanContainer() {
       if (!isBoardFocused) setIsBoardFocused(true);
       moveFocus(direction);
     },
-    [isBoardFocused, cursorIssueId, selectedKanbanIssueId, moveFocus]
+    [
+      isActivePane,
+      isBoardFocused,
+      cursorIssueId,
+      selectedKanbanIssueId,
+      moveFocus,
+    ]
   );
   useKeyNavUp((event) => moveFocusFromKeyboard('up', event), navOptions);
   useKeyNavDown((event) => moveFocusFromKeyboard('down', event), navOptions);
@@ -1451,6 +1460,7 @@ export function KanbanContainer() {
     {
       scopes: [Scope.KANBAN],
       enabled:
+        isActivePane &&
         isBoardFocused &&
         (!!cursorIssueId || !!focusedSectionId || !!focusedAddStatusId),
       enableOnFormTags: false,
@@ -1460,6 +1470,7 @@ export function KanbanContainer() {
       selectedKanbanIssueId,
       handleCardClick,
       isBoardFocused,
+      isActivePane,
       focusedSectionId,
       focusedAddStatusId,
       toggleStatusCollapsed,
