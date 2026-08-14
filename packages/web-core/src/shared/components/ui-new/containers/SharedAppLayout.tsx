@@ -227,6 +227,13 @@ export function SharedAppLayout() {
   );
   const isWorkspacesActive = isLocalWorkspacesDestination(currentDestination);
   const isPullRequestsActive = location.pathname === '/pull-requests';
+  // A PR deep-link (?prUrl=…) from a notification carries state the pane grid
+  // cannot render, so it must fall through to the document route
+  // (_app.pull-requests), which opens the PR detail. Without this the pane grid
+  // swallows the link and only lands on the list.
+  const hasPullRequestDeepLink =
+    isPullRequestsActive &&
+    typeof (location.search as { prUrl?: unknown }).prUrl === 'string';
   const isWorkspaceSidebarPreviewEnabled =
     !isMobile &&
     isWorkspacesActive &&
@@ -437,7 +444,8 @@ export function SharedAppLayout() {
 
               <div className="min-h-0 flex-1 overflow-hidden">
                 {appRuntime === 'local' &&
-                isPaneGridDestination(currentDestination) ? (
+                isPaneGridDestination(currentDestination) &&
+                !hasPullRequestDeepLink ? (
                   <WorkspacePanesScreen />
                 ) : (
                   <Outlet />
