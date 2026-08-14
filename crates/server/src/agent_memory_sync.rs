@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use api_types::{
     AgentMemoryKind, AgentMemoryMutation, AgentMemoryMutationOperation, AgentMemoryReceiptStatus,
     AgentMemoryScope, AgentMemorySnapshot, CreateAgentMemorySyncSessionRequest,
@@ -32,6 +33,7 @@ use crate::DeploymentImpl;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Base wait before re-probing a rate-limited agent when it did not report an
 /// exact reset time. Unlike an interactive session (which waits out the full
 /// ~5h window), background memory reconciliation re-probes on a short exponential
@@ -43,6 +45,8 @@ const RATE_LIMIT_BACKOFF_BASE_MINUTES: i64 = 5;
 /// Ceiling for the no-hint backoff so a recovered limit is retried within tens
 /// of minutes and the central session cannot stall indefinitely.
 const RATE_LIMIT_BACKOFF_CAP_MINUTES: i64 = 20;
+const FAILURE_BACKOFF_BASE_MINUTES: i64 = 60;
+const FAILURE_BACKOFF_CAP_MINUTES: i64 = 6 * 60;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 static RUN_LOCK: Mutex<()> = Mutex::const_new(());
@@ -275,10 +279,11 @@ pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<(
     };
     let idle_policy = idle_policy_for_job(job.round, &job.trigger_kind);
     let result = run_now_with_mode(deployment.clone(), &job.trigger_kind, idle_policy).await;
-    let retry_at = result.as_ref().err().and_then(|error| {
+    let retry_at = result.as_ref().err().map(|error| {
         error
             .downcast_ref::<MemorySyncRateLimited>()
             .map(|limited| rate_limit_retry_at(limited.reset_hint, job.attempts))
+            .unwrap_or_else(|| Utc::now() + failure_backoff(job.attempts))
     });
     let report = deployment
         .remote_client()?
@@ -1216,6 +1221,35 @@ async fn sync_one(
             return Err(error);
         }
     };
+    if let Err(error) = validate_snapshot_scope(&run.result.snapshot, scope_key, agent_kind) {
+        let Some(session_id) = run.session_id.as_deref() else {
+            let _ = tokio::fs::remove_file(&result_path).await;
+            return Err(error);
+        };
+        let repair_prompt = build_snapshot_repair_prompt(&result_path, &error);
+        log_event(
+            deployment,
+            run_id,
+            trigger_kind,
+            "info",
+            "snapshot_repair_started",
+            Some(repo),
+            Some(agent_kind),
+            "Resuming the same agent session once to repair snapshot structure",
+        )
+        .await;
+        run = run_agent(
+            repo,
+            scope_key,
+            agent_kind,
+            &repair_prompt,
+            &result_path,
+            Some(session_id),
+        )
+        .await
+        .context("snapshot structure repair follow-up failed")?;
+        validate_snapshot_scope(&run.result.snapshot, scope_key, agent_kind)?;
+    }
     let mut validations = validate_mutation_result_detailed(&mutations, &run.result);
     if validations
         .iter()
@@ -1891,14 +1925,38 @@ Do not ask questions and ensure the corrected result file exists before exiting.
     ))
 }
 
+fn build_snapshot_repair_prompt(result_path: &Path, error: &anyhow::Error) -> String {
+    format!(
+        r#"The snapshot you just wrote failed structural validation: {error}
+
+Repair the snapshot through your official native memory mechanism, then overwrite the JSON result at `{}`. Preserve all unrelated memory and receipts. Ensure the required three-line header is exact, all content is under level-2 Markdown topic headings, every heading is non-empty and unique, and the native repository memory is byte-for-byte identical to result.snapshot. Re-read both before exiting.
+
+Do not ask questions and ensure the corrected result file exists before exiting."#,
+        result_path.display()
+    )
+}
+
+async fn wait_for_sync_result(result_path: &Path) -> anyhow::Result<()> {
+    loop {
+        match tokio::fs::read_to_string(result_path).await {
+            Ok(raw) if serde_json::from_str::<SyncResult>(&raw).is_ok() => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        sleep(RESULT_POLL_INTERVAL).await;
+    }
+}
+
 async fn run_agent(
     repo: &Repo,
-    scope_key: &str,
+    _scope_key: &str,
     agent_kind: AgentMemoryKind,
     prompt: &str,
     result_path: &Path,
     session_id: Option<&str>,
 ) -> anyhow::Result<AgentRunOutput> {
+    let _ = tokio::fs::remove_file(result_path).await;
     let executor = match agent_kind {
         AgentMemoryKind::ClaudeCode => BaseCodingAgent::ClaudeCode,
         AgentMemoryKind::Codex => BaseCodingAgent::Codex,
@@ -1951,17 +2009,45 @@ async fn run_agent(
 
     let mut exit_signal = spawned.exit_signal.take();
     let completion = tokio::time::timeout(EXECUTION_TIMEOUT, async {
-        if let Some(signal) = exit_signal.as_mut() {
+        let result_ready = wait_for_sync_result(result_path);
+        enum Completion {
+            Exited(bool),
+            ResultReady,
+        }
+        let completion = if let Some(signal) = exit_signal.as_mut() {
             tokio::select! {
-                status = spawned.child.inner().wait() => Ok(status?.success()),
-                result = signal => Ok(matches!(result, Ok(ExecutorExitResult::Success))),
+                status = spawned.child.inner().wait() => Completion::Exited(status?.success()),
+                result = signal => Completion::Exited(matches!(result, Ok(ExecutorExitResult::Success))),
+                result = result_ready, if agent_kind == AgentMemoryKind::ClaudeCode => {
+                    result?;
+                    Completion::ResultReady
+                },
             }
         } else {
-            Ok::<_, std::io::Error>(spawned.child.inner().wait().await?.success())
+            tokio::select! {
+                status = spawned.child.inner().wait() => Completion::Exited(status?.success()),
+                result = result_ready, if agent_kind == AgentMemoryKind::ClaudeCode => {
+                    result?;
+                    Completion::ResultReady
+                },
+            }
+        };
+        match completion {
+            Completion::Exited(succeeded) => Ok::<_, anyhow::Error>(succeeded),
+            Completion::ResultReady => {
+                if let Some(cancel) = spawned.cancel.take() {
+                    cancel.cancel();
+                }
+                utils::process::kill_process_group(&mut spawned.child).await?;
+                Ok(true)
+            }
         }
     })
     .await;
     if completion.is_err() {
+        if let Some(cancel) = spawned.cancel.take() {
+            cancel.cancel();
+        }
         let _ = utils::process::kill_process_group(&mut spawned.child).await;
         anyhow::bail!("memory sync agent timed out");
     }
@@ -1982,7 +2068,6 @@ async fn run_agent(
         .await
         .map_err(|error| anyhow::anyhow!("agent did not write a sync result: {error}"))?;
     let result: SyncResult = serde_json::from_str(&raw)?;
-    validate_snapshot_scope(&result.snapshot, scope_key, agent_kind)?;
     if result.snapshot.len() > MAX_SNAPSHOT_BYTES {
         anyhow::bail!("agent memory snapshot exceeds 256 KiB");
     }
@@ -2153,11 +2238,28 @@ fn rate_limit_retry_at(reset_hint: Option<DateTime<Utc>>, attempts: i64) -> Date
 /// Exponential backoff for the no-reset-hint case: the base delay doubles per
 /// central claim attempt, capped so the wait stays in the tens-of-minutes range.
 fn rate_limit_backoff(attempts: i64) -> chrono::Duration {
+    exponential_backoff(
+        attempts,
+        RATE_LIMIT_BACKOFF_BASE_MINUTES,
+        RATE_LIMIT_BACKOFF_CAP_MINUTES,
+    )
+}
+
+fn failure_backoff(attempts: i64) -> chrono::Duration {
+    exponential_backoff(
+        attempts,
+        FAILURE_BACKOFF_BASE_MINUTES,
+        FAILURE_BACKOFF_CAP_MINUTES,
+    )
+}
+
+fn exponential_backoff(attempts: i64, base_minutes: i64, cap_minutes: i64) -> chrono::Duration {
     let exponent = attempts.clamp(1, 16) - 1;
-    let minutes = RATE_LIMIT_BACKOFF_BASE_MINUTES
-        .saturating_mul(1i64 << exponent)
-        .min(RATE_LIMIT_BACKOFF_CAP_MINUTES);
-    chrono::Duration::minutes(minutes)
+    chrono::Duration::minutes(
+        base_minutes
+            .saturating_mul(1i64 << exponent)
+            .min(cap_minutes),
+    )
 }
 
 fn find_reset_timestamp(value: serde_json::Value) -> Option<DateTime<Utc>> {
@@ -2328,6 +2430,43 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_failures_back_off_for_hours() {
+        assert_eq!(failure_backoff(1), chrono::Duration::hours(1));
+        assert_eq!(failure_backoff(2), chrono::Duration::hours(2));
+        assert_eq!(failure_backoff(3), chrono::Duration::hours(4));
+        assert_eq!(failure_backoff(4), chrono::Duration::hours(6));
+        assert_eq!(failure_backoff(100), chrono::Duration::hours(6));
+    }
+
+    #[tokio::test]
+    async fn completed_result_file_ends_streaming_agent_wait() {
+        let path = std::env::temp_dir().join(format!("vibe-sync-result-{}.json", Uuid::new_v4()));
+        let writer = tokio::spawn({
+            let path = path.clone();
+            async move {
+                tokio::fs::write(&path, "{").await.unwrap();
+                sleep(Duration::from_millis(
+                    RESULT_POLL_INTERVAL.as_millis() as u64 * 2,
+                ))
+                .await;
+                tokio::fs::write(
+                    &path,
+                    r#"{"snapshot":"ok","receipts":[],"mutation_receipts":[]}"#,
+                )
+                .await
+                .unwrap();
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), wait_for_sync_result(&path))
+            .await
+            .unwrap()
+            .unwrap();
+        writer.await.unwrap();
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[test]
     fn prompt_exports_final_state_after_import() {
         let prompt = build_prompt(
             Path::new("/tmp/result.json"),
@@ -2397,6 +2536,16 @@ mod tests {
                 .to_string()
                 .contains("duplicate topic heading")
         );
+    }
+
+    #[test]
+    fn snapshot_repair_prompt_requires_unique_topics_and_native_parity() {
+        let prompt = build_snapshot_repair_prompt(
+            Path::new("/tmp/result.json"),
+            &anyhow::anyhow!("duplicate topic heading"),
+        );
+        assert!(prompt.contains("every heading is non-empty and unique"));
+        assert!(prompt.contains("byte-for-byte identical"));
     }
 
     #[test]
