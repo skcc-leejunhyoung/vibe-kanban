@@ -141,7 +141,7 @@ import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
-  PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
+  PULL_REQUESTS_REFRESH_EVENT,
   PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
   PULL_REQUESTS_OPEN_IN_WEB_EVENT,
 } from '@/pages/pull-requests/pullRequestFilters';
@@ -1421,33 +1421,15 @@ export const Actions = {
     },
   } satisfies GlobalActionDefinition,
 
-  SelectPullRequestsRepository: {
-    id: 'select-pull-requests-repository',
-    label: 'Pull Requests: Select Repository',
-    icon: GitForkIcon,
-    keywords: ['pull request', 'pr', 'repository', 'repo', 'select'],
+  RefreshPullRequests: {
+    id: 'refresh-pull-requests',
+    label: 'Pull Requests: Refresh',
+    icon: ArrowsClockwiseIcon,
+    keywords: ['pull request', 'pr', 'refresh', 'reload', 'sync'],
     requiresTarget: ActionTargetType.NONE,
-    restoreFocusOnClose: false,
-    executeAfterClose: true,
     isVisible: (ctx) => ctx.layoutMode === 'pull-requests',
-    execute: async () => {
-      const repos = await repoApi.list();
-      if (repos.length === 0) return;
-      const { buildRepoSelectionPages } = await import(
-        '@/shared/dialogs/command-bar/selections/repoSelection'
-      );
-      const result = await SelectionDialog.show({
-        initialPageId: 'selectRepo',
-        pages: buildRepoSelectionPages(repos),
-      });
-      if (!result || typeof result !== 'object' || !('repoId' in result)) {
-        return;
-      }
-      window.dispatchEvent(
-        new CustomEvent(PULL_REQUESTS_SELECT_REPOSITORY_EVENT, {
-          detail: { repoId: result.repoId },
-        })
-      );
+    execute: () => {
+      window.dispatchEvent(new Event(PULL_REQUESTS_REFRESH_EVENT));
     },
   } satisfies GlobalActionDefinition,
 

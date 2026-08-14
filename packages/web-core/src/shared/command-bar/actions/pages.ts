@@ -59,11 +59,8 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.SelectProjectView },
           { type: 'action', action: Actions.ToggleAppBar },
           { type: 'action', action: Actions.ToggleWorkspaceArchiveView },
-          {
-            type: 'action',
-            action: Actions.SelectPullRequestsRepository,
-          },
           { type: 'action', action: Actions.FilterPullRequests },
+          { type: 'action', action: Actions.RefreshPullRequests },
           { type: 'childPages', id: 'viewOptions' },
           { type: 'childPages', id: 'diffOptions' },
         ],

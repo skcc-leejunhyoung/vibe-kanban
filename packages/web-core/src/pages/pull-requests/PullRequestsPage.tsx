@@ -57,7 +57,7 @@ import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
   PULL_REQUESTS_OPEN_FILTERS_EVENT,
-  PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
+  PULL_REQUESTS_REFRESH_EVENT,
   PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
   PULL_REQUESTS_OPEN_IN_WEB_EVENT,
   resolvePullRequestFiltersAfterDefaultsChange,
@@ -620,15 +620,6 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   useEffect(() => {
     const openFilters = () => setFiltersOpen(true);
     const focusSearch = () => searchInputRef.current?.focus();
-    const selectRepository = (event: Event) => {
-      const repoId = (event as CustomEvent<{ repoId?: string }>).detail?.repoId;
-      if (!repoId) return;
-      setFilters((current) =>
-        current.repositories.includes(repoId)
-          ? current
-          : { ...current, repositories: [...current.repositories, repoId] }
-      );
-    };
     const getSelectedPullRequest = () =>
       selectedPullRequest ?? filteredPullRequests[selectedIndex] ?? null;
     const gotoMappedIssue = () => {
@@ -646,10 +637,6 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     window.addEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
     window.addEventListener(PULL_REQUESTS_FOCUS_SEARCH_EVENT, focusSearch);
     window.addEventListener(
-      PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
-      selectRepository
-    );
-    window.addEventListener(
       PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
       gotoMappedIssue
     );
@@ -661,10 +648,6 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     return () => {
       window.removeEventListener(PULL_REQUESTS_OPEN_FILTERS_EVENT, openFilters);
       window.removeEventListener(PULL_REQUESTS_FOCUS_SEARCH_EVENT, focusSearch);
-      window.removeEventListener(
-        PULL_REQUESTS_SELECT_REPOSITORY_EVENT,
-        selectRepository
-      );
       window.removeEventListener(
         PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
         gotoMappedIssue
@@ -682,6 +665,23 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     selectedPullRequest,
     viewMappedWorkspaces,
   ]);
+
+  // Command-bar "Refresh" bridge. `mutate` is referentially stable, so the
+  // listener only needs re-registering when the selected repos / involvement
+  // change (to force-refresh the right cache entries).
+  useEffect(() => {
+    const refresh = () => {
+      if (filters.repositories.length === 0) return;
+      refreshPullRequests.mutate({
+        repositories: filters.repositories,
+        involvesMe: filters.involvesMe,
+      });
+    };
+    window.addEventListener(PULL_REQUESTS_REFRESH_EVENT, refresh);
+    return () =>
+      window.removeEventListener(PULL_REQUESTS_REFRESH_EVENT, refresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repositoriesKey, filters.involvesMe]);
 
   const focusRow = useCallback(
     (index: number) => {

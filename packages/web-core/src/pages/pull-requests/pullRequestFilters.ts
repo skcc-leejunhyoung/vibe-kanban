@@ -65,8 +65,7 @@ export const PULL_REQUESTS_OPEN_FILTERS_EVENT =
   'vibe:pull-requests-open-filters';
 export const PULL_REQUESTS_FOCUS_SEARCH_EVENT =
   'vibe:pull-requests-focus-search';
-export const PULL_REQUESTS_SELECT_REPOSITORY_EVENT =
-  'vibe:pull-requests-select-repository';
+export const PULL_REQUESTS_REFRESH_EVENT = 'vibe:pull-requests-refresh';
 export const PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT =
   'vibe:pull-requests-goto-mapped-issue';
 export const PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT =

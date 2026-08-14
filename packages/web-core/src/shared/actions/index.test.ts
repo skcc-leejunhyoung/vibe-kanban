@@ -384,18 +384,15 @@ describe('command palette navigation actions', () => {
     expect(goToProjectIssue).not.toHaveBeenCalled();
   });
 
-  it('only shows pull request repository selection on the pull requests page', () => {
+  it('only shows the pull request refresh action on the pull requests page', () => {
     expect(
-      isActionVisible(Actions.SelectPullRequestsRepository, {
+      isActionVisible(Actions.RefreshPullRequests, {
         ...openWorkspaceContext,
         layoutMode: 'pull-requests',
       })
     ).toBe(true);
     expect(
-      isActionVisible(
-        Actions.SelectPullRequestsRepository,
-        openWorkspaceContext
-      )
+      isActionVisible(Actions.RefreshPullRequests, openWorkspaceContext)
     ).toBe(false);
   });
 
