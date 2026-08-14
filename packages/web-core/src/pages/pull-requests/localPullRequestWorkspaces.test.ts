@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SidebarWorkspace } from '@/shared/hooks/useWorkspaces';
-import { findLocalPullRequestWorkspaces } from './localPullRequestWorkspaces';
+import {
+  findLocalPullRequestWorkspaces,
+  hasPullRequestWorkspace,
+} from './localPullRequestWorkspaces';
 
 function makeWorkspace(
   id: string,
@@ -37,5 +40,24 @@ describe('findLocalPullRequestWorkspaces', () => {
         workspaces
       ).map(({ id }) => id)
     ).toEqual(['quick-chat', 'remote-quick-chat']);
+  });
+
+  it('detects local and issue-mapped workspaces', () => {
+    expect(
+      hasPullRequestWorkspace(
+        'https://github.com/acme/repo/pull/42',
+        [makeWorkspace('quick-chat', 'https://github.com/acme/repo/pull/42')],
+        new Set(),
+        []
+      )
+    ).toBe(true);
+    expect(
+      hasPullRequestWorkspace(
+        'https://github.com/acme/repo/pull/42',
+        [],
+        new Set(['issue-1']),
+        [{ issue_id: 'issue-1', local_workspace_id: 'workspace-1' }]
+      )
+    ).toBe(true);
   });
 });

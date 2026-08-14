@@ -310,7 +310,7 @@ export function PrDetailsContent({
       )}
     >
       <DialogHeader className="shrink-0 border-b px-base py-base">
-        <DialogTitle className="flex min-w-0 items-center gap-base">
+        <DialogTitle className="flex min-w-0 items-start gap-base">
           <GitPullRequestIcon
             className={cn(
               'shrink-0',
@@ -318,7 +318,7 @@ export function PrDetailsContent({
             )}
           />
           <span className="shrink-0 text-low">#{prNumber}</span>
-          <span className="min-w-0 flex-1 truncate">
+          <span className="min-w-0 flex-1 break-words text-left">
             {detail?.title || 'Pull Request'}
           </span>
           {variant === 'panel' && onClose && (

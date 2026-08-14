@@ -53,7 +53,10 @@ import {
   getRepositoryNameFromPrUrl,
 } from './pullRequestUrl';
 import { handlePullRequestDetailsEscape } from './pullRequestDetailsEscape';
-import { findLocalPullRequestWorkspaces } from './localPullRequestWorkspaces';
+import {
+  findLocalPullRequestWorkspaces,
+  hasPullRequestWorkspace,
+} from './localPullRequestWorkspaces';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
   PULL_REQUESTS_GOTO_MAPPED_ISSUE_EVENT,
@@ -396,15 +399,41 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     [filters, normalizedQuery, pullRequests]
   );
 
-  const loadMappedIssues = useCallback(async (prUrl: string) => {
-    const links = await listPullRequestIssueMappings(prUrl);
-    return Promise.all(
-      links.map(async (link) => ({
-        link,
-        issue: await getRemoteIssue(link.issue_id),
-      }))
-    );
-  }, []);
+  const pullRequestMappingQueries = useQueries({
+    queries: filteredPullRequests.map((pr) => ({
+      queryKey: ['pull-request-issue-mappings', pr.url],
+      queryFn: () => listPullRequestIssueMappings(pr.url),
+      staleTime: PR_QUERY_STALE_TIME_MS,
+    })),
+  });
+
+  const pullRequestMappings = useMemo(
+    () =>
+      new Map(
+        filteredPullRequests.map((pr, index) => [
+          pr.url,
+          pullRequestMappingQueries[index]?.data ?? [],
+        ])
+      ),
+    [filteredPullRequests, pullRequestMappingQueries]
+  );
+
+  const loadMappedIssues = useCallback(
+    async (prUrl: string) => {
+      const links = await queryClient.fetchQuery({
+        queryKey: ['pull-request-issue-mappings', prUrl],
+        queryFn: () => listPullRequestIssueMappings(prUrl),
+        staleTime: PR_QUERY_STALE_TIME_MS,
+      });
+      return Promise.all(
+        links.map(async (link) => ({
+          link,
+          issue: await getRemoteIssue(link.issue_id),
+        }))
+      );
+    },
+    [queryClient]
+  );
 
   const workspaceSummaries = useMemo(
     () => [...activeWorkspaces, ...archivedWorkspaces],
@@ -945,138 +974,163 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
           </div>
         ) : (
           <div className="divide-y divide-border">
-            {filteredPullRequests.map((pr, index) => (
-              <div
-                data-pull-request-row
-                key={pr.url}
-                className={cn(
-                  'flex w-full items-start pr-base hover:bg-secondary/60',
-                  index === selectedIndex && 'bg-secondary/40'
-                )}
-              >
-                <button
-                  type="button"
-                  data-pull-request-primary
-                  ref={(element) => {
-                    if (element) rowRefs.current.set(pr.url, element);
-                    else rowRefs.current.delete(pr.url);
-                  }}
-                  onFocus={() => setSelectedIndex(index)}
-                  onMouseEnter={() => schedulePullRequestPrefetch(pr)}
-                  onMouseLeave={cancelScheduledPrefetch}
-                  onFocusCapture={() => {
-                    cancelScheduledPrefetch();
-                    void prefetchPullRequest(pr);
-                  }}
-                  onClick={() => openDetails(pr)}
-                  className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left"
+            {filteredPullRequests.map((pr, index) => {
+              const mappings = pullRequestMappings.get(pr.url) ?? [];
+              const issueIds = new Set(mappings.map((link) => link.issue_id));
+              const hasMappedIssue = mappings.length > 0;
+              const hasMappedWorkspace = hasPullRequestWorkspace(
+                pr.url,
+                workspaceSummaries,
+                issueIds,
+                workspaces
+              );
+
+              return (
+                <div
+                  data-pull-request-row
+                  key={pr.url}
+                  className={cn(
+                    'flex w-full items-start pr-base hover:bg-secondary/60',
+                    index === selectedIndex && 'bg-secondary/40'
+                  )}
                 >
-                  <span className="mt-half">
-                    {statusIcon(pr.status, pr.is_draft)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex flex-wrap items-center gap-half">
-                      <span className="truncate text-base font-medium text-high">
-                        {pr.title}
-                      </span>
-                      {pr.is_draft && (
-                        <span className="inline-flex items-center gap-1 rounded bg-tertiary px-half py-0.5 text-xs text-low">
-                          <GitPullRequestIcon
-                            className="size-icon-xs"
-                            weight="bold"
-                          />
-                          Draft
+                  <button
+                    type="button"
+                    data-pull-request-primary
+                    ref={(element) => {
+                      if (element) rowRefs.current.set(pr.url, element);
+                      else rowRefs.current.delete(pr.url);
+                    }}
+                    onFocus={() => setSelectedIndex(index)}
+                    onMouseEnter={() => schedulePullRequestPrefetch(pr)}
+                    onMouseLeave={cancelScheduledPrefetch}
+                    onFocusCapture={() => {
+                      cancelScheduledPrefetch();
+                      void prefetchPullRequest(pr);
+                    }}
+                    onClick={() => openDetails(pr)}
+                    className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left"
+                  >
+                    <span className="mt-half">
+                      {statusIcon(pr.status, pr.is_draft)}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-half">
+                        <span className="break-words text-base font-medium text-high">
+                          {pr.title}
                         </span>
-                      )}
-                      {pr.review_decision === 'APPROVED' && (
-                        <span className="inline-flex items-center gap-1 rounded bg-success/10 px-half py-0.5 text-xs text-success">
-                          <CheckCircleIcon
-                            className="size-icon-xs"
-                            weight="fill"
-                          />
-                          Approved
-                        </span>
-                      )}
-                      {pr.is_review_requested && (
-                        <span className="rounded bg-brand/10 px-half py-0.5 text-xs text-brand">
-                          Review requested
-                        </span>
-                      )}
-                      {/* A pending review request supersedes a stale
-                          CHANGES_REQUESTED, matching the details panel. */}
-                      {pr.review_decision === 'CHANGES_REQUESTED' &&
-                        !pr.is_review_requested && (
-                          <span className="rounded bg-error/10 px-half py-0.5 text-xs text-error">
-                            Changes requested
+                        {pr.is_draft && (
+                          <span className="inline-flex items-center gap-1 rounded bg-tertiary px-half py-0.5 text-xs text-low">
+                            <GitPullRequestIcon
+                              className="size-icon-xs"
+                              weight="bold"
+                            />
+                            Draft
                           </span>
                         )}
-                      {pr.labels.map((label) => (
-                        <span
-                          key={label}
-                          className="rounded border border-border px-half py-0.5 text-xs text-low"
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </span>
-                    <span className="mt-half flex flex-wrap items-center gap-x-base gap-y-half text-sm text-low">
-                      <span>
-                        {pr.repository} #{String(pr.number)}
+                        {pr.review_decision === 'APPROVED' && (
+                          <span className="inline-flex items-center gap-1 rounded bg-success/10 px-half py-0.5 text-xs text-success">
+                            <CheckCircleIcon
+                              className="size-icon-xs"
+                              weight="fill"
+                            />
+                            Approved
+                          </span>
+                        )}
+                        {pr.is_review_requested && (
+                          <span className="rounded bg-brand/10 px-half py-0.5 text-xs text-brand">
+                            Review requested
+                          </span>
+                        )}
+                        {/* A pending review request supersedes a stale
+                          CHANGES_REQUESTED, matching the details panel. */}
+                        {pr.review_decision === 'CHANGES_REQUESTED' &&
+                          !pr.is_review_requested && (
+                            <span className="rounded bg-error/10 px-half py-0.5 text-xs text-error">
+                              Changes requested
+                            </span>
+                          )}
+                        {pr.labels.map((label) => (
+                          <span
+                            key={label}
+                            className="rounded border border-border px-half py-0.5 text-xs text-low"
+                          >
+                            {label}
+                          </span>
+                        ))}
                       </span>
-                      <span>{statusLabel(pr.status)}</span>
-                      <span>by {pr.author ?? 'unknown'}</span>
-                      {pr.updated_at && (
-                        <span>
-                          updated {new Date(pr.updated_at).toLocaleDateString()}
+                      <span className="mt-half flex flex-wrap items-center gap-x-base gap-y-half text-sm text-low">
+                        <span>{pr.repository}</span>
+                        <span className="rounded bg-tertiary px-half py-0.5 text-xs text-low">
+                          #{String(pr.number)}
                         </span>
+                        <span>{statusLabel(pr.status)}</span>
+                        <span>by {pr.author ?? 'unknown'}</span>
+                        {pr.updated_at && (
+                          <span>
+                            updated{' '}
+                            {new Date(pr.updated_at).toLocaleDateString()}
+                          </span>
+                        )}
+                        <span className="inline-flex items-center gap-1">
+                          <ChatCircleIcon className="size-icon-xs" />
+                          {String(pr.comments_count)}
+                        </span>
+                      </span>
+                    </span>
+                  </button>
+                  <span
+                    className={cn(
+                      'flex shrink-0 items-center gap-half py-base',
+                      isNarrow && 'w-[4.5rem] flex-wrap justify-end'
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void goToMappedIssue(pr);
+                      }}
+                      className={cn(
+                        'flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high',
+                        hasMappedIssue && 'bg-brand/10 text-brand'
                       )}
-                      <span className="inline-flex items-center gap-1">
-                        <ChatCircleIcon className="size-icon-xs" />
-                        {String(pr.comments_count)}
-                      </span>
-                    </span>
+                      aria-label={`Go to issue mapped to pull request #${String(pr.number)}`}
+                      title="Go to mapped issue"
+                    >
+                      <ArrowSquareOutIcon className="size-icon-sm" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void viewMappedWorkspaces(pr);
+                      }}
+                      className={cn(
+                        'flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high',
+                        hasMappedWorkspace && 'bg-brand/10 text-brand'
+                      )}
+                      aria-label={`View workspaces mapped to pull request #${String(pr.number)}`}
+                      title="View mapped workspaces"
+                    >
+                      <StackIcon className="size-icon-sm" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openExternalUrl(pr.url);
+                      }}
+                      className="flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high"
+                      aria-label={`Open pull request #${String(pr.number)} in web`}
+                      title="Open in web"
+                    >
+                      <GlobeIcon className="size-icon-sm" />
+                    </button>
                   </span>
-                </button>
-                <span className="flex shrink-0 items-center gap-half py-base">
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void goToMappedIssue(pr);
-                    }}
-                    className="flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high"
-                    aria-label={`Go to issue mapped to pull request #${String(pr.number)}`}
-                    title="Go to mapped issue"
-                  >
-                    <ArrowSquareOutIcon className="size-icon-sm" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void viewMappedWorkspaces(pr);
-                    }}
-                    className="flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high"
-                    aria-label={`View workspaces mapped to pull request #${String(pr.number)}`}
-                    title="View mapped workspaces"
-                  >
-                    <StackIcon className="size-icon-sm" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openExternalUrl(pr.url);
-                    }}
-                    className="flex size-8 items-center justify-center rounded text-low hover:bg-secondary hover:text-high"
-                    aria-label={`Open pull request #${String(pr.number)} in web`}
-                    title="Open in web"
-                  >
-                    <GlobeIcon className="size-icon-sm" />
-                  </button>
-                </span>
-              </div>
-            ))}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
