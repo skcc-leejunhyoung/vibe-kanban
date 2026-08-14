@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { resolveUnfocusedChatKeyAction } from './workspaceChatKeyboard';
+import {
+  resolveUnfocusedChatKeyAction,
+  shouldHandleUnfocusedChatKey,
+} from './workspaceChatKeyboard';
+
+const elementWith = (nodeName: string, paneShell = false): Element =>
+  ({
+    nodeName,
+    hasAttribute: (name: string) => paneShell && name === 'data-workspace-pane',
+  }) as unknown as Element;
 
 const keyEvent = (
   key: string,
@@ -49,5 +58,19 @@ describe('resolveUnfocusedChatKeyAction', () => {
     expect(resolveUnfocusedChatKeyAction(keyEvent('Escape'))).toEqual({
       type: 'focus-workspaces',
     });
+  });
+});
+
+describe('shouldHandleUnfocusedChatKey', () => {
+  it('treats the document, body, and a keyboard-focused pane shell as unfocused', () => {
+    expect(shouldHandleUnfocusedChatKey(null)).toBe(true);
+    expect(shouldHandleUnfocusedChatKey(elementWith('BODY'))).toBe(true);
+    expect(shouldHandleUnfocusedChatKey(elementWith('HTML'))).toBe(true);
+    expect(shouldHandleUnfocusedChatKey(elementWith('DIV', true))).toBe(true);
+  });
+
+  it('defers to a real focused control', () => {
+    expect(shouldHandleUnfocusedChatKey(elementWith('TEXTAREA'))).toBe(false);
+    expect(shouldHandleUnfocusedChatKey(elementWith('BUTTON'))).toBe(false);
   });
 });

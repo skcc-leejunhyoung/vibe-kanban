@@ -44,6 +44,21 @@ interface UnfocusedChatKeyTarget {
 }
 
 /**
+ * The unfocused-chat keys act only while nothing interactive holds focus. The
+ * pane shell (`data-workspace-pane`, focused by keyboard pane cycling) is not a
+ * control, so it counts as "unfocused" — otherwise Enter/arrows/Esc are
+ * swallowed the moment a pane is keyboard-selected.
+ */
+export function shouldHandleUnfocusedChatKey(
+  activeElement: Element | null
+): boolean {
+  if (activeElement === null) return true;
+  const name = activeElement.nodeName;
+  if (name === 'BODY' || name === 'HTML') return true;
+  return activeElement.hasAttribute('data-workspace-pane');
+}
+
+/**
  * Window-level ArrowUp/ArrowDown/Enter handling for the chat while no control
  * is focused. `enabled` must fold in every caller-side condition (visible
  * chat, active pane, mobile tab), since panes register one listener each.
@@ -59,12 +74,7 @@ export function useUnfocusedChatKeys(
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
 
-      const activeElement = document.activeElement;
-      const hasNoFocusedControl =
-        activeElement === null ||
-        activeElement === document.body ||
-        activeElement === document.documentElement;
-      if (!hasNoFocusedControl) return;
+      if (!shouldHandleUnfocusedChatKey(document.activeElement)) return;
 
       const action = resolveUnfocusedChatKeyAction(event);
       if (action?.type === 'scroll') {
