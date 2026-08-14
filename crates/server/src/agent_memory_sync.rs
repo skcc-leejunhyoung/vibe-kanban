@@ -47,6 +47,7 @@ const RATE_LIMIT_BACKOFF_BASE_MINUTES: i64 = 5;
 const RATE_LIMIT_BACKOFF_CAP_MINUTES: i64 = 20;
 const FAILURE_BACKOFF_BASE_MINUTES: i64 = 60;
 const FAILURE_BACKOFF_CAP_MINUTES: i64 = 6 * 60;
+const MAX_SYNC_JOB_ATTEMPTS: i64 = 4;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 static RUN_LOCK: Mutex<()> = Mutex::const_new(());
@@ -261,29 +262,19 @@ pub async fn sync_control_plane(deployment: &DeploymentImpl) -> anyhow::Result<(
         return Ok(());
     }
     let client = deployment.remote_client()?;
-    let mut job = client.claim_agent_memory_sync_job(host_id).await?;
-    if job.is_none() {
-        let pending = pending_status(deployment).await?;
-        if pending.pending_snapshots > 0 || pending.pending_mutations > 0 {
-            client
-                .create_agent_memory_sync_session(&CreateAgentMemorySyncSessionRequest {
-                    requested_by_host_id: host_id,
-                    trigger_kind: "catch_up".to_string(),
-                })
-                .await?;
-            job = client.claim_agent_memory_sync_job(host_id).await?;
-        }
-    }
+    let job = client.claim_agent_memory_sync_job(host_id).await?;
     let Some(job) = job else {
         return Ok(());
     };
     let idle_policy = idle_policy_for_job(job.round, &job.trigger_kind);
     let result = run_now_with_mode(deployment.clone(), &job.trigger_kind, idle_policy).await;
-    let retry_at = result.as_ref().err().map(|error| {
-        error
-            .downcast_ref::<MemorySyncRateLimited>()
-            .map(|limited| rate_limit_retry_at(limited.reset_hint, job.attempts))
-            .unwrap_or_else(|| Utc::now() + failure_backoff(job.attempts))
+    let retry_at = result.as_ref().err().and_then(|error| {
+        should_retry_job(job.attempts).then(|| {
+            error
+                .downcast_ref::<MemorySyncRateLimited>()
+                .map(|limited| rate_limit_retry_at(limited.reset_hint, job.attempts))
+                .unwrap_or_else(|| Utc::now() + failure_backoff(job.attempts))
+        })
     });
     let report = deployment
         .remote_client()?
@@ -2293,6 +2284,10 @@ fn failure_backoff(attempts: i64) -> chrono::Duration {
     )
 }
 
+fn should_retry_job(attempts: i64) -> bool {
+    attempts < MAX_SYNC_JOB_ATTEMPTS
+}
+
 fn exponential_backoff(attempts: i64, base_minutes: i64, cap_minutes: i64) -> chrono::Duration {
     let exponent = attempts.clamp(1, 16) - 1;
     chrono::Duration::minutes(
@@ -2476,6 +2471,14 @@ mod tests {
         assert_eq!(failure_backoff(3), chrono::Duration::hours(4));
         assert_eq!(failure_backoff(4), chrono::Duration::hours(6));
         assert_eq!(failure_backoff(100), chrono::Duration::hours(6));
+    }
+
+    #[test]
+    fn automatic_retries_stop_after_four_attempts() {
+        assert!(should_retry_job(1));
+        assert!(should_retry_job(3));
+        assert!(!should_retry_job(4));
+        assert!(!should_retry_job(100));
     }
 
     #[tokio::test]
