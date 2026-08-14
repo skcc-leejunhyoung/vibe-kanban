@@ -122,6 +122,7 @@ export function sameDestination(
         (a.hostId ?? null) === (b.hostId ?? null)
       );
     case 'pull-requests':
+      return b.kind === 'pull-requests' && a.prUrl === b.prUrl;
     case 'notifications':
       return true;
   }

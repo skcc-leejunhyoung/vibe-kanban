@@ -67,9 +67,7 @@ export function WorkspacePanesScreen() {
   useEffect(() => {
     if (shouldAdoptDocument) return;
     if (!activeDestination) return;
-    const urlDestination = appNavigation.resolveFromPath(
-      window.location.pathname
-    );
+    const urlDestination = appNavigation.resolveFromPath(window.location.href);
     if (
       isPaneRenderableDestination(urlDestination) &&
       sameDestination(urlDestination, activeDestination)

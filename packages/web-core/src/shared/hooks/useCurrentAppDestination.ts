@@ -32,8 +32,8 @@ export function useCurrentAppDestination(): AppDestination | null {
   const override = useContext(AppDestinationOverrideContext);
 
   return useMemo(
-    () => override ?? appNavigation.resolveFromPath(location.pathname),
-    [override, appNavigation, location.pathname]
+    () => override ?? appNavigation.resolveFromPath(location.href),
+    [override, appNavigation, location.href]
   );
 }
 

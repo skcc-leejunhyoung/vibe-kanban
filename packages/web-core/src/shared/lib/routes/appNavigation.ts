@@ -8,7 +8,7 @@ export type AppDestination =
   | { kind: 'workspace-vscode'; workspaceId: string; hostId?: string | null }
   | { kind: 'export' }
   | { kind: 'notifications' }
-  | { kind: 'pull-requests'; hostId?: string | null }
+  | { kind: 'pull-requests'; prUrl?: string; hostId?: string | null }
   | { kind: 'project'; projectId: string }
   | {
       kind: 'project-issue';

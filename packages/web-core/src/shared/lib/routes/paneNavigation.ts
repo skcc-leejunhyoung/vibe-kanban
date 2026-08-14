@@ -67,7 +67,7 @@ export function navigateDocumentTo(
       );
       return;
     case 'pull-requests':
-      appNavigation.goToPullRequests(undefined, transition);
+      appNavigation.goToPullRequests(destination.prUrl, transition);
       return;
     case 'notifications':
       appNavigation.goToNotifications(transition);
@@ -177,16 +177,9 @@ export function createPaneAppNavigation(
       navigateTo({ kind: 'notifications' }, transition, () =>
         base.goToNotifications(transition)
       ),
-    goToPullRequests: (prUrl, transition) => {
-      // A concrete PR deep-link carries state the pane page cannot receive
-      // (search param); let the document route handle it.
-      if (prUrl) {
-        base.goToPullRequests(prUrl, transition);
-        return;
-      }
-      navigateTo({ kind: 'pull-requests' }, transition, () =>
+    goToPullRequests: (prUrl, transition) =>
+      navigateTo({ kind: 'pull-requests', prUrl }, transition, () =>
         base.goToPullRequests(prUrl, transition)
-      );
-    },
+      ),
   };
 }

@@ -28,7 +28,8 @@ function parseLocalHostIdFromPathname(pathname: string): string | null {
 }
 
 function resolveLocalDestinationFromPath(path: string): AppDestination | null {
-  const { pathname } = new URL(path, 'http://localhost');
+  const url = new URL(path, 'http://localhost');
+  const { pathname } = url;
   const { foundRoute, routeParams } = router.getMatchedRoutes(pathname);
 
   if (!foundRoute) {
@@ -49,7 +50,10 @@ function resolveLocalDestinationFromPath(path: string): AppDestination | null {
     case '/_app/notifications':
       return { kind: 'notifications' };
     case '/_app/pull-requests':
-      return { kind: 'pull-requests' };
+      return {
+        kind: 'pull-requests',
+        prUrl: url.searchParams.get('prUrl') ?? undefined,
+      };
     case '/_app/hosts/$hostId/workspaces': {
       const hostId = getPathParam(routeParams, 'hostId');
       return hostId ? { kind: 'workspaces', hostId } : null;

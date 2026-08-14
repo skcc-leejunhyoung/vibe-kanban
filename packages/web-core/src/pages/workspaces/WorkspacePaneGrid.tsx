@@ -160,7 +160,7 @@ function PaneOutlet({
         </>
       );
     case 'pull-requests':
-      return <PullRequestsPage />;
+      return <PullRequestsPage initialPrUrl={destination.prUrl} />;
     case 'notifications':
       return <NotificationsPage />;
   }

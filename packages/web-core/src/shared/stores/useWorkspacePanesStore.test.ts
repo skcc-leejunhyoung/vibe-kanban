@@ -324,5 +324,11 @@ describe('helpers', () => {
       )
     ).toBe(false);
     expect(sameDestination({ kind: 'pull-requests' }, null)).toBe(false);
+    expect(
+      sameDestination(
+        { kind: 'pull-requests', prUrl: 'https://example.com/pull/1' },
+        { kind: 'pull-requests', prUrl: 'https://example.com/pull/2' }
+      )
+    ).toBe(false);
   });
 });
