@@ -258,13 +258,14 @@ export const WorkspaceDetail = forwardRef<
   return (
     <ReviewProvider workspaceId={selectedWorkspace?.id}>
       <ChangesViewProvider>
-        <div className="flex h-full">
+        <div className="relative flex h-full">
+          {/* Never toggle the Group with `display:none`: react-resizable-panels
+              measures a hidden Group's panels at 0px and the flex-basis stays
+              stuck at 0 after it's shown again — a blank pane. The compact
+              sidebar overlays the Group instead, leaving it always laid out. */}
           <Group
             orientation="horizontal"
-            className={cn(
-              'flex-1 min-w-0 h-full',
-              isCompact && showRightSidebar && 'hidden'
-            )}
+            className="flex-1 min-w-0 h-full"
             defaultLayout={defaultLayout}
             onLayoutChange={onLayoutChange}
           >
@@ -345,13 +346,16 @@ export const WorkspaceDetail = forwardRef<
             )}
           </Group>
 
-          {/* Wide panes keep their sidebar mounted across focus changes.
-              Compact panes show it only while active, as the sole view. */}
+          {/* Wide panes keep their sidebar mounted alongside the Group.
+              Compact panes overlay it on top (absolute) so the Group underneath
+              stays laid out instead of being display:none'd. */}
           {showRightSidebar && (
             <div
               className={cn(
-                'shrink-0 h-full overflow-hidden',
-                isCompact ? 'w-full' : 'w-[300px]'
+                'h-full overflow-hidden bg-primary',
+                isCompact
+                  ? 'absolute inset-0 z-20 w-full'
+                  : 'shrink-0 w-[300px]'
               )}
             >
               <RightSidebar
