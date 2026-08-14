@@ -100,6 +100,7 @@ import {
 } from '@/shared/keyboard';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 import { shouldStartBoardNavigation } from '../model/shouldStartBoardNavigation';
+import { isWorkspaceVisibleOnIssueCard } from '../model/isWorkspaceVisibleOnIssueCard';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { COMMAND_PALETTE_EVENT } from '@/shared/lib/commandPaletteEvents';
 
@@ -215,7 +216,7 @@ export function KanbanContainer() {
     membersWithProfilesById,
     isLoading: orgLoading,
   } = useOrgContext();
-  const { activeWorkspaces } = useWorkspaceContext();
+  const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
   const { userId } = useAuth();
   const workspaceHostMap = useWorkspaceHostMap();
 
@@ -721,6 +722,11 @@ export function KanbanContainer() {
     return map;
   }, [activeWorkspaces]);
 
+  const locallyArchivedWorkspaceIds = useMemo(
+    () => new Set(archivedWorkspaces.map((workspace) => workspace.id)),
+    [archivedWorkspaces]
+  );
+
   const openIssueWorkspace = useCallback(
     async (
       issueId: string,
@@ -810,8 +816,8 @@ export function KanbanContainer() {
         // machine. This mirrors the issue detail view; previously the board
         // additionally required `localWorkspacesById.has(...)`, which silently
         // hid remote-host workspaces from the cards.
-        .filter(
-          (workspace) => !workspace.archived && !!workspace.local_workspace_id
+        .filter((workspace) =>
+          isWorkspaceVisibleOnIssueCard(workspace, locallyArchivedWorkspaceIds)
         )
         .map((workspace) => {
           const localWorkspace = workspace.local_workspace_id
@@ -853,6 +859,7 @@ export function KanbanContainer() {
     issues,
     getWorkspacesForIssue,
     localWorkspacesById,
+    locallyArchivedWorkspaceIds,
     prsByWorkspaceId,
     membersWithProfilesById,
     userId,
