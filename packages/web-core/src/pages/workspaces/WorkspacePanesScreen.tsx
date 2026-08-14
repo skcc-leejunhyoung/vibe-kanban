@@ -14,7 +14,10 @@ import {
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { WorkspacesSidebarContainer } from './WorkspacesSidebarContainer';
 import { WorkspacePaneGrid } from './WorkspacePaneGrid';
-import { shouldAdoptDocumentDestination } from './workspacePaneNavigation';
+import {
+  shouldAdoptDocumentDestination,
+  shouldParkEmptyPaneUrl,
+} from './workspacePaneNavigation';
 
 /**
  * The desktop-local pane surface: the shared workspace list next to the pane
@@ -66,8 +69,15 @@ export function WorkspacePanesScreen() {
   // Store → URL: mirror the active pane into the address bar (replace-only).
   useEffect(() => {
     if (shouldAdoptDocument) return;
-    if (!activeDestination) return;
     const urlDestination = appNavigation.resolveFromPath(window.location.href);
+    if (!activeDestination) {
+      // Empty active pane: park the URL on the bare grid route so a stale
+      // renderable URL doesn't get re-adopted and snap the active pane back.
+      if (shouldParkEmptyPaneUrl(activeDestination, urlDestination)) {
+        appNavigation.goToWorkspaces({ replace: true });
+      }
+      return;
+    }
     if (
       isPaneRenderableDestination(urlDestination) &&
       sameDestination(urlDestination, activeDestination)
