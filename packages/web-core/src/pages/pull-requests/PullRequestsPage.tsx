@@ -46,6 +46,7 @@ import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { ActionTargetType } from '@/shared/types/actions';
 import { PullRequestDetailsPanel } from './PullRequestDetailsPanel';
+import { shouldPreservePullRequestDetails } from './pullRequestDetailsState';
 import { PullRequestFiltersDialog } from './PullRequestFiltersDialog';
 import {
   getPullRequestNumberFromUrl,
@@ -608,14 +609,19 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   useEffect(() => {
     if (previousRepositoriesKeyRef.current === repositoriesKey) return;
     previousRepositoriesKeyRef.current = repositoriesKey;
-    if (skipNextRepositoryResetRef.current) {
+    if (
+      shouldPreservePullRequestDetails(
+        initialPrUrl,
+        skipNextRepositoryResetRef.current
+      )
+    ) {
       skipNextRepositoryResetRef.current = false;
       setSelectedIndex(0);
       return;
     }
     setSelectedPullRequest(null);
     setSelectedIndex(0);
-  }, [repositoriesKey]);
+  }, [repositoriesKey, initialPrUrl]);
 
   useEffect(() => {
     const openFilters = () => setFiltersOpen(true);
