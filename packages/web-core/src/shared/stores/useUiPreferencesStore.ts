@@ -449,9 +449,6 @@ export const PERSIST_KEYS = {
   repoCard: (repoId: string) => `repo-card-${repoId}` as const,
 } as const;
 
-// Check if screen is wide enough to keep sidebar visible
-const isWideScreen = () => window.innerWidth > 2048;
-
 export type PersistKey =
   | typeof PERSIST_KEYS.workspacesSidebarArchived
   | typeof PERSIST_KEYS.workspacesSidebarAccordionLayout
@@ -805,11 +802,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
           rightMainPanelMode: isCurrentlyActive ? null : mode,
         },
       },
-      isLeftSidebarVisible: isCurrentlyActive
-        ? true
-        : mode !== RIGHT_MAIN_PANEL_MODES.PREVIEW || isWideScreen()
-          ? state.isLeftSidebarVisible
-          : false,
       ...(isMobile &&
         !isCurrentlyActive && { mobileActiveTab: mode as MobileTab }),
     });
@@ -829,11 +821,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
           rightMainPanelMode: mode,
         },
       },
-      ...(mode === RIGHT_MAIN_PANEL_MODES.PREVIEW && {
-        isLeftSidebarVisible: isWideScreen()
-          ? state.isLeftSidebarVisible
-          : false,
-      }),
       ...(isMobile && mode !== null && { mobileActiveTab: mode as MobileTab }),
     });
   },
