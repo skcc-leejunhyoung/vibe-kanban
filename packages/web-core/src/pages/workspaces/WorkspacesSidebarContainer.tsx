@@ -108,6 +108,8 @@ interface WorkspacesSidebarContainerProps {
   onAddWorkspaceOverride?: () => void;
   /** Render the touch-sized mobile list inside an empty desktop pane. */
   forceMobile?: boolean;
+  /** Pin selection and navigation to an empty pane's own picker. */
+  targetPaneId?: string;
 }
 
 export function WorkspacesSidebarContainer({
@@ -116,6 +118,7 @@ export function WorkspacesSidebarContainer({
   onSelectWorkspaceOverride,
   onAddWorkspaceOverride,
   forceMobile = false,
+  targetPaneId,
 }: WorkspacesSidebarContainerProps) {
   const {
     workspaceId: selectedWorkspaceId,
@@ -148,14 +151,16 @@ export function WorkspacesSidebarContainer({
   // active pane's workspace instead of the routed one.
   const isPaneGridTargeted = useIsPaneGridTargeted();
   const rawActivePaneWorkspace = useActivePaneWorkspace();
-  const activePaneWorkspace = isPaneGridTargeted
-    ? rawActivePaneWorkspace
-    : null;
+  const activePaneWorkspace =
+    isPaneGridTargeted && !targetPaneId ? rawActivePaneWorkspace : null;
   const effectiveSelectedWorkspaceId =
-    activePaneWorkspace?.workspaceId ?? selectedWorkspaceId;
+    activePaneWorkspace?.workspaceId ??
+    (targetPaneId ? null : selectedWorkspaceId);
   const effectiveSelectedHostId = activePaneWorkspace
     ? activePaneWorkspace.hostId
-    : (routeHostId ?? null);
+    : targetPaneId
+      ? null
+      : (routeHostId ?? null);
 
   // Warm the queries a workspace open waits on (sessions gate the whole
   // conversation waterfall) once intent shows — a row dwelled on or the
@@ -417,8 +422,9 @@ export function WorkspacesSidebarContainer({
       }
       // On the pane grid, list selections go to the active pane.
       const panesState = useWorkspacePanesStore.getState();
-      if (isPaneGridTargeted && panesState.activePaneId !== null) {
-        panesState.setPaneDestination(panesState.activePaneId, {
+      const paneId = targetPaneId ?? panesState.activePaneId;
+      if (isPaneGridTargeted && paneId !== null) {
+        panesState.setPaneDestination(paneId, {
           kind: 'workspace',
           workspaceId: id,
           hostId: workspaceHostId ?? null,
@@ -448,6 +454,7 @@ export function WorkspacesSidebarContainer({
     [
       onSelectWorkspaceOverride,
       openInSplitPane,
+      targetPaneId,
       isPaneGridTargeted,
       selectedWorkspaceId,
       routeHostId,

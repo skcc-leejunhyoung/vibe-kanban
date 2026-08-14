@@ -190,7 +190,13 @@ function paneTitle(
   }
 }
 
-function EmptyPane({ onClose }: { onClose: () => void }) {
+function EmptyPane({
+  paneId,
+  onClose,
+}: {
+  paneId: string;
+  onClose: () => void;
+}) {
   const { t } = useTranslation('common');
   return (
     <div className="flex h-full min-h-0 flex-col bg-primary">
@@ -201,7 +207,11 @@ function EmptyPane({ onClose }: { onClose: () => void }) {
         onClose={onClose}
       />
       <div className="min-h-0 flex-1">
-        <WorkspacesSidebarContainer isStandalonePage forceMobile />
+        <WorkspacesSidebarContainer
+          isStandalonePage
+          forceMobile
+          targetPaneId={paneId}
+        />
       </div>
     </div>
   );
@@ -260,7 +270,7 @@ function WorkspacePaneView({
           </PaneActiveProvider>
         </WorkspacePaneScope>
       ) : (
-        <EmptyPane onClose={() => closePane(pane.id)} />
+        <EmptyPane paneId={pane.id} onClose={() => closePane(pane.id)} />
       )}
     </PaneChrome>
   );
@@ -295,14 +305,20 @@ export function WorkspacePaneGrid() {
 
   useEffect(() => {
     if (!structuralPendingRef.current || !groupHandle) return;
-    const state = useWorkspacePanesStore.getState();
-    const fallback = 100 / Math.max(state.panes.length, 1);
-    groupHandle.setLayout(
-      Object.fromEntries(
-        state.panes.map((pane) => [pane.id, state.layout[pane.id] ?? fallback])
-      )
-    );
-    structuralPendingRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      const state = useWorkspacePanesStore.getState();
+      const fallback = 100 / Math.max(state.panes.length, 1);
+      groupHandle.setLayout(
+        Object.fromEntries(
+          state.panes.map((pane) => [
+            pane.id,
+            state.layout[pane.id] ?? fallback,
+          ])
+        )
+      );
+      structuralPendingRef.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
   }, [paneIdsSignature, groupHandle]);
 
   const handleLayoutChange = useCallback(
