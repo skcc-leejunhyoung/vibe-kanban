@@ -284,13 +284,6 @@ export const ORGANIZATION_MEMBERS_SHAPE = defineShape<OrganizationMember>(
   '/v1/fallback/organization_members'
 );
 
-export const USERS_SHAPE = defineShape<User>(
-  'users',
-  ['organization_id'] as const,
-  '/v1/shape/users',
-  '/v1/fallback/users'
-);
-
 export const PROJECT_TAGS_SHAPE = defineShape<Tag>(
   'tags',
   ['project_id'] as const,

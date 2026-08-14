@@ -6,7 +6,7 @@ use api_types::{
     ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse,
     ListProjectStatusesResponse, ListProjectsResponse, ListPullRequestIssuesResponse,
     ListPullRequestsResponse, ListTagsResponse, Notification, OrganizationMember, ProjectMilestone,
-    SearchIssuesRequest, User, Workspace,
+    SearchIssuesRequest, Workspace,
 };
 use axum::{
     Json,
@@ -63,11 +63,6 @@ struct ListOrganizationMembersResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct ListUsersResponse {
-    users: Vec<User>,
-}
-
-#[derive(Debug, Serialize)]
 struct ListWorkspacesResponse {
     workspaces: Vec<Workspace>,
 }
@@ -109,12 +104,6 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
             ShapeScope::Org,
             "/fallback/organization_members",
             fallback_list_organization_members,
-        ),
-        ShapeRoute::new(
-            &shapes::USERS_SHAPE,
-            ShapeScope::Org,
-            "/fallback/users",
-            fallback_list_users,
         ),
         // Project-scoped
         ShapeRoute::new(
@@ -218,6 +207,16 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
     ]
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shapes_only_filter_on_their_own_rows() {
+        for route in super::all_shape_routes() {
+            assert!(!route.shape.where_clause().contains("SELECT"));
+        }
+    }
+}
+
 // =============================================================================
 // Org-scoped fallback handlers
 // =============================================================================
@@ -282,24 +281,6 @@ async fn fallback_list_organization_members(
     Ok(Json(ListOrganizationMembersResponse {
         organization_member_metadata,
     }))
-}
-
-async fn fallback_list_users(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<RequestContext>,
-    Query(query): Query<OrgFallbackQuery>,
-) -> Result<Json<ListUsersResponse>, ErrorResponse> {
-    ensure_member_access(state.pool(), query.organization_id, ctx.user.id).await?;
-
-    let users =
-        organization_members::list_users_by_organization(state.pool(), query.organization_id)
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, organization_id = %query.organization_id, "failed to list users (fallback)");
-                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to list users")
-            })?;
-
-    Ok(Json(ListUsersResponse { users }))
 }
 
 // =============================================================================

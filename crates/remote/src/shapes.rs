@@ -3,7 +3,7 @@
 use api_types::{
     GithubIssueLink, Issue, IssueAssignee, IssueComment, IssueCommentReaction, IssueFollower,
     IssueMilestone, IssueRelationship, IssueTag, Notification, OrganizationMember, Project,
-    ProjectMilestone, ProjectStatus, PullRequest, PullRequestIssue, Tag, User, Workspace,
+    ProjectMilestone, ProjectStatus, PullRequest, PullRequestIssue, Tag, Workspace,
 };
 
 use crate::shape_definition::ShapeDefinition;
@@ -33,14 +33,6 @@ pub const ORGANIZATION_MEMBERS_SHAPE: ShapeDefinition<OrganizationMember> = crat
     table: "organization_member_metadata",
     where_clause: r#""organization_id" = $1"#,
     url: "/shape/organization_members",
-    params: ["organization_id"],
-);
-
-pub const USERS_SHAPE: ShapeDefinition<User> = crate::define_shape!(
-    name: "USERS_SHAPE",
-    table: "users",
-    where_clause: r#""id" IN (SELECT user_id FROM organization_member_metadata WHERE "organization_id" = $1)"#,
-    url: "/shape/users",
     params: ["organization_id"],
 );
 
@@ -184,7 +176,7 @@ pub const ISSUE_COMMENTS_SHAPE: ShapeDefinition<IssueComment> = crate::define_sh
 pub const ISSUE_REACTIONS_SHAPE: ShapeDefinition<IssueCommentReaction> = crate::define_shape!(
     name: "ISSUE_REACTIONS_SHAPE",
     table: "issue_comment_reactions",
-    where_clause: r#""comment_id" IN (SELECT id FROM issue_comments WHERE "issue_id" = $1)"#,
+    where_clause: r#""issue_id" = $1"#,
     url: "/shape/issue/{issue_id}/reactions",
     params: ["issue_id"],
 );

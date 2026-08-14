@@ -75,8 +75,10 @@ impl IssueCommentReactionRepository {
         let data = sqlx::query_as!(
             IssueCommentReaction,
             r#"
-            INSERT INTO issue_comment_reactions (id, comment_id, user_id, emoji, created_at)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO issue_comment_reactions (id, comment_id, issue_id, user_id, emoji, created_at)
+            SELECT $1, $2, issue_id, $3, $4, $5
+            FROM issue_comments
+            WHERE id = $2
             RETURNING
                 id          AS "id!: Uuid",
                 comment_id  AS "comment_id!: Uuid",

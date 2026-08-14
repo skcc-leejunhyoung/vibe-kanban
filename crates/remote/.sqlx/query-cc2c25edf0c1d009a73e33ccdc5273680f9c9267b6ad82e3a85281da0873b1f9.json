@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT 1 AS v FROM users WHERE \"id\" IN (SELECT user_id FROM organization_member_metadata WHERE \"organization_id\" = $1)",
+  "query": "SELECT 1 AS v FROM issue_comment_reactions WHERE \"issue_id\" = $1",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       null
     ]
   },
-  "hash": "f4015e2352122c1819ff7e7a4dff62b9387f439d80f47bf457b20663c24b861a"
+  "hash": "cc2c25edf0c1d009a73e33ccdc5273680f9c9267b6ad82e3a85281da0873b1f9"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO issue_comment_reactions (id, comment_id, user_id, emoji, created_at)\n            VALUES ($1, $2, $3, $4, $5)\n            RETURNING\n                id          AS \"id!: Uuid\",\n                comment_id  AS \"comment_id!: Uuid\",\n                user_id     AS \"user_id!: Uuid\",\n                emoji       AS \"emoji!\",\n                created_at  AS \"created_at!: DateTime<Utc>\"\n            ",
+  "query": "\n            INSERT INTO issue_comment_reactions (id, comment_id, issue_id, user_id, emoji, created_at)\n            SELECT $1, $2, issue_id, $3, $4, $5\n            FROM issue_comments\n            WHERE id = $2\n            RETURNING\n                id          AS \"id!: Uuid\",\n                comment_id  AS \"comment_id!: Uuid\",\n                user_id     AS \"user_id!: Uuid\",\n                emoji       AS \"emoji!\",\n                created_at  AS \"created_at!: DateTime<Utc>\"\n            ",
   "describe": {
     "columns": [
       {
@@ -46,5 +46,5 @@
       false
     ]
   },
-  "hash": "623c1d7933109030c4dbbf84d6028d1a7c94394906d1300c257c2e657925eb25"
+  "hash": "25231a1ddee4f880ecd653cd50c9edfeca77cd2aaf733200899debf07efbb5eb"
 }

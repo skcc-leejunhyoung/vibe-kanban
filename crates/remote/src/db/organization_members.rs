@@ -148,30 +148,6 @@ pub(crate) async fn list_by_organization(
     .await
 }
 
-pub(crate) async fn list_users_by_organization(
-    pool: &PgPool,
-    organization_id: Uuid,
-) -> Result<Vec<api_types::User>, sqlx::Error> {
-    sqlx::query_as!(
-        api_types::User,
-        r#"
-        SELECT
-            id           AS "id!: Uuid",
-            email        AS "email!",
-            first_name   AS "first_name?",
-            last_name    AS "last_name?",
-            username     AS "username?",
-            created_at   AS "created_at!",
-            updated_at   AS "updated_at!"
-        FROM users
-        WHERE id IN (SELECT user_id FROM organization_member_metadata WHERE organization_id = $1)
-        "#,
-        organization_id
-    )
-    .fetch_all(pool)
-    .await
-}
-
 pub(super) async fn assert_admin(
     pool: &PgPool,
     organization_id: Uuid,
