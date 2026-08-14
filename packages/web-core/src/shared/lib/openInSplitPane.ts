@@ -31,9 +31,9 @@ export function ensurePaneGridVisible(appNavigation: AppNavigation): void {
   }
 }
 
-/** Split: a new empty pane next to the active one, on a visible grid. */
+/** Split: a new empty pane at the right edge, on a visible grid. */
 export function openNewPane(appNavigation: AppNavigation): void {
-  useWorkspacePanesStore.getState().insertPaneAfterActive();
+  useWorkspacePanesStore.getState().appendPane();
   ensurePaneGridVisible(appNavigation);
 }
 

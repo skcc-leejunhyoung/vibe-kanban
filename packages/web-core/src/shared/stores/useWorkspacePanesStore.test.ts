@@ -44,7 +44,7 @@ function reset() {
 
 beforeEach(reset);
 
-describe('ensurePane / insertPaneAfterActive / focusPaneAt', () => {
+describe('ensurePane / appendPane / focusPaneAt', () => {
   it('creates a single empty pane on boot', () => {
     store.getState().ensurePane();
     expect(store.getState().panes).toEqual([
@@ -54,17 +54,17 @@ describe('ensurePane / insertPaneAfterActive / focusPaneAt', () => {
     expect(store.getState().layout['pane-1']).toBe(100);
   });
 
-  it('inserts an empty pane right of the active one and focuses it', () => {
+  it('appends an empty pane at the right edge and focuses it', () => {
     store.getState().ensurePane();
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));
     store.getState().setActivePane('pane-1');
 
-    store.getState().insertPaneAfterActive();
+    store.getState().appendPane();
     expect(store.getState().panes.map((pane) => pane.id)).toEqual([
       'pane-1',
-      'pane-3',
       'pane-2',
+      'pane-3',
     ]);
     expect(store.getState().activePaneId).toBe('pane-3');
     // Every existing pane makes equal room, preserving their prior ratio.
@@ -76,13 +76,13 @@ describe('ensurePane / insertPaneAfterActive / focusPaneAt', () => {
 
   it('caps inserts at maxPanes', () => {
     store.getState().ensurePane();
-    for (let i = 0; i < 5; i += 1) store.getState().insertPaneAfterActive();
+    for (let i = 0; i < 5; i += 1) store.getState().appendPane();
     expect(store.getState().panes).toHaveLength(4); // maxPanes
   });
 
   it('focusPaneAt focuses existing panes only and requests DOM focus', () => {
     store.getState().ensurePane();
-    store.getState().insertPaneAfterActive();
+    store.getState().appendPane();
     const serial = store.getState().focusSerial;
 
     store.getState().focusPaneAt(0);
@@ -286,16 +286,18 @@ describe('helpers', () => {
     store.getState().ensurePane();
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().appendPane();
     const allPanes = store.getState().panes;
     expect(getAdjacentWorkspacePaneId(allPanes, 'pane-2', 'next')).toBe(
-      'pane-1'
+      'pane-3'
     );
-    expect(getAdjacentWorkspacePaneId(allPanes, 'pane-1', 'previous')).toBe(
-      'pane-2'
+    expect(getAdjacentWorkspacePaneId(allPanes, 'pane-2', 'previous')).toBe(
+      'pane-1'
     );
 
     store.getState().cycleActivePane('next');
-    expect(store.getState().focusSerial).toBe(1);
+    expect(store.getState().activePaneId).toBe('pane-1');
+    expect(store.getState().focusSerial).toBe(2);
   });
 
   it('getActivePaneWorkspace only reports workspace destinations', () => {

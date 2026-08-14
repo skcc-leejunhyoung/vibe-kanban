@@ -154,8 +154,8 @@ interface WorkspacePanesState {
   setMaxPanes: (maxPanes: number) => void;
   /** Make sure at least one pane exists (boot). */
   ensurePane: () => void;
-  /** Split: insert an empty pane right of the active one and focus it. */
-  insertPaneAfterActive: () => void;
+  /** Split: append an empty pane at the right edge and focus it. */
+  appendPane: () => void;
   /** Focus the pane at a position (0-based); no-op when absent. */
   focusPaneAt: (index: number) => void;
   /** Show a destination in some pane (dedupe → empty → split → replace). */
@@ -322,7 +322,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             layout: { [id]: 100 },
           };
         }),
-      insertPaneAfterActive: () =>
+      appendPane: () =>
         set((state) => {
           if (state.panes.length >= state.maxPanes) return state;
           if (state.panes.length === 0) {
@@ -335,17 +335,8 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
               focusSerial: state.focusSerial + 1,
             };
           }
-          const activeIndex = state.panes.findIndex(
-            (pane) => pane.id === state.activePaneId
-          );
-          const insertAt =
-            activeIndex >= 0 ? activeIndex + 1 : state.panes.length;
           const id = `pane-${state.nextPaneId}`;
-          const panes = [
-            ...state.panes.slice(0, insertAt),
-            { id, destination: null },
-            ...state.panes.slice(insertAt),
-          ];
+          const panes = [...state.panes, { id, destination: null }];
           return {
             panes,
             nextPaneId: state.nextPaneId + 1,
