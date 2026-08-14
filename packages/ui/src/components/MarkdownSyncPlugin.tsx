@@ -5,7 +5,7 @@ import {
   $convertFromMarkdownString,
   type Transformer,
 } from '@lexical/markdown';
-import { $getRoot, type EditorState } from 'lexical';
+import { $createParagraphNode, $getRoot, type EditorState } from 'lexical';
 import { normalizeGitHubImageHtml } from '@vibe/ui/lib/githubImageMarkdown';
 
 type MarkdownSyncPluginProps = {
@@ -55,7 +55,15 @@ export function MarkdownSyncPlugin({
       lastSerializedRef.current = parsedValue;
       editor.update(() => {
         if (parsedValue.trim() === '') {
-          $getRoot().clear();
+          // Leave a single empty paragraph, not a childless root. A childless
+          // root has no selection target, so focus landing on it (autofocus,
+          // click, panel activation, or the value being cleared while focused)
+          // focuses the element with no caret — the field looks focused but
+          // shows no blinking cursor. An empty paragraph keeps the placeholder
+          // visible (Lexical treats it as empty) while giving focus a caret.
+          const root = $getRoot();
+          root.clear();
+          root.append($createParagraphNode());
         } else {
           $convertFromMarkdownString(parsedValue, transformers);
         }
