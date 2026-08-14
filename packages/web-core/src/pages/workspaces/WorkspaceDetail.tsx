@@ -193,13 +193,19 @@ export const WorkspaceDetail = forwardRef<
     50
   );
 
+  // Layout must only mention the panels actually rendered below. When just one
+  // is shown (narrow pane shows chat OR the right panel, not both), a two-key
+  // layout leaves the rendered panel at its split fraction — e.g. chat-only
+  // with a stored right-main size of 100 collapses left-main to 0 width, a
+  // blank pane. Give the sole panel the full 100.
+  const splitSize =
+    typeof rightMainPanelSize === 'number' ? rightMainPanelSize : 50;
   const defaultLayout: Layout =
-    typeof rightMainPanelSize === 'number'
-      ? {
-          'left-main': 100 - rightMainPanelSize,
-          'right-main': rightMainPanelSize,
-        }
-      : { 'left-main': 50, 'right-main': 50 };
+    showChatPanel && showRightMainPanel
+      ? { 'left-main': 100 - splitSize, 'right-main': splitSize }
+      : showRightMainPanel
+        ? { 'right-main': 100 }
+        : { 'left-main': 100 };
 
   const layoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
