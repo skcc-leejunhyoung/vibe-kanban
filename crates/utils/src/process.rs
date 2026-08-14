@@ -25,7 +25,9 @@ pub async fn kill_process_group(child: &mut AsyncGroupChild) -> std::io::Result<
         }
     }
 
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    Ok(())
+    let kill_error = child.kill().await.err();
+    match child.wait().await {
+        Ok(_) => Ok(()),
+        Err(wait_error) => Err(kill_error.unwrap_or(wait_error)),
+    }
 }

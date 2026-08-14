@@ -1288,6 +1288,36 @@ async fn sync_one(
             }
         }
     }
+    if let Err(error) = validate_snapshot_scope(&run.result.snapshot, scope_key, agent_kind) {
+        let Some(session_id) = run.session_id.clone() else {
+            let _ = tokio::fs::remove_file(&result_path).await;
+            return Err(error);
+        };
+        let repair_prompt = build_snapshot_repair_prompt(&result_path, &error);
+        log_event(
+            deployment,
+            run_id,
+            trigger_kind,
+            "info",
+            "snapshot_repair_started",
+            Some(repo),
+            Some(agent_kind),
+            "Mutation repair changed snapshot structure; resuming once to restore it",
+        )
+        .await;
+        run = run_agent(
+            repo,
+            scope_key,
+            agent_kind,
+            &repair_prompt,
+            &result_path,
+            Some(&session_id),
+        )
+        .await
+        .context("post-mutation snapshot structure repair follow-up failed")?;
+        validate_snapshot_scope(&run.result.snapshot, scope_key, agent_kind)?;
+        validations = validate_mutation_result_detailed(&mutations, &run.result);
+    }
     let _ = tokio::fs::remove_file(&result_path).await;
     let result = run.result;
     let mutation_receipts = validations
@@ -1956,7 +1986,13 @@ async fn run_agent(
     result_path: &Path,
     session_id: Option<&str>,
 ) -> anyhow::Result<AgentRunOutput> {
-    let _ = tokio::fs::remove_file(result_path).await;
+    match tokio::fs::remove_file(result_path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).context("failed to remove stale memory sync result");
+        }
+    }
     let executor = match agent_kind {
         AgentMemoryKind::ClaudeCode => BaseCodingAgent::ClaudeCode,
         AgentMemoryKind::Codex => BaseCodingAgent::Codex,
@@ -2048,12 +2084,16 @@ async fn run_agent(
         if let Some(cancel) = spawned.cancel.take() {
             cancel.cancel();
         }
-        let _ = utils::process::kill_process_group(&mut spawned.child).await;
+        utils::process::kill_process_group(&mut spawned.child)
+            .await
+            .context("failed to terminate timed-out memory sync agent")?;
         anyhow::bail!("memory sync agent timed out");
     }
     let succeeded = completion??;
     if exit_signal.is_some() {
-        let _ = utils::process::kill_process_group(&mut spawned.child).await;
+        utils::process::kill_process_group(&mut spawned.child)
+            .await
+            .context("failed to reap memory sync agent process group")?;
     }
     let stdout = stdout_task.await??;
     let stderr = stderr_task.await??;
