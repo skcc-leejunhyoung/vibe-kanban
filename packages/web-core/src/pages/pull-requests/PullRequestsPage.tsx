@@ -1024,7 +1024,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                           {pr.title}
                         </span>
                         {pr.is_draft && (
-                          <span className="inline-flex items-center gap-1 rounded bg-tertiary px-half py-0.5 text-xs text-low">
+                          <span className="inline-flex items-center gap-1 rounded border border-border bg-panel px-half py-0.5 text-sm font-semibold uppercase tracking-wide text-normal">
                             <GitPullRequestIcon
                               className="size-icon-xs"
                               weight="bold"
@@ -1065,8 +1065,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                       </span>
                       <span className="mt-half flex flex-wrap items-center gap-x-base gap-y-half text-sm text-low">
                         <span>{pr.repository}</span>
-                        <span className="rounded bg-tertiary px-half py-0.5 text-xs text-low">
-                          #{String(pr.number)}
+                        <span className="rounded border border-brand/40 bg-brand/10 px-half py-0.5 text-sm font-semibold text-brand">
+                          PR #{String(pr.number)}
                         </span>
                         <span>{statusLabel(pr.status)}</span>
                         <span>by {pr.author ?? 'unknown'}</span>
