@@ -47,10 +47,11 @@ export function openWorkspacesForActivePane(
     navigateDocument();
     return;
   }
-  const { activePaneId, clearPaneDestination } =
+  const { activePaneId, clearPaneDestination, focusActivePane } =
     useWorkspacePanesStore.getState();
   if (activePaneId !== null) {
     clearPaneDestination(activePaneId);
+    focusActivePane();
     appNavigation.goToWorkspaces();
   }
 }

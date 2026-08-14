@@ -133,6 +133,7 @@ import {
 import {
   getChromeTargetWorkspace,
   openUrlInSplitPane,
+  openWorkspacesForActivePane,
 } from '@/shared/lib/openInSplitPane';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
@@ -1250,7 +1251,10 @@ export const Actions = {
     icon: LayoutIcon,
     keywords: ['workspace', 'workspaces', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
-    execute: (ctx) => ctx.appNavigation.goToWorkspaces(),
+    execute: (ctx) =>
+      openWorkspacesForActivePane(ctx.appNavigation, ctx.appRuntime, () =>
+        ctx.appNavigation.goToWorkspaces()
+      ),
   } satisfies GlobalActionDefinition,
 
   OpenWorkspace: {

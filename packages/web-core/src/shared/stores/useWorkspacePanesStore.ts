@@ -158,6 +158,8 @@ interface WorkspacePanesState {
   appendPane: () => void;
   /** Focus the pane at a position (0-based); no-op when absent. */
   focusPaneAt: (index: number) => void;
+  /** Move DOM focus into the active pane (e.g. after clearing to the picker). */
+  focusActivePane: () => void;
   /** Show a destination in some pane (dedupe → empty → split → replace). */
   openPaneForDestination: (destination: WorkspacePaneDestination) => void;
   /**
@@ -354,6 +356,8 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             focusSerial: state.focusSerial + 1,
           };
         }),
+      focusActivePane: () =>
+        set((state) => ({ focusSerial: state.focusSerial + 1 })),
       openPaneForDestination: (destination) =>
         set((state) => {
           const key = paneDestinationKey(destination);
