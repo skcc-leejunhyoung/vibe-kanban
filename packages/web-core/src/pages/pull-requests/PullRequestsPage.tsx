@@ -991,6 +991,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                   key={pr.url}
                   className={cn(
                     'flex w-full items-start pr-base hover:bg-secondary/60',
+                    isNarrow && 'flex-wrap',
                     index === selectedIndex && 'bg-secondary/40'
                   )}
                 >
@@ -1009,7 +1010,10 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                       void prefetchPullRequest(pr);
                     }}
                     onClick={() => openDetails(pr)}
-                    className="flex min-w-0 flex-1 items-start gap-base px-double py-base text-left"
+                    className={cn(
+                      'flex min-w-0 items-start gap-base px-double py-base text-left',
+                      isNarrow ? 'w-full' : 'flex-1'
+                    )}
                   >
                     <span className="mt-half">
                       {statusIcon(pr.status, pr.is_draft)}
@@ -1079,12 +1083,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                       </span>
                     </span>
                   </button>
-                  <span
-                    className={cn(
-                      'flex shrink-0 items-center gap-half py-base',
-                      isNarrow && 'w-[4.5rem] flex-wrap justify-end'
-                    )}
-                  >
+                  <span className="ml-auto flex shrink-0 items-center gap-half py-base">
                     <button
                       type="button"
                       onClick={(event) => {
