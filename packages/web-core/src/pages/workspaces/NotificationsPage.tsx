@@ -32,6 +32,7 @@ import {
 import { formatRelativeTime } from '@/shared/lib/date';
 import { cn } from '@/shared/lib/utils';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import {
   disableWebPush,
   enableWebPush,
@@ -167,6 +168,7 @@ function WebPushToggle({ compact }: { compact: boolean }) {
 
 export function NotificationsPage() {
   const isNarrow = usePaneNarrowerThan(768);
+  const isActivePane = useIsActivePane();
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const openInSplitPane = useOpenInSplitPane();
@@ -222,6 +224,7 @@ export function NotificationsPage() {
   }, [view]);
 
   useEffect(() => {
+    if (!isActivePane) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
       if (
@@ -258,7 +261,7 @@ export function NotificationsPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [isActivePane]);
 
   const toggleGroupSelected = useCallback(
     (groupId: string, selected: boolean) => {

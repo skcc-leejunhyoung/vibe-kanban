@@ -29,6 +29,7 @@ import {
 import { cn } from '@/shared/lib/utils';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -198,6 +199,7 @@ function getPullRequestTargetFromUrl(
 export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const isMobile = useIsMobile();
   const isNarrow = usePaneNarrowerThan(768);
+  const isActivePane = useIsActivePane();
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const queryClient = useQueryClient();
@@ -710,7 +712,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   }, [appNavigation, focusRow, selectedIndex]);
 
   useEffect(() => {
-    if (!selectedPullRequest) return;
+    if (!isActivePane || !selectedPullRequest) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
       handlePullRequestDetailsEscape(
@@ -721,10 +723,15 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [closeDetails, selectedPullRequest]);
+  }, [closeDetails, selectedPullRequest, isActivePane]);
 
   useEffect(() => {
-    if (!selectedPullRequest || filteredPullRequests.length === 0) return;
+    if (
+      !isActivePane ||
+      !selectedPullRequest ||
+      filteredPullRequests.length === 0
+    )
+      return;
     const handleDetailNavigation = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
       if (
@@ -759,10 +766,16 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     openDetails,
     prefetchPullRequest,
     selectedPullRequest,
+    isActivePane,
   ]);
 
   useEffect(() => {
-    if (selectedPullRequest || filteredPullRequests.length === 0) return;
+    if (
+      !isActivePane ||
+      selectedPullRequest ||
+      filteredPullRequests.length === 0
+    )
+      return;
 
     const handleListKeyDown = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
@@ -807,6 +820,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     openDetails,
     selectedIndex,
     selectedPullRequest,
+    isActivePane,
   ]);
 
   const listContent = (

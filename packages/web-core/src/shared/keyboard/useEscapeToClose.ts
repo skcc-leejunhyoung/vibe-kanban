@@ -1,6 +1,7 @@
 import { useHotkeys } from 'react-hotkeys-hook';
 
 import { Scope } from './registry';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 
 interface UseEscapeToCloseOptions {
   /** Disable the handler (e.g. while the panel is closed). Defaults to true. */
@@ -29,6 +30,10 @@ export function useEscapeToClose(
   onClose: () => void,
   options?: UseEscapeToCloseOptions
 ): void {
+  // Every pane registers this hook; only the active pane's copy may close, so
+  // Escape never closes a panel in an inactive pane. Defaults true outside the
+  // pane grid.
+  const isActivePane = useIsActivePane();
   useHotkeys(
     'escape',
     (e) => {
@@ -38,7 +43,7 @@ export function useEscapeToClose(
     },
     {
       scopes: [options?.scope ?? Scope.KANBAN],
-      enabled: options?.enabled ?? true,
+      enabled: (options?.enabled ?? true) && isActivePane,
       enableOnFormTags: true,
       enableOnContentEditable: true,
     },

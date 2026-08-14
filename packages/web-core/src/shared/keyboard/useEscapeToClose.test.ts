@@ -8,6 +8,7 @@ import {
 
 import { Scope } from './registry';
 import { useEscapeToClose } from './useEscapeToClose';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 
 // useEscapeToClose's whole job is to wire react-hotkeys-hook correctly: bind
 // Escape in the KANBAN scope, stay active while a form field / contentEditable
@@ -20,7 +21,15 @@ vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
 }));
 
+// Only the active pane's copy may fire; every pane mounts this hook. Mock the
+// context accessor so we can drive active/inactive without rendering a tree
+// (matches the node-env, no-DOM approach used for react-hotkeys-hook above).
+vi.mock('@/shared/components/workspace-panes/PaneActiveContext', () => ({
+  useIsActivePane: vi.fn(() => true),
+}));
+
 const mockedUseHotkeys = vi.mocked(useHotkeys);
+const mockedUseIsActivePane = vi.mocked(useIsActivePane);
 
 // The node env has no KeyboardEvent constructor; the handler only reads
 // `defaultPrevented` and calls `preventDefault`, so a plain object is enough.
@@ -51,6 +60,7 @@ function lastBinding(): {
 
 beforeEach(() => {
   mockedUseHotkeys.mockClear();
+  mockedUseIsActivePane.mockReturnValue(true);
 });
 
 describe('useEscapeToClose', () => {
@@ -81,6 +91,14 @@ describe('useEscapeToClose', () => {
     expect(lastBinding().options?.enabled).toBe(true);
 
     useEscapeToClose(() => {}, { enabled: false });
+    expect(lastBinding().options?.enabled).toBe(false);
+  });
+
+  it('disables itself in an inactive pane so only the active pane closes', () => {
+    mockedUseIsActivePane.mockReturnValue(false);
+
+    // Even with the caller-side enabled flag on, an inactive pane stays inert.
+    useEscapeToClose(() => {}, { enabled: true });
     expect(lastBinding().options?.enabled).toBe(false);
   });
 

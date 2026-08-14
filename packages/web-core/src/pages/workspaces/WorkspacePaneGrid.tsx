@@ -18,6 +18,7 @@ import { cn } from '@/shared/lib/utils';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { WorkspacePaneScope } from '@/shared/components/workspace-panes/WorkspacePaneScope';
 import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidthContext';
+import { PaneActiveProvider } from '@/shared/components/workspace-panes/PaneActiveContext';
 import {
   paneDestinationKey,
   useWorkspacePanesStore,
@@ -241,20 +242,22 @@ function WorkspacePaneView({
           destination={pane.destination}
           onNavigate={handleNavigate}
         >
-          <div className="flex h-full min-h-0 flex-col bg-primary">
-            <PaneHeaderShell
-              title={paneTitle(pane.destination, t)}
-              onClose={() => closePane(pane.id)}
-            />
-            <div className="min-h-0 flex-1">
-              <PaneWidthProvider>
-                <PaneOutlet
-                  destination={pane.destination}
-                  isPaneActive={active}
-                />
-              </PaneWidthProvider>
+          <PaneActiveProvider active={active}>
+            <div className="flex h-full min-h-0 flex-col bg-primary">
+              <PaneHeaderShell
+                title={paneTitle(pane.destination, t)}
+                onClose={() => closePane(pane.id)}
+              />
+              <div className="min-h-0 flex-1">
+                <PaneWidthProvider>
+                  <PaneOutlet
+                    destination={pane.destination}
+                    isPaneActive={active}
+                  />
+                </PaneWidthProvider>
+              </div>
             </div>
-          </div>
+          </PaneActiveProvider>
         </WorkspacePaneScope>
       ) : (
         <EmptyPane onClose={() => closePane(pane.id)} />

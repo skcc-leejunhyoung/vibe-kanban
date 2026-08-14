@@ -37,6 +37,7 @@ import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostId
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { resolveUnfocusedChatKeyAction } from '@/pages/workspaces/workspaceChatKeyboard';
 import {
   buildKanbanIssueComposerKey,
@@ -167,6 +168,7 @@ function WorkspaceSessionPanel({
     isNewSessionMode,
     startNewSession,
   } = useWorkspaceContext();
+  const isActivePane = useIsActivePane();
   const conversationListRef = useRef<ConversationListHandle>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -256,6 +258,7 @@ function WorkspaceSessionPanel({
   }, []);
 
   useEffect(() => {
+    if (!isActivePane) return;
     const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
       const activeElement = document.activeElement;
@@ -299,7 +302,7 @@ function WorkspaceSessionPanel({
     return () => {
       window.removeEventListener('keydown', handleUnfocusedChatKeyDown, true);
     };
-  }, []);
+  }, [isActivePane]);
 
   return (
     <ExecutionProcessesProvider
