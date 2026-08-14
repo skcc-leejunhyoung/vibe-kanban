@@ -91,7 +91,7 @@ function PaneChrome({
       <div
         aria-hidden
         className={cn(
-          'pointer-events-none absolute inset-0 z-20 border border-brand transition-opacity',
+          'pointer-events-none absolute inset-0 z-30 border border-brand transition-opacity',
           active && showActiveRing ? 'opacity-60' : 'opacity-0'
         )}
       />
