@@ -150,6 +150,8 @@ function PaneOutlet({
     case 'project':
     case 'project-issue':
     case 'project-issue-workspace':
+    case 'project-issue-workspace-create':
+    case 'project-workspace-create':
       return (
         <>
           <KanbanPaneShortcuts enabled={isPaneActive} />
@@ -173,6 +175,8 @@ function paneTitle(
     case 'project':
     case 'project-issue':
     case 'project-issue-workspace':
+    case 'project-issue-workspace-create':
+    case 'project-workspace-create':
       return t('workspacePanes.projectPane', { defaultValue: 'Project' });
     case 'pull-requests':
       return t('workspacePanes.pullRequestsPane', {

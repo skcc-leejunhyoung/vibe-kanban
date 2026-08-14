@@ -15,6 +15,8 @@ export type WorkspacePaneDestination = Extract<
       | 'project'
       | 'project-issue'
       | 'project-issue-workspace'
+      | 'project-issue-workspace-create'
+      | 'project-workspace-create'
       | 'pull-requests'
       | 'notifications';
   }
@@ -28,6 +30,8 @@ export function isPaneRenderableDestination(
     case 'project':
     case 'project-issue':
     case 'project-issue-workspace':
+    case 'project-issue-workspace-create':
+    case 'project-workspace-create':
     case 'pull-requests':
     case 'notifications':
       return true;
@@ -59,8 +63,11 @@ export function paneDestinationKey(
     case 'project':
     case 'project-issue':
     case 'project-issue-workspace':
-      // One pane per project: issue/workspace sub-navigation swaps content
-      // within that pane instead of spawning siblings of the same board.
+    case 'project-issue-workspace-create':
+    case 'project-workspace-create':
+      // One pane per project: issue/workspace sub-navigation (including
+      // workspace-create) swaps content within that pane instead of spawning
+      // siblings of the same board.
       return `project:${destination.projectId}`;
     case 'pull-requests':
       return 'pull-requests';
@@ -97,6 +104,21 @@ export function sameDestination(
         a.projectId === b.projectId &&
         a.issueId === b.issueId &&
         a.workspaceId === b.workspaceId &&
+        (a.hostId ?? null) === (b.hostId ?? null)
+      );
+    case 'project-issue-workspace-create':
+      return (
+        b.kind === 'project-issue-workspace-create' &&
+        a.projectId === b.projectId &&
+        a.issueId === b.issueId &&
+        a.draftId === b.draftId &&
+        (a.hostId ?? null) === (b.hostId ?? null)
+      );
+    case 'project-workspace-create':
+      return (
+        b.kind === 'project-workspace-create' &&
+        a.projectId === b.projectId &&
+        a.draftId === b.draftId &&
         (a.hostId ?? null) === (b.hostId ?? null)
       );
     case 'pull-requests':

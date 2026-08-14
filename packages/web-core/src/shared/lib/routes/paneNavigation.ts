@@ -51,6 +51,21 @@ export function navigateDocumentTo(
         { ...transition, hostId: destination.hostId ?? null }
       );
       return;
+    case 'project-issue-workspace-create':
+      appNavigation.goToProjectIssueWorkspaceCreate(
+        destination.projectId,
+        destination.issueId,
+        destination.draftId,
+        { ...transition, hostId: destination.hostId ?? null }
+      );
+      return;
+    case 'project-workspace-create':
+      appNavigation.goToProjectWorkspaceCreate(
+        destination.projectId,
+        destination.draftId,
+        { ...transition, hostId: destination.hostId ?? null }
+      );
+      return;
     case 'pull-requests':
       appNavigation.goToPullRequests(undefined, transition);
       return;
@@ -121,6 +136,40 @@ export function createPaneAppNavigation(
             projectId,
             issueId,
             workspaceId,
+            transition
+          )
+      ),
+    goToProjectWorkspaceCreate: (projectId, draftId, transition) =>
+      navigateTo(
+        {
+          kind: 'project-workspace-create',
+          projectId,
+          draftId,
+          hostId: transition?.hostId,
+        },
+        transition,
+        () => base.goToProjectWorkspaceCreate(projectId, draftId, transition)
+      ),
+    goToProjectIssueWorkspaceCreate: (
+      projectId,
+      issueId,
+      draftId,
+      transition
+    ) =>
+      navigateTo(
+        {
+          kind: 'project-issue-workspace-create',
+          projectId,
+          issueId,
+          draftId,
+          hostId: transition?.hostId,
+        },
+        transition,
+        () =>
+          base.goToProjectIssueWorkspaceCreate(
+            projectId,
+            issueId,
+            draftId,
             transition
           )
       ),

@@ -181,6 +181,24 @@ describe('adoptRouteDestination', () => {
     expect(store.getState().activePaneId).toBe('pane-1');
     expect(store.getState().panes).toHaveLength(2);
   });
+
+  it('folds workspace-create into the existing project pane', () => {
+    store
+      .getState()
+      .openPaneForDestination({ kind: 'project', projectId: 'p1' });
+    store.getState().adoptRouteDestination({
+      kind: 'project-workspace-create',
+      projectId: 'p1',
+      draftId: 'd1',
+    });
+    // Same project pane, content swapped to create mode — no new pane spawned.
+    expect(store.getState().panes).toHaveLength(1);
+    expect(store.getState().panes[0].destination).toEqual({
+      kind: 'project-workspace-create',
+      projectId: 'p1',
+      draftId: 'd1',
+    });
+  });
 });
 
 describe('closePane', () => {
