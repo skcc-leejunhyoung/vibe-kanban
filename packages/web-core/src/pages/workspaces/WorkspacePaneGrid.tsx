@@ -332,17 +332,11 @@ function WorkspaceGridPanel({
   showActiveRing: boolean;
   registrationVersion: number;
 }) {
-  // Changing this callback makes react-resizable-panels rebuild its ordered
-  // registry without unmounting the pane and its live content.
-  const refreshRegistration = useCallback(
-    () => undefined,
-    [registrationVersion]
-  );
   return (
     <Panel
       id={pane.id}
-      minSize={10}
-      onResize={refreshRegistration}
+      // Equivalent values force the ordered registry to refresh on reorder.
+      minSize={registrationVersion % 2 ? '10%' : '10.0%'}
       className="min-w-0 h-full overflow-hidden"
     >
       <WorkspacePaneView
