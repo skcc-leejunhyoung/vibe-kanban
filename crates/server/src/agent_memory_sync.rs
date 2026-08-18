@@ -1168,8 +1168,13 @@ async fn sync_one(
     )
     .await;
     let failure_key = format!("{}:{agent_kind:?}:{scope_key}", repo.path.display());
-    let context_fingerprint =
-        sync_context_fingerprint(previous.as_ref(), &inbox.snapshots, &mutations);
+    let native_fingerprint = native_memory_fingerprint(repo, scope_key, agent_kind);
+    let context_fingerprint = sync_context_fingerprint(
+        previous.as_ref(),
+        &inbox.snapshots,
+        &mutations,
+        &native_fingerprint,
+    );
     let retry_blocked = {
         let mut failures = FAILED_CONTEXT_FINGERPRINTS.lock().await;
         if idle_policy == IdlePolicy::Never {
@@ -1514,6 +1519,48 @@ fn native_memory_changed_since(
             !path.exists() || path_modified_after(&path, since)
         }
     }
+}
+
+fn native_memory_fingerprint(repo: &Repo, scope_key: &str, agent_kind: AgentMemoryKind) -> String {
+    let mut digest = Sha256::new();
+    let Some(home) = std::env::var_os("HOME") else {
+        digest.update(b"home-missing");
+        return hex::encode(digest.finalize());
+    };
+    let mut paths = match agent_kind {
+        AgentMemoryKind::ClaudeCode => {
+            let encoded_repo_path = repo.path.to_string_lossy().replace('/', "-");
+            let directory = Path::new(&home)
+                .join(".claude/projects")
+                .join(encoded_repo_path)
+                .join("memory");
+            std::fs::read_dir(directory)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        }
+        AgentMemoryKind::Codex => vec![
+            Path::new(&home)
+                .join(".codex/memories/extensions/ad_hoc/vibe-sync")
+                .join(format!(
+                    "{}.md",
+                    hex::encode(Sha256::digest(scope_key.as_bytes()))
+                )),
+        ],
+    };
+    paths.sort();
+    for path in paths {
+        digest.update(path.as_os_str().as_encoded_bytes());
+        match std::fs::read(path) {
+            Ok(content) => digest.update(content),
+            Err(error) => digest.update(error.kind().to_string().as_bytes()),
+        }
+    }
+    hex::encode(digest.finalize())
 }
 
 fn path_modified_after(path: &Path, since: DateTime<Utc>) -> bool {
@@ -1880,8 +1927,10 @@ fn sync_context_fingerprint(
     previous: Option<&AgentMemorySnapshot>,
     inbox: &[AgentMemorySnapshot],
     mutations: &[AgentMemoryMutation],
+    native_fingerprint: &str,
 ) -> String {
     let mut digest = Sha256::new();
+    digest.update(native_fingerprint.as_bytes());
     if let Some(previous) = previous {
         digest.update(previous.id.as_bytes());
         digest.update(previous.revision.to_be_bytes());
@@ -2957,15 +3006,20 @@ mod tests {
             created_at: Utc::now(),
             receipt_count: 0,
         };
-        let first = sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation));
+        let first = sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation), "native");
         assert_eq!(
             first,
-            sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation))
+            sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation), "native")
         );
         mutation.generation = 2;
         assert_ne!(
             first,
-            sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation))
+            sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation), "native")
+        );
+        mutation.generation = 1;
+        assert_ne!(
+            first,
+            sync_context_fingerprint(None, &[], std::slice::from_ref(&mutation), "changed")
         );
     }
 
