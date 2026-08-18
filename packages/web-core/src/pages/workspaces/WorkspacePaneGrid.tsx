@@ -21,6 +21,7 @@ import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidth
 import { PaneActiveProvider } from '@/shared/components/workspace-panes/PaneActiveContext';
 import {
   paneDestinationKey,
+  resizePaneProportionally,
   useWorkspacePanesStore,
   type WorkspacePane,
   type WorkspacePaneDestination,
@@ -48,9 +49,8 @@ function KanbanPaneShortcuts({ enabled }: { enabled: boolean }) {
   return null;
 }
 
-const paneSeparator = (
-  <Separator className="relative z-10 w-1 shrink-0 bg-border/60 transition-colors hover:bg-brand data-[resize-handle-active]:bg-brand" />
-);
+const paneSeparatorClassName =
+  'relative z-10 w-1 shrink-0 bg-border/60 transition-colors hover:bg-brand data-[resize-handle-active]:bg-brand';
 
 function PaneChrome({
   active,
@@ -314,6 +314,8 @@ export function WorkspacePaneGrid() {
   const storedLayout = useWorkspacePanesStore((s) => s.layout);
   const setLayout = useWorkspacePanesStore((s) => s.setLayout);
   const [groupHandle, setGroupHandle] = useGroupCallbackRef();
+  const resizeRef = useRef<{ paneId: string; layout: Layout } | null>(null);
+  const applyingLayoutRef = useRef(false);
 
   // Structural changes (pane added/closed) must apply the store-computed
   // layout without remounting the Group — a keyed remount would tear down
@@ -348,10 +350,24 @@ export function WorkspacePaneGrid() {
 
   const handleLayoutChange = useCallback(
     (layout: Layout) => {
-      if (structuralPendingRef.current) return;
+      if (structuralPendingRef.current || applyingLayoutRef.current) return;
+      const resize = resizeRef.current;
+      if (resize && groupHandle) {
+        const proportionalLayout = resizePaneProportionally(
+          resize.layout,
+          resize.paneId,
+          layout[resize.paneId],
+          10
+        );
+        applyingLayoutRef.current = true;
+        groupHandle.setLayout(proportionalLayout);
+        applyingLayoutRef.current = false;
+        setLayout(proportionalLayout);
+        return;
+      }
       setLayout(layout);
     },
-    [setLayout]
+    [groupHandle, setLayout]
   );
 
   if (panes.length === 0) return null;
@@ -372,7 +388,27 @@ export function WorkspacePaneGrid() {
     >
       {panes.map((pane, index) => (
         <Fragment key={pane.id}>
-          {index > 0 && paneSeparator}
+          {index > 0 && (
+            <Separator
+              className={paneSeparatorClassName}
+              onPointerDownCapture={() => {
+                resizeRef.current = {
+                  paneId: panes[index - 1].id,
+                  layout: groupHandle?.getLayout() ?? defaultLayout,
+                };
+              }}
+              onPointerUp={() => (resizeRef.current = null)}
+              onPointerCancel={() => (resizeRef.current = null)}
+              onKeyDownCapture={() => {
+                resizeRef.current = {
+                  paneId: panes[index - 1].id,
+                  layout: groupHandle?.getLayout() ?? defaultLayout,
+                };
+              }}
+              onKeyUp={() => (resizeRef.current = null)}
+              onBlur={() => (resizeRef.current = null)}
+            />
+          )}
           <Panel
             id={pane.id}
             minSize={10}

@@ -19,6 +19,7 @@ const {
   layoutAfterClose,
   layoutAfterSplit,
   paneDestinationKey,
+  resizePaneProportionally,
   sameDestination,
   useWorkspacePanesStore,
 } = await import('./useWorkspacePanesStore');
@@ -296,6 +297,15 @@ describe('layout math', () => {
     );
     expect(layout.a).toBeCloseTo(40);
     expect(layout.b).toBeCloseTo(60);
+  });
+
+  it('resizes all other panes proportionally within their minimum size', () => {
+    expect(
+      resizePaneProportionally({ a: 20, b: 30, c: 50 }, 'b', 50, 10)
+    ).toEqual({ a: 100 / 7, b: 50, c: 250 / 7 });
+    expect(
+      resizePaneProportionally({ a: 20, b: 30, c: 50 }, 'b', 80, 10)
+    ).toEqual({ a: 10, b: 65, c: 25 });
   });
 });
 

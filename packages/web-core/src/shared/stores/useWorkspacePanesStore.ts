@@ -240,6 +240,33 @@ function normalizedLayout(
   );
 }
 
+export function resizePaneProportionally(
+  layout: Record<string, number>,
+  paneId: string,
+  requestedSize: number,
+  minSize: number
+): Record<string, number> {
+  const otherTotal = 100 - layout[paneId];
+  if (otherTotal <= 0) return layout;
+
+  const otherSizes = Object.entries(layout).filter(([id]) => id !== paneId);
+  const minimumOtherTotal = Math.max(
+    ...otherSizes.map(([, size]) => (minSize * otherTotal) / size)
+  );
+  const size = Math.max(
+    minSize,
+    Math.min(requestedSize, 100 - minimumOtherTotal)
+  );
+  const scale = (100 - size) / otherTotal;
+
+  return Object.fromEntries(
+    Object.entries(layout).map(([id, previousSize]) => [
+      id,
+      id === paneId ? size : previousSize * scale,
+    ])
+  );
+}
+
 /** Existing pane ratios stay intact while all make equal room for the new pane. */
 export function layoutAfterSplit(
   panes: WorkspacePane[],
