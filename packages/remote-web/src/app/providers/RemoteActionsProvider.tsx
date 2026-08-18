@@ -64,8 +64,16 @@ export function RemoteActionsProvider({
   >([]);
 
   const registerProjectMutations = useCallback(
-    (mutations: ProjectMutations | null) => {
+    (mutations: ProjectMutations): (() => void) => {
       setProjectMutations(mutations);
+      // Only clear if this registration is still the active one, so a late
+      // cleanup from a view unmounting after a route change can't wipe a newer
+      // registration and leave issue actions without a project context.
+      return () => {
+        setProjectMutations((current) =>
+          current === mutations ? null : current,
+        );
+      };
     },
     [],
   );

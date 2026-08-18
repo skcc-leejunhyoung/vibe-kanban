@@ -66,7 +66,7 @@ export interface ActionsContextValue {
   setDefaultCreateStatusId: (statusId: string | undefined) => void;
 
   // Register project mutations (called by components inside ProjectProvider)
-  registerProjectMutations: (mutations: ProjectMutations | null) => void;
+  registerProjectMutations: (mutations: ProjectMutations) => () => void;
 
   registerNavigationProjects: (projects: NavigationProject[]) => void;
 

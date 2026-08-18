@@ -91,8 +91,18 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
   >([]);
 
   const registerProjectMutations = useCallback(
-    (mutations: ProjectMutations | null) => {
+    (mutations: ProjectMutations): (() => void) => {
       setProjectMutations(mutations);
+      // Return an unregister that only clears the slot if this registration is
+      // still the active one. Route changes can unmount the previous view
+      // after the new view has already registered (multi-commit transitions);
+      // an unconditional clear would then wipe the newer registration and
+      // leave issue actions (e.g. delete) without a project context.
+      return () => {
+        setProjectMutations((current) =>
+          current === mutations ? null : current
+        );
+      };
     },
     []
   );

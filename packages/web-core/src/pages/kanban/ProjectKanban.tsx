@@ -55,7 +55,7 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
   }, [issues]);
 
   useEffect(() => {
-    registerProjectMutations({
+    return registerProjectMutations({
       removeIssue: (id) => removeIssue(id),
       duplicateIssue: (issueId) => {
         const issue = getIssue(issueId);
@@ -126,10 +126,6 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
       getPullRequestsForIssue,
       getGithubIssueLinkForIssue,
     });
-
-    return () => {
-      registerProjectMutations(null);
-    };
   }, [
     registerProjectMutations,
     removeIssue,
