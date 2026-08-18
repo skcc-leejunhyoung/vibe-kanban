@@ -188,8 +188,6 @@ export const WorkspaceDetail = forwardRef<
     !(isNarrow && showChatPanel);
   const showRightSidebar = shouldShowWorkspacePaneSidebar({
     isVisible: isRightSidebarVisible,
-    isPaneActive,
-    isCompact,
     isCreateMode,
   });
 
@@ -351,9 +349,8 @@ export const WorkspaceDetail = forwardRef<
             )}
           </Group>
 
-          {/* Wide panes keep their sidebar mounted alongside the Group.
-              Compact panes overlay it on top (absolute) so the Group underneath
-              stays laid out instead of being display:none'd. */}
+          {/* Keep each pane's sidebar mounted across focus changes. Compact
+              panes overlay it so the Group underneath stays laid out. */}
           {showRightSidebar && (
             <div
               className={cn(

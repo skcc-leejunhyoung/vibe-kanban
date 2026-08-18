@@ -5,24 +5,20 @@ import {
 } from './workspacePaneSidebar';
 
 describe('shouldShowWorkspacePaneSidebar', () => {
-  it('keeps a wide pane sidebar mounted while another pane is active', () => {
+  it('shows a visible workspace sidebar', () => {
     expect(
       shouldShowWorkspacePaneSidebar({
         isVisible: true,
-        isPaneActive: false,
-        isCompact: false,
         isCreateMode: false,
       })
     ).toBe(true);
   });
 
-  it('only shows a compact pane sidebar while that pane is active', () => {
+  it('hides the sidebar in create mode', () => {
     expect(
       shouldShowWorkspacePaneSidebar({
         isVisible: true,
-        isPaneActive: false,
-        isCompact: true,
-        isCreateMode: false,
+        isCreateMode: true,
       })
     ).toBe(false);
   });
