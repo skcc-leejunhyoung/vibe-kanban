@@ -224,26 +224,20 @@ fn select_mutation_deliveries(
     states: &[MutationDeliveryState],
     include_applied_guards: bool,
 ) -> Vec<Uuid> {
-    let mut per_memory = HashMap::<Uuid, (Uuid, Option<Uuid>)>::new();
+    let mut per_memory = HashMap::<Uuid, &MutationDeliveryState>::new();
     for state in states {
-        let entry = per_memory
-            .entry(state.memory_id)
-            .or_insert((state.id, None));
-        entry.0 = state.id;
-        if entry.1.is_none()
-            && state
-                .receipt_status
-                .as_deref()
-                .is_none_or(|status| status == "deferred")
-        {
-            entry.1 = Some(state.id);
-        }
+        per_memory.insert(state.memory_id, state);
     }
 
     let selected = per_memory
         .into_values()
-        .filter_map(|(latest, pending)| {
-            pending.or_else(|| include_applied_guards.then_some(latest))
+        .filter_map(|state| {
+            (include_applied_guards
+                || state
+                    .receipt_status
+                    .as_deref()
+                    .is_none_or(|status| status == "deferred"))
+            .then_some(state.id)
         })
         .collect::<HashSet<_>>();
     states
@@ -987,7 +981,7 @@ async fn sync_session_has_pending(
     session_id: Uuid,
 ) -> anyhow::Result<bool> {
     sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_snapshots snapshot ON snapshot.owner_user_id = $1 AND snapshot.scope = 'repository' AND snapshot.scope_key = repo_key AND NOT (snapshot.source_host_id = st.host_id AND snapshot.source_agent = agent) LEFT JOIN agent_memory_receipts receipt ON receipt.snapshot_id = snapshot.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent WHERE st.session_id = $2 AND (receipt.snapshot_id IS NULL OR receipt.processed_revision < snapshot.revision OR receipt.status = 'deferred')) OR EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_mutations mutation ON mutation.owner_user_id = $1 AND (mutation.scope = 'user_global' OR (mutation.scope = 'repository' AND mutation.scope_key = repo_key)) LEFT JOIN agent_memory_mutation_receipts receipt ON receipt.mutation_id = mutation.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent AND receipt.target_scope_key = CASE WHEN mutation.scope = 'user_global' THEN '' ELSE repo_key END WHERE st.session_id = $2 AND (receipt.mutation_id IS NULL OR receipt.status = 'deferred'))",
+        "SELECT EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_snapshots snapshot ON snapshot.owner_user_id = $1 AND snapshot.scope = 'repository' AND snapshot.scope_key = repo_key AND NOT (snapshot.source_host_id = st.host_id AND snapshot.source_agent = agent) LEFT JOIN agent_memory_receipts receipt ON receipt.snapshot_id = snapshot.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent WHERE st.session_id = $2 AND (receipt.snapshot_id IS NULL OR receipt.processed_revision < snapshot.revision OR receipt.status = 'deferred')) OR EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_mutations mutation ON mutation.owner_user_id = $1 AND (mutation.scope = 'user_global' OR (mutation.scope = 'repository' AND mutation.scope_key = repo_key)) LEFT JOIN agent_memory_mutation_receipts receipt ON receipt.mutation_id = mutation.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent AND receipt.target_scope_key = CASE WHEN mutation.scope = 'user_global' THEN '' ELSE repo_key END WHERE st.session_id = $2 AND NOT EXISTS (SELECT 1 FROM agent_memory_mutations newer WHERE newer.owner_user_id = mutation.owner_user_id AND newer.memory_id = mutation.memory_id AND newer.generation > mutation.generation) AND (receipt.mutation_id IS NULL OR receipt.status = 'deferred'))",
     )
     .bind(owner_user_id)
     .bind(session_id)
@@ -1086,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn mutation_delivery_advances_offline_hosts_one_generation_at_a_time() {
+    fn mutation_delivery_skips_superseded_generations() {
         let memory_id = Uuid::new_v4();
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
@@ -1099,17 +1093,17 @@ mod tests {
                 ],
                 true,
             ),
-            vec![first]
+            vec![second]
         );
         assert_eq!(
             select_mutation_deliveries(
                 &[
-                    delivery_state(first, memory_id, Some("accepted")),
-                    delivery_state(second, memory_id, None),
+                    delivery_state(first, memory_id, Some("deferred")),
+                    delivery_state(second, memory_id, Some("accepted")),
                 ],
-                true,
+                false,
             ),
-            vec![second]
+            Vec::<Uuid>::new()
         );
     }
 
