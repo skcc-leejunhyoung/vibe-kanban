@@ -175,6 +175,8 @@ interface WorkspacePanesState {
   clearPaneDestination: (paneId: string) => void;
   /** Close a pane; the last pane is cleared instead of removed. */
   closePane: (paneId: string) => void;
+  /** Move a pane before or after another pane. */
+  movePane: (paneId: string, targetPaneId: string, after: boolean) => void;
   setActivePane: (paneId: string) => void;
   /** Keyboard pane cycling: activates the adjacent pane and requests focus. */
   cycleActivePane: (direction: 'next' | 'previous') => void;
@@ -485,6 +487,17 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
                 ? fallbackActive
                 : state.activePaneId,
           };
+        }),
+      movePane: (paneId, targetPaneId, after) =>
+        set((state) => {
+          const from = state.panes.findIndex((pane) => pane.id === paneId);
+          const to = state.panes.findIndex((pane) => pane.id === targetPaneId);
+          if (from < 0 || to < 0 || from === to) return state;
+          const panes = [...state.panes];
+          const [pane] = panes.splice(from, 1);
+          const target = panes.findIndex((pane) => pane.id === targetPaneId);
+          panes.splice(target + (after ? 1 : 0), 0, pane);
+          return { panes };
         }),
       setActivePane: (activePaneId) => set({ activePaneId }),
       cycleActivePane: (direction) =>

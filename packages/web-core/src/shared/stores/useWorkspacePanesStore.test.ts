@@ -230,6 +230,30 @@ describe('closePane', () => {
   });
 });
 
+describe('movePane', () => {
+  it('moves a pane before the drop target without changing its identity', () => {
+    store.getState().ensurePane();
+    store.getState().appendPane();
+    store.getState().appendPane();
+
+    store.getState().movePane('pane-3', 'pane-1', false);
+
+    expect(store.getState().panes.map((pane) => pane.id)).toEqual([
+      'pane-3',
+      'pane-1',
+      'pane-2',
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-3');
+
+    store.getState().movePane('pane-3', 'pane-2', true);
+    expect(store.getState().panes.map((pane) => pane.id)).toEqual([
+      'pane-1',
+      'pane-2',
+      'pane-3',
+    ]);
+  });
+});
+
 describe('clearPaneDestination', () => {
   it('shows the picker without changing the pane structure', () => {
     store.getState().ensurePane();

@@ -101,15 +101,38 @@ function PaneChrome({
 }
 
 function PaneHeaderShell({
+  paneId,
   title,
   onClose,
 }: {
+  paneId: string;
   title: ReactNode;
   onClose: () => void;
 }) {
   const { t } = useTranslation('common');
+  const movePane = useWorkspacePanesStore((s) => s.movePane);
   return (
-    <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border bg-secondary px-2">
+    <div
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', paneId);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const { left, width } = event.currentTarget.getBoundingClientRect();
+        movePane(
+          event.dataTransfer.getData('text/plain'),
+          paneId,
+          event.clientX > left + width / 2
+        );
+      }}
+      className="flex h-7 shrink-0 cursor-grab items-center gap-2 border-b border-border bg-secondary px-2 active:cursor-grabbing"
+    >
       <span className="min-w-0 flex-1 truncate text-xs text-normal">
         {title}
       </span>
@@ -201,6 +224,7 @@ function EmptyPane({
   return (
     <div className="flex h-full min-h-0 flex-col bg-primary">
       <PaneHeaderShell
+        paneId={paneId}
         title={t('workspacePanes.emptyPaneTitle', {
           defaultValue: 'New pane',
         })}
@@ -255,6 +279,7 @@ function WorkspacePaneView({
           <PaneActiveProvider active={active}>
             <div className="flex h-full min-h-0 flex-col bg-primary">
               <PaneHeaderShell
+                paneId={pane.id}
                 title={paneTitle(pane.destination, t)}
                 onClose={() => closePane(pane.id)}
               />
