@@ -141,6 +141,8 @@ interface WorkspacePanesState {
   nextPaneId: number;
   /** Every visible pane, left to right. All panes are equals. */
   panes: WorkspacePane[];
+  /** Remounts the resizable group after a reorder to refresh panel constraints. */
+  paneOrderVersion: number;
   /** Active pane id; null only before the first ensurePane(). */
   activePaneId: string | null;
   /** Split sizes (percent) keyed by pane id. Source of truth for the grid. */
@@ -310,6 +312,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
       maxPanes: DEFAULT_MAX_WORKSPACE_PANES,
       nextPaneId: 1,
       panes: [],
+      paneOrderVersion: 0,
       activePaneId: null,
       layout: {},
       focusSerial: 0,
@@ -524,7 +527,10 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
           const [pane] = panes.splice(from, 1);
           const target = panes.findIndex((pane) => pane.id === targetPaneId);
           panes.splice(target + (after ? 1 : 0), 0, pane);
-          return { panes };
+          return {
+            panes,
+            paneOrderVersion: state.paneOrderVersion + 1,
+          };
         }),
       setActivePane: (activePaneId) => set({ activePaneId }),
       cycleActivePane: (direction) =>

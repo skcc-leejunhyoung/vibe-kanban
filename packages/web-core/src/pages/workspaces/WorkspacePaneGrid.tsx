@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
   type ReactNode,
 } from 'react';
 import {
@@ -111,6 +112,7 @@ function PaneHeaderShell({
 }) {
   const { t } = useTranslation('common');
   const movePane = useWorkspacePanesStore((s) => s.movePane);
+  const [dropAfter, setDropAfter] = useState<boolean | null>(null);
   return (
     <div
       draggable
@@ -121,6 +123,13 @@ function PaneHeaderShell({
       onDragOver={(event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
+        const { left, width } = event.currentTarget.getBoundingClientRect();
+        setDropAfter(event.clientX > left + width / 2);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+          setDropAfter(null);
+        }
       }}
       onDrop={(event) => {
         event.preventDefault();
@@ -130,9 +139,20 @@ function PaneHeaderShell({
           paneId,
           event.clientX > left + width / 2
         );
+        setDropAfter(null);
       }}
-      className="flex h-7 shrink-0 cursor-grab items-center gap-2 border-b border-border bg-secondary px-2 active:cursor-grabbing"
+      onDragEnd={() => setDropAfter(null)}
+      className="relative flex h-7 shrink-0 cursor-grab items-center gap-2 border-b border-border bg-secondary px-2 active:cursor-grabbing"
     >
+      {dropAfter !== null && (
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-y-0 z-40 w-1 bg-brand',
+            dropAfter ? '-right-0.5' : '-left-0.5'
+          )}
+        />
+      )}
       <span className="min-w-0 flex-1 truncate text-xs text-normal">
         {title}
       </span>
@@ -312,6 +332,7 @@ export function WorkspacePaneGrid() {
   const panes = useWorkspacePanesStore((s) => s.panes);
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
   const storedLayout = useWorkspacePanesStore((s) => s.layout);
+  const paneOrderVersion = useWorkspacePanesStore((s) => s.paneOrderVersion);
   const setLayout = useWorkspacePanesStore((s) => s.setLayout);
   const [groupHandle, setGroupHandle] = useGroupCallbackRef();
   const resizeRef = useRef<{ paneId: string; layout: Layout } | null>(null);
@@ -380,6 +401,7 @@ export function WorkspacePaneGrid() {
 
   return (
     <Group
+      key={paneOrderVersion}
       groupRef={setGroupHandle}
       orientation="horizontal"
       className="h-full min-h-0"
