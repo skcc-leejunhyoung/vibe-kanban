@@ -15,6 +15,7 @@ import { WorkspaceProvider } from '@/shared/providers/WorkspaceProvider';
 import { ExecutionProcessesProvider } from '@/shared/providers/ExecutionProcessesProvider';
 import { LogsPanelProvider } from '@/shared/providers/LogsPanelProvider';
 import { ActionsProvider } from '@/shared/providers/ActionsProvider';
+import { useMarkNotificationsReadOnView } from '@/shared/hooks/useMarkNotificationsReadOnView';
 
 interface WorkspacePaneScopeProps {
   destination: WorkspacePaneDestination;
@@ -30,6 +31,11 @@ function ExecutionProcessesFromContext({ children }: { children: ReactNode }) {
       {children}
     </ExecutionProcessesProvider>
   );
+}
+
+function MarkNotificationsReadOnView() {
+  useMarkNotificationsReadOnView();
+  return null;
 }
 
 /**
@@ -55,6 +61,7 @@ export function WorkspacePaneScope({
   return (
     <AppNavigationProvider value={paneNavigation}>
       <AppDestinationOverrideProvider value={destination}>
+        <MarkNotificationsReadOnView />
         <HostIdProvider global={false}>
           <WorkspaceProvider inheritStreams>
             <ExecutionProcessesFromContext>
