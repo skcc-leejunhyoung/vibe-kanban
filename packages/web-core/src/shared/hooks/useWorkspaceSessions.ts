@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { create } from 'zustand';
 import { sessionsApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
@@ -30,6 +31,39 @@ export type SessionSelection =
   | { mode: 'existing'; sessionId: string }
   | { mode: 'new' };
 
+interface WorkspaceSessionSelectionState {
+  selections: Record<string, SessionSelection | undefined>;
+  setSelection: (key: string, selection: SessionSelection | undefined) => void;
+}
+
+export const useWorkspaceSessionSelectionStore =
+  create<WorkspaceSessionSelectionState>((set) => ({
+    selections: {},
+    setSelection: (key, selection) =>
+      set((state) => ({
+        selections: { ...state.selections, [key]: selection },
+      })),
+  }));
+
+function workspaceSessionSelectionKey(
+  workspaceId: string | undefined,
+  hostId: string | null
+) {
+  return `${hostId ?? ''}:${workspaceId ?? ''}`;
+}
+
+export function selectWorkspaceSession(
+  workspaceId: string,
+  hostId: string | null,
+  sessionId: string
+) {
+  const { setSelection } = useWorkspaceSessionSelectionStore.getState();
+  setSelection(workspaceSessionSelectionKey(workspaceId, hostId), {
+    mode: 'existing',
+    sessionId,
+  });
+}
+
 interface UseWorkspaceSessionsResult {
   sessions: Session[];
   selectedSession: Session | undefined;
@@ -54,8 +88,12 @@ export function useWorkspaceSessions(
 ): UseWorkspaceSessionsResult {
   const hostId = useHostId();
   const { enabled = true } = options;
-  const [selection, setSelection] = useState<SessionSelection | undefined>(
-    undefined
+  const selectionKey = workspaceSessionSelectionKey(workspaceId, hostId);
+  const selection = useWorkspaceSessionSelectionStore(
+    (state) => state.selections[selectionKey]
+  );
+  const setStoredSelection = useWorkspaceSessionSelectionStore(
+    (state) => state.setSelection
   );
   const prevWorkspaceIdRef = useRef(workspaceId);
 
@@ -75,14 +113,18 @@ export function useWorkspaceSessions(
       // Sessions are ordered by most recently used, so first is the most recently used
       // Always select first session when sessions are available for this workspace
       // Only preserve new session mode within the same workspace
-      setSelection((prev) => {
-        if (prev?.mode === 'new' && !workspaceChanged) return prev;
-        return { mode: 'existing', sessionId: sessions[0].id };
-      });
+      const currentSelection =
+        useWorkspaceSessionSelectionStore.getState().selections[selectionKey];
+      if (currentSelection?.mode !== 'new' || workspaceChanged) {
+        setStoredSelection(selectionKey, {
+          mode: 'existing',
+          sessionId: sessions[0].id,
+        });
+      }
     } else {
-      setSelection(undefined);
+      setStoredSelection(selectionKey, undefined);
     }
-  }, [workspaceId, sessions]);
+  }, [workspaceId, sessions, selectionKey, setStoredSelection]);
 
   const isNewSessionMode = selection?.mode === 'new' || sessions.length === 0;
   const selectedSessionId =
@@ -93,19 +135,24 @@ export function useWorkspaceSessions(
     [sessions, selectedSessionId]
   );
 
-  const selectSession = useCallback((sessionId: string) => {
-    setSelection({ mode: 'existing', sessionId });
-  }, []);
+  const selectSession = useCallback(
+    (sessionId: string) =>
+      setStoredSelection(selectionKey, { mode: 'existing', sessionId }),
+    [selectionKey, setStoredSelection]
+  );
 
   const selectLatestSession = useCallback(() => {
     if (sessions.length > 0) {
-      setSelection({ mode: 'existing', sessionId: sessions[0].id });
+      setStoredSelection(selectionKey, {
+        mode: 'existing',
+        sessionId: sessions[0].id,
+      });
     }
-  }, [sessions]);
+  }, [sessions, selectionKey, setStoredSelection]);
 
   const startNewSession = useCallback(() => {
-    setSelection({ mode: 'new' });
-  }, []);
+    setStoredSelection(selectionKey, { mode: 'new' });
+  }, [selectionKey, setStoredSelection]);
 
   return {
     sessions,

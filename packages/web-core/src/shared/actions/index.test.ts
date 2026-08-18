@@ -96,6 +96,7 @@ import { LinkPrByUrlDialog } from '@/shared/dialogs/command-bar/LinkPrByUrlDialo
 import { getPageActions } from '@/shared/command-bar/actions/pages';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
+import { useWorkspaceSessionSelectionStore } from '@/shared/hooks/useWorkspaceSessions';
 
 const update = vi.mocked(workspacesApi.update);
 const updateScratch = vi.mocked(scratchApi.update);
@@ -502,7 +503,11 @@ describe('command palette navigation actions', () => {
     expect(startNewSession).not.toHaveBeenCalled();
   });
 
-  it('does not load sessions from a different host target', async () => {
+  it('selects a session for the targeted pane workspace', async () => {
+    getSessionsByWorkspace.mockResolvedValue([
+      { id: 'session-2', name: 'Second session' },
+    ] as never);
+    showSelection.mockResolvedValue('session-2' as never);
     const { ctx } = makeCtx(
       { id: 'ws1' },
       {
@@ -511,10 +516,12 @@ describe('command palette navigation actions', () => {
       }
     );
 
-    await expect(
-      Actions.ViewWorkspaceSessions.execute(ctx, 'ws1', 'host-2')
-    ).rejects.toThrow('currently open workspace');
-    expect(getSessionsByWorkspace).not.toHaveBeenCalled();
+    await Actions.ViewWorkspaceSessions.execute(ctx, 'ws2', 'host-2');
+
+    expect(getSessionsByWorkspace).toHaveBeenCalledWith('ws2', 'host-2');
+    expect(
+      useWorkspaceSessionSelectionStore.getState().selections['host-2:ws2']
+    ).toEqual({ mode: 'existing', sessionId: 'session-2' });
   });
 });
 

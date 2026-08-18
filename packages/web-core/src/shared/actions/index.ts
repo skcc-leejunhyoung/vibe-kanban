@@ -92,6 +92,7 @@ import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
+import { selectWorkspaceSession } from '@/shared/hooks/useWorkspaceSessions';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
 import { DeleteWorkspaceDialog } from '@vibe/ui/components/DeleteWorkspaceDialog';
@@ -788,7 +789,6 @@ export const Actions = {
     isVisible: (ctx) =>
       ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
     execute: async (ctx, workspaceId, hostId) => {
-      assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
       const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
       const { SelectionDialog } = await import(
         '@/shared/dialogs/command-bar/SelectionDialog'
@@ -824,7 +824,13 @@ export const Actions = {
           },
         },
       })) as string | undefined;
-      if (result) ctx.selectSession(result);
+      if (result) {
+        selectWorkspaceSession(
+          workspaceId,
+          hostId === undefined ? ctx.currentHostId : hostId,
+          result
+        );
+      }
     },
   },
 
