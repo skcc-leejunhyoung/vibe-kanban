@@ -56,9 +56,7 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     registerProjectMutations({
-      removeIssue: (id) => {
-        removeIssue(id);
-      },
+      removeIssue: (id) => removeIssue(id),
       duplicateIssue: (issueId) => {
         const issue = getIssue(issueId);
         if (!issue) return;

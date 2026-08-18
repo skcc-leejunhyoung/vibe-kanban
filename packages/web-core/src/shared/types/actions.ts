@@ -14,6 +14,7 @@ import { RIGHT_MAIN_PANEL_MODES } from '@/shared/stores/useUiPreferencesStore';
 import type { AppNavigation } from '@/shared/lib/routes/appNavigation';
 import type { ProjectIssueCreateOptions } from '@/shared/stores/useKanbanIssueComposerStore';
 import type { AppRuntime } from '@/shared/hooks/useAppRuntime';
+import type { MutationResult } from '@/shared/lib/electric/types';
 
 // Portable type aliases (avoid importing from component containers)
 export type LogEntry = Extract<
@@ -40,7 +41,7 @@ export type DevServerState = 'stopped' | 'starting' | 'running' | 'stopping';
 
 // Project mutations interface (registered by ProjectProvider consumers)
 export interface ProjectMutations {
-  removeIssue: (id: string) => void;
+  removeIssue: (id: string) => MutationResult | void;
   duplicateIssue: (issueId: string) => void;
   linkPullRequest: (issueId: string) => Promise<void>;
   linkGithubIssue: (issueId: string) => Promise<void>;

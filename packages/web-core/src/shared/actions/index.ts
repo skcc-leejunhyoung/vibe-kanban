@@ -3222,10 +3222,19 @@ export const Actions = {
         cancelText: 'Cancel',
         variant: 'destructive',
       });
-      if (result === 'confirmed' && ctx.projectMutations?.removeIssue) {
-        for (const issueId of issueIds) {
-          ctx.projectMutations.removeIssue(issueId);
-        }
+      if (result !== 'confirmed') return;
+      // Surface failures instead of swallowing them. If the mutation isn't
+      // wired up in this view (no project context) or the backend rejects the
+      // delete, throw so executeAction shows the error dialog.
+      const removeIssue = ctx.projectMutations?.removeIssue;
+      if (!removeIssue) {
+        throw new Error(
+          'Cannot delete issue: project mutations are not available in this view.'
+        );
+      }
+      for (const issueId of issueIds) {
+        const mutation = removeIssue(issueId);
+        if (mutation) await mutation.persisted;
       }
     },
   } satisfies IssueActionDefinition,
