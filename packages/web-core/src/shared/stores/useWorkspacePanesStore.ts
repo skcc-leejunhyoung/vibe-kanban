@@ -141,7 +141,7 @@ interface WorkspacePanesState {
   nextPaneId: number;
   /** Every visible pane, left to right. All panes are equals. */
   panes: WorkspacePane[];
-  /** Remounts the resizable group after a reorder to refresh panel constraints. */
+  /** Refreshes resizable-panel registration after a reorder. */
   paneOrderVersion: number;
   /** Active pane id; null only before the first ensurePane(). */
   activePaneId: string | null;

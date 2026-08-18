@@ -321,6 +321,39 @@ function WorkspacePaneView({
   );
 }
 
+function WorkspaceGridPanel({
+  pane,
+  active,
+  showActiveRing,
+  registrationVersion,
+}: {
+  pane: WorkspacePane;
+  active: boolean;
+  showActiveRing: boolean;
+  registrationVersion: number;
+}) {
+  // Changing this callback makes react-resizable-panels rebuild its ordered
+  // registry without unmounting the pane and its live content.
+  const refreshRegistration = useCallback(
+    () => undefined,
+    [registrationVersion]
+  );
+  return (
+    <Panel
+      id={pane.id}
+      minSize={10}
+      onResize={refreshRegistration}
+      className="min-w-0 h-full overflow-hidden"
+    >
+      <WorkspacePaneView
+        pane={pane}
+        active={active}
+        showActiveRing={showActiveRing}
+      />
+    </Panel>
+  );
+}
+
 /**
  * The in-document pane grid: every pane (workspace, kanban, pull requests,
  * notifications) is a store-owned equal — there is no route-bound primary.
@@ -401,7 +434,6 @@ export function WorkspacePaneGrid() {
 
   return (
     <Group
-      key={paneOrderVersion}
       groupRef={setGroupHandle}
       orientation="horizontal"
       className="h-full min-h-0"
@@ -431,17 +463,12 @@ export function WorkspacePaneGrid() {
               onBlur={() => (resizeRef.current = null)}
             />
           )}
-          <Panel
-            id={pane.id}
-            minSize={10}
-            className="min-w-0 h-full overflow-hidden"
-          >
-            <WorkspacePaneView
-              pane={pane}
-              active={activePaneId === pane.id}
-              showActiveRing={showActiveRing}
-            />
-          </Panel>
+          <WorkspaceGridPanel
+            pane={pane}
+            active={activePaneId === pane.id}
+            showActiveRing={showActiveRing}
+            registrationVersion={paneOrderVersion}
+          />
         </Fragment>
       ))}
     </Group>
