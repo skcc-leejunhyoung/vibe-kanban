@@ -529,6 +529,9 @@ export function WorkspacesSidebar({
                   latestProcessCompletedAt={workspace.latestProcessCompletedAt}
                   latestProcessStatus={workspace.latestProcessStatus}
                   prStatus={workspace.prStatus}
+                  prNumber={workspace.prNumber}
+                  prUrl={workspace.prUrl}
+                  githubIssues={workspace.githubIssues}
                   isInPlace={workspace.isInPlace}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
                   onClick={(event) =>
@@ -693,6 +696,9 @@ export function WorkspacesSidebar({
                 latestProcessCompletedAt={workspace.latestProcessCompletedAt}
                 latestProcessStatus={workspace.latestProcessStatus}
                 prStatus={workspace.prStatus}
+                prNumber={workspace.prNumber}
+                prUrl={workspace.prUrl}
+                githubIssues={workspace.githubIssues}
                 isInPlace={workspace.isInPlace}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
                 onClick={(event) =>

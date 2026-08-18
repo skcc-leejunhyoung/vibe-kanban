@@ -130,6 +130,9 @@ export function WorkspaceSummary({
   const showTodoProgress =
     isActuallyRunning && todoTotal !== undefined && todoTotal > 0;
   const todoAllDone = showTodoProgress && todoCompleted === todoTotal;
+  const hasLinkBadges =
+    (!!prNumber && !!prUrl && !!prStatus && prStatus !== 'unknown') ||
+    githubIssues.length > 0;
   // Issue-card rows pass latestPrompt and show it in place of the name.
   const primaryText = latestPrompt?.trim() || name;
 
@@ -201,7 +204,7 @@ export function WorkspaceSummary({
             {primaryText}
           </div>
         </div>
-        {(!summary || isActive) && (
+        {(!summary || isActive || hasLinkBadges) && (
           <div className="flex w-full items-center gap-base text-sm h-5">
             {/* Dev server running - leftmost */}
             {hasRunningDevServer && (
