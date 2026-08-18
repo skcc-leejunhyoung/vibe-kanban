@@ -255,7 +255,18 @@ export function WorkspacesSidebarContainer({
   const { mode: groupMode, toggle: toggleGroupMode } = useWorkspaceGroupMode();
   const [issueStatusNames] = useWorkspaceIssueStatuses();
   const isIssueGrouped = groupMode === 'issue';
-  const workspaceIssueMeta = useWorkspaceIssueGrouping(isIssueGrouped);
+  const workspaceIssueMeta = useWorkspaceIssueGrouping();
+
+  const withGithubIssues = useCallback(
+    (workspace: (typeof activeWorkspaces)[number]) => ({
+      ...workspace,
+      githubIssues:
+        workspaceIssueMeta.get(
+          getHostWorkspaceKey(workspace.id, workspace.hostId)
+        )?.githubIssues ?? [],
+    }),
+    [workspaceIssueMeta]
+  );
 
   // Shared workspace sort/filter model (project options + filter/sort pipeline).
   const sortFilter = useWorkspaceSortFilter();
@@ -293,11 +304,13 @@ export function WorkspacesSidebarContainer({
   // Apply sidebar filters (project + PR) + search, then sort.
   const sortedActiveWorkspaces = useMemo(() => {
     const filtered = filterAndSort(
-      activeWorkspaces.map((workspace) => ({
-        ...workspace,
-        hostPrimaryColor:
-          hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
-      })),
+      activeWorkspaces
+        .map((workspace) => ({
+          ...workspace,
+          hostPrimaryColor:
+            hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
+        }))
+        .map(withGithubIssues),
       searchQuery
     );
     if (selectedHostView === 'all') return filtered;
@@ -311,15 +324,18 @@ export function WorkspacesSidebarContainer({
     searchQuery,
     selectedHostView,
     hostPrimaryColors,
+    withGithubIssues,
   ]);
 
   const sortedArchivedWorkspaces = useMemo(() => {
     const filtered = filterAndSort(
-      archivedWorkspaces.map((workspace) => ({
-        ...workspace,
-        hostPrimaryColor:
-          hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
-      })),
+      archivedWorkspaces
+        .map((workspace) => ({
+          ...workspace,
+          hostPrimaryColor:
+            hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
+        }))
+        .map(withGithubIssues),
       searchQuery
     );
     if (selectedHostView === 'all') return filtered;
@@ -333,6 +349,7 @@ export function WorkspacesSidebarContainer({
     searchQuery,
     selectedHostView,
     hostPrimaryColors,
+    withGithubIssues,
   ]);
 
   // Apply pagination (only when not searching)

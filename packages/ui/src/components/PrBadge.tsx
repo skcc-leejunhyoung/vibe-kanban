@@ -1,6 +1,10 @@
 import { cn } from '../lib/cn';
 import { openExternalUrl } from '../lib/open-url';
-import { GitPullRequestIcon, XIcon } from '@phosphor-icons/react';
+import {
+  GithubLogoIcon,
+  GitPullRequestIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 
 export type PrBadgeStatus = 'open' | 'merged' | 'closed';
 
@@ -12,6 +16,39 @@ export interface PrBadgeProps {
   onRemove?: () => void;
   disabled?: boolean;
   className?: string;
+}
+
+export interface GithubIssueBadgeProps {
+  number: number;
+  url: string;
+  repository?: string;
+  className?: string;
+}
+
+export function GithubIssueBadge({
+  number,
+  url,
+  repository,
+  className,
+}: GithubIssueBadgeProps) {
+  return (
+    <a
+      href={url}
+      title={repository ? `${repository}#${number}` : undefined}
+      onClick={(event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        openExternalUrl(url);
+      }}
+      className={cn(
+        'inline-flex items-center gap-half rounded bg-secondary px-1.5 py-0.5 text-xs font-medium text-low transition-colors hover:underline',
+        className
+      )}
+    >
+      <GithubLogoIcon className="size-icon-2xs" weight="bold" />
+      <span>#{number}</span>
+    </a>
+  );
 }
 
 export function PrBadge({

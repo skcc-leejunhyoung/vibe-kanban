@@ -34,6 +34,11 @@ import { useWorkspaceShortcuts } from '@/shared/keyboard/useWorkspaceShortcuts';
 import { NotificationsPage } from './NotificationsPage';
 import { WorkspaceDetail } from './WorkspaceDetail';
 import { WorkspacesSidebarContainer } from './WorkspacesSidebarContainer';
+import { GithubIssueBadge, PrBadge } from '@vibe/ui/components/PrBadge';
+import { useWorkspaceIssueGrouping } from '@/shared/hooks/useWorkspaceIssueGrouping';
+import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
+import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
+import { useProjectContext } from '@/shared/hooks/useProjectContext';
 
 /**
  * Pane-scoped keyboard registrations: they read the pane's context (workspace,
@@ -171,9 +176,88 @@ function PaneHeaderShell({
 }
 
 /** Header title for workspace panes — reads the pane-scoped context. */
-function WorkspacePaneTitle() {
-  const { workspace } = useWorkspaceContext();
-  return <>{workspace?.name ?? '…'}</>;
+function WorkspacePaneTitle({ hostId }: { hostId: string | null }) {
+  const { workspace, activeWorkspaces, archivedWorkspaces } =
+    useWorkspaceContext();
+  const issueMeta = useWorkspaceIssueGrouping();
+  const summary = [...activeWorkspaces, ...archivedWorkspaces].find(
+    (candidate) => candidate.id === workspace?.id && candidate.hostId === hostId
+  );
+  const githubIssues = workspace
+    ? (issueMeta.get(getHostWorkspaceKey(workspace.id, hostId))?.githubIssues ??
+      [])
+    : [];
+
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      {summary?.prNumber &&
+        summary.prUrl &&
+        summary.prStatus &&
+        summary.prStatus !== 'unknown' && (
+          <PrBadge
+            number={summary.prNumber}
+            url={summary.prUrl}
+            status={summary.prStatus}
+          />
+        )}
+      {githubIssues.map((issue) => (
+        <GithubIssueBadge key={issue.id} {...issue} />
+      ))}
+      <span className="truncate">{workspace?.name ?? '…'}</span>
+    </span>
+  );
+}
+
+function ProjectIssuePaneTitle({
+  issueId,
+  label,
+}: {
+  issueId: string;
+  label: string;
+}) {
+  const { pullRequests, pullRequestIssues, githubIssueLinks } =
+    useProjectContext();
+  const linkedPrIds = new Set(
+    pullRequestIssues
+      .filter((link) => link.issue_id === issueId)
+      .map((link) => link.pull_request_id)
+  );
+
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      {pullRequests
+        .filter((pr) => linkedPrIds.has(pr.id))
+        .map((pr) => (
+          <PrBadge
+            key={pr.id}
+            number={pr.number}
+            url={pr.url}
+            status={pr.status}
+          />
+        ))}
+      {githubIssueLinks
+        .filter((link) => link.issue_id === issueId)
+        .map((issue) => (
+          <GithubIssueBadge key={issue.id} {...issue} />
+        ))}
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+function ProjectPaneTitle({
+  destination,
+  label,
+}: {
+  destination: Extract<WorkspacePaneDestination, { kind: `project${string}` }>;
+  label: string;
+}) {
+  if (!('issueId' in destination)) return <>{label}</>;
+  return (
+    <ProjectProvider projectId={destination.projectId}>
+      <ProjectIssuePaneTitle issueId={destination.issueId} label={label} />
+    </ProjectProvider>
+  );
 }
 
 function PaneOutlet({
@@ -215,13 +299,19 @@ function paneTitle(
 ): ReactNode {
   switch (destination.kind) {
     case 'workspace':
-      return <WorkspacePaneTitle />;
+      return <WorkspacePaneTitle hostId={destination.hostId ?? null} />;
     case 'project':
+    case 'project-workspace-create':
+      return t('workspacePanes.projectPane', { defaultValue: 'Project' });
     case 'project-issue':
     case 'project-issue-workspace':
     case 'project-issue-workspace-create':
-    case 'project-workspace-create':
-      return t('workspacePanes.projectPane', { defaultValue: 'Project' });
+      return (
+        <ProjectPaneTitle
+          destination={destination}
+          label={t('workspacePanes.projectPane', { defaultValue: 'Project' })}
+        />
+      );
     case 'pull-requests':
       return t('workspacePanes.pullRequestsPane', {
         defaultValue: 'Pull requests',

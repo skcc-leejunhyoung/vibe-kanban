@@ -52,6 +52,14 @@ export interface WorkspacesSidebarWorkspace {
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
+  prNumber?: number;
+  prUrl?: string;
+  githubIssues?: Array<{
+    id: string;
+    number: number;
+    repository: string;
+    url: string;
+  }>;
   /** Most recent prompt sent in this workspace (what it's working on) */
   latestPrompt?: string;
   /** Quick-chat ("in-place") workspace — runs in an existing checkout. */
@@ -252,6 +260,9 @@ function WorkspaceList({
           latestProcessCompletedAt={workspace.latestProcessCompletedAt}
           latestProcessStatus={workspace.latestProcessStatus}
           prStatus={workspace.prStatus}
+          prNumber={workspace.prNumber}
+          prUrl={workspace.prUrl}
+          githubIssues={workspace.githubIssues}
           isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>

@@ -7,16 +7,14 @@ import {
   ArrowSquareOutIcon,
   CircleDashedIcon,
   DotsThreeIcon,
-  GithubLogoIcon,
   PlusIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
-import { openExternalUrl } from '../lib/open-url';
 import { PriorityIcon, type PriorityLevel } from './PriorityIcon';
 import { KanbanBadge } from './KanbanBadge';
 import { KanbanAssignee, type KanbanAssigneeUser } from './KanbanAssignee';
 import { RunningDots } from './RunningDots';
-import { PrBadge, type PrBadgeStatus } from './PrBadge';
+import { GithubIssueBadge, PrBadge, type PrBadgeStatus } from './PrBadge';
 import {
   RelationshipBadge,
   type RelationshipDisplayType,
@@ -244,21 +242,8 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
                   +{pullRequests.length - 2}
                 </span>
               )}
-              {githubIssues.slice(0, 2).map((gh) => (
-                <a
-                  key={gh.id}
-                  href={gh.url}
-                  title={`${gh.repository}#${gh.number}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    openExternalUrl(gh.url);
-                  }}
-                  className="inline-flex items-center gap-half rounded bg-secondary px-1.5 py-0.5 text-xs font-medium text-low transition-colors hover:underline"
-                >
-                  <GithubLogoIcon className="size-icon-2xs" weight="bold" />
-                  <span>#{gh.number}</span>
-                </a>
+              {githubIssues.slice(0, 2).map((issue) => (
+                <GithubIssueBadge key={issue.id} {...issue} />
               ))}
               {githubIssues.length > 2 && (
                 <span className="text-sm text-low">

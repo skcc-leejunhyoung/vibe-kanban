@@ -5,7 +5,6 @@ import {
   PlayIcon,
   FileIcon,
   CircleIcon,
-  GitPullRequestIcon,
   DotsThreeIcon,
   LightningIcon,
   ListChecksIcon,
@@ -16,6 +15,7 @@ import type { MouseEvent, Ref } from 'react';
 import { cn } from '../lib/cn';
 import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { RunningDots } from './RunningDots';
+import { GithubIssueBadge, PrBadge } from './PrBadge';
 
 const formatRelativeElapsed = (dateString: string): string => {
   const date = new Date(dateString);
@@ -57,6 +57,14 @@ export interface WorkspaceSummaryProps {
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
+  prNumber?: number;
+  prUrl?: string;
+  githubIssues?: Array<{
+    id: string;
+    number: number;
+    repository: string;
+    url: string;
+  }>;
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   className?: string;
   summary?: boolean;
@@ -96,6 +104,9 @@ export function WorkspaceSummary({
   latestProcessCompletedAt,
   latestProcessStatus,
   prStatus,
+  prNumber,
+  prUrl,
+  githubIssues = [],
   onClick,
   className,
   summary = false,
@@ -259,19 +270,12 @@ export function WorkspaceSummary({
                 />
               )}
 
-            {/* PR status icon */}
-            {prStatus === 'open' && (
-              <GitPullRequestIcon
-                className="size-icon-xs text-success shrink-0"
-                weight="fill"
-              />
+            {prNumber && prUrl && prStatus && prStatus !== 'unknown' && (
+              <PrBadge number={prNumber} url={prUrl} status={prStatus} />
             )}
-            {prStatus === 'merged' && (
-              <GitPullRequestIcon
-                className="size-icon-xs text-merged shrink-0"
-                weight="fill"
-              />
-            )}
+            {githubIssues.map((issue) => (
+              <GithubIssueBadge key={issue.id} {...issue} />
+            ))}
 
             {/* Pin icon */}
             {isPinned && (

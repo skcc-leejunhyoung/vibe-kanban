@@ -17,6 +17,12 @@ export const UNKNOWN_STATUS_KEY = '__unknown__';
  */
 export interface WorkspaceIssueMeta {
   issueId: string;
+  githubIssues: Array<{
+    id: string;
+    number: number;
+    repository: string;
+    url: string;
+  }>;
   /** Status name used for status bucketing (matched case-insensitively). */
   statusName: string | null;
   header: WorkspaceIssueGroupHeader;

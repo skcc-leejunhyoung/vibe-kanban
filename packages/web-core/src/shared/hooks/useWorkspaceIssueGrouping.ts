@@ -4,12 +4,14 @@ import {
   PROJECT_PROJECT_STATUSES_SHAPE,
   PROJECT_TAGS_SHAPE,
   PROJECT_ISSUE_TAGS_SHAPE,
+  PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
   type Issue,
   type IssueTag,
   type Project,
   type ProjectStatus,
   type ShapeDefinition,
   type Tag,
+  type GithubIssueLink,
 } from 'shared/remote-types';
 import { createShapeCollection } from '@/shared/lib/electric/collections';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
@@ -126,6 +128,11 @@ export function useWorkspaceIssueGrouping(
     projectIds,
     shapesEnabled
   );
+  const githubIssueLinks = useAggregatedProjectShape<GithubIssueLink>(
+    PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
+    projectIds,
+    shapesEnabled
+  );
 
   const issuesById = useMemo(() => {
     const map = new Map<string, Issue>();
@@ -157,6 +164,16 @@ export function useWorkspaceIssueGrouping(
     return map;
   }, [issueTags, tagsById]);
 
+  const githubIssuesByIssueId = useMemo(() => {
+    const map = new Map<string, GithubIssueLink[]>();
+    for (const link of githubIssueLinks) {
+      const links = map.get(link.issue_id) ?? [];
+      links.push(link);
+      map.set(link.issue_id, links);
+    }
+    return map;
+  }, [githubIssueLinks]);
+
   const projectsById = useMemo(() => {
     const map = new Map<string, Project>();
     for (const project of allProjects) map.set(project.id, project);
@@ -187,6 +204,7 @@ export function useWorkspaceIssueGrouping(
 
       map.set(workspaceKey, {
         issueId: issue.id,
+        githubIssues: githubIssuesByIssueId.get(issue.id) ?? [],
         statusName: status?.name ?? null,
         header: {
           displayId: issue.simple_id || `#${issue.issue_number}`,
@@ -211,6 +229,7 @@ export function useWorkspaceIssueGrouping(
     issuesById,
     statusesById,
     tagsByIssueId,
+    githubIssuesByIssueId,
     projectsById,
   ]);
 }

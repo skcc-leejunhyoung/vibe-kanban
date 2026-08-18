@@ -13,6 +13,7 @@ const key = (id: string, hostId = 'host-a') => `${hostId}:${id}`;
 function meta(issueId: string, statusName: string | null): WorkspaceIssueMeta {
   return {
     issueId,
+    githubIssues: [],
     statusName,
     header: {
       displayId: `#${issueId}`,
