@@ -22,7 +22,7 @@ import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidth
 import { PaneActiveProvider } from '@/shared/components/workspace-panes/PaneActiveContext';
 import {
   paneDestinationKey,
-  resizePaneProportionally,
+  resizePaneWithEqualSiblings,
   useWorkspacePanesStore,
   type WorkspacePane,
   type WorkspacePaneDestination,
@@ -442,8 +442,8 @@ function WorkspaceGridPanel({
 /**
  * The in-document pane grid: every pane (workspace, kanban, pull requests,
  * notifications) is a store-owned equal — there is no route-bound primary.
- * Structural changes get their layout from the store (VS Code split
- * semantics); onLayoutChange persists user drags.
+ * Structural changes get their equal layout from the store;
+ * onLayoutChange persists user drags.
  */
 // ponytail: single-row split only; add row wrapping if >4 panes sees real use.
 export function WorkspacePaneGrid() {
@@ -492,16 +492,16 @@ export function WorkspacePaneGrid() {
       if (structuralPendingRef.current || applyingLayoutRef.current) return;
       const resize = resizeRef.current;
       if (resize && groupHandle) {
-        const proportionalLayout = resizePaneProportionally(
+        const equalSiblingLayout = resizePaneWithEqualSiblings(
           resize.layout,
           resize.paneId,
           layout[resize.paneId],
           10
         );
         applyingLayoutRef.current = true;
-        groupHandle.setLayout(proportionalLayout);
+        groupHandle.setLayout(equalSiblingLayout);
         applyingLayoutRef.current = false;
-        setLayout(proportionalLayout);
+        setLayout(equalSiblingLayout);
         return;
       }
       setLayout(layout);

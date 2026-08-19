@@ -19,7 +19,7 @@ const {
   layoutAfterClose,
   layoutAfterSplit,
   paneDestinationKey,
-  resizePaneProportionally,
+  resizePaneWithEqualSiblings,
   sameDestination,
   useWorkspacePanesStore,
 } = await import('./useWorkspacePanesStore');
@@ -69,7 +69,7 @@ describe('ensurePane / appendPane / focusPaneAt', () => {
       'pane-3',
     ]);
     expect(store.getState().activePaneId).toBe('pane-3');
-    // Every existing pane makes equal room, preserving their prior ratio.
+    // Every pane has the same width after a structural change.
     expect(store.getState().layout['pane-1']).toBeCloseTo(100 / 3);
     expect(store.getState().layout['pane-3']).toBeCloseTo(100 / 3);
     expect(store.getState().layout['pane-2']).toBeCloseTo(100 / 3);
@@ -216,7 +216,7 @@ describe('closePane', () => {
     ]);
   });
 
-  it('preserves remaining pane ratios and refocuses the left neighbour', () => {
+  it('equalizes remaining panes and refocuses the left neighbour', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));
     store.getState().openPaneForDestination(ws('ws-c'));
@@ -277,38 +277,26 @@ describe('layout math', () => {
   const panes = (...ids: string[]) =>
     ids.map((id) => ({ id, destination: null }));
 
-  it('layoutAfterSplit preserves existing ratios and gives the new pane an equal share', () => {
-    const layout = layoutAfterSplit(
-      panes('a', 'b', 'new'),
-      { a: 60, b: 40 },
-      'new'
-    );
-    expect(layout.a).toBeCloseTo(40);
+  it('layoutAfterSplit makes every pane equal', () => {
+    const layout = layoutAfterSplit(panes('a', 'b', 'new'));
+    expect(layout.a).toBeCloseTo(100 / 3);
     expect(layout.new).toBeCloseTo(100 / 3);
-    expect(layout.b).toBeCloseTo(80 / 3);
+    expect(layout.b).toBeCloseTo(100 / 3);
   });
 
-  it('layoutAfterClose preserves remaining ratios', () => {
-    const layout = layoutAfterClose(
-      panes('a', 'b', 'c'),
-      {
-        a: 20,
-        b: 30,
-        c: 50,
-      },
-      'c'
-    );
-    expect(layout.a).toBeCloseTo(40);
-    expect(layout.b).toBeCloseTo(60);
+  it('layoutAfterClose makes every remaining pane equal', () => {
+    const layout = layoutAfterClose(panes('a', 'b', 'c'), 'c');
+    expect(layout.a).toBeCloseTo(50);
+    expect(layout.b).toBeCloseTo(50);
   });
 
-  it('resizes all other panes proportionally within their minimum size', () => {
+  it('resizes all other panes equally within their minimum size', () => {
     expect(
-      resizePaneProportionally({ a: 20, b: 30, c: 50 }, 'b', 50, 10)
-    ).toEqual({ a: 100 / 7, b: 50, c: 250 / 7 });
+      resizePaneWithEqualSiblings({ a: 20, b: 30, c: 50 }, 'b', 50, 10)
+    ).toEqual({ a: 25, b: 50, c: 25 });
     expect(
-      resizePaneProportionally({ a: 20, b: 30, c: 50 }, 'b', 80, 10)
-    ).toEqual({ a: 10, b: 65, c: 25 });
+      resizePaneWithEqualSiblings({ a: 20, b: 30, c: 50 }, 'b', 80, 10)
+    ).toEqual({ a: 10, b: 80, c: 10 });
   });
 });
 
