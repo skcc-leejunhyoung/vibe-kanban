@@ -501,7 +501,7 @@ export function WorkspacePaneGrid() {
         applyingLayoutRef.current = true;
         groupHandle.setLayout(equalSiblingLayout);
         applyingLayoutRef.current = false;
-        setLayout(equalSiblingLayout);
+        setLayout(equalSiblingLayout, resize.paneId);
         return;
       }
       setLayout(layout);

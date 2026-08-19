@@ -147,6 +147,8 @@ interface WorkspacePanesState {
   activePaneId: string | null;
   /** Split sizes (percent) keyed by pane id. Source of truth for the grid. */
   layout: Record<string, number>;
+  /** Last pane explicitly resized by the user; every sibling stays equal. */
+  resizedPaneId: string | null;
   /**
    * Bumped by keyboard pane cycling only; the grid moves DOM focus into the
    * active pane when this changes. Pointer activation must not move focus.
@@ -183,7 +185,7 @@ interface WorkspacePanesState {
   /** Keyboard pane cycling: activates the adjacent pane and requests focus. */
   cycleActivePane: (direction: 'next' | 'previous') => void;
   /** Persist sizes reported by the resizable group (user drags). */
-  setLayout: (layout: Record<string, number>) => void;
+  setLayout: (layout: Record<string, number>, resizedPaneId?: string) => void;
 }
 
 export function getAdjacentWorkspacePaneId(
@@ -226,20 +228,8 @@ export function useActivePaneWorkspace(): {
 
 // ---------------------------------------------------------------------------
 // Layout math. Sizes are percentages summing ~100. A resized pane gets the
-// requested width; every pane not explicitly resized in that gesture is equal.
+// requested width; every other pane is equal.
 // ---------------------------------------------------------------------------
-
-function normalizedLayout(
-  panes: WorkspacePane[],
-  layout: Record<string, number>
-): Record<string, number> {
-  const fallback = 100 / Math.max(panes.length, 1);
-  const sizes = panes.map((pane) => layout[pane.id] ?? fallback);
-  const total = sizes.reduce((sum, size) => sum + size, 0) || 1;
-  return Object.fromEntries(
-    panes.map((pane, index) => [pane.id, (sizes[index] / total) * 100])
-  );
-}
 
 export function resizePaneWithEqualSiblings(
   layout: Record<string, number>,
@@ -260,21 +250,22 @@ export function resizePaneWithEqualSiblings(
   );
 }
 
-/** Structural changes reset every visible pane to the same width. */
-export function layoutAfterSplit(
-  panes: WorkspacePane[]
+/** Keep the explicitly resized pane and divide the rest equally. */
+export function layoutForPanes(
+  panes: WorkspacePane[],
+  layout: Record<string, number>,
+  resizedPaneId: string | null,
+  minSize = 10
 ): Record<string, number> {
   const size = 100 / Math.max(panes.length, 1);
-  return Object.fromEntries(panes.map((pane) => [pane.id, size]));
-}
-
-/** Remaining panes expand to equal widths. */
-export function layoutAfterClose(
-  panes: WorkspacePane[],
-  closedPaneId: string
-): Record<string, number> {
-  const remaining = panes.filter((pane) => pane.id !== closedPaneId);
-  return normalizedLayout(remaining, {});
+  const equalLayout = Object.fromEntries(panes.map((pane) => [pane.id, size]));
+  if (!resizedPaneId || !(resizedPaneId in equalLayout)) return equalLayout;
+  return resizePaneWithEqualSiblings(
+    equalLayout,
+    resizedPaneId,
+    layout[resizedPaneId] ?? size,
+    minSize
+  );
 }
 
 interface PersistedPaneV1 {
@@ -293,6 +284,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
       paneOrderVersion: 0,
       activePaneId: null,
       layout: {},
+      resizedPaneId: null,
       focusSerial: 0,
       syncUser: (userId) =>
         set((state) => {
@@ -302,6 +294,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             panes: [],
             activePaneId: null,
             layout: {},
+            resizedPaneId: null,
           };
         }),
       setMaxPanes: (maxPanes) =>
@@ -311,7 +304,10 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
           return {
             maxPanes: clamped,
             panes,
-            layout: layoutAfterSplit(panes),
+            layout: layoutForPanes(panes, state.layout, state.resizedPaneId),
+            resizedPaneId: panes.some((pane) => pane.id === state.resizedPaneId)
+              ? state.resizedPaneId
+              : null,
             activePaneId: panes.some((pane) => pane.id === state.activePaneId)
               ? state.activePaneId
               : (panes[0]?.id ?? null),
@@ -332,6 +328,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             nextPaneId: state.nextPaneId + 1,
             activePaneId: id,
             layout: { [id]: 100 },
+            resizedPaneId: null,
           };
         }),
       appendPane: () =>
@@ -344,6 +341,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
               nextPaneId: state.nextPaneId + 1,
               activePaneId: id,
               layout: { [id]: 100 },
+              resizedPaneId: null,
               focusSerial: state.focusSerial + 1,
             };
           }
@@ -353,7 +351,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             panes,
             nextPaneId: state.nextPaneId + 1,
             activePaneId: id,
-            layout: layoutAfterSplit(panes),
+            layout: layoutForPanes(panes, state.layout, state.resizedPaneId),
             focusSerial: state.focusSerial + 1,
           };
         }),
@@ -404,7 +402,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
               panes,
               nextPaneId: state.nextPaneId + 1,
               activePaneId: id,
-              layout: layoutAfterSplit(panes),
+              layout: layoutForPanes(panes, state.layout, state.resizedPaneId),
             };
           }
 
@@ -480,16 +478,19 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
               ),
             };
           }
-          const layout = layoutAfterClose(state.panes, paneId);
           const closedIndex = state.panes.findIndex(
             (pane) => pane.id === paneId
           );
           const panes = state.panes.filter((pane) => pane.id !== paneId);
+          const resizedPaneId =
+            state.resizedPaneId === paneId ? null : state.resizedPaneId;
+          const layout = layoutForPanes(panes, state.layout, resizedPaneId);
           const fallbackActive =
             panes[Math.max(closedIndex - 1, 0)]?.id ?? panes[0].id;
           return {
             panes,
             layout,
+            resizedPaneId,
             activePaneId:
               state.activePaneId === paneId
                 ? fallbackActive
@@ -523,8 +524,11 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             focusSerial: state.focusSerial + 1,
           };
         }),
-      setLayout: (layout) =>
-        set((state) => ({ layout: { ...state.layout, ...layout } })),
+      setLayout: (layout, resizedPaneId) =>
+        set((state) => ({
+          layout: { ...state.layout, ...layout },
+          resizedPaneId: resizedPaneId ?? state.resizedPaneId,
+        })),
     }),
     {
       name: 'vk-workspace-panes-v1',
@@ -577,6 +581,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         panes,
         activePaneId,
         layout,
+        resizedPaneId,
       }) => ({
         activeUserId,
         maxPanes,
@@ -584,6 +589,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         panes,
         activePaneId,
         layout,
+        resizedPaneId,
       }),
     }
   )

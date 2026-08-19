@@ -16,8 +16,7 @@ vi.stubGlobal('localStorage', {
 const {
   getAdjacentWorkspacePaneId,
   getActivePaneWorkspace,
-  layoutAfterClose,
-  layoutAfterSplit,
+  layoutForPanes,
   paneDestinationKey,
   resizePaneWithEqualSiblings,
   sameDestination,
@@ -39,6 +38,7 @@ function reset() {
     panes: [],
     activePaneId: null,
     layout: {},
+    resizedPaneId: null,
     focusSerial: 0,
     paneOrderVersion: 0,
   });
@@ -80,6 +80,22 @@ describe('ensurePane / appendPane / focusPaneAt', () => {
     store.getState().ensurePane();
     for (let i = 0; i < 5; i += 1) store.getState().appendPane();
     expect(store.getState().panes).toHaveLength(4); // maxPanes
+  });
+
+  it('keeps the explicitly resized pane and equalizes new siblings', () => {
+    store.getState().ensurePane();
+    store.getState().appendPane();
+    store.getState().appendPane();
+    store
+      .getState()
+      .setLayout({ 'pane-1': 50, 'pane-2': 25, 'pane-3': 25 }, 'pane-1');
+
+    store.getState().appendPane();
+
+    expect(store.getState().layout['pane-1']).toBeCloseTo(50);
+    expect(store.getState().layout['pane-2']).toBeCloseTo(50 / 3);
+    expect(store.getState().layout['pane-3']).toBeCloseTo(50 / 3);
+    expect(store.getState().layout['pane-4']).toBeCloseTo(50 / 3);
   });
 
   it('focusPaneAt focuses existing panes only and requests DOM focus', () => {
@@ -230,6 +246,20 @@ describe('closePane', () => {
     expect(store.getState().layout['pane-2']).toBeCloseTo(50);
     expect(store.getState().activePaneId).toBe('pane-2');
   });
+
+  it('equalizes every pane after the explicitly resized pane closes', () => {
+    store.getState().appendPane();
+    store.getState().appendPane();
+    store
+      .getState()
+      .setLayout({ 'pane-1': 50, 'pane-2': 25, 'pane-3': 25 }, 'pane-1');
+
+    store.getState().closePane('pane-1');
+
+    expect(store.getState().layout['pane-2']).toBeCloseTo(50);
+    expect(store.getState().layout['pane-3']).toBeCloseTo(50);
+    expect(store.getState().resizedPaneId).toBeNull();
+  });
 });
 
 describe('movePane', () => {
@@ -277,17 +307,22 @@ describe('layout math', () => {
   const panes = (...ids: string[]) =>
     ids.map((id) => ({ id, destination: null }));
 
-  it('layoutAfterSplit makes every pane equal', () => {
-    const layout = layoutAfterSplit(panes('a', 'b', 'new'));
+  it('makes panes equal when none was explicitly resized', () => {
+    const layout = layoutForPanes(panes('a', 'b', 'new'), {}, null);
     expect(layout.a).toBeCloseTo(100 / 3);
     expect(layout.new).toBeCloseTo(100 / 3);
     expect(layout.b).toBeCloseTo(100 / 3);
   });
 
-  it('layoutAfterClose makes every remaining pane equal', () => {
-    const layout = layoutAfterClose(panes('a', 'b', 'c'), 'c');
+  it('preserves the explicitly resized pane across structural changes', () => {
+    const layout = layoutForPanes(
+      panes('a', 'b', 'new'),
+      { a: 50, b: 25 },
+      'a'
+    );
     expect(layout.a).toBeCloseTo(50);
-    expect(layout.b).toBeCloseTo(50);
+    expect(layout.b).toBeCloseTo(25);
+    expect(layout.new).toBeCloseTo(25);
   });
 
   it('resizes all other panes equally within their minimum size', () => {
