@@ -29,8 +29,13 @@ import { useResolvedPage } from './commandBar/useResolvedPage';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { effectiveActionShortcut } from '@/shared/keyboard/registry';
-import { KanbanIcon, StackIcon } from '@phosphor-icons/react';
+import {
+  ArrowSquareOutIcon,
+  KanbanIcon,
+  StackIcon,
+} from '@phosphor-icons/react';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { splitPresetActions } from '@/shared/actions/splitPresetActions';
 import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { resolveCommandBarIssueIds } from './commandBar/resolveCommandBarIssueIds';
@@ -262,6 +267,30 @@ function CommandBarContent({
     };
   }, [currentPage, maxSplitPanes, pageWithNavigationMatches, state.search]);
 
+  const pageWithUrl = useMemo(() => {
+    const url = state.search.trim();
+    if (currentPage !== 'root' || !/^https?:\/\//i.test(url)) {
+      return pageWithSplitPresets;
+    }
+
+    const action: ActionDefinition = {
+      id: 'goto-url',
+      label: `Goto: ${url}`,
+      icon: ArrowSquareOutIcon,
+      requiresTarget: ActionTargetType.NONE,
+      execute: () => {
+        openExternalUrl(url);
+      },
+    };
+    return {
+      ...pageWithSplitPresets,
+      groups: [
+        ...pageWithSplitPresets.groups,
+        { label: 'Open URL', items: [{ type: 'action' as const, action }] },
+      ],
+    };
+  }, [currentPage, pageWithSplitPresets, state.search]);
+
   // Handle item selection with side effects
   const handleSelect = useCallback(
     async (item: CommandBarGroupItem<ActionDefinition, PageId>) => {
@@ -367,7 +396,7 @@ function CommandBarContent({
       onCloseAutoFocus={handleCloseAutoFocus}
     >
       <CommandBar
-        page={pageWithSplitPresets}
+        page={pageWithUrl}
         canGoBack={canGoBack}
         onGoBack={() => dispatch({ type: 'GO_BACK' })}
         onSelect={handleSelect}

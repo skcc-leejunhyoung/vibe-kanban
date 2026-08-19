@@ -18,6 +18,7 @@ describe("isRemoteExecutableAction", () => {
     action("search-workspace-list", ActionTargetType.NONE),
     action("search-project-issues", ActionTargetType.NONE),
     action("toggle-workspace-archive-view", ActionTargetType.NONE),
+    action("goto-url", ActionTargetType.NONE),
     action("goto-pull-requests", ActionTargetType.NONE),
     action("filter-pull-requests", ActionTargetType.NONE),
     action("select-pull-requests-repository", ActionTargetType.NONE),

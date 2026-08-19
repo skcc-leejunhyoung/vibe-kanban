@@ -8,6 +8,7 @@ import {
 const REMOTE_GLOBAL_ACTION_IDS = new Set([
   "goto-workspaces",
   "goto-projects",
+  "goto-url",
   "goto-pull-requests",
   "filter-pull-requests",
   "select-pull-requests-repository",
