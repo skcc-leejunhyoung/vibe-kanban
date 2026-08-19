@@ -31,6 +31,9 @@ export function isRemoteExecutableAction(
   return (
     action.requiresTarget === ActionTargetType.NONE &&
     (REMOTE_GLOBAL_ACTION_IDS.has(action.id) ||
+      action.id === "add-bookmark" ||
+      action.id === "remove-bookmark" ||
+      action.id.startsWith("open-bookmark-") ||
       action.id.startsWith("goto-project-") ||
       action.id.startsWith("goto-workspace-"))
   );

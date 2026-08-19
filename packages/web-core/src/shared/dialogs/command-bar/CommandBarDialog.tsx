@@ -33,6 +33,8 @@ import {
   ArrowSquareOutIcon,
   KanbanIcon,
   StackIcon,
+  StarIcon,
+  TrashIcon,
 } from '@phosphor-icons/react';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
@@ -40,6 +42,10 @@ import { splitPresetActions } from '@/shared/actions/splitPresetActions';
 import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { resolveCommandBarIssueIds } from './commandBar/resolveCommandBarIssueIds';
 import { resolveWorkspaceNavigationTargets } from './commandBar/workspaceNavigationTargets';
+import {
+  normalizeBookmarkUrl,
+  useUrlBookmarksStore,
+} from '@/shared/stores/useUrlBookmarksStore';
 
 export interface CommandBarDialogProps {
   page?: PageId;
@@ -77,6 +83,7 @@ function CommandBarContent({
   // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const maxSplitPanes = useWorkspacePanesStore((state) => state.maxPanes);
+  const bookmarks = useUrlBookmarksStore((state) => state.bookmarks);
 
   // The command bar acts on the active split pane when one is focused: its
   // workspace becomes the implicit target and its destination supplies the
@@ -267,13 +274,49 @@ function CommandBarContent({
     };
   }, [currentPage, maxSplitPanes, pageWithNavigationMatches, state.search]);
 
-  const pageWithUrl = useMemo(() => {
-    const url = state.search.trim();
-    if (currentPage !== 'root' || !/^https?:\/\//i.test(url)) {
+  const pageWithBookmarksAndUrl = useMemo(() => {
+    const url = normalizeBookmarkUrl(state.search);
+    if (currentPage !== 'root') {
       return pageWithSplitPresets;
     }
 
-    const action: ActionDefinition = {
+    const bookmarkItems = bookmarks.map((bookmark, index) => ({
+      type: 'action' as const,
+      action: {
+        id: `open-bookmark-${index}`,
+        label: bookmark,
+        icon: StarIcon,
+        requiresTarget: ActionTargetType.NONE,
+        execute: () => {
+          openExternalUrl(bookmark);
+        },
+      } satisfies ActionDefinition,
+    }));
+    const groups =
+      bookmarkItems.length > 0
+        ? [
+            ...pageWithSplitPresets.groups,
+            { label: 'Bookmarks', items: bookmarkItems },
+          ]
+        : pageWithSplitPresets.groups;
+
+    if (!url) {
+      return { ...pageWithSplitPresets, groups };
+    }
+
+    const isBookmarked = bookmarks.includes(url);
+    const bookmarkAction: ActionDefinition = {
+      id: isBookmarked ? 'remove-bookmark' : 'add-bookmark',
+      label: `${isBookmarked ? 'Remove' : 'Add'} bookmark: ${url}`,
+      icon: isBookmarked ? TrashIcon : StarIcon,
+      requiresTarget: ActionTargetType.NONE,
+      execute: () => {
+        const store = useUrlBookmarksStore.getState();
+        if (isBookmarked) store.removeBookmark(url);
+        else store.addBookmark(url);
+      },
+    };
+    const gotoAction: ActionDefinition = {
       id: 'goto-url',
       label: `Goto: ${url}`,
       icon: ArrowSquareOutIcon,
@@ -285,11 +328,18 @@ function CommandBarContent({
     return {
       ...pageWithSplitPresets,
       groups: [
-        ...pageWithSplitPresets.groups,
-        { label: 'Open URL', items: [{ type: 'action' as const, action }] },
+        ...groups,
+        {
+          label: 'Bookmark',
+          items: [{ type: 'action' as const, action: bookmarkAction }],
+        },
+        {
+          label: 'Open URL',
+          items: [{ type: 'action' as const, action: gotoAction }],
+        },
       ],
     };
-  }, [currentPage, pageWithSplitPresets, state.search]);
+  }, [bookmarks, currentPage, pageWithSplitPresets, state.search]);
 
   // Handle item selection with side effects
   const handleSelect = useCallback(
@@ -396,7 +446,7 @@ function CommandBarContent({
       onCloseAutoFocus={handleCloseAutoFocus}
     >
       <CommandBar
-        page={pageWithUrl}
+        page={pageWithBookmarksAndUrl}
         canGoBack={canGoBack}
         onGoBack={() => dispatch({ type: 'GO_BACK' })}
         onSelect={handleSelect}
