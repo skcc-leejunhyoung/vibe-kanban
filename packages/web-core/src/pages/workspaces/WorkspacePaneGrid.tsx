@@ -39,6 +39,7 @@ import { useWorkspaceIssueGrouping } from '@/shared/hooks/useWorkspaceIssueGroup
 import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 /**
  * Pane-scoped keyboard registrations: they read the pane's context (workspace,
@@ -176,7 +177,8 @@ function PaneHeaderShell({
 }
 
 /** Header title for workspace panes — reads the pane-scoped context. */
-function WorkspacePaneTitle({ hostId }: { hostId: string | null }) {
+function WorkspacePaneTitle() {
+  const hostId = useHostId();
   const { workspace, activeWorkspaces, archivedWorkspaces } =
     useWorkspaceContext();
   const issueMeta = useWorkspaceIssueGrouping();
@@ -299,7 +301,7 @@ function paneTitle(
 ): ReactNode {
   switch (destination.kind) {
     case 'workspace':
-      return <WorkspacePaneTitle hostId={destination.hostId ?? null} />;
+      return <WorkspacePaneTitle />;
     case 'project':
     case 'project-workspace-create':
       return t('workspacePanes.projectPane', { defaultValue: 'Project' });
