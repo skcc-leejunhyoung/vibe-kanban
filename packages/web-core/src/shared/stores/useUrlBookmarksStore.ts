@@ -7,10 +7,16 @@ export type UrlBookmark = {
 };
 
 type State = {
-  bookmarks: UrlBookmark[];
-  addBookmark: (url: string, name: string) => void;
-  removeBookmark: (url: string) => void;
+  bookmarksByUser: Record<string, UrlBookmark[]>;
+  addBookmark: (userId: string | null, url: string, name: string) => void;
+  removeBookmark: (userId: string | null, url: string) => void;
 };
+
+const LOCAL_USER_KEY = 'local';
+
+export function bookmarkUserKey(userId: string | null): string {
+  return userId ?? LOCAL_USER_KEY;
+}
 
 export function normalizeBookmarkUrl(value: string): string | null {
   try {
@@ -39,31 +45,49 @@ export function migrateBookmarks(value: unknown): UrlBookmark[] {
 export const useUrlBookmarksStore = create<State>()(
   persist(
     (set) => ({
-      bookmarks: [],
-      addBookmark: (url, name) =>
+      bookmarksByUser: {},
+      addBookmark: (userId, url, name) =>
         set((state) => {
           const normalizedUrl = normalizeBookmarkUrl(url);
+          const key = bookmarkUserKey(userId);
+          const bookmarks = state.bookmarksByUser[key] ?? [];
           return !normalizedUrl ||
-            state.bookmarks.some((bookmark) => bookmark.url === normalizedUrl)
+            bookmarks.some((bookmark) => bookmark.url === normalizedUrl)
             ? state
             : {
-                bookmarks: [
-                  ...state.bookmarks,
-                  { name: name.trim() || normalizedUrl, url: normalizedUrl },
-                ],
+                bookmarksByUser: {
+                  ...state.bookmarksByUser,
+                  [key]: [
+                    ...bookmarks,
+                    { name: name.trim() || normalizedUrl, url: normalizedUrl },
+                  ],
+                },
               };
         }),
-      removeBookmark: (url) =>
-        set((state) => ({
-          bookmarks: state.bookmarks.filter((bookmark) => bookmark.url !== url),
-        })),
+      removeBookmark: (userId, url) =>
+        set((state) => {
+          const key = bookmarkUserKey(userId);
+          return {
+            bookmarksByUser: {
+              ...state.bookmarksByUser,
+              [key]: (state.bookmarksByUser[key] ?? []).filter(
+                (bookmark) => bookmark.url !== url
+              ),
+            },
+          };
+        }),
     }),
     {
       name: 'url-bookmarks',
-      version: 1,
+      version: 2,
       migrate: (persisted) => {
-        const state = persisted as Partial<State>;
-        return { ...state, bookmarks: migrateBookmarks(state.bookmarks) };
+        const state = persisted as Partial<State> & { bookmarks?: unknown };
+        return {
+          ...state,
+          bookmarksByUser: state.bookmarksByUser ?? {
+            [LOCAL_USER_KEY]: migrateBookmarks(state.bookmarks),
+          },
+        };
       },
     }
   )

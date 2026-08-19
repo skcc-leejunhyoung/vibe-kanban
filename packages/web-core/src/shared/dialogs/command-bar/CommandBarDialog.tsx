@@ -43,6 +43,7 @@ import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { resolveCommandBarIssueIds } from './commandBar/resolveCommandBarIssueIds';
 import { resolveWorkspaceNavigationTargets } from './commandBar/workspaceNavigationTargets';
 import {
+  bookmarkUserKey,
   normalizeBookmarkUrl,
   useUrlBookmarksStore,
 } from '@/shared/stores/useUrlBookmarksStore';
@@ -83,7 +84,10 @@ function CommandBarContent({
   // Subscribe to keyboard overrides so command bar shortcut hints reflect rebinds.
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const maxSplitPanes = useWorkspacePanesStore((state) => state.maxPanes);
-  const bookmarks = useUrlBookmarksStore((state) => state.bookmarks);
+  const bookmarkUserId = executorContext.userId;
+  const bookmarks = useUrlBookmarksStore(
+    (state) => state.bookmarksByUser[bookmarkUserKey(bookmarkUserId)] ?? []
+  );
 
   // The command bar acts on the active split pane when one is focused: its
   // workspace becomes the implicit target and its destination supplies the
@@ -314,10 +318,10 @@ function CommandBarContent({
       executeAfterClose: !isBookmarked,
       execute: () => {
         const store = useUrlBookmarksStore.getState();
-        if (isBookmarked) store.removeBookmark(url);
+        if (isBookmarked) store.removeBookmark(bookmarkUserId, url);
         else {
           const name = window.prompt('Bookmark name', new URL(url).hostname);
-          if (name !== null) store.addBookmark(url, name);
+          if (name !== null) store.addBookmark(bookmarkUserId, url, name);
         }
       },
     };
@@ -344,7 +348,13 @@ function CommandBarContent({
         },
       ],
     };
-  }, [bookmarks, currentPage, pageWithSplitPresets, state.search]);
+  }, [
+    bookmarkUserId,
+    bookmarks,
+    currentPage,
+    pageWithSplitPresets,
+    state.search,
+  ]);
 
   // Handle item selection with side effects
   const handleSelect = useCallback(
