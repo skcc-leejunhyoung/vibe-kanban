@@ -79,7 +79,7 @@ function PaneChrome({
     if (focusSerial > 0 && active) {
       const target =
         containerRef.current?.querySelector<HTMLElement>(
-          '[data-workspace-selector]'
+          '[data-chatbox-container="true"] [contenteditable="true"], [data-workspace-selector]'
         ) ?? containerRef.current;
       target?.focus({ preventScroll: true });
     }
