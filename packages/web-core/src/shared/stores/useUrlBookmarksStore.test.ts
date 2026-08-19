@@ -6,9 +6,8 @@ vi.stubGlobal('localStorage', {
   removeItem: () => undefined,
 });
 
-const { normalizeBookmarkUrl, useUrlBookmarksStore } = await import(
-  './useUrlBookmarksStore'
-);
+const { migrateBookmarks, normalizeBookmarkUrl, useUrlBookmarksStore } =
+  await import('./useUrlBookmarksStore');
 
 beforeEach(() => useUrlBookmarksStore.setState({ bookmarks: [] }));
 
@@ -21,14 +20,20 @@ describe('URL bookmarks', () => {
     expect(normalizeBookmarkUrl('example.com')).toBeNull();
   });
 
+  it('migrates URL-only bookmarks without losing them', () => {
+    expect(
+      migrateBookmarks(['https://example.com', 'javascript:alert(1)'])
+    ).toEqual([{ name: 'https://example.com/', url: 'https://example.com/' }]);
+  });
+
   it('adds each URL once and removes it', () => {
     const { addBookmark, removeBookmark } = useUrlBookmarksStore.getState();
 
-    addBookmark('https://example.com');
-    addBookmark('https://example.com/');
-    addBookmark('javascript:alert(1)');
+    addBookmark('https://example.com', 'Example');
+    addBookmark('https://example.com/', 'Duplicate');
+    addBookmark('javascript:alert(1)', 'Unsafe');
     expect(useUrlBookmarksStore.getState().bookmarks).toEqual([
-      'https://example.com/',
+      { name: 'Example', url: 'https://example.com/' },
     ]);
 
     removeBookmark('https://example.com/');

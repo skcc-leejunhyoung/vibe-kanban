@@ -284,11 +284,12 @@ function CommandBarContent({
       type: 'action' as const,
       action: {
         id: `open-bookmark-${index}`,
-        label: bookmark,
+        label: bookmark.name,
+        description: bookmark.url,
         icon: StarIcon,
         requiresTarget: ActionTargetType.NONE,
         execute: () => {
-          openExternalUrl(bookmark);
+          openExternalUrl(bookmark.url);
         },
       } satisfies ActionDefinition,
     }));
@@ -304,16 +305,20 @@ function CommandBarContent({
       return { ...pageWithSplitPresets, groups };
     }
 
-    const isBookmarked = bookmarks.includes(url);
+    const isBookmarked = bookmarks.some((bookmark) => bookmark.url === url);
     const bookmarkAction: ActionDefinition = {
       id: isBookmarked ? 'remove-bookmark' : 'add-bookmark',
       label: `${isBookmarked ? 'Remove' : 'Add'} bookmark: ${url}`,
       icon: isBookmarked ? TrashIcon : StarIcon,
       requiresTarget: ActionTargetType.NONE,
+      executeAfterClose: !isBookmarked,
       execute: () => {
         const store = useUrlBookmarksStore.getState();
         if (isBookmarked) store.removeBookmark(url);
-        else store.addBookmark(url);
+        else {
+          const name = window.prompt('Bookmark name', new URL(url).hostname);
+          if (name !== null) store.addBookmark(url, name);
+        }
       },
     };
     const gotoAction: ActionDefinition = {
