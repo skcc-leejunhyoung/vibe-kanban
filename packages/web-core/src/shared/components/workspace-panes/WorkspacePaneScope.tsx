@@ -18,6 +18,7 @@ import { ActionsProvider } from '@/shared/providers/ActionsProvider';
 import { useMarkNotificationsReadOnView } from '@/shared/hooks/useMarkNotificationsReadOnView';
 
 interface WorkspacePaneScopeProps {
+  paneId: string;
   destination: WorkspacePaneDestination;
   /** Rebinds pane-renderable navigation issued inside the pane to pane state. */
   onNavigate: (destination: WorkspacePaneDestination) => void;
@@ -44,6 +45,7 @@ function MarkNotificationsReadOnView() {
  * several views can coexist in one document.
  */
 export function WorkspacePaneScope({
+  paneId,
   destination,
   onNavigate,
   children,
@@ -66,7 +68,7 @@ export function WorkspacePaneScope({
           <WorkspaceProvider inheritStreams>
             <ExecutionProcessesFromContext>
               <LogsPanelProvider>
-                <ActionsProvider>{children}</ActionsProvider>
+                <ActionsProvider paneId={paneId}>{children}</ActionsProvider>
               </LogsPanelProvider>
             </ExecutionProcessesFromContext>
           </WorkspaceProvider>

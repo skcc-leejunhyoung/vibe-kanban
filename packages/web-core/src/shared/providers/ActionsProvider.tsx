@@ -1,6 +1,7 @@
 import {
   useContext,
   useCallback,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -35,13 +36,18 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useChromeTargetWorkspace } from '@/shared/lib/openInSplitPane';
+import {
+  getActivePaneActionExecutor,
+  registerPaneActionExecutor,
+} from '@/shared/lib/paneActionRegistry';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 
 interface ActionsProviderProps {
   children: ReactNode;
+  paneId?: string;
 }
 
-export function ActionsProvider({ children }: ActionsProviderProps) {
+export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
   const appRuntime = useAppRuntime();
   const { userId } = useAuth();
   const appNavigation = useAppNavigation();
@@ -324,6 +330,18 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       issueIds?: string[],
       hostId?: string | null
     ): Promise<void> => {
+      if (!paneId) {
+        const paneExecuteAction = getActivePaneActionExecutor();
+        if (paneExecuteAction) {
+          return paneExecuteAction(
+            action,
+            workspaceId,
+            repoIdOrProjectId,
+            issueIds,
+            hostId
+          );
+        }
+      }
       try {
         switch (action.requiresTarget) {
           case ActionTargetType.NONE:
@@ -372,7 +390,7 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
         });
       }
     },
-    [executorContext]
+    [executorContext, paneId]
   );
 
   // Get resolved label helper (supports dynamic labels via visibility context)
@@ -419,6 +437,11 @@ export function ActionsProvider({ children }: ActionsProviderProps) {
       executorContext,
     ]
   );
+
+  useEffect(() => {
+    if (!paneId) return;
+    return registerPaneActionExecutor(paneId, executeAction);
+  }, [executeAction, paneId]);
 
   return (
     <ActionsContext.Provider value={value}>{children}</ActionsContext.Provider>

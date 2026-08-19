@@ -383,6 +383,7 @@ function WorkspacePaneView({
       {pane.destination ? (
         <WorkspacePaneScope
           key={paneDestinationKey(pane.destination)}
+          paneId={pane.id}
           destination={pane.destination}
           onNavigate={handleNavigate}
         >
