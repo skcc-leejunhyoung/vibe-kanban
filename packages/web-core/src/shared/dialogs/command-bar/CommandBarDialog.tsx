@@ -306,26 +306,49 @@ function CommandBarContent({
           ]
         : pageWithSplitPresets.groups;
 
+    const bookmarkManagementItems = [
+      {
+        type: 'action' as const,
+        action: {
+          id: 'add-bookmark',
+          label: 'Add bookmark',
+          icon: StarIcon,
+          requiresTarget: ActionTargetType.NONE,
+          executeAfterClose: true,
+          execute: async () => {
+            const { AddUrlBookmarkDialog } = await import(
+              './UrlBookmarkDialogs'
+            );
+            await AddUrlBookmarkDialog.show({ userId: bookmarkUserId });
+          },
+        } satisfies ActionDefinition,
+      },
+      {
+        type: 'action' as const,
+        action: {
+          id: 'remove-bookmark',
+          label: 'Remove bookmark',
+          icon: TrashIcon,
+          requiresTarget: ActionTargetType.NONE,
+          executeAfterClose: true,
+          execute: async () => {
+            const { RemoveUrlBookmarkDialog } = await import(
+              './UrlBookmarkDialogs'
+            );
+            await RemoveUrlBookmarkDialog.show({ userId: bookmarkUserId });
+          },
+        } satisfies ActionDefinition,
+      },
+    ];
+    const groupsWithBookmarkManagement = [
+      ...groups,
+      { label: 'Bookmark management', items: bookmarkManagementItems },
+    ];
+
     if (!url) {
-      return { ...pageWithSplitPresets, groups };
+      return { ...pageWithSplitPresets, groups: groupsWithBookmarkManagement };
     }
 
-    const isBookmarked = bookmarks.some((bookmark) => bookmark.url === url);
-    const bookmarkAction: ActionDefinition = {
-      id: isBookmarked ? 'remove-bookmark' : 'add-bookmark',
-      label: `${isBookmarked ? 'Remove' : 'Add'} bookmark: ${inputUrl}`,
-      icon: isBookmarked ? TrashIcon : StarIcon,
-      requiresTarget: ActionTargetType.NONE,
-      executeAfterClose: !isBookmarked,
-      execute: () => {
-        const store = useUrlBookmarksStore.getState();
-        if (isBookmarked) store.removeBookmark(bookmarkUserId, url);
-        else {
-          const name = window.prompt('Bookmark name', new URL(url).hostname);
-          if (name !== null) store.addBookmark(bookmarkUserId, url, name);
-        }
-      },
-    };
     const gotoAction: ActionDefinition = {
       id: 'goto-url',
       label: `Goto: ${inputUrl}`,
@@ -338,11 +361,7 @@ function CommandBarContent({
     return {
       ...pageWithSplitPresets,
       groups: [
-        ...groups,
-        {
-          label: 'Bookmark',
-          items: [{ type: 'action' as const, action: bookmarkAction }],
-        },
+        ...groupsWithBookmarkManagement,
         {
           label: 'Open URL',
           items: [{ type: 'action' as const, action: gotoAction }],
