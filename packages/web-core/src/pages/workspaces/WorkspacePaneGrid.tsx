@@ -61,11 +61,13 @@ const paneSeparatorClassName =
   'relative z-10 w-1 shrink-0 bg-border/60 transition-colors';
 
 function PaneChrome({
+  paneId,
   active,
   showActiveRing,
   onActivate,
   children,
 }: {
+  paneId: string;
   active: boolean;
   showActiveRing: boolean;
   onActivate: () => void;
@@ -73,6 +75,8 @@ function PaneChrome({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const focusSerial = useWorkspacePanesStore((s) => s.focusSerial);
+  const movePane = useWorkspacePanesStore((s) => s.movePane);
+  const [dropAfter, setDropAfter] = useState<boolean | null>(null);
 
   // Move DOM focus only for keyboard pane cycling (focusSerial bumps), never
   // for pointer activation — that would steal focus from the clicked control.
@@ -95,7 +99,37 @@ function PaneChrome({
       className="relative flex h-full min-h-0 flex-col overflow-hidden outline-none"
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const { left, width } = event.currentTarget.getBoundingClientRect();
+        setDropAfter(event.clientX > left + width / 2);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+          setDropAfter(null);
+        }
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const { left, width } = event.currentTarget.getBoundingClientRect();
+        movePane(
+          event.dataTransfer.getData('text/plain'),
+          paneId,
+          event.clientX > left + width / 2
+        );
+        setDropAfter(null);
+      }}
     >
+      {dropAfter !== null && (
+        <div
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-y-0 z-40 w-1 bg-brand',
+            dropAfter ? '-right-0.5' : '-left-0.5'
+          )}
+        />
+      )}
       <div
         aria-hidden
         className={cn(
@@ -118,8 +152,6 @@ function PaneHeaderShell({
   onClose: () => void;
 }) {
   const { t } = useTranslation('common');
-  const movePane = useWorkspacePanesStore((s) => s.movePane);
-  const [dropAfter, setDropAfter] = useState<boolean | null>(null);
   return (
     <div
       draggable
@@ -127,39 +159,8 @@ function PaneHeaderShell({
         event.dataTransfer.effectAllowed = 'move';
         event.dataTransfer.setData('text/plain', paneId);
       }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = 'move';
-        const { left, width } = event.currentTarget.getBoundingClientRect();
-        setDropAfter(event.clientX > left + width / 2);
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node)) {
-          setDropAfter(null);
-        }
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        const { left, width } = event.currentTarget.getBoundingClientRect();
-        movePane(
-          event.dataTransfer.getData('text/plain'),
-          paneId,
-          event.clientX > left + width / 2
-        );
-        setDropAfter(null);
-      }}
-      onDragEnd={() => setDropAfter(null)}
       className="relative flex h-7 shrink-0 cursor-grab items-center gap-2 border-b border-border bg-secondary px-2 active:cursor-grabbing"
     >
-      {dropAfter !== null && (
-        <div
-          aria-hidden
-          className={cn(
-            'pointer-events-none absolute inset-y-0 z-40 w-1 bg-brand',
-            dropAfter ? '-right-0.5' : '-left-0.5'
-          )}
-        />
-      )}
       <span className="min-w-0 flex-1 truncate text-xs text-normal">
         {title}
       </span>
@@ -391,6 +392,7 @@ function WorkspacePaneView({
 
   return (
     <PaneChrome
+      paneId={pane.id}
       active={active}
       showActiveRing={showActiveRing}
       onActivate={() => setActivePane(pane.id)}
