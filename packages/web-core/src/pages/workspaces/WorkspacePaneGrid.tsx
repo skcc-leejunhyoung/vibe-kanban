@@ -2,6 +2,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -45,6 +46,13 @@ import {
   isWorkspacePaneDrag,
   workspacePaneDragType,
 } from './workspacePaneDrag';
+import {
+  capturePaneScrollPositions,
+  restorePaneScrollPositions,
+  type PaneScrollPosition,
+} from './workspacePaneScroll';
+
+let pendingPaneScrollPositions: PaneScrollPosition[] = [];
 
 /**
  * Pane-scoped keyboard registrations: they read the pane's context (workspace,
@@ -118,12 +126,16 @@ function PaneChrome({
       onDrop={(event) => {
         if (!isWorkspacePaneDrag(event.dataTransfer.types)) return;
         event.preventDefault();
+        const movedPaneId = event.dataTransfer.getData(workspacePaneDragType);
+        if (movedPaneId === paneId) {
+          setDropAfter(null);
+          return;
+        }
         const { left, width } = event.currentTarget.getBoundingClientRect();
-        movePane(
-          event.dataTransfer.getData(workspacePaneDragType),
-          paneId,
-          event.clientX > left + width / 2
+        pendingPaneScrollPositions = capturePaneScrollPositions(
+          event.currentTarget.closest('[data-group]') ?? document
         );
+        movePane(movedPaneId, paneId, event.clientX > left + width / 2);
         setDropAfter(null);
       }}
     >
@@ -494,6 +506,12 @@ export function WorkspacePaneGrid() {
     lastSignatureRef.current = paneIdsSignature;
     structuralPendingRef.current = true;
   }
+
+  // Child Panel registration effects have settled; restore before paint.
+  useLayoutEffect(() => {
+    restorePaneScrollPositions(pendingPaneScrollPositions);
+    pendingPaneScrollPositions = [];
+  }, [panes]);
 
   useEffect(() => {
     if (!structuralPendingRef.current || !groupHandle) return;
