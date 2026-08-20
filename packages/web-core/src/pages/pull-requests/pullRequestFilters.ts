@@ -29,11 +29,26 @@ function filterValuesEqual(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
+function filtersEqual(
+  a: PullRequestFilterState,
+  b: PullRequestFilterState
+): boolean {
+  return (Object.keys(a) as Array<keyof PullRequestFilterState>).every((key) =>
+    filterValuesEqual(a[key], b[key])
+  );
+}
+
 export function resolvePullRequestFiltersAfterDefaultsChange(
   current: PullRequestFilterState,
   previousDefaults: PullRequestFilterState,
   nextDefaults: PullRequestFilterState
 ): PullRequestFilterState {
+  // A reset to the entirely empty state is not a user refinement. Restore the
+  // configured defaults even when they were already loaded.
+  if (filtersEqual(current, DEFAULT_PULL_REQUEST_FILTER_STATE)) {
+    return { ...nextDefaults };
+  }
+
   // Repository selection is driven by the page itself (deep links to a PR,
   // pruning removed repos), not by the default "refinement" filters. Ignore it
   // when deciding whether the user diverged from the defaults — otherwise a

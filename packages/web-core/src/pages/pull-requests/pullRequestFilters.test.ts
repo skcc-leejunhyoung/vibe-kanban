@@ -27,6 +27,23 @@ describe('resolvePullRequestFiltersAfterDefaultsChange', () => {
     ).toEqual(loadedDefaults);
   });
 
+  it('restores configured defaults after filters reset to empty', () => {
+    const configuredDefaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      repositories: ['repo-1'],
+      status: 'open' as const,
+      involvesMe: true,
+    };
+
+    expect(
+      resolvePullRequestFiltersAfterDefaultsChange(
+        { ...DEFAULT_PULL_REQUEST_FILTER_STATE },
+        configuredDefaults,
+        configuredDefaults
+      )
+    ).toEqual(configuredDefaults);
+  });
+
   it('preserves filters that the user already changed', () => {
     const current = {
       ...DEFAULT_PULL_REQUEST_FILTER_STATE,
