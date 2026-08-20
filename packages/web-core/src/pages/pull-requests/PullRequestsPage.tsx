@@ -187,6 +187,18 @@ interface PullRequestsPageProps {
   initialPrUrl?: string;
 }
 
+export function getPullRequestsDefaultLayout(
+  detailPanelSize: number | string,
+  hasDetails: boolean
+): Layout {
+  if (!hasDetails) return { 'pull-requests-list': 100 };
+  const detailSize = typeof detailPanelSize === 'number' ? detailPanelSize : 35;
+  return {
+    'pull-requests-list': 100 - detailSize,
+    'pull-request-detail': detailSize,
+  };
+}
+
 type PullRequestTarget = {
   url: string;
   number: number;
@@ -1144,16 +1156,10 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     />
   ) : null;
 
-  const pullRequestsDefaultLayout: Layout =
-    typeof detailPanelSize === 'number'
-      ? {
-          'pull-requests-list': 100 - detailPanelSize,
-          'pull-request-detail': detailPanelSize,
-        }
-      : {
-          'pull-requests-list': 65,
-          'pull-request-detail': 35,
-        };
+  const pullRequestsDefaultLayout = getPullRequestsDefaultLayout(
+    detailPanelSize,
+    selectedPullRequest !== null
+  );
 
   const onPullRequestsLayoutChange = useCallback(
     (layout: Layout) => {
