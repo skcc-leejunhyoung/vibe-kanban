@@ -1,5 +1,7 @@
 import { useCallback, useRef, useEffect } from 'react';
+import { useLocation } from '@tanstack/react-router';
 import { useActions } from '@/shared/hooks/useActions';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { Actions } from '@/shared/actions';
 import {
@@ -9,7 +11,6 @@ import {
 import { Scope, resolveSequence } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
-import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 
 const SEQUENCE_TIMEOUT_MS = 1500;
@@ -31,7 +32,11 @@ interface UseWorkspaceShortcutsOptions {
 export function useWorkspaceShortcuts(options?: UseWorkspaceShortcutsOptions) {
   const { executeAction } = useActions();
   const { workspaceId, repos, startNewSession } = useWorkspaceContext();
-  const destination = useCurrentAppDestination();
+  const appNavigation = useAppNavigation();
+  const location = useLocation();
+  const isProjectScreen = isProjectDestination(
+    appNavigation.resolveFromPath(location.href)
+  );
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const hotkeyOptions = { ...OPTIONS, enabled: options?.enabled ?? true };
 
@@ -156,9 +161,9 @@ export function useWorkspaceShortcuts(options?: UseWorkspaceShortcutsOptions) {
     () => execute(Actions.ToggleRightSidebar),
     {
       ...hotkeyOptions,
-      enabled: hotkeyOptions.enabled && !isProjectDestination(destination),
+      enabled: hotkeyOptions.enabled && !isProjectScreen,
     },
-    [overrides, destination]
+    [overrides, isProjectScreen]
   );
   useReboundHotkey(
     seq('seq-view-chat'),
