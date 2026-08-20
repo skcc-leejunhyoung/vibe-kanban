@@ -12,9 +12,18 @@ describe('WorkspaceSummary link badges', () => {
       <WorkspaceSummary
         summary
         name="Workspace"
-        prStatus="open"
-        prNumber={42}
-        prUrl="https://github.com/acme/repo/pull/42"
+        pullRequests={[
+          {
+            status: 'open',
+            number: 42,
+            url: 'https://github.com/acme/repo/pull/42',
+          },
+          {
+            status: 'merged',
+            number: 43,
+            url: 'https://github.com/acme/repo/pull/43',
+          },
+        ]}
         githubIssues={[
           {
             id: 'issue-77',
@@ -22,11 +31,19 @@ describe('WorkspaceSummary link badges', () => {
             repository: 'acme/repo',
             url: 'https://github.com/acme/repo/issues/77',
           },
+          {
+            id: 'issue-78',
+            number: 78,
+            repository: 'acme/repo',
+            url: 'https://github.com/acme/repo/issues/78',
+          },
         ]}
       />
     );
 
     expect(html).toContain('#42');
+    expect(html).toContain('#43');
     expect(html).toContain('#77');
+    expect(html).toContain('#78');
   });
 });

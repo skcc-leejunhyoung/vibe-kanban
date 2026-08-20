@@ -938,7 +938,13 @@ pr_number: bigint | null,
 /**
  * PR URL for this workspace (if any PR exists)
  */
-pr_url: string | null, };
+pr_url: string | null,
+/**
+ * All PRs for this workspace, newest first.
+ */
+pull_requests: Array<WorkspacePullRequestSummary>, };
+
+export type WorkspacePullRequestSummary = { status: MergeStatus, number: bigint, url: string, };
 
 export type WorkspaceSummaryResponse = { summaries: Array<WorkspaceSummary>, };
 

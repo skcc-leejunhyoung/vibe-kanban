@@ -59,6 +59,11 @@ export interface WorkspaceSummaryProps {
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
   prNumber?: number;
   prUrl?: string;
+  pullRequests?: Array<{
+    status: 'open' | 'merged' | 'closed' | 'unknown';
+    number: number;
+    url: string;
+  }>;
   githubIssues?: Array<{
     id: string;
     number: number;
@@ -106,6 +111,7 @@ export function WorkspaceSummary({
   prStatus,
   prNumber,
   prUrl,
+  pullRequests,
   githubIssues = [],
   onClick,
   className,
@@ -131,6 +137,7 @@ export function WorkspaceSummary({
     isActuallyRunning && todoTotal !== undefined && todoTotal > 0;
   const todoAllDone = showTodoProgress && todoCompleted === todoTotal;
   const hasLinkBadges =
+    !!pullRequests?.some((pr) => pr.status !== 'unknown') ||
     (!!prNumber && !!prUrl && !!prStatus && prStatus !== 'unknown') ||
     githubIssues.length > 0;
   // Issue-card rows pass latestPrompt and show it in place of the name.
@@ -273,8 +280,20 @@ export function WorkspaceSummary({
                 />
               )}
 
-            {prNumber && prUrl && prStatus && prStatus !== 'unknown' && (
-              <PrBadge number={prNumber} url={prUrl} status={prStatus} />
+            {(pullRequests ??
+              (prNumber && prUrl && prStatus
+                ? [{ number: prNumber, url: prUrl, status: prStatus }]
+                : [])
+            ).map(
+              (pr) =>
+                pr.status !== 'unknown' && (
+                  <PrBadge
+                    key={pr.url}
+                    number={pr.number}
+                    url={pr.url}
+                    status={pr.status}
+                  />
+                )
             )}
             {githubIssues.map((issue) => (
               <GithubIssueBadge key={issue.id} {...issue} />

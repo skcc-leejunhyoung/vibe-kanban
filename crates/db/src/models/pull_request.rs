@@ -265,44 +265,18 @@ impl PullRequest {
         Ok(row.count)
     }
 
-    pub async fn get_latest_for_workspaces(
+    pub async fn get_for_workspaces(
         pool: &SqlitePool,
-        archived: bool,
-    ) -> Result<HashMap<Uuid, PullRequest>, sqlx::Error> {
-        let rows = sqlx::query_as!(
-            PullRequest,
-            r#"SELECT
-                t.id,
-                t.workspace_id AS "workspace_id: Uuid",
-                t.repo_id AS "repo_id: Uuid",
-                t.pr_url,
-                t.pr_number,
-                t.pr_status AS "pr_status: MergeStatus",
-                t.target_branch_name,
-                t.head_branch_name,
-                t.merged_at AS "merged_at: DateTime<Utc>",
-                t.merge_commit_sha,
-                t.created_at AS "created_at!: DateTime<Utc>",
-                t.updated_at AS "updated_at!: DateTime<Utc>",
-                t.synced_at AS "synced_at: DateTime<Utc>"
-            FROM pull_requests t
-            INNER JOIN (
-                SELECT workspace_id, MAX(created_at) as max_created_at
-                FROM pull_requests
-                WHERE workspace_id IS NOT NULL
-                GROUP BY workspace_id
-            ) latest ON t.workspace_id = latest.workspace_id AND t.created_at = latest.max_created_at
-            INNER JOIN workspaces w ON t.workspace_id = w.id
-            WHERE t.workspace_id IS NOT NULL AND w.archived = $1"#,
-            archived,
-        )
-        .fetch_all(pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .filter_map(|pr| pr.workspace_id.map(|ws_id| (ws_id, pr)))
-            .collect())
+    ) -> Result<HashMap<Uuid, Vec<PullRequest>>, sqlx::Error> {
+        let mut rows = Self::find_all_with_workspace(pool).await?;
+        rows.reverse();
+        let mut by_workspace = HashMap::<Uuid, Vec<PullRequest>>::new();
+        for pr in rows {
+            if let Some(workspace_id) = pr.workspace_id {
+                by_workspace.entry(workspace_id).or_default().push(pr);
+            }
+        }
+        Ok(by_workspace)
     }
 
     pub async fn find_all_with_workspace(

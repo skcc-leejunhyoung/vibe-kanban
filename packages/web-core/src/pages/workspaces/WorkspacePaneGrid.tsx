@@ -190,19 +190,31 @@ function WorkspacePaneTitle() {
     ? (issueMeta.get(getHostWorkspaceKey(workspace.id, hostId))?.githubIssues ??
       [])
     : [];
+  const pullRequests =
+    summary?.pullRequests ??
+    (summary?.prNumber && summary.prUrl && summary.prStatus
+      ? [
+          {
+            number: summary.prNumber,
+            url: summary.prUrl,
+            status: summary.prStatus,
+          },
+        ]
+      : []);
 
   return (
     <span className="flex min-w-0 items-center gap-1.5">
-      {summary?.prNumber &&
-        summary.prUrl &&
-        summary.prStatus &&
-        summary.prStatus !== 'unknown' && (
-          <PrBadge
-            number={summary.prNumber}
-            url={summary.prUrl}
-            status={summary.prStatus}
-          />
-        )}
+      {pullRequests.map(
+        (pr) =>
+          pr.status !== 'unknown' && (
+            <PrBadge
+              key={pr.url}
+              number={pr.number}
+              url={pr.url}
+              status={pr.status}
+            />
+          )
+      )}
       {githubIssues.map((issue) => (
         <GithubIssueBadge key={issue.id} {...issue} />
       ))}

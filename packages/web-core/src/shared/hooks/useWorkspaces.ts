@@ -59,6 +59,11 @@ export interface SidebarWorkspace {
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
   prNumber?: number;
   prUrl?: string;
+  pullRequests?: Array<{
+    status: 'open' | 'merged' | 'closed' | 'unknown';
+    number: number;
+    url: string;
+  }>;
   /** Most recent prompt sent in this workspace (what it's working on) */
   latestPrompt?: string;
   /** Host that owns the workspace. `null` is this machine. */
@@ -137,6 +142,10 @@ function toSidebarWorkspace(
     prNumber:
       summary?.pr_number != null ? Number(summary.pr_number) : undefined,
     prUrl: summary?.pr_url ?? undefined,
+    pullRequests: summary?.pull_requests?.map((pr) => ({
+      ...pr,
+      number: Number(pr.number),
+    })),
     latestPrompt: summary?.latest_prompt ?? undefined,
     hostId,
   };

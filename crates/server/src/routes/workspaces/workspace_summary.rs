@@ -82,6 +82,15 @@ pub struct WorkspaceSummary {
     pub pr_number: Option<i64>,
     /// PR URL for this workspace (if any PR exists)
     pub pr_url: Option<String>,
+    /// All PRs for this workspace, newest first.
+    pub pull_requests: Vec<WorkspacePullRequestSummary>,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct WorkspacePullRequestSummary {
+    pub status: MergeStatus,
+    pub number: i64,
+    pub url: String,
 }
 
 /// Response containing summaries for requested workspaces
@@ -184,7 +193,7 @@ pub async fn get_workspace_summaries(
     };
 
     // 6. Get PR status for each workspace
-    let pr_statuses = PullRequest::get_latest_for_workspaces(pool, archived).await?;
+    let pull_requests = PullRequest::get_for_workspaces(pool).await?;
 
     // 7. Compute diff stats for active workspaces only. Archived workspace lists
     // can be large and are used for lookup/history, where live diff counts are
@@ -226,6 +235,9 @@ pub async fn get_workspace_summaries(
             let stats = diff_stats.get(&id);
             let todo = todo_progress.get(&id);
 
+            let workspace_pull_requests = pull_requests.get(&id);
+            let latest_pr = workspace_pull_requests.and_then(|prs| prs.first());
+
             WorkspaceSummary {
                 workspace_id: id,
                 latest_session_id: latest.map(|p| p.session_id),
@@ -244,9 +256,18 @@ pub async fn get_workspace_summaries(
                 todo_total: todo.map(|t| t.total),
                 todo_completed: todo.map(|t| t.completed),
                 latest_prompt: latest_prompts.get(&id).cloned(),
-                pr_status: pr_statuses.get(&id).map(|pr| pr.pr_status.clone()),
-                pr_number: pr_statuses.get(&id).map(|pr| pr.pr_number),
-                pr_url: pr_statuses.get(&id).map(|pr| pr.pr_url.clone()),
+                pr_status: latest_pr.map(|pr| pr.pr_status.clone()),
+                pr_number: latest_pr.map(|pr| pr.pr_number),
+                pr_url: latest_pr.map(|pr| pr.pr_url.clone()),
+                pull_requests: workspace_pull_requests
+                    .into_iter()
+                    .flatten()
+                    .map(|pr| WorkspacePullRequestSummary {
+                        status: pr.pr_status.clone(),
+                        number: pr.pr_number,
+                        url: pr.pr_url.clone(),
+                    })
+                    .collect(),
             }
         })
         .collect();

@@ -216,6 +216,7 @@ fn generate_types_content() -> String {
         db::models::requests::UpdateSession::decl(),
         server::routes::workspaces::workspace_summary::WorkspaceSummaryRequest::decl(),
         server::routes::workspaces::workspace_summary::WorkspaceSummary::decl(),
+        server::routes::workspaces::workspace_summary::WorkspacePullRequestSummary::decl(),
         server::routes::workspaces::workspace_summary::WorkspaceSummaryResponse::decl(),
         server::routes::workspaces::workspace_summary::DiffStats::decl(),
         services::services::filesystem::DirectoryEntry::decl(),

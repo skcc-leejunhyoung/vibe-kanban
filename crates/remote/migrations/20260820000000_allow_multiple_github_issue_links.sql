@@ -1,0 +1,2 @@
+ALTER TABLE github_issue_links
+DROP CONSTRAINT github_issue_links_issue_unique;

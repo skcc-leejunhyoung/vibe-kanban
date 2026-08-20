@@ -134,6 +134,7 @@ function WorkspaceRows({
           prStatus={workspace.prStatus}
           prNumber={workspace.prNumber}
           prUrl={workspace.prUrl}
+          pullRequests={workspace.pullRequests}
           githubIssues={workspace.githubIssues}
           latestPrompt={workspace.latestPrompt}
           isInPlace={workspace.isInPlace}

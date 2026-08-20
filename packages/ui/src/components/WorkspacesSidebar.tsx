@@ -54,6 +54,11 @@ export interface WorkspacesSidebarWorkspace {
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
   prNumber?: number;
   prUrl?: string;
+  pullRequests?: Array<{
+    status: 'open' | 'merged' | 'closed' | 'unknown';
+    number: number;
+    url: string;
+  }>;
   githubIssues?: Array<{
     id: string;
     number: number;
@@ -262,6 +267,7 @@ function WorkspaceList({
           prStatus={workspace.prStatus}
           prNumber={workspace.prNumber}
           prUrl={workspace.prUrl}
+          pullRequests={workspace.pullRequests}
           githubIssues={workspace.githubIssues}
           isInPlace={workspace.isInPlace}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
@@ -531,6 +537,7 @@ export function WorkspacesSidebar({
                   prStatus={workspace.prStatus}
                   prNumber={workspace.prNumber}
                   prUrl={workspace.prUrl}
+                  pullRequests={workspace.pullRequests}
                   githubIssues={workspace.githubIssues}
                   isInPlace={workspace.isInPlace}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
@@ -698,6 +705,7 @@ export function WorkspacesSidebar({
                 prStatus={workspace.prStatus}
                 prNumber={workspace.prNumber}
                 prUrl={workspace.prUrl}
+                pullRequests={workspace.pullRequests}
                 githubIssues={workspace.githubIssues}
                 isInPlace={workspace.isInPlace}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
