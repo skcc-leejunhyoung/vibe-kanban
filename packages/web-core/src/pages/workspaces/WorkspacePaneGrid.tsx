@@ -21,6 +21,7 @@ import { WorkspacePaneScope } from '@/shared/components/workspace-panes/Workspac
 import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { PaneActiveProvider } from '@/shared/components/workspace-panes/PaneActiveContext';
 import {
+  isPaneSeparatorActive,
   paneDestinationKey,
   resizePaneWithEqualSiblings,
   useWorkspacePanesStore,
@@ -57,7 +58,7 @@ function KanbanPaneShortcuts({ enabled }: { enabled: boolean }) {
 }
 
 const paneSeparatorClassName =
-  'relative z-10 w-1 shrink-0 bg-border/60 transition-colors hover:bg-brand data-[resize-handle-active]:bg-brand';
+  'relative z-10 w-1 shrink-0 bg-border/60 transition-colors';
 
 function PaneChrome({
   active,
@@ -523,41 +524,57 @@ export function WorkspacePaneGrid() {
     <Group
       groupRef={setGroupHandle}
       orientation="horizontal"
+      disableCursor
       className="h-full min-h-0"
       defaultLayout={defaultLayout}
       onLayoutChange={handleLayoutChange}
     >
-      {panes.map((pane, index) => (
-        <Fragment key={pane.id}>
-          {index > 0 && (
-            <Separator
-              className={paneSeparatorClassName}
-              onPointerDownCapture={() => {
-                resizeRef.current = {
-                  paneId: panes[index - 1].id,
-                  layout: groupHandle?.getLayout() ?? defaultLayout,
-                };
-              }}
-              onPointerUp={() => (resizeRef.current = null)}
-              onPointerCancel={() => (resizeRef.current = null)}
-              onKeyDownCapture={() => {
-                resizeRef.current = {
-                  paneId: panes[index - 1].id,
-                  layout: groupHandle?.getLayout() ?? defaultLayout,
-                };
-              }}
-              onKeyUp={() => (resizeRef.current = null)}
-              onBlur={() => (resizeRef.current = null)}
+      {panes.map((pane, index) => {
+        const separatorActive = isPaneSeparatorActive(
+          panes,
+          index,
+          activePaneId
+        );
+        const startResize = () => {
+          resizeRef.current = {
+            paneId: activePaneId!,
+            layout: groupHandle?.getLayout() ?? defaultLayout,
+          };
+        };
+        return (
+          <Fragment key={pane.id}>
+            {index > 0 && (
+              <Separator
+                aria-disabled={!separatorActive}
+                tabIndex={separatorActive ? 0 : -1}
+                className={cn(
+                  paneSeparatorClassName,
+                  separatorActive &&
+                    'cursor-col-resize hover:bg-brand data-[resize-handle-active]:bg-brand'
+                )}
+                onPointerDownCapture={(event) => {
+                  if (!separatorActive) return event.preventDefault();
+                  startResize();
+                }}
+                onPointerUp={() => (resizeRef.current = null)}
+                onPointerCancel={() => (resizeRef.current = null)}
+                onKeyDownCapture={(event) => {
+                  if (!separatorActive) return event.preventDefault();
+                  startResize();
+                }}
+                onKeyUp={() => (resizeRef.current = null)}
+                onBlur={() => (resizeRef.current = null)}
+              />
+            )}
+            <WorkspaceGridPanel
+              pane={pane}
+              active={activePaneId === pane.id}
+              showActiveRing={showActiveRing}
+              registrationVersion={paneOrderVersion}
             />
-          )}
-          <WorkspaceGridPanel
-            pane={pane}
-            active={activePaneId === pane.id}
-            showActiveRing={showActiveRing}
-            registrationVersion={paneOrderVersion}
-          />
-        </Fragment>
-      ))}
+          </Fragment>
+        );
+      })}
     </Group>
   );
 }

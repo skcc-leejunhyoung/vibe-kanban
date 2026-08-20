@@ -200,6 +200,18 @@ export function getAdjacentWorkspacePaneId(
   return panes[(startIndex + offset + panes.length) % panes.length].id;
 }
 
+export function isPaneSeparatorActive(
+  panes: WorkspacePane[],
+  rightPaneIndex: number,
+  activePaneId: string | null
+): boolean {
+  return (
+    rightPaneIndex > 0 &&
+    (panes[rightPaneIndex - 1]?.id === activePaneId ||
+      panes[rightPaneIndex]?.id === activePaneId)
+  );
+}
+
 /**
  * The workspace shown by the active pane, or null when it shows non-workspace
  * content. Document chrome (navbar toggles, sidebar clicks) targets this.

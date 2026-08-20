@@ -16,6 +16,7 @@ vi.stubGlobal('localStorage', {
 const {
   getAdjacentWorkspacePaneId,
   getActivePaneWorkspace,
+  isPaneSeparatorActive,
   layoutForPanes,
   paneDestinationKey,
   resizePaneWithEqualSiblings,
@@ -29,6 +30,9 @@ const ws = (
   workspaceId: string,
   hostId: string | null = null
 ): WorkspacePaneDestination => ({ kind: 'workspace', workspaceId, hostId });
+
+const panes = (...ids: string[]) =>
+  ids.map((id) => ({ id, destination: null }));
 
 function reset() {
   store.setState({
@@ -304,9 +308,6 @@ describe('clearPaneDestination', () => {
 });
 
 describe('layout math', () => {
-  const panes = (...ids: string[]) =>
-    ids.map((id) => ({ id, destination: null }));
-
   it('makes panes equal when none was explicitly resized', () => {
     const layout = layoutForPanes(panes('a', 'b', 'new'), {}, null);
     expect(layout.a).toBeCloseTo(100 / 3);
@@ -336,6 +337,14 @@ describe('layout math', () => {
 });
 
 describe('helpers', () => {
+  it('enables only separators next to the active pane', () => {
+    const allPanes = panes('a', 'b', 'c', 'd');
+    expect(isPaneSeparatorActive(allPanes, 0, 'a')).toBe(false);
+    expect(isPaneSeparatorActive(allPanes, 1, 'c')).toBe(false);
+    expect(isPaneSeparatorActive(allPanes, 2, 'c')).toBe(true);
+    expect(isPaneSeparatorActive(allPanes, 3, 'c')).toBe(true);
+  });
+
   it('gives workspace and pull requests distinct render identities', () => {
     expect(paneDestinationKey(ws('ws-a'))).not.toBe(
       paneDestinationKey({ kind: 'pull-requests' })
