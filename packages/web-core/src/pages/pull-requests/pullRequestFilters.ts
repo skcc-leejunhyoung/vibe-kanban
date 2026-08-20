@@ -54,7 +54,8 @@ export function resolvePullRequestFiltersAfterRepositoriesChange(
     validRepositoryIds.has(id)
   );
 
-  return filtersEqual(filtered, DEFAULT_PULL_REQUEST_FILTER_STATE) &&
+  return repositories.length !== current.repositories.length &&
+    filtersEqual(filtered, DEFAULT_PULL_REQUEST_FILTER_STATE) &&
     defaultRepositories.length > 0
     ? { ...defaults, repositories: defaultRepositories }
     : filtered;

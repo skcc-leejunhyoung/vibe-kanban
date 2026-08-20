@@ -148,11 +148,27 @@ describe('resolvePullRequestFiltersAfterRepositoriesChange', () => {
 
     expect(
       resolvePullRequestFiltersAfterRepositoriesChange(
-        { ...DEFAULT_PULL_REQUEST_FILTER_STATE },
+        { ...DEFAULT_PULL_REQUEST_FILTER_STATE, repositories: ['repo-2'] },
         defaults,
         new Set(['repo-1'])
       )
     ).toEqual(defaults);
+  });
+
+  it('preserves manually cleared repositories', () => {
+    const defaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      repositories: ['repo-1'],
+    };
+    const empty = { ...DEFAULT_PULL_REQUEST_FILTER_STATE };
+
+    expect(
+      resolvePullRequestFiltersAfterRepositoriesChange(
+        empty,
+        defaults,
+        new Set(['repo-1'])
+      )
+    ).toBe(empty);
   });
 
   it('does not restore a deleted default repository', () => {
