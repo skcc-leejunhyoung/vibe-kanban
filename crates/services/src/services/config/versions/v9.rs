@@ -181,6 +181,9 @@ pub struct Config {
     /// Opaque quick-chat folder favorites (`FolderFavorite[]`).
     #[serde(default = "default_quick_chat_favorites")]
     pub quick_chat_favorites: serde_json::Value,
+    /// Open newly created quick chats in a new workspace pane when supported.
+    #[serde(default)]
+    pub quick_chat_open_in_new_pane: bool,
     /// Daily agent-owned reconciliation of memory snapshots across this user's hosts.
     #[serde(default)]
     pub agent_memory_sync: AgentMemorySyncConfig,
@@ -223,6 +226,7 @@ impl Config {
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
             quick_chat_favorites: default_quick_chat_favorites(),
+            quick_chat_open_in_new_pane: false,
             agent_memory_sync: AgentMemorySyncConfig::default(),
         }
     }
@@ -290,6 +294,7 @@ impl Default for Config {
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
             quick_chat_favorites: default_quick_chat_favorites(),
+            quick_chat_open_in_new_pane: false,
             agent_memory_sync: AgentMemorySyncConfig::default(),
         }
     }
@@ -325,6 +330,7 @@ mod tests {
             migrated.quick_chat_favorites,
             serde_json::Value::Array(vec![])
         );
+        assert!(!migrated.quick_chat_open_in_new_pane);
     }
 
     #[test]
@@ -361,5 +367,6 @@ mod tests {
             config.quick_chat_favorites,
             serde_json::Value::Array(vec![])
         );
+        assert!(!config.quick_chat_open_in_new_pane);
     }
 }

@@ -37,6 +37,25 @@ export function openNewPane(appNavigation: AppNavigation): void {
   ensurePaneGridVisible(appNavigation);
 }
 
+/** Open a destination in a newly appended pane, if this surface has room. */
+export function openDestinationInNewPane(
+  destination: WorkspacePaneDestination,
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime
+): boolean {
+  if (!paneGridAvailable(appRuntime)) return false;
+
+  const before = useWorkspacePanesStore.getState().panes.length;
+  useWorkspacePanesStore.getState().appendPane();
+  const { panes, activePaneId, setPaneDestination } =
+    useWorkspacePanesStore.getState();
+  if (panes.length === before || activePaneId === null) return false;
+
+  setPaneDestination(activePaneId, destination);
+  ensurePaneGridVisible(appNavigation);
+  return true;
+}
+
 /** Show the workspace picker in the active pane, or navigate normally. */
 export function openWorkspacesForActivePane(
   appNavigation: AppNavigation,

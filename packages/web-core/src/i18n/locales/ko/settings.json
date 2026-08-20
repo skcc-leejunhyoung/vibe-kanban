@@ -365,6 +365,10 @@
         "title": "분할 화면",
         "description": "동시에 열 수 있는 페이지 수와 각 프리셋의 배치를 설정합니다.",
         "maxPanes": "최대 패널 수",
+        "quickChatNewPane": {
+          "label": "Quick Chat을 새 패널에서 열기",
+          "helper": "패널 공간이 있으면 현재 패널을 유지하고 새 Quick Chat을 옆에 엽니다."
+        },
         "presetLayout": "{{count}}개 패널 배치",
         "rowsColumns": "{{rows}}행 × {{columns}}열"
       },

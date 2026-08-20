@@ -996,6 +996,10 @@ diff_view: JsonValue,
  */
 quick_chat_favorites: JsonValue,
 /**
+ * Open newly created quick chats in a new workspace pane when supported.
+ */
+quick_chat_open_in_new_pane: boolean,
+/**
  * Daily agent-owned reconciliation of memory snapshots across this user's hosts.
  */
 agent_memory_sync: AgentMemorySyncConfig, };

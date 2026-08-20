@@ -1174,6 +1174,17 @@ export function GeneralSettingsSection() {
             'Choose how many pages can open together before links fall back to a new window.',
         })}
       >
+        <SettingsCheckbox
+          id="quick-chat-open-in-new-pane"
+          label={t('settings.general.splitScreen.quickChatNewPane.label')}
+          description={t(
+            'settings.general.splitScreen.quickChatNewPane.helper'
+          )}
+          checked={draft?.quick_chat_open_in_new_pane ?? false}
+          onChange={(checked) =>
+            updateDraft({ quick_chat_open_in_new_pane: checked })
+          }
+        />
         <SettingsField
           label={t('settings.general.splitScreen.maxPanes', {
             defaultValue: 'Maximum panes',

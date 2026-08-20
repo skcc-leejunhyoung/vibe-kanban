@@ -373,6 +373,10 @@
         "title": "Split screen",
         "description": "Choose how many pages can open together and how each preset is arranged.",
         "maxPanes": "Maximum panes",
+        "quickChatNewPane": {
+          "label": "Open Quick Chat in a new pane",
+          "helper": "Keep the current pane open and show each new Quick Chat beside it when space is available."
+        },
         "presetLayout": "{{count}} pane layout",
         "rowsColumns": "{{rows}} rows × {{columns}} columns"
       },

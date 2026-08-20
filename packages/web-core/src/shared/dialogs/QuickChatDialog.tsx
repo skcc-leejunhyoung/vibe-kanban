@@ -34,6 +34,7 @@ import { useFolderFavoritesStore } from '@/shared/stores/useFolderFavoritesStore
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { openDestinationInNewPane } from '@/shared/lib/openInSplitPane';
 
 /**
  * "Quick chat": a low-ceremony launcher to run an agent directly in an existing
@@ -258,12 +259,34 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       );
       modal.resolve(workspace.id);
       modal.hide();
-      appNavigation.goToWorkspace(workspace.id, { hostId: selectedHostId });
+      if (
+        !config?.quick_chat_open_in_new_pane ||
+        !openDestinationInNewPane(
+          {
+            kind: 'workspace',
+            workspaceId: workspace.id,
+            hostId: selectedHostId,
+          },
+          appNavigation,
+          runtime
+        )
+      ) {
+        appNavigation.goToWorkspace(workspace.id, { hostId: selectedHostId });
+      }
     } catch (e) {
       setError(getErrorMessage(e) || 'Failed to start quick chat.');
       setSubmitting(false);
     }
-  }, [repo, executorConfig, prompt, modal, appNavigation, selectedHostId]);
+  }, [
+    repo,
+    executorConfig,
+    prompt,
+    modal,
+    config?.quick_chat_open_in_new_pane,
+    appNavigation,
+    runtime,
+    selectedHostId,
+  ]);
 
   return (
     <Dialog
