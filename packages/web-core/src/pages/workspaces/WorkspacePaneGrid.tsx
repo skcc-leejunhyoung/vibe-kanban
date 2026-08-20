@@ -41,6 +41,10 @@ import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import {
+  isWorkspacePaneDrag,
+  workspacePaneDragType,
+} from './workspacePaneDrag';
 
 /**
  * Pane-scoped keyboard registrations: they read the pane's context (workspace,
@@ -100,6 +104,7 @@ function PaneChrome({
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
       onDragOver={(event) => {
+        if (!isWorkspacePaneDrag(event.dataTransfer.types)) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
         const { left, width } = event.currentTarget.getBoundingClientRect();
@@ -111,10 +116,11 @@ function PaneChrome({
         }
       }}
       onDrop={(event) => {
+        if (!isWorkspacePaneDrag(event.dataTransfer.types)) return;
         event.preventDefault();
         const { left, width } = event.currentTarget.getBoundingClientRect();
         movePane(
-          event.dataTransfer.getData('text/plain'),
+          event.dataTransfer.getData(workspacePaneDragType),
           paneId,
           event.clientX > left + width / 2
         );
@@ -157,7 +163,7 @@ function PaneHeaderShell({
       draggable
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', paneId);
+        event.dataTransfer.setData(workspacePaneDragType, paneId);
       }}
       className="relative flex h-7 shrink-0 cursor-grab items-center gap-2 border-b border-border bg-secondary px-2 active:cursor-grabbing"
     >
