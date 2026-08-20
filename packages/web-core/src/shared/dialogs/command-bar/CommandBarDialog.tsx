@@ -289,8 +289,7 @@ function CommandBarContent({
       type: 'action' as const,
       action: {
         id: `open-bookmark-${index}`,
-        label: bookmark.name,
-        description: bookmark.url,
+        label: `${bookmark.name} — ${bookmark.url}`,
         icon: StarIcon,
         requiresTarget: ActionTargetType.NONE,
         execute: () => {
