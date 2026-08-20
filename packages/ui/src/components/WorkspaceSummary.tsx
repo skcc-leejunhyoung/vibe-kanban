@@ -280,7 +280,8 @@ export function WorkspaceSummary({
                 />
               )}
 
-            {(pullRequests ??
+            {(
+              pullRequests ??
               (prNumber && prUrl && prStatus
                 ? [{ number: prNumber, url: prUrl, status: prStatus }]
                 : [])
