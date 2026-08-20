@@ -546,11 +546,14 @@ export function WorkspacePaneGrid() {
             {index > 0 && (
               <Separator
                 aria-disabled={!separatorActive}
-                tabIndex={separatorActive ? 0 : -1}
+                elementRef={(element) => {
+                  if (element) element.tabIndex = separatorActive ? 0 : -1;
+                }}
                 className={cn(
                   paneSeparatorClassName,
-                  separatorActive &&
-                    'cursor-col-resize hover:bg-brand data-[resize-handle-active]:bg-brand'
+                  separatorActive
+                    ? 'cursor-col-resize hover:bg-brand data-[resize-handle-active]:bg-brand'
+                    : "before:absolute before:-inset-x-2.5 before:inset-y-0 before:content-['']"
                 )}
                 onPointerDownCapture={(event) => {
                   if (!separatorActive) return event.preventDefault();
