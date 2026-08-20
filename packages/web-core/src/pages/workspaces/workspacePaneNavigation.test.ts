@@ -47,9 +47,9 @@ describe('shouldParkEmptyPaneUrl', () => {
   it('parks a stale renderable URL when the active pane is empty', () => {
     // The stale URL below is exactly what the adopt effect would re-adopt,
     // snapping the active pane off the empty one (cmd+t / alt+tab focus bug).
-    expect(
-      shouldAdoptDocumentDestination(workspace('a'), null, null)
-    ).toBe(true);
+    expect(shouldAdoptDocumentDestination(workspace('a'), null, null)).toBe(
+      true
+    );
     expect(shouldParkEmptyPaneUrl(null, workspace('a'))).toBe(true);
   });
 
