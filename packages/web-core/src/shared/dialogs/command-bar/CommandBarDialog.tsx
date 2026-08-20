@@ -279,7 +279,8 @@ function CommandBarContent({
   }, [currentPage, maxSplitPanes, pageWithNavigationMatches, state.search]);
 
   const pageWithBookmarksAndUrl = useMemo(() => {
-    const url = normalizeBookmarkUrl(state.search);
+    const inputUrl = state.search.trim();
+    const url = normalizeBookmarkUrl(inputUrl);
     if (currentPage !== 'root') {
       return pageWithSplitPresets;
     }
@@ -312,7 +313,7 @@ function CommandBarContent({
     const isBookmarked = bookmarks.some((bookmark) => bookmark.url === url);
     const bookmarkAction: ActionDefinition = {
       id: isBookmarked ? 'remove-bookmark' : 'add-bookmark',
-      label: `${isBookmarked ? 'Remove' : 'Add'} bookmark: ${url}`,
+      label: `${isBookmarked ? 'Remove' : 'Add'} bookmark: ${inputUrl}`,
       icon: isBookmarked ? TrashIcon : StarIcon,
       requiresTarget: ActionTargetType.NONE,
       executeAfterClose: !isBookmarked,
@@ -327,7 +328,7 @@ function CommandBarContent({
     };
     const gotoAction: ActionDefinition = {
       id: 'goto-url',
-      label: `Goto: ${url}`,
+      label: `Goto: ${inputUrl}`,
       icon: ArrowSquareOutIcon,
       requiresTarget: ActionTargetType.NONE,
       execute: () => {

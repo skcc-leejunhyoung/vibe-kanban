@@ -19,4 +19,9 @@ describe('fuzzySearchMatch', () => {
   it('matches across multiple searchable fields', () => {
     expect(fuzzySearchMatchAny(['title', 'long body text'], 'lgbt')).toBe(true);
   });
+
+  it('matches a Unicode URL preserved in a command label', () => {
+    const url = 'https://figma.com/design/123/-공유--WISDOM-개선';
+    expect(fuzzySearchMatch(`Goto: ${url}`, url)).toBe(true);
+  });
 });
