@@ -9,6 +9,8 @@ import {
 import { Scope, resolveSequence } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
+import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
+import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 
 const SEQUENCE_TIMEOUT_MS = 1500;
 
@@ -29,6 +31,7 @@ interface UseWorkspaceShortcutsOptions {
 export function useWorkspaceShortcuts(options?: UseWorkspaceShortcutsOptions) {
   const { executeAction } = useActions();
   const { workspaceId, repos, startNewSession } = useWorkspaceContext();
+  const destination = useCurrentAppDestination();
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const hotkeyOptions = { ...OPTIONS, enabled: options?.enabled ?? true };
 
@@ -151,8 +154,11 @@ export function useWorkspaceShortcuts(options?: UseWorkspaceShortcutsOptions) {
   useReboundHotkey(
     seq('seq-view-right-sidebar'),
     () => execute(Actions.ToggleRightSidebar),
-    hotkeyOptions,
-    [overrides]
+    {
+      ...hotkeyOptions,
+      enabled: hotkeyOptions.enabled && !isProjectDestination(destination),
+    },
+    [overrides, destination]
   );
   useReboundHotkey(
     seq('seq-view-chat'),
