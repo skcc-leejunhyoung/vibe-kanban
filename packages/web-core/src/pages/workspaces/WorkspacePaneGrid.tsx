@@ -473,7 +473,7 @@ export function WorkspacePaneGrid() {
   const panes = useWorkspacePanesStore((s) => s.panes);
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
   const storedLayout = useWorkspacePanesStore((s) => s.layout);
-  const paneOrderVersion = useWorkspacePanesStore((s) => s.paneOrderVersion);
+  const paneOrderVersions = useWorkspacePanesStore((s) => s.paneOrderVersions);
   const setLayout = useWorkspacePanesStore((s) => s.setLayout);
   const [groupHandle, setGroupHandle] = useGroupCallbackRef();
   const resizeRef = useRef<{ paneId: string; layout: Layout } | null>(null);
@@ -484,7 +484,10 @@ export function WorkspacePaneGrid() {
   // every pane's streams and providers. The library redistributes sizes when
   // panels mount/unmount; we suppress persisting that echo (flag set during
   // render, before child effects) and then impose the store layout.
-  const paneIdsSignature = panes.map((pane) => pane.id).join(',');
+  const paneIdsSignature = panes
+    .map((pane) => pane.id)
+    .sort()
+    .join(',');
   const lastSignatureRef = useRef(paneIdsSignature);
   const structuralPendingRef = useRef(false);
   if (lastSignatureRef.current !== paneIdsSignature) {
@@ -593,7 +596,7 @@ export function WorkspacePaneGrid() {
               pane={pane}
               active={activePaneId === pane.id}
               showActiveRing={showActiveRing}
-              registrationVersion={paneOrderVersion}
+              registrationVersion={paneOrderVersions[pane.id] ?? 0}
             />
           </Fragment>
         );

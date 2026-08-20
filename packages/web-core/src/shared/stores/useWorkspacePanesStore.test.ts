@@ -44,7 +44,7 @@ function reset() {
     layout: {},
     resizedPaneId: null,
     focusSerial: 0,
-    paneOrderVersion: 0,
+    paneOrderVersions: {},
   });
 }
 
@@ -280,7 +280,7 @@ describe('movePane', () => {
       'pane-2',
     ]);
     expect(store.getState().activePaneId).toBe('pane-3');
-    expect(store.getState().paneOrderVersion).toBe(1);
+    expect(store.getState().paneOrderVersions).toEqual({ 'pane-3': 1 });
 
     store.getState().movePane('pane-3', 'pane-2', true);
     expect(store.getState().panes.map((pane) => pane.id)).toEqual([
@@ -288,7 +288,13 @@ describe('movePane', () => {
       'pane-2',
       'pane-3',
     ]);
-    expect(store.getState().paneOrderVersion).toBe(2);
+    expect(store.getState().paneOrderVersions).toEqual({ 'pane-3': 2 });
+
+    store.getState().movePane('pane-1', 'pane-3', true);
+    expect(store.getState().paneOrderVersions).toEqual({
+      'pane-1': 1,
+      'pane-3': 2,
+    });
   });
 });
 
