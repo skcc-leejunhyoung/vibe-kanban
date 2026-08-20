@@ -65,6 +65,7 @@ import {
   PULL_REQUESTS_VIEW_MAPPED_WORKSPACES_EVENT,
   PULL_REQUESTS_OPEN_IN_WEB_EVENT,
   resolvePullRequestFiltersAfterDefaultsChange,
+  resolvePullRequestFiltersAfterRepositoriesChange,
   type PullRequestFilterState,
   type PullRequestUpdatedFilter,
 } from './pullRequestFilters';
@@ -270,12 +271,14 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   useEffect(() => {
     if (!reposQuery.isSuccess) return;
     const valid = new Set(repositories.map((repository) => repository.value));
-    if (filters.repositories.every((id) => valid.has(id))) return;
-    setFilters((current) => ({
-      ...current,
-      repositories: current.repositories.filter((id) => valid.has(id)),
-    }));
-  }, [repositoriesKey, reposQuery.isSuccess, repositories]); // eslint-disable-line react-hooks/exhaustive-deps
+    setFilters((current) =>
+      resolvePullRequestFiltersAfterRepositoriesChange(
+        current,
+        defaultFilters,
+        valid
+      )
+    );
+  }, [defaultFilters, repositoriesKey, reposQuery.isSuccess, repositories]);
 
   useEffect(() => {
     setFilters((current) =>

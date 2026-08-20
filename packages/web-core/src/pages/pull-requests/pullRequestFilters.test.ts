@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PULL_REQUEST_FILTER_STATE,
   resolvePullRequestFiltersAfterDefaultsChange,
+  resolvePullRequestFiltersAfterRepositoriesChange,
 } from './pullRequestFilters';
 
 describe('DEFAULT_PULL_REQUEST_FILTER_STATE', () => {
@@ -135,5 +136,37 @@ describe('resolvePullRequestFiltersAfterDefaultsChange', () => {
         nextDefaults
       )
     ).toBe(refinementChanged);
+  });
+});
+
+describe('resolvePullRequestFiltersAfterRepositoriesChange', () => {
+  it('restores valid configured defaults after repository pruning empties filters', () => {
+    const defaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      repositories: ['repo-1'],
+    };
+
+    expect(
+      resolvePullRequestFiltersAfterRepositoriesChange(
+        { ...DEFAULT_PULL_REQUEST_FILTER_STATE },
+        defaults,
+        new Set(['repo-1'])
+      )
+    ).toEqual(defaults);
+  });
+
+  it('does not restore a deleted default repository', () => {
+    const defaults = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      repositories: ['repo-1'],
+    };
+
+    expect(
+      resolvePullRequestFiltersAfterRepositoriesChange(
+        defaults,
+        defaults,
+        new Set<string>()
+      )
+    ).toEqual(DEFAULT_PULL_REQUEST_FILTER_STATE);
   });
 });

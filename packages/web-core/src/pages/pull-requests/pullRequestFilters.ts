@@ -38,6 +38,28 @@ function filtersEqual(
   );
 }
 
+export function resolvePullRequestFiltersAfterRepositoriesChange(
+  current: PullRequestFilterState,
+  defaults: PullRequestFilterState,
+  validRepositoryIds: ReadonlySet<string>
+): PullRequestFilterState {
+  const repositories = current.repositories.filter((id) =>
+    validRepositoryIds.has(id)
+  );
+  const filtered =
+    repositories.length === current.repositories.length
+      ? current
+      : { ...current, repositories };
+  const defaultRepositories = defaults.repositories.filter((id) =>
+    validRepositoryIds.has(id)
+  );
+
+  return filtersEqual(filtered, DEFAULT_PULL_REQUEST_FILTER_STATE) &&
+    defaultRepositories.length > 0
+    ? { ...defaults, repositories: defaultRepositories }
+    : filtered;
+}
+
 export function resolvePullRequestFiltersAfterDefaultsChange(
   current: PullRequestFilterState,
   previousDefaults: PullRequestFilterState,
