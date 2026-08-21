@@ -10,11 +10,11 @@ import {
 } from "@/shared/lib/remoteSharedConfig";
 import {
   applyPrimaryColor,
-  applyTheme,
   persistPrimaryColor,
   persistTheme,
 } from "@/shared/lib/themeColors";
 import { persistLanguage, updateLanguageFromConfig } from "@/i18n/config";
+import { useTheme } from "@/shared/hooks/useTheme";
 
 interface RemoteSharedConfigProviderProps {
   children: ReactNode;
@@ -36,6 +36,7 @@ export function RemoteSharedConfigProvider({
   children,
 }: RemoteSharedConfigProviderProps) {
   const { isSignedIn, isLoaded } = useAuth();
+  const { setTheme } = useTheme();
 
   const { value } = useUserSystemController({
     queryKey: REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
@@ -51,10 +52,10 @@ export function RemoteSharedConfigProvider({
 
   useEffect(() => {
     if (theme != null && theme !== DEFAULT_CONFIG.theme) {
-      applyTheme(theme);
+      setTheme(theme);
       persistTheme(theme);
     }
-  }, [theme]);
+  }, [setTheme, theme]);
 
   useEffect(() => {
     if (primaryColor && primaryColor !== DEFAULT_CONFIG.primary_color) {

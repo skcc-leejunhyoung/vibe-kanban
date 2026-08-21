@@ -264,10 +264,13 @@ export function persistTheme(theme: ThemeMode | string | null | undefined) {
   }
 }
 
-export function loadPersistedTheme(): string | null {
+export function loadPersistedTheme(): ThemeMode | null {
   if (typeof window === 'undefined') return null;
   try {
-    return window.localStorage.getItem(THEME_STORAGE_KEY);
+    const theme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return Object.values(ThemeMode).includes(theme as ThemeMode)
+      ? (theme as ThemeMode)
+      : null;
   } catch {
     return null;
   }

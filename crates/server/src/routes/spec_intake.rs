@@ -6,10 +6,18 @@
 //! message is parsed into a title + markdown spec used to pre-fill the New Issue
 //! dialog. The ephemeral workspace is always torn down afterward.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use axum::{
-    Json, Router, extract::State, http::HeaderMap, response::Json as ResponseJson, routing::post,
+    Json, Router,
+    extract::{Query, State},
+    http::HeaderMap,
+    response::Json as ResponseJson,
+    routing::{get, post},
 };
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
@@ -19,12 +27,13 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::profile::ExecutorConfig;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use services::services::{
     config::DEFAULT_SPEC_INTAKE_PROMPT,
     container::{ContainerService, assistant_message_in_store},
 };
+use tokio::sync::RwLock;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
@@ -36,10 +45,46 @@ use crate::{DeploymentImpl, error::ApiError};
 const SPEC_INTAKE_TIMEOUT: Duration = Duration::from_secs(120);
 /// How often to poll the execution-process status while waiting for the agent.
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
+const JOB_TTL: Duration = Duration::from_secs(10 * 60);
+
+struct SpecGenerationJob {
+    status: SpecGenerationStatus,
+    created_at: Instant,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum SpecGenerationStatus {
+    Running,
+    Completed {
+        title: String,
+        description: String,
+        intake_metadata: serde_json::Value,
+    },
+    Failed {
+        error: String,
+    },
+}
+
+#[derive(Serialize)]
+struct StartSpecGenerationResponse {
+    job_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct SpecGenerationQuery {
+    job_id: Uuid,
+}
+
+static SPEC_GENERATION_JOBS: LazyLock<RwLock<HashMap<Uuid, SpecGenerationJob>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let _ = deployment;
-    Router::new().route("/spec/generate", post(generate_spec))
+    Router::new()
+        .route("/spec/generate", post(generate_spec))
+        .route("/spec/generate/start", post(start_spec_generation))
+        .route("/spec/generate/status", get(get_spec_generation))
 }
 
 pub async fn generate_spec(
@@ -59,6 +104,13 @@ pub async fn generate_spec(
         ));
     }
 
+    generate_spec_inner(&deployment, payload).await
+}
+
+async fn generate_spec_inner(
+    deployment: &DeploymentImpl,
+    payload: GenerateSpecRequest,
+) -> Result<ResponseJson<ApiResponse<GenerateSpecResponse>>, ApiError> {
     let GenerateSpecRequest {
         project_id,
         brief,
@@ -142,6 +194,73 @@ pub async fn generate_spec(
         description,
         intake_metadata,
     })))
+}
+
+async fn start_spec_generation(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<GenerateSpecRequest>,
+) -> Result<ResponseJson<ApiResponse<StartSpecGenerationResponse>>, ApiError> {
+    let job_id = Uuid::new_v4();
+    let mut jobs = SPEC_GENERATION_JOBS.write().await;
+    jobs.retain(|_, job| job.created_at.elapsed() < JOB_TTL);
+    jobs.insert(
+        job_id,
+        SpecGenerationJob {
+            status: SpecGenerationStatus::Running,
+            created_at: Instant::now(),
+        },
+    );
+    drop(jobs);
+
+    tokio::spawn(async move {
+        let status = match generate_spec_inner(&deployment, payload).await {
+            Ok(ResponseJson(response)) => match response.into_data() {
+                Some(result) => SpecGenerationStatus::Completed {
+                    title: result.title,
+                    description: result.description,
+                    intake_metadata: result.intake_metadata,
+                },
+                None => SpecGenerationStatus::Failed {
+                    error: "Spec generation returned no result.".to_string(),
+                },
+            },
+            Err(error) => SpecGenerationStatus::Failed {
+                error: error.to_string(),
+            },
+        };
+        if let Some(job) = SPEC_GENERATION_JOBS.write().await.get_mut(&job_id) {
+            job.status = status;
+        }
+    });
+
+    Ok(ResponseJson(ApiResponse::success(
+        StartSpecGenerationResponse { job_id },
+    )))
+}
+
+async fn get_spec_generation(
+    Query(query): Query<SpecGenerationQuery>,
+) -> Result<ResponseJson<ApiResponse<SpecGenerationStatus>>, ApiError> {
+    let jobs = SPEC_GENERATION_JOBS.read().await;
+    let job = jobs
+        .get(&query.job_id)
+        .ok_or_else(|| ApiError::BadRequest("Spec generation job not found.".to_string()))?;
+    let status = match &job.status {
+        SpecGenerationStatus::Running => SpecGenerationStatus::Running,
+        SpecGenerationStatus::Completed {
+            title,
+            description,
+            intake_metadata,
+        } => SpecGenerationStatus::Completed {
+            title: title.clone(),
+            description: description.clone(),
+            intake_metadata: intake_metadata.clone(),
+        },
+        SpecGenerationStatus::Failed { error } => SpecGenerationStatus::Failed {
+            error: error.clone(),
+        },
+    };
+    Ok(ResponseJson(ApiResponse::success(status)))
 }
 
 /// Run the agent and return the parsed (title, description). Hard-errors on

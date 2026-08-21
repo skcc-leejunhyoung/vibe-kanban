@@ -3,7 +3,7 @@ import { I18nextProvider } from 'react-i18next';
 import { ThemeMode } from 'shared/types';
 import i18n from '@/i18n';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
-import { ThemeProvider } from '@web/app/providers/ThemeProvider';
+import { ThemeProvider } from '@/shared/providers/ThemeProvider';
 import { useUiPreferencesScratch } from '@/shared/hooks/useUiPreferencesScratch';
 import { useServiceWorkerNavigation } from '@/shared/hooks/useServiceWorkerNavigation';
 import { useWebPushReconcile } from '@/shared/hooks/useWebPushReconcile';

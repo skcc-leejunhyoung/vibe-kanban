@@ -1,23 +1,16 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { CrashScreen } from '@vibe/ui/components/CrashScreen';
 
-interface AppErrorBoundaryProps {
-  children: ReactNode;
-}
-
 interface AppErrorBoundaryState {
   error: Error | null;
   componentStack: string | null;
 }
 
 export class AppErrorBoundary extends Component<
-  AppErrorBoundaryProps,
+  { children: ReactNode },
   AppErrorBoundaryState
 > {
-  state: AppErrorBoundaryState = {
-    error: null,
-    componentStack: null,
-  };
+  state: AppErrorBoundaryState = { error: null, componentStack: null };
 
   static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
     return { error, componentStack: null };
@@ -36,7 +29,6 @@ export class AppErrorBoundary extends Component<
         />
       );
     }
-
     return this.props.children;
   }
 }

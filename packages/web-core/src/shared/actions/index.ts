@@ -786,8 +786,7 @@ export const Actions = {
     label: 'View sessions',
     icon: ChatsTeardropIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) =>
-      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
+    isVisible: (ctx) => ctx.isCurrentWorkspaceTarget,
     execute: async (ctx, workspaceId, hostId) => {
       const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
       const { SelectionDialog } = await import(
@@ -839,8 +838,7 @@ export const Actions = {
     label: 'New session',
     icon: PlusIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) =>
-      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
+    isVisible: (ctx) => ctx.isCurrentWorkspaceTarget,
     execute: (ctx, workspaceId, hostId) => {
       assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
       ctx.startNewSession();
@@ -852,8 +850,7 @@ export const Actions = {
     label: 'Rename session',
     icon: PencilSimpleIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) =>
-      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
+    isVisible: (ctx) => ctx.isCurrentWorkspaceTarget,
     execute: async (ctx, workspaceId, hostId) => {
       assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
       if (!ctx.currentSessionId) return;
@@ -878,8 +875,7 @@ export const Actions = {
     icon: TrashIcon,
     variant: 'destructive',
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) =>
-      ctx.appRuntime === 'local' && ctx.isCurrentWorkspaceTarget,
+    isVisible: (ctx) => ctx.isCurrentWorkspaceTarget,
     execute: async (ctx, workspaceId, hostId) => {
       assertCurrentWorkspaceSessionTarget(ctx, workspaceId, hostId);
       if (!ctx.currentSessionId) return;
@@ -1105,8 +1101,7 @@ export const Actions = {
     label: 'View linked workspaces',
     icon: StackIcon,
     requiresTarget: ActionTargetType.ISSUE,
-    isVisible: (ctx) =>
-      ctx.appRuntime === 'local' && ctx.hasSelectedKanbanIssue,
+    isVisible: (ctx) => ctx.hasSelectedKanbanIssue,
     execute: async (ctx, projectId, issueIds) => {
       const issueId = issueIds[0];
       if (!issueId) return;
@@ -1303,7 +1298,7 @@ export const Actions = {
     icon: ArrowSquareOutIcon,
     keywords: ['workspace', 'issue', 'mapped', 'linked', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.appRuntime === 'local' && ctx.hasWorkspace,
+    isVisible: (ctx) => ctx.hasWorkspace,
     execute: (ctx, workspaceId, hostId) => {
       const remoteWs = findRemoteWorkspaceByLocalIdentity(
         ctx.remoteWorkspaces,

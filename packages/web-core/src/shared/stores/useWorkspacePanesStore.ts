@@ -41,7 +41,7 @@ export function isPaneRenderableDestination(
 }
 
 /**
- * Routes that show the pane grid on desktop local: every pane-renderable
+ * Routes that show the pane grid in desktop apps: every pane-renderable
  * destination plus the bare workspaces list (grid with whatever panes exist).
  */
 export function isPaneGridDestination(

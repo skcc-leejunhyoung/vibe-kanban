@@ -20,7 +20,9 @@ import {
 } from '@/shared/stores/useWorkspacePanesStore';
 
 function paneGridAvailable(appRuntime: AppRuntime): boolean {
-  return appRuntime === 'local' && !isMobileViewport();
+  return (
+    (appRuntime === 'local' || appRuntime === 'remote') && !isMobileViewport()
+  );
 }
 
 /** Make sure the pane grid is on screen. */
@@ -196,8 +198,8 @@ export function useChromeTargetWorkspace(): {
 /**
  * Open an app URL "to the side": pane-renderable URLs (workspace, kanban,
  * pull requests, notifications) go to an in-document split pane on the
- * workspaces page; anything else (or unsupported surfaces — remote web,
- * mobile) falls back to a new browser tab/window.
+ * workspaces page; anything else (or mobile) falls back to a new browser
+ * tab/window.
  */
 export function openUrlInSplitPane(
   url: string,

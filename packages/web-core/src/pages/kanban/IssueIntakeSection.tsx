@@ -8,7 +8,6 @@ import {
 } from 'shared/types';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { getProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
 import { repoApi, specApi, ApiError } from '@/shared/lib/api';
 
@@ -47,13 +46,11 @@ function prettyExecutor(executor: BaseCodingAgent): string {
  * "Generate spec" intake controls for the New Issue dialog (create mode). Takes
  * the issue's own title + description as the brief, lets the user pick agent
  * parameters + repos, and runs a coding agent that expands it into a
- * development-ready title + spec. Synchronous (spinner) — overwrites the dialog's
- * title and description on success via `onGenerated`.
+ * development-ready title + spec. Overwrites the dialog's title and description
+ * on success via `onGenerated`.
  *
- * Spec generation runs the read-only agent locally only: the remote web app
- * proxies these calls through the host relay, and the backend rejects relayed
- * requests (generation can exceed the relay's 30s timeout). When running remote,
- * the controls are shown but disabled with an explanatory note.
+ * Generation starts asynchronously so remote relay requests stay below the
+ * relay timeout while the host-side agent continues in the background.
  */
 export function IssueIntakeSection({
   projectId,
@@ -64,8 +61,6 @@ export function IssueIntakeSection({
   onGenerated,
 }: IssueIntakeSectionProps) {
   const { profiles, config } = useUserSystem();
-  const relayDisabled = useAppRuntime() === 'remote';
-
   const {
     executorConfig,
     effectiveExecutor,
@@ -165,7 +160,6 @@ export function IssueIntakeSection({
 
   const canGenerate =
     !disabled &&
-    !relayDisabled &&
     !isGenerating &&
     title.trim().length > 0 &&
     selectedRepos.length > 0 &&
@@ -177,12 +171,16 @@ export function IssueIntakeSection({
     setIsGenerating(true);
     setError(null);
     try {
-      const result = await specApi.generate({
-        project_id: projectId,
-        brief: brief.trim(),
-        executor_config: executorConfig,
-        repos: selectedRepos,
-      });
+      const result = await specApi.generate(
+        {
+          project_id: projectId,
+          brief: brief.trim(),
+          executor_config: executorConfig,
+          repos: selectedRepos,
+        },
+        undefined,
+        hostId
+      );
       // Ignore if a newer request superseded this one.
       if (token !== requestTokenRef.current) return;
       onGenerated(result.title, result.description, result.intake_metadata);
@@ -202,6 +200,7 @@ export function IssueIntakeSection({
     projectId,
     brief,
     selectedRepos,
+    hostId,
     onGenerated,
   ]);
 
@@ -227,95 +226,82 @@ export function IssueIntakeSection({
             the selected repos and rewrites them into a full technical task.
           </p>
 
-          {relayDisabled ? (
+          {title.trim().length === 0 && (
             <p className="text-xs text-low">
-              Spec generation runs locally only — it isn’t available over a
-              remote connection.
+              Add a title (and optionally a description) above to use as the
+              brief.
             </p>
-          ) : (
-            <>
-              {title.trim().length === 0 && (
-                <p className="text-xs text-low">
-                  Add a title (and optionally a description) above to use as the
-                  brief.
-                </p>
-              )}
-
-              <div className="flex flex-wrap items-center gap-half">
-                <label className="text-xs text-low">Agent</label>
-                <select
-                  value={effectiveExecutor ?? ''}
-                  disabled={disabled || isGenerating}
-                  onChange={(e) =>
-                    setExecutor(e.target.value as BaseCodingAgent)
-                  }
-                  className="rounded-sm border bg-panel/40 px-half py-half text-sm text-high disabled:opacity-50"
-                >
-                  {executorOptions.map((exec) => (
-                    <option key={exec} value={exec}>
-                      {prettyExecutor(exec)}
-                    </option>
-                  ))}
-                </select>
-
-                {variantOptions.length > 1 && (
-                  <select
-                    value={selectedVariant ?? ''}
-                    disabled={disabled || isGenerating}
-                    onChange={(e) => setVariant(e.target.value || null)}
-                    className="rounded-sm border bg-panel/40 px-half py-half text-sm text-high disabled:opacity-50"
-                  >
-                    {variantOptions.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <div className="space-y-half">
-                <div className="text-xs text-low">Repos to explore</div>
-                {candidates.length === 0 ? (
-                  <p className="text-xs text-low">
-                    No repositories with a default branch are available for this
-                    project.
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-base">
-                    {candidates.map((c) => (
-                      <label
-                        key={c.repoId}
-                        className="flex items-center gap-half text-sm text-normal"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedRepoIds.has(c.repoId)}
-                          disabled={disabled || isGenerating}
-                          onChange={() => toggleRepo(c.repoId)}
-                        />
-                        <span>{c.name}</span>
-                        <span className="text-xs text-low">
-                          ({c.targetBranch})
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {error && <p className="text-xs text-error">{error}</p>}
-
-              <button
-                type="button"
-                onClick={handleGenerate}
-                disabled={!canGenerate}
-                className="rounded-sm border px-base py-half text-sm font-medium text-high hover:bg-panel/50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isGenerating ? 'Generating spec…' : 'Generate spec'}
-              </button>
-            </>
           )}
+
+          <div className="flex flex-wrap items-center gap-half">
+            <label className="text-xs text-low">Agent</label>
+            <select
+              value={effectiveExecutor ?? ''}
+              disabled={disabled || isGenerating}
+              onChange={(e) => setExecutor(e.target.value as BaseCodingAgent)}
+              className="rounded-sm border bg-panel/40 px-half py-half text-sm text-high disabled:opacity-50"
+            >
+              {executorOptions.map((exec) => (
+                <option key={exec} value={exec}>
+                  {prettyExecutor(exec)}
+                </option>
+              ))}
+            </select>
+
+            {variantOptions.length > 1 && (
+              <select
+                value={selectedVariant ?? ''}
+                disabled={disabled || isGenerating}
+                onChange={(e) => setVariant(e.target.value || null)}
+                className="rounded-sm border bg-panel/40 px-half py-half text-sm text-high disabled:opacity-50"
+              >
+                {variantOptions.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div className="space-y-half">
+            <div className="text-xs text-low">Repos to explore</div>
+            {candidates.length === 0 ? (
+              <p className="text-xs text-low">
+                No repositories with a default branch are available for this
+                project.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-base">
+                {candidates.map((c) => (
+                  <label
+                    key={c.repoId}
+                    className="flex items-center gap-half text-sm text-normal"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedRepoIds.has(c.repoId)}
+                      disabled={disabled || isGenerating}
+                      onChange={() => toggleRepo(c.repoId)}
+                    />
+                    <span>{c.name}</span>
+                    <span className="text-xs text-low">({c.targetBranch})</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {error && <p className="text-xs text-error">{error}</p>}
+
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            className="rounded-sm border px-base py-half text-sm font-medium text-high hover:bg-panel/50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isGenerating ? 'Generating spec…' : 'Generate spec'}
+          </button>
         </>
       )}
     </div>

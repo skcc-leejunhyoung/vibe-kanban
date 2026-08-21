@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { ClickToComponent } from 'click-to-react-component';
 import { QueryClientProvider } from '@tanstack/react-query';
 import App from '@web/app/entry/App';
-import { AppErrorBoundary } from '@web/app/entry/AppErrorBoundary';
+import { AppErrorBoundary } from '@/shared/components/AppErrorBoundary';
 import '@/i18n';
 import { oauthApi } from '@/shared/lib/api';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';

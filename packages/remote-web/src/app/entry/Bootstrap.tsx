@@ -28,6 +28,8 @@ import {
 import { installRelayResumeReconnect } from "@remote/shared/lib/relay/resumeReconnect";
 import { installKeyboardModalityTracker } from "@/shared/lib/keyboardModality";
 import { installAppZoom } from "@/shared/lib/zoom";
+import { ThemeProvider } from "@/shared/providers/ThemeProvider";
+import { AppErrorBoundary } from "@/shared/components/AppErrorBoundary";
 
 setRemoteApiBase(import.meta.env.VITE_API_BASE_URL || window.location.origin);
 setRelayApiBase(
@@ -73,9 +75,13 @@ if (cachedPrimaryColor) {
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RemoteAuthProvider>
-        <AppRouter />
-      </RemoteAuthProvider>
+      <AppErrorBoundary>
+        <ThemeProvider initialTheme={loadPersistedTheme() ?? undefined}>
+          <RemoteAuthProvider>
+            <AppRouter />
+          </RemoteAuthProvider>
+        </ThemeProvider>
+      </AppErrorBoundary>
     </QueryClientProvider>
   </React.StrictMode>,
 );

@@ -43,6 +43,9 @@ import {
   isWorkspacesDestination,
 } from "@/shared/lib/routes/appNavigation";
 import NotFoundPage from "../pages/NotFoundPage";
+import { RemoteReleaseNotesHandler } from "@remote/app/entry/RemoteReleaseNotesHandler";
+import { isPaneGridDestination } from "@/shared/stores/useWorkspacePanesStore";
+import { useWorkspacePaneShortcuts } from "@/shared/keyboard/useWorkspacePaneShortcuts";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -85,6 +88,7 @@ function GlobalKeyboardShortcuts() {
 function WorkspaceKeyboardShortcuts() {
   useWorkspaceShortcuts();
   useIssueShortcuts();
+  useWorkspacePaneShortcuts();
   return null;
 }
 
@@ -134,7 +138,7 @@ function RootLayout() {
   const isWorkspaceProviderRoute =
     isProjectDestination(destination) ||
     isWorkspacesDestination(destination) ||
-    destination?.kind === "pull-requests";
+    isPaneGridDestination(destination);
 
   const appShell = (
     <RemoteAppShell>
@@ -147,6 +151,7 @@ function RootLayout() {
     <SequenceTrackerProvider>
       <SequenceIndicator />
       <GlobalKeyboardShortcuts />
+      <RemoteReleaseNotesHandler />
       {appShell}
     </SequenceTrackerProvider>
   );

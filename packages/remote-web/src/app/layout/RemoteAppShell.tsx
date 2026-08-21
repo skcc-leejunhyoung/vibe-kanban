@@ -59,6 +59,8 @@ import {
 } from "@/shared/keyboard/registry";
 import { getCycledProjectId } from "@/shared/lib/projectCycle";
 import { PullRequestsBackgroundPrefetch } from "@/pages/pull-requests/PullRequestsBackgroundPrefetch";
+import { WorkspacePanesScreen } from "@/pages/workspaces/WorkspacePanesScreen";
+import { isPaneGridDestination } from "@/shared/stores/useWorkspacePanesStore";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -88,6 +90,11 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
   const isProjectRoute = /^\/projects\/[^/]+/.test(location.pathname);
   const isPullRequestsRoute = location.pathname.endsWith("/pull-requests");
+  const isMobile = useIsMobile();
+  const currentDestination = resolveRemoteDestinationFromPath(
+    location.pathname,
+  );
+  const showPaneGrid = !isMobile && isPaneGridDestination(currentDestination);
 
   useEffect(() => {
     syncWorkspaceHostUser(isSignedIn ? userId : null);
@@ -98,7 +105,6 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     isWorkspaceContextRoute || isProjectRoute || isPullRequestsRoute,
   );
   useMarkNotificationsReadOnView();
-  const isMobile = useIsMobile();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAppBarHovered, setIsAppBarHovered] = useState(false);
   const isLeftSidebarVisible = useUiPreferencesStore(
@@ -647,7 +653,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               enabled={isWorkspaceSidebarPreviewEnabled}
               isAppBarHovered={isAppBarHovered}
             />
-            {children}
+            {showPaneGrid ? <WorkspacePanesScreen /> : children}
           </div>
         </div>
       </div>

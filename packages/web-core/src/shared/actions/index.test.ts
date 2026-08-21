@@ -314,7 +314,7 @@ describe('command palette navigation actions', () => {
     ).toBe(false);
   });
 
-  it('shows go to mapped issue for a local workspace target', () => {
+  it('shows go to mapped issue for a workspace target in both apps', () => {
     expect(
       isActionVisible(Actions.GotoWorkspaceMappedIssue, {
         ...openWorkspaceContext,
@@ -327,7 +327,7 @@ describe('command palette navigation actions', () => {
         ...openWorkspaceContext,
         appRuntime: 'remote',
       })
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isActionVisible(Actions.GotoWorkspaceMappedIssue, {
         ...openWorkspaceContext,
@@ -455,7 +455,7 @@ describe('command palette navigation actions', () => {
     Actions.RenameSession,
     Actions.DeleteSession,
     Actions.ViewIssueWorkspaces,
-  ])('$id is hidden when its remote executor cannot run it', (action) => {
+  ])('$id is available in both apps', (action) => {
     const base = {
       appRuntime: 'remote',
       hasWorkspace: true,
@@ -464,7 +464,7 @@ describe('command palette navigation actions', () => {
       isInPlace: false,
     } as ActionVisibilityContext;
 
-    expect(isActionVisible(action, base)).toBe(false);
+    expect(isActionVisible(action, base)).toBe(true);
     expect(isActionVisible(action, { ...base, appRuntime: 'local' })).toBe(
       true
     );

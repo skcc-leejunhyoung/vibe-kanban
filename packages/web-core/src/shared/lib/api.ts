@@ -526,7 +526,8 @@ export const specApi = {
    */
   generate: async (
     data: GenerateSpecRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    hostId?: string | null
   ): Promise<GenerateSpecResponse> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 180_000);
@@ -536,12 +537,40 @@ export const specApi = {
       });
     }
     try {
-      const response = await makeRequest(`/api/spec/generate`, {
-        method: 'POST',
-        body: JSON.stringify(data),
-        signal: controller.signal,
-      });
-      return handleApiResponse<GenerateSpecResponse>(response);
+      const response = await makeHostAwareRequest(
+        `/api/spec/generate/start`,
+        hostId,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+          signal: controller.signal,
+        }
+      );
+      const { job_id } = await handleApiResponse<{ job_id: string }>(response);
+      const statusUrl = `/api/spec/generate/status?job_id=${encodeURIComponent(job_id)}`;
+      while (true) {
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            window.clearTimeout(timeoutId);
+            reject(new DOMException('aborted', 'AbortError'));
+          };
+          const timeoutId = window.setTimeout(() => {
+            controller.signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, 1_000);
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+        });
+        const statusResponse = await makeHostAwareRequest(statusUrl, hostId, {
+          signal: controller.signal,
+        });
+        const status = await handleApiResponse<
+          | { status: 'running' }
+          | ({ status: 'completed' } & GenerateSpecResponse)
+          | { status: 'failed'; error: string }
+        >(statusResponse);
+        if (status.status === 'completed') return status;
+        if (status.status === 'failed') throw new ApiError(status.error);
+      }
     } finally {
       clearTimeout(timeout);
     }
