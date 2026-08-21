@@ -8,6 +8,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    panic::AssertUnwindSafe,
     sync::LazyLock,
     time::{Duration, Instant},
 };
@@ -27,6 +28,7 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::profile::ExecutorConfig;
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use services::services::{
@@ -34,6 +36,7 @@ use services::services::{
     container::{ContainerService, assistant_message_in_store},
 };
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
@@ -49,6 +52,7 @@ const JOB_TTL: Duration = Duration::from_secs(10 * 60);
 
 struct SpecGenerationJob {
     status: SpecGenerationStatus,
+    cancel_token: CancellationToken,
     created_at: Instant,
 }
 
@@ -79,12 +83,25 @@ struct SpecGenerationQuery {
 static SPEC_GENERATION_JOBS: LazyLock<RwLock<HashMap<Uuid, SpecGenerationJob>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+fn prune_spec_generation_jobs(jobs: &mut HashMap<Uuid, SpecGenerationJob>) {
+    jobs.retain(|_, job| {
+        let keep = job.created_at.elapsed() < JOB_TTL;
+        if !keep {
+            job.cancel_token.cancel();
+        }
+        keep
+    });
+}
+
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let _ = deployment;
     Router::new()
         .route("/spec/generate", post(generate_spec))
         .route("/spec/generate/start", post(start_spec_generation))
-        .route("/spec/generate/status", get(get_spec_generation))
+        .route(
+            "/spec/generate/status",
+            get(get_spec_generation).delete(cancel_spec_generation),
+        )
 }
 
 pub async fn generate_spec(
@@ -201,20 +218,30 @@ async fn start_spec_generation(
     Json(payload): Json<GenerateSpecRequest>,
 ) -> Result<ResponseJson<ApiResponse<StartSpecGenerationResponse>>, ApiError> {
     let job_id = Uuid::new_v4();
+    let cancel_token = CancellationToken::new();
     let mut jobs = SPEC_GENERATION_JOBS.write().await;
-    jobs.retain(|_, job| job.created_at.elapsed() < JOB_TTL);
+    prune_spec_generation_jobs(&mut jobs);
     jobs.insert(
         job_id,
         SpecGenerationJob {
             status: SpecGenerationStatus::Running,
+            cancel_token: cancel_token.clone(),
             created_at: Instant::now(),
         },
     );
     drop(jobs);
 
     tokio::spawn(async move {
-        let status = match generate_spec_inner(&deployment, payload).await {
-            Ok(ResponseJson(response)) => match response.into_data() {
+        let result = tokio::select! {
+            result = AssertUnwindSafe(generate_spec_inner(&deployment, payload)).catch_unwind() => Some(result),
+            _ = cancel_token.cancelled() => None,
+        };
+        let Some(result) = result else {
+            SPEC_GENERATION_JOBS.write().await.remove(&job_id);
+            return;
+        };
+        let status = match result {
+            Ok(Ok(ResponseJson(response))) => match response.into_data() {
                 Some(result) => SpecGenerationStatus::Completed {
                     title: result.title,
                     description: result.description,
@@ -224,8 +251,11 @@ async fn start_spec_generation(
                     error: "Spec generation returned no result.".to_string(),
                 },
             },
-            Err(error) => SpecGenerationStatus::Failed {
+            Ok(Err(error)) => SpecGenerationStatus::Failed {
                 error: error.to_string(),
+            },
+            Err(_) => SpecGenerationStatus::Failed {
+                error: "Spec generation stopped unexpectedly.".to_string(),
             },
         };
         if let Some(job) = SPEC_GENERATION_JOBS.write().await.get_mut(&job_id) {
@@ -236,6 +266,15 @@ async fn start_spec_generation(
     Ok(ResponseJson(ApiResponse::success(
         StartSpecGenerationResponse { job_id },
     )))
+}
+
+async fn cancel_spec_generation(
+    Query(query): Query<SpecGenerationQuery>,
+) -> ResponseJson<ApiResponse<()>> {
+    if let Some(job) = SPEC_GENERATION_JOBS.read().await.get(&query.job_id) {
+        job.cancel_token.cancel();
+    }
+    ResponseJson(ApiResponse::success(()))
 }
 
 async fn get_spec_generation(
@@ -437,7 +476,32 @@ async fn cleanup_ephemeral_workspace(deployment: &DeploymentImpl, workspace_id: 
 
 #[cfg(test)]
 mod tests {
-    use super::parse_spec;
+    use std::{collections::HashMap, time::Instant};
+
+    use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
+
+    use super::{
+        JOB_TTL, SpecGenerationJob, SpecGenerationStatus, parse_spec, prune_spec_generation_jobs,
+    };
+
+    #[test]
+    fn pruning_expired_job_cancels_it() {
+        let cancel_token = CancellationToken::new();
+        let mut jobs = HashMap::from([(
+            Uuid::new_v4(),
+            SpecGenerationJob {
+                status: SpecGenerationStatus::Running,
+                cancel_token: cancel_token.clone(),
+                created_at: Instant::now() - JOB_TTL,
+            },
+        )]);
+
+        prune_spec_generation_jobs(&mut jobs);
+
+        assert!(jobs.is_empty());
+        assert!(cancel_token.is_cancelled());
+    }
 
     #[test]
     fn parses_json_fence() {

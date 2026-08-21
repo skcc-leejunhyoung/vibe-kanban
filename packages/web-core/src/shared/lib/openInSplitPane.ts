@@ -19,10 +19,11 @@ import {
   type WorkspacePaneDestination,
 } from '@/shared/stores/useWorkspacePanesStore';
 
-function paneGridAvailable(appRuntime: AppRuntime): boolean {
-  return (
-    (appRuntime === 'local' || appRuntime === 'remote') && !isMobileViewport()
-  );
+export function paneGridAvailable(
+  appRuntime: AppRuntime,
+  isMobile = isMobileViewport()
+): boolean {
+  return (appRuntime === 'local' || appRuntime === 'remote') && !isMobile;
 }
 
 /** Make sure the pane grid is on screen. */
@@ -159,7 +160,7 @@ export function useIsPaneGridTargeted(): boolean {
 
   return (
     !hasDestinationOverride &&
-    appRuntime === 'local' &&
+    paneGridAvailable(appRuntime, isMobile) &&
     !isMobile &&
     activePaneId !== null &&
     isPaneGridDestination(destination)

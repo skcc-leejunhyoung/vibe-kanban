@@ -531,11 +531,12 @@ export const specApi = {
   ): Promise<GenerateSpecResponse> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 180_000);
+    const onAbort = () => controller.abort();
     if (signal) {
-      signal.addEventListener('abort', () => controller.abort(), {
-        once: true,
-      });
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', onAbort, { once: true });
     }
+    let statusUrl: string | null = null;
     try {
       const response = await makeHostAwareRequest(
         `/api/spec/generate/start`,
@@ -547,14 +548,17 @@ export const specApi = {
         }
       );
       const { job_id } = await handleApiResponse<{ job_id: string }>(response);
-      const statusUrl = `/api/spec/generate/status?job_id=${encodeURIComponent(job_id)}`;
+      statusUrl = `/api/spec/generate/status?job_id=${encodeURIComponent(job_id)}`;
       while (true) {
+        if (controller.signal.aborted) {
+          throw new DOMException('aborted', 'AbortError');
+        }
         await new Promise<void>((resolve, reject) => {
           const onAbort = () => {
-            window.clearTimeout(timeoutId);
+            clearTimeout(timeoutId);
             reject(new DOMException('aborted', 'AbortError'));
           };
-          const timeoutId = window.setTimeout(() => {
+          const timeoutId = setTimeout(() => {
             controller.signal.removeEventListener('abort', onAbort);
             resolve();
           }, 1_000);
@@ -571,8 +575,14 @@ export const specApi = {
         if (status.status === 'completed') return status;
         if (status.status === 'failed') throw new ApiError(status.error);
       }
+    } catch (error) {
+      if (controller.signal.aborted && statusUrl) {
+        void makeHostAwareRequest(statusUrl, hostId, { method: 'DELETE' });
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
     }
   },
 };

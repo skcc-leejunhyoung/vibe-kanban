@@ -94,6 +94,15 @@ export function IssueIntakeSection({
 
   // Used to ignore a stale in-flight response if a newer request is started.
   const requestTokenRef = useRef(0);
+  const generationAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(
+    () => () => {
+      requestTokenRef.current += 1;
+      generationAbortRef.current?.abort();
+    },
+    []
+  );
 
   // Load the project's default repos (with branches) + repo names for display.
   useEffect(() => {
@@ -168,6 +177,8 @@ export function IssueIntakeSection({
   const handleGenerate = useCallback(async () => {
     if (!canGenerate || !executorConfig) return;
     const token = ++requestTokenRef.current;
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
     setIsGenerating(true);
     setError(null);
     try {
@@ -178,7 +189,7 @@ export function IssueIntakeSection({
           executor_config: executorConfig,
           repos: selectedRepos,
         },
-        undefined,
+        controller.signal,
         hostId
       );
       // Ignore if a newer request superseded this one.
@@ -192,6 +203,9 @@ export function IssueIntakeSection({
           : 'Failed to generate spec. Please try again.';
       setError(message);
     } finally {
+      if (generationAbortRef.current === controller) {
+        generationAbortRef.current = null;
+      }
       if (token === requestTokenRef.current) setIsGenerating(false);
     }
   }, [

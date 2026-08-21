@@ -3,7 +3,7 @@ import path from "path";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import pkg from "./package.json";
+import pkg from "../../package.json";
 
 function executorSchemasPlugin(): Plugin {
   const VIRTUAL_ID = "virtual:executor-schemas";

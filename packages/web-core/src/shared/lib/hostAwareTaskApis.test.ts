@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { searchApi, tagsApi, workspacesApi } from './api';
+import type { GenerateSpecRequest } from 'shared/types';
+import { searchApi, specApi, tagsApi, workspacesApi } from './api';
 import { setLocalApiTransport } from './localApiTransport';
 
 function apiResponse<T>(data: T): Response {
@@ -97,5 +98,27 @@ describe('host-aware task APIs', () => {
       '/api/host/host-3/workspaces/workspace-1/git/pull-and-push',
       '/api/host/host-3/workspaces/workspace-1/git/target-branch/pull-and-push',
     ]);
+  });
+
+  it('cancels an aborted remote spec generation job', async () => {
+    const request = vi.fn(async (path: string) =>
+      apiResponse(path.endsWith('/start') ? { job_id: 'job-1' } : undefined)
+    );
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+    const controller = new AbortController();
+    const generation = specApi.generate(
+      {} as GenerateSpecRequest,
+      controller.signal,
+      'host-4'
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.abort();
+
+    await expect(generation).rejects.toMatchObject({ name: 'AbortError' });
+    expect(request).toHaveBeenLastCalledWith(
+      '/api/host/host-4/spec/generate/status?job_id=job-1',
+      expect.objectContaining({ method: 'DELETE' })
+    );
   });
 });
