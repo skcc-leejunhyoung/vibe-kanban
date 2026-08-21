@@ -56,7 +56,7 @@ struct SpecGenerationJob {
     created_at: Instant,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum SpecGenerationStatus {
     Running,
@@ -231,6 +231,12 @@ async fn start_spec_generation(
     );
     drop(jobs);
 
+    tokio::spawn(async {
+        tokio::time::sleep(JOB_TTL).await;
+        let mut jobs = SPEC_GENERATION_JOBS.write().await;
+        prune_spec_generation_jobs(&mut jobs);
+    });
+
     tokio::spawn(async move {
         let result = tokio::select! {
             result = AssertUnwindSafe(generate_spec_inner(&deployment, payload)).catch_unwind() => Some(result),
@@ -280,25 +286,14 @@ async fn cancel_spec_generation(
 async fn get_spec_generation(
     Query(query): Query<SpecGenerationQuery>,
 ) -> Result<ResponseJson<ApiResponse<SpecGenerationStatus>>, ApiError> {
-    let jobs = SPEC_GENERATION_JOBS.read().await;
-    let job = jobs
+    let mut jobs = SPEC_GENERATION_JOBS.write().await;
+    let status = jobs
         .get(&query.job_id)
+        .map(|job| job.status.clone())
         .ok_or_else(|| ApiError::BadRequest("Spec generation job not found.".to_string()))?;
-    let status = match &job.status {
-        SpecGenerationStatus::Running => SpecGenerationStatus::Running,
-        SpecGenerationStatus::Completed {
-            title,
-            description,
-            intake_metadata,
-        } => SpecGenerationStatus::Completed {
-            title: title.clone(),
-            description: description.clone(),
-            intake_metadata: intake_metadata.clone(),
-        },
-        SpecGenerationStatus::Failed { error } => SpecGenerationStatus::Failed {
-            error: error.clone(),
-        },
-    };
+    if !matches!(status, SpecGenerationStatus::Running) {
+        jobs.remove(&query.job_id);
+    }
     Ok(ResponseJson(ApiResponse::success(status)))
 }
 
@@ -482,7 +477,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        JOB_TTL, SpecGenerationJob, SpecGenerationStatus, parse_spec, prune_spec_generation_jobs,
+        JOB_TTL, SPEC_GENERATION_JOBS, SpecGenerationJob, SpecGenerationQuery,
+        SpecGenerationStatus, get_spec_generation, parse_spec, prune_spec_generation_jobs,
     };
 
     #[test]
@@ -501,6 +497,29 @@ mod tests {
 
         assert!(jobs.is_empty());
         assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn completed_job_is_consumed() {
+        let job_id = Uuid::new_v4();
+        SPEC_GENERATION_JOBS.write().await.insert(
+            job_id,
+            SpecGenerationJob {
+                status: SpecGenerationStatus::Completed {
+                    title: String::new(),
+                    description: String::new(),
+                    intake_metadata: serde_json::Value::Null,
+                },
+                cancel_token: CancellationToken::new(),
+                created_at: Instant::now(),
+            },
+        );
+
+        let _ = get_spec_generation(axum::extract::Query(SpecGenerationQuery { job_id }))
+            .await
+            .unwrap();
+
+        assert!(!SPEC_GENERATION_JOBS.read().await.contains_key(&job_id));
     }
 
     #[test]
