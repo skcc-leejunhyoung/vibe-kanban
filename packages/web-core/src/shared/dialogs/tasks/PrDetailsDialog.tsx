@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
@@ -59,6 +60,7 @@ export interface PrDetailsContentProps extends PrDetailsDialogProps {
   active?: boolean;
   variant?: 'dialog' | 'panel';
   onClose?: () => void;
+  actions?: ReactNode;
 }
 
 function formatActivityDate(value: string): string {
@@ -224,6 +226,7 @@ export function PrDetailsContent({
   active = true,
   variant = 'dialog',
   onClose,
+  actions,
 }: PrDetailsContentProps) {
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -385,6 +388,7 @@ export function PrDetailsContent({
                   </span>
                 )}
               <div className="flex gap-half @sm:ml-auto">
+                {actions}
                 <Button
                   variant="outline"
                   size="sm"

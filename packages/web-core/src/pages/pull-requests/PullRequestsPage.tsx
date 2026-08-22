@@ -1151,11 +1151,28 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     </main>
   );
 
+  const selectedMappings = selectedPullRequest
+    ? (pullRequestMappings.get(selectedPullRequest.url) ?? [])
+    : [];
+  const selectedIssueIds = new Set(
+    selectedMappings.map((link) => link.issue_id)
+  );
   const detailsContent = selectedPullRequest ? (
     <PullRequestDetailsPanel
       prUrl={selectedPullRequest.url}
       prNumber={selectedPullRequest.number}
       onClose={closeDetails}
+      onGoToMappedIssue={() => void goToMappedIssue(selectedPullRequest)}
+      onViewMappedWorkspaces={() =>
+        void viewMappedWorkspaces(selectedPullRequest)
+      }
+      hasMappedIssue={selectedMappings.length > 0}
+      hasMappedWorkspace={hasPullRequestWorkspace(
+        selectedPullRequest.url,
+        workspaceSummaries,
+        selectedIssueIds,
+        workspaces
+      )}
     />
   ) : null;
 
