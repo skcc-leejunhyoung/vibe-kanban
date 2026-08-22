@@ -7,6 +7,12 @@ import {
 } from '@/shared/stores/useFolderFavoritesStore';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import type { ProjectViewDefinition } from '@/shared/stores/useUiPreferencesStore';
+import {
+  DEFAULT_PULL_REQUEST_FILTER_STATE,
+  migratePullRequestDefaultFilters,
+  type PullRequestFilterState,
+} from '@/pages/pull-requests/pullRequestFilters';
 import {
   DEFAULT_THEME_VARIANT,
   persistStoredPresets,
@@ -82,6 +88,17 @@ function favoritesEqual(a: FolderFavorite[], b: FolderFavorite[]): boolean {
   // Favorites are a small ordered list of plain {path, name} pairs, so a stable
   // JSON compare is sufficient for echo detection.
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+const jsonEqual = (a: unknown, b: unknown): boolean =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+function readProjectViews(
+  raw: unknown
+): Record<string, ProjectViewDefinition[]> {
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, ProjectViewDefinition[]>)
+    : {};
 }
 
 /** Coerce opaque config JSON into a clean, well-formed favorites list. */
@@ -229,6 +246,34 @@ const PREF_SPECS: PrefSpec[] = [
     equal: favoritesEqual,
     toConfig: (v) => ({
       quick_chat_favorites: v as unknown as Config['quick_chat_favorites'],
+    }),
+  }),
+  // 6. Project view definitions
+  pref<Record<string, ProjectViewDefinition[]>>({
+    getConfigValue: (c) => readProjectViews(c.kanban_project_views),
+    isDefault: (v) => Object.keys(v).length === 0,
+    readStore: () => useUiPreferencesStore.getState().projectViewsById,
+    applyToStore: (v) =>
+      useUiPreferencesStore.setState({ projectViewsById: v }),
+    subscribe: (cb) => useUiPreferencesStore.subscribe(cb),
+    equal: jsonEqual,
+    toConfig: (v) => ({
+      kanban_project_views: v as unknown as Config['kanban_project_views'],
+    }),
+  }),
+  // 7. Pull request page default filters
+  pref<PullRequestFilterState>({
+    getConfigValue: (c) =>
+      migratePullRequestDefaultFilters(c.pull_request_default_filters),
+    isDefault: (v) => jsonEqual(v, DEFAULT_PULL_REQUEST_FILTER_STATE),
+    readStore: () => useUiPreferencesStore.getState().pullRequestDefaultFilters,
+    applyToStore: (v) =>
+      useUiPreferencesStore.setState({ pullRequestDefaultFilters: v }),
+    subscribe: (cb) => useUiPreferencesStore.subscribe(cb),
+    equal: jsonEqual,
+    toConfig: (v) => ({
+      pull_request_default_filters:
+        v as unknown as Config['pull_request_default_filters'],
     }),
   }),
 ];

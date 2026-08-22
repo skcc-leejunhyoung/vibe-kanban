@@ -1002,6 +1002,14 @@ diff_view: JsonValue,
  */
 quick_chat_favorites: JsonValue,
 /**
+ * Opaque project view definitions keyed by project id.
+ */
+kanban_project_views: JsonValue,
+/**
+ * Opaque pull request page default filters.
+ */
+pull_request_default_filters: JsonValue,
+/**
  * Open newly created quick chats in a new workspace pane when supported.
  */
 quick_chat_open_in_new_pane: boolean,

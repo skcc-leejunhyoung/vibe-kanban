@@ -22,6 +22,28 @@ export const DEFAULT_PULL_REQUEST_FILTER_STATE: PullRequestFilterState = {
   involvesMe: false,
 };
 
+/** Normalize saved defaults, including the legacy single-repository shape. */
+export function migratePullRequestDefaultFilters(
+  saved: unknown
+): PullRequestFilterState {
+  const legacy = (saved ?? {}) as Partial<PullRequestFilterState> & {
+    repository?: string;
+  };
+  const merged: PullRequestFilterState & { repository?: string } = {
+    ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+    ...legacy,
+  };
+  if (
+    merged.repositories.length === 0 &&
+    legacy.repository &&
+    legacy.repository !== 'all'
+  ) {
+    merged.repositories = [legacy.repository];
+  }
+  delete merged.repository;
+  return merged;
+}
+
 function filterValuesEqual(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((value, i) => value === b[i]);

@@ -71,6 +71,8 @@ export const DEFAULT_CONFIG: Config = {
   theme_presets: [],
   diff_view: { mode: 'unified', ignoreWhitespace: true, wrapText: false },
   quick_chat_favorites: [],
+  kanban_project_views: {},
+  pull_request_default_filters: {},
   quick_chat_open_in_new_pane: false,
   agent_memory_sync: {
     enabled: false,

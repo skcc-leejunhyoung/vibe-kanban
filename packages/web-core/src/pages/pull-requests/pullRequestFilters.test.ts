@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PULL_REQUEST_FILTER_STATE,
+  migratePullRequestDefaultFilters,
   resolvePullRequestFiltersAfterDefaultsChange,
   resolvePullRequestFiltersAfterRepositoriesChange,
 } from './pullRequestFilters';
@@ -8,6 +9,15 @@ import {
 describe('DEFAULT_PULL_REQUEST_FILTER_STATE', () => {
   it('does not limit pull requests to the current user by default', () => {
     expect(DEFAULT_PULL_REQUEST_FILTER_STATE.involvesMe).toBe(false);
+  });
+});
+
+describe('migratePullRequestDefaultFilters', () => {
+  it('preserves legacy single-repository defaults during config promotion', () => {
+    expect(migratePullRequestDefaultFilters({ repository: 'repo-1' })).toEqual({
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      repositories: ['repo-1'],
+    });
   });
 });
 

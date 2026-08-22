@@ -27,7 +27,7 @@ import {
   type ProjectViewDefinition,
 } from '@/shared/stores/useUiPreferencesStore';
 import {
-  DEFAULT_PULL_REQUEST_FILTER_STATE,
+  migratePullRequestDefaultFilters,
   type PullRequestFilterState,
 } from '@/pages/pull-requests/pullRequestFilters';
 import {
@@ -126,32 +126,6 @@ function storeToScratchData(state: {
     preview_shortcuts: [],
     preview_shortcuts_by_project: state.previewShortcutsByProject,
   };
-}
-
-/**
- * Normalizes the saved PR default filters, migrating the legacy single
- * `repository` string into the multi-select `repositories` array so defaults
- * saved before multi-repo support still apply on load.
- */
-function migratePullRequestDefaultFilters(
-  saved: unknown
-): PullRequestFilterState {
-  const legacy = (saved ?? {}) as Partial<PullRequestFilterState> & {
-    repository?: string;
-  };
-  const merged: PullRequestFilterState & { repository?: string } = {
-    ...DEFAULT_PULL_REQUEST_FILTER_STATE,
-    ...legacy,
-  };
-  if (
-    merged.repositories.length === 0 &&
-    legacy.repository &&
-    legacy.repository !== 'all'
-  ) {
-    merged.repositories = [legacy.repository];
-  }
-  delete merged.repository;
-  return merged;
 }
 
 /**

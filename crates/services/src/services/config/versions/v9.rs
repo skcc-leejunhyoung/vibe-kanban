@@ -82,6 +82,10 @@ fn default_quick_chat_favorites() -> serde_json::Value {
     serde_json::Value::Array(Vec::new())
 }
 
+fn default_json_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 fn default_agent_memory_sync_time() -> String {
     "03:00".to_string()
 }
@@ -181,6 +185,12 @@ pub struct Config {
     /// Opaque quick-chat folder favorites (`FolderFavorite[]`).
     #[serde(default = "default_quick_chat_favorites")]
     pub quick_chat_favorites: serde_json::Value,
+    /// Opaque project view definitions keyed by project id.
+    #[serde(default = "default_json_object")]
+    pub kanban_project_views: serde_json::Value,
+    /// Opaque pull request page default filters.
+    #[serde(default = "default_json_object")]
+    pub pull_request_default_filters: serde_json::Value,
     /// Open newly created quick chats in a new workspace pane when supported.
     #[serde(default)]
     pub quick_chat_open_in_new_pane: bool,
@@ -226,6 +236,8 @@ impl Config {
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
             quick_chat_favorites: default_quick_chat_favorites(),
+            kanban_project_views: default_json_object(),
+            pull_request_default_filters: default_json_object(),
             quick_chat_open_in_new_pane: false,
             agent_memory_sync: AgentMemorySyncConfig::default(),
         }
@@ -294,6 +306,8 @@ impl Default for Config {
             theme_presets: default_theme_presets(),
             diff_view: default_diff_view(),
             quick_chat_favorites: default_quick_chat_favorites(),
+            kanban_project_views: default_json_object(),
+            pull_request_default_filters: default_json_object(),
             quick_chat_open_in_new_pane: false,
             agent_memory_sync: AgentMemorySyncConfig::default(),
         }
@@ -339,6 +353,8 @@ mod tests {
         assert_eq!(config.config_version, "v9");
         assert!(config.keyboard_shortcuts.is_empty());
         assert_eq!(config.theme_variant, "default");
+        assert_eq!(config.kanban_project_views, serde_json::json!({}));
+        assert_eq!(config.pull_request_default_filters, serde_json::json!({}));
     }
 
     #[test]
@@ -363,6 +379,8 @@ mod tests {
         assert!(config.keyboard_shortcuts.is_empty());
         assert_eq!(config.theme_variant, "default");
         assert_eq!(config.diff_view["mode"], "unified");
+        assert_eq!(config.kanban_project_views, serde_json::json!({}));
+        assert_eq!(config.pull_request_default_filters, serde_json::json!({}));
         assert_eq!(
             config.quick_chat_favorites,
             serde_json::Value::Array(vec![])
