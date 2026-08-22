@@ -771,6 +771,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       const current =
         wsState.isRightSidebarVisible ?? state.isRightSidebarVisible;
       return {
+        isRightSidebarVisible: !current,
         workspacePanelStates: {
           ...state.workspacePanelStates,
           [workspaceId]: { ...wsState, isRightSidebarVisible: !current },
