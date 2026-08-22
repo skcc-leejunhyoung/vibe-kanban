@@ -16,6 +16,8 @@ import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal, type NoProps } from '@/shared/lib/modals';
 import { issuePrsApi } from '@/shared/lib/api';
 import type { PullRequestDetail } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 /**
  * Prompt the user to paste a pull-request URL and, once it resolves to a real
@@ -25,6 +27,7 @@ import type { PullRequestDetail } from 'shared/types';
  */
 const LinkPrByUrlDialogImpl = create<NoProps>(() => {
   const modal = useModal();
+  const hostId = useHostId();
   const { t } = useTranslation('tasks');
 
   const [prUrl, setPrUrl] = useState('');
@@ -55,8 +58,8 @@ const LinkPrByUrlDialogImpl = create<NoProps>(() => {
     isLoading: isLoadingPrInfo,
     error: prInfoError,
   } = useQuery({
-    queryKey: ['pr-info', debouncedUrl],
-    queryFn: () => issuePrsApi.getPrInfo(debouncedUrl),
+    queryKey: ['pr-info', debouncedUrl, getHostRequestScopeQueryKey(hostId)],
+    queryFn: () => issuePrsApi.getPrInfo(debouncedUrl, hostId),
     enabled: modal.visible && debouncedUrl.length > 0,
   });
 

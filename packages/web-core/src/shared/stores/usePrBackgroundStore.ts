@@ -54,9 +54,14 @@ interface PrBackgroundState {
   byWorkspace: Record<string, PrBackgroundEntry | undefined>;
   startGenerate: (
     workspaceId: string,
-    req: GeneratePrDescriptionRequest
+    req: GeneratePrDescriptionRequest,
+    hostId?: string | null
   ) => void;
-  startCreate: (workspaceId: string, req: CreatePrApiRequest) => void;
+  startCreate: (
+    workspaceId: string,
+    req: CreatePrApiRequest,
+    hostId?: string | null
+  ) => void;
   cancelGenerate: (workspaceId: string) => void;
   cancelCreate: (workspaceId: string) => void;
   clearGenerate: (workspaceId: string) => void;
@@ -131,7 +136,7 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
   return {
     byWorkspace: {},
 
-    startGenerate: (workspaceId, req) => {
+    startGenerate: (workspaceId, req, hostId) => {
       if (get().byWorkspace[workspaceId]?.generate?.status === 'running') {
         return;
       }
@@ -140,7 +145,7 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
       patch(workspaceId, { generate: { status: 'running' } });
 
       workspacesApi
-        .generatePrDescription(workspaceId, req, controller.signal)
+        .generatePrDescription(workspaceId, req, controller.signal, hostId)
         .then((res) => {
           if (slot(workspaceId).generate !== controller) return;
           patch(workspaceId, {
@@ -169,7 +174,7 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
         });
     },
 
-    startCreate: (workspaceId, req) => {
+    startCreate: (workspaceId, req, hostId) => {
       if (get().byWorkspace[workspaceId]?.create?.status === 'running') {
         return;
       }
@@ -184,7 +189,7 @@ export const usePrBackgroundStore = create<PrBackgroundState>()((set, get) => {
       });
 
       workspacesApi
-        .createPR(workspaceId, req, controller.signal)
+        .createPR(workspaceId, req, controller.signal, hostId)
         .then((result) => {
           if (slot(workspaceId).create !== controller) return;
           if (result.success) {

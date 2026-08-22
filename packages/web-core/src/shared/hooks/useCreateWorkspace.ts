@@ -6,6 +6,7 @@ import type {
   Workspace,
 } from 'shared/types';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface LinkToIssueParams {
   remoteProjectId: string;
@@ -24,6 +25,7 @@ interface CreateWorkspaceOnlyParams {
 
 export function useCreateWorkspace() {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
 
   const finishWorkspaceCreation = async (
     workspace: Workspace,
@@ -34,7 +36,8 @@ export function useCreateWorkspace() {
         await workspacesApi.linkToIssue(
           workspace.id,
           linkToIssue.remoteProjectId,
-          linkToIssue.issueId
+          linkToIssue.issueId,
+          hostId
         );
       } catch (linkError) {
         console.error('Failed to link workspace to issue:', linkError);
@@ -49,7 +52,7 @@ export function useCreateWorkspace() {
       data,
       linkToIssue,
     }: CreateAndStartWorkspaceParams) => {
-      const { workspace } = await workspacesApi.createAndStart(data);
+      const { workspace } = await workspacesApi.createAndStart(data, hostId);
       return finishWorkspaceCreation(workspace, linkToIssue);
     },
     onSuccess: () => {
@@ -65,7 +68,7 @@ export function useCreateWorkspace() {
 
   const createWorkspaceOnly = useMutation({
     mutationFn: async ({ data, linkToIssue }: CreateWorkspaceOnlyParams) => {
-      const { workspace } = await workspacesApi.createOnly(data);
+      const { workspace } = await workspacesApi.createOnly(data, hostId);
       return finishWorkspaceCreation(workspace, linkToIssue);
     },
     onSuccess: () => {

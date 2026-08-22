@@ -24,6 +24,7 @@ export interface ReconcileRemoteBranchDialogProps {
   behind: number;
   triggeredByPush?: boolean;
   isTarget?: boolean;
+  hostId?: string | null;
 }
 
 export type ReconcileRemoteBranchDialogResult =
@@ -41,6 +42,7 @@ const ReconcileRemoteBranchDialogImpl =
       behind,
       triggeredByPush = false,
       isTarget = false,
+      hostId,
     } = props;
     const modal = useModal();
     const { t } = useTranslation(['tasks', 'common']);
@@ -65,7 +67,8 @@ const ReconcileRemoteBranchDialogImpl =
             : t('tasks:git.reconcileRemote.error')
         );
       },
-      isTarget
+      isTarget,
+      hostId
     );
     const resetToRemote = useResetToRemote(
       workspaceId,
@@ -77,7 +80,8 @@ const ReconcileRemoteBranchDialogImpl =
             : t('tasks:git.reconcileRemote.resetError')
         );
       },
-      isTarget
+      isTarget,
+      hostId
     );
 
     const handleMerge = async () => {

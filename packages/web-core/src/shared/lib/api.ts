@@ -214,6 +214,22 @@ const makeHostAwareRequest = async (
   );
 };
 
+const makeHostAwareLocalApiRequest = async (
+  url: string,
+  hostId: string | null | undefined,
+  options: RequestInit
+) => {
+  const scope = resolveHostRequestScope(hostId);
+  if (scope.kind === 'current') return makeLocalApiRequest(url, options);
+  const targetHostId = scope.kind === 'host' ? scope.hostId : null;
+  return makeLocalApiRequest(url, {
+    ...options,
+    hostScope: 'explicit',
+    hostId: targetHostId,
+    relayHostId: targetHostId,
+  });
+};
+
 export type Ok<T> = { success: true; data: T };
 export type Err<E> = { success: false; error: E | undefined; message?: string };
 
@@ -373,23 +389,33 @@ export const sessionsApi = {
 
   followUp: async (
     sessionId: string,
-    data: CreateFollowUpAttempt
+    data: CreateFollowUpAttempt,
+    hostId?: string | null
   ): Promise<ExecutionProcess> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/follow-up`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/follow-up`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<ExecutionProcess>(response);
   },
 
   handoff: async (
     sessionId: string,
-    data: CreateHandoffAttempt
+    data: CreateHandoffAttempt,
+    hostId?: string | null
   ): Promise<ExecutionProcess> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/handoff`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/handoff`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<ExecutionProcess>(response);
   },
 
@@ -441,12 +467,17 @@ export const sessionsApi = {
 
   reset: async (
     sessionId: string,
-    data: ResetProcessRequest
+    data: ResetProcessRequest,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/reset`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/reset`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<void>(response);
   },
 
@@ -494,20 +525,24 @@ export const sessionsApi = {
   },
 
   getAutoResume: async (
-    sessionId: string
+    sessionId: string,
+    hostId?: string | null
   ): Promise<SessionAutoResumeStatus> => {
-    const response = await makeRequest(
-      `/api/sessions/${sessionId}/auto-resume`
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/auto-resume`,
+      hostId
     );
     return handleApiResponse<SessionAutoResumeStatus>(response);
   },
 
   setAutoResume: async (
     sessionId: string,
-    enabled: boolean
+    enabled: boolean,
+    hostId?: string | null
   ): Promise<SessionAutoResumeStatus> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/auto-resume`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify({ enabled }),
@@ -590,22 +625,32 @@ export const specApi = {
 // Workspace APIs
 export const workspacesApi = {
   createOnly: async (
-    data: CreateWorkspaceWithoutStartingRequest
+    data: CreateWorkspaceWithoutStartingRequest,
+    hostId?: string | null
   ): Promise<CreateWorkspaceWithoutStartingResponse> => {
-    const response = await makeRequest(`/api/workspaces/create`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      '/api/workspaces/create',
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<CreateWorkspaceWithoutStartingResponse>(response);
   },
 
   createAndStart: async (
-    data: CreateAndStartWorkspaceRequest
+    data: CreateAndStartWorkspaceRequest,
+    hostId?: string | null
   ): Promise<CreateAndStartWorkspaceResponse> => {
-    const response = await makeRequest(`/api/workspaces/start`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      '/api/workspaces/start',
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<CreateAndStartWorkspaceResponse>(response);
   },
 
@@ -686,9 +731,10 @@ export const workspacesApi = {
     return createWorkspaceWithSession(workspace, sessions[0]);
   },
 
-  stop: async (workspaceId: string): Promise<void> => {
-    const response = await makeRequest(
+  stop: async (workspaceId: string, hostId?: string | null): Promise<void> => {
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/execution/stop`,
+      hostId,
       {
         method: 'POST',
       }
@@ -758,10 +804,12 @@ export const workspacesApi = {
 
   openEditor: async (
     workspaceId: string,
-    data: OpenEditorRequest
+    data: OpenEditorRequest,
+    hostId?: string | null
   ): Promise<OpenEditorResponse> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/integration/editor/open`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -839,10 +887,12 @@ export const workspacesApi = {
 
   merge: async (
     workspaceId: string,
-    data: MergeWorkspaceRequest
+    data: MergeWorkspaceRequest,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/merge`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -853,10 +903,12 @@ export const workspacesApi = {
 
   commit: async (
     workspaceId: string,
-    data: CommitWorkspaceRequest
+    data: CommitWorkspaceRequest,
+    hostId?: string | null
   ): Promise<CommitWorkspaceResponse> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/commit`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -867,10 +919,12 @@ export const workspacesApi = {
 
   push: async (
     workspaceId: string,
-    data: PushWorkspaceRequest
+    data: PushWorkspaceRequest,
+    hostId?: string | null
   ): Promise<Result<void, PushError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/push`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -881,10 +935,12 @@ export const workspacesApi = {
 
   forcePush: async (
     workspaceId: string,
-    data: PushWorkspaceRequest
+    data: PushWorkspaceRequest,
+    hostId?: string | null
   ): Promise<Result<void, PushError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/push/force`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -917,10 +973,12 @@ export const workspacesApi = {
 
   mergeRemote: async (
     workspaceId: string,
-    data: PushWorkspaceRequest
+    data: PushWorkspaceRequest,
+    hostId?: string | null
   ): Promise<Result<void, GitOperationError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/merge-remote`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -931,10 +989,12 @@ export const workspacesApi = {
 
   resetToRemote: async (
     workspaceId: string,
-    data: ResetWorkspaceToRemoteRequest
+    data: ResetWorkspaceToRemoteRequest,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/reset-to-remote`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -945,10 +1005,12 @@ export const workspacesApi = {
 
   mergeRemoteTargetBranch: async (
     workspaceId: string,
-    repoId: string
+    repoId: string,
+    hostId?: string | null
   ): Promise<Result<void, GitOperationError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/merge-remote`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify({ repo_id: repoId }),
@@ -959,10 +1021,12 @@ export const workspacesApi = {
 
   resetTargetBranchToRemote: async (
     workspaceId: string,
-    data: ResetWorkspaceToRemoteRequest
+    data: ResetWorkspaceToRemoteRequest,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/reset-to-remote`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -994,10 +1058,12 @@ export const workspacesApi = {
 
   rebase: async (
     workspaceId: string,
-    data: RebaseWorkspaceRequest
+    data: RebaseWorkspaceRequest,
+    hostId?: string | null
   ): Promise<Result<void, GitOperationError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/rebase`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1009,10 +1075,12 @@ export const workspacesApi = {
   /** Fast-forward the work branch to its own remote (`git pull --ff-only`). */
   pull: async (
     workspaceId: string,
-    data: PullWorkspaceRequest
+    data: PullWorkspaceRequest,
+    hostId?: string | null
   ): Promise<PullWorkspaceResponse> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/pull`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1024,10 +1092,12 @@ export const workspacesApi = {
   /** Bring the target (base) branch into the work branch via merge or rebase. */
   updateFromBase: async (
     workspaceId: string,
-    data: UpdateFromBaseRequest
+    data: UpdateFromBaseRequest,
+    hostId?: string | null
   ): Promise<Result<void, GitOperationError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/update-from-base`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1039,10 +1109,12 @@ export const workspacesApi = {
   /** Merge a selected base branch into the workspace's target branch. */
   updateTargetBranchFromBase: async (
     workspaceId: string,
-    data: UpdateTargetBranchFromBaseRequest
+    data: UpdateTargetBranchFromBaseRequest,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/update-from-base`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1053,10 +1125,12 @@ export const workspacesApi = {
 
   change_target_branch: async (
     workspaceId: string,
-    data: ChangeTargetBranchRequest
+    data: ChangeTargetBranchRequest,
+    hostId?: string | null
   ): Promise<ChangeTargetBranchResponse> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch`,
+      hostId,
       {
         method: 'PUT',
         body: JSON.stringify(data),
@@ -1068,11 +1142,13 @@ export const workspacesApi = {
   /** Ahead/behind of the workspace's target branch vs the repo's origin. */
   getTargetBranchRemoteStatus: async (
     workspaceId: string,
-    repoId: string
+    repoId: string,
+    hostId?: string | null
   ): Promise<TargetBranchRemoteStatus> => {
     const params = new URLSearchParams({ repo_id: repoId });
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/remote-status?${params.toString()}`,
+      hostId,
       { cache: 'no-store' }
     );
     return handleApiResponse<TargetBranchRemoteStatus>(response);
@@ -1081,11 +1157,13 @@ export const workspacesApi = {
   /** Fetch the repo's origin, refreshing the target branch's tracking ref. */
   fetchTargetBranch: async (
     workspaceId: string,
-    repoId: string
+    repoId: string,
+    hostId?: string | null
   ): Promise<TargetBranchRemoteStatus> => {
     const payload: FetchTargetBranchRequest = { repo_id: repoId };
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/fetch`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -1118,11 +1196,13 @@ export const workspacesApi = {
   /** Fetch, then fast-forward the target branch, reporting divergence. */
   pullTargetBranch: async (
     workspaceId: string,
-    repoId: string
+    repoId: string,
+    hostId?: string | null
   ): Promise<PullWorkspaceResponse> => {
     const payload: PullTargetBranchRequest = { repo_id: repoId };
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/target-branch/pull`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(payload),
@@ -1133,13 +1213,15 @@ export const workspacesApi = {
 
   renameBranch: async (
     workspaceId: string,
-    newBranchName: string
+    newBranchName: string,
+    hostId?: string | null
   ): Promise<RenameBranchResponse> => {
     const payload: RenameBranchRequest = {
       new_branch_name: newBranchName,
     };
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/branch`,
+      hostId,
       {
         method: 'PUT',
         body: JSON.stringify(payload),
@@ -1150,10 +1232,12 @@ export const workspacesApi = {
 
   abortConflicts: async (
     workspaceId: string,
-    data: AbortConflictsRequest
+    data: AbortConflictsRequest,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/conflicts/abort`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1164,10 +1248,12 @@ export const workspacesApi = {
 
   continueRebase: async (
     workspaceId: string,
-    data: ContinueRebaseRequest
+    data: ContinueRebaseRequest,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/git/rebase/continue`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1260,25 +1346,37 @@ export const workspacesApi = {
 
   getPrDraft: async (
     workspaceId: string,
-    repoId: string
+    repoId: string,
+    hostId?: string | null
   ): Promise<PrDraft | null> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/pull-requests/draft?repo_id=${encodeURIComponent(repoId)}`
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/draft?repo_id=${encodeURIComponent(repoId)}`,
+      hostId
     );
     return handleApiResponse<PrDraft | null>(response);
   },
 
-  savePrDraft: async (workspaceId: string, draft: PrDraft): Promise<void> => {
-    const response = await makeRequest(
+  savePrDraft: async (
+    workspaceId: string,
+    draft: PrDraft,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/pull-requests/draft`,
+      hostId,
       { method: 'PUT', body: JSON.stringify(draft) }
     );
     await handleApiResponse<void>(response);
   },
 
-  deletePrDraft: async (workspaceId: string, repoId: string): Promise<void> => {
-    const response = await makeRequest(
+  deletePrDraft: async (
+    workspaceId: string,
+    repoId: string,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/pull-requests/draft?repo_id=${encodeURIComponent(repoId)}`,
+      hostId,
       { method: 'DELETE' }
     );
     await handleApiResponse<void>(response);
@@ -1288,12 +1386,14 @@ export const workspacesApi = {
   listAttachablePrs: async (
     workspaceId: string,
     repoId: string,
-    headBranch?: string
+    headBranch?: string,
+    hostId?: string | null
   ): Promise<Result<PullRequestDetail[], PrError>> => {
     const params = new URLSearchParams({ repo_id: repoId });
     if (headBranch) params.set('head_branch', headBranch);
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/pull-requests/attach?${params}`
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/attach?${params}`,
+      hostId
     );
     return handleApiResponseAsResult<PullRequestDetail[], PrError>(response);
   },
@@ -1301,10 +1401,12 @@ export const workspacesApi = {
   /** Attach a branch-matched PR, or resolve and attach an explicitly supplied URL. */
   attachPr: async (
     workspaceId: string,
-    data: AttachExistingPrRequest
+    data: AttachExistingPrRequest,
+    hostId?: string | null
   ): Promise<Result<AttachPrResponse, PrError>> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/pull-requests/attach`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1316,10 +1418,12 @@ export const workspacesApi = {
   /** Unlink the PR(s) tracked for a repo. Removes only the local link. */
   unlinkPr: async (
     workspaceId: string,
-    data: UnlinkPrRequest
+    data: UnlinkPrRequest,
+    hostId?: string | null
   ): Promise<UnlinkPrResponse> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/pull-requests/unlink`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1328,9 +1432,13 @@ export const workspacesApi = {
     return handleApiResponse<UnlinkPrResponse>(response);
   },
 
-  startDevServer: async (workspaceId: string): Promise<ExecutionProcess[]> => {
-    const response = await makeRequest(
+  startDevServer: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<ExecutionProcess[]> => {
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/execution/dev-server/start`,
+      hostId,
       {
         method: 'POST',
       }
@@ -1340,16 +1448,24 @@ export const workspacesApi = {
 
   // Dev server processes across all sessions of the workspace. The preview is
   // workspace-scoped, so it must not depend on the currently selected session.
-  getDevServers: async (workspaceId: string): Promise<ExecutionProcess[]> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/execution/dev-servers`
+  getDevServers: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<ExecutionProcess[]> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/execution/dev-servers`,
+      hostId
     );
     return handleApiResponse<ExecutionProcess[]>(response);
   },
 
-  setupGhCli: async (workspaceId: string): Promise<ExecutionProcess> => {
-    const response = await makeRequest(
+  setupGhCli: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<ExecutionProcess> => {
+    const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}/integration/github/cli/setup`,
+      hostId,
       {
         method: 'POST',
       }
@@ -1404,12 +1520,14 @@ export const workspacesApi = {
   getPrComments: async (
     workspaceId: string,
     repoId: string,
-    prNumber?: number
+    prNumber?: number,
+    hostId?: string | null
   ): Promise<PrCommentsResponse> => {
     const prNumberParam =
       prNumber == null ? '' : `&pr_number=${encodeURIComponent(prNumber)}`;
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/pull-requests/comments?repo_id=${encodeURIComponent(repoId)}${prNumberParam}`
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/comments?repo_id=${encodeURIComponent(repoId)}${prNumberParam}`,
+      hostId
     );
     return handleApiResponse<PrCommentsResponse>(response);
   },
@@ -1451,12 +1569,17 @@ export const workspacesApi = {
 
   /** Create a workspace directly from a pull request */
   createFromPr: async (
-    data: CreateWorkspaceFromPrBody
+    data: CreateWorkspaceFromPrBody,
+    hostId?: string | null
   ): Promise<Result<CreateWorkspaceFromPrResponse, CreateFromPrError>> => {
-    const response = await makeRequest('/api/workspaces/from-pr', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      '/api/workspaces/from-pr',
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponseAsResult<
       CreateWorkspaceFromPrResponse,
       CreateFromPrError
@@ -1466,23 +1589,35 @@ export const workspacesApi = {
 
 // Execution Process APIs
 export const executionProcessesApi = {
-  getDetails: async (processId: string): Promise<ExecutionProcess> => {
-    const response = await makeRequest(`/api/execution-processes/${processId}`);
+  getDetails: async (
+    processId: string,
+    hostId?: string | null
+  ): Promise<ExecutionProcess> => {
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}`,
+      hostId
+    );
     return handleApiResponse<ExecutionProcess>(response);
   },
 
   getRepoStates: async (
-    processId: string
+    processId: string,
+    hostId?: string | null
   ): Promise<ExecutionProcessRepoState[]> => {
-    const response = await makeRequest(
-      `/api/execution-processes/${processId}/repo-states`
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}/repo-states`,
+      hostId
     );
     return handleApiResponse<ExecutionProcessRepoState[]>(response);
   },
 
-  stopExecutionProcess: async (processId: string): Promise<void> => {
-    const response = await makeRequest(
+  stopExecutionProcess: async (
+    processId: string,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
       `/api/execution-processes/${processId}/stop`,
+      hostId,
       {
         method: 'POST',
       }
@@ -1660,12 +1795,16 @@ export const repoApi = {
 
   listOpenPrs: async (
     repoId: string,
-    remoteName?: string
+    remoteName?: string,
+    hostId?: string | null
   ): Promise<Result<PullRequestDetail[], ListPrsError>> => {
     const params = remoteName
       ? `?remote=${encodeURIComponent(remoteName)}`
       : '';
-    const response = await makeRequest(`/api/repos/${repoId}/prs${params}`);
+    const response = await makeHostAwareRequest(
+      `/api/repos/${repoId}/prs${params}`,
+      hostId
+    );
     return handleApiResponseAsResult<PullRequestDetail[], ListPrsError>(
       response
     );
@@ -1674,10 +1813,12 @@ export const repoApi = {
   listPullRequestSummaries: async (
     repoId: string,
     involvesMe: boolean,
-    refresh = false
+    refresh = false,
+    hostId?: string | null
   ): Promise<Result<PullRequestSummaries, ListPrsError>> => {
-    const response = await makeRequest(
-      `/api/repos/${repoId}/pull-requests?involves_me=${involvesMe}&refresh=${refresh}`
+    const response = await makeHostAwareRequest(
+      `/api/repos/${repoId}/pull-requests?involves_me=${involvesMe}&refresh=${refresh}`,
+      hostId
     );
     // The backend serves a stale/empty list immediately and refreshes `gh` in
     // the background when this header is `true`; the caller polls until it clears.
@@ -1692,8 +1833,14 @@ export const repoApi = {
     return { success: true, data: { summaries: result.data, warming } };
   },
 
-  listRemotes: async (repoId: string): Promise<GitRemote[]> => {
-    const response = await makeRequest(`/api/repos/${repoId}/remotes`);
+  listRemotes: async (
+    repoId: string,
+    hostId?: string | null
+  ): Promise<GitRemote[]> => {
+    const response = await makeHostAwareRequest(
+      `/api/repos/${repoId}/remotes`,
+      hostId
+    );
     return handleApiResponse<GitRemote[]>(response);
   },
 };
@@ -1701,20 +1848,24 @@ export const repoApi = {
 // Issue PR linking APIs
 export const issuePrsApi = {
   getPrInfo: async (
-    url: string
+    url: string,
+    hostId?: string | null
   ): Promise<Result<PullRequestDetail, ListPrsError>> => {
-    const response = await makeRequest(
-      `/api/repos/pr-info?url=${encodeURIComponent(url)}`
+    const response = await makeHostAwareRequest(
+      `/api/repos/pr-info?url=${encodeURIComponent(url)}`,
+      hostId
     );
     return handleApiResponseAsResult<PullRequestDetail, ListPrsError>(response);
   },
 
   getPrComments: async (
     url: string,
-    prNumber: number
+    prNumber: number,
+    hostId?: string | null
   ): Promise<PrCommentsResponse> => {
-    const response = await makeRequest(
-      `/api/repos/pr-comments?url=${encodeURIComponent(url)}&pr_number=${encodeURIComponent(prNumber)}`
+    const response = await makeHostAwareRequest(
+      `/api/repos/pr-comments?url=${encodeURIComponent(url)}&pr_number=${encodeURIComponent(prNumber)}`,
+      hostId
     );
     return handleApiResponse<PrCommentsResponse>(response);
   },
@@ -1723,17 +1874,22 @@ export const issuePrsApi = {
     url: string,
     prNumber: number,
     threadId: string,
-    resolved: boolean
+    resolved: boolean,
+    hostId?: string | null
   ): Promise<void> => {
-    const response = await makeRequest('/api/repos/pr-comments/resolve', {
-      method: 'POST',
-      body: JSON.stringify({
-        url,
-        pr_number: prNumber,
-        thread_id: threadId,
-        resolved,
-      }),
-    });
+    const response = await makeHostAwareRequest(
+      '/api/repos/pr-comments/resolve',
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          url,
+          pr_number: prNumber,
+          thread_id: threadId,
+          resolved,
+        }),
+      }
+    );
     return handleApiResponse<void>(response);
   },
 
@@ -2017,15 +2173,22 @@ export const profilesApi = {
 
 // Workspace attachments API
 export const attachmentsApi = {
-  upload: async (attachment: File): Promise<AttachmentResponse> => {
+  upload: async (
+    attachment: File,
+    hostId?: string | null
+  ): Promise<AttachmentResponse> => {
     const formData = new FormData();
     formData.append('image', attachment);
 
-    const response = await makeLocalApiRequest('/api/attachments/upload', {
-      method: 'POST',
-      body: formData,
-      credentials: 'same-origin',
-    });
+    const response = await makeHostAwareLocalApiRequest(
+      '/api/attachments/upload',
+      hostId,
+      {
+        method: 'POST',
+        body: formData,
+        credentials: 'same-origin',
+      }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -2041,13 +2204,15 @@ export const attachmentsApi = {
 
   uploadForTask: async (
     taskId: string,
-    attachment: File
+    attachment: File,
+    hostId?: string | null
   ): Promise<AttachmentResponse> => {
     const formData = new FormData();
     formData.append('image', attachment);
 
-    const response = await makeLocalApiRequest(
+    const response = await makeHostAwareLocalApiRequest(
       `/api/attachments/task/${taskId}/upload`,
+      hostId,
       {
         method: 'POST',
         body: formData,
@@ -2070,13 +2235,15 @@ export const attachmentsApi = {
   uploadForAttempt: async (
     workspaceId: string,
     sessionId: string,
-    attachment: File
+    attachment: File,
+    hostId?: string | null
   ): Promise<AttachmentResponse> => {
     const formData = new FormData();
     formData.append('image', attachment);
 
-    const response = await makeLocalApiRequest(
+    const response = await makeHostAwareLocalApiRequest(
       `/api/workspaces/${workspaceId}/attachments/upload?session_id=${sessionId}`,
+      hostId,
       {
         method: 'POST',
         body: formData,
@@ -2118,14 +2285,19 @@ export const approvalsApi = {
   respond: async (
     approvalId: string,
     payload: ApprovalResponse,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    hostId?: string | null
   ): Promise<ApprovalStatus> => {
-    const res = await makeRequest(`/api/approvals/${approvalId}/respond`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal,
-    });
+    const res = await makeHostAwareRequest(
+      `/api/approvals/${approvalId}/respond`,
+      hostId,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal,
+      }
+    );
 
     return handleApiResponse<ApprovalStatus>(res);
   },
@@ -2498,12 +2670,17 @@ export const queueApi = {
    */
   queue: async (
     sessionId: string,
-    data: DraftFollowUpData
+    data: DraftFollowUpData,
+    hostId?: string | null
   ): Promise<QueueStatus> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/queue`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/queue`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<QueueStatus>(response);
   },
 
@@ -2513,10 +2690,12 @@ export const queueApi = {
    */
   steer: async (
     sessionId: string,
-    data: DraftFollowUpData
+    data: DraftFollowUpData,
+    hostId?: string | null
   ): Promise<QueueStatus> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/queue/steer`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify(data),
@@ -2531,10 +2710,12 @@ export const queueApi = {
    */
   steerQueued: async (
     sessionId: string,
-    messageId: string
+    messageId: string,
+    hostId?: string | null
   ): Promise<QueueStatus> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/queue/steer-queued`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify({ message_id: messageId }),
@@ -2548,10 +2729,12 @@ export const queueApi = {
    */
   reorder: async (
     sessionId: string,
-    messageIds: string[]
+    messageIds: string[],
+    hostId?: string | null
   ): Promise<QueueStatus> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/queue/reorder`,
+      hostId,
       {
         method: 'POST',
         body: JSON.stringify({ message_ids: messageIds }),
@@ -2563,10 +2746,15 @@ export const queueApi = {
   /**
    * Cancel all queued follow-up messages
    */
-  cancel: async (sessionId: string): Promise<QueueStatus> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/queue`, {
-      method: 'DELETE',
-    });
+  cancel: async (
+    sessionId: string,
+    hostId?: string | null
+  ): Promise<QueueStatus> => {
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/queue`,
+      hostId,
+      { method: 'DELETE' }
+    );
     return handleApiResponse<QueueStatus>(response);
   },
 
@@ -2575,10 +2763,12 @@ export const queueApi = {
    */
   cancelOne: async (
     sessionId: string,
-    messageId: string
+    messageId: string,
+    hostId?: string | null
   ): Promise<QueueStatus> => {
-    const response = await makeRequest(
+    const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/queue?message_id=${encodeURIComponent(messageId)}`,
+      hostId,
       {
         method: 'DELETE',
       }
@@ -2589,8 +2779,14 @@ export const queueApi = {
   /**
    * Get the current queue status for a session
    */
-  getStatus: async (sessionId: string): Promise<QueueStatus> => {
-    const response = await makeRequest(`/api/sessions/${sessionId}/queue`);
+  getStatus: async (
+    sessionId: string,
+    hostId?: string | null
+  ): Promise<QueueStatus> => {
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/queue`,
+      hostId
+    );
     return handleApiResponse<QueueStatus>(response);
   },
 };

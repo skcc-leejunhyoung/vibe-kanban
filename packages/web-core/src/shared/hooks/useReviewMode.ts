@@ -4,6 +4,8 @@ import { ProjectContext } from '@/shared/hooks/useProjectContext';
 import { issuePrsApi } from '@/shared/lib/api';
 import { hasReviewTag, resolveReviewMode } from '@/shared/lib/reviewMode';
 import type { PrReviewInput, PullRequestDetail } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 interface LinkedIssueLike {
   issueId: string;
@@ -43,6 +45,7 @@ export function useReviewMode(
   // Read the project context defensively: the create UI is also reachable
   // outside a project (no linked issue), where the provider is absent.
   const projectCtx = useContext(ProjectContext);
+  const hostId = useHostId();
   const [enabled, setEnabled] = useState(true);
 
   const issueId = linkedIssue?.issueId ?? null;
@@ -68,8 +71,8 @@ export function useReviewMode(
 
   const prQueries = useQueries({
     queries: issuePrUrls.map((url) => ({
-      queryKey: ['review-mode-pr', url],
-      queryFn: () => issuePrsApi.getPrInfo(url),
+      queryKey: ['review-mode-pr', url, getHostRequestScopeQueryKey(hostId)],
+      queryFn: () => issuePrsApi.getPrInfo(url, hostId),
       enabled: canResolve,
       staleTime: 30_000,
     })),

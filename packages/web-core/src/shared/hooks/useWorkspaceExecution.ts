@@ -8,8 +8,11 @@ import { workspacesApi, executionProcessesApi } from '@/shared/lib/api';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import type { AttemptData } from '@/shared/lib/types';
 import type { ExecutionProcess } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 export function useWorkspaceExecution(workspaceId?: string) {
+  const hostId = useHostId();
   const stopMutationKey = useMemo(
     () => ['stopWorkspaceExecution', workspaceId] as const,
     [workspaceId]
@@ -19,7 +22,7 @@ export function useWorkspaceExecution(workspaceId?: string) {
     mutationKey: stopMutationKey,
     mutationFn: async () => {
       if (!workspaceId) return;
-      await workspacesApi.stop(workspaceId);
+      await workspacesApi.stop(workspaceId, hostId);
     },
   });
 
@@ -46,8 +49,12 @@ export function useWorkspaceExecution(workspaceId?: string) {
   // Fetch details for setup processes
   const processDetailQueries = useQueries({
     queries: setupProcesses.map((process) => ({
-      queryKey: ['processDetails', process.id],
-      queryFn: () => executionProcessesApi.getDetails(process.id),
+      queryKey: [
+        'processDetails',
+        process.id,
+        getHostRequestScopeQueryKey(hostId),
+      ],
+      queryFn: () => executionProcessesApi.getDetails(process.id, hostId),
       enabled: !!process.id,
     })),
   });

@@ -18,6 +18,7 @@ import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { GitPanel, type RepoInfo } from '@vibe/ui/components/GitPanel';
 import { Actions } from '@/shared/actions';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { RepoAction } from '@vibe/ui/components/RepoCard';
 import type { Workspace, RepoWithTargetBranch, Merge } from 'shared/types';
 
@@ -40,6 +41,7 @@ export function GitPanelContainer({
   repos,
 }: GitPanelContainerProps) {
   const { executeAction } = useActions();
+  const hostId = useHostId();
   const { t } = useTranslation('tasks');
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
   const repoActions = useUiPreferencesStore((s) => s.repoActions);
@@ -167,9 +169,16 @@ export function GitPanelContainer({
       });
       if (confirmed !== 'confirmed') return;
 
-      startTargetPush(workspaceId, repoId);
+      startTargetPush(workspaceId, repoId, hostId);
     },
-    [selectedWorkspace?.id, targetPushStates, branchStatus, startTargetPush, t]
+    [
+      selectedWorkspace?.id,
+      targetPushStates,
+      branchStatus,
+      startTargetPush,
+      hostId,
+      t,
+    ]
   );
 
   // Compute repoInfos with push button state
@@ -239,9 +248,15 @@ export function GitPanelContainer({
       if (!actionDef) return;
 
       // Execute git action with workspaceId and repoId
-      await executeAction(actionDef, selectedWorkspace.id, repoId);
+      await executeAction(
+        actionDef,
+        selectedWorkspace.id,
+        repoId,
+        undefined,
+        hostId
+      );
     },
-    [selectedWorkspace, executeAction]
+    [selectedWorkspace, executeAction, hostId]
   );
 
   // Handle push button click - delegate to the background store so the push and
@@ -250,9 +265,9 @@ export function GitPanelContainer({
     (repoId: string) => {
       const workspaceId = selectedWorkspace?.id;
       if (!workspaceId) return;
-      startPush(workspaceId, repoId);
+      startPush(workspaceId, repoId, hostId);
     },
-    [selectedWorkspace?.id, startPush]
+    [selectedWorkspace?.id, startPush, hostId]
   );
 
   return (

@@ -18,10 +18,12 @@ export function useMergeRemote(
   workspaceId?: string,
   onSuccess?: () => void,
   onError?: (err: unknown, errorData?: GitOperationError) => void,
-  isTarget = false
+  isTarget = false,
+  hostIdOverride?: string | null
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const currentHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? currentHostId : hostIdOverride;
 
   return useMutation<void, unknown, PushWorkspaceRequest>({
     mutationFn: async (params) => {
@@ -29,9 +31,10 @@ export function useMergeRemote(
       const result = isTarget
         ? await workspacesApi.mergeRemoteTargetBranch(
             workspaceId,
-            params.repo_id
+            params.repo_id,
+            hostId
           )
-        : await workspacesApi.mergeRemote(workspaceId, params);
+        : await workspacesApi.mergeRemote(workspaceId, params, hostId);
       if (!result.success) {
         throw new MergeRemoteErrorWithData(
           result.message || 'Failed to merge remote branch',

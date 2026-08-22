@@ -35,6 +35,7 @@ export interface ResolveCreateModeBootstrapParams {
   scratchData?: DraftWorkspaceData;
   defaultExecutorConfig?: ExecutorConfig | null;
   isValidProfile: (config: ExecutorConfig | null) => boolean;
+  hostId?: string | null;
 }
 
 export interface ResolveCreateModeBootstrapResult {
@@ -49,7 +50,8 @@ interface PreferredRepoInput {
 }
 
 export async function resolveBootstrapRepos(
-  preferredRepos: PreferredRepoInput[]
+  preferredRepos: PreferredRepoInput[],
+  hostId?: string | null
 ): Promise<BootstrapSelectedRepo[]> {
   const reposById = new Map<string, Repo>();
 
@@ -61,7 +63,7 @@ export async function resolveBootstrapRepos(
     const fetchedRepos = await Promise.all(
       missingRepoIds.map(async (repoId) => {
         try {
-          return await repoApi.getById(repoId);
+          return await repoApi.getById(repoId, hostId);
         } catch {
           return null;
         }
@@ -98,6 +100,7 @@ export async function resolveCreateModeBootstrap({
   scratchData,
   defaultExecutorConfig,
   isValidProfile,
+  hostId,
 }: ResolveCreateModeBootstrapParams): Promise<ResolveCreateModeBootstrapResult> {
   const hasInitialPrompt = !!seedState?.initialPrompt;
   const hasLinkedIssue = !!seedState?.linkedIssue;
@@ -125,7 +128,8 @@ export async function resolveCreateModeBootstrap({
 
     if (seedState?.preferredRepos && seedState.preferredRepos.length > 0) {
       const resolvedRepos = await resolveBootstrapRepos(
-        seedState.preferredRepos
+        seedState.preferredRepos,
+        hostId
       );
       if (resolvedRepos.length > 0) {
         data.repos = resolvedRepos;
@@ -193,7 +197,8 @@ export async function resolveCreateModeBootstrap({
           repo_id: repo.repo_id,
           target_branch: repo.target_branch ?? null,
           create_target_branch: repo.create_target_branch ?? false,
-        }))
+        })),
+        hostId
       );
 
       if (restoredRepos.length > 0) {

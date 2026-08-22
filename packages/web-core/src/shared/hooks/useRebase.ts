@@ -33,7 +33,7 @@ export function useRebase(
           new_base_branch: newBaseBranch ?? null,
         };
 
-        return workspacesApi.rebase(workspaceId, data).then((res) => {
+        return workspacesApi.rebase(workspaceId, data, hostId).then((res) => {
           if (!res.success) {
             // Propagate typed failure Result for caller to handle (no manual ApiError construction)
             return Promise.reject(res);

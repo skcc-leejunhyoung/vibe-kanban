@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import { workspaceRecordKeys } from '@/shared/hooks/useWorkspaceRecord';
 import type { Workspace } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface RenameBranchContext {
   previousWorkspace: Workspace | undefined;
@@ -13,27 +14,28 @@ export function useRenameBranch(
   onError?: (err: unknown) => void
 ) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
 
   return useMutation<{ branch: string }, unknown, string, RenameBranchContext>({
     mutationFn: async (newBranchName) => {
       if (!workspaceId) throw new Error('Workspace id is not set');
-      return workspacesApi.renameBranch(workspaceId, newBranchName);
+      return workspacesApi.renameBranch(workspaceId, newBranchName, hostId);
     },
     onMutate: async (newBranchName) => {
       if (!workspaceId) return { previousWorkspace: undefined };
 
       await queryClient.cancelQueries({
-        queryKey: workspaceRecordKeys.byId(workspaceId),
+        queryKey: workspaceRecordKeys.byId(workspaceId, hostId),
       });
 
       // Snapshot the previous value
       const previousWorkspace = queryClient.getQueryData<Workspace>(
-        workspaceRecordKeys.byId(workspaceId)
+        workspaceRecordKeys.byId(workspaceId, hostId)
       );
 
       // Optimistically update the cache
       queryClient.setQueryData<Workspace>(
-        workspaceRecordKeys.byId(workspaceId),
+        workspaceRecordKeys.byId(workspaceId, hostId),
         (old) => {
           if (!old) return old;
           return { ...old, branch: newBranchName };
@@ -49,7 +51,7 @@ export function useRenameBranch(
           queryKey: ['workspaceWithSession', workspaceId],
         });
         queryClient.invalidateQueries({
-          queryKey: workspaceRecordKeys.byId(workspaceId),
+          queryKey: workspaceRecordKeys.byId(workspaceId, hostId),
         });
         queryClient.invalidateQueries({
           queryKey: ['attemptBranch', workspaceId],
@@ -66,7 +68,7 @@ export function useRenameBranch(
       // Rollback to the previous value on error
       if (workspaceId && context?.previousWorkspace) {
         queryClient.setQueryData(
-          workspaceRecordKeys.byId(workspaceId),
+          workspaceRecordKeys.byId(workspaceId, hostId),
           context.previousWorkspace
         );
       }

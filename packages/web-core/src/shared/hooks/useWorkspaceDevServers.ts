@@ -1,8 +1,22 @@
 import { useQuery } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import type { ExecutionProcess } from 'shared/types';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 const EMPTY: ExecutionProcess[] = [];
+
+export const workspaceDevServerKeys = {
+  byWorkspace: (
+    workspaceId: string | undefined,
+    hostId: string | null = null
+  ) =>
+    [
+      'workspaceDevServers',
+      workspaceId,
+      getHostRequestScopeQueryKey(hostId),
+    ] as const,
+};
 
 /**
  * Dev server processes for a workspace across all of its sessions.
@@ -16,9 +30,10 @@ const EMPTY: ExecutionProcess[] = [];
 export function useWorkspaceDevServers(
   workspaceId: string | undefined
 ): ExecutionProcess[] {
+  const hostId = useHostId();
   const { data } = useQuery({
-    queryKey: ['workspaceDevServers', workspaceId],
-    queryFn: () => workspacesApi.getDevServers(workspaceId as string),
+    queryKey: workspaceDevServerKeys.byWorkspace(workspaceId, hostId),
+    queryFn: () => workspacesApi.getDevServers(workspaceId as string, hostId),
     enabled: !!workspaceId,
     refetchInterval: 2500,
   });

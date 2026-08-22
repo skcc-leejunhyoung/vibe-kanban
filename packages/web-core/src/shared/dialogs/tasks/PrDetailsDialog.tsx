@@ -50,6 +50,8 @@ import {
 } from '@/shared/lib/prConversation';
 import { useMarkPullRequestNotificationsRead } from '@/shared/hooks/useMarkPullRequestNotificationsRead';
 import { cn } from '@/shared/lib/utils';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 export interface PrDetailsDialogProps {
   prUrl: string;
@@ -229,14 +231,15 @@ export function PrDetailsContent({
   actions,
 }: PrDetailsContentProps) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
   const scrollRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
   useMarkPullRequestNotificationsRead(prUrl, active);
   const detailQuery = useQuery({
-    queryKey: ['pr-detail', prUrl],
+    queryKey: ['pr-detail', prUrl, getHostRequestScopeQueryKey(hostId)],
     queryFn: async () => {
-      const result = await issuePrsApi.getPrInfo(prUrl);
+      const result = await issuePrsApi.getPrInfo(prUrl, hostId);
       if (!result.success) {
         throw new Error(result.message || 'Failed to load pull request');
       }
@@ -268,11 +271,12 @@ export function PrDetailsContent({
         prUrl,
         prNumber,
         threadId,
-        resolved
+        resolved,
+        hostId
       ),
     onSuccess: () =>
       queryClient.invalidateQueries({
-        queryKey: prCommentsKeys.byUrl(prUrl, prNumber),
+        queryKey: prCommentsKeys.byUrl(prUrl, prNumber, hostId),
       }),
   });
   const handleDialogKeyDown = (event: KeyboardEvent) => {

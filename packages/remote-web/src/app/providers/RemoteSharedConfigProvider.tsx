@@ -35,6 +35,16 @@ interface RemoteSharedConfigProviderProps {
 export function RemoteSharedConfigProvider({
   children,
 }: RemoteSharedConfigProviderProps) {
+  const { userId } = useAuth();
+  // Reset the sync hook's refs before hydrating another account's config.
+  return (
+    <RemoteSharedConfig key={userId ?? "signed-out"}>
+      {children}
+    </RemoteSharedConfig>
+  );
+}
+
+function RemoteSharedConfig({ children }: RemoteSharedConfigProviderProps) {
   const { isSignedIn, isLoaded } = useAuth();
   const { setTheme } = useTheme();
 

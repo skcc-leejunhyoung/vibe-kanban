@@ -2,10 +2,12 @@ import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { pullRequestSummariesQueryOptions } from './pullRequestSummariesQuery';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 /** Keeps the configured Pull Requests view warm while the user works elsewhere. */
 export function PullRequestsBackgroundPrefetch() {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );
@@ -20,7 +22,8 @@ export function PullRequestsBackgroundPrefetch() {
         void queryClient.prefetchQuery(
           pullRequestSummariesQueryOptions(
             repository,
-            defaultFilters.involvesMe
+            defaultFilters.involvesMe,
+            hostId
           )
         );
       }
@@ -28,7 +31,7 @@ export function PullRequestsBackgroundPrefetch() {
 
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultFilters.involvesMe, repositoriesKey, queryClient]);
+  }, [defaultFilters.involvesMe, hostId, repositoriesKey, queryClient]);
 
   return null;
 }

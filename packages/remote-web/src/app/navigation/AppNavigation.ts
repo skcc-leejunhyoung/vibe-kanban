@@ -323,13 +323,30 @@ function createRemoteAppNavigation(): AppNavigation {
     destination: AppDestination,
     transition?: NavigationTransition,
   ) => {
+    const nextDestination = applyNavigationTransition(destination, transition);
+    const requiresHost =
+      nextDestination.kind === "workspaces-create" ||
+      nextDestination.kind === "workspace" ||
+      nextDestination.kind === "workspace-vscode" ||
+      nextDestination.kind === "project-issue-workspace" ||
+      nextDestination.kind === "project-issue-workspace-create" ||
+      nextDestination.kind === "project-workspace-create";
+
+    if (
+      requiresHost &&
+      resolveDestinationHostId(nextDestination, null) === null
+    ) {
+      void import(
+        "@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog"
+      ).then(async ({ selectWorkspaceHost }) => {
+        const hostId = await selectWorkspaceHost();
+        if (hostId) navigateTo(nextDestination, { ...transition, hostId });
+      });
+      return;
+    }
+
     void router.navigate({
-      ...destinationToRemoteTarget(
-        applyNavigationTransition(destination, transition),
-        {
-          currentHostId: null,
-        },
-      ),
+      ...destinationToRemoteTarget(nextDestination, { currentHostId: null }),
       ...(transition?.replace !== undefined
         ? { replace: transition.replace }
         : {}),
@@ -355,17 +372,26 @@ function createRemoteAppNavigation(): AppNavigation {
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
     goToPullRequests: (prUrl, transition) => {
-      const targetHostId = transition?.hostId;
-      if (!targetHostId) {
-        throw new Error("A host is required to open pull requests");
+      const open = (hostId: string) =>
+        router.navigate({
+          to: "/hosts/$hostId/pull-requests",
+          params: { hostId },
+          search: { prUrl },
+          ...(transition?.replace !== undefined
+            ? { replace: transition.replace }
+            : {}),
+        });
+
+      if (transition?.hostId) {
+        void open(transition.hostId);
+        return;
       }
-      void router.navigate({
-        to: "/hosts/$hostId/pull-requests",
-        params: { hostId: targetHostId },
-        search: { prUrl },
-        ...(transition.replace !== undefined
-          ? { replace: transition.replace }
-          : {}),
+
+      void import(
+        "@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog"
+      ).then(async ({ selectWorkspaceHost }) => {
+        const hostId = await selectWorkspaceHost();
+        if (hostId) await open(hostId);
       });
     },
     goToProject: (projectId, transition) =>

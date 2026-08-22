@@ -22,6 +22,7 @@ import {
   type ProjectMutations,
 } from "@/shared/types/actions";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
+import { ConfirmDialog } from "@vibe/ui/components/ConfirmDialog";
 import { useAppNavigation } from "@/shared/hooks/useAppNavigation";
 import { useAppRuntime } from "@/shared/hooks/useAppRuntime";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
@@ -33,8 +34,11 @@ import {
 } from "@/shared/stores/useKanbanIssueComposerStore";
 import {
   isRemoteExecutableAction,
+  isRemoteExecutableGitAction,
+  isRemoteExecutableIssueAction,
   isRemoteExecutableWorkspaceAction,
 } from "./remoteExecutableActions";
+import { getActivePaneActionExecutor } from "@/shared/lib/paneActionRegistry";
 
 interface RemoteActionsProviderProps {
   children: ReactNode;
@@ -89,30 +93,91 @@ export function RemoteActionsProvider({
     [hostId, projectId],
   );
 
-  const openStatusSelection = useCallback(async () => {
-    noOpSelection("Status selection");
-  }, []);
+  const openStatusSelection = useCallback(
+    async (projectId: string, issueIds: string[]) => {
+      const { ProjectSelectionDialog } = await import(
+        "@/shared/dialogs/command-bar/selections/ProjectSelectionDialog"
+      );
+      await ProjectSelectionDialog.show({
+        projectId,
+        selection: { type: "status", issueIds },
+      });
+    },
+    [],
+  );
 
-  const openPrioritySelection = useCallback(async () => {
-    noOpSelection("Priority selection");
-  }, []);
+  const openPrioritySelection = useCallback(
+    async (projectId: string, issueIds: string[]) => {
+      const { ProjectSelectionDialog } = await import(
+        "@/shared/dialogs/command-bar/selections/ProjectSelectionDialog"
+      );
+      await ProjectSelectionDialog.show({
+        projectId,
+        selection: { type: "priority", issueIds },
+      });
+    },
+    [],
+  );
 
-  const openAssigneeSelection = useCallback(async () => {
-    noOpSelection("Assignee selection");
-  }, []);
+  const openAssigneeSelection = useCallback(
+    async (projectId: string, issueIds: string[], isCreateMode = false) => {
+      const { AssigneeSelectionDialog } = await import(
+        "@/shared/dialogs/kanban/AssigneeSelectionDialog"
+      );
+      await AssigneeSelectionDialog.show({ projectId, issueIds, isCreateMode });
+    },
+    [],
+  );
 
-  const openSubIssueSelection = useCallback(async () => {
-    noOpSelection("Sub-issue selection");
-    return undefined;
-  }, []);
+  const openSubIssueSelection = useCallback(
+    async (
+      projectId: string,
+      parentIssueId: string,
+      mode: "addChild" | "setParent" = "addChild",
+    ) => {
+      const { ProjectSelectionDialog } = await import(
+        "@/shared/dialogs/command-bar/selections/ProjectSelectionDialog"
+      );
+      return (await ProjectSelectionDialog.show({
+        projectId,
+        selection: { type: "subIssue", parentIssueId, mode },
+      })) as { type: string } | undefined;
+    },
+    [],
+  );
 
-  const openWorkspaceSelection = useCallback(async () => {
-    noOpSelection("Workspace selection");
-  }, []);
+  const openWorkspaceSelection = useCallback(
+    async (projectId: string, issueId: string) => {
+      const { WorkspaceSelectionDialog } = await import(
+        "@/shared/dialogs/command-bar/WorkspaceSelectionDialog"
+      );
+      await WorkspaceSelectionDialog.show({ projectId, issueId });
+    },
+    [],
+  );
 
-  const openRelationshipSelection = useCallback(async () => {
-    noOpSelection("Relationship selection");
-  }, []);
+  const openRelationshipSelection = useCallback(
+    async (
+      projectId: string,
+      issueId: string,
+      relationshipType: "blocking" | "related" | "has_duplicate",
+      direction: "forward" | "reverse",
+    ) => {
+      const { ProjectSelectionDialog } = await import(
+        "@/shared/dialogs/command-bar/selections/ProjectSelectionDialog"
+      );
+      await ProjectSelectionDialog.show({
+        projectId,
+        selection: {
+          type: "relationship",
+          issueId,
+          relationshipType,
+          direction,
+        },
+      });
+    },
+    [],
+  );
 
   const executorContext = useMemo<ActionExecutorContext>(
     () => ({
@@ -187,37 +252,82 @@ export function RemoteActionsProvider({
       _issueIds?: string[],
       workspaceHostId?: string | null,
     ): Promise<void> => {
-      if (action.id === "settings") {
-        await SettingsDialog.show({
-          initialSection: "organizations",
+      const paneExecuteAction = getActivePaneActionExecutor();
+      if (paneExecuteAction) {
+        return paneExecuteAction(
+          action,
+          workspaceId,
+          _repoIdOrProjectId,
+          _issueIds,
+          workspaceHostId,
+        );
+      }
+
+      try {
+        if (action.id === "settings") {
+          await SettingsDialog.show({
+            initialSection: "organizations",
+          });
+          return;
+        }
+
+        if (action.id === "project-settings") {
+          await SettingsDialog.show({
+            initialSection: "remote-projects",
+            initialState: {
+              organizationId: selectedOrgId ?? undefined,
+              projectId: projectId ?? undefined,
+            },
+          });
+          return;
+        }
+
+        if (isRemoteExecutableAction(action)) {
+          await action.execute(executorContext);
+          return;
+        }
+
+        if (isRemoteExecutableWorkspaceAction(action) && workspaceId) {
+          await action.execute(executorContext, workspaceId, workspaceHostId);
+          return;
+        }
+
+        if (
+          isRemoteExecutableGitAction(action) &&
+          workspaceId &&
+          _repoIdOrProjectId
+        ) {
+          await action.execute(
+            workspaceHostId === undefined
+              ? executorContext
+              : { ...executorContext, currentHostId: workspaceHostId },
+            workspaceId,
+            _repoIdOrProjectId,
+          );
+          return;
+        }
+
+        if (
+          isRemoteExecutableIssueAction(action) &&
+          _repoIdOrProjectId &&
+          _issueIds?.length
+        ) {
+          await action.execute(executorContext, _repoIdOrProjectId, _issueIds);
+          return;
+        }
+
+        console.warn(
+          `[RemoteActionsProvider] Action "${action.id}" is unavailable in remote web.`,
+        );
+      } catch (error) {
+        await ConfirmDialog.show({
+          title: "Error",
+          message: error instanceof Error ? error.message : "An error occurred",
+          confirmText: "OK",
+          showCancelButton: false,
+          variant: "destructive",
         });
-        return;
       }
-
-      if (action.id === "project-settings") {
-        await SettingsDialog.show({
-          initialSection: "remote-projects",
-          initialState: {
-            organizationId: selectedOrgId ?? undefined,
-            projectId: projectId ?? undefined,
-          },
-        });
-        return;
-      }
-
-      if (isRemoteExecutableAction(action)) {
-        await action.execute(executorContext);
-        return;
-      }
-
-      if (isRemoteExecutableWorkspaceAction(action) && workspaceId) {
-        await action.execute(executorContext, workspaceId, workspaceHostId);
-        return;
-      }
-
-      console.warn(
-        `[RemoteActionsProvider] Action "${action.id}" is unavailable in remote web.`,
-      );
     },
     [executorContext, projectId, selectedOrgId],
   );

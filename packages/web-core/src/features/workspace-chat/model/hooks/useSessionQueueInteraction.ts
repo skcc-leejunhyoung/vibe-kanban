@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueApi } from '@/shared/lib/api';
 import type { ExecutorConfig, QueuedMessage, QueueStatus } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import {
   advanceQueueTracking,
   queueStatusRefetchInterval,
@@ -51,12 +53,18 @@ export function useSessionQueueInteraction({
   onQueueConsumed,
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
+  const queueKey = [
+    QUEUE_STATUS_KEY,
+    sessionId,
+    getHostRequestScopeQueryKey(hostId),
+  ];
 
   // Query for queue status
   const { data: queueStatus = { status: 'empty' as const }, refetch } =
     useQuery<QueueStatus>({
-      queryKey: [QUEUE_STATUS_KEY, sessionId],
-      queryFn: () => queueApi.getStatus(sessionId!),
+      queryKey: queueKey,
+      queryFn: () => queueApi.getStatus(sessionId!, hostId),
       enabled: !!sessionId,
       // Queue state is in-memory and has no push stream of its own. Poll only
       // while work is waiting, including in non-focused split-screen panes.
@@ -86,9 +94,9 @@ export function useSessionQueueInteraction({
 
   const applyStatus = useCallback(
     (status: QueueStatus) => {
-      queryClient.setQueryData([QUEUE_STATUS_KEY, sessionId], status);
+      queryClient.setQueryData(queueKey, status);
     },
-    [queryClient, sessionId]
+    [queryClient, queueKey]
   );
 
   // Mutation for appending a message to the queue
@@ -100,10 +108,11 @@ export function useSessionQueueInteraction({
       message: string;
       executorConfig: ExecutorConfig;
     }) =>
-      queueApi.queue(sessionId!, {
-        message,
-        executor_config: executorConfig,
-      }),
+      queueApi.queue(
+        sessionId!,
+        { message, executor_config: executorConfig },
+        hostId
+      ),
     onSuccess: applyStatus,
   });
 
@@ -116,17 +125,18 @@ export function useSessionQueueInteraction({
       message: string;
       executorConfig: ExecutorConfig;
     }) =>
-      queueApi.steer(sessionId!, {
-        message,
-        executor_config: executorConfig,
-      }),
+      queueApi.steer(
+        sessionId!,
+        { message, executor_config: executorConfig },
+        hostId
+      ),
     onSuccess: applyStatus,
   });
 
   // Mutation for steering an already-queued message ("send now" on a queued row)
   const steerQueuedMutation = useMutation({
     mutationFn: (messageId: string) =>
-      queueApi.steerQueued(sessionId!, messageId),
+      queueApi.steerQueued(sessionId!, messageId, hostId),
     onSuccess: applyStatus,
   });
 
@@ -134,15 +144,12 @@ export function useSessionQueueInteraction({
   // instant; the server response replaces the optimistic order on success.
   const reorderMutation = useMutation({
     mutationFn: (messageIds: string[]) =>
-      queueApi.reorder(sessionId!, messageIds),
+      queueApi.reorder(sessionId!, messageIds, hostId),
     onMutate: async (messageIds: string[]) => {
       await queryClient.cancelQueries({
-        queryKey: [QUEUE_STATUS_KEY, sessionId],
+        queryKey: queueKey,
       });
-      const previous = queryClient.getQueryData<QueueStatus>([
-        QUEUE_STATUS_KEY,
-        sessionId,
-      ]);
+      const previous = queryClient.getQueryData<QueueStatus>(queueKey);
       if (previous && previous.status === 'queued') {
         const byId = new Map(previous.messages.map((m) => [m.id, m]));
         const ordered = messageIds
@@ -165,14 +172,14 @@ export function useSessionQueueInteraction({
 
   // Mutation for cancelling the whole queue
   const cancelMutation = useMutation({
-    mutationFn: () => queueApi.cancel(sessionId!),
+    mutationFn: () => queueApi.cancel(sessionId!, hostId),
     onSuccess: applyStatus,
   });
 
   // Mutation for cancelling a single message
   const cancelOneMutation = useMutation({
     mutationFn: (messageId: string) =>
-      queueApi.cancelOne(sessionId!, messageId),
+      queueApi.cancelOne(sessionId!, messageId, hostId),
     onSuccess: applyStatus,
   });
 

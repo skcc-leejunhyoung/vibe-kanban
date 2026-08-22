@@ -6,6 +6,7 @@ import {
   toLocalAttachmentMetadata,
 } from '@/shared/lib/workspaceAttachments';
 import type { DraftWorkspaceAttachment } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 /**
  * Hook for handling attachments during workspace creation.
@@ -18,6 +19,7 @@ export function useCreateAttachments(
   initialAttachments?: DraftWorkspaceAttachment[],
   onAttachmentsChange?: (attachments: DraftWorkspaceAttachment[]) => void
 ) {
+  const hostId = useHostId();
   const [attachments, setAttachments] = useState<DraftWorkspaceAttachment[]>(
     initialAttachments ?? []
   );
@@ -41,7 +43,7 @@ export function useCreateAttachments(
 
       for (const attachment of selectedFiles) {
         try {
-          const response = await attachmentsApi.upload(attachment);
+          const response = await attachmentsApi.upload(attachment, hostId);
           uploadResults.push({
             id: response.id,
             file_path: response.file_path,
@@ -62,7 +64,7 @@ export function useCreateAttachments(
         onInsertMarkdown(allMarkdown);
       }
     },
-    [onInsertMarkdown]
+    [hostId, onInsertMarkdown]
   );
 
   const getAttachmentIds = useCallback(() => {

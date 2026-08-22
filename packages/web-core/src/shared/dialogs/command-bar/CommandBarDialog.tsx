@@ -430,7 +430,13 @@ function CommandBarContent({
           }
         }
         if (repoId) {
-          executeAction(effect.action, effectiveWorkspaceId, repoId);
+          executeAction(
+            effect.action,
+            effectiveWorkspaceId,
+            repoId,
+            undefined,
+            hostId
+          );
         }
       } else {
         executeAction(

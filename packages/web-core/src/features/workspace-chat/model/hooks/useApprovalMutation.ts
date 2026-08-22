@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { approvalsApi } from '@/shared/lib/api';
 import type { QuestionAnswer } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface ApproveParams {
   approvalId: string;
@@ -16,12 +17,18 @@ interface AnswerParams extends ApproveParams {
 }
 
 export function useApprovalMutation() {
+  const hostId = useHostId();
   const approveMutation = useMutation({
     mutationFn: ({ approvalId, executionProcessId }: ApproveParams) =>
-      approvalsApi.respond(approvalId, {
-        execution_process_id: executionProcessId,
-        status: { status: 'approved' },
-      }),
+      approvalsApi.respond(
+        approvalId,
+        {
+          execution_process_id: executionProcessId,
+          status: { status: 'approved' },
+        },
+        undefined,
+        hostId
+      ),
     onError: (err) => {
       console.error('Failed to approve:', err);
     },
@@ -29,13 +36,18 @@ export function useApprovalMutation() {
 
   const denyMutation = useMutation({
     mutationFn: ({ approvalId, executionProcessId, reason }: DenyParams) =>
-      approvalsApi.respond(approvalId, {
-        execution_process_id: executionProcessId,
-        status: {
-          status: 'denied',
-          reason: reason || 'User denied this request.',
+      approvalsApi.respond(
+        approvalId,
+        {
+          execution_process_id: executionProcessId,
+          status: {
+            status: 'denied',
+            reason: reason || 'User denied this request.',
+          },
         },
-      }),
+        undefined,
+        hostId
+      ),
     onError: (err) => {
       console.error('Failed to deny:', err);
     },
@@ -43,10 +55,15 @@ export function useApprovalMutation() {
 
   const answerMutation = useMutation({
     mutationFn: ({ approvalId, executionProcessId, answers }: AnswerParams) =>
-      approvalsApi.respond(approvalId, {
-        execution_process_id: executionProcessId,
-        status: { status: 'answered', answers },
-      }),
+      approvalsApi.respond(
+        approvalId,
+        {
+          execution_process_id: executionProcessId,
+          status: { status: 'answered', answers },
+        },
+        undefined,
+        hostId
+      ),
     onError: (err) => {
       console.error('Failed to answer:', err);
     },

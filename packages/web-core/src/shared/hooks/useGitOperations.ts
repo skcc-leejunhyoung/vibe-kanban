@@ -9,12 +9,14 @@ import { Result } from '@/shared/lib/api';
 import type { GitOperationError, PushWorkspaceRequest } from 'shared/types';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export function useGitOperations(
   workspaceId: string | undefined,
   repoId: string | undefined
 ) {
   const { setError } = useGitOperationsError();
+  const hostId = useHostId();
 
   const rebase = useRebase(
     workspaceId,
@@ -66,7 +68,8 @@ export function useGitOperations(
           ? String(err.message)
           : 'Failed to force push';
       setError(message);
-    }
+    },
+    hostId
   );
 
   const push = usePush(
@@ -84,6 +87,7 @@ export function useGitOperations(
             ahead: errorData.ahead,
             behind: errorData.behind,
             triggeredByPush: true,
+            hostId,
           });
         }
         return;
@@ -92,7 +96,11 @@ export function useGitOperations(
       if (errorData?.type === 'force_push_required') {
         // Show confirmation dialog - dialog handles the force push internally
         if (workspaceId && params?.repo_id) {
-          await ForcePushDialog.show({ workspaceId, repoId: params.repo_id });
+          await ForcePushDialog.show({
+            workspaceId,
+            repoId: params.repo_id,
+            hostId,
+          });
         }
         return;
       }

@@ -30,6 +30,8 @@ import { SearchableDropdownContainer } from '@/shared/components/ui-new/containe
 import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import type { GitRemote, PullRequestDetail } from 'shared/types';
 import type { PullRequestStatus } from 'shared/remote-types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 export interface LinkPrToIssueDialogProps {
   projectId: string;
@@ -40,6 +42,7 @@ type TabMode = 'url' | 'browse';
 
 function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   const modal = useModal();
+  const hostId = useHostId();
   const { t } = useTranslation('tasks');
 
   const [activeTab, setActiveTab] = useState<TabMode>('url');
@@ -95,8 +98,8 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
     isLoading: isLoadingPrInfo,
     error: prInfoError,
   } = useQuery({
-    queryKey: ['pr-info', debouncedUrl],
-    queryFn: () => issuePrsApi.getPrInfo(debouncedUrl),
+    queryKey: ['pr-info', debouncedUrl, getHostRequestScopeQueryKey(hostId)],
+    queryFn: () => issuePrsApi.getPrInfo(debouncedUrl, hostId),
     enabled: modal.visible && activeTab === 'url' && debouncedUrl.length > 0,
   });
 
@@ -116,8 +119,8 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
 
   // Browse mode queries
   const { data: repos = [], isLoading: isLoadingRepos } = useQuery({
-    queryKey: ['repos'],
-    queryFn: () => repoApi.list(),
+    queryKey: ['repos', getHostRequestScopeQueryKey(hostId)],
+    queryFn: () => repoApi.list(hostId),
     enabled: modal.visible && activeTab === 'browse',
   });
 
@@ -129,10 +132,14 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   }, [repos, selectedRepoId, activeTab]);
 
   const { data: remotes = [], isLoading: isLoadingRemotes } = useQuery({
-    queryKey: ['repo-remotes', selectedRepoId],
+    queryKey: [
+      'repo-remotes',
+      selectedRepoId,
+      getHostRequestScopeQueryKey(hostId),
+    ],
     queryFn: async () => {
       if (!selectedRepoId) return [];
-      return repoApi.listRemotes(selectedRepoId);
+      return repoApi.listRemotes(selectedRepoId, hostId);
     },
     enabled: modal.visible && activeTab === 'browse' && !!selectedRepoId,
   });
@@ -148,10 +155,15 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
     isLoading: isLoadingPrs,
     error: prsError,
   } = useQuery({
-    queryKey: ['open-prs', selectedRepoId, selectedRemote],
+    queryKey: [
+      'open-prs',
+      selectedRepoId,
+      selectedRemote,
+      getHostRequestScopeQueryKey(hostId),
+    ],
     queryFn: async () => {
       if (!selectedRepoId || !selectedRemote) return null;
-      return repoApi.listOpenPrs(selectedRepoId, selectedRemote);
+      return repoApi.listOpenPrs(selectedRepoId, selectedRemote, hostId);
     },
     enabled:
       modal.visible &&

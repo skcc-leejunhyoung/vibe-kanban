@@ -9,6 +9,7 @@ import type {
   ExecutionProcess,
   ExecutorConfig,
 } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export interface MessageEditRetryParams {
   message: string;
@@ -30,6 +31,7 @@ export function useMessageEditRetry(
   onSuccess?: () => void,
   onError?: (err: unknown) => void
 ) {
+  const hostId = useHostId();
   return useMutation({
     mutationFn: async ({
       message,
@@ -55,13 +57,17 @@ export function useMessageEditRetry(
 
       // Send the retry request with the edited message. Return the created
       // process so the caller can render the new turn optimistically.
-      return await sessionsApi.followUp(sessionId, {
-        prompt: message,
-        executor_config: executorConfig,
-        retry_process_id: executionProcessId,
-        force_when_dirty: modalResult.forceWhenDirty ?? false,
-        perform_git_reset: modalResult.performGitReset ?? true,
-      });
+      return await sessionsApi.followUp(
+        sessionId,
+        {
+          prompt: message,
+          executor_config: executorConfig,
+          retry_process_id: executionProcessId,
+          force_when_dirty: modalResult.forceWhenDirty ?? false,
+          perform_git_reset: modalResult.performGitReset ?? true,
+        },
+        hostId
+      );
     },
     onSuccess: () => {
       onSuccess?.();

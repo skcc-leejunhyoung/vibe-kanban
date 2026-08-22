@@ -8,18 +8,24 @@ export function useResetToRemote(
   workspaceId?: string,
   onSuccess?: () => void,
   onError?: (err: unknown) => void,
-  isTarget = false
+  isTarget = false,
+  hostIdOverride?: string | null
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const currentHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? currentHostId : hostIdOverride;
 
   return useMutation<void, unknown, ResetWorkspaceToRemoteRequest>({
     mutationFn: async (params) => {
       if (!workspaceId) return;
       if (isTarget) {
-        await workspacesApi.resetTargetBranchToRemote(workspaceId, params);
+        await workspacesApi.resetTargetBranchToRemote(
+          workspaceId,
+          params,
+          hostId
+        );
       } else {
-        await workspacesApi.resetToRemote(workspaceId, params);
+        await workspacesApi.resetToRemote(workspaceId, params, hostId);
       }
     },
     onSuccess: () => {

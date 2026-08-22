@@ -766,6 +766,29 @@ export function KanbanIssuePanelContainer({
   ]);
 
   useEffect(() => {
+    if (
+      runtime !== 'remote' ||
+      mode !== 'create' ||
+      !createFormData ||
+      createFormData.workspaceHostId != null ||
+      !defaultWorkspaceHostId
+    ) {
+      return;
+    }
+    dispatchFormState({
+      type: 'patchCreateFormData',
+      patch: { workspaceHostId: defaultWorkspaceHostId },
+      fallback: createModeDefaults,
+    });
+  }, [
+    createFormData,
+    createModeDefaults,
+    defaultWorkspaceHostId,
+    mode,
+    runtime,
+  ]);
+
+  useEffect(() => {
     const wasPending = prevHasPendingAttachmentsRef.current;
     prevHasPendingAttachmentsRef.current = hasPendingAttachments;
 

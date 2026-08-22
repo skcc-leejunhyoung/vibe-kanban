@@ -27,6 +27,7 @@ import { repoApi, workspacesApi } from '@/shared/lib/api';
 import { useLogStream } from '@/shared/hooks/useLogStream';
 import { useExecutionProcesses } from '@/shared/hooks/useExecutionProcesses';
 import type { RepoWithTargetBranch, PatchType, UpdateRepo } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export type ScriptType = 'setup' | 'cleanup' | 'dev_server' | 'archive';
 
@@ -49,6 +50,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
     const modal = useModal();
     const { t } = useTranslation(['tasks', 'common']);
     const queryClient = useQueryClient();
+    const hostId = useHostId();
 
     // State
     const [selectedRepoId, setSelectedRepoId] = useState<string>(
@@ -125,7 +127,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
 
       (async () => {
         try {
-          const repo = await repoApi.getById(selectedRepoId);
+          const repo = await repoApi.getById(selectedRepoId, hostId);
           if (cancelled) return;
 
           const scriptContent =
@@ -152,7 +154,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
       return () => {
         cancelled = true;
       };
-    }, [selectedRepoId, scriptType, t]);
+    }, [selectedRepoId, scriptType, t, hostId]);
 
     const hasChanges = script !== originalScript;
 
@@ -185,7 +187,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
                 ? { archive_script: scriptValue }
                 : { dev_server_script: scriptValue };
 
-        await repoApi.update(selectedRepoId, updateData as UpdateRepo);
+        await repoApi.update(selectedRepoId, updateData as UpdateRepo, hostId);
 
         // Invalidate repos cache
         queryClient.invalidateQueries({ queryKey: ['repos'] });
@@ -200,7 +202,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
       } finally {
         setIsSaving(false);
       }
-    }, [selectedRepoId, script, scriptType, queryClient, modal, t]);
+    }, [selectedRepoId, script, scriptType, queryClient, modal, t, hostId]);
 
     const handleSaveAndTest = useCallback(async () => {
       if (!selectedRepoId) return;
@@ -220,7 +222,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
                 ? { archive_script: scriptValue }
                 : { dev_server_script: scriptValue };
 
-        await repoApi.update(selectedRepoId, updateData as UpdateRepo);
+        await repoApi.update(selectedRepoId, updateData as UpdateRepo, hostId);
 
         // Invalidate repos cache
         queryClient.invalidateQueries({ queryKey: ['repos'] });
@@ -229,23 +231,35 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
 
         // Then run the script and capture the session ID from the returned process
         if (scriptType === 'setup') {
-          const result = await workspacesApi.runSetupScript(workspaceId);
+          const result = await workspacesApi.runSetupScript(
+            workspaceId,
+            hostId
+          );
           if (result.success) {
             setActiveSessionId(result.data.session_id);
           }
         } else if (scriptType === 'cleanup') {
-          const result = await workspacesApi.runCleanupScript(workspaceId);
+          const result = await workspacesApi.runCleanupScript(
+            workspaceId,
+            hostId
+          );
           if (result.success) {
             setActiveSessionId(result.data.session_id);
           }
         } else if (scriptType === 'archive') {
-          const result = await workspacesApi.runArchiveScript(workspaceId);
+          const result = await workspacesApi.runArchiveScript(
+            workspaceId,
+            hostId
+          );
           if (result.success) {
             setActiveSessionId(result.data.session_id);
           }
         } else {
           // Start the dev server
-          const processes = await workspacesApi.startDevServer(workspaceId);
+          const processes = await workspacesApi.startDevServer(
+            workspaceId,
+            hostId
+          );
           if (processes.length > 0) {
             setActiveSessionId(processes[0].session_id);
           }
@@ -260,7 +274,15 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
       } finally {
         setIsTesting(false);
       }
-    }, [selectedRepoId, script, scriptType, workspaceId, queryClient, t]);
+    }, [
+      selectedRepoId,
+      script,
+      scriptType,
+      workspaceId,
+      queryClient,
+      t,
+      hostId,
+    ]);
 
     const dialogTitle =
       scriptType === 'setup'

@@ -19,11 +19,12 @@ export interface ForcePushDialogProps {
   workspaceId: string;
   repoId: string;
   branchName?: string;
+  hostId?: string | null;
 }
 
 const ForcePushDialogImpl = create<ForcePushDialogProps>((props) => {
   const modal = useModal();
-  const { workspaceId, repoId, branchName } = props;
+  const { workspaceId, repoId, branchName, hostId } = props;
   const [error, setError] = useState<string | null>(null);
   const { t } = useTranslation(['tasks', 'common']);
   const branchLabel = branchName ? ` "${branchName}"` : '';
@@ -42,7 +43,8 @@ const ForcePushDialogImpl = create<ForcePushDialogProps>((props) => {
           ? String(err.message)
           : t('tasks:git.forcePushDialog.error');
       setError(message);
-    }
+    },
+    hostId
   );
 
   const handleConfirm = async () => {

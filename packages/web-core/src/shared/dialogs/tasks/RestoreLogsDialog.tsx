@@ -22,6 +22,7 @@ import type {
   ExecutionProcessRepoState,
   RepoBranchStatus,
 } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export interface RestoreLogsDialogProps {
   executionProcessId: string;
@@ -48,6 +49,7 @@ const RestoreLogsDialogImpl = create<RestoreLogsDialogProps>(
     mode = 'retry',
   }) => {
     const modal = useModal();
+    const hostId = useHostId();
     const { t } = useTranslation(['tasks', 'common']);
     const [isLoading, setIsLoading] = useState(true);
     const [worktreeResetOn, setWorktreeResetOn] = useState(
@@ -69,8 +71,10 @@ const RestoreLogsDialogImpl = create<RestoreLogsDialogProps>(
       (async () => {
         try {
           // Fetch repo states for the execution process (supports multi-repo)
-          const states =
-            await executionProcessesApi.getRepoStates(executionProcessId);
+          const states = await executionProcessesApi.getRepoStates(
+            executionProcessId,
+            hostId
+          );
           if (cancelled) return;
           setRepoStates(states);
         } finally {
@@ -81,7 +85,7 @@ const RestoreLogsDialogImpl = create<RestoreLogsDialogProps>(
       return () => {
         cancelled = true;
       };
-    }, [executionProcessId]);
+    }, [executionProcessId, hostId]);
 
     // Compute processes to be deleted
     // For retry mode: only processes AFTER target (target itself will be retried)

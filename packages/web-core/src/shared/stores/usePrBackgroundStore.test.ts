@@ -51,7 +51,9 @@ describe('usePrBackgroundStore', () => {
   it('applies a successful generation result to the workspace entry', async () => {
     generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
 
-    usePrBackgroundStore.getState().startGenerate('ws-gen-ok', genReq);
+    usePrBackgroundStore
+      .getState()
+      .startGenerate('ws-gen-ok', genReq, 'host-1');
     expect(
       usePrBackgroundStore.getState().byWorkspace['ws-gen-ok']?.generate?.status
     ).toBe('running');
@@ -61,6 +63,12 @@ describe('usePrBackgroundStore', () => {
     expect(
       usePrBackgroundStore.getState().byWorkspace['ws-gen-ok']?.generate
     ).toEqual({ status: 'success', title: 'T', description: 'D' });
+    expect(generatePrDescription).toHaveBeenCalledWith(
+      'ws-gen-ok',
+      genReq,
+      expect.anything(),
+      'host-1'
+    );
   });
 
   it('does not start a second generation while one is running', () => {
@@ -103,7 +111,9 @@ describe('usePrBackgroundStore', () => {
   it('records a finished PR creation as done with its result', async () => {
     createPR.mockResolvedValue({ success: true, data: 'https://pr' });
 
-    usePrBackgroundStore.getState().startCreate('ws-create-ok', createReq);
+    usePrBackgroundStore
+      .getState()
+      .startCreate('ws-create-ok', createReq, 'host-1');
     expect(
       usePrBackgroundStore.getState().byWorkspace['ws-create-ok']?.create
         ?.status
@@ -118,6 +128,12 @@ describe('usePrBackgroundStore', () => {
     expect(create?.baseBranch).toBe('main');
     expect(reservePrWindow).toHaveBeenCalledOnce();
     expect(openPrUrl).toHaveBeenCalledWith('https://pr', prWindow);
+    expect(createPR).toHaveBeenCalledWith(
+      'ws-create-ok',
+      createReq,
+      expect.anything(),
+      'host-1'
+    );
   });
 
   it('aborts and clears a running PR creation on cancel', async () => {

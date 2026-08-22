@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { issuePrsApi, workspacesApi } from '@/shared/lib/api';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { PrCommentsResponse } from 'shared/types';
 
 export const prCommentsKeys = {
@@ -7,10 +9,25 @@ export const prCommentsKeys = {
   byWorkspace: (
     workspaceId: string | undefined,
     repoId: string | undefined,
-    prNumber?: number
-  ) => ['prComments', 'workspace', workspaceId, repoId, prNumber] as const,
-  byUrl: (prUrl: string, prNumber: number) =>
-    ['prComments', 'url', prUrl, prNumber] as const,
+    prNumber?: number,
+    hostId: string | null = null
+  ) =>
+    [
+      'prComments',
+      'workspace',
+      workspaceId,
+      repoId,
+      prNumber,
+      getHostRequestScopeQueryKey(hostId),
+    ] as const,
+  byUrl: (prUrl: string, prNumber: number, hostId: string | null = null) =>
+    [
+      'prComments',
+      'url',
+      prUrl,
+      prNumber,
+      getHostRequestScopeQueryKey(hostId),
+    ] as const,
 };
 
 type Options = {
@@ -23,12 +40,23 @@ export function usePrComments(
   repoId?: string,
   opts?: Options
 ) {
+  const hostId = useHostId();
   const enabled = (opts?.enabled ?? true) && !!workspaceId && !!repoId;
 
   return useQuery<PrCommentsResponse>({
-    queryKey: prCommentsKeys.byWorkspace(workspaceId, repoId, opts?.prNumber),
+    queryKey: prCommentsKeys.byWorkspace(
+      workspaceId,
+      repoId,
+      opts?.prNumber,
+      hostId
+    ),
     queryFn: () =>
-      workspacesApi.getPrComments(workspaceId!, repoId!, opts?.prNumber),
+      workspacesApi.getPrComments(
+        workspaceId!,
+        repoId!,
+        opts?.prNumber,
+        hostId
+      ),
     enabled,
     staleTime: 30_000, // Cache for 30s - comments don't change frequently
     retry: 2,
@@ -40,9 +68,10 @@ export function usePrCommentsByUrl(
   prNumber: number,
   enabled = true
 ) {
+  const hostId = useHostId();
   return useQuery<PrCommentsResponse>({
-    queryKey: prCommentsKeys.byUrl(prUrl, prNumber),
-    queryFn: () => issuePrsApi.getPrComments(prUrl, prNumber),
+    queryKey: prCommentsKeys.byUrl(prUrl, prNumber, hostId),
+    queryFn: () => issuePrsApi.getPrComments(prUrl, prNumber, hostId),
     enabled,
     staleTime: 30_000,
     retry: 2,

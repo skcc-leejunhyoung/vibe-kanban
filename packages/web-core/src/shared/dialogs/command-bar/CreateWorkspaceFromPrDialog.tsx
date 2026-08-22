@@ -29,6 +29,8 @@ import { SearchableDropdownContainer } from '@/shared/components/ui-new/containe
 import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import type { PullRequestDetail, GitRemote } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 export interface CreateWorkspaceFromPrDialogProps {}
 
@@ -36,6 +38,7 @@ const CreateWorkspaceFromPrDialogImpl =
   create<CreateWorkspaceFromPrDialogProps>(() => {
     const modal = useModal();
     const appNavigation = useAppNavigation();
+    const hostId = useHostId();
     const { t } = useTranslation('tasks');
     const queryClient = useQueryClient();
 
@@ -50,8 +53,8 @@ const CreateWorkspaceFromPrDialogImpl =
     const [runSetup, setRunSetup] = useState(true);
 
     const { data: repos = [], isLoading: isLoadingRepos } = useQuery({
-      queryKey: ['repos'],
-      queryFn: () => repoApi.list(),
+      queryKey: ['repos', getHostRequestScopeQueryKey(hostId)],
+      queryFn: () => repoApi.list(hostId),
       enabled: modal.visible,
     });
 
@@ -68,10 +71,14 @@ const CreateWorkspaceFromPrDialogImpl =
     }, [repos, selectedRepoId, currentWorkspaceRepoId]);
 
     const { data: remotes = [], isLoading: isLoadingRemotes } = useQuery({
-      queryKey: ['repo-remotes', selectedRepoId],
+      queryKey: [
+        'repo-remotes',
+        selectedRepoId,
+        getHostRequestScopeQueryKey(hostId),
+      ],
       queryFn: async () => {
         if (!selectedRepoId) return [];
-        return repoApi.listRemotes(selectedRepoId);
+        return repoApi.listRemotes(selectedRepoId, hostId);
       },
       enabled: modal.visible && !!selectedRepoId,
     });
@@ -87,10 +94,15 @@ const CreateWorkspaceFromPrDialogImpl =
       isLoading: isLoadingPrs,
       error: prsError,
     } = useQuery({
-      queryKey: ['open-prs', selectedRepoId, selectedRemote],
+      queryKey: [
+        'open-prs',
+        selectedRepoId,
+        selectedRemote,
+        getHostRequestScopeQueryKey(hostId),
+      ],
       queryFn: async () => {
         if (!selectedRepoId || !selectedRemote) return null;
-        return repoApi.listOpenPrs(selectedRepoId, selectedRemote);
+        return repoApi.listOpenPrs(selectedRepoId, selectedRemote, hostId);
       },
       enabled: modal.visible && !!selectedRepoId && !!selectedRemote,
     });
@@ -141,16 +153,19 @@ const CreateWorkspaceFromPrDialogImpl =
         ) {
           throw new Error('Missing required fields');
         }
-        const result = await workspacesApi.createFromPr({
-          repo_id: selectedRepoId,
-          pr_number: selectedPrNumber as unknown as bigint,
-          pr_title: selectedPr.title,
-          pr_url: selectedPr.url,
-          head_branch: selectedPr.head_branch,
-          base_branch: selectedPr.base_branch,
-          run_setup: runSetup,
-          remote_name: selectedRemote,
-        });
+        const result = await workspacesApi.createFromPr(
+          {
+            repo_id: selectedRepoId,
+            pr_number: selectedPrNumber as unknown as bigint,
+            pr_title: selectedPr.title,
+            pr_url: selectedPr.url,
+            head_branch: selectedPr.head_branch,
+            base_branch: selectedPr.base_branch,
+            run_setup: runSetup,
+            remote_name: selectedRemote,
+          },
+          hostId
+        );
         if (!result.success) {
           switch (result.error?.type) {
             case 'branch_fetch_failed':
@@ -182,7 +197,7 @@ const CreateWorkspaceFromPrDialogImpl =
         queryClient.invalidateQueries({ queryKey: ['tasks'] });
         queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         modal.hide();
-        appNavigation.goToWorkspace(data.workspace.id);
+        appNavigation.goToWorkspace(data.workspace.id, { hostId });
       },
     });
 

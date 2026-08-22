@@ -29,6 +29,7 @@ import { useWorkspaces } from '@/shared/hooks/useWorkspaces';
 import { workspacesApi, type Result } from '@/shared/lib/api';
 import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsDialog';
 import { RebaseInProgressDialog } from '@vibe/ui/components/RebaseInProgressDialog';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export interface RebaseDialogProps {
   workspaceId: string;
@@ -45,6 +46,7 @@ function RebaseDialogContent({
   repoId,
 }: RebaseDialogContentProps) {
   const modal = useModal();
+  const hostId = useHostId();
   const queryClient = useQueryClient();
   const { t } = useTranslation(['tasks', 'common']);
   const [selectedBranch, setSelectedBranch] = useState<string>('');
@@ -101,14 +103,22 @@ function RebaseDialogContent({
   }, [queryClient, workspaceId]);
 
   const continueRebaseInProgress = useCallback(async () => {
-    await workspacesApi.continueRebase(workspaceId, { repo_id: repoId });
+    await workspacesApi.continueRebase(
+      workspaceId,
+      { repo_id: repoId },
+      hostId
+    );
     await invalidateRebaseQueries();
-  }, [workspaceId, repoId, invalidateRebaseQueries]);
+  }, [workspaceId, repoId, hostId, invalidateRebaseQueries]);
 
   const abortRebaseInProgress = useCallback(async () => {
-    await workspacesApi.abortConflicts(workspaceId, { repo_id: repoId });
+    await workspacesApi.abortConflicts(
+      workspaceId,
+      { repo_id: repoId },
+      hostId
+    );
     await invalidateRebaseQueries();
-  }, [workspaceId, repoId, invalidateRebaseQueries]);
+  }, [workspaceId, repoId, hostId, invalidateRebaseQueries]);
 
   // Prevent the redirect useEffect from firing more than once. Without this,
   // every 5-second branchStatus poll that still returns conflicts would

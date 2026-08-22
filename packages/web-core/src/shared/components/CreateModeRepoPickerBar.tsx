@@ -48,6 +48,7 @@ import {
   type LockedBranch,
 } from '@/shared/components/WorkingBranchRow';
 import { pickBranchForRepo } from '@/shared/lib/branchPicker';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 function toRepoItem(repo: Repo): RepoItem {
   return {
@@ -267,6 +268,7 @@ export function CreateModeRepoPickerBar({
 }: CreateModeRepoPickerBarProps) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
+  const hostId = useHostId();
   const { repos, addRepo, removeRepo, setTargetBranch } = useCreateMode();
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -325,7 +327,7 @@ export function CreateModeRepoPickerBar({
     await runPickerAction(
       'choose',
       async () => {
-        const allRepos = await repoApi.listRecent();
+        const allRepos = await repoApi.listRecent(hostId);
         const availableRepos = allRepos.filter(
           (repo) => !selectedRepoIds.has(repo.id)
         );
@@ -355,7 +357,7 @@ export function CreateModeRepoPickerBar({
       },
       'Failed to load repositories or branches'
     );
-  }, [addRepoWithBranchSelection, runPickerAction, selectedRepoIds]);
+  }, [addRepoWithBranchSelection, hostId, runPickerAction, selectedRepoIds]);
 
   const handleBrowseRepo = useCallback(async () => {
     await runPickerAction(
@@ -367,13 +369,13 @@ export function CreateModeRepoPickerBar({
         });
         if (!selectedPath) return;
 
-        const repo = await repoApi.register({ path: selectedPath });
+        const repo = await repoApi.register({ path: selectedPath }, hostId);
         queryClient.invalidateQueries({ queryKey: ['repos'] });
         await addRepoWithBranchSelection(repo);
       },
       'Failed to register repository'
     );
-  }, [addRepoWithBranchSelection, runPickerAction, t]);
+  }, [addRepoWithBranchSelection, hostId, runPickerAction, t]);
 
   const handleCreateRepo = useCallback(async () => {
     await runPickerAction(
@@ -387,10 +389,13 @@ export function CreateModeRepoPickerBar({
               value: currentPath,
             }),
           onCreateRepo: async ({ parentPath, folderName }) => {
-            const repo = await repoApi.init({
-              parent_path: parentPath,
-              folder_name: folderName,
-            });
+            const repo = await repoApi.init(
+              {
+                parent_path: parentPath,
+                folder_name: folderName,
+              },
+              hostId
+            );
             queryClient.invalidateQueries({ queryKey: ['repos'] });
             await addRepoWithBranchSelection(repo);
           },
@@ -398,7 +403,7 @@ export function CreateModeRepoPickerBar({
       },
       'Failed to create repository'
     );
-  }, [addRepoWithBranchSelection, runPickerAction, t]);
+  }, [addRepoWithBranchSelection, hostId, runPickerAction, t]);
 
   return (
     <div className="w-chat max-w-full">

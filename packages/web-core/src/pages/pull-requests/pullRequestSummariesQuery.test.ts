@@ -18,10 +18,11 @@ describe('pullRequestSummariesQueryOptions', () => {
   });
 
   it('uses the same cache key for page and background prefetches', () => {
-    expect(pullRequestSummariesQueryKey('repo-1', true)).toEqual([
+    expect(pullRequestSummariesQueryKey('repo-1', true, 'host-1')).toEqual([
       'pull-request-summaries',
       'repo-1',
       true,
+      'host-1',
     ]);
   });
 
@@ -31,11 +32,13 @@ describe('pullRequestSummariesQueryOptions', () => {
       data: { summaries: [], warming: false },
     });
 
-    await pullRequestSummariesQueryOptions('repo-1', false).queryFn();
+    await pullRequestSummariesQueryOptions('repo-1', false, 'host-1').queryFn();
 
     expect(repoApi.listPullRequestSummaries).toHaveBeenCalledWith(
       'repo-1',
-      false
+      false,
+      false,
+      'host-1'
     );
   });
 });

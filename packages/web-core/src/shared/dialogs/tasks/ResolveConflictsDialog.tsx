@@ -154,12 +154,15 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
 
         // Create new session if user selected that option or no existing session
         if (creatingNewSession) {
-          const session = await sessionsApi.create({
-            workspace_id: workspaceId,
-            executor: effectiveProfile.executor,
-            variant: effectiveProfile.variant,
-            name: t('resolveConflicts.dialog.sessionName'),
-          });
+          const session = await sessionsApi.create(
+            {
+              workspace_id: workspaceId,
+              executor: effectiveProfile.executor,
+              variant: effectiveProfile.variant,
+              name: t('resolveConflicts.dialog.sessionName'),
+            },
+            hostId
+          );
           targetSessionId = session.id;
         }
 
@@ -170,16 +173,20 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
         }
 
         // Send follow-up with conflict resolution instructions
-        await sessionsApi.followUp(targetSessionId, {
-          prompt: conflictInstructions,
-          executor_config: {
-            executor: effectiveProfile.executor,
-            variant: effectiveProfile.variant,
+        await sessionsApi.followUp(
+          targetSessionId,
+          {
+            prompt: conflictInstructions,
+            executor_config: {
+              executor: effectiveProfile.executor,
+              variant: effectiveProfile.variant,
+            },
+            retry_process_id: null,
+            force_when_dirty: null,
+            perform_git_reset: null,
           },
-          retry_process_id: null,
-          force_when_dirty: null,
-          perform_git_reset: null,
-        });
+          hostId
+        );
 
         // Invalidate queries and wait for them to complete
         await Promise.all([
@@ -247,7 +254,11 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
       setError(null);
 
       try {
-        await workspacesApi.abortConflicts(workspaceId, { repo_id: repoId });
+        await workspacesApi.abortConflicts(
+          workspaceId,
+          { repo_id: repoId },
+          hostId
+        );
         await queryClient.invalidateQueries({
           queryKey: ['branchStatus', workspaceId],
         });
@@ -264,7 +275,7 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
       } finally {
         setIsAborting(false);
       }
-    }, [workspaceId, repoId, queryClient, modal, t]);
+    }, [workspaceId, repoId, hostId, queryClient, modal, t]);
 
     const handleOpenChange = (open: boolean) => {
       if (!open) handleCancel();

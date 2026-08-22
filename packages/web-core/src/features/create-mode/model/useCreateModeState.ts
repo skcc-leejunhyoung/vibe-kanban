@@ -25,6 +25,7 @@ import { repoApi } from '@/shared/lib/api';
 import { resolveCreateModeBootstrap } from '@/features/create-mode/model/createModeBootstrap';
 import { useWorkspaceCreateDefaults } from '@/shared/hooks/useWorkspaceCreateDefaults';
 import { getValidProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import type {
   CreateModeInitialState,
   LinkedIssue,
@@ -297,6 +298,7 @@ export function useCreateModeState({
   remoteWorkspacesLoading,
 }: UseCreateModeStateParams): UseCreateModeStateResult {
   const { profiles, config, loading: systemLoading } = useUserSystem();
+  const hostId = useHostId();
   const scratchId = draftId ?? DRAFT_WORKSPACE_ID;
 
   const {
@@ -352,6 +354,7 @@ export function useCreateModeState({
           }
         : null,
       isValidProfile,
+      hostId,
     })
       .then(({ data }) => {
         dispatch({ type: 'INIT_COMPLETE', data });
@@ -370,6 +373,7 @@ export function useCreateModeState({
     config?.executor_profile,
     scratch,
     isValidProfile,
+    hostId,
   ]);
 
   // ============================================================================
@@ -486,14 +490,15 @@ export function useCreateModeState({
     const remoteProjectId = state.linkedIssue?.remoteProjectId;
     if (!remoteProjectId) return;
     if (state.repos.length > 0) return;
-    if (scratchDefaultsProjectRef.current === remoteProjectId) return;
+    const lookupKey = `${hostId ?? 'local'}:${remoteProjectId}`;
+    if (scratchDefaultsProjectRef.current === lookupKey) return;
 
-    scratchDefaultsProjectRef.current = remoteProjectId;
+    scratchDefaultsProjectRef.current = lookupKey;
     let cancelled = false;
 
     (async () => {
       try {
-        const allRepos = await repoApi.list();
+        const allRepos = await repoApi.list(hostId);
         if (cancelled) return;
 
         const availableRepoIds = new Set(allRepos.map((r) => r.id));
@@ -539,7 +544,7 @@ export function useCreateModeState({
     return () => {
       cancelled = true;
     };
-  }, [state.linkedIssue?.remoteProjectId, state.repos.length]);
+  }, [hostId, state.linkedIssue?.remoteProjectId, state.repos.length]);
 
   // ============================================================================
   // Persistence to scratch (debounced)

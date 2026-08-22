@@ -5,6 +5,7 @@ import {
   type RestoreLogsDialogResult,
 } from '@/shared/dialogs/tasks/RestoreLogsDialog';
 import type { RepoBranchStatus, ExecutionProcess } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export interface ResetProcessParams {
   executionProcessId: string;
@@ -24,6 +25,7 @@ export function useResetProcessMutation(
   onSuccess?: () => void,
   onError?: (err: unknown) => void
 ) {
+  const hostId = useHostId();
   return useMutation({
     mutationKey: ['reset-process', sessionId],
     mutationFn: async ({
@@ -46,11 +48,15 @@ export function useResetProcessMutation(
         throw new ResetDialogCancelledError();
       }
 
-      await sessionsApi.reset(sessionId, {
-        process_id: executionProcessId,
-        force_when_dirty: modalResult.forceWhenDirty ?? false,
-        perform_git_reset: modalResult.performGitReset ?? true,
-      });
+      await sessionsApi.reset(
+        sessionId,
+        {
+          process_id: executionProcessId,
+          force_when_dirty: modalResult.forceWhenDirty ?? false,
+          perform_git_reset: modalResult.performGitReset ?? true,
+        },
+        hostId
+      );
     },
     onSuccess: () => {
       onSuccess?.();

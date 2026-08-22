@@ -15,6 +15,7 @@ import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface GhCliSetupDialogProps {
   workspaceId: string;
@@ -128,6 +129,7 @@ export const GhCliHelpInstructions = ({
 const GhCliSetupDialogImpl = create<GhCliSetupDialogProps>(
   ({ workspaceId }) => {
     const modal = useModal();
+    const hostId = useHostId();
     const { t } = useTranslation();
     const [isRunning, setIsRunning] = useState(false);
     const [errorInfo, setErrorInfo] = useState<{
@@ -144,7 +146,7 @@ const GhCliSetupDialogImpl = create<GhCliSetupDialogProps>(
       pendingResultRef.current = null;
 
       try {
-        await workspacesApi.setupGhCli(workspaceId);
+        await workspacesApi.setupGhCli(workspaceId, hostId);
         hasResolvedRef.current = true;
         modal.resolve(null);
         modal.hide();

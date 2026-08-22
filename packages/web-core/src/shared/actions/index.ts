@@ -329,9 +329,10 @@ type RepoPullRequestSelection =
 async function selectRepoPullRequest(
   workspaceId: string,
   repoId: string,
-  options: { openOnly: boolean }
+  options: { openOnly: boolean },
+  hostId?: string | null
 ): Promise<RepoPullRequestSelection> {
-  const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+  const branchStatus = await workspacesApi.getBranchStatus(workspaceId, hostId);
   const merges =
     branchStatus.find((status) => status.repo_id === repoId)?.merges ?? [];
   const pullRequests: RepoPullRequest[] = merges
@@ -436,13 +437,14 @@ async function attachPrAndReport(
   repoId: string,
   request: { head_branch: string | null; pr_url: string | null }
 ) {
-  const result = await workspacesApi.attachPr(workspaceId, {
-    repo_id: repoId,
-    ...request,
-  });
+  const result = await workspacesApi.attachPr(
+    workspaceId,
+    { repo_id: repoId, ...request },
+    ctx.currentHostId
+  );
 
   if (result.success && result.data.pr_attached && result.data.pr_number) {
-    invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+    invalidateWorkspaceQueries(ctx.queryClient, workspaceId, ctx.currentHostId);
     ctx.queryClient.invalidateQueries({ queryKey: ['branch-status'] });
     await ConfirmDialog.show({
       title: 'Pull Request Linked',
@@ -531,10 +533,14 @@ function navigateToCreateSubIssue(
 // base via PR). Returns undefined when there's no such direct merge.
 async function findMergedFeatureBranch(
   workspaceId: string,
-  repoId: string
+  repoId: string,
+  hostId?: string | null
 ): Promise<string | undefined> {
   try {
-    const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+    const branchStatus = await workspacesApi.getBranchStatus(
+      workspaceId,
+      hostId
+    );
     const repoStatus = branchStatus.find((s) => s.repo_id === repoId);
     const directMerge = repoStatus?.merges?.find((m) => m.type === 'direct');
     return directMerge?.type === 'direct'
@@ -550,10 +556,14 @@ async function findMergedFeatureBranch(
 // PR), so it's a valid candidate when searching for a linkable PR.
 async function findRepoTargetBranch(
   workspaceId: string,
-  repoId: string
+  repoId: string,
+  hostId?: string | null
 ): Promise<string | undefined> {
   try {
-    const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+    const branchStatus = await workspacesApi.getBranchStatus(
+      workspaceId,
+      hostId
+    );
     const repoStatus = branchStatus.find((s) => s.repo_id === repoId);
     return repoStatus?.target_branch_name || undefined;
   } catch {
@@ -1405,8 +1415,6 @@ export const Actions = {
     icon: GitPullRequestIcon,
     keywords: ['pull request', 'pr', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
-    isVisible: (ctx) =>
-      ctx.appRuntime === 'local' || ctx.currentHostId !== null,
     execute: (ctx) => {
       ctx.appNavigation.goToPullRequests();
     },
@@ -1809,11 +1817,15 @@ export const Actions = {
                 editor_type: null,
                 file_path: null,
               })
-            : await workspacesApi.openEditor(ctx.currentWorkspaceId, {
-                editor_type: null,
-                file_path: null,
-                is_remote_web: ctx.appRuntime === 'remote',
-              });
+            : await workspacesApi.openEditor(
+                ctx.currentWorkspaceId,
+                {
+                  editor_type: null,
+                  file_path: null,
+                  is_remote_web: ctx.appRuntime === 'remote',
+                },
+                ctx.currentHostId
+              );
         if (response.url) {
           window.open(response.url, '_blank');
         }
@@ -1916,12 +1928,20 @@ export const Actions = {
     isVisible: (ctx) =>
       ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasUncommittedChanges,
     execute: async (ctx, workspaceId, repoId) => {
-      const result = await workspacesApi.commit(workspaceId, {
-        repo_id: repoId,
-      });
+      const result = await workspacesApi.commit(
+        workspaceId,
+        {
+          repo_id: repoId,
+        },
+        ctx.currentHostId
+      );
       // `committed === false` means the worktree was clean — not an error.
       if (result.committed) {
-        invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+        invalidateWorkspaceQueries(
+          ctx.queryClient,
+          workspaceId,
+          ctx.currentHostId
+        );
         ctx.queryClient.invalidateQueries({
           queryKey: ['branchStatus', workspaceId],
         });
@@ -1937,14 +1957,25 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+      const workspace = await getWorkspace(
+        ctx.queryClient,
+        workspaceId,
+        ctx.currentHostId
+      );
 
-      const repos = await workspacesApi.getRepos(workspaceId);
+      const repos = await workspacesApi.getRepos(
+        workspaceId,
+        ctx.currentHostId
+      );
       const repo = repos.find((r) => r.id === repoId);
 
       // Prefer opening the PR from the feature branch the work branch was merged
       // into (three-branch workflow); the dialog falls back to the work branch.
-      const featureBranch = await findMergedFeatureBranch(workspaceId, repoId);
+      const featureBranch = await findMergedFeatureBranch(
+        workspaceId,
+        repoId,
+        ctx.currentHostId
+      );
 
       // Resolve vibe-kanban identifier from remote workspace + issue
       let issueIdentifier: string | undefined;
@@ -1986,9 +2017,9 @@ export const Actions = {
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
       const [workspace, repos, featureBranch] = await Promise.all([
-        getWorkspace(ctx.queryClient, workspaceId),
-        workspacesApi.getRepos(workspaceId),
-        findMergedFeatureBranch(workspaceId, repoId),
+        getWorkspace(ctx.queryClient, workspaceId, ctx.currentHostId),
+        workspacesApi.getRepos(workspaceId, ctx.currentHostId),
+        findMergedFeatureBranch(workspaceId, repoId, ctx.currentHostId),
       ]);
       const repo = repos.find((r) => r.id === repoId);
 
@@ -2003,7 +2034,8 @@ export const Actions = {
         workspaceId,
         repoId,
         workspace.branch,
-        headBranch
+        headBranch,
+        ctx.currentHostId
       );
       if (!proceed) return;
 
@@ -2030,15 +2062,20 @@ export const Actions = {
     keywords: ['pull request', 'browser'],
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasOpenPR,
-    execute: async (_ctx, workspaceId, repoId) => {
+    execute: async (ctx, workspaceId, repoId) => {
       const reservedWindow = reserveExternalWindow();
       try {
         // Prefer the reserved popup so the browser keeps the user gesture; when
         // several open PRs are connected the selection dialog runs while the
         // popup waits blank, then we point it at the chosen PR.
-        const selection = await selectRepoPullRequest(workspaceId, repoId, {
-          openOnly: true,
-        });
+        const selection = await selectRepoPullRequest(
+          workspaceId,
+          repoId,
+          {
+            openOnly: true,
+          },
+          ctx.currentHostId
+        );
 
         if (selection.kind === 'cancelled') {
           reservedWindow?.close();
@@ -2075,8 +2112,11 @@ export const Actions = {
     keywords: ['pull request', 'details', 'comments', 'reviews', 'pr'],
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasLinkedPR,
-    execute: async (_ctx, workspaceId, repoId) => {
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+    execute: async (ctx, workspaceId, repoId) => {
+      const branchStatus = await workspacesApi.getBranchStatus(
+        workspaceId,
+        ctx.currentHostId
+      );
       const merges = branchStatus.find(
         (status) => status.repo_id === repoId
       )?.merges;
@@ -2101,17 +2141,16 @@ export const Actions = {
     icon: GitPullRequestIcon,
     keywords: ['pull request', 'pr', 'pull requests', 'page', 'open'],
     requiresTarget: ActionTargetType.GIT,
-    isVisible: (ctx) =>
-      ctx.hasWorkspace &&
-      ctx.hasGitRepos &&
-      ctx.hasLinkedPR &&
-      (ctx.appRuntime === 'local' || ctx.currentHostId !== null),
+    isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos && ctx.hasLinkedPR,
     execute: async (ctx, workspaceId, repoId) => {
       // Any connected PR (open, merged, or closed) can be opened on the PR page;
       // when several are linked, let the user pick which one to open.
-      const selection = await selectRepoPullRequest(workspaceId, repoId, {
-        openOnly: false,
-      });
+      const selection = await selectRepoPullRequest(
+        workspaceId,
+        repoId,
+        { openOnly: false },
+        ctx.currentHostId
+      );
       if (selection.kind !== 'selected') return;
       ctx.appNavigation.goToPullRequests(
         selection.pullRequest.url,
@@ -2184,9 +2223,7 @@ export const Actions = {
     keywords: ['pull request', 'pr', 'pull requests', 'page', 'open'],
     requiresTarget: ActionTargetType.ISSUE,
     isVisible: (ctx) =>
-      ctx.layoutMode === 'kanban' &&
-      ctx.hasSelectedKanbanIssue &&
-      (ctx.appRuntime === 'local' || ctx.currentHostId !== null),
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
     execute: async (ctx, _projectId, issueIds) => {
       const pullRequest = await selectIssuePullRequest(ctx, issueIds);
       if (!pullRequest) return;
@@ -2213,9 +2250,9 @@ export const Actions = {
       //   3. the repo's target branch — a PR may originate from the target
       //      branch itself (e.g. an upstream `target -> base` PR)
       const [featureBranch, targetBranch, workspace] = await Promise.all([
-        findMergedFeatureBranch(workspaceId, repoId),
-        findRepoTargetBranch(workspaceId, repoId),
-        getWorkspace(ctx.queryClient, workspaceId),
+        findMergedFeatureBranch(workspaceId, repoId, ctx.currentHostId),
+        findRepoTargetBranch(workspaceId, repoId, ctx.currentHostId),
+        getWorkspace(ctx.queryClient, workspaceId, ctx.currentHostId),
       ]);
 
       // Sending the work branch explicitly is equivalent to null (the backend
@@ -2231,7 +2268,8 @@ export const Actions = {
           result: await workspacesApi.listAttachablePrs(
             workspaceId,
             repoId,
-            headBranch
+            headBranch,
+            ctx.currentHostId
           ),
         }))
       );
@@ -2299,7 +2337,10 @@ export const Actions = {
     execute: async (ctx, workspaceId, repoId) => {
       // A repo can track more than one PR, so gather them all and let the user
       // pick which one to unlink (skipping the picker when there's only one).
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const branchStatus = await workspacesApi.getBranchStatus(
+        workspaceId,
+        ctx.currentHostId
+      );
       const prMerges =
         branchStatus
           .find((status) => status.repo_id === repoId)
@@ -2364,12 +2405,17 @@ export const Actions = {
       });
       if (confirm !== 'confirmed') return;
 
-      await workspacesApi.unlinkPr(workspaceId, {
-        repo_id: repoId,
-        pr_url: prUrl,
-      });
+      await workspacesApi.unlinkPr(
+        workspaceId,
+        { repo_id: repoId, pr_url: prUrl },
+        ctx.currentHostId
+      );
 
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+      invalidateWorkspaceQueries(
+        ctx.queryClient,
+        workspaceId,
+        ctx.currentHostId
+      );
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
       });
@@ -2386,8 +2432,8 @@ export const Actions = {
     execute: async (ctx, workspaceId, repoId) => {
       // Check for existing conflicts first
       const [workspace, branchStatus] = await Promise.all([
-        getWorkspace(ctx.queryClient, workspaceId),
-        workspacesApi.getBranchStatus(workspaceId),
+        getWorkspace(ctx.queryClient, workspaceId, ctx.currentHostId),
+        workspacesApi.getBranchStatus(workspaceId, ctx.currentHostId),
       ]);
       const repoStatus = branchStatus?.find((s) => s.repo_id === repoId);
 
@@ -2431,7 +2477,11 @@ export const Actions = {
         });
 
         if (result.action === 'resolved') {
-          invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+          invalidateWorkspaceQueries(
+            ctx.queryClient,
+            workspaceId,
+            ctx.currentHostId
+          );
         }
         return;
       }
@@ -2466,8 +2516,16 @@ export const Actions = {
       });
 
       if (confirmResult === 'confirmed') {
-        await workspacesApi.merge(workspaceId, { repo_id: repoId });
-        invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+        await workspacesApi.merge(
+          workspaceId,
+          { repo_id: repoId },
+          ctx.currentHostId
+        );
+        invalidateWorkspaceQueries(
+          ctx.queryClient,
+          workspaceId,
+          ctx.currentHostId
+        );
       }
     },
   },
@@ -2498,15 +2556,21 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const outcome = await workspacesApi.pull(workspaceId, {
-        repo_id: repoId,
-      });
+      const outcome = await workspacesApi.pull(
+        workspaceId,
+        { repo_id: repoId },
+        ctx.currentHostId
+      );
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
       });
 
       if (outcome.type === 'fast_forwarded') {
-        invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+        invalidateWorkspaceQueries(
+          ctx.queryClient,
+          workspaceId,
+          ctx.currentHostId
+        );
         await ConfirmDialog.show({
           title: 'Pull complete',
           message: `Fast-forwarded ${outcome.commits} commit${
@@ -2522,6 +2586,7 @@ export const Actions = {
           repoId,
           ahead: outcome.ahead,
           behind: outcome.behind,
+          hostId: ctx.currentHostId,
         });
       } else {
         await ConfirmDialog.show({
@@ -2545,7 +2610,10 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const branchStatus = await workspacesApi.getBranchStatus(workspaceId);
+      const branchStatus = await workspacesApi.getBranchStatus(
+        workspaceId,
+        ctx.currentHostId
+      );
       const repoStatus = branchStatus?.find((s) => s.repo_id === repoId);
 
       // Already mid-conflict: open the resolver instead of starting a new merge.
@@ -2558,7 +2626,11 @@ export const Actions = {
         )?.isRunning;
         if (isRunning) return;
 
-        const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+        const workspace = await getWorkspace(
+          ctx.queryClient,
+          workspaceId,
+          ctx.currentHostId
+        );
         await ResolveConflictsDialog.show({
           workspaceId,
           repoId,
@@ -2568,7 +2640,11 @@ export const Actions = {
           conflictedFiles: repoStatus.conflicted_files ?? [],
           repoName: repoStatus.repo_name,
         });
-        invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+        invalidateWorkspaceQueries(
+          ctx.queryClient,
+          workspaceId,
+          ctx.currentHostId
+        );
         return;
       }
 
@@ -2597,10 +2673,11 @@ export const Actions = {
       });
       if (confirmResult !== 'confirmed') return;
 
-      const result = await workspacesApi.updateFromBase(workspaceId, {
-        repo_id: repoId,
-        strategy: 'merge',
-      });
+      const result = await workspacesApi.updateFromBase(
+        workspaceId,
+        { repo_id: repoId, strategy: 'merge' },
+        ctx.currentHostId
+      );
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
       });
@@ -2608,7 +2685,11 @@ export const Actions = {
       if (!result.success) {
         const err = result.error;
         if (err?.type === 'merge_conflicts') {
-          const workspace = await getWorkspace(ctx.queryClient, workspaceId);
+          const workspace = await getWorkspace(
+            ctx.queryClient,
+            workspaceId,
+            ctx.currentHostId
+          );
           await ResolveConflictsDialog.show({
             workspaceId,
             repoId,
@@ -2618,7 +2699,11 @@ export const Actions = {
             conflictedFiles: err.conflicted_files ?? [],
             repoName: repoStatus?.repo_name,
           });
-          invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+          invalidateWorkspaceQueries(
+            ctx.queryClient,
+            workspaceId,
+            ctx.currentHostId
+          );
           return;
         }
         throw new Error(
@@ -2626,7 +2711,11 @@ export const Actions = {
         );
       }
 
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+      invalidateWorkspaceQueries(
+        ctx.queryClient,
+        workspaceId,
+        ctx.currentHostId
+      );
     },
   },
 
@@ -2651,11 +2740,16 @@ export const Actions = {
       });
       if (confirmResult !== 'confirmed') return;
 
-      await workspacesApi.updateTargetBranchFromBase(workspaceId, {
-        repo_id: repoId,
-        base_branch: baseBranch,
-      });
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+      await workspacesApi.updateTargetBranchFromBase(
+        workspaceId,
+        { repo_id: repoId, base_branch: baseBranch },
+        ctx.currentHostId
+      );
+      invalidateWorkspaceQueries(
+        ctx.queryClient,
+        workspaceId,
+        ctx.currentHostId
+      );
     },
   },
 
@@ -2672,10 +2766,14 @@ export const Actions = {
       });
       if (!newTargetBranch) return;
 
-      await workspacesApi.change_target_branch(workspaceId, {
-        new_target_branch: newTargetBranch,
-        repo_id: repoId,
-      });
+      await workspacesApi.change_target_branch(
+        workspaceId,
+        {
+          new_target_branch: newTargetBranch,
+          repo_id: repoId,
+        },
+        ctx.currentHostId
+      );
 
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
@@ -2704,7 +2802,11 @@ export const Actions = {
       ctx.hasOpenPR &&
       ctx.hasUnpushedCommits,
     execute: async (ctx, workspaceId, repoId) => {
-      const result = await workspacesApi.push(workspaceId, { repo_id: repoId });
+      const result = await workspacesApi.push(
+        workspaceId,
+        { repo_id: repoId },
+        ctx.currentHostId
+      );
       if (!result.success) {
         if (result.error?.type === 'diverged') {
           await ReconcileRemoteBranchDialog.show({
@@ -2713,16 +2815,25 @@ export const Actions = {
             ahead: result.error.ahead,
             behind: result.error.behind,
             triggeredByPush: true,
+            hostId: ctx.currentHostId,
           });
           return;
         }
         if (result.error?.type === 'force_push_required') {
-          await ForcePushDialog.show({ workspaceId, repoId });
+          await ForcePushDialog.show({
+            workspaceId,
+            repoId,
+            hostId: ctx.currentHostId,
+          });
           return;
         }
         throw new Error('Failed to push changes');
       }
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId);
+      invalidateWorkspaceQueries(
+        ctx.queryClient,
+        workspaceId,
+        ctx.currentHostId
+      );
     },
   },
 
@@ -2735,7 +2846,11 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const outcome = await workspacesApi.pullTargetBranch(workspaceId, repoId);
+      const outcome = await workspacesApi.pullTargetBranch(
+        workspaceId,
+        repoId,
+        ctx.currentHostId
+      );
       ctx.queryClient.invalidateQueries({
         queryKey: ['branchStatus', workspaceId],
       });
@@ -2750,6 +2865,7 @@ export const Actions = {
           ahead: outcome.ahead,
           behind: outcome.behind,
           isTarget: true,
+          hostId: ctx.currentHostId,
         });
         return;
       }
@@ -2788,7 +2904,8 @@ export const Actions = {
       const result = await workspacesApi.pushTargetBranch(
         workspaceId,
         repoId,
-        false
+        false,
+        ctx.currentHostId
       );
       invalidate();
 
@@ -2833,7 +2950,8 @@ export const Actions = {
         const forced = await workspacesApi.pushTargetBranch(
           workspaceId,
           repoId,
-          true
+          true,
+          ctx.currentHostId
         );
         invalidate();
         if (!forced.success) {
@@ -2864,9 +2982,9 @@ export const Actions = {
     icon: CopyIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
-    execute: async (_ctx, _workspaceId, repoId) => {
+    execute: async (ctx, _workspaceId, repoId) => {
       try {
-        const repo = await repoApi.getById(repoId);
+        const repo = await repoApi.getById(repoId, ctx.currentHostId);
         if (repo?.path) {
           await navigator.clipboard.writeText(repo.path);
         }

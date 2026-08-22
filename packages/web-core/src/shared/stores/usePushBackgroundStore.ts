@@ -33,8 +33,16 @@ interface PushBackgroundState {
   // byWorkspace[workspaceId][repoId] -> current status. Absence == idle.
   byWorkspace: Record<string, Record<string, PushStatus> | undefined>;
   targetByWorkspace: Record<string, Record<string, PushStatus> | undefined>;
-  startPush: (workspaceId: string, repoId: string) => void;
-  startTargetPush: (workspaceId: string, repoId: string) => void;
+  startPush: (
+    workspaceId: string,
+    repoId: string,
+    hostId?: string | null
+  ) => void;
+  startTargetPush: (
+    workspaceId: string,
+    repoId: string,
+    hostId?: string | null
+  ) => void;
 }
 
 // Auto-clear timers (success/error → idle) live outside the reactive store,
@@ -125,13 +133,13 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
     byWorkspace: {},
     targetByWorkspace: {},
 
-    startPush: (workspaceId, repoId) => {
+    startPush: (workspaceId, repoId, hostId) => {
       if (get().byWorkspace[workspaceId]?.[repoId] === 'pending') return;
       cancelTimer('byWorkspace', workspaceId, repoId);
       setStatus('byWorkspace', workspaceId, repoId, 'pending');
 
       workspacesApi
-        .push(workspaceId, { repo_id: repoId })
+        .push(workspaceId, { repo_id: repoId }, hostId)
         .then(async (result) => {
           if (result.success) {
             // A push only affects remote status; refresh branch status.
@@ -155,6 +163,7 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
               ahead: result.error.ahead,
               behind: result.error.behind,
               triggeredByPush: true,
+              hostId,
             });
             return;
           }
@@ -162,7 +171,7 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
           // Force push required → drop back to idle and prompt to confirm.
           if (result.error?.type === 'force_push_required') {
             clearStatus('byWorkspace', workspaceId, repoId);
-            await ForcePushDialog.show({ workspaceId, repoId });
+            await ForcePushDialog.show({ workspaceId, repoId, hostId });
             return;
           }
 
@@ -183,7 +192,7 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
     // Push the workspace's target (base) branch to origin. The caller is
     // expected to have already confirmed the intent; this handles the
     // force-push-required retry and all result feedback in the background.
-    startTargetPush: (workspaceId, repoId) => {
+    startTargetPush: (workspaceId, repoId, hostId) => {
       if (get().targetByWorkspace[workspaceId]?.[repoId] === 'pending') return;
       cancelTimer('targetByWorkspace', workspaceId, repoId);
       setStatus('targetByWorkspace', workspaceId, repoId, 'pending');
@@ -193,7 +202,8 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
           let result = await workspacesApi.pushTargetBranch(
             workspaceId,
             repoId,
-            false
+            false,
+            hostId
           );
 
           // Diverged → lead with the safe pull-first flow (merge origin into the
@@ -207,6 +217,7 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
               ahead: result.error.ahead,
               behind: result.error.behind,
               isTarget: true,
+              hostId,
             });
             if (choice !== 'force') {
               // 'success' (dialog pulled & pushed), 'conflicts', or 'canceled':
@@ -228,7 +239,8 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
             result = await workspacesApi.pushTargetBranch(
               workspaceId,
               repoId,
-              true
+              true,
+              hostId
             );
           } else if (
             !result.success &&
@@ -247,7 +259,8 @@ export const usePushBackgroundStore = create<PushBackgroundState>()((
             result = await workspacesApi.pushTargetBranch(
               workspaceId,
               repoId,
-              true
+              true,
+              hostId
             );
           }
 

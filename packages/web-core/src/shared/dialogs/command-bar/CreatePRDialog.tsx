@@ -46,6 +46,7 @@ import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContain
 import { defineModal } from '@/shared/lib/modals';
 import { splitMessageToTitleDescription } from '@/shared/lib/string';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface CreatePRDialogProps {
   attempt: Workspace;
@@ -109,6 +110,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     issueIdentifier,
   }) => {
     const modal = useModal();
+    const hostId = useHostId();
     const queryClient = useQueryClient();
     const { t } = useTranslation('tasks');
     const { isLoaded } = useAuth();
@@ -226,7 +228,11 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         try {
           // The backend draft is authoritative: unlike the background store it
           // survives reloads, app restarts, and opening this workspace elsewhere.
-          const savedDraft = await workspacesApi.getPrDraft(attempt.id, repoId);
+          const savedDraft = await workspacesApi.getPrDraft(
+            attempt.id,
+            repoId,
+            hostId
+          );
           if (isCancelled) return;
           if (savedDraft) {
             setPrTitle(savedDraft.title);
@@ -258,7 +264,8 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
 
         try {
           const firstUserMessage = await workspacesApi.getFirstUserMessage(
-            attempt.id
+            attempt.id,
+            hostId
           );
 
           if (isCancelled) return;
@@ -281,7 +288,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       return () => {
         isCancelled = true;
       };
-    }, [attempt.id, isLoaded, issueIdentifier, repoId]);
+    }, [attempt.id, hostId, isLoaded, issueIdentifier, repoId]);
 
     // Apply a completed AI generation into the form (works whether it finished
     // while open or in the background), then consume it. Surface generate errors
@@ -323,19 +330,23 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       draftSaveTimer.current = setTimeout(() => {
         enqueueDraftMutation(() =>
           isEmpty
-            ? workspacesApi.deletePrDraft(attempt.id, repoId)
-            : workspacesApi.savePrDraft(attempt.id, {
-                repo_id: repoId,
-                title: prTitle,
-                body: prBody,
-              })
+            ? workspacesApi.deletePrDraft(attempt.id, repoId, hostId)
+            : workspacesApi.savePrDraft(
+                attempt.id,
+                {
+                  repo_id: repoId,
+                  title: prTitle,
+                  body: prBody,
+                },
+                hostId
+              )
         );
       }, 400);
       return () => {
         if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
         draftSaveTimer.current = null;
       };
-    }, [prTitle, prBody, attempt.id, repoId, enqueueDraftMutation]);
+    }, [prTitle, prBody, attempt.id, repoId, hostId, enqueueDraftMutation]);
 
     // Set default head (source) branch when branches load. Prefer the feature
     // branch the work branch was merged into; fall back to the work branch.
@@ -407,19 +418,24 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         attempt.id,
         repoId,
         attempt.branch,
-        prHeadBranch
+        prHeadBranch,
+        hostId
       );
       if (!proceed) return;
       setError(null);
       setGhCliHelp(null);
-      startCreate(attempt.id, {
-        title: prTitle,
-        body: prBody || null,
-        target_branch: prBaseBranch || null,
-        head_branch: prHeadBranch || null,
-        draft: isDraft,
-        repo_id: repoId,
-      });
+      startCreate(
+        attempt.id,
+        {
+          title: prTitle,
+          body: prBody || null,
+          target_branch: prBaseBranch || null,
+          head_branch: prHeadBranch || null,
+          draft: isDraft,
+          repo_id: repoId,
+        },
+        hostId
+      );
     }, [
       attempt.id,
       attempt.branch,
@@ -431,6 +447,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       isDraft,
       creatingPR,
       startCreate,
+      hostId,
     ]);
 
     // Map a business failure from createPR onto the dialog (error text or the
@@ -563,7 +580,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
         draftSaveTimer.current = null;
         enqueueDraftMutation(() =>
-          workspacesApi.deletePrDraft(attempt.id, repoId)
+          workspacesApi.deletePrDraft(attempt.id, repoId, hostId)
         );
         modal.resolve({ success: true } as CreatePRDialogResult);
         modal.hide();
@@ -583,6 +600,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       queryClient,
       t,
       enqueueDraftMutation,
+      hostId,
     ]);
 
     // Generate a PR title + description by running the configured agent, once,
@@ -592,12 +610,16 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     const handleGenerate = useCallback(() => {
       if (!repoId || !attempt.id || generating) return;
       setError(null);
-      startGenerate(attempt.id, {
-        repo_id: repoId,
-        target_branch: prBaseBranch || null,
-        head_branch: prHeadBranch || null,
-        executor_config: generationExecutorConfig,
-      });
+      startGenerate(
+        attempt.id,
+        {
+          repo_id: repoId,
+          target_branch: prBaseBranch || null,
+          head_branch: prHeadBranch || null,
+          executor_config: generationExecutorConfig,
+        },
+        hostId
+      );
     }, [
       attempt.id,
       repoId,
@@ -606,6 +628,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       generating,
       startGenerate,
       generationExecutorConfig,
+      hostId,
     ]);
 
     // X button / ESC: keep any running background operation alive and just hide.
@@ -624,7 +647,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
       draftSaveTimer.current = null;
       enqueueDraftMutation(() =>
-        workspacesApi.deletePrDraft(attempt.id, repoId)
+        workspacesApi.deletePrDraft(attempt.id, repoId, hostId)
       );
       initializedFor.current = null;
       hydratedFor.current = null;
@@ -641,6 +664,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       cancelGenerate,
       cancelCreate,
       enqueueDraftMutation,
+      hostId,
     ]);
 
     return (

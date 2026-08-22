@@ -35,6 +35,10 @@ import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions'
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { openDestinationInNewPane } from '@/shared/lib/openInSplitPane';
+import {
+  REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
+  loadRemoteSharedUserSystemInfo,
+} from '@/shared/lib/remoteSharedConfig';
 
 /**
  * "Quick chat": a low-ceremony launcher to run an agent directly in an existing
@@ -69,6 +73,12 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     enabled: modal.visible && runtime === 'remote' && !!selectedHostId,
     staleTime: 5 * 60 * 1000,
   });
+  const remoteSharedSystem = useQuery({
+    queryKey: REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
+    queryFn: loadRemoteSharedUserSystemInfo,
+    enabled: modal.visible && runtime === 'remote',
+    staleTime: 5 * 60 * 1000,
+  });
   const config =
     runtime === 'remote'
       ? (selectedHostSystem.data?.config ?? null)
@@ -77,6 +87,10 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     runtime === 'remote'
       ? (selectedHostSystem.data?.executors ?? null)
       : routeProfiles;
+  const openInNewPane =
+    runtime === 'remote'
+      ? remoteSharedSystem.data?.config.quick_chat_open_in_new_pane
+      : config?.quick_chat_open_in_new_pane;
 
   const [repo, setRepo] = useState<Repo | null>(null);
   const [prompt, setPrompt] = useState('');
@@ -260,7 +274,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       modal.resolve(workspace.id);
       modal.hide();
       if (
-        !config?.quick_chat_open_in_new_pane ||
+        !openInNewPane ||
         !openDestinationInNewPane(
           {
             kind: 'workspace',
@@ -282,7 +296,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     executorConfig,
     prompt,
     modal,
-    config?.quick_chat_open_in_new_pane,
+    openInNewPane,
     appNavigation,
     runtime,
     selectedHostId,

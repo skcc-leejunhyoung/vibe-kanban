@@ -60,7 +60,10 @@ import {
 import { getCycledProjectId } from "@/shared/lib/projectCycle";
 import { PullRequestsBackgroundPrefetch } from "@/pages/pull-requests/PullRequestsBackgroundPrefetch";
 import { WorkspacePanesScreen } from "@/pages/workspaces/WorkspacePanesScreen";
-import { isPaneGridDestination } from "@/shared/stores/useWorkspacePanesStore";
+import {
+  isPaneGridDestination,
+  useWorkspacePanesStore,
+} from "@/shared/stores/useWorkspacePanesStore";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -84,26 +87,31 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const syncWorkspaceHostUser = useWorkspaceHostSelectionStore(
     (state) => state.syncUser,
   );
+  const syncWorkspacePaneUser = useWorkspacePanesStore(
+    (state) => state.syncUser,
+  );
   const location = useLocation();
   const { registerNavigationProjects } = useActions();
-  const { isSignedIn, userId } = useAuth();
-  const isWorkspaceContextRoute = location.pathname.includes("/workspaces");
-  const isProjectRoute = /^\/projects\/[^/]+/.test(location.pathname);
-  const isPullRequestsRoute = location.pathname.endsWith("/pull-requests");
+  const { isSignedIn, isLoaded, userId } = useAuth();
   const isMobile = useIsMobile();
   const currentDestination = resolveRemoteDestinationFromPath(
     location.pathname,
   );
-  const showPaneGrid = !isMobile && isPaneGridDestination(currentDestination);
+  const isWorkspaceNavigationRoute = isPaneGridDestination(currentDestination);
+  const showPaneGrid = !isMobile && isWorkspaceNavigationRoute;
 
   useEffect(() => {
     syncWorkspaceHostUser(isSignedIn ? userId : null);
   }, [isSignedIn, syncWorkspaceHostUser, userId]);
 
-  useCommandBarShortcut(
-    () => CommandBarDialog.show(),
-    isWorkspaceContextRoute || isProjectRoute || isPullRequestsRoute,
-  );
+  useEffect(() => {
+    if (!isLoaded) return;
+    syncWorkspacePaneUser(isSignedIn ? userId : null);
+  }, [isLoaded, isSignedIn, syncWorkspacePaneUser, userId]);
+
+  // Match local web: command search is global anywhere the app shell is
+  // mounted, including notifications and the remote home screen.
+  useCommandBarShortcut(() => CommandBarDialog.show());
   useMarkNotificationsReadOnView();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAppBarHovered, setIsAppBarHovered] = useState(false);
@@ -633,21 +641,15 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
         </MobileDrawer>
 
         <div className="flex min-w-0 flex-1 flex-col pb-base">
-          {isMobile &&
-            (isWorkspaceContextRoute ||
-              isProjectRoute ||
-              isPullRequestsRoute) && (
-              <RemoteNavbarContainer
-                organizationName={selectedOrgName}
-                mobileMode={isMobile}
-                onOpenDrawer={() => setIsDrawerOpen(true)}
-                mobileUserSlot={mobileUserSlot}
-              />
-            )}
-          {!isMobile &&
-            (isWorkspaceContextRoute ||
-              isProjectRoute ||
-              isPullRequestsRoute) && <RemoteDesktopNavbar />}
+          {isMobile && isWorkspaceNavigationRoute && (
+            <RemoteNavbarContainer
+              organizationName={selectedOrgName}
+              mobileMode={isMobile}
+              onOpenDrawer={() => setIsDrawerOpen(true)}
+              mobileUserSlot={mobileUserSlot}
+            />
+          )}
+          {!isMobile && isWorkspaceNavigationRoute && <RemoteDesktopNavbar />}
           <div className="relative min-h-0 flex-1 overflow-hidden">
             <WorkspaceSidebarHoverPreview
               enabled={isWorkspaceSidebarPreviewEnabled}

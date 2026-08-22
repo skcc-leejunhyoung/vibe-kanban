@@ -8,6 +8,7 @@ import {
   deduplicateDevServersByWorkingDir,
 } from '@/shared/lib/devServerUtils';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface UsePreviewDevServerOptions {
   onStartSuccess?: () => void;
@@ -21,6 +22,7 @@ export function usePreviewDevServer(
   options?: UsePreviewDevServerOptions
 ) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
   const processes = useWorkspaceDevServers(workspaceId);
 
   const runningDevServers = useMemo(
@@ -38,7 +40,7 @@ export function usePreviewDevServer(
     mutationKey: ['startDevServer', workspaceId],
     mutationFn: async () => {
       if (!workspaceId) return;
-      await workspacesApi.startDevServer(workspaceId);
+      await workspacesApi.startDevServer(workspaceId, hostId);
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({
@@ -59,7 +61,7 @@ export function usePreviewDevServer(
       if (runningDevServers.length === 0) return;
       await Promise.all(
         runningDevServers.map((ds) =>
-          executionProcessesApi.stopExecutionProcess(ds.id)
+          executionProcessesApi.stopExecutionProcess(ds.id, hostId)
         )
       );
     },

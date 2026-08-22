@@ -33,6 +33,8 @@ import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveC
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import {
   PERSIST_KEYS,
   usePaneSize,
@@ -214,6 +216,7 @@ function getPullRequestTargetFromUrl(
 }
 
 export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
+  const hostId = useHostId();
   const isMobile = useIsMobile();
   const isNarrow = usePaneNarrowerThan(768);
   const isActivePane = useIsActivePane();
@@ -252,8 +255,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const reposQuery = useQuery({
-    queryKey: ['repos'],
-    queryFn: () => repoApi.list(),
+    queryKey: ['repos', getHostRequestScopeQueryKey(hostId)],
+    queryFn: () => repoApi.list(hostId),
     staleTime: 5 * 60_000,
     gcTime: 60 * 60_000,
   });
@@ -296,7 +299,11 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   // across single- and multi-select views.
   const pullRequestQueries = useQueries({
     queries: filters.repositories.map((repository) => ({
-      ...pullRequestSummariesQueryOptions(repository, filters.involvesMe),
+      ...pullRequestSummariesQueryOptions(
+        repository,
+        filters.involvesMe,
+        hostId
+      ),
       staleTime: PR_QUERY_STALE_TIME_MS,
       gcTime: 60 * 60_000,
       // Cold/stale opens return an empty list immediately while the backend
@@ -329,7 +336,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
           result: await repoApi.listPullRequestSummaries(
             repository,
             involvesMe,
-            true
+            true,
+            hostId
           ),
         }))
       );
@@ -345,8 +353,11 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       for (const { repository, result } of results) {
         if (!result.success) continue;
         queryClient.setQueryData(
-          pullRequestSummariesQueryOptions(repository, variables.involvesMe)
-            .queryKey,
+          pullRequestSummariesQueryOptions(
+            repository,
+            variables.involvesMe,
+            hostId
+          ).queryKey,
           result.data
         );
       }
@@ -458,9 +469,13 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const prefetchPullRequest = useCallback(
     (pullRequest: PullRequestSummary) =>
       queryClient.prefetchQuery({
-        queryKey: ['pr-detail', pullRequest.url],
+        queryKey: [
+          'pr-detail',
+          pullRequest.url,
+          getHostRequestScopeQueryKey(hostId),
+        ],
         queryFn: async () => {
-          const result = await issuePrsApi.getPrInfo(pullRequest.url);
+          const result = await issuePrsApi.getPrInfo(pullRequest.url, hostId);
           if (!result.success) {
             throw new Error(result.message || 'Failed to load pull request');
           }
@@ -469,7 +484,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         staleTime: PR_QUERY_STALE_TIME_MS,
         gcTime: 30 * 60_000,
       }),
-    [queryClient]
+    [hostId, queryClient]
   );
 
   const cancelScheduledPrefetch = useCallback(() => {

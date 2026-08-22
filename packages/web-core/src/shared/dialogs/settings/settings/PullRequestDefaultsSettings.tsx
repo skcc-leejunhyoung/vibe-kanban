@@ -7,8 +7,11 @@ import { PullRequestFiltersDialog } from '@/pages/pull-requests/PullRequestFilte
 import { DEFAULT_PULL_REQUEST_FILTER_STATE } from '@/pages/pull-requests/pullRequestFilters';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { repoApi } from '@/shared/lib/api';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 export function PullRequestDefaultsSettings() {
+  const hostId = useHostId();
   const [open, setOpen] = useState(false);
   const filters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
@@ -17,8 +20,8 @@ export function PullRequestDefaultsSettings() {
     (state) => state.setPullRequestDefaultFilters
   );
   const reposQuery = useQuery({
-    queryKey: ['repos'],
-    queryFn: () => repoApi.list(),
+    queryKey: ['repos', getHostRequestScopeQueryKey(hostId)],
+    queryFn: () => repoApi.list(hostId),
     staleTime: 5 * 60_000,
   });
   const repositories = (reposQuery.data ?? []).map((repo) => ({

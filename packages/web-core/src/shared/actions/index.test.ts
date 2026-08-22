@@ -239,11 +239,15 @@ describe('command palette navigation actions', () => {
 
     await Actions.GitLinkPRByUrl.execute(ctx, 'ws1', 'repo1');
 
-    expect(attachPr).toHaveBeenCalledWith('ws1', {
-      repo_id: 'repo1',
-      head_branch: null,
-      pr_url: 'https://github.com/acme/repo/pull/42',
-    });
+    expect(attachPr).toHaveBeenCalledWith(
+      'ws1',
+      {
+        repo_id: 'repo1',
+        head_branch: null,
+        pr_url: 'https://github.com/acme/repo/pull/42',
+      },
+      undefined
+    );
   });
 
   it('exposes pull request linking from issue actions and targets one issue', async () => {
@@ -914,7 +918,7 @@ describe('diverged push recovery', () => {
     } as never);
     showPullFirst.mockResolvedValue('force');
     showConfirm.mockResolvedValue('confirmed');
-    const { ctx } = makeCtx({ id: 'ws1' });
+    const { ctx } = makeCtx({ id: 'ws1' }, { currentHostId: 'host-1' });
 
     await Actions.GitPushTarget.execute(ctx, 'ws1', 'repo1');
 
@@ -928,7 +932,12 @@ describe('diverged push recovery', () => {
     expect(showConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ variant: 'destructive' })
     );
-    expect(pushTargetBranch).toHaveBeenLastCalledWith('ws1', 'repo1', true);
+    expect(pushTargetBranch).toHaveBeenLastCalledWith(
+      'ws1',
+      'repo1',
+      true,
+      'host-1'
+    );
   });
 });
 
@@ -1039,7 +1048,10 @@ describe('Actions.GitMerge', () => {
   });
 
   it('allows direct merge when the open PR is from an intermediate feature branch', async () => {
-    const { ctx, invalidateQueries } = makeCtx({ id: 'ws1', branch: 'work' });
+    const { ctx, invalidateQueries } = makeCtx(
+      { id: 'ws1', branch: 'work' },
+      { currentHostId: 'host-1' }
+    );
     getBranchStatus.mockResolvedValue(branchStatusWithMerge(openPr('feature')));
     showConfirm.mockResolvedValue('confirmed');
 
@@ -1048,8 +1060,10 @@ describe('Actions.GitMerge', () => {
     expect(showConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Merge Branch' })
     );
-    expect(merge).toHaveBeenCalledWith('ws1', { repo_id: 'repo1' });
-    expect(invalidateQueries).toHaveBeenCalled();
+    expect(merge).toHaveBeenCalledWith('ws1', { repo_id: 'repo1' }, 'host-1');
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['workspaceRecord', 'host-1', 'ws1'],
+    });
   });
 });
 
@@ -1322,7 +1336,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
     ).toBe(true);
   });
 
-  it('is hidden on remote without a selected host', () => {
+  it('is visible on remote without a selected host', () => {
     expect(
       Actions.GitOpenPRInPullRequests.isVisible?.({
         hasWorkspace: true,
@@ -1331,7 +1345,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
         appRuntime: 'remote',
         currentHostId: null,
       } as ActionExecutorContext)
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('opens the only connected PR without prompting for a selection', async () => {
@@ -1354,7 +1368,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
     const { ctx } = makeCtx(
       { id: 'ws1' },
       {
-        appRuntime: 'local',
+        appRuntime: 'remote',
         currentHostId: null,
         appNavigation: { goToPullRequests } as never,
       }
@@ -1564,7 +1578,7 @@ describe('issue pull request actions', () => {
     expect(
       Actions.IssueOpenPRInPullRequests.isVisible?.({
         ...issueActionContext,
-        appRuntime: 'local',
+        appRuntime: 'remote',
         currentHostId: null,
       } as ActionVisibilityContext)
     ).toBe(true);

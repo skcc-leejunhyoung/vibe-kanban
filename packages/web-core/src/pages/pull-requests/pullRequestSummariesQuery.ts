@@ -1,4 +1,5 @@
 import { repoApi } from '@/shared/lib/api';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 // Client-side freshness window for PR list/detail queries, matched to the
 // backend PR cache TTL (see PULL_REQUEST_CACHE_TTL_SECS).
@@ -11,16 +12,28 @@ export const PR_WARMING_POLL_MS = 3_000;
 
 export function pullRequestSummariesQueryKey(
   repository: string,
-  involvesMe: boolean
+  involvesMe: boolean,
+  hostId: string | null = null
 ) {
-  return ['pull-request-summaries', repository, involvesMe] as const;
+  return [
+    'pull-request-summaries',
+    repository,
+    involvesMe,
+    getHostRequestScopeQueryKey(hostId),
+  ] as const;
 }
 
 export async function fetchPullRequestSummaries(
   repository: string,
-  involvesMe: boolean
+  involvesMe: boolean,
+  hostId: string | null = null
 ) {
-  const result = await repoApi.listPullRequestSummaries(repository, involvesMe);
+  const result = await repoApi.listPullRequestSummaries(
+    repository,
+    involvesMe,
+    false,
+    hostId
+  );
   if (!result.success) {
     throw new Error(result.message || 'Failed to load pull requests');
   }
@@ -29,11 +42,12 @@ export async function fetchPullRequestSummaries(
 
 export function pullRequestSummariesQueryOptions(
   repository: string,
-  involvesMe: boolean
+  involvesMe: boolean,
+  hostId: string | null = null
 ) {
   return {
-    queryKey: pullRequestSummariesQueryKey(repository, involvesMe),
-    queryFn: () => fetchPullRequestSummaries(repository, involvesMe),
+    queryKey: pullRequestSummariesQueryKey(repository, involvesMe, hostId),
+    queryFn: () => fetchPullRequestSummaries(repository, involvesMe, hostId),
     staleTime: PR_QUERY_STALE_TIME_MS,
     gcTime: 60 * 60_000,
   };

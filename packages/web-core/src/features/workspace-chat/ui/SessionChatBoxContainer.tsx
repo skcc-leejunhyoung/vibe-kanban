@@ -70,7 +70,7 @@ import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { sessionsApi, ApiError } from '@/shared/lib/api';
-import { useWorkspace } from '@/shared/hooks/useWorkspace';
+import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
@@ -248,7 +248,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Only issue-linked workspaces can enter the automated vibe review workflow;
   // gate the review button on a linked issue so it never advertises a call that
   // the backend is guaranteed to reject.
-  const { data: reviewWorkspace } = useWorkspace(workspaceId);
+  const { data: reviewWorkspace } = useWorkspaceRecord(workspaceId);
   const hasLinkedIssue = reviewWorkspace?.task_id != null;
 
   const handleRenameSession = useCallback(
@@ -256,7 +256,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       void RenameSessionDialog.show({
         currentName,
         onRename: async (newName: string) => {
-          await sessionsApi.update(targetSessionId, { name: newName });
+          await sessionsApi.update(targetSessionId, { name: newName }, hostId);
           void queryClient.invalidateQueries({
             queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
           });
@@ -277,7 +277,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         });
         if (result !== 'confirmed') return;
         try {
-          await sessionsApi.delete(targetSessionId);
+          await sessionsApi.delete(targetSessionId, hostId);
           void queryClient.invalidateQueries({
             queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
           });
@@ -301,7 +301,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // "waiting to resume" badge + countdown stay live.
   const autoResumeQuery = useQuery({
     queryKey: ['sessionAutoResume', hostId, sessionId],
-    queryFn: () => sessionsApi.getAutoResume(sessionId!),
+    queryFn: () => sessionsApi.getAutoResume(sessionId!, hostId),
     enabled: !!sessionId,
     refetchInterval: 10000,
   });
@@ -315,7 +315,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       if (!sessionId) return;
       void (async () => {
         try {
-          await sessionsApi.setAutoResume(sessionId, enabled);
+          await sessionsApi.setAutoResume(sessionId, enabled, hostId);
         } finally {
           void queryClient.invalidateQueries({
             queryKey: ['sessionAutoResume', hostId, sessionId],
@@ -784,13 +784,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }
       setIsHandoffPending(true);
       try {
-        const process = await sessionsApi.handoff(sessionId, {
-          prompt,
-          executor_config:
-            executorConfig?.executor === handoffTarget
-              ? executorConfig
-              : getInitialExecutorConfig(handoffTarget, profiles),
-        });
+        const process = await sessionsApi.handoff(
+          sessionId,
+          {
+            prompt,
+            executor_config:
+              executorConfig?.executor === handoffTarget
+                ? executorConfig
+                : getInitialExecutorConfig(handoffTarget, profiles),
+          },
+          hostId
+        );
         setHandoffTarget(null);
         addOptimisticProcess(process);
         await queryClient.invalidateQueries({

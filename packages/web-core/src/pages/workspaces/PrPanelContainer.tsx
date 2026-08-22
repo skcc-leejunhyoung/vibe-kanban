@@ -8,6 +8,7 @@ import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { PrPanel, type PrInfo } from '@vibe/ui/components/PrPanel';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import type { Workspace, RepoWithTargetBranch, Merge } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export interface PrPanelContainerProps {
   selectedWorkspace: Workspace | undefined;
@@ -33,6 +34,7 @@ export function PrPanelContainer({
   repos,
 }: PrPanelContainerProps) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
   const { t } = useTranslation('tasks');
   const workspaceId = selectedWorkspace?.id;
   const { data: branchStatus } = useBranchStatus(workspaceId);
@@ -147,10 +149,11 @@ export function PrPanelContainer({
         // Target this specific PR by its unique URL so repos tracking more than
         // one PR unlink only the selected card. Fall back to repo-wide only if a
         // URL is somehow missing.
-        await workspacesApi.unlinkPr(workspaceId, {
-          repo_id: pr.repoId,
-          pr_url: pr.prUrl ?? null,
-        });
+        await workspacesApi.unlinkPr(
+          workspaceId,
+          { repo_id: pr.repoId, pr_url: pr.prUrl ?? null },
+          hostId
+        );
         queryClient.invalidateQueries({
           queryKey: ['branchStatus', workspaceId],
         });
@@ -158,7 +161,7 @@ export function PrPanelContainer({
         showError(err instanceof Error ? err.message : 'Failed to unlink PR');
       }
     },
-    [workspaceId, queryClient, showError, t]
+    [workspaceId, hostId, queryClient, showError, t]
   );
 
   // Fetch the repo's primary remote (refreshes both head and base tracking refs),
@@ -168,7 +171,7 @@ export function PrPanelContainer({
       if (!workspaceId || fetchStates[repoId] === 'pending') return;
       setFetchStates((prev) => ({ ...prev, [repoId]: 'pending' }));
       try {
-        await workspacesApi.fetchTargetBranch(workspaceId, repoId);
+        await workspacesApi.fetchTargetBranch(workspaceId, repoId, hostId);
         queryClient.invalidateQueries({
           queryKey: ['branchStatus', workspaceId],
         });
@@ -178,7 +181,7 @@ export function PrPanelContainer({
         setFetchStates((prev) => ({ ...prev, [repoId]: 'idle' }));
       }
     },
-    [workspaceId, fetchStates, queryClient, showError]
+    [workspaceId, hostId, fetchStates, queryClient, showError]
   );
 
   // Push the head (feature) branch to origin, confirming a force-push when the
@@ -191,7 +194,8 @@ export function PrPanelContainer({
         let result = await workspacesApi.pushTargetBranch(
           workspaceId,
           repoId,
-          false
+          false,
+          hostId
         );
         if (!result.success && result.error?.type === 'diverged') {
           const choice = await PullFirstDialog.show({
@@ -213,7 +217,8 @@ export function PrPanelContainer({
           result = await workspacesApi.pushTargetBranch(
             workspaceId,
             repoId,
-            true
+            true,
+            hostId
           );
         }
         if (!result.success && result.error?.type === 'force_push_required') {
@@ -230,7 +235,8 @@ export function PrPanelContainer({
           result = await workspacesApi.pushTargetBranch(
             workspaceId,
             repoId,
-            true
+            true,
+            hostId
           );
         }
         if (!result.success) {
@@ -245,7 +251,7 @@ export function PrPanelContainer({
         setPushStates((prev) => ({ ...prev, [repoId]: 'idle' }));
       }
     },
-    [workspaceId, pushStates, queryClient, showError, t]
+    [workspaceId, hostId, pushStates, queryClient, showError, t]
   );
 
   // Fetch, then fast-forward the head (target) branch from origin (ff-only).
@@ -254,7 +260,7 @@ export function PrPanelContainer({
       if (!workspaceId || pullStates[repoId] === 'pending') return;
       setPullStates((prev) => ({ ...prev, [repoId]: 'pending' }));
       try {
-        await workspacesApi.pullTargetBranch(workspaceId, repoId);
+        await workspacesApi.pullTargetBranch(workspaceId, repoId, hostId);
         queryClient.invalidateQueries({
           queryKey: ['branchStatus', workspaceId],
         });
@@ -264,7 +270,7 @@ export function PrPanelContainer({
         setPullStates((prev) => ({ ...prev, [repoId]: 'idle' }));
       }
     },
-    [workspaceId, pullStates, queryClient, showError]
+    [workspaceId, hostId, pullStates, queryClient, showError]
   );
 
   return (

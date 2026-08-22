@@ -19,9 +19,11 @@ export function useMerge(
   return useMutation<void, unknown, MergeParams>({
     mutationFn: (params: MergeParams) => {
       if (!workspaceId) return Promise.resolve();
-      return workspacesApi.merge(workspaceId, {
-        repo_id: params.repoId,
-      });
+      return workspacesApi.merge(
+        workspaceId,
+        { repo_id: params.repoId },
+        hostId
+      );
     },
     onSuccess: () => {
       // Refresh attempt-specific branch information

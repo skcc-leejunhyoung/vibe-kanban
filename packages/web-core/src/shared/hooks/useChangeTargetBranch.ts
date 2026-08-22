@@ -36,7 +36,7 @@ export function useChangeTargetBranch(
         new_target_branch: newTargetBranch,
         repo_id: repoId,
       };
-      return workspacesApi.change_target_branch(workspaceId, payload);
+      return workspacesApi.change_target_branch(workspaceId, payload, hostId);
     },
     onSuccess: (data) => {
       if (workspaceId) {

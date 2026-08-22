@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { PushError, PushWorkspaceRequest } from 'shared/types';
 
 class PushErrorWithData extends Error {
@@ -22,11 +23,12 @@ export function usePush(
   ) => void
 ) {
   const queryClient = useQueryClient();
+  const hostId = useHostId();
 
   return useMutation<void, unknown, PushWorkspaceRequest>({
     mutationFn: async (params: PushWorkspaceRequest) => {
       if (!workspaceId) return;
-      const result = await workspacesApi.push(workspaceId, params);
+      const result = await workspacesApi.push(workspaceId, params, hostId);
       if (!result.success) {
         throw new PushErrorWithData(
           result.message || 'Push failed',

@@ -4,6 +4,7 @@ import { repoApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import type { MachineClient } from '@/shared/lib/machineClient';
 import type { GitBranch } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export const repoBranchKeys = {
   all: ['repoBranches'] as const,
@@ -82,10 +83,11 @@ interface UseMultiRepoBranchesResult {
 export function useMultiRepoBranches(
   repoIds: string[]
 ): UseMultiRepoBranchesResult {
+  const hostId = useHostId();
   const queries = useQueries({
     queries: repoIds.map((repoId) => ({
-      queryKey: repoBranchKeys.byRepo(repoId),
-      queryFn: () => repoApi.getBranches(repoId),
+      queryKey: [...repoBranchKeys.byRepo(repoId), hostId],
+      queryFn: () => repoApi.getBranches(repoId, hostId),
       staleTime: 60_000,
     })),
   });

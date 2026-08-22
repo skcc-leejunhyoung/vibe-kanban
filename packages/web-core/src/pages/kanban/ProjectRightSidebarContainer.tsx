@@ -212,8 +212,8 @@ function WorkspaceSessionPanel({
   }, [projectId, breadcrumbIssueId, appNavigation, onClose]);
 
   const handleOpenWorkspaceView = useCallback(() => {
-    appNavigation.goToWorkspace(workspaceId);
-  }, [appNavigation, workspaceId]);
+    appNavigation.goToWorkspace(workspaceId, { hostId: routeState.hostId });
+  }, [appNavigation, routeState.hostId, workspaceId]);
 
   const handleOpenWorkspaceInNewTab = useCallback(() => {
     openInSplitPane(buildWorkspacePath(workspaceId, routeState.hostId));
@@ -490,10 +490,11 @@ export function ProjectRightSidebarContainer() {
       appNavigation.goToProjectIssueWorkspace(
         projectId,
         targetIssueId,
-        targetWorkspaceId
+        targetWorkspaceId,
+        { hostId }
       );
     },
-    [projectId, appNavigation]
+    [projectId, appNavigation, hostId]
   );
   const closePanel = useCallback(() => {
     if (!projectId) {
@@ -601,9 +602,9 @@ export function ProjectRightSidebarContainer() {
         return;
       }
 
-      appNavigation.goToWorkspace(createdWorkspaceId);
+      appNavigation.goToWorkspace(createdWorkspaceId, { hostId });
     },
-    [issueId, openIssueWorkspace, appNavigation]
+    [issueId, openIssueWorkspace, appNavigation, hostId]
   );
 
   useEffect(() => {

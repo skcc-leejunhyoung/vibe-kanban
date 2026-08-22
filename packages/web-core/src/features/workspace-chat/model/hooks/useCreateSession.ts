@@ -28,11 +28,14 @@ export function useCreateSession() {
       prompt,
       executorConfig,
     }: CreateSessionParams): Promise<Session> => {
-      const session = await sessionsApi.create({
-        workspace_id: workspaceId,
-        executor: executorConfig.executor,
-        variant: executorConfig.variant ?? null,
-      });
+      const session = await sessionsApi.create(
+        {
+          workspace_id: workspaceId,
+          executor: executorConfig.executor,
+          variant: executorConfig.variant ?? null,
+        },
+        hostId
+      );
 
       const body: CreateFollowUpAttempt = {
         prompt,
@@ -41,7 +44,7 @@ export function useCreateSession() {
         force_when_dirty: null,
         perform_git_reset: null,
       };
-      await sessionsApi.followUp(session.id, body);
+      await sessionsApi.followUp(session.id, body, hostId);
 
       return session;
     },

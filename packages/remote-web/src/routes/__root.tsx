@@ -45,6 +45,7 @@ import {
 import NotFoundPage from "../pages/NotFoundPage";
 import { RemoteReleaseNotesHandler } from "@remote/app/entry/RemoteReleaseNotesHandler";
 import { isPaneGridDestination } from "@/shared/stores/useWorkspacePanesStore";
+import { useChromeTargetWorkspace } from "@/shared/lib/openInSplitPane";
 import { useWorkspacePaneShortcuts } from "@/shared/keyboard/useWorkspacePaneShortcuts";
 
 export const Route = createRootRoute({
@@ -86,7 +87,8 @@ function GlobalKeyboardShortcuts() {
  * Must be rendered inside WorkspaceRouteProviders.
  */
 function WorkspaceKeyboardShortcuts() {
-  useWorkspaceShortcuts();
+  const chromeTargetWorkspace = useChromeTargetWorkspace();
+  useWorkspaceShortcuts({ enabled: chromeTargetWorkspace === null });
   useIssueShortcuts();
   useWorkspacePaneShortcuts();
   return null;

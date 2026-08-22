@@ -15,14 +15,15 @@ class ForcePushErrorWithData extends Error {
 export function useForcePush(
   workspaceId?: string,
   onSuccess?: () => void,
-  onError?: (err: unknown, errorData?: PushError) => void
+  onError?: (err: unknown, errorData?: PushError) => void,
+  hostId?: string | null
 ) {
   const queryClient = useQueryClient();
 
   return useMutation<void, unknown, PushWorkspaceRequest>({
     mutationFn: async (params: PushWorkspaceRequest) => {
       if (!workspaceId) return;
-      const result = await workspacesApi.forcePush(workspaceId, params);
+      const result = await workspacesApi.forcePush(workspaceId, params, hostId);
       if (!result.success) {
         throw new ForcePushErrorWithData(
           result.message || 'Force push failed',

@@ -98,13 +98,17 @@ export function useSessionSend({
         try {
           // The POST returns the created process; hand it to the caller so the
           // turn renders immediately instead of waiting for the WS stream.
-          const process = await sessionsApi.followUp(sessionId, {
-            prompt: trimmed,
-            executor_config: executorConfig,
-            retry_process_id: null,
-            force_when_dirty: null,
-            perform_git_reset: null,
-          });
+          const process = await sessionsApi.followUp(
+            sessionId,
+            {
+              prompt: trimmed,
+              executor_config: executorConfig,
+              retry_process_id: null,
+              force_when_dirty: null,
+              perform_git_reset: null,
+            },
+            hostId
+          );
           onOptimisticProcess?.(process);
           await queryClient.invalidateQueries({
             queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),

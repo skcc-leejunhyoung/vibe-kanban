@@ -6,6 +6,7 @@ import {
   toLocalAttachmentMetadata,
 } from '@/shared/lib/workspaceAttachments';
 import type { AttachmentResponse } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 /**
  * Hook for handling attachments in session follow-up messages.
@@ -17,6 +18,7 @@ export function useSessionAttachments(
   sessionId: string | undefined,
   onInsertMarkdown: (markdown: string) => void
 ) {
+  const hostId = useHostId();
   const [uploadedAttachments, setUploadedAttachments] = useState<
     AttachmentResponse[]
   >([]);
@@ -32,7 +34,8 @@ export function useSessionAttachments(
           const response = await attachmentsApi.uploadForAttempt(
             workspaceId,
             sessionId,
-            file
+            file,
+            hostId
           );
           uploadResults.push(response);
         } catch (error) {
@@ -48,7 +51,7 @@ export function useSessionAttachments(
         onInsertMarkdown(allMarkdown);
       }
     },
-    [workspaceId, sessionId, onInsertMarkdown]
+    [workspaceId, sessionId, hostId, onInsertMarkdown]
   );
 
   const clearUploadedAttachments = useCallback(() => {

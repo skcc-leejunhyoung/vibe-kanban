@@ -34,12 +34,16 @@ export function useOpenInEditor(
                 file_path: filePath ?? null,
                 repo_id: repoId,
               })
-            : await workspacesApi.openEditor(workspaceId, {
-                editor_type: editorType ?? null,
-                file_path: filePath ?? null,
-                repo_id: repoId,
-                is_remote_web: appRuntime === 'remote',
-              });
+            : await workspacesApi.openEditor(
+                workspaceId,
+                {
+                  editor_type: editorType ?? null,
+                  file_path: filePath ?? null,
+                  repo_id: repoId,
+                  is_remote_web: appRuntime === 'remote',
+                },
+                hostId
+              );
 
         // If a URL is returned, open it in a new window/tab
         if (response.url) {

@@ -4,6 +4,8 @@ import type { ExecutorConfig, RepoWithTargetBranch } from 'shared/types';
 import { workspacesApi } from '@/shared/lib/api';
 import { useExecutionProcesses } from '@/shared/hooks/useExecutionProcesses';
 import { getLatestConfigFromProcesses } from '@/shared/lib/executor';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface UseWorkspaceCreateDefaultsOptions {
   sourceWorkspaceId: string | null;
@@ -22,21 +24,34 @@ interface UseWorkspaceCreateDefaultsResult {
   hasResolvedPreferredRepos: boolean;
 }
 
+export const workspaceCreateDefaultsKeys = {
+  byWorkspace: (workspaceId: string | null, hostId: string | null = null) =>
+    [
+      'workspaceCreateDefaults',
+      workspaceId,
+      getHostRequestScopeQueryKey(hostId),
+    ] as const,
+};
+
 export function useWorkspaceCreateDefaults({
   sourceWorkspaceId,
   enabled,
 }: UseWorkspaceCreateDefaultsOptions): UseWorkspaceCreateDefaultsResult {
+  const hostId = useHostId();
   const queryEnabled = enabled && !!sourceWorkspaceId;
 
   const { data, status } = useQuery<WorkspaceCreateDefaultsData>({
-    queryKey: ['workspaceCreateDefaults', sourceWorkspaceId],
+    queryKey: workspaceCreateDefaultsKeys.byWorkspace(
+      sourceWorkspaceId,
+      hostId
+    ),
     enabled: queryEnabled,
     staleTime: 0,
     refetchOnMount: 'always',
     queryFn: async () => {
       const [repos, workspaceWithSession] = await Promise.all([
-        workspacesApi.getRepos(sourceWorkspaceId!),
-        workspacesApi.getWithSession(sourceWorkspaceId!),
+        workspacesApi.getRepos(sourceWorkspaceId!, hostId),
+        workspacesApi.getWithSession(sourceWorkspaceId!, hostId),
       ]);
 
       const result = {

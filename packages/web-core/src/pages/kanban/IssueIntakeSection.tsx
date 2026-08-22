@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { CaretDownIcon, CaretRightIcon } from '@phosphor-icons/react';
 import {
   BaseCodingAgent,
@@ -7,9 +8,10 @@ import {
   type WorkspaceRepoInput,
 } from 'shared/types';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { getProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
-import { repoApi, specApi, ApiError } from '@/shared/lib/api';
+import { configApi, repoApi, specApi, ApiError } from '@/shared/lib/api';
 
 interface IssueIntakeSectionProps {
   projectId: string;
@@ -60,7 +62,22 @@ export function IssueIntakeSection({
   disabled,
   onGenerated,
 }: IssueIntakeSectionProps) {
-  const { profiles, config } = useUserSystem();
+  const runtime = useAppRuntime();
+  const routeSystem = useUserSystem();
+  const hostSystem = useQuery({
+    queryKey: ['user-system', 'remote-route', hostId ?? 'none'],
+    queryFn: () => configApi.getConfig(hostId ?? null),
+    enabled: runtime === 'remote' && !!hostId,
+    staleTime: 5 * 60 * 1000,
+  });
+  const profiles =
+    runtime === 'remote'
+      ? (hostSystem.data?.executors ?? null)
+      : routeSystem.profiles;
+  const config =
+    runtime === 'remote'
+      ? (hostSystem.data?.config ?? null)
+      : routeSystem.config;
   const {
     executorConfig,
     effectiveExecutor,
@@ -75,6 +92,8 @@ export function IssueIntakeSection({
       ? { executor: config.executor_profile.executor, variant: null }
       : null,
     configExecutorProfile: config?.executor_profile,
+    disabledExecutors: config?.disabled_executors,
+    hostId,
   });
 
   // The brief is the issue's own header + description.

@@ -20,9 +20,11 @@ export function useCommit(
   return useMutation<CommitWorkspaceResponse, unknown, CommitParams>({
     mutationFn: (params: CommitParams) => {
       if (!workspaceId) return Promise.resolve({ committed: false });
-      return workspacesApi.commit(workspaceId, {
-        repo_id: params.repoId,
-      });
+      return workspacesApi.commit(
+        workspaceId,
+        { repo_id: params.repoId },
+        hostId
+      );
     },
     onSuccess: (result) => {
       // A commit changes uncommitted state and commits_ahead; refresh the
