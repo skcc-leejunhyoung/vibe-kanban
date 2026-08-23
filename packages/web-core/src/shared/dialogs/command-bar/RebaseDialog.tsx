@@ -34,19 +34,23 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 export interface RebaseDialogProps {
   workspaceId: string;
   repoId: string;
+  hostId?: string | null;
 }
 
 interface RebaseDialogContentProps {
   workspaceId: string;
   repoId: string;
+  hostId?: string | null;
 }
 
 function RebaseDialogContent({
   workspaceId,
   repoId,
+  hostId: hostIdOverride,
 }: RebaseDialogContentProps) {
   const modal = useModal();
-  const hostId = useHostId();
+  const routeHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
   const queryClient = useQueryClient();
   const { t } = useTranslation(['tasks', 'common']);
   const [selectedBranch, setSelectedBranch] = useState<string>('');
@@ -146,6 +150,7 @@ function RebaseDialogContent({
         ResolveConflictsDialog.show({
           workspaceId: workspaceId,
           repoId,
+          hostId,
           conflictOp: repoStatus.conflict_op ?? 'rebase',
           sourceBranch: workspace?.branch ?? null,
           targetBranch: repoStatus.target_branch_name,
@@ -215,6 +220,7 @@ function RebaseDialogContent({
           await ResolveConflictsDialog.show({
             workspaceId: workspaceId,
             repoId,
+            hostId,
             conflictOp: errorData.op,
             sourceBranch: workspace?.branch ?? null,
             targetBranch: errorData.target_branch,
@@ -358,10 +364,14 @@ function RebaseDialogContent({
 }
 
 const RebaseDialogImpl = create<RebaseDialogProps>(
-  ({ workspaceId, repoId }) => {
+  ({ workspaceId, repoId, hostId }) => {
     return (
       <GitOperationsProvider workspaceId={workspaceId}>
-        <RebaseDialogContent workspaceId={workspaceId} repoId={repoId} />
+        <RebaseDialogContent
+          workspaceId={workspaceId}
+          repoId={repoId}
+          hostId={hostId}
+        />
       </GitOperationsProvider>
     );
   }

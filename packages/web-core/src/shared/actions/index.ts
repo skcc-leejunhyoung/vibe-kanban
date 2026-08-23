@@ -475,7 +475,7 @@ async function linkPrByUrl(
   const { LinkPrByUrlDialog } = await import(
     '@/shared/dialogs/command-bar/LinkPrByUrlDialog'
   );
-  const prUrl = await LinkPrByUrlDialog.show();
+  const prUrl = await LinkPrByUrlDialog.show({ hostId: ctx.currentHostId });
   if (!prUrl) return;
   await attachPrAndReport(ctx, workspaceId, repoId, {
     head_branch: null,
@@ -1992,6 +1992,7 @@ export const Actions = {
       const result = await CreatePRDialog.show({
         attempt: workspace,
         repoId,
+        hostId: ctx.currentHostId,
         targetBranch: repo?.target_branch,
         headBranch: featureBranch,
         defaultBaseBranch: repo?.default_target_branch ?? undefined,
@@ -2131,6 +2132,7 @@ export const Actions = {
       await PrDetailsDialog.show({
         prUrl: pullRequest.pr_info.url,
         prNumber: Number(pullRequest.pr_info.number),
+        hostId: ctx.currentHostId,
       });
     },
   },
@@ -2212,6 +2214,7 @@ export const Actions = {
       await PrDetailsDialog.show({
         prUrl: pullRequest.url,
         prNumber: pullRequest.number,
+        hostId: ctx.currentHostId,
       });
     },
   } satisfies IssueActionDefinition,
@@ -2469,6 +2472,7 @@ export const Actions = {
         const result = await ResolveConflictsDialog.show({
           workspaceId,
           repoId,
+          hostId: ctx.currentHostId,
           conflictOp: repoStatus.conflict_op ?? 'merge',
           sourceBranch: workspace.branch,
           targetBranch: repoStatus.target_branch_name,
@@ -2502,6 +2506,7 @@ export const Actions = {
           await RebaseDialog.show({
             workspaceId: workspaceId,
             repoId,
+            hostId: ctx.currentHostId,
           });
         }
         return;
@@ -2537,11 +2542,12 @@ export const Actions = {
     shortcut: 'X R',
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
-    execute: async (_ctx, workspaceId, repoId) => {
+    execute: async (ctx, workspaceId, repoId) => {
       // Open rebase dialog - it loads branches/status internally and handles conflicts
       await RebaseDialog.show({
         workspaceId: workspaceId,
         repoId,
+        hostId: ctx.currentHostId,
       });
     },
   },
@@ -2634,6 +2640,7 @@ export const Actions = {
         await ResolveConflictsDialog.show({
           workspaceId,
           repoId,
+          hostId: ctx.currentHostId,
           conflictOp: repoStatus.conflict_op ?? 'merge',
           sourceBranch: repoStatus.target_branch_name,
           targetBranch: workspace.branch,
@@ -2693,6 +2700,7 @@ export const Actions = {
           await ResolveConflictsDialog.show({
             workspaceId,
             repoId,
+            hostId: ctx.currentHostId,
             conflictOp: 'merge',
             sourceBranch: err.target_branch,
             targetBranch: workspace.branch,

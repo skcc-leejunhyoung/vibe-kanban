@@ -235,10 +235,11 @@ describe('command palette navigation actions', () => {
         pr_status: 'open',
       },
     });
-    const { ctx } = makeCtx({ id: 'ws1' });
+    const { ctx } = makeCtx({ id: 'ws1' }, { currentHostId: 'host-1' });
 
     await Actions.GitLinkPRByUrl.execute(ctx, 'ws1', 'repo1');
 
+    expect(showLinkPrByUrl).toHaveBeenCalledWith({ hostId: 'host-1' });
     expect(attachPr).toHaveBeenCalledWith(
       'ws1',
       {
@@ -246,7 +247,7 @@ describe('command palette navigation actions', () => {
         head_branch: null,
         pr_url: 'https://github.com/acme/repo/pull/42',
       },
-      undefined
+      'host-1'
     );
   });
 
@@ -1278,13 +1279,14 @@ describe('Actions.GitViewPRDetails', () => {
         ],
       },
     ] as never);
-    const { ctx } = makeCtx({ id: 'ws1' });
+    const { ctx } = makeCtx({ id: 'ws1' }, { currentHostId: 'host-1' });
 
     await Actions.GitViewPRDetails.execute(ctx, 'ws1', 'repo1');
 
     expect(showPrDetails).toHaveBeenCalledWith({
       prUrl: 'https://example.com/pull/42',
       prNumber: 42,
+      hostId: 'host-1',
     });
   });
 
@@ -1312,13 +1314,14 @@ describe('Actions.GitViewPRDetails', () => {
         ],
       },
     ] as never);
-    const { ctx } = makeCtx({ id: 'ws1' });
+    const { ctx } = makeCtx({ id: 'ws1' }, { currentHostId: 'host-1' });
 
     await Actions.GitViewPRDetails.execute(ctx, 'ws1', 'repo1');
 
     expect(showPrDetails).toHaveBeenCalledWith({
       prUrl: 'https://example.com/pull/42',
       prNumber: 42,
+      hostId: 'host-1',
     });
   });
 });
@@ -1571,6 +1574,7 @@ describe('issue pull request actions', () => {
     expect(showPrDetails).toHaveBeenCalledWith({
       prUrl: linkedPullRequest.url,
       prNumber: linkedPullRequest.number,
+      hostId: ctx.currentHostId,
     });
   });
 

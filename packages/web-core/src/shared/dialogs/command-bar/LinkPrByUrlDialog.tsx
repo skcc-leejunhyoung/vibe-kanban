@@ -13,7 +13,7 @@ import { Button } from '@vibe/ui/components/Button';
 import { Input } from '@vibe/ui/components/Input';
 import { Label } from '@vibe/ui/components/Label';
 import { create, useModal } from '@ebay/nice-modal-react';
-import { defineModal, type NoProps } from '@/shared/lib/modals';
+import { defineModal } from '@/shared/lib/modals';
 import { issuePrsApi } from '@/shared/lib/api';
 import type { PullRequestDetail } from 'shared/types';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -25,9 +25,14 @@ import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
  * branch-based auto-matching can't find a PR to link. Resolves `undefined` when
  * dismissed.
  */
-const LinkPrByUrlDialogImpl = create<NoProps>(() => {
+interface LinkPrByUrlDialogProps {
+  hostId?: string | null;
+}
+
+const LinkPrByUrlDialogImpl = create<LinkPrByUrlDialogProps>((props) => {
   const modal = useModal();
-  const hostId = useHostId();
+  const routeHostId = useHostId();
+  const hostId = props.hostId === undefined ? routeHostId : props.hostId;
   const { t } = useTranslation('tasks');
 
   const [prUrl, setPrUrl] = useState('');
@@ -182,6 +187,7 @@ const LinkPrByUrlDialogImpl = create<NoProps>(() => {
   );
 });
 
-export const LinkPrByUrlDialog = defineModal<void, string | undefined>(
-  LinkPrByUrlDialogImpl
-);
+export const LinkPrByUrlDialog = defineModal<
+  LinkPrByUrlDialogProps,
+  string | undefined
+>(LinkPrByUrlDialogImpl);

@@ -34,6 +34,7 @@ import type {
 export interface ResolveConflictsDialogProps {
   workspaceId: string;
   repoId: string;
+  hostId?: string | null;
   conflictOp: ConflictOp;
   sourceBranch: string | null;
   targetBranch: string;
@@ -54,10 +55,12 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
     targetBranch,
     conflictedFiles,
     repoName,
+    hostId: hostIdOverride,
   }) => {
     const modal = useModal();
     const queryClient = useQueryClient();
-    const hostId = useHostId();
+    const routeHostId = useHostId();
+    const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
     const { profiles, config } = useUserSystem();
     const {
       workspaceId: activeWorkspaceId,

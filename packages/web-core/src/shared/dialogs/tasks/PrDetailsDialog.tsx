@@ -56,6 +56,7 @@ import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 export interface PrDetailsDialogProps {
   prUrl: string;
   prNumber: number;
+  hostId?: string | null;
 }
 
 export interface PrDetailsContentProps extends PrDetailsDialogProps {
@@ -225,13 +226,15 @@ function ReviewConversationThread({
 export function PrDetailsContent({
   prUrl,
   prNumber,
+  hostId: hostIdOverride,
   active = true,
   variant = 'dialog',
   onClose,
   actions,
 }: PrDetailsContentProps) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const routeHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
   const scrollRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
@@ -628,7 +631,7 @@ export function PrDetailsContent({
 }
 
 const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
-  ({ prUrl, prNumber }) => {
+  ({ prUrl, prNumber, hostId }) => {
     const modal = useModal();
     const close = () => {
       modal.resolve();
@@ -646,6 +649,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
         <PrDetailsContent
           prUrl={prUrl}
           prNumber={prNumber}
+          hostId={hostId}
           active={modal.visible}
           onClose={close}
         />

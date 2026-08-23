@@ -51,6 +51,7 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 interface CreatePRDialogProps {
   attempt: Workspace;
   repoId: string;
+  hostId?: string | null;
   targetBranch?: string;
   /**
    * Default head (source) branch — typically an intermediate "feature" branch
@@ -108,9 +109,11 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     headBranch,
     defaultBaseBranch,
     issueIdentifier,
+    hostId: hostIdOverride,
   }) => {
     const modal = useModal();
-    const hostId = useHostId();
+    const routeHostId = useHostId();
+    const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
     const queryClient = useQueryClient();
     const { t } = useTranslation('tasks');
     const { isLoaded } = useAuth();
@@ -483,6 +486,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
         const showGhCliSetupDialog = async () => {
           const setupResult = await GhCliSetupDialog.show({
             workspaceId: attempt.id,
+            hostId,
           });
 
           handleGhCliSetupOutcome(setupResult, defaultGhCliErrorMessage);

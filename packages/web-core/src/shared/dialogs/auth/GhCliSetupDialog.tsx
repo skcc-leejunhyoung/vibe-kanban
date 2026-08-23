@@ -19,6 +19,7 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface GhCliSetupDialogProps {
   workspaceId: string;
+  hostId?: string | null;
 }
 
 export type GhCliSupportVariant = 'homebrew' | 'manual';
@@ -127,9 +128,10 @@ export const GhCliHelpInstructions = ({
 };
 
 const GhCliSetupDialogImpl = create<GhCliSetupDialogProps>(
-  ({ workspaceId }) => {
+  ({ workspaceId, hostId: hostIdOverride }) => {
     const modal = useModal();
-    const hostId = useHostId();
+    const routeHostId = useHostId();
+    const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
     const { t } = useTranslation();
     const [isRunning, setIsRunning] = useState(false);
     const [errorInfo, setErrorInfo] = useState<{
