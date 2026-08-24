@@ -346,7 +346,7 @@ export function PrDetailsContent({
             {detail?.title || 'Pull Request'}
           </span>
           {variant === 'panel' && onClose && (
-            <div className="flex items-center gap-half">
+            <div className="col-start-4 flex items-center gap-half">
               {headerActions}
               <button
                 type="button"
