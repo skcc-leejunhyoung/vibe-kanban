@@ -133,6 +133,7 @@ import {
 } from '@/shared/lib/commandPaletteEvents';
 import {
   getChromeTargetWorkspace,
+  openNewPane,
   openUrlInSplitPane,
   openWorkspacesForActivePane,
 } from '@/shared/lib/openInSplitPane';
@@ -1622,6 +1623,15 @@ export const Actions = {
   },
 
   // === Layout Panel Actions ===
+  NewPane: {
+    id: 'newPane',
+    label: 'New pane',
+    icon: PlusIcon,
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => !ctx.isMobile,
+    execute: (ctx) => openNewPane(ctx.appNavigation),
+  },
+
   ToggleAppBar: {
     id: 'toggle-app-bar',
     label: () =>
@@ -3463,6 +3473,7 @@ export const Actions = {
 export const NavbarActionGroups = {
   left: [Actions.ArchiveWorkspace] as NavbarItem[],
   right: [
+    Actions.NewPane,
     Actions.ToggleAppBar,
     Actions.ToggleDiffViewMode,
     NavbarDivider,
