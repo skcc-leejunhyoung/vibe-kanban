@@ -9,7 +9,6 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import {
-  ArrowSquareOutIcon,
   CaretDownIcon,
   CaretRightIcon,
   CheckCircleIcon,
@@ -17,6 +16,7 @@ import {
   GitCommitIcon,
   GitMergeIcon,
   GitPullRequestIcon,
+  GlobeIcon,
   ShieldCheckIcon,
   SpinnerGapIcon,
   UserIcon,
@@ -403,7 +403,7 @@ export function PrDetailsContent({
                   aria-label="Open pull request in web"
                   title="Open in web"
                 >
-                  <ArrowSquareOutIcon />
+                  <GlobeIcon />
                 </Button>
               </div>
             </div>
