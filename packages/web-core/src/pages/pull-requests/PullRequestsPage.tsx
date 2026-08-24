@@ -776,6 +776,31 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     window.requestAnimationFrame(() => focusRow(selectedIndex));
   }, [appNavigation, focusRow, selectedIndex]);
 
+  const navigateDetails = useCallback(
+    (direction: -1 | 1) => {
+      if (!selectedPullRequest) return;
+      const currentIndex = filteredPullRequests.findIndex(
+        (candidate) => candidate.url === selectedPullRequest.url
+      );
+      if (currentIndex < 0) return;
+      const nextIndex = Math.min(
+        filteredPullRequests.length - 1,
+        Math.max(0, currentIndex + direction)
+      );
+      const nextPullRequest = filteredPullRequests[nextIndex];
+      if (!nextPullRequest || nextIndex === currentIndex) return;
+      setSelectedIndex(nextIndex);
+      openDetails(nextPullRequest);
+      void prefetchPullRequest(nextPullRequest);
+    },
+    [
+      filteredPullRequests,
+      openDetails,
+      prefetchPullRequest,
+      selectedPullRequest,
+    ]
+  );
+
   useEffect(() => {
     if (!isActivePane || !selectedPullRequest) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -809,27 +834,13 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         return;
       }
       event.preventDefault();
-      const direction = event.key === 'ArrowRight' ? 1 : -1;
-      const currentIndex = filteredPullRequests.findIndex(
-        (candidate) => candidate.url === selectedPullRequest.url
-      );
-      if (currentIndex < 0) return;
-      const nextIndex = Math.min(
-        filteredPullRequests.length - 1,
-        Math.max(0, currentIndex + direction)
-      );
-      const nextPullRequest = filteredPullRequests[nextIndex];
-      if (!nextPullRequest || nextIndex === currentIndex) return;
-      setSelectedIndex(nextIndex);
-      openDetails(nextPullRequest);
-      void prefetchPullRequest(nextPullRequest);
+      navigateDetails(event.key === 'ArrowRight' ? 1 : -1);
     };
     window.addEventListener('keydown', handleDetailNavigation);
     return () => window.removeEventListener('keydown', handleDetailNavigation);
   }, [
     filteredPullRequests,
-    openDetails,
-    prefetchPullRequest,
+    navigateDetails,
     selectedPullRequest,
     isActivePane,
   ]);
@@ -1172,11 +1183,23 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const selectedIssueIds = new Set(
     selectedMappings.map((link) => link.issue_id)
   );
+  const selectedPullRequestIndex = selectedPullRequest
+    ? filteredPullRequests.findIndex(
+        (pullRequest) => pullRequest.url === selectedPullRequest.url
+      )
+    : -1;
   const detailsContent = selectedPullRequest ? (
     <PullRequestDetailsPanel
       prUrl={selectedPullRequest.url}
       prNumber={selectedPullRequest.number}
       onClose={closeDetails}
+      onPrevious={isMobile || isNarrow ? () => navigateDetails(-1) : undefined}
+      onNext={isMobile || isNarrow ? () => navigateDetails(1) : undefined}
+      hasPrevious={selectedPullRequestIndex > 0}
+      hasNext={
+        selectedPullRequestIndex >= 0 &&
+        selectedPullRequestIndex < filteredPullRequests.length - 1
+      }
       onGoToMappedIssue={() => void goToMappedIssue(selectedPullRequest)}
       onViewMappedWorkspaces={() =>
         void viewMappedWorkspaces(selectedPullRequest)

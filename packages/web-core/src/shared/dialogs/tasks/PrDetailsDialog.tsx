@@ -63,6 +63,7 @@ export interface PrDetailsContentProps extends PrDetailsDialogProps {
   active?: boolean;
   variant?: 'dialog' | 'panel';
   onClose?: () => void;
+  headerActions?: ReactNode;
   actions?: ReactNode;
 }
 
@@ -230,6 +231,7 @@ export function PrDetailsContent({
   active = true,
   variant = 'dialog',
   onClose,
+  headerActions,
   actions,
 }: PrDetailsContentProps) {
   const queryClient = useQueryClient();
@@ -320,7 +322,14 @@ export function PrDetailsContent({
       )}
     >
       <DialogHeader className="shrink-0 border-b px-base py-base">
-        <DialogTitle className="flex min-w-0 items-start gap-base">
+        <DialogTitle
+          className={cn(
+            'min-w-0 gap-base',
+            variant === 'panel'
+              ? 'grid grid-cols-[auto_auto_1fr_auto] items-center'
+              : 'flex items-start'
+          )}
+        >
           <GitPullRequestIcon
             className={cn(
               'shrink-0',
@@ -328,18 +337,26 @@ export function PrDetailsContent({
             )}
           />
           <span className="shrink-0 text-low">#{prNumber}</span>
-          <span className="min-w-0 flex-1 break-words text-left">
+          <span
+            className={cn(
+              'min-w-0 flex-1 break-words text-left',
+              variant === 'panel' && 'col-span-4 row-start-2'
+            )}
+          >
             {detail?.title || 'Pull Request'}
           </span>
           {variant === 'panel' && onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded p-half text-low hover:bg-panel hover:text-high"
-              aria-label="Close pull request details"
-            >
-              <XIcon className="size-icon-sm" />
-            </button>
+            <div className="flex items-center gap-half">
+              {headerActions}
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded p-half text-low hover:bg-panel hover:text-high"
+                aria-label="Close pull request details"
+              >
+                <XIcon className="size-icon-sm" />
+              </button>
+            </div>
           )}
         </DialogTitle>
       </DialogHeader>
