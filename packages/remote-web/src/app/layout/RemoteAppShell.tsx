@@ -21,6 +21,8 @@ import {
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
+import { useAppNavigation } from "@/shared/hooks/useAppNavigation";
+import { useAppRuntime } from "@/shared/hooks/useAppRuntime";
 import { cn } from "@/shared/lib/utils";
 import { useUiPreferencesStore } from "@/shared/stores/useUiPreferencesStore";
 import { useAppBarVisibilityStore } from "@/shared/stores/useAppBarVisibilityStore";
@@ -64,6 +66,7 @@ import {
   isPaneGridDestination,
   useWorkspacePanesStore,
 } from "@/shared/stores/useWorkspacePanesStore";
+import { openWorkspacesForActivePane } from "@/shared/lib/openInSplitPane";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -81,6 +84,8 @@ function getHostInitials(name: string): string {
 
 export function RemoteAppShell({ children }: RemoteAppShellProps) {
   const navigate = useNavigate();
+  const appRuntime = useAppRuntime();
+  const appNavigation = useAppNavigation();
   const selectWorkspaceHost = useWorkspaceHostSelectionStore(
     (state) => state.selectHost,
   );
@@ -224,8 +229,10 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
 
   const handleWorkspacesClick = useCallback(() => {
     selectWorkspaceHost(ALL_WORKSPACE_HOSTS_ID);
-    navigate({ to: "/workspaces" });
-  }, [navigate, selectWorkspaceHost]);
+    openWorkspacesForActivePane(appNavigation, appRuntime, () =>
+      navigate({ to: "/workspaces" }),
+    );
+  }, [appNavigation, appRuntime, navigate, selectWorkspaceHost]);
 
   const selectedWorkspaceHostId = useWorkspaceHostSelectionStore(
     (state) => state.selectedHostId,

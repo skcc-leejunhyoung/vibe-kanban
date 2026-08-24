@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildNotificationTabUrl,
+  getKnownPullRequestHostId,
   getPullRequestDetailsNavigationTarget,
   groupNotifications,
   selectUnseenPullRequestCommentNotificationIds,
@@ -260,6 +261,34 @@ describe('getPullRequestDetailsNavigationTarget', () => {
       prNumber: 42,
       prUrl: 'https://github.com/acme/repo/pull/42',
     });
+  });
+});
+
+describe('getKnownPullRequestHostId', () => {
+  const target = {
+    prNumber: 42,
+    prUrl: 'https://github.com/acme/repo/pull/42',
+  };
+
+  it('reuses the host from an existing pane showing the same PR', () => {
+    expect(
+      getKnownPullRequestHostId(target, [
+        { kind: 'notifications' },
+        { ...target, kind: 'pull-requests', hostId: 'host-1' },
+      ])
+    ).toBe('host-1');
+  });
+
+  it('does not borrow a host from a different PR', () => {
+    expect(
+      getKnownPullRequestHostId(target, [
+        {
+          kind: 'pull-requests',
+          prUrl: 'https://github.com/acme/repo/pull/7',
+          hostId: 'host-1',
+        },
+      ])
+    ).toBeNull();
   });
 });
 

@@ -20,11 +20,13 @@ import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
 import {
   buildNotificationTabUrl,
+  getKnownPullRequestHostId,
   getPayload,
   getPullRequestDetailsNavigationTarget,
 } from '@/shared/lib/notifications';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
+import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import {
   getGroupedNotificationSegments,
   type MessageSegment,
@@ -203,6 +205,20 @@ export function NotificationsPage() {
   const selectedCount = selectedGroups.length;
   const { membersByUserId } = useNotificationMembers(data);
 
+  const knownPullRequestHostId = useCallback(
+    (group: GroupedNotification) => {
+      const target = getPullRequestDetailsNavigationTarget(group.latest);
+      if (!target) return null;
+      return getKnownPullRequestHostId(target, [
+        appNavigation.resolveFromPath(window.location.href),
+        ...useWorkspacePanesStore
+          .getState()
+          .panes.map((pane) => pane.destination),
+      ]);
+    },
+    [appNavigation]
+  );
+
   const markGroupSeen = useCallback(
     (group: GroupedNotification) => {
       if (group.unseenNotificationIds.length === 0) {
@@ -316,7 +332,8 @@ export function NotificationsPage() {
     (group: GroupedNotification) => {
       markGroupSeen(group);
       const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
-      if (prDetails && runtime === 'remote' && !prDetails.hostId) {
+      const knownHostId = knownPullRequestHostId(group);
+      if (prDetails && runtime === 'remote' && !knownHostId) {
         void selectWorkspaceHost().then((hostId) => {
           if (!hostId) return;
           const url = buildNotificationTabUrl(group, { hostId });
@@ -324,10 +341,10 @@ export function NotificationsPage() {
         });
         return;
       }
-      const url = buildNotificationTabUrl(group);
+      const url = buildNotificationTabUrl(group, { hostId: knownHostId });
       if (url) openInSplitPane(url);
     },
-    [markGroupSeen, openInSplitPane, runtime]
+    [knownPullRequestHostId, markGroupSeen, openInSplitPane, runtime]
   );
 
   // Keep the cursor store in sync so the "Open Notification in New Tab" command
@@ -359,9 +376,10 @@ export function NotificationsPage() {
       const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
       if (prDetails) {
         if (runtime === 'remote') {
-          if (prDetails.hostId) {
+          const hostId = knownPullRequestHostId(group);
+          if (hostId) {
             appNavigation.goToPullRequests(prDetails.prUrl, {
-              hostId: prDetails.hostId,
+              hostId,
             });
             return;
           }
@@ -387,7 +405,7 @@ export function NotificationsPage() {
         });
       }
     },
-    [appNavigation, markGroupSeen, router, runtime]
+    [appNavigation, knownPullRequestHostId, markGroupSeen, router, runtime]
   );
 
   const handleMarkAllSeen = useCallback(() => {
