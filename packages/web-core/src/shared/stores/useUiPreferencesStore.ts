@@ -770,8 +770,9 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
         DEFAULT_WORKSPACE_PANEL_STATE;
       const current =
         wsState.isRightSidebarVisible ?? state.isRightSidebarVisible;
+      // Panel-scoped only: never touch the global flag here, or sibling panes
+      // without their own override would follow along and toggle too.
       return {
-        isRightSidebarVisible: !current,
         workspacePanelStates: {
           ...state.workspacePanelStates,
           [workspaceId]: { ...wsState, isRightSidebarVisible: !current },

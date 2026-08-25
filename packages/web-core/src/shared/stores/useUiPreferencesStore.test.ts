@@ -9,13 +9,17 @@ describe('right sidebar preference', () => {
     });
   });
 
-  it('uses the last workspace toggle as the default for new workspaces', () => {
+  it('toggles only the targeted workspace, leaving the global flag intact', () => {
     useUiPreferencesStore.getState().toggleRightSidebar('workspace-1');
 
     const state = useUiPreferencesStore.getState();
     expect(
       state.workspacePanelStates['workspace-1'].isRightSidebarVisible
     ).toBe(false);
-    expect(state.isRightSidebarVisible).toBe(false);
+    // Global stays put so sibling panes without an override don't follow along.
+    expect(state.isRightSidebarVisible).toBe(true);
+    expect(
+      state.workspacePanelStates['workspace-2']?.isRightSidebarVisible
+    ).toBeUndefined();
   });
 });
