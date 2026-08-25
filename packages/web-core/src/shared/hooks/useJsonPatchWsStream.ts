@@ -4,7 +4,11 @@ import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 import { useHostId } from '@/shared/providers/HostIdProvider';
-import { getWsSnapshot, saveWsSnapshot } from '@/shared/lib/wsSnapshotCache';
+import {
+  getWsSnapshot,
+  saveWsSnapshot,
+  wsSnapshotKey,
+} from '@/shared/lib/wsSnapshotCache';
 import { WsConnectionHealth } from '@/shared/lib/wsConnectionHealth';
 import {
   shouldReconnectForStreamSilence,
@@ -113,6 +117,7 @@ export const useJsonPatchWsStream = <T extends object>(
   const contextHostId = useHostId();
   const targetHostId =
     options?.targetHostId !== undefined ? options.targetHostId : contextHostId;
+  const streamKey = wsSnapshotKey(endpoint, targetHostId);
   const silenceTimeoutMs = options?.silenceTimeoutMs;
   const shouldReconcileAfterSilence = options?.shouldReconcileAfterSilence;
 
@@ -158,7 +163,7 @@ export const useJsonPatchWsStream = <T extends object>(
   }
 
   useEffect(() => {
-    if (!enabled || !endpoint) {
+    if (!enabled || !endpoint || !streamKey) {
       // Close connection and reset state
       if (wsRef.current) {
         wsRef.current.close();
@@ -185,7 +190,7 @@ export const useJsonPatchWsStream = <T extends object>(
     // consumers paint immediately while the server replay refreshes it.
     if (!dataRef.current) {
       const cached = keepSnapshotForEndpoint
-        ? getWsSnapshot<T>(endpoint)
+        ? getWsSnapshot<T>(streamKey)
         : undefined;
       if (cached) {
         dataRef.current = cached;
@@ -200,16 +205,16 @@ export const useJsonPatchWsStream = <T extends object>(
           injectInitialEntry(dataRef.current);
         }
       }
-      dataEndpointRef.current = endpoint;
+      dataEndpointRef.current = streamKey;
     }
 
     let cancelled = false;
-    if (healthEndpointRef.current !== endpoint) {
-      healthEndpointRef.current = endpoint;
+    if (healthEndpointRef.current !== streamKey) {
+      healthEndpointRef.current = streamKey;
       setError(null);
     }
     const connectionGeneration =
-      connectionHealthRef.current.startConnection(endpoint);
+      connectionHealthRef.current.startConnection(streamKey);
 
     const recordConnectionFailure = () => {
       if (connectionHealthRef.current.recordFailure(connectionGeneration)) {
@@ -345,7 +350,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
               // Handle Ready messages (initial data has been sent)
               if ('Ready' in msg) {
-                initializedForEndpointRef.current = endpoint;
+                initializedForEndpointRef.current = streamKey;
                 setIsInitialized(true);
                 setError(null);
                 resetSilenceWatchdog(false);
@@ -447,7 +452,7 @@ export const useJsonPatchWsStream = <T extends object>(
         dataRef.current &&
         dataPatchedRef.current
       ) {
-        saveWsSnapshot(endpoint, dataRef.current);
+        saveWsSnapshot(streamKey, dataRef.current);
       }
       if (wsRef.current) {
         const ws = wsRef.current;
@@ -565,16 +570,16 @@ export const useJsonPatchWsStream = <T extends object>(
   }, [enabled, endpoint]);
 
   const isInitializedForCurrentEndpoint =
-    isInitialized && initializedForEndpointRef.current === endpoint;
+    isInitialized && initializedForEndpointRef.current === streamKey;
 
   // Serve `data` only when it belongs to the current endpoint. During the
   // paint between an endpoint switch and the effect reset, fall back to the
   // new endpoint's cached snapshot (if any) instead of leaking stale data.
   const dataForEndpoint =
-    dataEndpointRef.current === endpoint
+    dataEndpointRef.current === streamKey
       ? data
       : keepSnapshotForEndpoint
-        ? getWsSnapshot<T>(endpoint)
+        ? getWsSnapshot<T>(streamKey)
         : undefined;
 
   return {

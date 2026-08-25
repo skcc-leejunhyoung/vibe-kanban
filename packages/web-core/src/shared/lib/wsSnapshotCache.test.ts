@@ -4,6 +4,7 @@ import {
   clearWsSnapshots,
   getWsSnapshot,
   saveWsSnapshot,
+  wsSnapshotKey,
 } from './wsSnapshotCache';
 
 describe('wsSnapshotCache', () => {
@@ -21,6 +22,12 @@ describe('wsSnapshotCache', () => {
     saveWsSnapshot('/api/x', snapshot);
     expect(getWsSnapshot('/api/x')).toBe(snapshot);
     expect(getWsSnapshot('/api/other')).toBeUndefined();
+  });
+
+  it('isolates identical endpoints by host', () => {
+    expect(wsSnapshotKey('/api/workspaces/stream', null)).not.toBe(
+      wsSnapshotKey('/api/workspaces/stream', 'local')
+    );
   });
 
   it('overwrites the previous snapshot for the same endpoint', () => {

@@ -20,6 +20,15 @@ const MAX_SNAPSHOTS = 16;
 
 const snapshots = new Map<string, object>();
 
+export function wsSnapshotKey(
+  endpoint: string | undefined,
+  hostId: string | null
+): string | undefined {
+  return endpoint === undefined
+    ? undefined
+    : JSON.stringify([hostId, endpoint]);
+}
+
 export function getWsSnapshot<T extends object>(
   endpoint: string | undefined
 ): T | undefined {
