@@ -42,20 +42,36 @@ export async function fetchRemoteCloudHostsState(
     listCloudHosts: listRelayHosts,
   }
 ): Promise<RemoteCloudHostsState> {
-  // A failed cloud lookup is not evidence that every paired host is offline.
-  // Let React Query retain the last successful state and expose the request
-  // error instead of replacing real host statuses with a fabricated fallback.
-  const [pairedHosts, remoteHosts] = await Promise.all([
-    sources.listPairedHosts(),
-    sources.listCloudHosts(),
-  ]);
+  // Enumerate from the local pairing list, which is available without the
+  // cloud. The cloud `/v1/hosts` response only *decorates* status. A failed
+  // cloud lookup (auth expiry, dev-origin CORS, ...) is not evidence that every
+  // paired host is offline, so keep the paired hosts and fall back to an
+  // optimistic `online` status: the relay data plane usually still works when
+  // only the auth layer fails, and marking them online keeps their workspaces
+  // hydrating instead of vanishing from the sidebar/picker/snapshots.
+  // ponytail: optimistic online costs a 15s failed snapshot poll per genuinely
+  // offline host *during a cloud outage only*; acceptable for that narrow case.
+  const pairedHosts = await sources.listPairedHosts();
 
-  const remoteHostsById = new Map(remoteHosts.map((host) => [host.id, host]));
+  let remoteHostsById = new Map<string, RelayHost>();
+  let cloudReachable = true;
+  try {
+    const remoteHosts = await sources.listCloudHosts();
+    remoteHostsById = new Map(remoteHosts.map((host) => [host.id, host]));
+  } catch (error) {
+    cloudReachable = false;
+    console.warn(
+      'Cloud host status lookup failed; keeping paired hosts',
+      error
+    );
+  }
 
   const hosts = pairedHosts
     .map((host) => {
       const remoteHost = remoteHostsById.get(host.host_id);
-      const status = normalizeRemoteCloudHostStatus(remoteHost?.status);
+      const status = cloudReachable
+        ? normalizeRemoteCloudHostStatus(remoteHost?.status)
+        : 'online';
       const pairedAt = host.paired_at ?? '';
 
       return {

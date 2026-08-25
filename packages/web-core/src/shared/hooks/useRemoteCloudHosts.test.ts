@@ -45,15 +45,25 @@ describe('fetchRemoteCloudHostsState', () => {
     ]);
   });
 
-  it('does not turn every paired host offline when the cloud lookup fails', async () => {
+  it('keeps paired hosts reachable when the cloud lookup fails', async () => {
     const error = new Error('cloud authentication failed');
 
-    await expect(
-      fetchRemoteCloudHostsState({
-        listPairedHosts: vi.fn().mockResolvedValue([pairedHost()]),
-        listCloudHosts: vi.fn().mockRejectedValue(error),
-      })
-    ).rejects.toBe(error);
+    const state = await fetchRemoteCloudHostsState({
+      listPairedHosts: vi.fn().mockResolvedValue([pairedHost()]),
+      listCloudHosts: vi.fn().mockRejectedValue(error),
+    });
+
+    // Optimistic online so the host and its workspaces stay visible instead of
+    // vanishing when only the cloud auth layer fails.
+    expect(state.hosts).toEqual([
+      {
+        id: 'i9',
+        name: 'i9-mbp',
+        status: 'online',
+        pairedAt: '2026-01-01T00:00:00Z',
+        lastUsedAt: '2026-01-01T00:00:00Z',
+      },
+    ]);
   });
 
   it('does not report an empty host list when the pairing lookup fails', async () => {
