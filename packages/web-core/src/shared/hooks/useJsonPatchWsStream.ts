@@ -3,6 +3,7 @@ import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getWsSnapshot, saveWsSnapshot } from '@/shared/lib/wsSnapshotCache';
 import { WsConnectionHealth } from '@/shared/lib/wsConnectionHealth';
 import {
@@ -105,7 +106,13 @@ export const useJsonPatchWsStream = <T extends object>(
   const injectInitialEntry = options?.injectInitialEntry;
   const deduplicatePatches = options?.deduplicatePatches;
   const keepSnapshotForEndpoint = options?.keepSnapshotForEndpoint ?? false;
-  const targetHostId = options?.targetHostId;
+  // Default to the React-context host, not the transport's document-level
+  // fallback: a split pane showing another host's workspace overrides the
+  // context, while the document fallback would route this stream to whichever
+  // host the focused route happens to be on.
+  const contextHostId = useHostId();
+  const targetHostId =
+    options?.targetHostId !== undefined ? options.targetHostId : contextHostId;
   const silenceTimeoutMs = options?.silenceTimeoutMs;
   const shouldReconcileAfterSilence = options?.shouldReconcileAfterSilence;
 

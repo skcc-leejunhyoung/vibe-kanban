@@ -54,9 +54,14 @@ export const useConversationHistory = ({
     isLoading,
     isConnected,
   } = useExecutionProcessesContext();
-  // Captured per render so async stream callbacks cache under the host the
-  // data was actually fetched from, even if the route changes mid-stream.
+  // Read through a ref at stream-open time: the loaders below are memoized
+  // once per mount, so a render-captured host would go stale. Each open takes
+  // its own snapshot, scoping the stream AND its cache entry to the host the
+  // data is actually fetched from — never the focused route's host, which
+  // differs in a split pane showing another host's workspace.
   const hostId = useHostId();
+  const hostIdRef = useRef(hostId);
+  hostIdRef.current = hostId;
   const executionProcesses = useRef<ExecutionProcess[]>(executionProcessesRaw);
   const displayedExecutionProcesses = useRef<ExecutionProcessStateStore>({});
   const loadedInitialEntries = useRef(false);
@@ -120,9 +125,10 @@ export const useConversationHistory = ({
   const loadEntriesForHistoricExecutionProcess = (
     executionProcess: ExecutionProcess
   ) => {
+    const streamHostId = hostIdRef.current;
     // Finished-process logs are immutable: entries resolved once are reused
     // across navigations instead of re-streaming the whole history.
-    const cached = getCachedProcessEntries(hostId, executionProcess.id);
+    const cached = getCachedProcessEntries(streamHostId, executionProcess.id);
     if (cached) return Promise.resolve(cached);
 
     let url = '';
@@ -134,13 +140,18 @@ export const useConversationHistory = ({
 
     return new Promise<PatchType[]>((resolve) => {
       const controller = streamJsonPatchEntries<PatchType>(url, {
+        hostId: streamHostId,
         onFinished: (allEntries) => {
           controller.close();
           if (
             executionProcess.status !== ExecutionProcessStatus.running &&
             hasStableCompletedLog(executionProcess.completed_at)
           ) {
-            setCachedProcessEntries(hostId, executionProcess.id, allEntries);
+            setCachedProcessEntries(
+              streamHostId,
+              executionProcess.id,
+              allEntries
+            );
           }
           resolve(allEntries);
         },
@@ -250,6 +261,7 @@ export const useConversationHistory = ({
           url = `/api/execution-processes/${executionProcess.id}/normalized-logs/ws`;
         }
         const controller = streamJsonPatchEntries<PatchType>(url, {
+          hostId: hostIdRef.current,
           onEntries(entries) {
             const patchesWithKey = entries.map((entry, index) =>
               patchWithKey(entry, executionProcess.id, index)

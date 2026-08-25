@@ -28,6 +28,12 @@ export interface StreamOptions<E = unknown> {
    * Covers both stalled connects and drops that happen before `finished`.
    */
   maxRetries?: number;
+  /**
+   * Route the stream to this host explicitly (null = the local backend).
+   * Without it the transport falls back to the document's host scope, which is
+   * the wrong host for a split pane showing another host's workspace.
+   */
+  hostId?: string | null;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
@@ -238,7 +244,16 @@ export function streamJsonPatchEntries<E = unknown>(
 
     void (async () => {
       try {
-        const opened = await openLocalApiStream(url);
+        const opened = await openLocalApiStream(
+          url,
+          opts.hostId !== undefined
+            ? {
+                hostScope: 'explicit',
+                hostId: opts.hostId,
+                relayHostId: opts.hostId,
+              }
+            : undefined
+        );
 
         if (closed || finished || myGen !== generation) {
           opened.close();

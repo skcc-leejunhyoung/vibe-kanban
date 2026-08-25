@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import type { PatchType } from 'shared/types';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 type LogEntry = Extract<PatchType, { type: 'STDOUT' } | { type: 'STDERR' }>;
 
@@ -10,6 +11,9 @@ interface UseLogStreamResult {
 }
 
 export const useLogStream = (processId: string): UseLogStreamResult => {
+  // Context host, not the document fallback: in a split pane this process
+  // lives on the pane's host, which may differ from the focused route's.
+  const hostId = useHostId();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -47,7 +51,8 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
       void (async () => {
         try {
           const ws = await openLocalApiStream(
-            `/api/execution-processes/${processId}/raw-logs/ws`
+            `/api/execution-processes/${processId}/raw-logs/ws`,
+            { hostScope: 'explicit', hostId, relayHostId: hostId }
           );
 
           if (cancelled || currentProcessIdRef.current !== capturedProcessId) {
@@ -186,7 +191,7 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
         retryTimerRef.current = null;
       }
     };
-  }, [processId]);
+  }, [processId, hostId]);
 
   return { logs, error };
 };

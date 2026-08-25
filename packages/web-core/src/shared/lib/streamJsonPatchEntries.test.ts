@@ -94,6 +94,22 @@ afterEach(() => {
   setLocalApiTransport(null);
 });
 
+describe('streamJsonPatchEntries — explicit host scoping (split panes)', () => {
+  it('prefixes the stream path with the given host', async () => {
+    streamJsonPatchEntries(URL, { hostId: 'host-1' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWebSocket.instances[0].url).toBe(
+      `/api/host/host-1${URL.slice('/api'.length)}`
+    );
+  });
+
+  it('leaves the path unscoped for the local host (null)', async () => {
+    streamJsonPatchEntries(URL, { hostId: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWebSocket.instances[0].url).toBe(URL);
+  });
+});
+
 describe('streamJsonPatchEntries — connection watchdog (PWA resume)', () => {
   it('surfaces an error instead of hanging forever when the socket never connects', async () => {
     const onFinished = vi.fn();
