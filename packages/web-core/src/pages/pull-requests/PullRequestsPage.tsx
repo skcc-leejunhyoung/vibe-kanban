@@ -34,6 +34,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import {
   PERSIST_KEYS,
@@ -42,7 +43,6 @@ import {
 } from '@/shared/stores/useUiPreferencesStore';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { selectLinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
-import type { LinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
@@ -56,8 +56,8 @@ import {
 } from './pullRequestUrl';
 import { handlePullRequestDetailsEscape } from './pullRequestDetailsEscape';
 import {
-  findLocalPullRequestWorkspaces,
   hasPullRequestWorkspace,
+  mergeMappedPullRequestWorkspaces,
 } from './localPullRequestWorkspaces';
 import {
   PULL_REQUESTS_FOCUS_SEARCH_EVENT,
@@ -225,6 +225,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const queryClient = useQueryClient();
   const { workspaces } = useUserContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
+  const selfHostId = useSelfCloudHostId();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );
@@ -556,31 +557,12 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
             workspace.local_workspace_id !== null &&
             issueIds.has(workspace.issue_id)
         );
-        const linkedWorkspaces = new Map<string, LinkedWorkspace>();
-        for (const workspace of mappedWorkspaces) {
-          linkedWorkspaces.set(
-            `${workspace.host_id}:${workspace.local_workspace_id}`,
-            workspace
-          );
-        }
-        for (const workspace of findLocalPullRequestWorkspaces(
+        const mappedAndLocalWorkspaces = mergeMappedPullRequestWorkspaces(
           pullRequest.url,
-          workspaceSummaries
-        )) {
-          const hostId = workspace.hostId ?? null;
-          const key = `${hostId}:${workspace.id}`;
-          if (!linkedWorkspaces.has(key)) {
-            linkedWorkspaces.set(key, {
-              id: key,
-              host_id: hostId,
-              local_workspace_id: workspace.id,
-              name: workspace.name,
-              archived: workspace.isArchived ?? false,
-              updated_at: workspace.updatedAt,
-            });
-          }
-        }
-        const mappedAndLocalWorkspaces = [...linkedWorkspaces.values()];
+          mappedWorkspaces,
+          workspaceSummaries,
+          selfHostId
+        );
         if (mappedAndLocalWorkspaces.length === 0) {
           await showEmptyMapping('This pull request has no mapped workspaces.');
           return;
@@ -612,7 +594,13 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         });
       }
     },
-    [appNavigation, loadMappedIssues, workspaces, workspaceSummaries]
+    [
+      appNavigation,
+      loadMappedIssues,
+      selfHostId,
+      workspaces,
+      workspaceSummaries,
+    ]
   );
 
   useEffect(() => {
