@@ -379,6 +379,7 @@
       "approve": "批准",
       "clearReviewComments": "清除审查评论",
       "edit": "编辑消息",
+      "confirmEdit": "确认",
       "scrollToPreviousMessage": "Go to previous message",
       "reset": "重置",
       "resetTooltip": "重置到此时点"

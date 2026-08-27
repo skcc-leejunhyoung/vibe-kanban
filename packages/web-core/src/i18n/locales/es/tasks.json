@@ -380,6 +380,7 @@
       "approve": "Aprobar",
       "clearReviewComments": "Limpiar comentarios de revisión",
       "edit": "Editar mensaje",
+      "confirmEdit": "Confirmar",
       "scrollToPreviousMessage": "Go to previous message",
       "reset": "Restablecer",
       "resetTooltip": "Restablecer a este punto"

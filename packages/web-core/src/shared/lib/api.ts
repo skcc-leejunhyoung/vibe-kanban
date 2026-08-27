@@ -2725,6 +2725,27 @@ export const queueApi = {
   },
 
   /**
+   * Edit an already-queued message in place (text + executor config),
+   * preserving its queue position.
+   */
+  updateQueued: async (
+    sessionId: string,
+    messageId: string,
+    data: DraftFollowUpData,
+    hostId?: string | null
+  ): Promise<QueueStatus> => {
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/queue/update`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify({ message_id: messageId, ...data }),
+      }
+    );
+    return handleApiResponse<QueueStatus>(response);
+  },
+
+  /**
    * Reorder the queue to the given message id order (front first).
    */
   reorder: async (

@@ -148,6 +148,8 @@ interface EditModeProps {
   onSubmitEdit: () => void;
   onCancel: () => void;
   isSubmitting: boolean;
+  /** Submit button label; defaults to the retry label (sent-message edit). */
+  submitLabel?: string;
 }
 
 interface ApprovalModeProps {
@@ -216,6 +218,10 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   onRemoveQueued?: (id: string) => void;
   /** "Send now" on a queued message: run it next, interrupting the current turn */
   onSteerQueued?: (id: string) => void;
+  /** Load a queued message into the input for in-place editing */
+  onEditQueued?: (id: string) => void;
+  /** Id of the queued message currently being edited (highlights its row) */
+  editingQueuedId?: string | null;
   /** Reorder the queue to this exact id order (front first) */
   onReorderQueued?: (ids: string[]) => void;
   session: SessionProps<TExecutor>;
@@ -302,6 +308,8 @@ export function SessionChatBox<TExecutor extends string = string>({
   queuedMessages,
   onRemoveQueued,
   onSteerQueued,
+  onEditQueued,
+  editingQueuedId,
   onReorderQueued,
   session,
   stats,
@@ -510,7 +518,7 @@ export function SessionChatBox<TExecutor extends string = string>({
             onClick={editMode?.onSubmitEdit}
             disabled={!canSend || editMode?.isSubmitting}
             actionIcon={editMode?.isSubmitting ? 'spinner' : undefined}
-            value={t('conversation.retry')}
+            value={editMode?.submitLabel ?? t('conversation.retry')}
           />
         </>
       );
@@ -790,7 +798,9 @@ export function SessionChatBox<TExecutor extends string = string>({
                           {...dragProvided.draggableProps}
                           className={cn(
                             'flex items-center gap-base rounded-sm',
-                            dragSnapshot.isDragging && 'bg-panel shadow-lg'
+                            dragSnapshot.isDragging && 'bg-panel shadow-lg',
+                            editingQueuedId === queued.id &&
+                              'ring-1 ring-brand bg-brand/5'
                           )}
                         >
                           {/* Drag handle — grab here to reorder the queue.
@@ -819,6 +829,17 @@ export function SessionChatBox<TExecutor extends string = string>({
                           <span className="text-sm text-normal flex-1 min-w-0 truncate">
                             {queued.message}
                           </span>
+                          {onEditQueued && (
+                            <button
+                              type="button"
+                              onClick={() => onEditQueued(queued.id)}
+                              className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0"
+                              title={t('conversation.actions.edit')}
+                              aria-label={t('conversation.actions.edit')}
+                            >
+                              <PencilSimpleIcon className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                           {onSteerQueued && (
                             <button
                               type="button"

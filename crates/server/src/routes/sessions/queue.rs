@@ -177,6 +177,36 @@ struct SteerQueuedRequest {
     pub message_id: Uuid,
 }
 
+/// Request body for editing a message already in the queue.
+#[derive(Debug, Deserialize)]
+struct UpdateQueuedRequest {
+    pub message_id: Uuid,
+    pub message: String,
+    pub executor_config: ExecutorConfig,
+}
+
+/// Edit a queued message in place (text + executor config), preserving its
+/// queue position. If the message already drained or was cancelled this is a
+/// no-op; the returned status reflects the current queue either way.
+async fn update_queued_message(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<UpdateQueuedRequest>,
+) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    let data = DraftFollowUpData {
+        message: payload.message,
+        executor_config: payload.executor_config,
+    };
+
+    deployment
+        .queued_message_service()
+        .update_message(session.id, payload.message_id, data);
+
+    Ok(ResponseJson(ApiResponse::success(
+        deployment.queued_message_service().get_status(session.id),
+    )))
+}
+
 /// Request body for reordering the queue: the desired id order (front first).
 #[derive(Debug, Deserialize)]
 struct ReorderQueueRequest {
@@ -345,6 +375,7 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         )
         .route("/steer", post(steer_message))
         .route("/steer-queued", post(steer_queued_message))
+        .route("/update", post(update_queued_message))
         .route("/reorder", post(reorder_queue))
         .layer(from_fn_with_state(
             deployment.clone(),

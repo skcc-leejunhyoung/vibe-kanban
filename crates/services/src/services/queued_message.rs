@@ -113,6 +113,23 @@ impl QueuedMessageService {
         msg
     }
 
+    /// Update a queued message's content in place, preserving its queue
+    /// position. Returns the updated message, or `None` if it's no longer
+    /// queued (already drained or cancelled).
+    pub fn update_message(
+        &self,
+        session_id: Uuid,
+        message_id: Uuid,
+        data: DraftFollowUpData,
+    ) -> Option<QueuedMessage> {
+        self.queue.get_mut(&session_id).and_then(|mut q| {
+            q.iter_mut().find(|m| m.id == message_id).map(|m| {
+                m.data = data;
+                m.clone()
+            })
+        })
+    }
+
     /// Cancel a single queued message by id. Returns the removed message if found.
     pub fn cancel_message(&self, session_id: Uuid, message_id: Uuid) -> Option<QueuedMessage> {
         let removed = self.queue.get_mut(&session_id).and_then(|mut q| {
@@ -317,6 +334,38 @@ mod tests {
         svc.cancel_message(session, b.id);
         assert!(!svc.has_queued(session));
         assert!(matches!(svc.get_status(session), QueueStatus::Empty));
+    }
+
+    #[test]
+    fn update_message_edits_in_place_preserving_position() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+
+        svc.enqueue(session, sample_data("a"));
+        let b = svc.enqueue(session, sample_data("b"));
+        svc.enqueue(session, sample_data("c"));
+
+        let updated = svc
+            .update_message(session, b.id, sample_data("b-edited"))
+            .unwrap();
+        assert_eq!(updated.id, b.id);
+        assert_eq!(updated.data.message, "b-edited");
+
+        // Position and neighbors unchanged.
+        let queued = svc.get_queued(session);
+        assert_eq!(queued[0].data.message, "a");
+        assert_eq!(queued[1].data.message, "b-edited");
+        assert_eq!(queued[2].data.message, "c");
+
+        // Unknown id (or session) is a no-op returning None.
+        assert!(
+            svc.update_message(session, Uuid::new_v4(), sample_data("x"))
+                .is_none()
+        );
+        assert!(
+            svc.update_message(Uuid::new_v4(), b.id, sample_data("x"))
+                .is_none()
+        );
     }
 
     #[test]

@@ -122,6 +122,7 @@
       "approve": "Approuver",
       "clearReviewComments": "Effacer les commentaires de révision",
       "edit": "Modifier le message",
+      "confirmEdit": "Confirmer",
       "scrollToPreviousMessage": "Go to previous message",
       "reset": "Réinitialiser",
       "resetTooltip": "Réinitialiser à ce point"

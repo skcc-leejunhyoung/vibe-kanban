@@ -725,6 +725,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     queueMessage,
     steer,
     steerQueued,
+    updateQueued,
+    isUpdatingQueued,
     reorderQueue,
     cancelQueue,
     cancelOne,
@@ -733,6 +735,75 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     sessionId,
     onQueueConsumed: reconcileExecutionProcesses,
   });
+
+  // In-place editing of a queued message: the queued text is loaded into the
+  // chat input (no dialog); confirm updates it in place, cancel restores the
+  // draft that was being composed before the edit started.
+  const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null);
+  const editingQueuedBackupRef = useRef('');
+
+  const exitQueuedEdit = useCallback(() => {
+    setEditingQueuedId(null);
+    cancelDebouncedSave();
+    setLocalMessage(editingQueuedBackupRef.current);
+    if (executorConfig) {
+      // Restore the scratch draft too — typing during the edit debounce-saved
+      // the queued text over it.
+      void saveToScratch(editingQueuedBackupRef.current, executorConfig);
+    }
+    editingQueuedBackupRef.current = '';
+  }, [cancelDebouncedSave, setLocalMessage, saveToScratch, executorConfig]);
+
+  const handleEditQueued = useCallback(
+    (messageId: string) => {
+      const target = queuedMessages.find((m) => m.id === messageId);
+      if (!target) return;
+      // Queued edit and sent-message edit are mutually exclusive.
+      editContext.cancelEdit();
+      if (editingQueuedId === null) {
+        editingQueuedBackupRef.current = localMessage;
+      }
+      setEditingQueuedId(messageId);
+      cancelDebouncedSave();
+      setLocalMessage(target.data.message);
+    },
+    [
+      queuedMessages,
+      editContext,
+      editingQueuedId,
+      localMessage,
+      cancelDebouncedSave,
+      setLocalMessage,
+    ]
+  );
+
+  const handleSubmitQueuedEdit = useCallback(async () => {
+    if (!editingQueuedId || !localMessage.trim() || !executorConfig) return;
+    try {
+      await updateQueued(editingQueuedId, localMessage, executorConfig);
+    } catch {
+      return; // stay in edit mode so the user can retry or cancel
+    }
+    exitQueuedEdit();
+  }, [
+    editingQueuedId,
+    localMessage,
+    executorConfig,
+    updateQueued,
+    exitQueuedEdit,
+  ]);
+
+  // The edited message can be consumed (turn finished) or removed while the
+  // user is still typing — drop out of edit mode instead of targeting a
+  // message that no longer exists.
+  useEffect(() => {
+    if (
+      editingQueuedId &&
+      !queuedMessages.some((m) => m.id === editingQueuedId)
+    ) {
+      exitQueuedEdit();
+    }
+  }, [editingQueuedId, queuedMessages, exitQueuedEdit]);
 
   // Send actions
   const {
@@ -1188,7 +1259,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const prevEditRef = useRef(editContext.activeEdit);
   useEffect(() => {
     if (editContext.activeEdit && !prevEditRef.current) {
-      // Just entered edit mode - populate with original message
+      // Just entered edit mode - populate with original message. A queued-edit
+      // in progress is superseded (the two modes share the input).
+      setEditingQueuedId(null);
+      editingQueuedBackupRef.current = '';
       setLocalMessage(editContext.activeEdit.originalMessage);
     }
     prevEditRef.current = editContext.activeEdit;
@@ -1339,7 +1413,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const status = computeExecutionStatus({
     isInFeedbackMode,
-    isInEditMode,
+    isInEditMode: isInEditMode || editingQueuedId !== null,
     isStopping,
     isQueueLoading,
     isSendingFollowUp: isSending || isHandoffPending,
@@ -1519,6 +1593,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }))}
       onRemoveQueued={handleRemoveQueued}
       onSteerQueued={handleSteerQueued}
+      onEditQueued={handleEditQueued}
+      editingQueuedId={editingQueuedId}
       onReorderQueued={handleReorderQueued}
       session={{
         sessions,
@@ -1600,12 +1676,22 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
             }
           : undefined
       }
-      editMode={{
-        isActive: isInEditMode,
-        onSubmitEdit: handleSubmitEdit,
-        onCancel: handleCancelEdit,
-        isSubmitting: editRetryMutation.isPending,
-      }}
+      editMode={
+        editingQueuedId !== null
+          ? {
+              isActive: true,
+              onSubmitEdit: () => void handleSubmitQueuedEdit(),
+              onCancel: exitQueuedEdit,
+              isSubmitting: isUpdatingQueued,
+              submitLabel: t('conversation.actions.confirmEdit'),
+            }
+          : {
+              isActive: isInEditMode,
+              onSubmitEdit: handleSubmitEdit,
+              onCancel: handleCancelEdit,
+              isSubmitting: editRetryMutation.isPending,
+            }
+      }
       reviewComments={
         hasReviewComments && reviewContext
           ? {

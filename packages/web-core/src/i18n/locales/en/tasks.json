@@ -141,6 +141,7 @@
       "approve": "Approve",
       "clearReviewComments": "Clear review comments",
       "edit": "Edit message",
+      "confirmEdit": "Confirm",
       "scrollToPreviousMessage": "Go to previous message",
       "reset": "Reset",
       "resetTooltip": "Reset to this point"

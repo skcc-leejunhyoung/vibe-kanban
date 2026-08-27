@@ -32,6 +32,14 @@ interface UseSessionQueueInteractionResult {
   steer: (message: string, executorConfig: ExecutorConfig) => Promise<void>;
   /** Interrupt the running turn and run an already-queued message immediately */
   steerQueued: (messageId: string) => Promise<void>;
+  /** Edit an already-queued message in place, preserving its position */
+  updateQueued: (
+    messageId: string,
+    message: string,
+    executorConfig: ExecutorConfig
+  ) => Promise<void>;
+  /** Whether an updateQueued request is in flight */
+  isUpdatingQueued: boolean;
   /** Reorder the queue to the given message id order (front first) */
   reorderQueue: (messageIds: string[]) => Promise<void>;
   /** Cancel all queued messages */
@@ -140,6 +148,26 @@ export function useSessionQueueInteraction({
     onSuccess: applyStatus,
   });
 
+  // Mutation for editing a queued message in place
+  const updateQueuedMutation = useMutation({
+    mutationFn: ({
+      messageId,
+      message,
+      executorConfig,
+    }: {
+      messageId: string;
+      message: string;
+      executorConfig: ExecutorConfig;
+    }) =>
+      queueApi.updateQueued(
+        sessionId!,
+        messageId,
+        { message, executor_config: executorConfig },
+        hostId
+      ),
+    onSuccess: applyStatus,
+  });
+
   // Mutation for reordering the queue. Optimistic so the up/down arrows feel
   // instant; the server response replaces the optimistic order on success.
   const reorderMutation = useMutation({
@@ -207,6 +235,22 @@ export function useSessionQueueInteraction({
     [sessionId, steerQueuedMutation]
   );
 
+  const updateQueued = useCallback(
+    async (
+      messageId: string,
+      message: string,
+      executorConfig: ExecutorConfig
+    ) => {
+      if (!sessionId) return;
+      await updateQueuedMutation.mutateAsync({
+        messageId,
+        message,
+        executorConfig,
+      });
+    },
+    [sessionId, updateQueuedMutation]
+  );
+
   const reorderQueue = useCallback(
     async (messageIds: string[]) => {
       if (!sessionId) return;
@@ -244,6 +288,8 @@ export function useSessionQueueInteraction({
     queueMessage,
     steer,
     steerQueued,
+    updateQueued,
+    isUpdatingQueued: updateQueuedMutation.isPending,
     reorderQueue,
     cancelQueue,
     cancelOne,

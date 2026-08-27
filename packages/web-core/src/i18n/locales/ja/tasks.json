@@ -379,6 +379,7 @@
       "approve": "承認",
       "clearReviewComments": "レビューコメントをクリア",
       "edit": "メッセージを編集",
+      "confirmEdit": "確定",
       "scrollToPreviousMessage": "Go to previous message",
       "reset": "リセット",
       "resetTooltip": "この時点にリセット"
