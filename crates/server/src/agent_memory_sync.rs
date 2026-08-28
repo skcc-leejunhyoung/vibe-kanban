@@ -1051,6 +1051,7 @@ async fn write_codex_scope_snapshot(scope_key: &str, snapshot: &str) -> anyhow::
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sync_one(
     deployment: &DeploymentImpl,
     host_id: Uuid,
@@ -2044,8 +2045,7 @@ async fn run_agent(
     if !agent.get_availability_info().is_available() {
         anyhow::bail!("executor is not installed or configured");
     }
-    let approvals: Arc<dyn ExecutorApprovalService> =
-        Arc::new(NoopExecutorApprovalService::default());
+    let approvals: Arc<dyn ExecutorApprovalService> = Arc::new(NoopExecutorApprovalService);
     agent.use_approvals(approvals);
     let env = ExecutionEnv::new(
         RepoContext::new(repo.path.clone(), Vec::new()),

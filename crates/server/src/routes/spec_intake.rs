@@ -190,7 +190,7 @@ async fn generate_spec_inner(
 
     let (title, description) = tokio::time::timeout(
         SPEC_INTAKE_TIMEOUT,
-        run_intake(&deployment, &workspace, executor_config.clone(), prompt),
+        run_intake(deployment, &workspace, executor_config.clone(), prompt),
     )
     .await
     .map_err(|_| {

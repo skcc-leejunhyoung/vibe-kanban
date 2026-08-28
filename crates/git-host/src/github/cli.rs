@@ -1145,6 +1145,277 @@ fn pull_request_search_args(repository: &str, involves_me: bool) -> Vec<String> 
     args
 }
 
+impl GhCli {
+    fn parse_pr_create_text(
+        raw: &str,
+        request: &CreatePrRequest,
+    ) -> Result<PullRequestDetail, GhCliError> {
+        let pr_url = raw
+            .lines()
+            .rev()
+            .flat_map(|line| line.split_whitespace())
+            .map(|token| token.trim_matches(|c: char| c == '<' || c == '>'))
+            .find(|token| token.starts_with("http") && token.contains("/pull/"))
+            .ok_or_else(|| {
+                GhCliError::UnexpectedOutput(format!(
+                    "gh pr create did not return a pull request URL; raw output: {raw}"
+                ))
+            })?
+            .trim_end_matches(['.', ',', ';'])
+            .to_string();
+
+        let number = pr_url
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to extract PR number from URL '{pr_url}'"
+                ))
+            })?
+            .trim_end_matches(|c: char| !c.is_ascii_digit())
+            .parse::<i64>()
+            .map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse PR number from URL '{pr_url}': {err}"
+                ))
+            })?;
+
+        Ok(PullRequestDetail {
+            number,
+            url: pr_url,
+            status: MergeStatus::Open,
+            merged_at: None,
+            merge_commit_sha: None,
+            title: request.title.clone(),
+            body: request.body.clone().unwrap_or_default(),
+            author: None,
+            assignees: Vec::new(),
+            reviewers: Vec::new(),
+            reviews: Vec::new(),
+            review_requests: Vec::new(),
+            commits: Vec::new(),
+            review_decision: None,
+            is_draft: request.draft.unwrap_or(false),
+            created_at: None,
+            updated_at: None,
+            base_branch: request.base_branch.clone(),
+            head_branch: request.head_branch.clone(),
+        })
+    }
+
+    fn parse_pr_view(raw: &str) -> Result<PullRequestDetail, GhCliError> {
+        let pr: GhPrResponse = serde_json::from_str(raw.trim()).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!(
+                "Failed to parse gh pr view response: {err}; raw: {raw}"
+            ))
+        })?;
+        Ok(Self::pr_response_to_detail(pr))
+    }
+
+    fn parse_pr_list(raw: &str) -> Result<Vec<PullRequestDetail>, GhCliError> {
+        let prs: Vec<GhPrResponse> = serde_json::from_str(raw.trim()).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!(
+                "Failed to parse gh pr list response: {err}; raw: {raw}"
+            ))
+        })?;
+        Ok(prs.into_iter().map(Self::pr_response_to_detail).collect())
+    }
+
+    fn pr_response_to_detail(pr: GhPrResponse) -> PullRequestDetail {
+        let state = if pr.state.is_empty() {
+            "OPEN"
+        } else {
+            &pr.state
+        };
+        PullRequestDetail {
+            number: pr.number,
+            url: pr.url,
+            status: match state.to_ascii_uppercase().as_str() {
+                "OPEN" => MergeStatus::Open,
+                "MERGED" => MergeStatus::Merged,
+                "CLOSED" => MergeStatus::Closed,
+                _ => MergeStatus::Unknown,
+            },
+            merged_at: pr.merged_at,
+            merge_commit_sha: pr.merge_commit.and_then(|c| c.oid),
+            title: pr.title.unwrap_or_default(),
+            body: pr.body,
+            author: pr.author.map(|author| author.login),
+            assignees: pr.assignees.into_iter().map(|user| user.login).collect(),
+            reviewers: pr
+                .review_requests
+                .into_iter()
+                .map(|user| user.login)
+                .collect(),
+            reviews: pr
+                .reviews
+                .into_iter()
+                .map(|review| PullRequestReview {
+                    id: review.id,
+                    author: review.author.map(|author| author.login).unwrap_or_default(),
+                    state: review.state,
+                    body: review.body,
+                    submitted_at: review.submitted_at,
+                })
+                .collect(),
+            review_requests: Vec::new(),
+            commits: pr
+                .commits
+                .into_iter()
+                .map(|commit| PullRequestCommit {
+                    oid: commit.oid,
+                    message: commit.message_headline,
+                    authors: commit
+                        .authors
+                        .into_iter()
+                        .filter_map(|author| author.login.or(author.name))
+                        .collect(),
+                    committed_at: commit.committed_date,
+                })
+                .collect(),
+            review_decision: pr.review_decision,
+            is_draft: pr.is_draft,
+            created_at: pr.created_at,
+            updated_at: pr.updated_at,
+            base_branch: pr.base_ref_name.unwrap_or_default(),
+            head_branch: pr.head_ref_name.unwrap_or_default(),
+        }
+    }
+
+    fn parse_pr_comments(raw: &str) -> Result<Vec<PrComment>, GhCliError> {
+        let wrapper: GhCommentsWrapper = serde_json::from_str(raw.trim()).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!(
+                "Failed to parse gh pr view --json comments response: {err}; raw: {raw}"
+            ))
+        })?;
+
+        Ok(wrapper
+            .comments
+            .into_iter()
+            .map(|c| PrComment {
+                id: c.id,
+                author: PrCommentAuthor {
+                    login: c
+                        .author
+                        .and_then(|a| a.login)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                },
+                author_association: c.author_association,
+                body: c.body,
+                created_at: c.created_at.unwrap_or_else(Utc::now),
+                url: c.url,
+            })
+            .collect())
+    }
+
+    fn parse_pr_review_comments(raw: &str) -> Result<Vec<PrReviewComment>, GhCliError> {
+        let items: Vec<GhReviewCommentResponse> =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse review comments API response: {err}; raw: {raw}"
+                ))
+            })?;
+
+        Ok(items
+            .into_iter()
+            .map(|c| PrReviewComment {
+                id: c.id,
+                user: ReviewCommentUser {
+                    login: c
+                        .user
+                        .and_then(|u| u.login)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                },
+                body: c.body,
+                created_at: c.created_at.unwrap_or_else(Utc::now),
+                html_url: c.html_url,
+                path: c.path,
+                line: c.line,
+                side: c.side,
+                diff_hunk: c.diff_hunk,
+                author_association: c.author_association,
+                in_reply_to_id: c.in_reply_to_id,
+                pull_request_review_id: c.pull_request_review_id,
+            })
+            .collect())
+    }
+
+    fn parse_pr_review_threads(raw: &str) -> Result<Vec<PrReviewThread>, GhCliError> {
+        let response: GhReviewThreadsResponse =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse review threads GraphQL response: {err}; raw: {raw}"
+                ))
+            })?;
+        Ok(response
+            .data
+            .repository
+            .pull_request
+            .review_threads
+            .nodes
+            .into_iter()
+            .map(|thread| PrReviewThread {
+                id: thread.id,
+                comment_ids: thread
+                    .comments
+                    .nodes
+                    .into_iter()
+                    .filter_map(|comment| comment.database_id)
+                    .collect(),
+                is_resolved: thread.is_resolved,
+                is_outdated: thread.is_outdated,
+            })
+            .collect())
+    }
+
+    fn parse_issue_linked_branches(raw: &str) -> Result<Vec<String>, GhCliError> {
+        let response: GhLinkedBranchesResponse =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse issue linked branches response: {err}; raw: {raw}"
+                ))
+            })?;
+        Ok(response
+            .data
+            .node
+            .unwrap_or_default()
+            .linked_branches
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.branch_ref.map(|r| r.name))
+            .collect())
+    }
+
+    fn parse_created_linked_branch(raw: &str) -> Result<String, GhCliError> {
+        let response: GhCreateLinkedBranchResponse =
+            serde_json::from_str(raw.trim()).map_err(|err| {
+                GhCliError::UnexpectedOutput(format!(
+                    "Failed to parse createLinkedBranch response: {err}; raw: {raw}"
+                ))
+            })?;
+        response
+            .data
+            .and_then(|data| data.create_linked_branch)
+            .and_then(|payload| payload.linked_branch)
+            .and_then(|branch| branch.branch_ref)
+            .map(|r| r.name)
+            .ok_or_else(|| {
+                GhCliError::UnexpectedOutput(format!(
+                    "createLinkedBranch did not return a branch ref; raw: {raw}"
+                ))
+            })
+    }
+
+    fn parse_ref_object_sha(raw: &str) -> Result<String, GhCliError> {
+        let response: GhRefObjectResponse = serde_json::from_str(raw.trim()).map_err(|err| {
+            GhCliError::UnexpectedOutput(format!(
+                "Failed to parse git ref response: {err}; raw: {raw}"
+            ))
+        })?;
+        Ok(response.object.sha)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,276 +1686,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sha, "b6a466b91ddcde88");
-    }
-}
-
-impl GhCli {
-    fn parse_pr_create_text(
-        raw: &str,
-        request: &CreatePrRequest,
-    ) -> Result<PullRequestDetail, GhCliError> {
-        let pr_url = raw
-            .lines()
-            .rev()
-            .flat_map(|line| line.split_whitespace())
-            .map(|token| token.trim_matches(|c: char| c == '<' || c == '>'))
-            .find(|token| token.starts_with("http") && token.contains("/pull/"))
-            .ok_or_else(|| {
-                GhCliError::UnexpectedOutput(format!(
-                    "gh pr create did not return a pull request URL; raw output: {raw}"
-                ))
-            })?
-            .trim_end_matches(['.', ',', ';'])
-            .to_string();
-
-        let number = pr_url
-            .rsplit('/')
-            .next()
-            .ok_or_else(|| {
-                GhCliError::UnexpectedOutput(format!(
-                    "Failed to extract PR number from URL '{pr_url}'"
-                ))
-            })?
-            .trim_end_matches(|c: char| !c.is_ascii_digit())
-            .parse::<i64>()
-            .map_err(|err| {
-                GhCliError::UnexpectedOutput(format!(
-                    "Failed to parse PR number from URL '{pr_url}': {err}"
-                ))
-            })?;
-
-        Ok(PullRequestDetail {
-            number,
-            url: pr_url,
-            status: MergeStatus::Open,
-            merged_at: None,
-            merge_commit_sha: None,
-            title: request.title.clone(),
-            body: request.body.clone().unwrap_or_default(),
-            author: None,
-            assignees: Vec::new(),
-            reviewers: Vec::new(),
-            reviews: Vec::new(),
-            review_requests: Vec::new(),
-            commits: Vec::new(),
-            review_decision: None,
-            is_draft: request.draft.unwrap_or(false),
-            created_at: None,
-            updated_at: None,
-            base_branch: request.base_branch.clone(),
-            head_branch: request.head_branch.clone(),
-        })
-    }
-
-    fn parse_pr_view(raw: &str) -> Result<PullRequestDetail, GhCliError> {
-        let pr: GhPrResponse = serde_json::from_str(raw.trim()).map_err(|err| {
-            GhCliError::UnexpectedOutput(format!(
-                "Failed to parse gh pr view response: {err}; raw: {raw}"
-            ))
-        })?;
-        Ok(Self::pr_response_to_detail(pr))
-    }
-
-    fn parse_pr_list(raw: &str) -> Result<Vec<PullRequestDetail>, GhCliError> {
-        let prs: Vec<GhPrResponse> = serde_json::from_str(raw.trim()).map_err(|err| {
-            GhCliError::UnexpectedOutput(format!(
-                "Failed to parse gh pr list response: {err}; raw: {raw}"
-            ))
-        })?;
-        Ok(prs.into_iter().map(Self::pr_response_to_detail).collect())
-    }
-
-    fn pr_response_to_detail(pr: GhPrResponse) -> PullRequestDetail {
-        let state = if pr.state.is_empty() {
-            "OPEN"
-        } else {
-            &pr.state
-        };
-        PullRequestDetail {
-            number: pr.number,
-            url: pr.url,
-            status: match state.to_ascii_uppercase().as_str() {
-                "OPEN" => MergeStatus::Open,
-                "MERGED" => MergeStatus::Merged,
-                "CLOSED" => MergeStatus::Closed,
-                _ => MergeStatus::Unknown,
-            },
-            merged_at: pr.merged_at,
-            merge_commit_sha: pr.merge_commit.and_then(|c| c.oid),
-            title: pr.title.unwrap_or_default(),
-            body: pr.body,
-            author: pr.author.map(|author| author.login),
-            assignees: pr.assignees.into_iter().map(|user| user.login).collect(),
-            reviewers: pr
-                .review_requests
-                .into_iter()
-                .map(|user| user.login)
-                .collect(),
-            reviews: pr
-                .reviews
-                .into_iter()
-                .map(|review| PullRequestReview {
-                    id: review.id,
-                    author: review.author.map(|author| author.login).unwrap_or_default(),
-                    state: review.state,
-                    body: review.body,
-                    submitted_at: review.submitted_at,
-                })
-                .collect(),
-            review_requests: Vec::new(),
-            commits: pr
-                .commits
-                .into_iter()
-                .map(|commit| PullRequestCommit {
-                    oid: commit.oid,
-                    message: commit.message_headline,
-                    authors: commit
-                        .authors
-                        .into_iter()
-                        .filter_map(|author| author.login.or(author.name))
-                        .collect(),
-                    committed_at: commit.committed_date,
-                })
-                .collect(),
-            review_decision: pr.review_decision,
-            is_draft: pr.is_draft,
-            created_at: pr.created_at,
-            updated_at: pr.updated_at,
-            base_branch: pr.base_ref_name.unwrap_or_default(),
-            head_branch: pr.head_ref_name.unwrap_or_default(),
-        }
-    }
-
-    fn parse_pr_comments(raw: &str) -> Result<Vec<PrComment>, GhCliError> {
-        let wrapper: GhCommentsWrapper = serde_json::from_str(raw.trim()).map_err(|err| {
-            GhCliError::UnexpectedOutput(format!(
-                "Failed to parse gh pr view --json comments response: {err}; raw: {raw}"
-            ))
-        })?;
-
-        Ok(wrapper
-            .comments
-            .into_iter()
-            .map(|c| PrComment {
-                id: c.id,
-                author: PrCommentAuthor {
-                    login: c
-                        .author
-                        .and_then(|a| a.login)
-                        .unwrap_or_else(|| "unknown".to_string()),
-                },
-                author_association: c.author_association,
-                body: c.body,
-                created_at: c.created_at.unwrap_or_else(Utc::now),
-                url: c.url,
-            })
-            .collect())
-    }
-
-    fn parse_pr_review_comments(raw: &str) -> Result<Vec<PrReviewComment>, GhCliError> {
-        let items: Vec<GhReviewCommentResponse> =
-            serde_json::from_str(raw.trim()).map_err(|err| {
-                GhCliError::UnexpectedOutput(format!(
-                    "Failed to parse review comments API response: {err}; raw: {raw}"
-                ))
-            })?;
-
-        Ok(items
-            .into_iter()
-            .map(|c| PrReviewComment {
-                id: c.id,
-                user: ReviewCommentUser {
-                    login: c
-                        .user
-                        .and_then(|u| u.login)
-                        .unwrap_or_else(|| "unknown".to_string()),
-                },
-                body: c.body,
-                created_at: c.created_at.unwrap_or_else(Utc::now),
-                html_url: c.html_url,
-                path: c.path,
-                line: c.line,
-                side: c.side,
-                diff_hunk: c.diff_hunk,
-                author_association: c.author_association,
-                in_reply_to_id: c.in_reply_to_id,
-                pull_request_review_id: c.pull_request_review_id,
-            })
-            .collect())
-    }
-
-    fn parse_pr_review_threads(raw: &str) -> Result<Vec<PrReviewThread>, GhCliError> {
-        let response: GhReviewThreadsResponse =
-            serde_json::from_str(raw.trim()).map_err(|err| {
-                GhCliError::UnexpectedOutput(format!(
-                    "Failed to parse review threads GraphQL response: {err}; raw: {raw}"
-                ))
-            })?;
-        Ok(response
-            .data
-            .repository
-            .pull_request
-            .review_threads
-            .nodes
-            .into_iter()
-            .map(|thread| PrReviewThread {
-                id: thread.id,
-                comment_ids: thread
-                    .comments
-                    .nodes
-                    .into_iter()
-                    .filter_map(|comment| comment.database_id)
-                    .collect(),
-                is_resolved: thread.is_resolved,
-                is_outdated: thread.is_outdated,
-            })
-            .collect())
-    }
-
-    fn parse_issue_linked_branches(raw: &str) -> Result<Vec<String>, GhCliError> {
-        let response: GhLinkedBranchesResponse =
-            serde_json::from_str(raw.trim()).map_err(|err| {
-                GhCliError::UnexpectedOutput(format!(
-                    "Failed to parse issue linked branches response: {err}; raw: {raw}"
-                ))
-            })?;
-        Ok(response
-            .data
-            .node
-            .unwrap_or_default()
-            .linked_branches
-            .nodes
-            .into_iter()
-            .filter_map(|node| node.branch_ref.map(|r| r.name))
-            .collect())
-    }
-
-    fn parse_created_linked_branch(raw: &str) -> Result<String, GhCliError> {
-        let response: GhCreateLinkedBranchResponse =
-            serde_json::from_str(raw.trim()).map_err(|err| {
-                GhCliError::UnexpectedOutput(format!(
-                    "Failed to parse createLinkedBranch response: {err}; raw: {raw}"
-                ))
-            })?;
-        response
-            .data
-            .and_then(|data| data.create_linked_branch)
-            .and_then(|payload| payload.linked_branch)
-            .and_then(|branch| branch.branch_ref)
-            .map(|r| r.name)
-            .ok_or_else(|| {
-                GhCliError::UnexpectedOutput(format!(
-                    "createLinkedBranch did not return a branch ref; raw: {raw}"
-                ))
-            })
-    }
-
-    fn parse_ref_object_sha(raw: &str) -> Result<String, GhCliError> {
-        let response: GhRefObjectResponse = serde_json::from_str(raw.trim()).map_err(|err| {
-            GhCliError::UnexpectedOutput(format!(
-                "Failed to parse git ref response: {err}; raw: {raw}"
-            ))
-        })?;
-        Ok(response.object.sha)
     }
 }

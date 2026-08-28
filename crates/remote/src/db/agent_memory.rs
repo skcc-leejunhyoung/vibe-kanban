@@ -335,6 +335,7 @@ async fn find_mutation(
         .transpose()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn mutation_inbox(
     pool: &PgPool,
     owner_user_id: Uuid,

@@ -207,16 +207,6 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn shapes_only_filter_on_their_own_rows() {
-        for route in super::all_shape_routes() {
-            assert!(!route.shape.where_clause().contains("SELECT"));
-        }
-    }
-}
-
 // =============================================================================
 // Org-scoped fallback handlers
 // =============================================================================
@@ -623,4 +613,14 @@ async fn fallback_list_issue_comment_reactions(
     Ok(Json(ListIssueCommentReactionsResponse {
         issue_comment_reactions,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shapes_only_filter_on_their_own_rows() {
+        for route in super::all_shape_routes() {
+            assert!(!route.shape.where_clause().contains("SELECT"));
+        }
+    }
 }

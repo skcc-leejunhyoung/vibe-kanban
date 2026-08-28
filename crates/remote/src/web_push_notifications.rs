@@ -159,15 +159,12 @@ pub async fn send_custom_notification(
 
     let deeplink_path = match (workspace_id, config.remote_base_url.as_deref()) {
         (Some(workspace_id), Some(base_url)) => {
-            match resolve_workspace_host_id(&pool, user_id, workspace_id).await {
-                // Direct link to the workspace on its host. This is the canonical
-                // route (`/hosts/{host}/workspaces/{ws}`); the `/workspace/{ws}`
-                // alias requires client-side host resolution which is unreliable.
-                Some(host_id) => Some(format!(
-                    "{base_url}/hosts/{host_id}/workspaces/{workspace_id}"
-                )),
-                None => None,
-            }
+            // Direct link to the workspace on its host. This is the canonical
+            // route (`/hosts/{host}/workspaces/{ws}`); the `/workspace/{ws}`
+            // alias requires client-side host resolution which is unreliable.
+            resolve_workspace_host_id(&pool, user_id, workspace_id)
+                .await
+                .map(|host_id| format!("{base_url}/hosts/{host_id}/workspaces/{workspace_id}"))
         }
         _ => None,
     };
