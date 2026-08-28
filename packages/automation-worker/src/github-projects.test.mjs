@@ -164,6 +164,32 @@ test('applies the connector state filter to project items', async () => {
   );
 });
 
+test('optionally imports assigned issues from other repositories', async () => {
+  const load = (includeOtherRepositories) =>
+    loadGithubProjectIssues(
+    { type: 'github' },
+    'project-1',
+    'acme/repo',
+    async () =>
+      projectItemPage([
+        projectItem(1, {
+          repository: { nameWithOwner: 'acme/other' },
+          assignees: { nodes: [{ login: 'me' }] },
+        }),
+      ]),
+      {
+        login: 'me',
+        filter: 'assigned',
+        state: 'open',
+        includeOtherRepositories,
+      }
+    );
+  assert.deepEqual(await load(false), []);
+  const issues = await load(true);
+  assert.equal(issues[0].repository, 'acme/other');
+  assert.equal(issues[0].__externalRepository, true);
+});
+
 test('queries projects for both organization and user owners', async () => {
   let capturedQuery = '';
   let capturedVariables = null;

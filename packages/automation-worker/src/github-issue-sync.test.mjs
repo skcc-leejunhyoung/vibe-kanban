@@ -239,6 +239,26 @@ test('keeps same-numbered review PRs from different repos in one batch', () => {
   );
 });
 
+test('keeps same-numbered project issues from different repositories', () => {
+  const { candidates } = selectGithubPollCandidates({
+    items: [
+      { id: 'I_c2', number: 7 },
+      {
+        id: 'I_other',
+        number: 7,
+        repository: 'acme/other',
+        __externalRepository: true,
+      },
+    ],
+    seen: new Set(),
+    seenNumbers: new Set(),
+  });
+  assert.deepEqual(
+    candidates.map((issue) => issue.id),
+    ['I_c2', 'I_other']
+  );
+});
+
 test('treats same-day milestone dates as equal to avoid reconcile write churn', () => {
   // GitHub returns due_on at a fixed time-of-day; Vibe stores 00:00Z. Same day
   // must NOT count as a difference, or every reconcile would re-PATCH both sides.
@@ -301,6 +321,21 @@ test('scopes GitHub sync rules to their configured source and target connectors'
   );
   assert.equal(
     shouldRunGithubIssueSyncRule(rule, { connectorId: 'github-2' }),
+    true
+  );
+  assert.equal(
+    shouldRunGithubIssueSyncRule(rule, {
+      connectorId: 'github-2',
+      externalRepository: true,
+    }),
+    false
+  );
+  rule.config.includeIssuesFromOtherRepositories = true;
+  assert.equal(
+    shouldRunGithubIssueSyncRule(rule, {
+      connectorId: 'github-2',
+      externalRepository: true,
+    }),
     true
   );
   assert.equal(githubIssueSyncVibeConnectorId(rule, 'vibe-default'), 'vibe-2');

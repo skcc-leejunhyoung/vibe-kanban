@@ -119,8 +119,12 @@ export function selectGithubPollCandidates({
     // Review PRs can come from other repos where numbers collide, so dedup them
     // within the batch by identity (id), not number — mirroring how they are
     // excluded from the cross-poll `seenNumbers` set below.
-    const batchKey = issue.__reviewPr ? String(issue.id) : String(issue.number);
-    const numberKey = issue.__reviewPr ? null : String(issue.number);
+    const batchKey = issue.__reviewPr
+      ? String(issue.id)
+      : issue.__externalRepository
+        ? `${String(issue.repository).toLowerCase()}#${issue.number}`
+        : String(issue.number);
+    const numberKey = issue.__reviewPr ? null : batchKey;
     if (
       seen.has(seenKey) ||
       (numberKey && seenNumbers.has(numberKey)) ||
@@ -204,7 +208,13 @@ export function decideGithubProjectStatusSync({
 // regardless of which source (REST id vs GraphQL node id) surfaces it next.
 export function markGithubIssueSeen(issue, seen, seenNumbers) {
   seen.add(String(issue.id));
-  if (!issue.__reviewPr) seenNumbers.add(String(issue.number));
+  if (!issue.__reviewPr) {
+    seenNumbers.add(
+      issue.__externalRepository
+        ? `${String(issue.repository).toLowerCase()}#${issue.number}`
+        : String(issue.number)
+    );
+  }
 }
 
 // GitHub normalizes a milestone's `due_on` to a fixed time-of-day (e.g. 08:00Z)
@@ -383,7 +393,9 @@ export function assertGithubIssueProject(issue, expectedProjectId) {
 export function shouldRunGithubIssueSyncRule(rule, event) {
   return (
     rule?.kind !== 'github_issue_sync' ||
-    rule.config?.githubConnectorId === event?.connectorId
+    (rule.config?.githubConnectorId === event?.connectorId &&
+      (!event?.externalRepository ||
+        rule.config?.includeIssuesFromOtherRepositories === true))
   );
 }
 

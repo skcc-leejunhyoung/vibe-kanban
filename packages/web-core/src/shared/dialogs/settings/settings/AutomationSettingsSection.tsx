@@ -65,6 +65,7 @@ const EMPTY_GITHUB_SYNC_CONFIG: GithubIssueSyncRuleConfig = {
   githubConnectorId: 'github-default',
   vibeConnectorId: 'vibe-default',
   githubProjectId: '',
+  includeIssuesFromOtherRepositories: false,
   githubStatusFieldId: '',
   statusMappings: [],
   fields: { title: true, description: true, status: true, comments: true },
@@ -237,6 +238,14 @@ function GithubIssueSyncRuleEditor({
           )}
         </div>
       </SettingsField>
+      <SettingsCheckbox
+        id="github-sync-other-repositories"
+        label="Include issues from other repositories"
+        checked={config.includeIssuesFromOtherRepositories}
+        onChange={(includeIssuesFromOtherRepositories) =>
+          update({ includeIssuesFromOtherRepositories })
+        }
+      />
       <SettingsField label="Status mapping">
         <div className="space-y-2">
           {vibeStatuses.map((status) => (

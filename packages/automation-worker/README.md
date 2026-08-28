@@ -66,6 +66,9 @@ miss would never be re-tried.
   GitHub sub-issue links are resolved via GraphQL and mirrored to Vibe
   (`parent_issue_id`) when both parent and child are imported; the
   github→Vibe id map persists in the `vibe_kanban` connector's `issueMap`.
+  A GitHub Project sync rule normally imports only issues from the connector's
+  repository. Enable `includeIssuesFromOtherRepositories` on the rule to import
+  assigned issues from other repositories on the selected Project as well.
   Set `reviewPrs: true` to also import open, non-draft PRs where review is
   requested from the user (Search API); imported PRs are tagged `review` in Vibe
   (the tag is created in the project if missing) and their footer includes a

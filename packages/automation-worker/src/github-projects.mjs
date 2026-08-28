@@ -77,6 +77,7 @@ export async function loadGithubProjectIssues(
   scope = {}
 ) {
   const expectedRepository = String(repository).toLowerCase();
+  const includeOtherRepositories = Boolean(scope.includeOtherRepositories);
   const login = String(scope.login || '');
   // Fail closed: an unscoped load would import other people's issues.
   if (!login) return [];
@@ -94,8 +95,9 @@ export async function loadGithubProjectIssues(
       const issue = item?.content;
       if (
         !issue?.number ||
-        String(issue.repository?.nameWithOwner || '').toLowerCase() !==
-          expectedRepository
+        (!includeOtherRepositories &&
+          String(issue.repository?.nameWithOwner || '').toLowerCase() !==
+            expectedRepository)
       ) {
         continue;
       }
@@ -131,7 +133,11 @@ export async function loadGithubProjectIssues(
             }
           : null,
         __projectItem: true,
+        __externalRepository:
+          String(issue.repository.nameWithOwner).toLowerCase() !==
+          expectedRepository,
         project_item_id: item.id,
+        repository: issue.repository.nameWithOwner,
       });
     }
     after = page?.pageInfo?.hasNextPage ? page.pageInfo.endCursor : null;

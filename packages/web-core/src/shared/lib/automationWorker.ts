@@ -31,6 +31,7 @@ export interface GithubIssueSyncRuleConfig {
   githubConnectorId: string;
   vibeConnectorId: string;
   githubProjectId: string;
+  includeIssuesFromOtherRepositories: boolean;
   githubStatusFieldId: string;
   statusMappings: GithubStatusMapping[];
   fields: {

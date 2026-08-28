@@ -213,6 +213,7 @@ const defaultState = {
         githubConnectorId: 'github-default',
         vibeConnectorId: 'vibe-default',
         githubProjectId: '',
+        includeIssuesFromOtherRepositories: false,
         githubStatusFieldId: '',
         statusMappings: [],
         fields: { title: true, description: true, status: true },
@@ -823,7 +824,7 @@ async function githubLogin(connector) {
 
 // REST issue payloads omit sub-issue links, so resolve parents via GraphQL.
 // Returns { issueNumber: parentNumber | null } for the given numbers.
-async function githubParentMap(connector, numbers) {
+async function githubParentMap(connector, numbers, repository) {
   const config = connector.config || {};
   if (!numbers.length) return {};
   const apiBase = String(config.apiBase || 'https://api.github.com').replace(
@@ -833,7 +834,10 @@ async function githubParentMap(connector, numbers) {
   const fields = numbers
     .map((n) => `i${n}: issue(number: ${n}) { parent { number } }`)
     .join(' ');
-  const query = `query { repository(owner: ${JSON.stringify(config.owner)}, name: ${JSON.stringify(config.repo)}) { ${fields} } }`;
+  const [owner, repoName] = String(
+    repository || `${config.owner}/${config.repo}`
+  ).split('/');
+  const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(repoName)}) { ${fields} } }`;
   const response = await fetch(`${apiBase}/graphql`, {
     method: 'POST',
     headers: {
@@ -1199,20 +1203,23 @@ async function pollGithub(connector) {
   }
 
   const repository = `${config.owner}/${config.repo}`;
-  const projectIds = [
-    ...new Set(
-      state.rules
-        .filter(
-          (rule) =>
-            rule.enabled &&
-            rule.kind === 'github_issue_sync' &&
-            rule.config?.githubConnectorId === connector.id &&
-            rule.config?.githubProjectId
-        )
-        .map((rule) => rule.config.githubProjectId)
-    ),
-  ];
-  for (const projectId of projectIds) {
+  const projectSources = new Map();
+  for (const rule of state.rules) {
+    if (
+      rule.enabled &&
+      rule.kind === 'github_issue_sync' &&
+      rule.config?.githubConnectorId === connector.id &&
+      rule.config?.githubProjectId
+    ) {
+      const projectId = rule.config.githubProjectId;
+      projectSources.set(
+        projectId,
+        projectSources.get(projectId) ||
+          Boolean(rule.config.includeIssuesFromOtherRepositories)
+      );
+    }
+  }
+  for (const [projectId, includeOtherRepositories] of projectSources) {
     let projectItems;
     try {
       projectItems = await loadGithubProjectIssues(
@@ -1220,7 +1227,12 @@ async function pollGithub(connector) {
         projectId,
         repository,
         githubGraphql,
-        { login, filter, state: config.state || 'open' }
+        {
+          login,
+          filter,
+          state: config.state || 'open',
+          includeOtherRepositories,
+        }
       );
     } catch (error) {
       // A deleted project, revoked `read:project` scope, or a transient GraphQL
@@ -1260,12 +1272,22 @@ async function pollGithub(connector) {
     // REST omits the parent link; GraphQL has it. Resolve each new issue's
     // parent, then import parents before children so a child can link to its
     // parent's Vibe id within the same batch.
-    const parentMap = await githubParentMap(
-      connector,
-      importCandidates.map((i) => i.number)
-    );
-    for (const issue of importCandidates)
-      issue.__parent = parentMap[issue.number] || null;
+    const issuesByRepository = new Map();
+    for (const issue of importCandidates) {
+      const sourceRepository = issue.repository || repository;
+      const sourceIssues = issuesByRepository.get(sourceRepository) || [];
+      sourceIssues.push(issue);
+      issuesByRepository.set(sourceRepository, sourceIssues);
+    }
+    for (const [sourceRepository, sourceIssues] of issuesByRepository) {
+      const parentMap = await githubParentMap(
+        connector,
+        sourceIssues.map((issue) => issue.number),
+        sourceRepository
+      );
+      for (const issue of sourceIssues)
+        issue.__parent = parentMap[issue.number] || null;
+    }
     for (const issue of orderByParent(importCandidates)) {
       markGithubIssueSeen(issue, seen, seenNumbers);
       let headRef = null;
@@ -1281,7 +1303,8 @@ async function pollGithub(connector) {
         source: 'github',
         type: issue.__reviewPr ? 'pr' : 'issue',
         connectorId: connector.id,
-        repo: `${config.owner}/${config.repo}`,
+        repo: issue.repository || repository,
+        externalRepository: Boolean(issue.__externalRepository),
         number: issue.number,
         title: issue.title,
         url: issue.html_url,
@@ -1477,10 +1500,12 @@ function compactGithubIssue(issue) {
   };
 }
 
-async function fetchGithubIssueByUrl(connector, inputUrl) {
+async function fetchGithubIssueByUrl(connector, inputUrl, allowedRepository) {
   const config = connector.config || {};
   const parsed = parseGithubIssueUrl(inputUrl);
-  const expected = `${config.owner}/${config.repo}`.toLowerCase();
+  const expected = String(
+    allowedRepository || `${config.owner}/${config.repo}`
+  ).toLowerCase();
   if (parsed.repository.toLowerCase() !== expected) {
     throw new Error(`issue must belong to configured repository ${expected}`);
   }
@@ -1911,7 +1936,8 @@ async function linkGithubIssueOnce(input, operationKey) {
       findCreatedIssue: (marker, createdAt) =>
         findGithubIssueByMarker(github, marker, createdAt),
       createIssue: (payload) => createGithubIssue(github, payload),
-      fetchExistingIssue: (url) => fetchGithubIssueByUrl(github, url),
+      fetchExistingIssue: (url) =>
+        fetchGithubIssueByUrl(github, url, effectiveInput.repository),
       persistOperation: persistState,
     });
   } catch (error) {
@@ -1971,7 +1997,8 @@ async function linkGithubIssueOnce(input, operationKey) {
     syncedVibeStatusId = decision.vibeStatusId || null;
   }
 
-  const repository = `${githubConfig.owner}/${githubConfig.repo}`;
+  const repository =
+    effectiveInput.repository || `${githubConfig.owner}/${githubConfig.repo}`;
   const created = await vibeApi(vibe, 'POST', '/v1/github_issue_links', {
     issue_id: effectiveInput.issueId,
     repository,
@@ -3065,6 +3092,7 @@ async function createVibeIssue(connectorId, input, event, rule) {
         statusId: payload.status_id,
         vibeUpdatedAt: body?.data?.updated_at || null,
         projectItemId: event.raw?.project_item_id || null,
+        repository: event.repo,
       });
     } catch (error) {
       await log('warn', 'github issue database link failed', {
