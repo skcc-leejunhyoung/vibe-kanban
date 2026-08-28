@@ -90,6 +90,7 @@
     "noTasks": "Aucune tâche"
   },
   "conversation": {
+    "askQuestionPlaceholder": "Saisissez une autre réponse...",
     "executors": "Exécuteurs",
     "saveAsDefault": "Enregistrer par défaut",
     "you": "Vous",

@@ -782,7 +782,8 @@ pub async fn create_and_start_workspace(
     }
 
     // If the linked issue carries the `vibe` tag, opt this run into the
-    // automated workflow: force permission_policy=Auto so approvals never block,
+    // automated workflow: force permission_policy=DontAsk so approvals and
+    // agent questions never block,
     // and append the self-report instruction so the agent emits a `VIBE_RESULT:`
     // sentinel the backend acts on. Applies to the deferred-spawn (blocker)
     // path too, since the action below is built from these values.
@@ -793,7 +794,7 @@ pub async fn create_and_start_workspace(
             .await
         {
             Ok(true) => {
-                executor_config.permission_policy = Some(PermissionPolicy::Auto);
+                executor_config.permission_policy = Some(PermissionPolicy::DontAsk);
                 workspace_prompt = vibe_orchestrator::with_coding_preamble(&workspace_prompt);
                 tracing::info!(
                     "vibe: enabled automated workflow for issue {}",

@@ -419,6 +419,7 @@
     }
   },
   "conversation": {
+    "askQuestionPlaceholder": "다른 답변 입력...",
     "handoff": {
       "label": "에이전트 전환",
       "target": "전환할 에이전트",

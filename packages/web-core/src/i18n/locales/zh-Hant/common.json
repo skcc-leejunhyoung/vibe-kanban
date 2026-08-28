@@ -519,6 +519,7 @@
     "custom": "自訂",
     "permissions": "權限",
     "permissionAuto": "自動",
+    "permissionDontAsk": "不提問",
     "permissionAsk": "詢問",
     "permissionPlan": "計畫",
     "agent": "代理",
@@ -565,6 +566,7 @@
     "title": "代理正在提問",
     "selectMultiple": "多選",
     "confirmSelection": "確認選擇",
+    "submitAnswers": "提交回答",
     "submitting": "正在提交回答...",
     "answeredCount": "已回答{{count}}個問題",
     "answeredCount_other": "已回答{{count}}個問題"

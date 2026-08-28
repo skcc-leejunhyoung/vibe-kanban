@@ -207,6 +207,10 @@ pub struct Codex {
     pub developer_instructions: Option<String>,
     #[serde(default)]
     pub plan: bool,
+    /// Block the request_user_input tool entirely (unattended runs). Auto keeps
+    /// questions available while approvals stay off.
+    #[serde(default)]
+    pub dont_ask: bool,
     /// When enabled, vibe-kanban automatically resumes this agent's session
     /// after its usage rate limit resets (sends a "continue" follow-up). This
     /// is the per-agent default for new sessions; it can be overridden per
@@ -238,15 +242,23 @@ impl StandardCodingAgentExecutor for Codex {
                 crate::model_selector::PermissionPolicy::Auto => {
                     self.ask_for_approval = Some(AskForApproval::Never);
                     self.plan = false;
+                    self.dont_ask = false;
+                }
+                crate::model_selector::PermissionPolicy::DontAsk => {
+                    self.ask_for_approval = Some(AskForApproval::Never);
+                    self.plan = false;
+                    self.dont_ask = true;
                 }
                 crate::model_selector::PermissionPolicy::Supervised => {
                     if matches!(self.ask_for_approval, None | Some(AskForApproval::Never)) {
                         self.ask_for_approval = Some(AskForApproval::UnlessTrusted);
                     }
                     self.plan = false;
+                    self.dont_ask = false;
                 }
                 crate::model_selector::PermissionPolicy::Plan => {
                     self.plan = true;
+                    self.dont_ask = false;
                 }
             }
         }
@@ -323,7 +335,11 @@ impl StandardCodingAgentExecutor for Codex {
         let permission_policy = if self.plan {
             PermissionPolicy::Plan
         } else if matches!(self.ask_for_approval, None | Some(AskForApproval::Never)) {
-            PermissionPolicy::Auto
+            if self.dont_ask {
+                PermissionPolicy::DontAsk
+            } else {
+                PermissionPolicy::Auto
+            }
         } else {
             PermissionPolicy::Supervised
         };
@@ -367,6 +383,7 @@ impl StandardCodingAgentExecutor for Codex {
                 ],
                 permissions: vec![
                     PermissionPolicy::Auto,
+                    PermissionPolicy::DontAsk,
                     PermissionPolicy::Supervised,
                     PermissionPolicy::Plan,
                 ],
@@ -483,7 +500,9 @@ impl Codex {
                 .get_or_insert_with(HashMap::new)
                 .insert("compact_prompt".to_string(), Value::String(compact.clone()));
         }
-        if !matches!(approval_policy, None | Some(V2AskForApproval::Never)) {
+        // Questions are available in every policy except DontAsk; the flag is
+        // independent of approval_policy (Never only disables approvals).
+        if !self.dont_ask {
             let map = config.get_or_insert_with(HashMap::new);
             map.insert(
                 "features.default_mode_request_user_input".to_string(),

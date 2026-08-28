@@ -1943,8 +1943,8 @@ impl LocalContainerService {
     }
 
     /// Build the executor config for a backend-driven vibe turn: the session's
-    /// current profile with `permission_policy = Auto` so tool/plan approvals
-    /// never block the automated run.
+    /// current profile with `permission_policy = DontAsk` so tool/plan
+    /// approvals and agent questions never block the automated run.
     async fn vibe_executor_config(&self, session_id: Uuid) -> Option<ExecutorConfig> {
         // Carry the user's full executor config (model / reasoning / agent
         // overrides), not just the profile identity — otherwise every
@@ -1954,7 +1954,7 @@ impl LocalContainerService {
                 .await
                 .ok()
                 .flatten()?;
-        cfg.permission_policy = Some(PermissionPolicy::Auto);
+        cfg.permission_policy = Some(PermissionPolicy::DontAsk);
         Some(cfg)
     }
 
@@ -2039,7 +2039,7 @@ impl LocalContainerService {
                 ))
             })?,
         };
-        executor_config.permission_policy = Some(PermissionPolicy::Auto);
+        executor_config.permission_policy = Some(PermissionPolicy::DontAsk);
 
         let session_id = Uuid::new_v4();
         let create = CreateSession {

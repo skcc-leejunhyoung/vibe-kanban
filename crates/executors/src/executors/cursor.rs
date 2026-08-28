@@ -179,6 +179,7 @@ impl StandardCodingAgentExecutor for CursorAgent {
             self.force = Some(matches!(
                 permission_policy,
                 crate::model_selector::PermissionPolicy::Auto
+                    | crate::model_selector::PermissionPolicy::DontAsk
             ));
         }
     }

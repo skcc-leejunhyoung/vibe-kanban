@@ -519,6 +519,7 @@
     "custom": "カスタマイズ",
     "permissions": "権限",
     "permissionAuto": "自動",
+    "permissionDontAsk": "質問なし",
     "permissionAsk": "確認",
     "permissionPlan": "計画",
     "agent": "エージェント",
@@ -565,6 +566,7 @@
     "title": "エージェントが質問しています",
     "selectMultiple": "複数選択",
     "confirmSelection": "選択を確定",
+    "submitAnswers": "回答を送信",
     "submitting": "回答を送信中...",
     "answeredCount": "{{count}}件の質問に回答済み",
     "answeredCount_other": "{{count}}件の質問に回答済み"

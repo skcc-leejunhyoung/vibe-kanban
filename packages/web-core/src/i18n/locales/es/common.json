@@ -519,6 +519,7 @@
     "custom": "Personalizar",
     "permissions": "Permisos",
     "permissionAuto": "Auto",
+    "permissionDontAsk": "No preguntar",
     "permissionAsk": "Preguntar",
     "permissionPlan": "Plan",
     "agent": "Agente",
@@ -565,6 +566,7 @@
     "title": "El agente está haciendo una pregunta",
     "selectMultiple": "seleccionar varios",
     "confirmSelection": "Confirmar selección",
+    "submitAnswers": "Enviar respuestas",
     "submitting": "Enviando respuestas...",
     "answeredCount": "Respondió {{count}} pregunta",
     "answeredCount_other": "Respondió {{count}} preguntas"

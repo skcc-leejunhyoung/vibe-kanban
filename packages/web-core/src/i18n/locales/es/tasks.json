@@ -350,6 +350,7 @@
     }
   },
   "conversation": {
+    "askQuestionPlaceholder": "Escribe otra respuesta...",
     "you": "Tú",
     "thinking": "Pensando",
     "todo": "Tarea pendiente",

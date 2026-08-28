@@ -1216,7 +1216,12 @@ export enum BaseAgentCapability { SESSION_FORK = "SESSION_FORK", SETUP_HELPER = 
 
 export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-export type ClaudeCode = { append_prompt: AppendPrompt, claude_code_router?: boolean | null, plan?: boolean | null, approvals?: boolean | null, model?: string | null, effort?: ClaudeEffort | null, agent?: string | null, dangerously_skip_permissions?: boolean | null, disable_api_key?: boolean | null,
+export type ClaudeCode = { append_prompt: AppendPrompt, claude_code_router?: boolean | null, plan?: boolean | null, approvals?: boolean | null,
+/**
+ * Block the AskUserQuestion tool entirely (unattended runs). Auto keeps
+ * questions available while still bypassing tool approvals.
+ */
+dont_ask?: boolean | null, model?: string | null, effort?: ClaudeEffort | null, agent?: string | null, dangerously_skip_permissions?: boolean | null, disable_api_key?: boolean | null,
 /**
  * When enabled, vibe-kanban automatically resumes this agent's session
  * after its usage rate limit resets (sends a "continue" follow-up). This
@@ -1230,6 +1235,11 @@ export type Gemini = { append_prompt: AppendPrompt, model?: string | null, yolo?
 export type Amp = { append_prompt: AppendPrompt, dangerously_allow_all?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
 export type Codex = { append_prompt: AppendPrompt, sandbox?: SandboxMode | null, ask_for_approval?: AskForApproval | null, oss?: boolean | null, model?: string | null, model_reasoning_effort?: ReasoningEffort | null, model_reasoning_summary?: ReasoningSummary | null, model_reasoning_summary_format?: ReasoningSummaryFormat | null, profile?: string | null, base_instructions?: string | null, include_apply_patch_tool?: boolean | null, model_provider?: string | null, compact_prompt?: string | null, developer_instructions?: string | null, plan: boolean,
+/**
+ * Block the request_user_input tool entirely (unattended runs). Auto keeps
+ * questions available while approvals stay off.
+ */
+dont_ask: boolean,
 /**
  * When enabled, vibe-kanban automatically resumes this agent's session
  * after its usage rate limit resets (sends a "continue" follow-up). This
@@ -1431,7 +1441,7 @@ name: string, };
 
 export type AgentInfo = { id: string, label: string, description?: string | null, is_default: boolean, };
 
-export enum PermissionPolicy { AUTO = "AUTO", SUPERVISED = "SUPERVISED", PLAN = "PLAN" }
+export enum PermissionPolicy { AUTO = "AUTO", DONT_ASK = "DONT_ASK", SUPERVISED = "SUPERVISED", PLAN = "PLAN" }
 
 export type ModelSelectorConfig = {
 /**

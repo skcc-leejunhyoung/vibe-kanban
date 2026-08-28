@@ -1,8 +1,9 @@
 import {
   forwardRef,
   useCallback,
+  useEffect,
   useImperativeHandle,
-  useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -10,8 +11,10 @@ import type { AskUserQuestionItem, QuestionAnswer } from 'shared/types';
 import { QuestionIcon } from '@phosphor-icons/react';
 
 export interface AskUserQuestionBannerHandle {
-  /** Submit a custom free-text answer for the current question (triggered by Enter in the editor) */
+  /** Submit a custom free-text answer for the current question (triggered by Cmd+Enter in the editor) */
   submitCustomAnswer: (text: string) => void;
+  /** Confirm the current question's selection: advance, or submit on the last question */
+  confirmSelection: () => void;
 }
 
 interface AskUserQuestionBannerProps {
@@ -30,131 +33,178 @@ export const AskUserQuestionBanner = forwardRef<
   ref
 ) {
   const { t } = useTranslation('common');
-  // Track completed answers: question text -> selected labels array
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
 
-  // Convert internal state to ordered QuestionAnswer[] for submission
-  const toQuestionAnswers = useCallback(
-    (rec: Record<string, string[]>): QuestionAnswer[] =>
-      questions
-        .filter((q) => rec[q.question] !== undefined)
-        .map((q) => ({ question: q.question, answer: rec[q.question] })),
-    [questions]
-  );
-  // Track which question index we're currently showing
-  const currentIndex = useMemo(() => {
-    for (let i = 0; i < questions.length; i++) {
-      if (answers[questions[i].question] === undefined) return i;
-    }
-    return questions.length; // all answered
-  }, [questions, answers]);
+  // Selected labels per question text. Selecting never advances by itself;
+  // Cmd+Enter (or the confirm button) confirms and moves on, so single- and
+  // multi-select share the same select→confirm semantics and answered
+  // questions can be revisited with Cmd+←/→ and changed.
+  const [selections, setSelections] = useState<Record<string, string[]>>({});
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [submitted, setSubmitted] = useState(false);
+  const [focusedIndex, setFocusedIndex] = useState(0);
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  // For multi-select: track toggled labels for the current question
-  const [multiSelectLabels, setMultiSelectLabels] = useState<Set<string>>(
-    new Set()
-  );
+  // Entry streaming rebuilds the questions array each patch, so detect a truly
+  // new question set by content, not reference, and reset during render.
+  const questionsKey = questions.map((q) => q.question).join('\n');
+  const [prevKey, setPrevKey] = useState(questionsKey);
+  if (prevKey !== questionsKey) {
+    setPrevKey(questionsKey);
+    setSelections({});
+    setCurrentIndex(0);
+    setSubmitted(false);
+    setFocusedIndex(0);
+  }
 
   const currentQuestion =
     currentIndex < questions.length ? questions[currentIndex] : null;
-  const isAllAnswered = currentIndex >= questions.length;
+  const currentSelection = currentQuestion
+    ? (selections[currentQuestion.question] ?? [])
+    : [];
+  const isLastQuestion = currentIndex >= questions.length - 1;
   const disabled = isSubmitting || isTimedOut;
 
-  // Select an option for single-select questions → immediately advance
+  const toQuestionAnswers = useCallback(
+    (rec: Record<string, string[]>): QuestionAnswer[] =>
+      questions
+        .filter((q) => (rec[q.question] ?? []).length > 0)
+        .map((q) => ({ question: q.question, answer: rec[q.question] })),
+    [questions]
+  );
+
+  const submitAll = useCallback(
+    (rec: Record<string, string[]>) => {
+      setSubmitted(true);
+      onSubmitAnswers(toQuestionAnswers(rec));
+    },
+    [onSubmitAnswers, toQuestionAnswers]
+  );
+
+  // Select (or toggle, for multi-select) an option — never advances
   const handleSelectOption = useCallback(
     (label: string) => {
       if (disabled || !currentQuestion) return;
-
-      if (currentQuestion.multiSelect) {
-        // Toggle label in multi-select set
-        setMultiSelectLabels((prev) => {
-          const next = new Set(prev);
-          if (next.has(label)) {
-            next.delete(label);
-          } else {
-            next.add(label);
-          }
-          return next;
-        });
-      } else {
-        // Single select → record answer and advance
-        const newAnswers = {
-          ...answers,
-          [currentQuestion.question]: [label],
-        };
-        setAnswers(newAnswers);
-
-        // If this was the last question, submit
-        if (currentIndex === questions.length - 1) {
-          onSubmitAnswers(toQuestionAnswers(newAnswers));
-        }
-      }
+      setSelections((prev) => {
+        const cur = prev[currentQuestion.question] ?? [];
+        const next = currentQuestion.multiSelect
+          ? cur.includes(label)
+            ? cur.filter((l) => l !== label)
+            : [...cur, label]
+          : [label];
+        return { ...prev, [currentQuestion.question]: next };
+      });
     },
-    [
-      disabled,
-      currentQuestion,
-      answers,
-      currentIndex,
-      questions.length,
-      onSubmitAnswers,
-      toQuestionAnswers,
-    ]
+    [disabled, currentQuestion]
   );
 
-  // Confirm multi-select or "Other" text answer
-  const handleConfirmMultiSelect = useCallback(() => {
+  // Confirm the current selection: next question, or submit on the last one
+  const confirmSelection = useCallback(() => {
     if (disabled || !currentQuestion) return;
-
-    const labels = Array.from(multiSelectLabels);
-    if (labels.length === 0) return;
-
-    const newAnswers = {
-      ...answers,
-      [currentQuestion.question]: labels,
-    };
-    setAnswers(newAnswers);
-    setMultiSelectLabels(new Set());
-
-    if (currentIndex === questions.length - 1) {
-      onSubmitAnswers(toQuestionAnswers(newAnswers));
+    if ((selections[currentQuestion.question] ?? []).length === 0) return;
+    if (isLastQuestion) {
+      submitAll(selections);
+    } else {
+      setCurrentIndex((i) => i + 1);
     }
-  }, [
-    disabled,
-    currentQuestion,
-    multiSelectLabels,
-    answers,
-    currentIndex,
-    questions.length,
-    onSubmitAnswers,
-    toQuestionAnswers,
-  ]);
+  }, [disabled, currentQuestion, isLastQuestion, selections, submitAll]);
+
+  const navigateQuestion = useCallback(
+    (delta: number) => {
+      setCurrentIndex((i) =>
+        Math.min(Math.max(i + delta, 0), questions.length - 1)
+      );
+    },
+    [questions.length]
+  );
 
   useImperativeHandle(
     ref,
     () => ({
       submitCustomAnswer: (text: string) => {
         if (disabled || !currentQuestion || !text.trim()) return;
-        const newAnswers = {
-          ...answers,
+        const next = {
+          ...selections,
           [currentQuestion.question]: [text.trim()],
         };
-        setAnswers(newAnswers);
-        if (currentIndex === questions.length - 1) {
-          onSubmitAnswers(toQuestionAnswers(newAnswers));
+        setSelections(next);
+        if (isLastQuestion) {
+          submitAll(next);
+        } else {
+          setCurrentIndex((i) => i + 1);
         }
       },
+      confirmSelection,
     }),
     [
       disabled,
       currentQuestion,
-      answers,
-      currentIndex,
-      questions.length,
-      onSubmitAnswers,
-      toQuestionAnswers,
+      selections,
+      isLastQuestion,
+      submitAll,
+      confirmSelection,
     ]
   );
 
-  if (isAllAnswered && !isSubmitting) return null;
+  // Focus the selected (or first) option when a question arrives or the user
+  // navigates between questions. Deferred a frame so it wins over the chat
+  // editor's own mount autofocus (Lexical AutoFocusPlugin) when question mode
+  // remounts the editor in the same commit.
+  useEffect(() => {
+    if (!currentQuestion || disabled) return;
+    const sel = selections[currentQuestion.question] ?? [];
+    const idx = Math.max(
+      0,
+      currentQuestion.options.findIndex((o) => sel.includes(o.label))
+    );
+    setFocusedIndex(idx);
+    const raf = requestAnimationFrame(() => optionRefs.current[idx]?.focus());
+    return () => cancelAnimationFrame(raf);
+    // Refocus only on question changes — not while toggling selections.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentIndex, questionsKey]);
+
+  // A failed submit should surface the question again so it can be retried.
+  useEffect(() => {
+    if (error) setSubmitted(false);
+  }, [error]);
+
+  // Roving-focus arrows, Cmd+Enter confirm, Cmd+←/→ question navigation.
+  // Bound to the banner subtree only, so editor focus keeps native macOS
+  // line-start/end behavior for Cmd+←/→.
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!currentQuestion) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === 'Enter') {
+        e.preventDefault();
+        confirmSelection();
+        return;
+      }
+      if (mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        navigateQuestion(e.key === 'ArrowRight' ? 1 : -1);
+        return;
+      }
+      if (mod) return;
+      const delta =
+        e.key === 'ArrowRight' || e.key === 'ArrowDown'
+          ? 1
+          : e.key === 'ArrowLeft' || e.key === 'ArrowUp'
+            ? -1
+            : 0;
+      if (delta !== 0) {
+        e.preventDefault();
+        const count = currentQuestion.options.length;
+        if (count === 0) return;
+        const next = (focusedIndex + delta + count) % count;
+        setFocusedIndex(next);
+        optionRefs.current[next]?.focus();
+      }
+    },
+    [currentQuestion, confirmSelection, navigateQuestion, focusedIndex]
+  );
+
+  if (submitted && !isSubmitting && !error) return null;
 
   return (
     <div className="border-b">
@@ -173,8 +223,8 @@ export const AskUserQuestionBanner = forwardRef<
       </div>
 
       {/* Current question */}
-      {currentQuestion && (
-        <div className="px-double pb-base">
+      {currentQuestion && !submitted && (
+        <div className="px-double pb-base" onKeyDown={handleKeyDown}>
           <div className="flex items-center gap-base mb-base">
             <span className="text-xs font-medium text-low bg-secondary px-1 py-0.5 rounded">
               {currentQuestion.header}
@@ -188,15 +238,25 @@ export const AskUserQuestionBanner = forwardRef<
           <p className="text-sm font-medium text-normal mb-base">
             {currentQuestion.question}
           </p>
-          <div className="flex flex-wrap gap-base">
-            {currentQuestion.options.map((opt) => {
-              const isSelected =
-                currentQuestion.multiSelect && multiSelectLabels.has(opt.label);
+          <div
+            role={currentQuestion.multiSelect ? 'group' : 'radiogroup'}
+            aria-label={currentQuestion.question}
+            className="flex flex-wrap gap-base"
+          >
+            {currentQuestion.options.map((opt, index) => {
+              const isSelected = currentSelection.includes(opt.label);
               return (
                 <button
                   key={opt.label}
+                  ref={(el) => {
+                    optionRefs.current[index] = el;
+                  }}
                   type="button"
+                  role={currentQuestion.multiSelect ? 'checkbox' : 'radio'}
+                  aria-checked={isSelected}
+                  tabIndex={index === focusedIndex ? 0 : -1}
                   disabled={disabled}
+                  onFocus={() => setFocusedIndex(index)}
                   onClick={() => handleSelectOption(opt.label)}
                   className={`
                     group relative rounded-md border px-2.5 py-1.5 text-xs transition-all
@@ -214,15 +274,17 @@ export const AskUserQuestionBanner = forwardRef<
               );
             })}
           </div>
-          {/* Multi-select confirm button */}
-          {currentQuestion.multiSelect && multiSelectLabels.size > 0 && (
+          {/* Confirm current selection (Cmd+Enter) */}
+          {currentSelection.length > 0 && (
             <button
               type="button"
               disabled={disabled}
-              onClick={handleConfirmMultiSelect}
+              onClick={confirmSelection}
               className="mt-2 rounded-md bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand/90 transition-colors disabled:opacity-50"
             >
-              {t('askQuestion.confirmSelection')}
+              {isLastQuestion
+                ? t('askQuestion.submitAnswers')
+                : t('askQuestion.confirmSelection')}
             </button>
           )}
         </div>

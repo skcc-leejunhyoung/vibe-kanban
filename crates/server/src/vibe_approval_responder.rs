@@ -1,9 +1,10 @@
 //! Rule 2 of the automated `vibe` workflow: auto-respond to pending approvals
 //! for vibe-tagged sessions so the run never blocks on a human.
 //!
-//! vibe sessions are spawned with `permission_policy = Auto` (tool/plan
-//! approvals are bypassed at spawn), so in practice the only approvals that
-//! reach here are `AskUserQuestion` prompts. This watcher is the safety net:
+//! vibe sessions are spawned with `permission_policy = DontAsk` (tool/plan
+//! approvals are bypassed and the question tool is disallowed at spawn), so
+//! normally nothing reaches here. This watcher is the safety net for sessions
+//! spawned under another policy (e.g. a manual turn in a vibe workspace):
 //! it approves any tool/plan approval and answers any question with an
 //! instruction to proceed with the agent's own recommendation — covering every
 //! permission policy.

@@ -57,8 +57,10 @@ pub struct AgentInfo {
 #[ts(use_ts_enum)]
 pub enum PermissionPolicy {
     #[default]
-    /// Skip all permission checks
+    /// Skip all permission checks, but let the agent ask the user questions
     Auto,
+    /// Skip all permission checks and block agent questions (unattended runs)
+    DontAsk,
     /// Require approval for risky operations
     Supervised,
     /// Plan mode before execution (executor-defined meaning)

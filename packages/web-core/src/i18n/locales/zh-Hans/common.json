@@ -519,6 +519,7 @@
     "custom": "自定义",
     "permissions": "权限",
     "permissionAuto": "自动",
+    "permissionDontAsk": "不提问",
     "permissionAsk": "询问",
     "permissionPlan": "计划",
     "agent": "代理",
@@ -565,6 +566,7 @@
     "title": "代理正在提问",
     "selectMultiple": "多选",
     "confirmSelection": "确认选择",
+    "submitAnswers": "提交回答",
     "submitting": "正在提交回答...",
     "answeredCount": "已回答{{count}}个问题",
     "answeredCount_other": "已回答{{count}}个问题"

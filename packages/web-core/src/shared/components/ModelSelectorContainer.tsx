@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  ChatCircleSlashIcon,
   CheckIcon,
   FastForwardIcon,
   GearIcon,
@@ -111,6 +112,10 @@ export function ModelSelectorContainer({
     [PermissionPolicy.AUTO]: {
       label: t('modelSelector.permissionAuto'),
       icon: FastForwardIcon,
+    },
+    [PermissionPolicy.DONT_ASK]: {
+      label: t('modelSelector.permissionDontAsk'),
+      icon: ChatCircleSlashIcon,
     },
     [PermissionPolicy.SUPERVISED]: {
       label: t('modelSelector.permissionAsk'),

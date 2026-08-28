@@ -393,17 +393,22 @@ export function SessionChatBox<TExecutor extends string = string>({
       : isInApprovalMode
         ? 'Provide feedback to request changes...'
         : isInAskQuestionMode
-          ? 'Type a different answer...'
+          ? t('conversation.askQuestionPlaceholder')
           : session.isNewSessionMode
             ? 'Start a new conversation...'
             : 'Continue working on this task...';
 
   // Cmd+Enter handler
   const handleCmdEnter = () => {
-    // AskUserQuestion mode: Enter submits custom text as answer
-    if (isInAskQuestionMode && hasContent) {
-      askQuestionBannerRef.current?.submitCustomAnswer(editor.value);
-      editor.onChange('');
+    // AskUserQuestion mode: with text, submit it as a custom answer; with an
+    // empty editor, confirm the banner's current selection instead.
+    if (isInAskQuestionMode) {
+      if (hasContent) {
+        askQuestionBannerRef.current?.submitCustomAnswer(editor.value);
+        editor.onChange('');
+      } else {
+        askQuestionBannerRef.current?.confirmSelection();
+      }
       return;
     }
     // Approval mode: Cmd+Enter triggers approve or request changes based on input

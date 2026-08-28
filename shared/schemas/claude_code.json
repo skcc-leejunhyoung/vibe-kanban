@@ -29,6 +29,13 @@
         "null"
       ]
     },
+    "dont_ask": {
+      "description": "Block the AskUserQuestion tool entirely (unattended runs). Auto keeps\nquestions available while still bypassing tool approvals.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "model": {
       "type": [
         "string",

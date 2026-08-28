@@ -29,7 +29,10 @@ use workspace_utils::{
 };
 
 use self::{
-    client::{AUTO_APPROVE_CALLBACK_ID, ClaudeAgentClient, STOP_GIT_CHECK_CALLBACK_ID},
+    client::{
+        AUTO_APPROVE_CALLBACK_ID, ClaudeAgentClient, STOP_GIT_CHECK_CALLBACK_ID,
+        TOOL_APPROVAL_CALLBACK_ID,
+    },
     protocol::ProtocolPeer,
     types::{ControlRequestType, ControlResponseType, PermissionMode},
 };
@@ -126,6 +129,10 @@ pub struct ClaudeCode {
     pub plan: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approvals: Option<bool>,
+    /// Block the AskUserQuestion tool entirely (unattended runs). Auto keeps
+    /// questions available while still bypassing tool approvals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dont_ask: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,15 +176,18 @@ impl ClaudeCode {
         if plan && approvals {
             tracing::warn!("Both plan and approvals are enabled. Plan will take precedence.");
         }
-        if plan || approvals {
-            // Enable bypass at startup, otherwise we cannot change to it after exiting plan mode
+        if !plan && !approvals && self.dont_ask.unwrap_or(false) {
+            builder = builder.extend_params(["--disallowedTools=AskUserQuestion"]);
+        } else {
+            // Enable bypass at startup, otherwise we cannot change to it after exiting plan mode.
+            // The stdio permission prompt is what routes AskUserQuestion (via the
+            // PreToolUse "ask" hook decision) to the question UI, so plain Auto
+            // needs it too.
             builder = builder.extend_params(["--permission-prompt-tool=stdio"]);
             builder = builder.extend_params([format!(
                 "--permission-mode={}",
                 PermissionMode::BypassPermissions
             )]);
-        } else {
-            builder = builder.extend_params(["--disallowedTools=AskUserQuestion"]);
         }
         if self.dangerously_skip_permissions.unwrap_or(false) {
             builder = builder.extend_params(["--dangerously-skip-permissions"]);
@@ -237,7 +247,7 @@ impl ClaudeCode {
                 serde_json::json!([
                     {
                         "matcher": "^(ExitPlanMode|AskUserQuestion)$",
-                        "hookCallbackIds": ["tool_approval"],
+                        "hookCallbackIds": [TOOL_APPROVAL_CALLBACK_ID],
                     },
                     {
                         "matcher": "^(?!(ExitPlanMode|AskUserQuestion)$).*",
@@ -251,7 +261,7 @@ impl ClaudeCode {
                 serde_json::json!([
                     {
                         "matcher": "^(?!(Glob|Grep|NotebookRead|Read|Task|TodoWrite)$).*",
-                        "hookCallbackIds": ["tool_approval"],
+                        "hookCallbackIds": [TOOL_APPROVAL_CALLBACK_ID],
                     }
                 ]),
             );
@@ -261,7 +271,7 @@ impl ClaudeCode {
                 serde_json::json!([
                     {
                         "matcher": "^AskUserQuestion$",
-                        "hookCallbackIds": ["tool_approval"],
+                        "hookCallbackIds": [TOOL_APPROVAL_CALLBACK_ID],
                     }
                 ]),
             );
@@ -313,6 +323,7 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
             agents: vec![],
             permissions: vec![
                 PermissionPolicy::Auto,
+                PermissionPolicy::DontAsk,
                 PermissionPolicy::Supervised,
                 PermissionPolicy::Plan,
             ],
@@ -342,14 +353,22 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                 PermissionPolicy::Plan => {
                     self.plan = Some(true);
                     self.approvals = Some(false);
+                    self.dont_ask = Some(false);
                 }
                 PermissionPolicy::Supervised => {
                     self.plan = Some(false);
                     self.approvals = Some(true);
+                    self.dont_ask = Some(false);
                 }
                 PermissionPolicy::Auto => {
                     self.plan = Some(false);
                     self.approvals = Some(false);
+                    self.dont_ask = Some(false);
+                }
+                PermissionPolicy::DontAsk => {
+                    self.plan = Some(false);
+                    self.approvals = Some(false);
+                    self.dont_ask = Some(true);
                 }
             }
         }
@@ -587,6 +606,8 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             PermissionPolicy::Auto
         } else if self.approvals.unwrap_or(false) {
             PermissionPolicy::Supervised
+        } else if self.dont_ask.unwrap_or(false) {
+            PermissionPolicy::DontAsk
         } else {
             PermissionPolicy::Auto
         };
@@ -3116,6 +3137,32 @@ mod tests {
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
 
+    #[tokio::test]
+    async fn permission_params_auto_allows_questions_dont_ask_blocks() {
+        let auto: ClaudeCode = serde_json::from_str("{}").unwrap();
+        let params = auto.build_command_builder().await.unwrap().params.unwrap();
+        assert!(params.iter().any(|p| p == "--permission-prompt-tool=stdio"));
+        assert!(!params.iter().any(|p| p.contains("disallowedTools")));
+
+        let dont_ask: ClaudeCode = serde_json::from_str(r#"{"dont_ask": true}"#).unwrap();
+        let params = dont_ask
+            .build_command_builder()
+            .await
+            .unwrap()
+            .params
+            .unwrap();
+        assert!(
+            params
+                .iter()
+                .any(|p| p == "--disallowedTools=AskUserQuestion")
+        );
+        assert!(
+            !params
+                .iter()
+                .any(|p| p.contains("--permission-prompt-tool"))
+        );
+    }
+
     fn patches_to_entries(patches: &[json_patch::Patch]) -> Vec<NormalizedEntry> {
         patches
             .iter()
@@ -3835,6 +3882,7 @@ mod tests {
             claude_code_router: Some(false),
             plan: None,
             approvals: None,
+            dont_ask: None,
             model: None,
             effort: None,
             agent: None,

@@ -102,6 +102,7 @@
     "noTasks": "No tasks"
   },
   "conversation": {
+    "askQuestionPlaceholder": "Type a different answer...",
     "executors": "Executors",
     "handoff": {
       "label": "Handoff",

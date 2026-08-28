@@ -349,6 +349,7 @@
     }
   },
   "conversation": {
+    "askQuestionPlaceholder": "別の回答を入力...",
     "you": "あなた",
     "thinking": "考え中",
     "todo": "タスク",

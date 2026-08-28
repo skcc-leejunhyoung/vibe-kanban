@@ -70,6 +70,7 @@ impl StandardCodingAgentExecutor for QwenCode {
             self.yolo = Some(matches!(
                 permission_policy,
                 crate::model_selector::PermissionPolicy::Auto
+                    | crate::model_selector::PermissionPolicy::DontAsk
             ));
         }
     }

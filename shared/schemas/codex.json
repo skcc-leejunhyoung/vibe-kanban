@@ -134,6 +134,11 @@
       "type": "boolean",
       "default": false
     },
+    "dont_ask": {
+      "description": "Block the request_user_input tool entirely (unattended runs). Auto keeps\nquestions available while approvals stay off.",
+      "type": "boolean",
+      "default": false
+    },
     "auto_resume_on_limit": {
       "description": "When enabled, vibe-kanban automatically resumes this agent's session\nafter its usage rate limit resets (sends a \"continue\" follow-up). This\nis the per-agent default for new sessions; it can be overridden per\nsession from the workspace chat UI.",
       "type": [

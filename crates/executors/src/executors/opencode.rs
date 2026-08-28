@@ -400,7 +400,10 @@ impl StandardCodingAgentExecutor for Opencode {
         }
 
         if let Some(permission_policy) = executor_config.permission_policy.clone() {
-            self.auto_approve = matches!(permission_policy, PermissionPolicy::Auto);
+            self.auto_approve = matches!(
+                permission_policy,
+                PermissionPolicy::Auto | PermissionPolicy::DontAsk
+            );
         }
 
         if let Some(reasoning_id) = &executor_config.reasoning_id {

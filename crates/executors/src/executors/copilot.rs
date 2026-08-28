@@ -100,6 +100,7 @@ impl StandardCodingAgentExecutor for Copilot {
             self.allow_all_tools = Some(matches!(
                 permission_policy,
                 crate::model_selector::PermissionPolicy::Auto
+                    | crate::model_selector::PermissionPolicy::DontAsk
             ));
         }
     }

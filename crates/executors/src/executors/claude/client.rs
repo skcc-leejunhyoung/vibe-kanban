@@ -26,6 +26,7 @@ use crate::{
 const EXIT_PLAN_MODE_NAME: &str = "ExitPlanMode";
 const ASK_USER_QUESTION_NAME: &str = "AskUserQuestion";
 pub const AUTO_APPROVE_CALLBACK_ID: &str = "AUTO_APPROVE_CALLBACK_ID";
+pub const TOOL_APPROVAL_CALLBACK_ID: &str = "tool_approval";
 pub const STOP_GIT_CHECK_CALLBACK_ID: &str = "STOP_GIT_CHECK_CALLBACK_ID";
 // Prefix for denial messages from the user, mirrors claude code CLI behavior
 const TOOL_DENY_PREFIX: &str = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said: ";
@@ -470,7 +471,10 @@ impl ClaudeAgentClient {
             return Ok(serde_json::json!({"decision": "approve"}));
         }
 
-        if self.auto_approve {
+        // Never auto-allow the tool_approval callback: in Auto mode it only
+        // matches AskUserQuestion, which must reach can_use_tool so the answer
+        // flow (or a clean deny when no approval service exists) runs.
+        if self.auto_approve && callback_id != TOOL_APPROVAL_CALLBACK_ID {
             Ok(serde_json::json!({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",

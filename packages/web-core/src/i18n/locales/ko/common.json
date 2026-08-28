@@ -687,6 +687,7 @@
     "custom": "사용자 정의",
     "permissions": "권한",
     "permissionAuto": "자동",
+    "permissionDontAsk": "묻지 않음",
     "permissionAsk": "확인",
     "permissionPlan": "계획",
     "agent": "에이전트",
@@ -736,6 +737,7 @@
     "title": "에이전트가 질문하고 있습니다",
     "selectMultiple": "복수 선택",
     "confirmSelection": "선택 확인",
+    "submitAnswers": "답변 제출",
     "submitting": "답변 제출 중...",
     "answeredCount": "{{count}}개의 질문에 답변함",
     "answeredCount_other": "{{count}}개의 질문에 답변함"

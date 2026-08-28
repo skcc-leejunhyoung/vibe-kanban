@@ -21,7 +21,8 @@ use executors::{
     approvals::{ExecutorApprovalService, NoopExecutorApprovalService},
     env::{ExecutionEnv, RepoContext},
     executors::{BaseCodingAgent, ExecutorExitResult, StandardCodingAgentExecutor},
-    profile::{ExecutorConfigs, ExecutorProfileId},
+    model_selector::PermissionPolicy,
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -2045,6 +2046,11 @@ async fn run_agent(
     if !agent.get_availability_info().is_available() {
         anyhow::bail!("executor is not installed or configured");
     }
+    // Unattended job: run under Don't Ask so the agent cannot stall on a
+    // question prompt nobody will answer.
+    let mut dont_ask = ExecutorConfig::from(ExecutorProfileId::new(executor));
+    dont_ask.permission_policy = Some(PermissionPolicy::DontAsk);
+    agent.apply_overrides(&dont_ask);
     let approvals: Arc<dyn ExecutorApprovalService> = Arc::new(NoopExecutorApprovalService);
     agent.use_approvals(approvals);
     let env = ExecutionEnv::new(

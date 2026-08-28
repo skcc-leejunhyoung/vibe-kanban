@@ -701,6 +701,7 @@
     "custom": "Custom",
     "permissions": "Permissions",
     "permissionAuto": "Auto",
+    "permissionDontAsk": "Don't Ask",
     "permissionAsk": "Ask",
     "permissionPlan": "Plan",
     "agent": "Agent",
@@ -736,6 +737,7 @@
     "title": "Agent is asking a question",
     "selectMultiple": "select multiple",
     "confirmSelection": "Confirm selection",
+    "submitAnswers": "Submit answers",
     "submitting": "Submitting answers...",
     "answeredCount": "Answered {{count}} question",
     "answeredCount_other": "Answered {{count}} questions"
