@@ -292,7 +292,7 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
     };
 
     let effort_options =
-        ReasoningOption::from_names(["low", "medium", "high", "xhigh", "max"].map(String::from));
+        ReasoningOption::from_names(slash_commands::CLAUDE_EFFORT_LEVELS.map(String::from));
 
     let supports_effort =
         |id: &str| -> bool { id.contains("fable") || id.contains("opus") || id.contains("sonnet") };
@@ -474,14 +474,14 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                 provisional
                     .map(|p| {
                         let mut opts = p.as_ref().clone();
-                        opts.loading_models = false;
+                        opts.loading_models = true;
                         opts.loading_agents = true;
                         opts.loading_slash_commands = true;
                         opts
                     })
                     .unwrap_or_else(|| {
                         let mut opts = default_discovered_options();
-                        opts.loading_models = false;
+                        opts.loading_models = true;
                         opts.loading_agents = true;
                         opts.loading_slash_commands = true;
                         opts
@@ -503,14 +503,14 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                 provisional
                     .map(|p| {
                         let mut opts = p.as_ref().clone();
-                        opts.loading_models = false;
+                        opts.loading_models = true;
                         opts.loading_agents = true;
                         opts.loading_slash_commands = true;
                         opts
                     })
                     .unwrap_or_else(|| {
                         let mut opts = default_discovered_options();
-                        opts.loading_models = false;
+                        opts.loading_models = true;
                         opts.loading_agents = true;
                         opts.loading_slash_commands = true;
                         opts
@@ -524,7 +524,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                 })));
             }
             let mut opts = default_discovered_options();
-            opts.loading_models = false;
+            opts.loading_models = true;
             opts.loading_agents = true;
             opts.loading_slash_commands = true;
             (None, opts)
@@ -540,7 +540,18 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             let mut final_options = default_discovered_options();
 
             match this.discover_agents_and_slash_commands_initial(&discovery_path).await {
-                Ok((mut agent_options, slash_commands_initial, plugins)) => {
+                Ok((mut agent_options, slash_commands_initial, plugins, live_models)) => {
+                    if let Some(models) = live_models {
+                        final_options.model_selector.default_model =
+                            models.first().map(|m| m.id.clone());
+                        final_options.model_selector.models = models;
+                        yield patch::update_models(final_options.model_selector.models.clone());
+                        yield patch::update_default_model(
+                            final_options.model_selector.default_model.clone(),
+                        );
+                    }
+                    yield patch::models_loaded();
+
                     let default_agents = [
                         "Bash",
                         "general-purpose",

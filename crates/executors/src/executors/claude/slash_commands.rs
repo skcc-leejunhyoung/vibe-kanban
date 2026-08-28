@@ -2,27 +2,105 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
+    str::FromStr,
     sync::OnceLock,
     time::Duration,
 };
 
 use convert_case::{Case, Casing};
+use serde::Deserialize;
 use tokio::{
     fs,
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
 };
 use workspace_utils::command_ext::GroupSpawnNoWindowExt;
 
-use super::{ClaudeCode, ClaudeJson, ClaudePlugin, base_command};
+use super::{
+    ClaudeCode, ClaudeEffort, ClaudeJson, ClaudePlugin, base_command,
+    types::{Message, SDKControlRequest, SDKControlRequestType},
+};
 use crate::{
     command::{CommandBuildError, CommandBuilder, apply_overrides},
     env::{ExecutionEnv, RepoContext},
     executors::{ExecutorError, SlashCommandDescription},
-    model_selector::AgentInfo,
+    model_selector::{AgentInfo, ModelInfo, ReasoningOption},
 };
 
 const SLASH_COMMANDS_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(120);
+
+pub(super) struct DiscoveredCommandsAndModels {
+    slash_commands: Vec<String>,
+    plugins: Vec<ClaudePlugin>,
+    agents: Vec<String>,
+    /// `None` when the CLI did not report a model catalog.
+    models: Option<Vec<ClaudeDiscoveredModel>>,
+}
+
+/// Effort levels the `--effort` CLI flag accepts; also the fallback offered
+/// when the CLI reports `supportsEffort` without an explicit level list.
+pub(super) const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// One entry of the `models` array in the control-protocol initialize
+/// response. Extra fields (resolvedModel, description, supportsFastMode, …)
+/// are ignored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ClaudeDiscoveredModel {
+    pub value: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub supports_effort: bool,
+    #[serde(default)]
+    pub supported_effort_levels: Vec<String>,
+}
+
+/// Extract the model catalog from a raw stdout line when it is the
+/// control-protocol response to our initialize request.
+pub(super) fn initialize_models_from_line(line: &str) -> Option<Vec<ClaudeDiscoveredModel>> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if value.get("type").and_then(|t| t.as_str()) != Some("control_response") {
+        return None;
+    }
+    let models = value.pointer("/response/response/models")?.clone();
+    serde_json::from_value(models).ok()
+}
+
+/// Map the CLI-reported model catalog onto the shared selector config.
+/// Effort options only appear on models that advertise `supportsEffort`, and
+/// are limited to levels the `--effort` flag understands.
+pub(super) fn models_from_initialize(models: Vec<ClaudeDiscoveredModel>) -> Vec<ModelInfo> {
+    let mut seen = HashSet::new();
+    models
+        .into_iter()
+        .filter(|m| !m.value.trim().is_empty())
+        .filter(|m| seen.insert(m.value.clone()))
+        .map(|m| {
+            let reasoning_options = if m.supports_effort {
+                let mut levels: Vec<String> = m
+                    .supported_effort_levels
+                    .iter()
+                    .filter(|level| ClaudeEffort::from_str(level).is_ok())
+                    .cloned()
+                    .collect();
+                if levels.is_empty() {
+                    levels = CLAUDE_EFFORT_LEVELS.map(String::from).to_vec();
+                }
+                ReasoningOption::from_names(levels)
+            } else {
+                vec![]
+            };
+            ModelInfo {
+                name: m.display_name.unwrap_or_else(|| m.value.clone()),
+                id: m.value,
+                provider_id: None,
+                reasoning_options,
+                supports_fast: false,
+            }
+        })
+        .collect()
+}
 
 impl ClaudeCode {
     fn extract_description(content: &str) -> Option<String> {
@@ -208,10 +286,9 @@ impl ClaudeCode {
         builder = builder.extend_params([
             "--verbose",
             "--output-format=stream-json",
+            "--input-format=stream-json",
             "--max-turns",
             "1",
-            "--",
-            "/",
         ]);
 
         apply_overrides(builder, &self.cmd)
@@ -220,7 +297,7 @@ impl ClaudeCode {
     async fn discover_available_command_and_plugins(
         &self,
         current_dir: &Path,
-    ) -> Result<(Vec<String>, Vec<ClaudePlugin>, Vec<String>), ExecutorError> {
+    ) -> Result<DiscoveredCommandsAndModels, ExecutorError> {
         let command_builder = self
             .build_slash_commands_discovery_command_builder()
             .await?;
@@ -230,7 +307,7 @@ impl ClaudeCode {
         let mut command = Command::new(program_path);
         command
             .kill_on_drop(true)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .current_dir(current_dir)
@@ -248,12 +325,39 @@ impl ClaudeCode {
         let stdout = child.inner().stdout.take().ok_or_else(|| {
             ExecutorError::Io(std::io::Error::other("Claude Code missing stdout"))
         })?;
+        let mut stdin =
+            child.inner().stdin.take().ok_or_else(|| {
+                ExecutorError::Io(std::io::Error::other("Claude Code missing stdin"))
+            })?;
+
+        // The initialize control request makes the CLI report its model
+        // catalog; the "/" user message triggers the init system message that
+        // carries slash commands, plugins, and agents.
+        let mut payload =
+            serde_json::to_string(&SDKControlRequest::new(SDKControlRequestType::Initialize {
+                hooks: None,
+            }))?;
+        payload.push('\n');
+        payload.push_str(&serde_json::to_string(&Message::new_user("/".to_string()))?);
+        payload.push('\n');
 
         let mut lines = BufReader::new(stdout).lines();
 
         let mut discovered: Option<(Vec<String>, Vec<ClaudePlugin>, Vec<String>)> = None;
+        let mut models: Option<Vec<ClaudeDiscoveredModel>> = None;
         let discovery = async {
+            stdin
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(ExecutorError::Io)?;
+            stdin.flush().await.map_err(ExecutorError::Io)?;
+
             while let Some(line) = lines.next_line().await.map_err(ExecutorError::Io)? {
+                if models.is_none()
+                    && let Some(found) = initialize_models_from_line(&line)
+                {
+                    models = Some(found);
+                }
                 if let Ok(json) = serde_json::from_str::<ClaudeJson>(&line)
                     && let ClaudeJson::System {
                         subtype,
@@ -275,7 +379,7 @@ impl ClaudeCode {
         let res = tokio::time::timeout(SLASH_COMMANDS_DISCOVERY_TIMEOUT, discovery).await;
         let _ = child.kill().await;
 
-        let result = match res {
+        let (slash_commands, plugins, agents) = match res {
             Ok(Ok(())) => discovered.unwrap_or_else(|| (vec![], vec![], vec![])),
             Ok(Err(e)) => return Err(e),
             Err(_) => {
@@ -285,7 +389,12 @@ impl ClaudeCode {
             }
         };
 
-        Ok(result)
+        Ok(DiscoveredCommandsAndModels {
+            slash_commands,
+            plugins,
+            agents,
+            models,
+        })
     }
 
     pub async fn discover_agents_and_slash_commands_initial(
@@ -296,10 +405,16 @@ impl ClaudeCode {
             Vec<AgentInfo>,
             Vec<SlashCommandDescription>,
             Vec<ClaudePlugin>,
+            Option<Vec<ModelInfo>>,
         ),
         ExecutorError,
     > {
-        let (names, plugins, agents) = self
+        let DiscoveredCommandsAndModels {
+            slash_commands: names,
+            plugins,
+            agents,
+            models,
+        } = self
             .discover_available_command_and_plugins(current_dir)
             .await?;
 
@@ -320,7 +435,13 @@ impl ClaudeCode {
             })
             .collect();
 
-        Ok((agent_options, slash_commands, plugins))
+        // Empty catalog (or a CLI that predates the models field) keeps the
+        // static fallback list.
+        let live_models = models
+            .map(models_from_initialize)
+            .filter(|models| !models.is_empty());
+
+        Ok((agent_options, slash_commands, plugins, live_models))
     }
 
     pub async fn fill_slash_command_descriptions(
@@ -372,5 +493,101 @@ impl ClaudeCode {
         } else {
             raw.to_case(Case::Title)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CLAUDE_EFFORT_LEVELS, ClaudeDiscoveredModel, initialize_models_from_line,
+        models_from_initialize,
+    };
+
+    fn parse_models(json: serde_json::Value) -> Vec<ClaudeDiscoveredModel> {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn parses_models_from_initialize_control_response() {
+        let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{"commands":[],"models":[{"value":"opus[1m]","resolvedModel":"claude-opus-4-8[1m]","displayName":"Opus","description":"Opus 4.8","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"],"supportsFastMode":true},{"value":"haiku","displayName":"Haiku","description":"Haiku 4.5"}]}}}"#;
+
+        let models = initialize_models_from_line(line).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].value, "opus[1m]");
+        assert!(models[0].supports_effort);
+        assert_eq!(models[0].supported_effort_levels.len(), 5);
+        assert!(!models[1].supports_effort);
+
+        // Non-control lines and responses without models are ignored.
+        assert!(initialize_models_from_line(r#"{"type":"system","subtype":"init"}"#).is_none());
+        assert!(
+            initialize_models_from_line(
+                r#"{"type":"control_response","response":{"subtype":"error","request_id":"r1","error":"nope"}}"#
+            )
+            .is_none()
+        );
+        assert!(initialize_models_from_line("not json").is_none());
+    }
+
+    #[test]
+    fn initialize_models_map_to_model_infos() {
+        let infos = models_from_initialize(parse_models(serde_json::json!([
+            {
+                "value": "opus[1m]",
+                "displayName": "Opus",
+                "supportsEffort": true,
+                "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]
+            },
+            {"value": "haiku", "displayName": "Haiku"},
+            {"value": "haiku", "displayName": "Duplicate"},
+            {"value": "  "}
+        ])));
+
+        assert_eq!(infos.len(), 2, "blank and duplicate values are dropped");
+        let opus = &infos[0];
+        assert_eq!(opus.id, "opus[1m]");
+        assert_eq!(opus.name, "Opus");
+        assert_eq!(
+            opus.reasoning_options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
+            CLAUDE_EFFORT_LEVELS.to_vec()
+        );
+        assert!(!opus.supports_fast);
+
+        let haiku = &infos[1];
+        assert!(
+            haiku.reasoning_options.is_empty(),
+            "no effort options without supportsEffort"
+        );
+    }
+
+    #[test]
+    fn initialize_models_filter_unknown_levels_and_default_when_missing() {
+        let infos = models_from_initialize(parse_models(serde_json::json!([
+            {
+                "value": "sonnet",
+                "supportsEffort": true,
+                "supportedEffortLevels": ["low", "banana"]
+            },
+            {"value": "fable", "supportsEffort": true}
+        ])));
+
+        assert_eq!(
+            infos[0]
+                .reasoning_options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low"],
+            "levels the --effort flag can't parse are dropped"
+        );
+        assert_eq!(infos[0].name, "sonnet", "value doubles as display name");
+        assert_eq!(
+            infos[1].reasoning_options.len(),
+            CLAUDE_EFFORT_LEVELS.len(),
+            "missing level list falls back to the full CLI set"
+        );
     }
 }

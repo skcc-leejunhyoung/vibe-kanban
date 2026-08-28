@@ -18,12 +18,12 @@ use codex_app_server_protocol::{
     GetAccountRateLimitsResponse, GetAccountResponse, InitializeCapabilities, InitializeParams,
     InitializeResponse, ItemCompletedNotification, JSONRPCError, JSONRPCNotification,
     JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams, ListMcpServerStatusResponse,
-    McpServerStatusDetail, RateLimitSnapshot, RateLimitWindow, RequestId, ReviewStartParams,
-    ReviewStartResponse, ReviewTarget, ServerRequest, ThreadCompactStartParams,
-    ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams,
-    ThreadReadResponse, ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
-    ToolRequestUserInputQuestion, ToolRequestUserInputResponse, TurnCompletedNotification,
-    TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
+    McpServerStatusDetail, ModelListParams, ModelListResponse, RateLimitSnapshot, RateLimitWindow,
+    RequestId, ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest,
+    ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
+    ThreadItem, ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
+    ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse,
+    TurnCompletedNotification, TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
 };
 use codex_protocol::config_types::{CollaborationMode, ModeKind, Settings};
 use futures::TryFutureExt;
@@ -197,6 +197,14 @@ impl AppServerClient {
         } else {
             self.collaboration_mode(ModeKind::Default)
         }
+    }
+
+    pub async fn model_list(&self) -> Result<ModelListResponse, ExecutorError> {
+        let request = ClientRequest::ModelList {
+            request_id: self.next_request_id(),
+            params: ModelListParams::default(),
+        };
+        self.send_request(request, "model/list").await
     }
 
     pub async fn get_account(&self) -> Result<GetAccountResponse, ExecutorError> {
@@ -1122,7 +1130,8 @@ fn request_id(request: &ClientRequest) -> RequestId {
         | ClientRequest::ThreadRead { request_id, .. }
         | ClientRequest::ConfigRead { request_id, .. }
         | ClientRequest::ConfigBatchWrite { request_id, .. }
-        | ClientRequest::GetAccountRateLimits { request_id, .. } => request_id.clone(),
+        | ClientRequest::GetAccountRateLimits { request_id, .. }
+        | ClientRequest::ModelList { request_id, .. } => request_id.clone(),
         _ => unreachable!("request_id called for unsupported request variant"),
     }
 }

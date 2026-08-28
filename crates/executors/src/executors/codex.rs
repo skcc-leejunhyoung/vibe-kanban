@@ -55,6 +55,98 @@ fn codex_supports_fast(model_id: &str) -> bool {
     )
 }
 
+/// Static fallback model catalog, shown until (or instead of, on probe
+/// failure) the live `model/list` result from the app server.
+fn static_model_selector() -> ModelSelectorConfig {
+    let model = |id: &str, name: &str| ModelInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        provider_id: None,
+        reasoning_options: codex_reasoning_options(id),
+        supports_fast: codex_supports_fast(id),
+    };
+
+    ModelSelectorConfig {
+        models: vec![
+            model("gpt-5.6-luna", "GPT-5.6 Luna"),
+            model("gpt-5.6-sol", "GPT-5.6 Sol"),
+            model("gpt-5.6-terra", "GPT-5.6 Terra"),
+            model("gpt-5.5", "GPT-5.5"),
+            model("gpt-5.4", "GPT-5.4"),
+            model("gpt-5.4-mini", "GPT-5.4 Mini"),
+            model("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"),
+        ],
+        permissions: vec![
+            PermissionPolicy::Auto,
+            PermissionPolicy::DontAsk,
+            PermissionPolicy::Supervised,
+            PermissionPolicy::Plan,
+        ],
+        ..Default::default()
+    }
+}
+
+/// Convert the app server's live `model/list` catalog into the shared selector
+/// config. Returns `None` when no picker-visible model is present so callers
+/// keep the static fallback list.
+fn model_selector_from_live(
+    models: &[codex_app_server_protocol::Model],
+) -> Option<ModelSelectorConfig> {
+    let mut seen = std::collections::HashSet::new();
+    let mut infos: Vec<ModelInfo> = Vec::new();
+    let mut default_model = None;
+
+    for model in models.iter().filter(|m| !m.hidden) {
+        let id = model.model.clone();
+        if id.is_empty() || !seen.insert(id.clone()) {
+            continue;
+        }
+        if model.is_default && default_model.is_none() {
+            default_model = Some(id.clone());
+        }
+
+        let mut reasoning_options = ReasoningOption::from_names(
+            model
+                .supported_reasoning_efforts
+                .iter()
+                .map(|option| option.reasoning_effort.as_str().to_string()),
+        );
+        let default_effort = model.default_reasoning_effort.as_str();
+        for option in &mut reasoning_options {
+            option.is_default = option.id == default_effort;
+        }
+
+        // `additional_speed_tiers` is the deprecated field but still the one
+        // the current catalog populates; check `service_tiers` too for later
+        // versions.
+        let supports_fast = model.additional_speed_tiers.iter().any(|t| t == "fast")
+            || model.service_tiers.iter().any(|t| t.id == "fast");
+
+        infos.push(ModelInfo {
+            id,
+            name: model.display_name.clone(),
+            provider_id: None,
+            reasoning_options,
+            supports_fast,
+        });
+    }
+
+    if infos.is_empty() {
+        return None;
+    }
+
+    Some(ModelSelectorConfig {
+        models: infos,
+        default_model,
+        permissions: vec![
+            PermissionPolicy::Auto,
+            PermissionPolicy::Supervised,
+            PermissionPolicy::Plan,
+        ],
+        ..Default::default()
+    })
+}
+
 pub(crate) fn fork_params_from(thread_id: String, params: ThreadStartParams) -> ThreadForkParams {
     ThreadForkParams {
         thread_id,
@@ -78,6 +170,7 @@ use codex_app_server_protocol::{
 };
 use codex_protocol::config_types::ServiceTier;
 use derivative::Derivative;
+use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -362,34 +455,80 @@ impl StandardCodingAgentExecutor for Codex {
         _workdir: Option<&std::path::Path>,
         _repo_path: Option<&std::path::Path>,
     ) -> Result<futures::stream::BoxStream<'static, json_patch::Patch>, ExecutorError> {
-        let model = |id: &str, name: &str| ModelInfo {
-            id: id.to_string(),
-            name: name.to_string(),
-            provider_id: None,
-            reasoning_options: codex_reasoning_options(id),
-            supports_fast: codex_supports_fast(id),
+        use crate::{
+            executor_discovery::ExecutorConfigCacheKey, executors::utils::executor_options_cache,
         };
 
-        let options = ExecutorDiscoveredOptions {
-            model_selector: ModelSelectorConfig {
-                models: vec![
-                    model("gpt-5.6-luna", "GPT-5.6 Luna"),
-                    model("gpt-5.6-sol", "GPT-5.6 Sol"),
-                    model("gpt-5.6-terra", "GPT-5.6 Terra"),
-                    model("gpt-5.5", "GPT-5.5"),
-                    model("gpt-5.4", "GPT-5.4"),
-                    model("gpt-5.4-mini", "GPT-5.4 Mini"),
-                    model("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"),
-                ],
-                permissions: vec![
-                    PermissionPolicy::Auto,
-                    PermissionPolicy::DontAsk,
-                    PermissionPolicy::Supervised,
-                    PermissionPolicy::Plan,
-                ],
-                ..Default::default()
-            },
-            slash_commands: vec![
+        // The model catalog is account-level, not workdir-specific: one global
+        // cache entry per command override set.
+        let cache = executor_options_cache();
+        let cache_key = ExecutorConfigCacheKey::new(
+            None,
+            serde_json::to_string(&self.cmd).unwrap_or_default(),
+            BaseCodingAgent::Codex,
+        );
+        if let Some(cached) = cache.get(&cache_key) {
+            return Ok(Box::pin(futures::stream::once(async move {
+                patch::executor_discovered_options(cached.as_ref().clone().with_loading(false))
+            })));
+        }
+
+        let mut initial_options = static_discovered_options();
+        initial_options.loading_models = true;
+        let initial_patch = patch::executor_discovered_options(initial_options);
+
+        let this = self.clone();
+        let discovery_stream = async_stream::stream! {
+            match this.fetch_live_models().await {
+                Ok(models) => {
+                    if let Some(model_selector) = model_selector_from_live(&models) {
+                        yield patch::update_models(model_selector.models.clone());
+                        yield patch::update_default_model(model_selector.default_model.clone());
+                        let mut final_options = static_discovered_options();
+                        final_options.model_selector = model_selector;
+                        executor_options_cache().put(cache_key, final_options);
+                    }
+                }
+                Err(e) => {
+                    // Keep the static fallback list; the selector stays usable.
+                    tracing::warn!("Failed to discover Codex models: {e}");
+                }
+            }
+            yield patch::models_loaded();
+        };
+
+        Ok(Box::pin(
+            futures::stream::once(async move { initial_patch }).chain(discovery_stream),
+        ))
+    }
+
+    async fn spawn_review(
+        &self,
+        current_dir: &Path,
+        prompt: &str,
+        session_id: Option<&str>,
+        env: &ExecutionEnv,
+    ) -> Result<SpawnedChild, ExecutorError> {
+        let command_parts = self.build_command_builder()?.build_initial()?;
+        let review_target = ReviewTarget::Custom {
+            instructions: prompt.to_string(),
+        };
+        let action = CodexSessionAction::Review {
+            target: review_target,
+        };
+        self.spawn_inner(current_dir, command_parts, action, session_id, env)
+            .await
+    }
+}
+
+/// How long the short-lived `codex app-server` model probe may take before we
+/// fall back to the static catalog.
+const MODEL_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn static_discovered_options() -> ExecutorDiscoveredOptions {
+    ExecutorDiscoveredOptions {
+        model_selector: static_model_selector(),
+        slash_commands: vec![
                 SlashCommandDescription {
                     name: "compact".to_string(),
                     description: Some(
@@ -423,35 +562,84 @@ impl StandardCodingAgentExecutor for Codex {
                     ),
                 },
             ],
-            ..Default::default()
-        };
-        Ok(Box::pin(futures::stream::once(async move {
-            patch::executor_discovered_options(options)
-        })))
-    }
-
-    async fn spawn_review(
-        &self,
-        current_dir: &Path,
-        prompt: &str,
-        session_id: Option<&str>,
-        env: &ExecutionEnv,
-    ) -> Result<SpawnedChild, ExecutorError> {
-        let command_parts = self.build_command_builder()?.build_initial()?;
-        let review_target = ReviewTarget::Custom {
-            instructions: prompt.to_string(),
-        };
-        let action = CodexSessionAction::Review {
-            target: review_target,
-        };
-        self.spawn_inner(current_dir, command_parts, action, session_id, env)
-            .await
+        ..Default::default()
     }
 }
 
 impl Codex {
     pub fn base_command() -> &'static str {
         "codex"
+    }
+
+    /// Ask a short-lived `codex app-server` for the model catalog visible to
+    /// this installation/account.
+    async fn fetch_live_models(
+        &self,
+    ) -> Result<Vec<codex_app_server_protocol::Model>, ExecutorError> {
+        let command_parts = self.build_command_builder()?.build_initial()?;
+        let (program_path, args) = command_parts.into_resolved().await?;
+
+        let mut process = Command::new(program_path);
+        process
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .env("NPM_CONFIG_LOGLEVEL", "error")
+            .env("NODE_NO_WARNINGS", "1")
+            .env("NO_COLOR", "1")
+            .env("RUST_LOG", "error")
+            .args(&args);
+
+        ExecutionEnv::new(crate::env::RepoContext::default(), false, String::new())
+            .with_profile(&self.cmd)
+            .apply_to_command(&mut process);
+
+        let mut child = process.group_spawn_no_window()?;
+        let child_stdout = child.inner().stdout.take().ok_or_else(|| {
+            ExecutorError::Io(std::io::Error::other("Codex app server missing stdout"))
+        })?;
+        let child_stdin = child.inner().stdin.take().ok_or_else(|| {
+            ExecutorError::Io(std::io::Error::other("Codex app server missing stdin"))
+        })?;
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (exit_signal_tx, _exit_signal_rx) = tokio::sync::oneshot::channel();
+        let client = AppServerClient::new(
+            LogWriter::new(tokio::io::sink()),
+            None,
+            false,
+            false,
+            crate::env::RepoContext::default(),
+            false,
+            String::new(),
+            cancel.clone(),
+        );
+        let rpc_peer = JsonRpcPeer::spawn(
+            child_stdin,
+            child_stdout,
+            client.clone(),
+            ExitSignalSender::new(exit_signal_tx),
+            cancel.clone(),
+        );
+        client.connect(rpc_peer);
+
+        let result = tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
+            client.initialize().await?;
+            client.model_list().await
+        })
+        .await;
+
+        cancel.cancel();
+        let _ = child.kill().await;
+
+        match result {
+            Ok(Ok(response)) => Ok(response.data),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ExecutorError::Io(std::io::Error::other(
+                "Timed out discovering Codex models",
+            ))),
+        }
     }
 
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
@@ -770,7 +958,127 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
-    use super::{AskForApproval, ReasoningEffort, resolve_model};
+    use futures::StreamExt;
+    use serde_json::json;
+
+    use super::{
+        AskForApproval, Codex, ReasoningEffort, model_selector_from_live, resolve_model,
+        static_model_selector,
+    };
+    use crate::executors::StandardCodingAgentExecutor;
+
+    fn live_model(value: serde_json::Value) -> codex_app_server_protocol::Model {
+        let mut base = json!({
+            "id": "gpt-test",
+            "model": "gpt-test",
+            "upgrade": null,
+            "upgradeInfo": null,
+            "availabilityNux": null,
+            "displayName": "GPT Test",
+            "description": "",
+            "hidden": false,
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "low", "description": ""},
+                {"reasoningEffort": "high", "description": ""}
+            ],
+            "defaultReasoningEffort": "high",
+            "isDefault": false
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(value.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn live_models_map_to_selector_config() {
+        let models = vec![
+            live_model(json!({
+                "id": "gpt-5.6-sol",
+                "model": "gpt-5.6-sol",
+                "displayName": "GPT-5.6-Sol",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low", "description": ""},
+                    {"reasoningEffort": "medium", "description": ""},
+                    {"reasoningEffort": "ultra", "description": ""}
+                ],
+                "defaultReasoningEffort": "low",
+                "additionalSpeedTiers": ["fast"],
+                "serviceTiers": [{"id": "priority", "name": "Priority", "description": ""}],
+                "isDefault": true
+            })),
+            live_model(json!({
+                "id": "gpt-5.4-mini",
+                "model": "gpt-5.4-mini",
+                "displayName": "GPT-5.4-Mini"
+            })),
+            live_model(json!({"id": "secret", "model": "secret", "hidden": true})),
+        ];
+
+        let config = model_selector_from_live(&models).unwrap();
+        assert_eq!(config.default_model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(config.models.len(), 2, "hidden models are filtered out");
+
+        let sol = &config.models[0];
+        assert_eq!(sol.name, "GPT-5.6-Sol");
+        assert!(sol.supports_fast, "additionalSpeedTiers fast is detected");
+        assert_eq!(
+            sol.reasoning_options
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "ultra"]
+        );
+        assert!(
+            sol.reasoning_options
+                .iter()
+                .find(|o| o.id == "low")
+                .unwrap()
+                .is_default,
+            "live default reasoning effort wins over the static 'high' default"
+        );
+
+        let mini = &config.models[1];
+        assert!(!mini.supports_fast);
+    }
+
+    #[test]
+    fn live_models_fall_back_when_empty_or_hidden() {
+        assert!(model_selector_from_live(&[]).is_none());
+        let hidden = vec![live_model(json!({"hidden": true}))];
+        assert!(model_selector_from_live(&hidden).is_none());
+    }
+
+    #[tokio::test]
+    async fn discover_options_falls_back_to_static_on_probe_failure() {
+        // `false` exits immediately, so the app-server probe fails fast.
+        let codex: Codex =
+            serde_json::from_value(json!({"base_command_override": "false"})).unwrap();
+
+        let stream = codex.discover_options(None, None).await.unwrap();
+        let patches: Vec<serde_json::Value> = stream
+            .map(|p| serde_json::to_value(&p).unwrap())
+            .collect()
+            .await;
+
+        let initial = &patches[0][0];
+        assert_eq!(initial["path"], "/options");
+        let models = initial["value"]["model_selector"]["models"]
+            .as_array()
+            .unwrap();
+        assert_eq!(models.len(), static_model_selector().models.len());
+        assert_eq!(initial["value"]["loading_models"], true);
+
+        let last = patches.last().unwrap();
+        assert_eq!(last[0]["path"], "/options/loading_models");
+        assert_eq!(last[0]["value"], false);
+        assert!(
+            !patches
+                .iter()
+                .any(|p| p[0]["path"] == "/options/model_selector/models"),
+            "no live model patch on probe failure"
+        );
+    }
 
     #[test]
     fn legacy_on_failure_approval_migrates_to_on_request() {
