@@ -25,7 +25,13 @@ use db::models::{
     workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
 };
 use deployment::Deployment;
-use executors::profile::ExecutorConfig;
+use executors::{
+    logs::{
+        NormalizedEntryError, NormalizedEntryType,
+        utils::patch::extract_normalized_entry_from_patch,
+    },
+    profile::ExecutorConfig,
+};
 use futures_util::FutureExt;
 use git::{GitCliError, GitRemote, GitServiceError};
 use git_host::{
@@ -41,7 +47,7 @@ use services::services::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
-use utils::response::ApiResponse;
+use utils::{log_msg::LogMsg, response::ApiResponse};
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
 
@@ -843,8 +849,8 @@ async fn capture_pr_generation(
             ExecutionProcessStatus::Running => tokio::time::sleep(PR_GENERATE_POLL_INTERVAL).await,
             ExecutionProcessStatus::Completed => break,
             ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed => {
-                return Err(ApiError::BadGateway(
-                    "The agent failed while generating the PR description.".to_string(),
+                return Err(pr_generation_agent_failure(
+                    msg_store.as_deref().map(|store| store.get_history()),
                 ));
             }
         }
@@ -857,6 +863,41 @@ async fn capture_pr_generation(
         .filter(|m| !m.trim().is_empty())
         .as_deref()
         .and_then(parse_pr_description))
+}
+
+fn pr_generation_agent_failure(msgs: Option<Vec<LogMsg>>) -> ApiError {
+    let detail = msgs.as_deref().and_then(|msgs| {
+        msgs.iter().rev().find_map(|msg| {
+            let LogMsg::JsonPatch(patch) = msg else {
+                return None;
+            };
+            let (_, entry) = extract_normalized_entry_from_patch(patch)?;
+            match entry.entry_type {
+                NormalizedEntryType::RateLimitInfo(info) if info.limit_reached => Some(
+                    info.resets_at.map_or_else(
+                        || "The agent's usage limit was reached. Try again later.".to_string(),
+                        |reset| {
+                            format!(
+                                "The agent's usage limit was reached. Try again after {reset}."
+                            )
+                        },
+                    ),
+                ),
+                NormalizedEntryType::ErrorMessage {
+                    error_type: NormalizedEntryError::SetupRequired,
+                } => Some(
+                    "The agent requires authentication or setup before it can generate the PR description."
+                        .to_string(),
+                ),
+                _ => None,
+            }
+        })
+    });
+
+    ApiError::BadGateway(
+        detail
+            .unwrap_or_else(|| "The agent failed while generating the PR description.".to_string()),
+    )
 }
 
 #[derive(Deserialize)]
@@ -1905,16 +1946,44 @@ pub fn router() -> Router<DeploymentImpl> {
 mod tests {
     use std::{collections::HashMap, time::Instant};
 
+    use executors::logs::{
+        NormalizedEntry, NormalizedEntryType, RateLimitInfo, utils::patch::ConversationPatch,
+    };
     use sqlx::SqlitePool;
     use tokio_util::sync::CancellationToken;
+    use utils::log_msg::LogMsg;
     use uuid::Uuid;
 
     use super::{
         PR_GENERATE_FINISHED_JOB_TTL, PR_GENERATE_RUNNING_JOB_TTL, PrDescriptionGenerationJob,
         PrDescriptionGenerationStatus, PrDraft, PrGenerationAdmissionError, PrGenerationScheduler,
-        build_pr_generation_prompt, normalized_repo_key, parse_pr_description, pr_repo_key,
-        prune_pr_description_generation_jobs, save_pr_draft,
+        build_pr_generation_prompt, normalized_repo_key, parse_pr_description,
+        pr_generation_agent_failure, pr_repo_key, prune_pr_description_generation_jobs,
+        save_pr_draft,
     };
+
+    #[test]
+    fn pr_generation_failure_reports_rate_limit_reset() {
+        let reset = "2026-08-28T13:40:00Z";
+        let msgs = vec![LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+            0,
+            NormalizedEntry {
+                timestamp: None,
+                entry_type: NormalizedEntryType::RateLimitInfo(RateLimitInfo {
+                    limit_reached: true,
+                    resets_at: Some(reset.to_string()),
+                    scope: Some("5h".to_string()),
+                }),
+                content: "Usage rate limit reached".to_string(),
+                metadata: None,
+            },
+        ))];
+
+        assert_eq!(
+            pr_generation_agent_failure(Some(msgs)).to_string(),
+            format!("Bad gateway: The agent's usage limit was reached. Try again after {reset}.")
+        );
+    }
 
     #[test]
     fn pr_urls_match_https_and_ssh_repository_remotes() {
