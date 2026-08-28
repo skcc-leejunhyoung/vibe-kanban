@@ -1,5 +1,7 @@
 import { forwardRef } from 'react';
+import { PlusIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { hexToHslString, hslStringToHex } from '../lib/colors';
 
 export const PRESET_COLORS = [
   '0 84% 60%',
@@ -14,6 +16,7 @@ export const PRESET_COLORS = [
   '142 71% 45%',
   '17 88% 40%',
   '231 48% 48%',
+  '220 9% 46%', // Slate Gray - neutral (backlog)
 ] as const;
 
 export interface InlineColorPickerProps {
@@ -34,6 +37,7 @@ export const InlineColorPicker = forwardRef<
     ref
   ) => {
     const currentIndex = colors.indexOf(value);
+    const isCustom = currentIndex === -1;
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
       if (disabled) return;
@@ -82,6 +86,29 @@ export const InlineColorPicker = forwardRef<
             style={{ backgroundColor: `hsl(${color})` }}
           />
         ))}
+        <label
+          title="Custom color"
+          className={cn(
+            'relative flex h-6 w-6 items-center justify-center rounded-full transition-all',
+            isCustom
+              ? 'ring-2 ring-brand ring-offset-1'
+              : 'border border-dashed border-border text-low hover:scale-110',
+            disabled
+              ? 'cursor-not-allowed opacity-50 hover:scale-100'
+              : 'cursor-pointer'
+          )}
+          style={isCustom ? { backgroundColor: `hsl(${value})` } : undefined}
+        >
+          {!isCustom && <PlusIcon className="size-icon-xs" weight="bold" />}
+          <input
+            type="color"
+            aria-label="Custom color"
+            value={hslStringToHex(value) ?? '#808080'}
+            onChange={(e) => onChange(hexToHslString(e.target.value))}
+            disabled={disabled}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+          />
+        </label>
       </div>
     );
   }

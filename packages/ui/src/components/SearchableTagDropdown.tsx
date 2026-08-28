@@ -50,8 +50,8 @@ interface SearchableTagDropdownProps {
   showCreateOption: boolean;
   createOptionHighlighted: boolean;
   isCreating: boolean;
-  colorIndex: number;
-  onColorIndexChange: (index: number) => void;
+  newTagColor: string;
+  onNewTagColorChange: (color: string) => void;
   onStartCreate: () => void;
   onConfirmCreate: () => void;
   onCancelCreate: () => void;
@@ -79,8 +79,8 @@ export function SearchableTagDropdown({
   showCreateOption,
   createOptionHighlighted,
   isCreating,
-  colorIndex,
-  onColorIndexChange,
+  newTagColor,
+  onNewTagColorChange,
   onStartCreate,
   onConfirmCreate,
   onCancelCreate,
@@ -112,11 +112,8 @@ export function SearchableTagDropdown({
               <span className="font-medium">{searchTerm}</span>
             </div>
             <InlineColorPicker
-              value={TAG_COLORS[colorIndex]}
-              onChange={(color) => {
-                const idx = (TAG_COLORS as readonly string[]).indexOf(color);
-                if (idx !== -1) onColorIndexChange(idx);
-              }}
+              value={newTagColor}
+              onChange={onNewTagColorChange}
               colors={TAG_COLORS}
             />
             <div className="flex items-center justify-end gap-half pt-half">

@@ -6,6 +6,7 @@ import {
   TAG_COLORS,
 } from '@vibe/ui/components/SearchableTagDropdown';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
+import { pickUnusedColor } from '@/shared/lib/colors';
 
 interface SearchableTagDropdownContainerProps {
   tags: Tag[];
@@ -30,7 +31,7 @@ export function SearchableTagDropdownContainer({
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
-  const [colorIndex, setColorIndex] = useState(0);
+  const [newTagColor, setNewTagColor] = useState<string>(TAG_COLORS[0]);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const colorPickerRef = useRef<HTMLDivElement>(null);
 
@@ -41,8 +42,11 @@ export function SearchableTagDropdownContainer({
     }
   }, [isCreating]);
 
-  // Derive newTagColor from colorIndex
-  const newTagColor = TAG_COLORS[colorIndex];
+  // Enter create mode with a color that doesn't collide with existing tags
+  const startCreate = useCallback(() => {
+    setNewTagColor(pickUnusedColor(tags.map((t) => t.color)));
+    setIsCreating(true);
+  }, [tags]);
 
   // Filter tags based on search term
   const filteredTags = useMemo(() => {
@@ -100,18 +104,22 @@ export function SearchableTagDropdownContainer({
       if (isCreating) {
         // Color picker mode keyboard navigation
         switch (e.key) {
-          case 'ArrowLeft':
+          case 'ArrowLeft': {
             e.preventDefault();
             e.stopPropagation();
-            setColorIndex(
-              (prev) => (prev - 1 + TAG_COLORS.length) % TAG_COLORS.length
+            const idx = (TAG_COLORS as readonly string[]).indexOf(newTagColor);
+            setNewTagColor(
+              TAG_COLORS[idx <= 0 ? TAG_COLORS.length - 1 : idx - 1]
             );
             return;
-          case 'ArrowRight':
+          }
+          case 'ArrowRight': {
             e.preventDefault();
             e.stopPropagation();
-            setColorIndex((prev) => (prev + 1) % TAG_COLORS.length);
+            const idx = (TAG_COLORS as readonly string[]).indexOf(newTagColor);
+            setNewTagColor(TAG_COLORS[(idx + 1) % TAG_COLORS.length]);
             return;
+          }
           case 'Enter':
             e.preventDefault();
             e.stopPropagation();
@@ -123,7 +131,6 @@ export function SearchableTagDropdownContainer({
               onTagToggle(newTagId); // Auto-select the newly created tag
               setSearchTerm('');
               setIsCreating(false);
-              setColorIndex(0);
             }
             return;
           case 'Escape':
@@ -154,7 +161,7 @@ export function SearchableTagDropdownContainer({
           if (safeHighlightedIndex !== null) {
             attemptToggle();
           } else if (showCreateOption) {
-            setIsCreating(true);
+            startCreate();
           }
           return;
         case 'Escape':
@@ -174,6 +181,7 @@ export function SearchableTagDropdownContainer({
       safeHighlightedIndex,
       attemptToggle,
       showCreateOption,
+      startCreate,
       searchTerm,
       newTagColor,
       onCreateTag,
@@ -187,12 +195,7 @@ export function SearchableTagDropdownContainer({
       setSearchTerm('');
       setHighlightedIndex(null);
       setIsCreating(false);
-      setColorIndex(0);
     }
-  }, []);
-
-  const handleStartCreate = useCallback(() => {
-    setIsCreating(true);
   }, []);
 
   const handleConfirmCreate = useCallback(() => {
@@ -204,15 +207,10 @@ export function SearchableTagDropdownContainer({
     onTagToggle(newTagId); // Auto-select the newly created tag
     setSearchTerm('');
     setIsCreating(false);
-    setColorIndex(0);
   }, [searchTerm, newTagColor, onCreateTag, onTagToggle]);
 
   const handleCancelCreate = useCallback(() => {
     setIsCreating(false);
-  }, []);
-
-  const handleColorIndexChange = useCallback((index: number) => {
-    setColorIndex(index);
   }, []);
 
   return (
@@ -232,9 +230,9 @@ export function SearchableTagDropdownContainer({
       showCreateOption={showCreateOption}
       createOptionHighlighted={createOptionHighlighted}
       isCreating={isCreating}
-      colorIndex={colorIndex}
-      onColorIndexChange={handleColorIndexChange}
-      onStartCreate={handleStartCreate}
+      newTagColor={newTagColor}
+      onNewTagColorChange={setNewTagColor}
+      onStartCreate={startCreate}
       onConfirmCreate={handleConfirmCreate}
       onCancelCreate={handleCancelCreate}
       colorPickerRef={colorPickerRef}

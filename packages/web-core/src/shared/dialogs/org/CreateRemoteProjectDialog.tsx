@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Button } from '@vibe/ui/components/Button';
 import { Input } from '@vibe/ui/components/Input';
 import { Label } from '@vibe/ui/components/Label';
@@ -20,7 +20,7 @@ import {
   PROJECT_MUTATION,
   type Project,
 } from 'shared/remote-types';
-import { getRandomPresetColor, PRESET_COLORS } from '@/shared/lib/colors';
+import { pickUnusedColor, PRESET_COLORS } from '@/shared/lib/colors';
 import { ColorPicker } from '@/shared/components/ui-new/containers/ColorPickerContainer';
 
 export type CreateRemoteProjectDialogProps = {
@@ -37,7 +37,7 @@ const CreateRemoteProjectDialogImpl = create<CreateRemoteProjectDialogProps>(
     const modal = useModal();
     const { t } = useTranslation('projects');
     const [name, setName] = useState('');
-    const [color, setColor] = useState<string>(() => getRandomPresetColor());
+    const [color, setColor] = useState<string>(() => pickUnusedColor([]));
     const [error, setError] = useState<string | null>(null);
     const [isCreating, setIsCreating] = useState(false);
 
@@ -46,15 +46,23 @@ const CreateRemoteProjectDialogImpl = create<CreateRemoteProjectDialogProps>(
       [organizationId]
     );
 
-    const { insert, error: syncError } = useShape(PROJECTS_SHAPE, params, {
+    const {
+      data: projects,
+      insert,
+      error: syncError,
+    } = useShape(PROJECTS_SHAPE, params, {
       mutation: PROJECT_MUTATION,
     });
+
+    // Ref so the open-reset effect reads fresh colors without re-firing on sync
+    const usedColorsRef = useRef<string[]>([]);
+    usedColorsRef.current = projects.map((p) => p.color);
 
     useEffect(() => {
       // Reset form when dialog opens
       if (modal.visible) {
         setName('');
-        setColor(getRandomPresetColor());
+        setColor(pickUnusedColor(usedColorsRef.current));
         setError(null);
         setIsCreating(false);
       }

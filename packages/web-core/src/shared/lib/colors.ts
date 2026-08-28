@@ -1,25 +1,34 @@
-// Predefined color palette for projects and tags (HSL format)
-// Modern, vibrant colors with good differentiation
-export const PRESET_COLORS = [
-  '0 84% 60%', // Coral Red - vibrant, warm
-  '24 95% 53%', // Tangerine - energetic orange
-  '45 93% 58%', // Golden Yellow - bright, optimistic
-  '158 64% 52%', // Mint Green - fresh, modern
-  '200 98% 39%', // Ocean Blue - professional, calm
-  '271 81% 56%', // Vivid Purple - creative, modern
-  '330 81% 60%', // Hot Pink - bold, playful
-  '183 74% 44%', // Teal - sophisticated
-  '262 52% 47%', // Indigo - deep, elegant
-  '142 71% 45%', // Emerald - nature, growth
-  '17 88% 40%', // Rust - warm, earthy
-  '231 48% 48%', // Slate Blue - professional
-] as const;
+import { PRESET_COLORS } from '@vibe/ui/components/ColorPicker';
 
-export type PresetColor = (typeof PRESET_COLORS)[number];
+export { PRESET_COLORS };
 
 /**
- * Get a random color from the preset palette
+ * Pick a color for a new item that doesn't collide with colors already in use.
+ * Prefers unused preset colors; once every preset is taken, generates a color
+ * whose hue is farthest from all used hues.
  */
-export function getRandomPresetColor(): string {
-  return PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)];
+export function pickUnusedColor(usedColors: string[]): string {
+  const used = new Set(usedColors);
+  const unused = PRESET_COLORS.filter((c) => !used.has(c));
+  if (unused.length > 0) {
+    return unused[Math.floor(Math.random() * unused.length)];
+  }
+  const usedHues = usedColors
+    .map((c) => Number.parseFloat(c))
+    .filter(Number.isFinite);
+  let bestHue = 0;
+  let bestDist = -1;
+  for (let h = 0; h < 360; h += 3) {
+    const dist = Math.min(
+      ...usedHues.map((u) => {
+        const d = Math.abs(h - u) % 360;
+        return Math.min(d, 360 - d);
+      })
+    );
+    if (dist > bestDist) {
+      bestDist = dist;
+      bestHue = h;
+    }
+  }
+  return `${bestHue} 70% 50%`;
 }

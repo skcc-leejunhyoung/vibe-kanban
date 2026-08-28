@@ -29,7 +29,11 @@ export function ColorPicker({
 
   const handleColorChange = (color: string) => {
     onChange(color);
-    setOpen(false);
+    // Custom colors stream in live from the native color input — keep the
+    // dropdown open so the input stays mounted; only a preset click closes it.
+    if (colors.includes(color)) {
+      setOpen(false);
+    }
   };
 
   // Use ref callback to focus when the element mounts

@@ -58,7 +58,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { organizationsApi } from '@/shared/lib/api';
 import { organizationKeys } from '@/shared/hooks/organizationKeys';
-import { getRandomPresetColor, PRESET_COLORS } from '@/shared/lib/colors';
+import { pickUnusedColor, PRESET_COLORS } from '@/shared/lib/colors';
 import { InlineColorPicker } from '@vibe/ui/components/ColorPicker';
 import { cn } from '@/shared/lib/utils';
 import {
@@ -815,7 +815,7 @@ export function RemoteProjectsSettingsSection({
       {
         id: newId,
         name: t('kanban.newStatus', 'New Status'),
-        color: getRandomPresetColor(),
+        color: pickUnusedColor(localStatuses.map((s) => s.color)),
         hidden: false,
         sort_order: maxSortOrder + 1000,
         isNew: true,
