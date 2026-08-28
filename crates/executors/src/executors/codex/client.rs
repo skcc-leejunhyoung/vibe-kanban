@@ -199,10 +199,16 @@ impl AppServerClient {
         }
     }
 
-    pub async fn model_list(&self) -> Result<ModelListResponse, ExecutorError> {
+    pub async fn model_list(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ModelListResponse, ExecutorError> {
         let request = ClientRequest::ModelList {
             request_id: self.next_request_id(),
-            params: ModelListParams::default(),
+            params: ModelListParams {
+                cursor,
+                ..Default::default()
+            },
         };
         self.send_request(request, "model/list").await
     }

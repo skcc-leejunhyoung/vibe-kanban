@@ -27,7 +27,7 @@ use crate::{
     model_selector::{AgentInfo, ModelInfo, ReasoningOption},
 };
 
-const SLASH_COMMANDS_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(120);
+const SLASH_COMMANDS_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) struct DiscoveredCommandsAndModels {
     slash_commands: Vec<String>,

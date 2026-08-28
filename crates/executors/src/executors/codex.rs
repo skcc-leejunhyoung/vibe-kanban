@@ -147,6 +147,27 @@ fn model_selector_from_live(
     })
 }
 
+async fn collect_model_pages<F, Fut>(
+    mut fetch: F,
+) -> Result<Vec<codex_app_server_protocol::Model>, ExecutorError>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<
+            Output = Result<codex_app_server_protocol::ModelListResponse, ExecutorError>,
+        >,
+{
+    let mut cursor = None;
+    let mut models = Vec::new();
+    loop {
+        let response = fetch(cursor).await?;
+        models.extend(response.data);
+        cursor = response.next_cursor;
+        if cursor.is_none() {
+            return Ok(models);
+        }
+    }
+}
+
 pub(crate) fn fork_params_from(thread_id: String, params: ThreadStartParams) -> ThreadForkParams {
     ThreadForkParams {
         thread_id,
@@ -467,13 +488,10 @@ impl StandardCodingAgentExecutor for Codex {
             serde_json::to_string(&self.cmd).unwrap_or_default(),
             BaseCodingAgent::Codex,
         );
-        if let Some(cached) = cache.get(&cache_key) {
-            return Ok(Box::pin(futures::stream::once(async move {
-                patch::executor_discovered_options(cached.as_ref().clone().with_loading(false))
-            })));
-        }
-
-        let mut initial_options = static_discovered_options();
+        let mut initial_options = cache
+            .get(&cache_key)
+            .map(|cached| cached.as_ref().clone())
+            .unwrap_or_else(static_discovered_options);
         initial_options.loading_models = true;
         let initial_patch = patch::executor_discovered_options(initial_options);
 
@@ -626,7 +644,7 @@ impl Codex {
 
         let result = tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
             client.initialize().await?;
-            client.model_list().await
+            collect_model_pages(|cursor| client.model_list(cursor)).await
         })
         .await;
 
@@ -634,7 +652,7 @@ impl Codex {
         let _ = child.kill().await;
 
         match result {
-            Ok(Ok(response)) => Ok(response.data),
+            Ok(Ok(models)) => Ok(models),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(ExecutorError::Io(std::io::Error::other(
                 "Timed out discovering Codex models",
@@ -962,8 +980,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AskForApproval, Codex, ReasoningEffort, model_selector_from_live, resolve_model,
-        static_model_selector,
+        AskForApproval, Codex, ReasoningEffort, collect_model_pages, model_selector_from_live,
+        resolve_model, static_model_selector,
     };
     use crate::executors::StandardCodingAgentExecutor;
 
@@ -1047,6 +1065,37 @@ mod tests {
         assert!(model_selector_from_live(&[]).is_none());
         let hidden = vec![live_model(json!({"hidden": true}))];
         assert!(model_selector_from_live(&hidden).is_none());
+    }
+
+    #[tokio::test]
+    async fn model_list_follows_pagination_cursor() {
+        let mut cursors = Vec::new();
+        let mut pages = std::collections::VecDeque::from([
+            Ok(codex_app_server_protocol::ModelListResponse {
+                data: vec![live_model(json!({"model": "first"}))],
+                next_cursor: Some("page-2".to_string()),
+            }),
+            Ok(codex_app_server_protocol::ModelListResponse {
+                data: vec![live_model(json!({"model": "second"}))],
+                next_cursor: None,
+            }),
+        ]);
+
+        let models = collect_model_pages(|cursor| {
+            cursors.push(cursor);
+            std::future::ready(pages.pop_front().unwrap())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(cursors, vec![None, Some("page-2".to_string())]);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
     }
 
     #[tokio::test]

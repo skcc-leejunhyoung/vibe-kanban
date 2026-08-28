@@ -452,17 +452,18 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             let wd_buf = wd.to_path_buf();
             let target_key =
                 ExecutorConfigCacheKey::new(Some(&wd_buf), cmd_key.clone(), base_executor);
-            if let Some(cached) = cache.get(&target_key) {
-                return Ok(Box::pin(futures::stream::once(async move {
-                    patch::executor_discovered_options(cached.as_ref().clone().with_loading(false))
-                })));
-            }
-            let provisional = repo_path
-                .and_then(|rp| {
-                    let rp_buf = rp.to_path_buf();
-                    let repo_key =
-                        ExecutorConfigCacheKey::new(Some(&rp_buf), cmd_key.clone(), base_executor);
-                    cache.get(&repo_key)
+            let provisional = cache
+                .get(&target_key)
+                .or_else(|| {
+                    repo_path.and_then(|rp| {
+                        let rp_buf = rp.to_path_buf();
+                        let repo_key = ExecutorConfigCacheKey::new(
+                            Some(&rp_buf),
+                            cmd_key.clone(),
+                            base_executor,
+                        );
+                        cache.get(&repo_key)
+                    })
                 })
                 .or_else(|| {
                     let global_key =
@@ -491,13 +492,8 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             let rp_buf = rp.to_path_buf();
             let target_key =
                 ExecutorConfigCacheKey::new(Some(&rp_buf), cmd_key.clone(), base_executor);
-            if let Some(cached) = cache.get(&target_key) {
-                return Ok(Box::pin(futures::stream::once(async move {
-                    patch::executor_discovered_options(cached.as_ref().clone().with_loading(false))
-                })));
-            }
             let global_key = ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
-            let provisional = cache.get(&global_key);
+            let provisional = cache.get(&target_key).or_else(|| cache.get(&global_key));
             (
                 Some(rp.to_path_buf()),
                 provisional
@@ -518,12 +514,10 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             )
         } else {
             let global_key = ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
-            if let Some(cached) = cache.get(&global_key) {
-                return Ok(Box::pin(futures::stream::once(async move {
-                    patch::executor_discovered_options(cached.as_ref().clone().with_loading(false))
-                })));
-            }
-            let mut opts = default_discovered_options();
+            let mut opts = cache
+                .get(&global_key)
+                .map(|cached| cached.as_ref().clone())
+                .unwrap_or_else(default_discovered_options);
             opts.loading_models = true;
             opts.loading_agents = true;
             opts.loading_slash_commands = true;
@@ -598,6 +592,9 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                 }
                 Err(e) => {
                     tracing::warn!("Failed to discover Claude Code options: {}", e);
+                    yield patch::models_loaded();
+                    yield patch::agents_loaded();
+                    yield patch::slash_commands_loaded();
                     yield patch::discovery_error(e.to_string());
                 }
             }
@@ -3172,6 +3169,36 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("--permission-prompt-tool"))
         );
+    }
+
+    #[tokio::test]
+    async fn discovery_failure_keeps_fallback_and_finishes_loading() {
+        let claude: ClaudeCode =
+            serde_json::from_value(serde_json::json!({"base_command_override": "false"})).unwrap();
+
+        let patches: Vec<serde_json::Value> = claude
+            .discover_options(None, None)
+            .await
+            .unwrap()
+            .map(|patch| serde_json::to_value(patch).unwrap())
+            .collect()
+            .await;
+
+        assert!(
+            !patches[0][0]["value"]["model_selector"]["models"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        for path in [
+            "/options/loading_models",
+            "/options/loading_agents",
+            "/options/loading_slash_commands",
+        ] {
+            assert!(patches.iter().any(|patch| {
+                patch[0]["path"] == path && patch[0]["value"] == serde_json::Value::Bool(false)
+            }));
+        }
     }
 
     fn patches_to_entries(patches: &[json_patch::Patch]) -> Vec<NormalizedEntry> {
