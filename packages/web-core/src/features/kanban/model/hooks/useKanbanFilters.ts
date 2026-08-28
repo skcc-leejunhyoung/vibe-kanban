@@ -60,6 +60,12 @@ export function matchesIssueSearch(
   );
 }
 
+export function isMilestoneOverdue(targetDate: string, now = Date.now()) {
+  const due = new Date(`${targetDate.slice(0, 10)}T00:00:00`);
+  due.setDate(due.getDate() + 1);
+  return !Number.isNaN(due.getTime()) && due.getTime() <= now;
+}
+
 export function matchesMilestoneFilters(
   milestone:
     | Pick<ProjectMilestone, 'id' | 'target_date' | 'completed_at'>
@@ -87,7 +93,7 @@ export function matchesMilestoneFilters(
   return Boolean(
     milestone?.target_date &&
       !milestone.completed_at &&
-      Date.parse(milestone.target_date) < now
+      isMilestoneOverdue(milestone.target_date, now)
   );
 }
 
@@ -176,7 +182,8 @@ export function useKanbanFilters({
       for (const m of milestones) {
         if (!m.target_date || m.completed_at) continue;
         const due = Date.parse(m.target_date);
-        if (Number.isNaN(due) || due < now) continue;
+        if (Number.isNaN(due) || isMilestoneOverdue(m.target_date, now))
+          continue;
         if (due < currentMilestoneDue) {
           currentMilestoneDue = due;
           currentMilestoneId = m.id;
@@ -187,10 +194,10 @@ export function useKanbanFilters({
         const milestone = milestoneId
           ? milestonesById.get(milestoneId)
           : undefined;
-        const isMilestoneOverdue = Boolean(
+        const milestoneOverdue = Boolean(
           milestone?.target_date &&
             !milestone.completed_at &&
-            Date.parse(milestone.target_date) < now
+            isMilestoneOverdue(milestone.target_date, now)
         );
         return {
           statusId: issue.status_id,
@@ -198,7 +205,7 @@ export function useKanbanFilters({
           assigneeUserIds: assigneesByIssue[issue.id] ?? [],
           tagIds: tagsByIssue[issue.id] ?? [],
           milestoneId,
-          isMilestoneOverdue,
+          isMilestoneOverdue: milestoneOverdue,
           isCurrentMilestone:
             milestoneId !== null && milestoneId === currentMilestoneId,
           isBlocked: blockedIssueIds.has(issue.id),

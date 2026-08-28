@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isMilestoneOverdue,
   matchesIssueSearch,
   matchesMilestoneFilters,
 } from './useKanbanFilters';
@@ -49,6 +50,11 @@ describe('matchesMilestoneFilters', () => {
         now
       )
     ).toBe(false);
+  });
+
+  it('keeps a milestone current through its due date', () => {
+    const midday = new Date(2026, 7, 1, 12).getTime();
+    expect(isMilestoneOverdue(milestone.target_date, midday)).toBe(false);
   });
 
   it('filters issues without a milestone', () => {
