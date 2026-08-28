@@ -21,7 +21,8 @@ export const PRESET_COLORS = [
 
 export interface InlineColorPickerProps {
   value: string;
-  onChange: (color: string) => void;
+  /** isCustomInput is true when the color streams from the native color input */
+  onChange: (color: string, isCustomInput?: boolean) => void;
   colors?: readonly string[];
   onKeyDown?: (e: React.KeyboardEvent) => void;
   disabled?: boolean;
@@ -41,6 +42,9 @@ export const InlineColorPicker = forwardRef<
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
       if (disabled) return;
+      // Keys bubbling from the native color input must not cycle presets —
+      // that would silently overwrite an in-progress custom color.
+      if (e.target instanceof HTMLInputElement) return;
 
       if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -80,8 +84,8 @@ export const InlineColorPicker = forwardRef<
               'w-6 h-6 rounded-full transition-all',
               color === value
                 ? 'ring-2 ring-brand ring-offset-1'
-                : 'hover:scale-110',
-              disabled && 'opacity-50 cursor-not-allowed hover:scale-100'
+                : !disabled && 'hover:scale-110',
+              disabled && 'opacity-50 cursor-not-allowed'
             )}
             style={{ backgroundColor: `hsl(${color})` }}
           />
@@ -92,10 +96,9 @@ export const InlineColorPicker = forwardRef<
             'relative flex h-6 w-6 items-center justify-center rounded-full transition-all',
             isCustom
               ? 'ring-2 ring-brand ring-offset-1'
-              : 'border border-dashed border-border text-low hover:scale-110',
-            disabled
-              ? 'cursor-not-allowed opacity-50 hover:scale-100'
-              : 'cursor-pointer'
+              : 'border border-dashed border-border text-low',
+            !isCustom && !disabled && 'hover:scale-110',
+            disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
           )}
           style={isCustom ? { backgroundColor: `hsl(${value})` } : undefined}
         >
@@ -104,7 +107,7 @@ export const InlineColorPicker = forwardRef<
             type="color"
             aria-label="Custom color"
             value={hslStringToHex(value) ?? '#808080'}
-            onChange={(e) => onChange(hexToHslString(e.target.value))}
+            onChange={(e) => onChange(hexToHslString(e.target.value), true)}
             disabled={disabled}
             className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
           />

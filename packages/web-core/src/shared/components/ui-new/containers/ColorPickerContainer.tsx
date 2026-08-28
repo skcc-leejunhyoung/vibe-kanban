@@ -27,11 +27,13 @@ export function ColorPicker({
 }: ColorPickerProps) {
   const [open, setOpen] = useState(false);
 
-  const handleColorChange = (color: string) => {
+  const handleColorChange = (color: string, isCustomInput?: boolean) => {
     onChange(color);
     // Custom colors stream in live from the native color input — keep the
     // dropdown open so the input stays mounted; only a preset click closes it.
-    if (colors.includes(color)) {
+    // (Membership checks can't distinguish the two: a custom drag tick can
+    // round to a preset string and would unmount the input mid-pick.)
+    if (!isCustomInput) {
       setOpen(false);
     }
   };
