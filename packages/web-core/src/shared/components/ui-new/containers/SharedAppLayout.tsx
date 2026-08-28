@@ -229,7 +229,8 @@ export function SharedAppLayout() {
   const isPullRequestsActive = location.pathname === '/pull-requests';
   const isWorkspaceSidebarPreviewEnabled =
     !isMobile &&
-    isWorkspacesActive &&
+    appRuntime === 'local' &&
+    isPaneGridDestination(currentDestination) &&
     currentDestination?.kind !== 'workspaces' &&
     !isLeftSidebarVisible;
   const activeProjectId = projectDestination?.projectId ?? null;
