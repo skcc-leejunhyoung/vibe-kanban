@@ -42,9 +42,12 @@ export const InlineColorPicker = forwardRef<
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
       if (disabled) return;
-      // Keys bubbling from the native color input must not cycle presets —
-      // that would silently overwrite an in-progress custom color.
-      if (e.target instanceof HTMLInputElement) return;
+      // Keep native color-input keys from cycling presets or triggering
+      // keyboard shortcuts owned by parent components.
+      if (e.target instanceof HTMLInputElement) {
+        e.stopPropagation();
+        return;
+      }
 
       if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         e.preventDefault();
