@@ -29,7 +29,7 @@ pub(crate) fn content_type_and_disposition_for_attachment(
     }
 }
 
-fn is_safe_inline_attachment_mime_type(mime_type: &str) -> bool {
+pub(crate) fn is_safe_inline_attachment_mime_type(mime_type: &str) -> bool {
     matches!(
         mime_type,
         "image/png"

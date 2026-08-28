@@ -53,6 +53,7 @@
     "thinking": "思考中",
     "toolSummary": {
       "read": "{{path}} を読み込み",
+      "viewedImage": "画像 {{path}} を表示",
       "searched": "「{{query}}」を検索",
       "fetched": "{{url}} を取得",
       "ranCommand": "コマンドを実行",

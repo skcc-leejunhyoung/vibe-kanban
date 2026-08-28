@@ -53,6 +53,7 @@
     "thinking": "생각 중",
     "toolSummary": {
       "read": "{{path}} 읽기",
+      "viewedImage": "이미지 {{path}} 보기",
       "searched": "\"{{query}}\" 검색",
       "fetched": "{{url}} 가져오기",
       "ranCommand": "명령 실행",

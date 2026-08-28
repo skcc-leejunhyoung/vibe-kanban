@@ -46,7 +46,7 @@ use crate::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType, TodoItem, ToolStatus,
         plain_text_processor::PlainTextLogProcessor,
         utils::{
-            EntryIndexProvider,
+            EntryIndexProvider, images,
             patch::{self, ConversationPatch},
             shell_command_parsing::CommandCategory,
         },
@@ -1162,9 +1162,14 @@ impl ClaudeLogProcessor {
     /// Extract action type from structured tool data
     fn extract_action_type(tool_data: &ClaudeToolData, worktree_path: &str) -> ActionType {
         match tool_data {
-            ClaudeToolData::Read { file_path } => ActionType::FileRead {
-                path: make_path_relative(file_path, worktree_path),
-            },
+            ClaudeToolData::Read { file_path } => {
+                let path = make_path_relative(file_path, worktree_path);
+                if images::is_image_path(&path) {
+                    ActionType::ImageView { path }
+                } else {
+                    ActionType::FileRead { path }
+                }
+            }
             ClaudeToolData::Edit {
                 file_path,
                 old_string,
@@ -1885,6 +1890,38 @@ impl ClaudeLogProcessor {
                         }
                         // Note: With control protocol, denials are handled via protocol messages
                         // rather than error content parsing
+
+                        // Persist base64 image blocks (screenshots from MCP tools,
+                        // reads of files outside the workspace, …) into
+                        // `.vibe-attachments/` and surface each as an inline image
+                        // entry. Reads of in-workspace images already render via
+                        // their own ImageView tool entry — skip those to avoid
+                        // showing the same image twice.
+                        let read_shows_inline = matches!(
+                            Self::extract_action_type(&info.tool_data, worktree_path),
+                            ActionType::ImageView { ref path }
+                                if !std::path::Path::new(path).is_absolute()
+                        );
+                        if !read_shows_inline {
+                            for (mime, data) in images::extract_base64_image_blocks(content) {
+                                if let Some(rel_path) =
+                                    images::store_base64_image(worktree_path, &mime, &data)
+                                {
+                                    let entry = Self::tool_use_entry(
+                                        "image".to_string(),
+                                        ActionType::ImageView {
+                                            path: rel_path.clone(),
+                                        },
+                                        ToolStatus::Success,
+                                        rel_path,
+                                    );
+                                    patches.push(ConversationPatch::add_normalized_entry(
+                                        entry_index_provider.next(),
+                                        entry,
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2231,6 +2268,7 @@ impl ClaudeLogProcessor {
     ) -> String {
         match action_type {
             ActionType::FileRead { path } => path.to_string(),
+            ActionType::ImageView { path } => path.to_string(),
             ActionType::FileEdit { path, .. } => path.to_string(),
             ActionType::CommandRun { command, .. } => command.to_string(),
             ActionType::Search { query } => query.to_string(),
@@ -4181,6 +4219,155 @@ mod tests {
         assert_eq!(entries[1].content, "I'll help you with that");
 
         // ToolResult entry is ignored - no third entry
+    }
+
+    // 1x1 transparent PNG
+    const TEST_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    fn tool_use_json(id: &str, name: &str, input: serde_json::Value) -> ClaudeJson {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]
+            }
+        }))
+        .unwrap()
+    }
+
+    fn tool_result_json(id: &str, content: serde_json::Value) -> ClaudeJson {
+        serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": id, "content": content, "is_error": false}]
+            }
+        }))
+        .unwrap()
+    }
+
+    fn image_block(data: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": data}
+        })
+    }
+
+    #[test]
+    fn test_read_image_becomes_image_view_without_duplicate_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().to_str().unwrap();
+        let mut processor = ClaudeLogProcessor::new();
+
+        let tool_use = tool_use_json(
+            "t1",
+            "Read",
+            serde_json::json!({"file_path": format!("{worktree}/shots/a.png")}),
+        );
+        let entries = normalize_helper(&mut processor, &tool_use, worktree);
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            &entries[0].entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::ImageView { path },
+                ..
+            } if path == "shots/a.png"
+        ));
+
+        // The Read result carries the same image as base64 — it must NOT be
+        // duplicated as a stored attachment entry.
+        let tool_result = tool_result_json("t1", serde_json::json!([image_block(TEST_PNG_B64)]));
+        let entries = normalize_helper(&mut processor, &tool_result, worktree);
+        assert!(entries.iter().all(|e| !matches!(
+            &e.entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::ImageView { path },
+                ..
+            } if path.starts_with(".vibe-attachments/")
+        )));
+        assert!(!dir.path().join(".vibe-attachments").exists());
+    }
+
+    #[test]
+    fn test_non_image_read_stays_file_read() {
+        let tool_use = tool_use_json(
+            "t1",
+            "Read",
+            serde_json::json!({"file_path": "/work/src/main.rs"}),
+        );
+        let entries = normalize(&tool_use, "/work");
+        assert!(matches!(
+            &entries[0].entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::FileRead { path },
+                ..
+            } if path == "src/main.rs"
+        ));
+    }
+
+    #[test]
+    fn test_tool_result_image_block_stored_as_image_view_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().to_str().unwrap();
+        let mut processor = ClaudeLogProcessor::new();
+
+        let tool_use = tool_use_json(
+            "t1",
+            "mcp__browser__screenshot",
+            serde_json::json!({"selector": "body"}),
+        );
+        normalize_helper(&mut processor, &tool_use, worktree);
+
+        let tool_result = tool_result_json(
+            "t1",
+            serde_json::json!([
+                {"type": "text", "text": "took a screenshot"},
+                image_block(TEST_PNG_B64),
+            ]),
+        );
+        let entries = normalize_helper(&mut processor, &tool_result, worktree);
+
+        let image_paths: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| match &e.entry_type {
+                NormalizedEntryType::ToolUse {
+                    action_type: ActionType::ImageView { path },
+                    ..
+                } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(image_paths.len(), 1);
+        let stored = image_paths[0];
+        assert!(stored.starts_with(".vibe-attachments/agent-"));
+        assert!(stored.ends_with(".png"));
+        assert!(dir.path().join(stored).is_file());
+    }
+
+    #[test]
+    fn test_read_image_outside_workspace_stores_result_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().to_str().unwrap();
+        let mut processor = ClaudeLogProcessor::new();
+
+        // Absolute path outside the worktree stays absolute → can't be served
+        // directly, so the base64 result image must be persisted instead.
+        let tool_use = tool_use_json(
+            "t1",
+            "Read",
+            serde_json::json!({"file_path": "/elsewhere/shot.png"}),
+        );
+        normalize_helper(&mut processor, &tool_use, worktree);
+
+        let tool_result = tool_result_json("t1", serde_json::json!([image_block(TEST_PNG_B64)]));
+        let entries = normalize_helper(&mut processor, &tool_result, worktree);
+        assert!(entries.iter().any(|e| matches!(
+            &e.entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::ImageView { path },
+                ..
+            } if path.starts_with(".vibe-attachments/agent-")
+        )));
     }
 
     #[test]

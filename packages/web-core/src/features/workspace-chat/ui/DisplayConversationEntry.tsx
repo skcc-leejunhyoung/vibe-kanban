@@ -1,4 +1,12 @@
-import { useMemo, useCallback, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useMemo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
@@ -21,6 +29,9 @@ import { getFileIcon } from '@/shared/lib/fileTypeIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useTheme } from '@/shared/hooks/useTheme';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
+import { attachmentsApi } from '@/shared/lib/api';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -97,6 +108,10 @@ function getToolSummary(
   switch (action_type.action) {
     case 'file_read':
       return t('conversation.toolSummary.read', { path: action_type.path });
+    case 'image_view':
+      return t('conversation.toolSummary.viewedImage', {
+        path: action_type.path,
+      });
     case 'search':
       return t('conversation.toolSummary.searched', {
         query: action_type.query,
@@ -263,6 +278,21 @@ function renderToolUseEntry(
         workspaceId={workspaceWithSession?.id}
         sessionId={sessionId}
         repos={repos}
+      />
+    );
+  }
+
+  // Inline image (Codex view_image, Claude image reads / tool-result images)
+  if (action_type.action === 'image_view') {
+    return (
+      <InlineImageEntry
+        path={action_type.path}
+        summary={getToolSummary(entryType, t)}
+        expansionKey={expansionKey}
+        status={status}
+        toolName={entryType.tool_name}
+        workspaceId={workspaceWithSession?.id}
+        sessionId={sessionId}
       />
     );
   }
@@ -996,6 +1026,111 @@ function ToolSummaryEntry({
       isTruncated={isTruncated}
       actionType={actionType}
     />
+  );
+}
+
+/**
+ * Inline image the agent viewed or produced (Codex view_image, Claude image
+ * reads and tool-result images). Fetches the bytes through the host-aware
+ * workspace image endpoint (works in local and remote web) and opens the
+ * existing preview dialog on click. Falls back to a plain tool-summary row
+ * when the image can't be served (absolute path outside the workspace,
+ * deleted file, disallowed type, …).
+ */
+function InlineImageEntry({
+  path,
+  summary,
+  expansionKey,
+  status,
+  toolName,
+  workspaceId,
+  sessionId,
+}: {
+  path: string;
+  summary: string;
+  expansionKey: string;
+  status: ToolStatus;
+  toolName: string;
+  workspaceId: string | undefined;
+  sessionId: string | undefined;
+}) {
+  const hostId = useHostId();
+  const servable =
+    !!workspaceId &&
+    !!sessionId &&
+    !path.startsWith('/') &&
+    !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path);
+
+  const query = useQuery({
+    queryKey: [
+      'workspace-path-image',
+      workspaceId,
+      sessionId,
+      path,
+      hostId ?? null,
+    ],
+    queryFn: () =>
+      attachmentsApi.fetchWorkspaceImageBlob(
+        workspaceId!,
+        sessionId!,
+        path,
+        hostId
+      ),
+    enabled: servable,
+    staleTime: 4 * 60 * 1000,
+  });
+
+  const blob = query.data ?? null;
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!blob) {
+      setImageUrl(null);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    setImageUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [blob]);
+
+  const fileName = path.split('/').pop() || path;
+
+  if (!servable || (!query.isLoading && !blob)) {
+    return (
+      <ToolSummaryEntry
+        summary={summary}
+        expansionKey={expansionKey}
+        status={status}
+        content={path}
+        toolName={toolName}
+        command={undefined}
+        actionType="image_view"
+      />
+    );
+  }
+
+  return (
+    <div className="py-1">
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt={fileName}
+          title={path}
+          className="max-w-full max-h-[640px] rounded border border-border object-contain cursor-zoom-in"
+          loading="lazy"
+          onClick={() =>
+            ImagePreviewDialog.show({
+              imageUrl,
+              altText: path,
+              fileName,
+              format: /\.([a-zA-Z0-9]+)$/.exec(fileName)?.[1],
+              sizeBytes: blob ? BigInt(blob.size) : null,
+            })
+          }
+        />
+      ) : (
+        <div className="h-24 w-40 rounded border border-border bg-muted animate-pulse" />
+      )}
+    </div>
   );
 }
 

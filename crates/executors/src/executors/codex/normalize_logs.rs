@@ -53,7 +53,7 @@ use crate::{
         NormalizedEntryType, TodoItem, ToolResult, ToolResultValueType, ToolStatus,
         plain_text_processor::PlainTextLogProcessor,
         utils::{
-            ConversationPatch, EntryIndexProvider,
+            ConversationPatch, EntryIndexProvider, images,
             patch::{add_normalized_entry, replace_normalized_entry, upsert_normalized_entry},
             shell_command_parsing::{CommandCategory, unwrap_shell_command},
         },
@@ -719,26 +719,43 @@ fn app_dynamic_tool_status_to_tool_status(status: &AppDynamicToolCallStatus) -> 
     }
 }
 
-fn dynamic_tool_markdown_from_app_items(items: &[AppDynamicToolCallOutputContentItem]) -> String {
+/// Render a tool-output image reference: persist data URLs into
+/// `.vibe-attachments/` so the chat can inline them; keep other URLs as text.
+fn dynamic_tool_image_markdown(image_url: &str, worktree_path: &str) -> String {
+    if let Some((mime, data)) = images::parse_image_data_url(image_url)
+        && let Some(rel_path) = images::store_base64_image(worktree_path, mime, data)
+    {
+        return format!("![tool image]({rel_path})");
+    }
+    format!("Image: {image_url}")
+}
+
+fn dynamic_tool_markdown_from_app_items(
+    items: &[AppDynamicToolCallOutputContentItem],
+    worktree_path: &str,
+) -> String {
     items
         .iter()
         .map(|item| match item {
             AppDynamicToolCallOutputContentItem::InputText { text } => text.clone(),
             AppDynamicToolCallOutputContentItem::InputImage { image_url } => {
-                format!("Image: {image_url}")
+                dynamic_tool_image_markdown(image_url, worktree_path)
             }
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn dynamic_tool_markdown_from_core_items(items: &[CoreDynamicToolCallOutputContentItem]) -> String {
+fn dynamic_tool_markdown_from_core_items(
+    items: &[CoreDynamicToolCallOutputContentItem],
+    worktree_path: &str,
+) -> String {
     items
         .iter()
         .map(|item| match item {
             CoreDynamicToolCallOutputContentItem::InputText { text } => text.clone(),
             CoreDynamicToolCallOutputContentItem::InputImage { image_url } => {
-                format!("Image: {image_url}")
+                dynamic_tool_image_markdown(image_url, worktree_path)
             }
         })
         .collect::<Vec<_>>()
@@ -1184,8 +1201,9 @@ fn handle_direct_item_completed(
                 Some(false) => ToolStatus::Failed,
                 _ => app_dynamic_tool_status_to_tool_status(&status),
             };
-            let dynamic_result = content_items
-                .map(|items| ToolResult::markdown(dynamic_tool_markdown_from_app_items(&items)));
+            let dynamic_result = content_items.map(|items| {
+                ToolResult::markdown(dynamic_tool_markdown_from_app_items(&items, worktree_path))
+            });
             upsert_dynamic_tool_state(
                 state,
                 msg_store,
@@ -1219,7 +1237,7 @@ fn handle_direct_item_completed(
                     timestamp: None,
                     entry_type: NormalizedEntryType::ToolUse {
                         tool_name: "view_image".to_string(),
-                        action_type: ActionType::FileRead {
+                        action_type: ActionType::ImageView {
                             path: relative_path.clone(),
                         },
                         status: ToolStatus::Success,
@@ -2008,8 +2026,10 @@ pub fn normalize_logs(
                     );
                 }
                 EventMsg::DynamicToolCallResponse(response) => {
-                    let mut result_text =
-                        dynamic_tool_markdown_from_core_items(&response.content_items);
+                    let mut result_text = dynamic_tool_markdown_from_core_items(
+                        &response.content_items,
+                        &worktree_path_str,
+                    );
                     if let Some(error) = response.error
                         && !error.trim().is_empty()
                     {
@@ -2137,7 +2157,7 @@ pub fn normalize_logs(
                             timestamp: None,
                             entry_type: NormalizedEntryType::ToolUse {
                                 tool_name: "view_image".to_string(),
-                                action_type: ActionType::FileRead {
+                                action_type: ActionType::ImageView {
                                     path: relative_path.clone(),
                                 },
                                 status: ToolStatus::Success,
@@ -2764,6 +2784,28 @@ mod tests {
         }
 
         latest_normalized_entries(&msg_store)
+    }
+
+    #[test]
+    fn dynamic_tool_image_markdown_persists_data_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().to_str().unwrap();
+        // 1x1 transparent PNG
+        let data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+        let markdown = dynamic_tool_image_markdown(data_url, worktree);
+        let path = markdown
+            .strip_prefix("![tool image](")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .expect("expected inline image markdown");
+        assert!(path.starts_with(".vibe-attachments/agent-"));
+        assert!(dir.path().join(path).is_file());
+
+        // Non-data URLs keep the plain-text fallback.
+        assert_eq!(
+            dynamic_tool_image_markdown("https://example.com/a.png", worktree),
+            "Image: https://example.com/a.png"
+        );
     }
 
     #[test]

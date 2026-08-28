@@ -1,6 +1,7 @@
 //! Utility modules for executor framework
 
 pub mod entry_index;
+pub mod images;
 pub mod patch;
 
 pub use entry_index::EntryIndexProvider;

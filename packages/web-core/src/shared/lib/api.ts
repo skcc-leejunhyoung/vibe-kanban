@@ -2278,6 +2278,27 @@ export const attachmentsApi = {
   getAttachmentUrl: (attachmentId: string): string => {
     return `/api/attachments/${attachmentId}/file`;
   },
+
+  /**
+   * Fetch a workspace-relative image (agent screenshot, `.vibe-attachments/`
+   * file, …) through the host-aware transport so it also works in remote-web.
+   * Returns null when the server rejects the path (missing, outside the
+   * workspace, or not a safe inline image type).
+   */
+  fetchWorkspaceImageBlob: async (
+    workspaceId: string,
+    sessionId: string,
+    path: string,
+    hostId?: string | null
+  ): Promise<Blob | null> => {
+    const response = await makeHostAwareLocalApiRequest(
+      `/api/workspaces/${workspaceId}/images?session_id=${sessionId}&path=${encodeURIComponent(path)}`,
+      hostId,
+      { method: 'GET' }
+    );
+    if (!response.ok) return null;
+    return response.blob();
+  },
 };
 
 // Approval API

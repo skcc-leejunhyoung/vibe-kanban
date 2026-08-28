@@ -79,7 +79,7 @@ import { useSlashCommands } from '@/shared/hooks/useExecutorDiscovery';
 import { useIsRealMobile } from '@/shared/hooks/useIsMobile';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { cn } from '@/shared/lib/utils';
-import { repoApi } from '@/shared/lib/api';
+import { attachmentsApi, repoApi } from '@/shared/lib/api';
 import { searchTagsAndFiles } from '@/shared/lib/searchTagsAndFiles';
 import { Button } from '@vibe/ui/components/Button';
 import { Check, Clipboard, Pencil, Trash2 } from 'lucide-react';
@@ -466,6 +466,13 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
         createImageNode({
           fetchAttachmentUrl: fetchAttachmentSasUrl,
           fetchGitHubImage,
+          fetchWorkspaceImage: (workspaceId, sessionId, path) =>
+            attachmentsApi.fetchWorkspaceImageBlob(
+              workspaceId,
+              sessionId,
+              path,
+              hostId
+            ),
           onGitHubImageAuthorizationRequired:
             requestGitHubImageAuthorizationIfRequired,
           onGitHubImageAuthorizationRequested: requestGitHubImageAuthorization,
@@ -474,6 +481,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
           },
         }),
       [
+        hostId,
         requestGitHubImageAuthorization,
         requestGitHubImageAuthorizationIfRequired,
       ]

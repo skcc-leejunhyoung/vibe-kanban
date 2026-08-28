@@ -40,6 +40,7 @@
     "thinking": "思考中",
     "toolSummary": {
       "read": "讀取 {{path}}",
+      "viewedImage": "檢視圖片 {{path}}",
       "searched": "搜尋 \"{{query}}\"",
       "fetched": "取得 {{url}}",
       "ranCommand": "執行命令",

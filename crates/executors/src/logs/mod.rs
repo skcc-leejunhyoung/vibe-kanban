@@ -255,6 +255,13 @@ pub enum ActionType {
     FileRead {
         path: String,
     },
+    /// An image the agent viewed or produced, rendered inline in chat.
+    /// `path` is workspace-relative when the image lives inside the workspace
+    /// (including `.vibe-attachments/`); absolute paths are kept for display
+    /// but are never served inline.
+    ImageView {
+        path: String,
+    },
     FileEdit {
         path: String,
         changes: Vec<FileChange>,

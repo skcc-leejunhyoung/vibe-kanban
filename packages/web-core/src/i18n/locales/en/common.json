@@ -45,6 +45,7 @@
     "thinking": "Thinking",
     "toolSummary": {
       "read": "Read {{path}}",
+      "viewedImage": "Viewed image {{path}}",
       "searched": "Searched for \"{{query}}\"",
       "fetched": "Fetched {{url}}",
       "ranCommand": "Ran command",

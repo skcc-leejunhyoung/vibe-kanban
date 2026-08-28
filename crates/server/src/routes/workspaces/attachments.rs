@@ -30,7 +30,7 @@ use crate::{
     middleware::load_workspace_middleware,
     routes::attachments::{
         AttachmentMetadata, AttachmentResponse, content_type_and_disposition_for_attachment,
-        process_file_upload,
+        is_safe_inline_attachment_mime_type, process_file_upload,
     },
 };
 
@@ -272,6 +272,84 @@ pub async fn serve_file(
     Ok(response)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WorkspaceImageQuery {
+    pub session_id: Uuid,
+    /// Path relative to the session's working directory, e.g.
+    /// "screenshots/login.png" or ".vibe-attachments/agent-abc.png".
+    pub path: String,
+}
+
+/// Serve an image file from inside the workspace so chat can inline images the
+/// agent viewed, saved, or referenced in Markdown. Only canonical paths under
+/// the workspace root and safe-inline image MIME types are served.
+pub async fn serve_workspace_image(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<WorkspaceImageQuery>,
+) -> Result<Response, ApiError> {
+    let base_path = resolve_session_base_path(&deployment, &workspace, query.session_id).await?;
+    let canonical_path = resolve_workspace_image_path(&base_path, &query.path)
+        .ok_or(ApiError::File(FileError::NotFound))?;
+
+    let content_type = MimeGuess::from_path(&canonical_path)
+        .first_raw()
+        .unwrap_or("application/octet-stream");
+    if !is_safe_inline_attachment_mime_type(content_type) {
+        return Err(ApiError::File(FileError::NotFound));
+    }
+
+    let file = TokioFile::open(&canonical_path)
+        .await
+        .map_err(|_| ApiError::File(FileError::NotFound))?;
+    let metadata = file
+        .metadata()
+        .await
+        .map_err(|_| ApiError::File(FileError::NotFound))?;
+    if !metadata.is_file() {
+        return Err(ApiError::File(FileError::NotFound));
+    }
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, metadata.len())
+        // Workspace files are mutable (unlike content-hashed attachments), so
+        // only cache briefly.
+        .header(header::CACHE_CONTROL, "private, max-age=300")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(body)
+        .map_err(|e| ApiError::File(FileError::ResponseBuildError(e.to_string())))?;
+
+    Ok(response)
+}
+
+/// Resolve a workspace-relative image path to a canonical filesystem path,
+/// rejecting absolute paths, parent traversal, and symlink escapes out of the
+/// workspace (canonicalization resolves symlinks before the containment check).
+fn resolve_workspace_image_path(base_path: &Path, relative: &str) -> Option<std::path::PathBuf> {
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return None;
+    }
+
+    let canonical_base = std::fs::canonicalize(base_path).ok()?;
+    let canonical_path = std::fs::canonicalize(base_path.join(relative_path)).ok()?;
+    canonical_path
+        .starts_with(&canonical_base)
+        .then_some(canonical_path)
+}
+
 async fn ensure_workspace_attachment_exists(
     deployment: &DeploymentImpl,
     base_path: &Path,
@@ -395,6 +473,15 @@ pub(crate) async fn import_issue_attachments_from_remote(
     Ok(imported_attachments)
 }
 
+pub fn images_router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
+    Router::new()
+        .route("/", get(serve_workspace_image))
+        .layer(from_fn_with_state(
+            deployment.clone(),
+            load_workspace_middleware,
+        ))
+}
+
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let metadata_router = Router::new()
         .route("/", get(get_workspace_files))
@@ -419,4 +506,51 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             ));
 
     metadata_router.merge(file_router)
+}
+
+#[cfg(test)]
+mod workspace_image_path_tests {
+    use super::resolve_workspace_image_path;
+
+    #[test]
+    fn resolves_files_inside_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("shots")).unwrap();
+        std::fs::write(dir.path().join("shots/a.png"), b"png").unwrap();
+
+        let resolved = resolve_workspace_image_path(dir.path(), "shots/a.png").unwrap();
+        assert!(resolved.ends_with("shots/a.png"));
+        assert!(resolve_workspace_image_path(dir.path(), "./shots/a.png").is_some());
+    }
+
+    #[test]
+    fn rejects_absolute_traversal_and_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.png"), b"png").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"png").unwrap();
+
+        let abs = outside.path().join("secret.png");
+        assert!(resolve_workspace_image_path(dir.path(), abs.to_str().unwrap()).is_none());
+        assert!(resolve_workspace_image_path(dir.path(), "../secret.png").is_none());
+        assert!(resolve_workspace_image_path(dir.path(), "shots/../../secret.png").is_none());
+        assert!(resolve_workspace_image_path(dir.path(), "missing.png").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"png").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.png"),
+            dir.path().join("link.png"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linkdir")).unwrap();
+
+        assert!(resolve_workspace_image_path(dir.path(), "link.png").is_none());
+        assert!(resolve_workspace_image_path(dir.path(), "linkdir/secret.png").is_none());
+    }
 }

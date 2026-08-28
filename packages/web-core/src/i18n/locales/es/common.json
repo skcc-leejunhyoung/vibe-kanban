@@ -53,6 +53,7 @@
     "thinking": "Pensando",
     "toolSummary": {
       "read": "Leyó {{path}}",
+      "viewedImage": "Vio la imagen {{path}}",
       "searched": "Buscó \"{{query}}\"",
       "fetched": "Obtuvo {{url}}",
       "ranCommand": "Ejecutó comando",

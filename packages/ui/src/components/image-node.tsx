@@ -55,6 +55,13 @@ export interface CreateImageNodeOptions {
     type: AttachmentType
   ) => Promise<string>;
   fetchGitHubImage?: (sourceUrl: string) => Promise<Blob>;
+  /** Fetch a workspace-relative image (e.g. an agent screenshot referenced in
+   * Markdown) as a Blob via the host-aware API; null when rejected/missing. */
+  fetchWorkspaceImage?: (
+    workspaceId: string,
+    sessionId: string,
+    path: string
+  ) => Promise<Blob | null>;
   onGitHubImageAuthorizationRequired?: (
     error: unknown
   ) => Promise<boolean> | boolean;
@@ -82,6 +89,13 @@ function isImageLikeFileName(name: string): boolean {
   }
 
   return IMAGE_FILE_EXTENSION_REGEX.test(normalized);
+}
+
+/** True for scheme-less, non-absolute paths like `screenshots/login.png` that
+ * can be served from inside the workspace. The scheme test also rejects
+ * Windows drive paths (`C:\…`). */
+function isWorkspaceRelativePath(src: string): boolean {
+  return !src.startsWith('/') && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(src);
 }
 
 function isGitHubAttachmentUrl(src: string): boolean {
@@ -208,6 +222,36 @@ function useAttachmentUrl(
     url: query.data ?? null,
     loading: query.isLoading,
   };
+}
+
+function useWorkspacePathImageUrl(
+  path: string | null,
+  workspaceId: string | undefined,
+  sessionId: string | undefined,
+  fetchWorkspaceImage: CreateImageNodeOptions['fetchWorkspaceImage']
+): AttachmentUrlResult {
+  const enabled =
+    !!path && !!workspaceId && !!sessionId && !!fetchWorkspaceImage;
+  const query = useQuery({
+    queryKey: ['workspace-path-image', workspaceId, sessionId, path],
+    queryFn: () => fetchWorkspaceImage!(workspaceId!, sessionId!, path!),
+    enabled,
+    staleTime: ATTACHMENT_URL_STALE_TIME,
+  });
+
+  const blob = query.data ?? null;
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!blob) {
+      setUrl(null);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [blob]);
+
+  return { url, loading: enabled && (query.isLoading || (!!query.data && !url)) };
 }
 
 function useGitHubImageUrl(
@@ -351,6 +395,22 @@ export function createImageNode(options: CreateImageNodeOptions) {
       isAttachment &&
       (localAttachment?.mime_type?.startsWith('image/') ||
         isImageLikeFileName(altText));
+    // Markdown image with a workspace-relative path (e.g. an agent-saved
+    // screenshot) — rendered full size like GitHub attachments.
+    const isWorkspacePathImage =
+      !isVibeImage &&
+      !isAttachment &&
+      !isGitHubAttachment &&
+      isWorkspaceRelativePath(src) &&
+      isImageLikeFileName(src);
+
+    const { url: workspacePathImageUrl, loading: workspacePathImageLoading } =
+      useWorkspacePathImageUrl(
+        isWorkspacePathImage ? src : null,
+        workspaceId,
+        sessionId,
+        options.fetchWorkspaceImage
+      );
 
     const { url: thumbnailUrl, loading: attachmentLoading } = useAttachmentUrl(
       isImageAttachment && !localAttachment ? attachmentId : null,
@@ -406,6 +466,15 @@ export function createImageNode(options: CreateImageNodeOptions) {
           return;
         }
 
+        if (isWorkspacePathImage && workspacePathImageUrl) {
+          options.openImagePreview({
+            imageUrl: workspacePathImageUrl,
+            altText: altText || src,
+            fileName: src.split('/').pop() || src,
+          });
+          return;
+        }
+
         const localAttachmentUrl = localAttachment?.proxy_url ?? null;
 
         if (isAttachment && (localAttachmentUrl || fullSizeUrl)) {
@@ -442,6 +511,9 @@ export function createImageNode(options: CreateImageNodeOptions) {
         isAttachment,
         isGitHubAttachment,
         githubImageUrl,
+        isWorkspacePathImage,
+        workspacePathImageUrl,
+        src,
         localAttachment?.proxy_url,
         fullSizeUrl,
         isImageAttachment,
@@ -533,6 +605,48 @@ export function createImageNode(options: CreateImageNodeOptions) {
                 </button>
               )}
             </div>
+          )}
+          {editor.isEditable() && (
+            <button
+              onClick={handleDelete}
+              className="absolute top-1 right-1 w-4 h-4 rounded-full bg-foreground/70 hover:bg-destructive flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              aria-label={t('kanban.removeImage')}
+              type="button"
+            >
+              <X className="w-2.5 h-2.5 text-background" />
+            </button>
+          )}
+        </span>
+      );
+    }
+
+    // Workspace-relative markdown image: render full size while the blob is
+    // available; otherwise fall through to the generic chip below.
+    if (
+      isWorkspacePathImage &&
+      (workspacePathImageLoading || workspacePathImageUrl)
+    ) {
+      return (
+        <span
+          className="group relative inline-block max-w-full cursor-zoom-in"
+          onClick={handleClick}
+          onDoubleClick={onDoubleClickEdit}
+          role="button"
+          tabIndex={0}
+        >
+          {workspacePathImageUrl ? (
+            <img
+              src={workspacePathImageUrl}
+              alt={altText || src}
+              title={src}
+              className="max-w-full max-h-[640px] rounded border border-border object-contain"
+              draggable={false}
+              loading="lazy"
+            />
+          ) : (
+            <span className="w-10 h-10 flex items-center justify-center bg-muted rounded">
+              <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+            </span>
           )}
           {editor.isEditable() && (
             <button
