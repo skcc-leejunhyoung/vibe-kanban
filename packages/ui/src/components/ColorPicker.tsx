@@ -42,9 +42,15 @@ export const InlineColorPicker = forwardRef<
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
       if (disabled) return;
-      // Keep native color-input keys from cycling presets or triggering
-      // keyboard shortcuts owned by parent components.
+      // Keep native-control keys from triggering shortcuts owned by parents.
       if (e.target instanceof HTMLInputElement) {
+        e.stopPropagation();
+        return;
+      }
+      if (
+        e.target instanceof HTMLButtonElement &&
+        (e.key === 'Enter' || e.key === ' ')
+      ) {
         e.stopPropagation();
         return;
       }
