@@ -378,9 +378,10 @@ impl CollabAgentTaskState {
 
     fn touch(&mut self, event_at_ms: i64) {
         if let Some(started) = self.started_at_ms
-            && event_at_ms > started
+            && let Some(elapsed) = event_at_ms.checked_sub(started)
+            && let Ok(ms) = u32::try_from(elapsed)
         {
-            self.duration_ms = u32::try_from(event_at_ms - started).ok();
+            self.duration_ms = Some(ms);
         }
     }
 }
@@ -1369,8 +1370,16 @@ fn upsert_collab_agent(
     let task = agents.entry(key.to_string()).or_insert_with(|| {
         CollabAgentTaskState::new(COLLAB_AGENT_FALLBACK_DESCRIPTION.to_string(), event_at_ms)
     });
+    // Freeze the elapsed time once the agent reached a terminal status: Codex
+    // re-lists finished agents in later `wait` snapshots, and re-touching them
+    // would inflate the duration to the unrelated wait's timestamp. Capture the
+    // status before `update` so the completing event itself still records the
+    // final duration.
+    let was_terminal = matches!(task.status, ToolStatus::Success | ToolStatus::Failed);
     update(task);
-    task.touch(event_at_ms);
+    if !was_terminal {
+        task.touch(event_at_ms);
+    }
     let is_new = task.index.is_none();
     let index = *task.index.get_or_insert_with(|| entry_index.next());
     upsert_normalized_entry(msg_store, index, task.to_normalized_entry(), is_new);
@@ -3636,6 +3645,55 @@ mod tests {
         assert_eq!(last_activity, Some("Working"));
         assert_eq!(duration_ms, Some(60_000));
         assert_eq!(result, Some("Refactor done"));
+        assert!(matches!(status, ToolStatus::Success));
+    }
+
+    #[tokio::test]
+    async fn collab_completed_subagent_duration_frozen_on_later_wait() {
+        // Codex re-lists a finished agent in every later `wait` snapshot. Its
+        // elapsed time must stay frozen at completion, not grow to the
+        // unrelated wait's timestamp.
+        let entries = normalize_lines(&[
+            spawn_started_line(1_000),
+            spawn_completed_line(3_000),
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                10_000,
+                json!({
+                    "type": "collabAgentToolCall",
+                    "id": "call-wait-1",
+                    "tool": "wait",
+                    "status": "completed",
+                    "senderThreadId": "thread-main",
+                    "receiverThreadIds": ["agent-t1"],
+                    "prompt": null,
+                    "model": null,
+                    "agentsStates": {"agent-t1": {"status": "completed", "message": "Refactor done"}}
+                }),
+            ),
+            // A second, unrelated wait 50s later still lists agent-t1 completed.
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                60_000,
+                json!({
+                    "type": "collabAgentToolCall",
+                    "id": "call-wait-2",
+                    "tool": "wait",
+                    "status": "completed",
+                    "senderThreadId": "thread-main",
+                    "receiverThreadIds": ["agent-t2"],
+                    "prompt": null,
+                    "model": null,
+                    "agentsStates": {"agent-t1": {"status": "completed", "message": "Refactor done"}}
+                }),
+            ),
+        ])
+        .await;
+
+        let (_, _, _, duration_ms, _, status) = collab_task_fields(tool_use(&entries, "agent"));
+        assert_eq!(duration_ms, Some(9_000), "duration froze at completion");
         assert!(matches!(status, ToolStatus::Success));
     }
 
