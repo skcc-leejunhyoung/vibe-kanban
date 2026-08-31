@@ -509,7 +509,8 @@ pub async fn get_pr_description_generation(
     Extension(workspace): Extension<Workspace>,
     Query(query): Query<PrDescriptionGenerationQuery>,
 ) -> Result<ResponseJson<ApiResponse<PrDescriptionGenerationStatus>>, ApiError> {
-    let jobs = PR_DESCRIPTION_GENERATION_JOBS.read().await;
+    let mut jobs = PR_DESCRIPTION_GENERATION_JOBS.write().await;
+    prune_pr_description_generation_jobs(&mut jobs);
     let job = jobs
         .get(&query.job_id)
         .filter(|job| job.workspace_id == workspace.id)

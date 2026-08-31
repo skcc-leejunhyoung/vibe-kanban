@@ -1291,37 +1291,46 @@ export const workspacesApi = {
     signal?: AbortSignal,
     hostId?: string | null
   ): Promise<GeneratePrDescriptionResponse> => {
-    const startResponse = await makeHostAwareRequest(
-      `/api/workspaces/${workspaceId}/pull-requests/generate/start`,
-      hostId,
-      {
-        method: 'POST',
-        body: JSON.stringify(data),
-        signal,
-      }
+    const timeoutController = new AbortController();
+    const timeout = globalThis.setTimeout(
+      () => timeoutController.abort(),
+      150_000
     );
-    const { job_id } =
-      await handleApiResponse<StartPrDescriptionGenerationResponse>(
-        startResponse
-      );
-
-    const statusUrl = `/api/workspaces/${workspaceId}/pull-requests/generate/status?job_id=${encodeURIComponent(job_id)}`;
+    const requestSignal = signal
+      ? AbortSignal.any([signal, timeoutController.signal])
+      : timeoutController.signal;
+    let statusUrl: string | undefined;
     try {
+      const startResponse = await makeHostAwareRequest(
+        `/api/workspaces/${workspaceId}/pull-requests/generate/start`,
+        hostId,
+        {
+          method: 'POST',
+          body: JSON.stringify(data),
+          signal: requestSignal,
+        }
+      );
+      const { job_id } =
+        await handleApiResponse<StartPrDescriptionGenerationResponse>(
+          startResponse
+        );
+
+      statusUrl = `/api/workspaces/${workspaceId}/pull-requests/generate/status?job_id=${encodeURIComponent(job_id)}`;
       while (true) {
         await new Promise<void>((resolve, reject) => {
           const onAbort = () => {
-            window.clearTimeout(timeout);
+            globalThis.clearTimeout(timeout);
             reject(new DOMException('aborted', 'AbortError'));
           };
-          const timeout = window.setTimeout(() => {
-            signal?.removeEventListener('abort', onAbort);
+          const timeout = globalThis.setTimeout(() => {
+            requestSignal.removeEventListener('abort', onAbort);
             resolve();
           }, 1_000);
-          signal?.addEventListener('abort', onAbort, { once: true });
+          requestSignal.addEventListener('abort', onAbort, { once: true });
         });
 
         const statusResponse = await makeHostAwareRequest(statusUrl, hostId, {
-          signal,
+          signal: requestSignal,
         });
         const status =
           await handleApiResponse<PrDescriptionGenerationStatus>(
@@ -1335,12 +1344,17 @@ export const workspacesApi = {
         }
       }
     } catch (error) {
-      if (signal?.aborted) {
+      if ((timeoutController.signal.aborted || signal?.aborted) && statusUrl) {
         // The polling request is canceled locally; explicitly stop the detached
         // server job as a separate short relay request.
         void makeHostAwareRequest(statusUrl, hostId, { method: 'DELETE' });
       }
+      if (timeoutController.signal.aborted) {
+        throw new Error('PR description generation timed out.');
+      }
       throw error;
+    } finally {
+      globalThis.clearTimeout(timeout);
     }
   },
 

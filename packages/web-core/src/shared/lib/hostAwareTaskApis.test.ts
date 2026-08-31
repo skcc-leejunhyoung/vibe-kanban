@@ -24,6 +24,7 @@ function apiResponse<T>(data: T): Response {
 
 describe('host-aware task APIs', () => {
   afterEach(() => {
+    vi.useRealTimers();
     setLocalApiTransport(null);
   });
 
@@ -391,6 +392,38 @@ describe('host-aware task APIs', () => {
     await expect(generation).rejects.toMatchObject({ name: 'AbortError' });
     expect(request).toHaveBeenLastCalledWith(
       '/api/host/host-4/spec/generate/status?job_id=job-1',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
+  it('times out and cancels a stuck remote PR generation job', async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path.endsWith('/start')) return apiResponse({ job_id: 'job-1' });
+      if (init?.method === 'DELETE') return apiResponse(undefined);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError'))
+        );
+      });
+    });
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+
+    const generation = workspacesApi.generatePrDescription(
+      'workspace-1',
+      { repo_id: 'repo-1' } as never,
+      undefined,
+      'host-4'
+    );
+    const rejection = expect(generation).rejects.toThrow(
+      'PR description generation timed out.'
+    );
+
+    await vi.advanceTimersByTimeAsync(150_000);
+
+    await rejection;
+    expect(request).toHaveBeenLastCalledWith(
+      expect.stringContaining('/pull-requests/generate/status?job_id=job-1'),
       expect.objectContaining({ method: 'DELETE' })
     );
   });
