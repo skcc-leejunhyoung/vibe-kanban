@@ -95,6 +95,10 @@ import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { LinkPrByUrlDialog } from '@/shared/dialogs/command-bar/LinkPrByUrlDialog';
 import { getPageActions } from '@/shared/command-bar/actions/pages';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import {
+  publishChatExecutorConfig,
+  unpublishChatExecutorConfig,
+} from '@/shared/lib/chatExecutorConfig';
 import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
 import { useWorkspaceSessionSelectionStore } from '@/shared/hooks/useWorkspaceSessions';
 
@@ -593,8 +597,34 @@ describe('Actions.StartReview', () => {
 
     await Actions.StartReview.execute(ctx, 'ws1');
 
-    expect(vibeReview).toHaveBeenCalledWith('session-1', 'current-host');
+    expect(vibeReview).toHaveBeenCalledWith('session-1', 'current-host', null);
     expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
+
+  it('passes the chat composer executor selection when one is published', async () => {
+    vibeReview.mockResolvedValue({ id: 'review-session' } as never);
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'current-host',
+        currentSessionId: 'session-1',
+        selectSession: vi.fn(),
+      }
+    );
+    const config = { executor: 'CLAUDE_CODE', variant: 'plan' } as never;
+    publishChatExecutorConfig('session-1', config);
+
+    try {
+      await Actions.StartReview.execute(ctx, 'ws1');
+    } finally {
+      unpublishChatExecutorConfig('session-1', config);
+    }
+
+    expect(vibeReview).toHaveBeenCalledWith(
+      'session-1',
+      'current-host',
+      config
+    );
   });
 
   it('starts review from the target workspace when its row menu is used', async () => {
@@ -620,7 +650,11 @@ describe('Actions.StartReview', () => {
       'target-workspace',
       'remote-host'
     );
-    expect(vibeReview).toHaveBeenCalledWith('target-session', 'remote-host');
+    expect(vibeReview).toHaveBeenCalledWith(
+      'target-session',
+      'remote-host',
+      null
+    );
     expect(selectWorkspace).toHaveBeenCalledWith(
       'target-workspace',
       'remote-host'
@@ -651,10 +685,37 @@ describe('Actions.StartReviewAndCreatePR', () => {
       workspaceId: 'ws1',
       sessionId: 'session-1',
       hostId: 'current-host',
+      executorConfig: null,
       queryClient: ctx.queryClient,
       onReviewSession: expect.any(Function),
     });
     expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
+
+  it('passes the chat composer executor selection when one is published', async () => {
+    reviewAndCreatePr.mockResolvedValue(true);
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        currentHostId: 'current-host',
+        currentSessionId: 'session-1',
+      }
+    );
+    const config = { executor: 'CODEX', variant: 'DEFAULT' } as never;
+    publishChatExecutorConfig('session-1', config);
+
+    try {
+      await Actions.StartReviewAndCreatePR.execute(ctx, 'ws1');
+    } finally {
+      unpublishChatExecutorConfig('session-1', config);
+    }
+
+    expect(reviewAndCreatePr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'session-1',
+        executorConfig: config,
+      })
+    );
   });
 
   it('resolves a remote workspace session and preserves its host scope', async () => {

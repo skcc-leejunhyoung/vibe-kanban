@@ -45,6 +45,10 @@ import { useApprovals } from '@/shared/hooks/useApprovals';
 import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsDialog';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
+import {
+  publishChatExecutorConfig,
+  unpublishChatExecutorConfig,
+} from '@/shared/lib/chatExecutorConfig';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import { toPrettyCase } from '@/shared/lib/string';
 import {
@@ -706,6 +710,15 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     sessionId,
     onPersist: (cfg) => void saveToScratch(localMessageRef.current, cfg),
   });
+
+  // Expose the composer's resolved agent selection to command palette actions
+  // (Start Review / Review and create PR) so they run with this config instead
+  // of the backend's last-executed fallback.
+  useEffect(() => {
+    if (!sessionId || !executorConfig) return;
+    publishChatExecutorConfig(sessionId, executorConfig);
+    return () => unpublishChatExecutorConfig(sessionId, executorConfig);
+  }, [sessionId, executorConfig]);
 
   const supportsContextUsage =
     !!effectiveExecutor &&

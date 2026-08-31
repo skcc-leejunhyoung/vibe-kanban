@@ -138,6 +138,7 @@ import {
   openWorkspacesForActivePane,
 } from '@/shared/lib/openInSplitPane';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import { getChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import {
@@ -927,7 +928,8 @@ export const Actions = {
       }
       const reviewSession = await sessionsApi.vibeReview(
         targetSessionId,
-        targetHostId
+        targetHostId,
+        getChatExecutorConfig(targetSessionId)
       );
       await ctx.queryClient.invalidateQueries({
         queryKey: workspaceSessionKeys.byWorkspace(workspaceId, targetHostId),
@@ -968,6 +970,7 @@ export const Actions = {
         workspaceId,
         sessionId: targetSessionId,
         hostId: targetHostId,
+        executorConfig: getChatExecutorConfig(targetSessionId),
         queryClient: ctx.queryClient,
         onReviewSession: (reviewSessionId) => {
           if (!isCurrentWorkspace) {
