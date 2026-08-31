@@ -6,6 +6,7 @@ import {
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
+import { MiddleEllipsisPath } from './MiddleEllipsisPath';
 import { ToolStatusDot, type ToolStatusLike } from './ToolStatusDot';
 import type { ChatFileEntryDiffInput } from './ChatFileEntry';
 
@@ -288,7 +289,10 @@ export function ChatAggregatedDiffEntries({
               />
             )}
           </span>
-          <span className="text-sm text-normal truncate">{filePath}</span>
+          <MiddleEllipsisPath
+            path={filePath}
+            className="text-sm text-normal"
+          />
           <span className="text-xs text-low shrink-0">
             · {entries.length} {entries.length === 1 ? 'edit' : 'edits'}
           </span>

@@ -18,6 +18,7 @@ import {
 } from '@phosphor-icons/react';
 import { FileDiff, WorkerPoolContextProvider } from '@pierre/diffs/react';
 import type { DiffLineAnnotation, AnnotationSide } from '@pierre/diffs';
+import { MiddleEllipsisPath } from '@vibe/ui/components/MiddleEllipsisPath';
 const WorkerUrl = new URL(
   '@pierre/diffs/worker/worker-portable.js',
   import.meta.url
@@ -71,7 +72,6 @@ import {
   shouldApplyInitialChangesPanelAutoFocus,
   shouldStackChangesPanel,
   shouldDeferDiffLoad,
-  splitFilePath,
 } from './changesPanelModel';
 
 function workerFactory() {
@@ -86,37 +86,6 @@ const HIGHLIGHTER_OPTIONS = {
 
 const IS_MOBILE = isRealMobileDevice();
 const NOOP = () => {};
-
-function MiddleEllipsisPath({
-  path,
-  className = '',
-}: {
-  path: string;
-  className?: string;
-}) {
-  const { directory, fileName } = splitFilePath(path);
-
-  return (
-    <span
-      className={`min-w-0 max-w-full flex flex-1 items-baseline overflow-hidden font-mono ${className}`}
-      title={path}
-    >
-      {directory && (
-        <>
-          <span className="min-w-0 flex-1 truncate text-low">{directory}</span>
-          <span className="shrink-0 text-low">/</span>
-        </>
-      )}
-      <span
-        className={`min-w-0 shrink-0 truncate font-medium ${
-          directory ? 'max-w-[calc(100%-0.75rem)]' : 'max-w-full'
-        }`}
-      >
-        {fileName}
-      </span>
-    </span>
-  );
-}
 
 const PIERRE_DIFFS_THEME_CSS = `
   :host {
@@ -547,7 +516,10 @@ const DiffFileItem = memo(function DiffFileItem({
     () => (
       <span className="min-w-0 max-w-full flex flex-1 items-center gap-2 overflow-hidden">
         <FileIcon className="size-icon-base shrink-0" />
-        <MiddleEllipsisPath path={filePath} className="text-xs leading-none" />
+        <MiddleEllipsisPath
+          path={filePath}
+          className="font-mono text-xs leading-none"
+        />
       </span>
     ),
     [FileIcon, filePath]
@@ -1060,7 +1032,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
                         <FileIcon className="size-icon-xs shrink-0 text-low" />
                         <MiddleEllipsisPath
                           path={path}
-                          className="text-[11px] leading-none"
+                          className="font-mono text-[11px] leading-none"
                         />
                         <span
                           className={`w-3 shrink-0 text-center text-[10px] font-semibold ${status[1]}`}

@@ -108,6 +108,12 @@ export function GeneralSettingsSection() {
   const setMaxSplitPanes = useWorkspacePanesStore((state) => state.setMaxPanes);
   const diffViewMode = useDiffViewStore((state) => state.mode);
   const setDiffViewMode = useDiffViewStore((state) => state.setMode);
+  const expandChatFileChanges = useDiffViewStore(
+    (state) => state.expandChatFileChanges
+  );
+  const setExpandChatFileChanges = useDiffViewStore(
+    (state) => state.setExpandChatFileChanges
+  );
   const languageOptions = getLanguageOptions(
     t('language.browserDefault', {
       ns: 'common',
@@ -504,6 +510,19 @@ export function GeneralSettingsSection() {
             onChange={(value: DiffViewMode) => setDiffViewMode(value)}
           />
         </SettingsField>
+
+        <SettingsCheckbox
+          id="expand-chat-file-changes"
+          label={t('settings.general.diff.expandChatFileChanges.label', {
+            defaultValue: 'Expand file changes in chat by default',
+          })}
+          description={t('settings.general.diff.expandChatFileChanges.helper', {
+            defaultValue:
+              'Show file-change diffs expanded in the conversation. You can still collapse each file individually.',
+          })}
+          checked={expandChatFileChanges}
+          onChange={setExpandChatFileChanges}
+        />
       </SettingsCard>
 
       {/* Editor */}

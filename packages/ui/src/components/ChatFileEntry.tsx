@@ -6,6 +6,7 @@ import {
   FileIcon as DefaultFileIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { MiddleEllipsisPath } from './MiddleEllipsisPath';
 import { ToolStatusDot, type ToolStatusLike } from './ToolStatusDot';
 
 export type ChatFileEntryDiffInput =
@@ -115,7 +116,10 @@ export function ChatFileEntry({
                 />
               )}
             </span>
-            <span className="text-sm text-normal truncate">{filename}</span>
+            <MiddleEllipsisPath
+              path={filename}
+              className="text-sm text-normal"
+            />
             {onOpenInChanges && (
               <button
                 type="button"
@@ -183,7 +187,7 @@ export function ChatFileEntry({
             />
           )}
         </span>
-        <span className="text-sm text-normal truncate">{filename}</span>
+        <MiddleEllipsisPath path={filename} className="text-sm text-normal" />
         {onOpenInChanges && (
           <button
             type="button"

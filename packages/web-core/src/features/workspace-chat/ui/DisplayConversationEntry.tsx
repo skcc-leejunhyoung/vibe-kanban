@@ -67,7 +67,10 @@ import {
   isVSCodeWebview,
   openFileInVSCode,
 } from '@/integrations/vscode/runtime';
-import { useDiffViewMode } from '@/shared/stores/useDiffViewStore';
+import {
+  useDiffViewMode,
+  useExpandChatFileChanges,
+} from '@/shared/stores/useDiffViewStore';
 import type {
   AggregatedPatchGroup,
   AggregatedDiffGroup,
@@ -564,11 +567,13 @@ function FileEditEntry({
   expansionKey: string;
   status: ToolStatus;
 }) {
-  // Auto-expand when pending approval
+  // Auto-expand when pending approval or when the user opted into expanding
+  // chat file changes by default.
   const pendingApproval = status.status === 'pending_approval';
+  const expandByDefault = useExpandChatFileChanges();
   const [expanded, toggle] = usePersistedExpanded(
     expansionKey as PersistKey,
-    pendingApproval
+    pendingApproval || expandByDefault
   );
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
@@ -1492,9 +1497,10 @@ function AggregatedDiffGroupEntry({ group }: { group: AggregatedDiffGroup }) {
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
   const { viewFileInChanges, findMatchingDiffTarget } = useChangesViewActions();
+  const expandByDefault = useExpandChatFileChanges();
   const [expanded, toggle] = usePersistedExpanded(
     `diff:${group.patchKey}`,
-    false
+    expandByDefault
   );
   const [isHovered, setIsHovered] = useState(false);
   const FileIcon = useMemo(

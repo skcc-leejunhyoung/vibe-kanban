@@ -11,6 +11,9 @@ type State = {
   setIgnoreWhitespace: (value: boolean) => void;
   wrapText: boolean;
   setWrapText: (value: boolean) => void;
+  /** Expand file-change diffs in chat by default (still collapsible per file). */
+  expandChatFileChanges: boolean;
+  setExpandChatFileChanges: (value: boolean) => void;
 };
 
 export const useDiffViewStore = create<State>()(
@@ -24,6 +27,9 @@ export const useDiffViewStore = create<State>()(
       setIgnoreWhitespace: (value) => set({ ignoreWhitespace: value }),
       wrapText: false,
       setWrapText: (value) => set({ wrapText: value }),
+      expandChatFileChanges: false,
+      setExpandChatFileChanges: (value) =>
+        set({ expandChatFileChanges: value }),
     }),
     {
       name: 'diff-view-preferences',
@@ -31,6 +37,7 @@ export const useDiffViewStore = create<State>()(
         mode: state.mode,
         ignoreWhitespace: state.ignoreWhitespace,
         wrapText: state.wrapText,
+        expandChatFileChanges: state.expandChatFileChanges,
       }),
     }
   )
@@ -40,3 +47,5 @@ export const useDiffViewMode = () => useDiffViewStore((s) => s.mode);
 export const useIgnoreWhitespaceDiff = () =>
   useDiffViewStore((s) => s.ignoreWhitespace);
 export const useWrapTextDiff = () => useDiffViewStore((s) => s.wrapText);
+export const useExpandChatFileChanges = () =>
+  useDiffViewStore((s) => s.expandChatFileChanges);
