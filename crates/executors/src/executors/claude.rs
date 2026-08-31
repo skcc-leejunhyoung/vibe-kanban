@@ -1478,6 +1478,7 @@ impl ClaudeLogProcessor {
                 tool_use_id,
                 description,
                 task_type,
+                subagent_type,
                 prompt,
                 summary,
                 usage,
@@ -1519,12 +1520,14 @@ impl ClaudeLogProcessor {
                             && !self.tool_map.contains_key(tool_use_id)
                         {
                             let desc = description.clone().unwrap_or_else(|| "Task".to_string());
-                            let subagent_type = task_type.clone();
+                            // Prefer the specific agent role over the generic
+                            // task kind (`local_agent` / `local_bash`).
+                            let role = subagent_type.clone().or_else(|| task_type.clone());
                             let entry = Self::tool_use_entry(
                                 "Task".to_string(),
                                 ActionType::TaskCreate {
                                     description: desc.clone(),
-                                    subagent_type: subagent_type.clone(),
+                                    subagent_type: role.clone(),
                                     result: None,
                                     last_activity: None,
                                     duration_ms: None,
@@ -1540,7 +1543,7 @@ impl ClaudeLogProcessor {
                                     entry_index: idx,
                                     tool_name: "Task".to_string(),
                                     tool_data: ClaudeToolData::Task {
-                                        subagent_type,
+                                        subagent_type: role,
                                         description: description.clone(),
                                         prompt: prompt.clone(),
                                     },
@@ -1553,13 +1556,15 @@ impl ClaudeLogProcessor {
                         if let (Some(tool_use_id), Some(desc)) = (tool_use_id, description)
                             && let Some(info) = self.tool_map.get_mut(tool_use_id)
                         {
-                            // `task_progress` may name the subagent role
-                            // (`subagent_type`) when `task_started` only had a
-                            // generic `task_type`; keep the freshest value.
-                            if let ClaudeToolData::Task { subagent_type, .. } = &mut info.tool_data
-                                && task_type.is_some()
+                            // `task_progress` names the specific subagent role;
+                            // upgrade entries that only had a generic kind.
+                            if let ClaudeToolData::Task {
+                                subagent_type: stored,
+                                ..
+                            } = &mut info.tool_data
+                                && subagent_type.is_some()
                             {
-                                *subagent_type = task_type.clone();
+                                *stored = subagent_type.clone();
                             }
                             let info = info.clone();
                             let meta = self.task_meta.entry(tool_use_id.clone()).or_default();
@@ -2716,10 +2721,15 @@ pub enum ClaudeJson {
         tool_use_id: Option<String>,
         #[serde(default)]
         description: Option<String>,
-        /// Subagent role. `task_started` sends it as `task_type`,
-        /// `task_progress` as `subagent_type`.
-        #[serde(default, alias = "subagent_type")]
+        /// Generic task kind on `task_started` (`local_bash`, `local_agent`).
+        #[serde(default)]
         task_type: Option<String>,
+        /// Specific subagent role (`Explore`, `general-purpose`, …). Present
+        /// alongside `task_type` on agent `task_started` events and on every
+        /// `task_progress` — a separate field because serde aliases reject
+        /// lines carrying both keys.
+        #[serde(default)]
+        subagent_type: Option<String>,
         #[serde(default)]
         prompt: Option<String>,
         #[serde(default)]
@@ -4844,6 +4854,21 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let (_, _, _, _, _, status) = task_create_fields(&entries[0]);
         assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[test]
+    fn task_started_with_both_role_keys_parses_and_prefers_specific() {
+        // Real agent task_started events carry BOTH subagent_type and
+        // task_type on the same line; parsing must accept that (an alias on
+        // one field would reject it as a duplicate) and keep the specific role.
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"aca274fe7eda0ab76","tool_use_id":"tool_1","description":"Find Open PR dialog AI generation code","subagent_type":"Explore","task_type":"local_agent","prompt":"scan the dialogs"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (description, subagent_type, _, _, _, status) = task_create_fields(&entries[0]);
+        assert_eq!(description, "Find Open PR dialog AI generation code");
+        assert_eq!(subagent_type, Some("Explore"));
+        assert!(matches!(status, ToolStatus::Created));
     }
 
     #[test]
