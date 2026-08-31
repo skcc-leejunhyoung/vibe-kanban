@@ -95,10 +95,7 @@ import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { LinkPrByUrlDialog } from '@/shared/dialogs/command-bar/LinkPrByUrlDialog';
 import { getPageActions } from '@/shared/command-bar/actions/pages';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
-import {
-  publishChatExecutorConfig,
-  unpublishChatExecutorConfig,
-} from '@/shared/lib/chatExecutorConfig';
+import { publishChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
 import { useWorkspaceSessionSelectionStore } from '@/shared/hooks/useWorkspaceSessions';
 
@@ -607,21 +604,17 @@ describe('Actions.StartReview', () => {
       { id: 'ws1' },
       {
         currentHostId: 'current-host',
-        currentSessionId: 'session-1',
+        currentSessionId: 'published-review-session',
         selectSession: vi.fn(),
       }
     );
     const config = { executor: 'CLAUDE_CODE', variant: 'plan' } as never;
-    publishChatExecutorConfig('session-1', config);
+    publishChatExecutorConfig('published-review-session', config);
 
-    try {
-      await Actions.StartReview.execute(ctx, 'ws1');
-    } finally {
-      unpublishChatExecutorConfig('session-1', config);
-    }
+    await Actions.StartReview.execute(ctx, 'ws1');
 
     expect(vibeReview).toHaveBeenCalledWith(
-      'session-1',
+      'published-review-session',
       'current-host',
       config
     );
@@ -698,21 +691,17 @@ describe('Actions.StartReviewAndCreatePR', () => {
       { id: 'ws1' },
       {
         currentHostId: 'current-host',
-        currentSessionId: 'session-1',
+        currentSessionId: 'published-pr-session',
       }
     );
     const config = { executor: 'CODEX', variant: 'DEFAULT' } as never;
-    publishChatExecutorConfig('session-1', config);
+    publishChatExecutorConfig('published-pr-session', config);
 
-    try {
-      await Actions.StartReviewAndCreatePR.execute(ctx, 'ws1');
-    } finally {
-      unpublishChatExecutorConfig('session-1', config);
-    }
+    await Actions.StartReviewAndCreatePR.execute(ctx, 'ws1');
 
     expect(reviewAndCreatePr).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: 'session-1',
+        sessionId: 'published-pr-session',
         executorConfig: config,
       })
     );

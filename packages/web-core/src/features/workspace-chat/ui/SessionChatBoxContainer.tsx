@@ -45,10 +45,7 @@ import { useApprovals } from '@/shared/hooks/useApprovals';
 import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsDialog';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
-import {
-  publishChatExecutorConfig,
-  unpublishChatExecutorConfig,
-} from '@/shared/lib/chatExecutorConfig';
+import { publishChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import { toPrettyCase } from '@/shared/lib/string';
 import {
@@ -713,11 +710,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Expose the composer's resolved agent selection to command palette actions
   // (Start Review / Review and create PR) so they run with this config instead
-  // of the backend's last-executed fallback.
+  // of the backend's last-executed fallback. Published entries persist past
+  // unmount on purpose: the palette must honor the selection even while the
+  // chat panel is hidden (narrow-pane changes view, hidden left panel).
   useEffect(() => {
     if (!sessionId || !executorConfig) return;
     publishChatExecutorConfig(sessionId, executorConfig);
-    return () => unpublishChatExecutorConfig(sessionId, executorConfig);
   }, [sessionId, executorConfig]);
 
   const supportsContextUsage =
