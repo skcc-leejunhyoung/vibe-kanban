@@ -66,37 +66,6 @@ export function parseModelId(
   };
 }
 
-export function appendPresetModel(
-  config: ModelSelectorConfig | null,
-  presetModel: string | null | undefined
-): ModelSelectorConfig | null {
-  if (!config || !presetModel) return config;
-  const hasProviders = config.providers.length > 0;
-  const { providerId, modelId } = parseModelId(presetModel, hasProviders);
-  if (!modelId) return config;
-
-  const exists = config.models.some(
-    (m) =>
-      m.id.toLowerCase() === modelId.toLowerCase() &&
-      (!providerId || m.provider_id?.toLowerCase() === providerId.toLowerCase())
-  );
-  if (exists) return config;
-
-  return {
-    ...config,
-    models: [
-      {
-        id: modelId,
-        name: modelId,
-        provider_id: providerId,
-        reasoning_options: [],
-        supports_fast: false,
-      },
-      ...config.models,
-    ],
-  };
-}
-
 export function resolveDefaultModelId(
   models: ModelInfo[],
   providerId: string | null,

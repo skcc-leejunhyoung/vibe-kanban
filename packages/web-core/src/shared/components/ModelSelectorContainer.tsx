@@ -27,7 +27,6 @@ import {
   getSelectedModel,
   escapeAttributeValue,
   parseModelId,
-  appendPresetModel,
   resolveDefaultModelId,
   isModelAvailable,
   resolveDefaultReasoningId,
@@ -176,7 +175,7 @@ export function ModelSelectorContainer({
     [presetOptions?.model_id, hasProviders, supportsFast]
   );
 
-  const config = appendPresetModel(baseConfig, presetModelNormalized);
+  const config = baseConfig;
 
   const availableProviderIds = useMemo(
     () => config?.providers.map((item) => item.id) ?? [],
