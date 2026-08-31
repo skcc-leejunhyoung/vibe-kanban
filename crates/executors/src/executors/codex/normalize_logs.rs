@@ -1447,7 +1447,12 @@ fn handle_collab_thread_item(
                                 if let Some(existing) = state.collab_agents.remove(thread_id) {
                                     // Events for the thread beat the spawn
                                     // completion; fold their outcome into the
-                                    // placeholder row.
+                                    // placeholder row and drop the separate row
+                                    // they already rendered.
+                                    if let Some(stale_index) = existing.index {
+                                        msg_store
+                                            .push_patch(ConversationPatch::remove(stale_index));
+                                    }
                                     task.status = existing.status;
                                     task.last_activity =
                                         existing.last_activity.or(task.last_activity);
@@ -3052,10 +3057,24 @@ mod tests {
     fn latest_normalized_entries(msg_store: &MsgStore) -> Vec<NormalizedEntry> {
         let mut entries = BTreeMap::new();
         for msg in msg_store.get_history() {
-            if let LogMsg::JsonPatch(patch) = msg
-                && let Some((index, entry)) = extract_normalized_entry_from_patch(&patch)
-            {
+            let LogMsg::JsonPatch(patch) = msg else {
+                continue;
+            };
+            if let Some((index, entry)) = extract_normalized_entry_from_patch(&patch) {
                 entries.insert(index, entry);
+            } else {
+                // A patch on `/entries/N` with no entry payload is a removal;
+                // honor it so replayed state matches the frontend.
+                for op in &patch.0 {
+                    if let Some(index) = op
+                        .path()
+                        .as_str()
+                        .strip_prefix("/entries/")
+                        .and_then(|s| s.parse::<usize>().ok())
+                    {
+                        entries.remove(&index);
+                    }
+                }
             }
         }
         entries.into_values().collect()
@@ -3729,5 +3748,43 @@ mod tests {
         assert_eq!(description, "worker");
         assert_eq!(last_activity, Some("Started"));
         assert!(matches!(status, ToolStatus::Created));
+    }
+
+    #[tokio::test]
+    async fn collab_activity_before_spawn_completion_no_duplicate() {
+        // Activity for the spawned thread arrives BEFORE the spawn call
+        // completes and re-keys the placeholder row. The fold must not leave a
+        // second (stale) row behind.
+        let entries = normalize_lines(&[
+            spawn_started_line(1_000),
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                2_000,
+                json!({
+                    "type": "subAgentActivity",
+                    "id": "activity-1",
+                    "kind": "started",
+                    "agentThreadId": "agent-t1",
+                    "agentPath": "/root/worker"
+                }),
+            ),
+            spawn_completed_line(3_000),
+        ])
+        .await;
+
+        let count = entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    &entry.entry_type,
+                    NormalizedEntryType::ToolUse {
+                        action_type: ActionType::TaskCreate { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(count, 1, "fold must not leave a duplicate agent row");
     }
 }
