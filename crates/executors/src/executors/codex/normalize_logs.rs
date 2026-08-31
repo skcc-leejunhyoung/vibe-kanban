@@ -1501,6 +1501,13 @@ fn handle_collab_thread_item(
                 AppCollabAgentTool::Wait | AppCollabAgentTool::CloseAgent => {}
             }
             for (thread_id, agent_state) in &agents_states {
+                // A NotFound answer for a thread we never rendered must not
+                // fabricate a phantom "Agent" row stuck in running state.
+                if matches!(agent_state.status, AppCollabAgentStatus::NotFound)
+                    && !state.collab_agents.contains_key(thread_id)
+                {
+                    continue;
+                }
                 upsert_collab_agent(
                     &mut state.collab_agents,
                     msg_store,
@@ -3665,6 +3672,38 @@ mod tests {
         let (_, _, last_activity, _, _, status) = collab_task_fields(tool_use(&entries, "agent"));
         assert_eq!(last_activity, Some("Interrupted"));
         assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn wait_not_found_skips_unknown_agents() {
+        let entries = normalize_lines(&[collab_item_line(
+            "item/completed",
+            "completedAtMs",
+            5_000,
+            json!({
+                "type": "collabAgentToolCall",
+                "id": "call-wait-9",
+                "tool": "wait",
+                "status": "failed",
+                "senderThreadId": "thread-main",
+                "receiverThreadIds": ["agent-unknown"],
+                "prompt": null,
+                "model": null,
+                "agentsStates": {"agent-unknown": {"status": "notFound", "message": null}}
+            }),
+        )])
+        .await;
+
+        assert!(
+            entries.iter().all(|entry| !matches!(
+                &entry.entry_type,
+                NormalizedEntryType::ToolUse {
+                    action_type: ActionType::TaskCreate { .. },
+                    ..
+                }
+            )),
+            "NotFound for an unknown thread must not create a phantom agent row"
+        );
     }
 
     #[tokio::test]

@@ -1122,6 +1122,22 @@ impl ClaudeLogProcessor {
         (entry, tool_name, content)
     }
 
+    /// (subagent_type, original description) of a tracked Task tool call.
+    /// The original description keeps task event replacements from adopting
+    /// the entry's display content (`Task: \`…\``) as the panel title.
+    fn task_tool_fields(info: &ClaudeToolCallInfo) -> (Option<String>, Option<String>) {
+        if let ClaudeToolData::Task {
+            subagent_type,
+            description,
+            ..
+        } = &info.tool_data
+        {
+            (subagent_type.clone(), description.clone())
+        } else {
+            (None, None)
+        }
+    }
+
     fn tool_use_entry(
         tool_name: String,
         action_type: ActionType,
@@ -1556,17 +1572,11 @@ impl ClaudeLogProcessor {
                                 meta.duration_ms = u32::try_from(ms).ok();
                             }
                             let meta = meta.clone();
-                            let subagent_type =
-                                if let ClaudeToolData::Task { subagent_type, .. } = &info.tool_data
-                                {
-                                    subagent_type.clone()
-                                } else {
-                                    None
-                                };
+                            let (subagent_type, task_desc) = Self::task_tool_fields(&info);
                             let entry = Self::tool_use_entry(
                                 info.tool_name.clone(),
                                 ActionType::TaskCreate {
-                                    description: info.content.clone(),
+                                    description: task_desc.unwrap_or_else(|| info.content.clone()),
                                     subagent_type,
                                     result: None,
                                     last_activity: meta.last_activity,
@@ -1582,21 +1592,20 @@ impl ClaudeLogProcessor {
                         if let Some(tool_use_id) = tool_use_id
                             && let Some(info) = self.tool_map.get(tool_use_id).cloned()
                         {
+                            // "stopped" = interrupted before finishing; showing it
+                            // as success would misreport cancelled subagents.
                             let task_status = match status.as_deref() {
-                                Some("failed") | Some("error") => ToolStatus::Failed,
+                                Some("failed") | Some("error") | Some("stopped") => {
+                                    ToolStatus::Failed
+                                }
                                 _ => ToolStatus::Success,
                             };
-                            let subagent_type =
-                                if let ClaudeToolData::Task { subagent_type, .. } = &info.tool_data
-                                {
-                                    subagent_type.clone()
-                                } else {
-                                    None
-                                };
+                            let (subagent_type, task_desc) = Self::task_tool_fields(&info);
                             let meta = self.task_meta.get(tool_use_id).cloned().unwrap_or_default();
                             let desc = summary
                                 .clone()
                                 .or(description.clone())
+                                .or(task_desc)
                                 .unwrap_or_else(|| info.content.clone());
                             let entry = Self::tool_use_entry(
                                 info.tool_name.clone(),
@@ -1905,20 +1914,12 @@ impl ClaudeLogProcessor {
                                 ToolStatus::Success
                             };
 
-                            // Extract subagent_type from the original tool_data
-                            let subagent_type =
-                                if let ClaudeToolData::Task { subagent_type, .. } = &info.tool_data
-                                {
-                                    subagent_type.clone()
-                                } else {
-                                    None
-                                };
-
+                            let (subagent_type, task_desc) = Self::task_tool_fields(&info);
                             let meta = self.task_meta.remove(tool_use_id).unwrap_or_default();
                             let entry = Self::tool_use_entry(
                                 info.tool_name.clone(),
                                 ActionType::TaskCreate {
-                                    description: info.content.clone(),
+                                    description: task_desc.unwrap_or_else(|| info.content.clone()),
                                     subagent_type,
                                     result: Some(crate::logs::ToolResult {
                                         r#type: res_type,
@@ -4830,6 +4831,34 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let (_, _, _, _, _, status) = task_create_fields(&entries[0]);
         assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[test]
+    fn task_notification_stopped_marks_entry_failed() {
+        // Real logs report user-interrupted tasks as "stopped"; success would
+        // misreport them in the panel.
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tool_1","status":"stopped"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (_, _, _, _, _, status) = task_create_fields(&entries[0]);
+        assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[test]
+    fn task_progress_after_tool_use_keeps_original_description() {
+        // Tasks spawned via the Task TOOL store `Task: `desc`` as entry content;
+        // progress replacements must keep the clean description as the title.
+        let entries = normalize_sequence(&[
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"Task","input":{"subagent_type":"Explore","description":"Audit auth flow","prompt":"deep dive"}}]}}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"t1","tool_use_id":"tool_1","description":"Reading src/auth.rs","usage":{"duration_ms":100}}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (description, subagent_type, last_activity, _, _, _) = task_create_fields(&entries[0]);
+        assert_eq!(description, "Audit auth flow");
+        assert_eq!(subagent_type, Some("Explore"));
+        assert_eq!(last_activity, Some("Reading src/auth.rs"));
     }
 
     #[test]
