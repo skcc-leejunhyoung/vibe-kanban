@@ -233,7 +233,8 @@ export function ModelSelectorContainer({
     : null;
 
   const selectedModelId = (() => {
-    const candidate = configModelId ?? resolvedPresetModelId ?? defaultModelId;
+    if (configModelId) return configModelId;
+    const candidate = resolvedPresetModelId ?? defaultModelId;
     if (!candidate || !config || !selectedProviderId) return candidate;
     const hasMatch = isModelAvailable(config, selectedProviderId, candidate);
     return hasMatch
