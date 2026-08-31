@@ -19,7 +19,7 @@ export function MiddleEllipsisPath({
   return (
     <span
       className={cn(
-        'min-w-0 max-w-full flex flex-1 items-baseline overflow-hidden',
+        'min-w-0 max-w-full flex items-baseline overflow-hidden',
         className
       )}
       title={path}

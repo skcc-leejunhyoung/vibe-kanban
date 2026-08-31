@@ -107,6 +107,10 @@
           "helper": "Unified shows changes in one column. Split shows old and new versions side by side.",
           "unified": "Unified",
           "split": "Split"
+        },
+        "expandChatFileChanges": {
+          "label": "Expand file changes in chat by default",
+          "helper": "Show file-change diffs expanded in the conversation. You can still collapse each file individually."
         }
       },
       "themeEditor": {

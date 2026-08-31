@@ -518,7 +518,7 @@ const DiffFileItem = memo(function DiffFileItem({
         <FileIcon className="size-icon-base shrink-0" />
         <MiddleEllipsisPath
           path={filePath}
-          className="font-mono text-xs leading-none"
+          className="flex-1 font-mono text-xs leading-none"
         />
       </span>
     ),
@@ -1032,7 +1032,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
                         <FileIcon className="size-icon-xs shrink-0 text-low" />
                         <MiddleEllipsisPath
                           path={path}
-                          className="font-mono text-[11px] leading-none"
+                          className="flex-1 font-mono text-[11px] leading-none"
                         />
                         <span
                           className={`w-3 shrink-0 text-center text-[10px] font-semibold ${status[1]}`}
