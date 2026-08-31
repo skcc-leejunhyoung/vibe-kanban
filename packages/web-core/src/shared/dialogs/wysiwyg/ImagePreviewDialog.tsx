@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   Dialog,
   DialogContent,
@@ -21,6 +22,7 @@ export interface ImagePreviewDialogProps {
 
 const ImagePreviewDialogImpl = create<ImagePreviewDialogProps>((props) => {
   const modal = useModal();
+  const { t } = useTranslation();
   const { imageUrl, altText, fileName, format, sizeBytes } = props;
   const [imageLoaded, setImageLoaded] = useState(false);
 
@@ -89,6 +91,8 @@ const ImagePreviewDialogImpl = create<ImagePreviewDialogProps>((props) => {
             onClick={handleDownload}
             className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
             type="button"
+            aria-label={t('kanban.downloadAttachment')}
+            title={t('kanban.downloadAttachment')}
           >
             <Download className="w-3.5 h-3.5" />
           </button>
