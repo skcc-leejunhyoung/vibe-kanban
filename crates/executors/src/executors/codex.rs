@@ -140,6 +140,7 @@ fn model_selector_from_live(
         default_model,
         permissions: vec![
             PermissionPolicy::Auto,
+            PermissionPolicy::DontAsk,
             PermissionPolicy::Supervised,
             PermissionPolicy::Plan,
         ],
@@ -1036,6 +1037,11 @@ mod tests {
         let config = model_selector_from_live(&models).unwrap();
         assert_eq!(config.default_model.as_deref(), Some("gpt-5.6-sol"));
         assert_eq!(config.models.len(), 2, "hidden models are filtered out");
+        assert!(
+            config
+                .permissions
+                .contains(&crate::model_selector::PermissionPolicy::DontAsk)
+        );
 
         let sol = &config.models[0];
         assert_eq!(sol.name, "GPT-5.6-Sol");
