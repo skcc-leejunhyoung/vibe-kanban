@@ -1793,6 +1793,7 @@ impl ClaudeLogProcessor {
                         }
                         entry_index_provider.reset();
                         self.tool_map.clear();
+                        self.task_meta.clear();
                     }
 
                     for item in message.content.items() {
