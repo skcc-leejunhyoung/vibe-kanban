@@ -293,6 +293,14 @@ pub enum ActionType {
         subagent_type: Option<String>,
         #[serde(default)]
         result: Option<ToolResult>,
+        /// Latest activity line reported by the running subagent.
+        #[serde(default)]
+        last_activity: Option<String>,
+        /// Elapsed runtime in milliseconds. Derived from data in the raw
+        /// executor events (not wall-clock at normalize time) so replaying
+        /// stored logs reproduces the same value.
+        #[serde(default)]
+        duration_ms: Option<u32>,
     },
     PlanPresentation {
         plan: String,

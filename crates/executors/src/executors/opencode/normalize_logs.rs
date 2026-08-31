@@ -1356,6 +1356,8 @@ impl ToolCallState {
                 result: output
                     .as_deref()
                     .map(|o| ToolResult::markdown(o.to_string())),
+                last_activity: None,
+                duration_ms: None,
             },
             ToolData::Question { questions } => ActionType::AskUserQuestion {
                 questions: questions.clone(),

@@ -829,6 +829,9 @@ pub struct ClaudeLogProcessor {
     model_name: Option<String>,
     // Map tool_use_id -> structured info for follow-up ToolResult replacement
     tool_map: HashMap<String, ClaudeToolCallInfo>,
+    // Map tool_use_id -> live subagent activity (latest `task_progress` line and
+    // elapsed ms) so later task events keep showing it.
+    task_meta: HashMap<String, ClaudeTaskMeta>,
     // Strategy controlling how to handle history and user messages
     strategy: HistoryStrategy,
     streaming_messages: HashMap<String, StreamingMessageState>,
@@ -855,6 +858,7 @@ impl ClaudeLogProcessor {
             model_name: None,
             main_model_name: None,
             tool_map: HashMap::new(),
+            task_meta: HashMap::new(),
             strategy,
             streaming_messages: HashMap::new(),
             streaming_message_id: None,
@@ -1283,6 +1287,8 @@ impl ClaudeLogProcessor {
                     description: task_description,
                     subagent_type: subagent_type.clone(),
                     result: None,
+                    last_activity: None,
+                    duration_ms: None,
                 }
             }
             ClaudeToolData::ExitPlanMode { plan } => {
@@ -1458,6 +1464,7 @@ impl ClaudeLogProcessor {
                 task_type,
                 prompt,
                 summary,
+                usage,
                 ..
             } => {
                 // emit billing warning if required
@@ -1503,6 +1510,8 @@ impl ClaudeLogProcessor {
                                     description: desc.clone(),
                                     subagent_type: subagent_type.clone(),
                                     result: None,
+                                    last_activity: None,
+                                    duration_ms: None,
                                 },
                                 ToolStatus::Created,
                                 desc.clone(),
@@ -1526,8 +1535,27 @@ impl ClaudeLogProcessor {
                     }
                     Some("task_progress") => {
                         if let (Some(tool_use_id), Some(desc)) = (tool_use_id, description)
-                            && let Some(info) = self.tool_map.get(tool_use_id).cloned()
+                            && let Some(info) = self.tool_map.get_mut(tool_use_id)
                         {
+                            // `task_progress` may name the subagent role
+                            // (`subagent_type`) when `task_started` only had a
+                            // generic `task_type`; keep the freshest value.
+                            if let ClaudeToolData::Task { subagent_type, .. } = &mut info.tool_data
+                                && task_type.is_some()
+                            {
+                                *subagent_type = task_type.clone();
+                            }
+                            let info = info.clone();
+                            let meta = self.task_meta.entry(tool_use_id.clone()).or_default();
+                            meta.last_activity = Some(desc.clone());
+                            if let Some(ms) = usage
+                                .as_ref()
+                                .and_then(|u| u.get("duration_ms"))
+                                .and_then(|v| v.as_u64())
+                            {
+                                meta.duration_ms = u32::try_from(ms).ok();
+                            }
+                            let meta = meta.clone();
                             let subagent_type =
                                 if let ClaudeToolData::Task { subagent_type, .. } = &info.tool_data
                                 {
@@ -1541,6 +1569,8 @@ impl ClaudeLogProcessor {
                                     description: info.content.clone(),
                                     subagent_type,
                                     result: None,
+                                    last_activity: meta.last_activity,
+                                    duration_ms: meta.duration_ms,
                                 },
                                 ToolStatus::Created,
                                 desc.clone(),
@@ -1563,6 +1593,7 @@ impl ClaudeLogProcessor {
                                 } else {
                                     None
                                 };
+                            let meta = self.task_meta.get(tool_use_id).cloned().unwrap_or_default();
                             let desc = summary
                                 .clone()
                                 .or(description.clone())
@@ -1573,6 +1604,8 @@ impl ClaudeLogProcessor {
                                     description: desc.clone(),
                                     subagent_type,
                                     result: None,
+                                    last_activity: meta.last_activity,
+                                    duration_ms: meta.duration_ms,
                                 },
                                 task_status,
                                 desc,
@@ -1649,11 +1682,29 @@ impl ClaudeLogProcessor {
                 for item in message.content.items() {
                     match item {
                         ClaudeContentItem::ToolUse { id, tool_data } => {
-                            let (entry, tool_name, content_text) = Self::build_tool_use_entry(
+                            let (mut entry, tool_name, content_text) = Self::build_tool_use_entry(
                                 tool_data,
                                 worktree_path,
                                 ToolStatus::Created,
                             );
+                            // The final assistant message can re-emit a Task
+                            // tool_use after `task_progress` events already ran;
+                            // re-attach the live activity so the replace doesn't
+                            // blank it until the next progress event.
+                            if let Some(meta) = self.task_meta.get(id)
+                                && let NormalizedEntryType::ToolUse {
+                                    action_type:
+                                        ActionType::TaskCreate {
+                                            last_activity,
+                                            duration_ms,
+                                            ..
+                                        },
+                                    ..
+                                } = &mut entry.entry_type
+                            {
+                                *last_activity = meta.last_activity.clone();
+                                *duration_ms = meta.duration_ms;
+                            }
                             // Tool calls are tracked via `tool_map`, never the streaming
                             // `contents` map (which only holds text/thinking), so reuse
                             // the index from there.
@@ -1863,6 +1914,7 @@ impl ClaudeLogProcessor {
                                     None
                                 };
 
+                            let meta = self.task_meta.remove(tool_use_id).unwrap_or_default();
                             let entry = Self::tool_use_entry(
                                 info.tool_name.clone(),
                                 ActionType::TaskCreate {
@@ -1872,6 +1924,8 @@ impl ClaudeLogProcessor {
                                         r#type: res_type,
                                         value: res_value,
                                     }),
+                                    last_activity: meta.last_activity,
+                                    duration_ms: meta.duration_ms,
                                 },
                                 status,
                                 info.content.clone(),
@@ -2661,7 +2715,9 @@ pub enum ClaudeJson {
         tool_use_id: Option<String>,
         #[serde(default)]
         description: Option<String>,
-        #[serde(default)]
+        /// Subagent role. `task_started` sends it as `task_type`,
+        /// `task_progress` as `subagent_type`.
+        #[serde(default, alias = "subagent_type")]
         task_type: Option<String>,
         #[serde(default)]
         prompt: Option<String>,
@@ -2669,6 +2725,9 @@ pub enum ClaudeJson {
         summary: Option<String>,
         #[serde(default)]
         last_tool_name: Option<String>,
+        /// `task_progress` usage blob (`{total_tokens, tool_uses, duration_ms}`).
+        #[serde(default)]
+        usage: Option<serde_json::Value>,
     },
     Assistant {
         message: ClaudeMessage,
@@ -3085,6 +3144,14 @@ struct ClaudeToolCallInfo {
     tool_name: String,
     tool_data: ClaudeToolData,
     content: String,
+}
+
+/// Latest subagent activity reported by `task_progress` events, kept so
+/// `task_notification` / tool_result replacements don't drop it.
+#[derive(Debug, Clone, Default)]
+struct ClaudeTaskMeta {
+    last_activity: Option<String>,
+    duration_ms: Option<u32>,
 }
 
 /// A single question from AskUserQuestion tool input.
@@ -4668,5 +4735,136 @@ mod tests {
             "the scheduler-visible entry must carry the exact reset time"
         );
         assert_eq!(infos[0].scope.as_deref(), Some("five_hour"));
+    }
+
+    /// Run a raw log line sequence through one processor and return the final
+    /// rendered state per entry index (replace patches win, like the UI).
+    fn normalize_sequence(lines: &[&str]) -> Vec<NormalizedEntry> {
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        let mut entries = std::collections::BTreeMap::new();
+        for line in lines {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            for patch in processor.normalize_entries(&parsed, "", &provider) {
+                if let Some((idx, entry)) = extract_normalized_entry_from_patch(&patch) {
+                    entries.insert(idx, entry);
+                }
+            }
+        }
+        entries.into_values().collect()
+    }
+
+    fn task_create_fields(
+        entry: &NormalizedEntry,
+    ) -> (
+        &str,
+        Option<&str>,
+        Option<&str>,
+        Option<u32>,
+        bool,
+        &ToolStatus,
+    ) {
+        match &entry.entry_type {
+            NormalizedEntryType::ToolUse {
+                action_type:
+                    ActionType::TaskCreate {
+                        description,
+                        subagent_type,
+                        result,
+                        last_activity,
+                        duration_ms,
+                    },
+                status,
+                ..
+            } => (
+                description.as_str(),
+                subagent_type.as_deref(),
+                last_activity.as_deref(),
+                *duration_ms,
+                result.is_some(),
+                status,
+            ),
+            other => panic!("expected TaskCreate entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_progress_tracks_activity_duration_and_subagent_type() {
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"local_agent"}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"t1","tool_use_id":"tool_1","description":"Reading src/auth.rs","subagent_type":"Explore","usage":{"total_tokens":9601,"tool_uses":1,"duration_ms":7549}}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (description, subagent_type, last_activity, duration_ms, has_result, status) =
+            task_create_fields(&entries[0]);
+        assert_eq!(description, "Audit auth flow");
+        assert_eq!(subagent_type, Some("Explore"));
+        assert_eq!(last_activity, Some("Reading src/auth.rs"));
+        assert_eq!(duration_ms, Some(7549));
+        assert!(!has_result);
+        assert!(matches!(status, ToolStatus::Created));
+    }
+
+    #[test]
+    fn task_notification_completes_and_keeps_activity() {
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"agent"}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"t1","tool_use_id":"tool_1","description":"Running checks","usage":{"duration_ms":9000}}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tool_1","status":"completed","summary":"Audit finished"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (description, _, last_activity, duration_ms, _, status) =
+            task_create_fields(&entries[0]);
+        assert_eq!(description, "Audit finished");
+        assert_eq!(last_activity, Some("Running checks"));
+        assert_eq!(duration_ms, Some(9000));
+        assert!(matches!(status, ToolStatus::Success));
+    }
+
+    #[test]
+    fn task_notification_failure_marks_entry_failed() {
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tool_1","status":"failed"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (_, _, _, _, _, status) = task_create_fields(&entries[0]);
+        assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[test]
+    fn task_tool_result_keeps_duration_and_sets_result() {
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"agent"}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"t1","tool_use_id":"tool_1","description":"Running checks","usage":{"duration_ms":12000}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"All good","is_error":false}]}}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (_, _, last_activity, duration_ms, has_result, status) =
+            task_create_fields(&entries[0]);
+        assert_eq!(last_activity, Some("Running checks"));
+        assert_eq!(duration_ms, Some(12000));
+        assert!(has_result);
+        assert!(matches!(status, ToolStatus::Success));
+    }
+
+    #[test]
+    fn task_create_without_new_fields_still_deserializes() {
+        // Logs written before last_activity/duration_ms existed must keep parsing.
+        let action: ActionType = serde_json::from_str(
+            r#"{"action":"task_create","description":"old","subagent_type":null,"result":null}"#,
+        )
+        .unwrap();
+        match action {
+            ActionType::TaskCreate {
+                last_activity,
+                duration_ms,
+                ..
+            } => {
+                assert!(last_activity.is_none());
+                assert!(duration_ms.is_none());
+            }
+            other => panic!("expected TaskCreate, got {other:?}"),
+        }
     }
 }

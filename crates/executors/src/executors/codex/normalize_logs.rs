@@ -6,13 +6,17 @@ use std::{
 };
 
 use codex_app_server_protocol::{
+    CollabAgentState as AppCollabAgentState, CollabAgentStatus as AppCollabAgentStatus,
+    CollabAgentTool as AppCollabAgentTool,
+    CollabAgentToolCallStatus as AppCollabAgentToolCallStatus,
     CommandExecutionOutputDeltaNotification, CommandExecutionStatus as AppCommandExecutionStatus,
     DynamicToolCallOutputContentItem as AppDynamicToolCallOutputContentItem,
     DynamicToolCallStatus as AppDynamicToolCallStatus, FileChangeOutputDeltaNotification,
     FileChangePatchUpdatedNotification, ItemCompletedNotification as AppItemCompletedNotification,
     ItemStartedNotification as AppItemStartedNotification, JSONRPCNotification, JSONRPCRequest,
     JSONRPCResponse, McpToolCallProgressNotification, McpToolCallStatus as AppMcpToolCallStatus,
-    PatchApplyStatus as AppPatchApplyStatus, ServerNotification, ServerRequest, ThreadForkResponse,
+    PatchApplyStatus as AppPatchApplyStatus, ServerNotification, ServerRequest,
+    SubAgentActivityKind as AppSubAgentActivityKind, ThreadForkResponse,
     ThreadItem as AppThreadItem, ThreadStartResponse, ThreadTokenUsageUpdatedNotification,
     ToolRequestUserInputQuestion,
 };
@@ -331,10 +335,72 @@ impl ToNormalizedEntry for ReviewState {
                     description: self.description.clone(),
                     subagent_type: Some("review".to_string()),
                     result: self.result.clone(),
+                    last_activity: None,
+                    duration_ms: None,
                 },
                 status: self.status.clone(),
             },
             content: String::new(),
+            metadata: None,
+        }
+    }
+}
+
+/// One spawned collab subagent, keyed by its agent thread id (or
+/// `call:<call_id>` until the spawn completes and reveals the thread id).
+/// Fed by `CollabAgentToolCall` and `SubAgentActivity` thread items.
+struct CollabAgentTaskState {
+    index: Option<usize>,
+    description: String,
+    subagent_type: Option<String>,
+    status: ToolStatus,
+    last_activity: Option<String>,
+    result: Option<ToolResult>,
+    /// Unix ms when the spawn call started; from notification timestamps so
+    /// replayed logs reproduce the same elapsed values.
+    started_at_ms: Option<i64>,
+    duration_ms: Option<u32>,
+}
+
+impl CollabAgentTaskState {
+    fn new(description: String, started_at_ms: i64) -> Self {
+        Self {
+            index: None,
+            description,
+            subagent_type: None,
+            status: ToolStatus::Created,
+            last_activity: None,
+            result: None,
+            started_at_ms: Some(started_at_ms),
+            duration_ms: None,
+        }
+    }
+
+    fn touch(&mut self, event_at_ms: i64) {
+        if let Some(started) = self.started_at_ms
+            && event_at_ms > started
+        {
+            self.duration_ms = u32::try_from(event_at_ms - started).ok();
+        }
+    }
+}
+
+impl ToNormalizedEntry for CollabAgentTaskState {
+    fn to_normalized_entry(&self) -> NormalizedEntry {
+        NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::ToolUse {
+                tool_name: "agent".to_string(),
+                action_type: ActionType::TaskCreate {
+                    description: self.description.clone(),
+                    subagent_type: self.subagent_type.clone(),
+                    result: self.result.clone(),
+                    last_activity: self.last_activity.clone(),
+                    duration_ms: self.duration_ms,
+                },
+                status: self.status.clone(),
+            },
+            content: self.description.clone(),
             metadata: None,
         }
     }
@@ -389,6 +455,7 @@ struct LogState {
     user_input_requests: HashMap<String, UserInputRequestState>,
     plans: HashMap<String, PlanState>,
     review: Option<ReviewState>,
+    collab_agents: HashMap<String, CollabAgentTaskState>,
     model_params: ModelParamsState,
 }
 
@@ -417,6 +484,7 @@ impl LogState {
             user_input_requests: HashMap::new(),
             plans: HashMap::new(),
             review: None,
+            collab_agents: HashMap::new(),
             model_params: ModelParamsState {
                 index: None,
                 model: None,
@@ -971,6 +1039,7 @@ fn handle_direct_item_started(
     state.assistant = None;
     state.thinking = None;
 
+    let event_at_ms = notification.started_at_ms;
     match notification.item {
         AppThreadItem::Plan { id, .. } => {
             let mut plan_state = PlanState {
@@ -1071,6 +1140,10 @@ fn handle_direct_item_started(
             review_state.index = Some(index);
             state.review = Some(review_state);
         }
+        item @ (AppThreadItem::CollabAgentToolCall { .. }
+        | AppThreadItem::SubAgentActivity { .. }) => {
+            handle_collab_thread_item(state, msg_store, entry_index, event_at_ms, item);
+        }
         _ => {}
     }
 }
@@ -1082,6 +1155,7 @@ fn handle_direct_item_completed(
     entry_index: &EntryIndexProvider,
     worktree_path: &str,
 ) {
+    let event_at_ms = notification.completed_at_ms;
     match notification.item {
         AppThreadItem::AgentMessage { text, .. } => {
             state.thinking = None;
@@ -1265,6 +1339,214 @@ fn handle_direct_item_completed(
                     entry_type: NormalizedEntryType::SystemMessage,
                     content: "Context compacted".to_string(),
                     metadata: None,
+                },
+            );
+        }
+        item @ (AppThreadItem::CollabAgentToolCall { .. }
+        | AppThreadItem::SubAgentActivity { .. }) => {
+            handle_collab_thread_item(state, msg_store, entry_index, event_at_ms, item);
+        }
+        _ => {}
+    }
+}
+
+const COLLAB_AGENT_FALLBACK_DESCRIPTION: &str = "Agent";
+
+/// First line of a collab prompt, capped for display.
+fn collab_prompt_line(prompt: &str) -> Option<String> {
+    let line = prompt.lines().find(|l| !l.trim().is_empty())?.trim();
+    Some(line.chars().take(200).collect())
+}
+
+fn upsert_collab_agent(
+    agents: &mut HashMap<String, CollabAgentTaskState>,
+    msg_store: &Arc<MsgStore>,
+    entry_index: &EntryIndexProvider,
+    key: &str,
+    event_at_ms: i64,
+    update: impl FnOnce(&mut CollabAgentTaskState),
+) {
+    let task = agents.entry(key.to_string()).or_insert_with(|| {
+        CollabAgentTaskState::new(COLLAB_AGENT_FALLBACK_DESCRIPTION.to_string(), event_at_ms)
+    });
+    update(task);
+    task.touch(event_at_ms);
+    let is_new = task.index.is_none();
+    let index = *task.index.get_or_insert_with(|| entry_index.next());
+    upsert_normalized_entry(msg_store, index, task.to_normalized_entry(), is_new);
+}
+
+fn apply_collab_agent_state(task: &mut CollabAgentTaskState, agent_state: &AppCollabAgentState) {
+    let message = agent_state
+        .message
+        .as_deref()
+        .filter(|m| !m.trim().is_empty());
+    match agent_state.status {
+        AppCollabAgentStatus::PendingInit | AppCollabAgentStatus::Running => {
+            task.status = ToolStatus::Created;
+        }
+        AppCollabAgentStatus::Completed => {
+            task.status = ToolStatus::Success;
+            if let Some(message) = message {
+                task.result = Some(ToolResult::markdown(message.to_string()));
+            }
+        }
+        AppCollabAgentStatus::Errored => {
+            task.status = ToolStatus::Failed;
+            if let Some(message) = message {
+                task.result = Some(ToolResult::markdown(message.to_string()));
+            }
+        }
+        AppCollabAgentStatus::Interrupted => {
+            task.status = ToolStatus::Failed;
+            task.last_activity = Some("Interrupted".to_string());
+        }
+        AppCollabAgentStatus::Shutdown => {
+            // Normal close: only upgrade a still-running row; keep a final
+            // Success/Failed verdict already reported by an earlier wait.
+            if matches!(task.status, ToolStatus::Created) {
+                task.status = ToolStatus::Success;
+            }
+        }
+        AppCollabAgentStatus::NotFound => {}
+    }
+}
+
+/// Normalize Codex collab (multi-agent) thread items into one `TaskCreate`
+/// entry per spawned agent — the same shape Claude Code Task events use — so
+/// the shared subagent panel renders both. Wait/SendInput/Close calls don't get
+/// their own entries; they fold into the per-agent rows via `agents_states`.
+fn handle_collab_thread_item(
+    state: &mut LogState,
+    msg_store: &Arc<MsgStore>,
+    entry_index: &EntryIndexProvider,
+    event_at_ms: i64,
+    item: AppThreadItem,
+) {
+    match item {
+        AppThreadItem::CollabAgentToolCall {
+            id,
+            tool,
+            status,
+            receiver_thread_ids,
+            prompt,
+            model,
+            agents_states,
+            ..
+        } => {
+            let call_failed = matches!(status, AppCollabAgentToolCallStatus::Failed);
+            match tool {
+                AppCollabAgentTool::SpawnAgent => {
+                    // Spawn begin carries no thread id yet — track the row under
+                    // the call id, then re-key it once completion reveals the
+                    // spawned agent's thread id.
+                    let placeholder_key = format!("call:{id}");
+                    let key = match receiver_thread_ids.first() {
+                        Some(thread_id) => {
+                            if let Some(mut task) = state.collab_agents.remove(&placeholder_key) {
+                                if let Some(existing) = state.collab_agents.remove(thread_id) {
+                                    // Events for the thread beat the spawn
+                                    // completion; fold their outcome into the
+                                    // placeholder row.
+                                    task.status = existing.status;
+                                    task.last_activity =
+                                        existing.last_activity.or(task.last_activity);
+                                    task.result = existing.result.or(task.result);
+                                }
+                                state.collab_agents.insert(thread_id.clone(), task);
+                            }
+                            thread_id.clone()
+                        }
+                        None => placeholder_key,
+                    };
+                    upsert_collab_agent(
+                        &mut state.collab_agents,
+                        msg_store,
+                        entry_index,
+                        &key,
+                        event_at_ms,
+                        |task| {
+                            if let Some(line) = prompt.as_deref().and_then(collab_prompt_line) {
+                                task.description = line;
+                            }
+                            if model.is_some() {
+                                task.subagent_type = model;
+                            }
+                            if call_failed {
+                                task.status = ToolStatus::Failed;
+                            }
+                        },
+                    );
+                }
+                AppCollabAgentTool::SendInput | AppCollabAgentTool::ResumeAgent => {
+                    if !call_failed {
+                        let activity = prompt.as_deref().and_then(collab_prompt_line);
+                        for thread_id in &receiver_thread_ids {
+                            upsert_collab_agent(
+                                &mut state.collab_agents,
+                                msg_store,
+                                entry_index,
+                                thread_id,
+                                event_at_ms,
+                                |task| {
+                                    task.status = ToolStatus::Created;
+                                    if activity.is_some() {
+                                        task.last_activity = activity.clone();
+                                    }
+                                },
+                            );
+                        }
+                    }
+                }
+                AppCollabAgentTool::Wait | AppCollabAgentTool::CloseAgent => {}
+            }
+            for (thread_id, agent_state) in &agents_states {
+                upsert_collab_agent(
+                    &mut state.collab_agents,
+                    msg_store,
+                    entry_index,
+                    thread_id,
+                    event_at_ms,
+                    |task| apply_collab_agent_state(task, agent_state),
+                );
+            }
+        }
+        AppThreadItem::SubAgentActivity {
+            kind,
+            agent_thread_id,
+            agent_path,
+            ..
+        } => {
+            let agent_name = agent_path
+                .rsplit('/')
+                .find(|segment| !segment.is_empty())
+                .map(|segment| segment.to_string());
+            upsert_collab_agent(
+                &mut state.collab_agents,
+                msg_store,
+                entry_index,
+                &agent_thread_id,
+                event_at_ms,
+                |task| {
+                    if task.description == COLLAB_AGENT_FALLBACK_DESCRIPTION
+                        && let Some(name) = agent_name
+                    {
+                        task.description = name;
+                    }
+                    match kind {
+                        AppSubAgentActivityKind::Started => {
+                            task.status = ToolStatus::Created;
+                            task.last_activity = Some("Started".to_string());
+                        }
+                        AppSubAgentActivityKind::Interacted => {
+                            task.status = ToolStatus::Created;
+                            task.last_activity = Some("Working".to_string());
+                        }
+                        AppSubAgentActivityKind::Interrupted => {
+                            task.status = ToolStatus::Failed;
+                            task.last_activity = Some("Interrupted".to_string());
+                        }
+                    }
                 },
             );
         }
@@ -3169,5 +3451,244 @@ mod tests {
         assert!(info.limit_reached);
         assert!(info.resets_at.is_none());
         assert!(info.scope.is_none());
+    }
+
+    fn collab_item_line(method: &str, ts_key: &str, ts: i64, item: serde_json::Value) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": {
+                "threadId": "thread-main",
+                "turnId": "turn-1",
+                ts_key: ts,
+                "item": item
+            }
+        })
+        .to_string()
+    }
+
+    fn spawn_started_line(ts: i64) -> String {
+        collab_item_line(
+            "item/started",
+            "startedAtMs",
+            ts,
+            json!({
+                "type": "collabAgentToolCall",
+                "id": "call-spawn-1",
+                "tool": "spawnAgent",
+                "status": "inProgress",
+                "senderThreadId": "thread-main",
+                "receiverThreadIds": [],
+                "prompt": "Refactor the API\nkeep behavior identical",
+                "model": "gpt-5.5",
+                "agentsStates": {}
+            }),
+        )
+    }
+
+    fn spawn_completed_line(ts: i64) -> String {
+        collab_item_line(
+            "item/completed",
+            "completedAtMs",
+            ts,
+            json!({
+                "type": "collabAgentToolCall",
+                "id": "call-spawn-1",
+                "tool": "spawnAgent",
+                "status": "completed",
+                "senderThreadId": "thread-main",
+                "receiverThreadIds": ["agent-t1"],
+                "prompt": "Refactor the API\nkeep behavior identical",
+                "model": "gpt-5.5",
+                "agentsStates": {"agent-t1": {"status": "running", "message": null}}
+            }),
+        )
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn collab_task_fields(
+        entry: &NormalizedEntry,
+    ) -> (
+        &str,
+        Option<&str>,
+        Option<&str>,
+        Option<u32>,
+        Option<&str>,
+        &ToolStatus,
+    ) {
+        match &entry.entry_type {
+            NormalizedEntryType::ToolUse {
+                action_type:
+                    ActionType::TaskCreate {
+                        description,
+                        subagent_type,
+                        result,
+                        last_activity,
+                        duration_ms,
+                    },
+                status,
+                ..
+            } => (
+                description.as_str(),
+                subagent_type.as_deref(),
+                last_activity.as_deref(),
+                *duration_ms,
+                result.as_ref().and_then(|r| r.value.as_str()),
+                status,
+            ),
+            other => panic!("expected TaskCreate entry, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn collab_spawn_renders_running_subagent() {
+        let entries =
+            normalize_lines(&[spawn_started_line(1_000), spawn_completed_line(3_000)]).await;
+
+        let (description, subagent_type, _, duration_ms, _, status) =
+            collab_task_fields(tool_use(&entries, "agent"));
+        assert_eq!(description, "Refactor the API");
+        assert_eq!(subagent_type, Some("gpt-5.5"));
+        assert_eq!(duration_ms, Some(2_000));
+        assert!(matches!(status, ToolStatus::Created));
+        // Wait/SendInput/Close fold into the agent row; the spawn call itself
+        // must not add a second entry.
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(
+                    &entry.entry_type,
+                    NormalizedEntryType::ToolUse {
+                        action_type: ActionType::TaskCreate { .. },
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn collab_activity_and_wait_complete_subagent() {
+        let entries = normalize_lines(&[
+            spawn_started_line(1_000),
+            spawn_completed_line(3_000),
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                10_000,
+                json!({
+                    "type": "subAgentActivity",
+                    "id": "activity-1",
+                    "kind": "interacted",
+                    "agentThreadId": "agent-t1",
+                    "agentPath": "/root/worker"
+                }),
+            ),
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                61_000,
+                json!({
+                    "type": "collabAgentToolCall",
+                    "id": "call-wait-1",
+                    "tool": "wait",
+                    "status": "completed",
+                    "senderThreadId": "thread-main",
+                    "receiverThreadIds": ["agent-t1"],
+                    "prompt": null,
+                    "model": null,
+                    "agentsStates": {"agent-t1": {"status": "completed", "message": "Refactor done"}}
+                }),
+            ),
+        ])
+        .await;
+
+        let (description, _, last_activity, duration_ms, result, status) =
+            collab_task_fields(tool_use(&entries, "agent"));
+        assert_eq!(description, "Refactor the API");
+        assert_eq!(last_activity, Some("Working"));
+        assert_eq!(duration_ms, Some(60_000));
+        assert_eq!(result, Some("Refactor done"));
+        assert!(matches!(status, ToolStatus::Success));
+    }
+
+    #[tokio::test]
+    async fn collab_errored_agent_marks_entry_failed() {
+        let entries = normalize_lines(&[
+            spawn_started_line(1_000),
+            spawn_completed_line(3_000),
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                8_000,
+                json!({
+                    "type": "collabAgentToolCall",
+                    "id": "call-wait-1",
+                    "tool": "wait",
+                    "status": "completed",
+                    "senderThreadId": "thread-main",
+                    "receiverThreadIds": ["agent-t1"],
+                    "prompt": null,
+                    "model": null,
+                    "agentsStates": {"agent-t1": {"status": "errored", "message": "compile error"}}
+                }),
+            ),
+        ])
+        .await;
+
+        let (_, _, _, _, result, status) = collab_task_fields(tool_use(&entries, "agent"));
+        assert_eq!(result, Some("compile error"));
+        assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn sub_agent_interruption_marks_entry_failed() {
+        let entries = normalize_lines(&[
+            spawn_started_line(1_000),
+            spawn_completed_line(3_000),
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                5_000,
+                json!({
+                    "type": "subAgentActivity",
+                    "id": "activity-1",
+                    "kind": "interrupted",
+                    "agentThreadId": "agent-t1",
+                    "agentPath": "/root/worker"
+                }),
+            ),
+        ])
+        .await;
+
+        let (_, _, last_activity, _, _, status) = collab_task_fields(tool_use(&entries, "agent"));
+        assert_eq!(last_activity, Some("Interrupted"));
+        assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn sub_agent_activity_without_spawn_creates_named_row() {
+        // Resumed logs can start mid-conversation: activity for an unknown
+        // agent still gets a row, named from the agent path.
+        let entries = normalize_lines(&[collab_item_line(
+            "item/completed",
+            "completedAtMs",
+            5_000,
+            json!({
+                "type": "subAgentActivity",
+                "id": "activity-1",
+                "kind": "started",
+                "agentThreadId": "agent-t9",
+                "agentPath": "/root/worker"
+            }),
+        )])
+        .await;
+
+        let (description, _, last_activity, _, _, status) =
+            collab_task_fields(tool_use(&entries, "agent"));
+        assert_eq!(description, "worker");
+        assert_eq!(last_activity, Some("Started"));
+        assert!(matches!(status, ToolStatus::Created));
     }
 }

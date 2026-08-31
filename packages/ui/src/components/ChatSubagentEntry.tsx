@@ -24,12 +24,26 @@ interface ChatSubagentEntryProps {
   description: string;
   subagentType?: string | null;
   result?: ChatSubagentResultLike | null;
+  /** Latest activity line reported by the running subagent. */
+  lastActivity?: string | null;
+  /** Elapsed runtime in milliseconds, as reported by the executor. */
+  durationMs?: number | null;
   expanded?: boolean;
   onToggle?: () => void;
   className?: string;
   status?: ToolStatusLike;
   workspaceId?: string;
   renderMarkdown: (props: ChatSubagentEntryRenderProps) => ReactNode;
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 /**
@@ -41,6 +55,8 @@ export function ChatSubagentEntry({
   description,
   subagentType,
   result,
+  lastActivity,
+  durationMs,
   expanded = false,
   onToggle,
   className,
@@ -152,10 +168,20 @@ export function ChatSubagentEntry({
               {formattedType}
             </span>
             {StatusIcon}
+            {durationMs != null && (
+              <span className="text-xs text-low tabular-nums">
+                {formatElapsed(durationMs)}
+              </span>
+            )}
           </div>
           <span className="text-sm text-normal truncate block">
             {description}
           </span>
+          {lastActivity && lastActivity !== description && (
+            <span className="text-xs text-low truncate block">
+              {lastActivity}
+            </span>
+          )}
         </div>
         {isInteractive && (
           <CaretDownIcon
