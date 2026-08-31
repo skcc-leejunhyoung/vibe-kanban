@@ -490,7 +490,7 @@ pub async fn inbox(
          WHERE s.owner_user_id = $1 AND s.scope = $4 AND s.scope_key = $5 \
            AND NOT (s.source_host_id = $2 AND s.source_agent = $3) \
            AND (COALESCE(r.processed_revision, 0) < s.revision OR r.status = 'deferred') \
-         ORDER BY s.updated_at ASC LIMIT 20"
+         ORDER BY s.updated_at ASC LIMIT 3"
     );
     let rows = sqlx::query_as::<_, SnapshotRow>(&query)
         .bind(owner_user_id)
