@@ -336,6 +336,18 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
     }
 }
 
+fn apply_live_models(
+    selector: &mut crate::model_selector::ModelSelectorConfig,
+    live_models: Option<Vec<crate::model_selector::ModelInfo>>,
+) -> bool {
+    let Some(models) = live_models else {
+        return false;
+    };
+    selector.default_model = models.first().map(|model| model.id.clone());
+    selector.models = models;
+    true
+}
+
 #[async_trait]
 impl StandardCodingAgentExecutor for ClaudeCode {
     fn apply_overrides(&mut self, executor_config: &ExecutorConfig) {
@@ -524,6 +536,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             (None, opts)
         };
 
+        let fallback_model_selector = initial_options.model_selector.clone();
         let initial_patch = patch::executor_discovered_options(initial_options);
 
         let this = self.clone();
@@ -532,13 +545,11 @@ impl StandardCodingAgentExecutor for ClaudeCode {
         let discovery_stream = async_stream::stream! {
             let discovery_path = target_path.as_deref().unwrap_or(Path::new(".")).to_path_buf();
             let mut final_options = default_discovered_options();
+            final_options.model_selector = fallback_model_selector;
 
             match this.discover_agents_and_slash_commands_initial(&discovery_path).await {
                 Ok((mut agent_options, slash_commands_initial, plugins, live_models)) => {
-                    if let Some(models) = live_models {
-                        final_options.model_selector.default_model =
-                            models.first().map(|m| m.id.clone());
-                        final_options.model_selector.models = models;
+                    if apply_live_models(&mut final_options.model_selector, live_models) {
                         yield patch::update_models(final_options.model_selector.models.clone());
                         yield patch::update_default_model(
                             final_options.model_selector.default_model.clone(),
@@ -3144,6 +3155,17 @@ impl ClaudeToolData {
 mod tests {
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
+
+    #[test]
+    fn unsupported_live_models_preserve_cached_selector() {
+        let mut selector = default_discovered_options().model_selector;
+        selector.models[0].id = "cached-model".to_string();
+        selector.default_model = Some("cached-model".to_string());
+
+        assert!(!apply_live_models(&mut selector, None));
+        assert_eq!(selector.models[0].id, "cached-model");
+        assert_eq!(selector.default_model.as_deref(), Some("cached-model"));
+    }
 
     #[tokio::test]
     async fn permission_params_auto_allows_questions_dont_ask_blocks() {

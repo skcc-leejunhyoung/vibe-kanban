@@ -1129,6 +1129,45 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn discover_options_preserves_cache_on_probe_failure() {
+        use crate::{
+            executor_discovery::ExecutorConfigCacheKey,
+            executors::{BaseCodingAgent, utils::executor_options_cache},
+        };
+
+        let codex: Codex = serde_json::from_value(
+            json!({"base_command_override": "missing-codex-cache-fallback-test"}),
+        )
+        .unwrap();
+        let cache_key = ExecutorConfigCacheKey::new(
+            None,
+            serde_json::to_string(&codex.cmd).unwrap(),
+            BaseCodingAgent::Codex,
+        );
+        let mut cached = super::static_discovered_options();
+        cached.model_selector.models[0].id = "cached-model".to_string();
+        executor_options_cache().put(cache_key, cached);
+
+        let patches: Vec<serde_json::Value> = codex
+            .discover_options(None, None)
+            .await
+            .unwrap()
+            .map(|patch| serde_json::to_value(patch).unwrap())
+            .collect()
+            .await;
+
+        assert_eq!(
+            patches[0][0]["value"]["model_selector"]["models"][0]["id"],
+            "cached-model"
+        );
+        assert!(
+            !patches
+                .iter()
+                .any(|patch| patch[0]["path"] == "/options/model_selector/models")
+        );
+    }
+
     #[test]
     fn legacy_on_failure_approval_migrates_to_on_request() {
         assert_eq!(
