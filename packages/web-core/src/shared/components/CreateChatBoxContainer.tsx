@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState, useEffect } from 'react';
+import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 import { LockIcon } from '@phosphor-icons/react';
@@ -68,6 +68,18 @@ export function CreateChatBoxContainer({
   } = useCreateMode();
 
   const { createWorkspace, createWorkspaceOnly } = useCreateWorkspace();
+  // Tracks whether this create surface is still on screen when the async
+  // create resolves. The document pathname is no proxy for that: in the split
+  // pane grid the URL mirrors the *active* pane, so clicking another pane
+  // while creation runs changes the pathname without leaving the create
+  // screen — which used to swallow the post-create navigation.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const hasSelectedRepos = repos.length > 0;
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [hasInitializedStep, setHasInitializedStep] = useState(false);
@@ -391,9 +403,10 @@ export function CreateChatBoxContainer({
   //
   // `shouldNavigate` gates the jump into the new workspace: creation runs
   // async, so if the user has navigated away from the create screen while it
-  // was in flight, we must NOT yank them into the workspace when it resolves —
-  // they asked for it to be created in the background. The draft/attachment
-  // cleanup still runs either way so the next create screen starts fresh.
+  // was in flight (this component unmounted), we must NOT yank them into the
+  // workspace when it resolves — they asked for it to be created in the
+  // background. The draft/attachment cleanup still runs either way so the
+  // next create screen starts fresh.
   const finishWorkspaceCreated = useCallback(
     async (workspaceId: string, shouldNavigate: boolean) => {
       if (shouldNavigate) {
@@ -430,19 +443,13 @@ export function CreateChatBoxContainer({
       working_branch: workingBranch,
     };
 
-    // Snapshot the route before the async create; if the user leaves the
-    // create screen while it runs, we skip the post-create navigation.
-    const startPathname = window.location.pathname;
     const result = await createWorkspace.mutateAsync({
       data,
       linkToIssue: getLinkToIssue(),
     });
 
     if (result.workspace) {
-      await finishWorkspaceCreated(
-        result.workspace.id,
-        window.location.pathname === startPathname
-      );
+      await finishWorkspaceCreated(result.workspace.id, isMountedRef.current);
     }
   }, [
     canSubmit,
@@ -474,19 +481,13 @@ export function CreateChatBoxContainer({
       working_branch: workingBranch,
     };
 
-    // Snapshot the route before the async create; if the user leaves the
-    // create screen while it runs, we skip the post-create navigation.
-    const startPathname = window.location.pathname;
     const result = await createWorkspaceOnly.mutateAsync({
       data,
       linkToIssue: getLinkToIssue(),
     });
 
     if (result.workspace) {
-      await finishWorkspaceCreated(
-        result.workspace.id,
-        window.location.pathname === startPathname
-      );
+      await finishWorkspaceCreated(result.workspace.id, isMountedRef.current);
     }
   }, [
     canCreateOnly,
