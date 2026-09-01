@@ -422,6 +422,27 @@ fn task_transcript_path_matches(path: &std::path::Path, task_id: &str, session_i
             == Some(session_id)
 }
 
+fn canonical_task_transcript_path_matches(
+    path: &std::path::Path,
+    task_id: &str,
+    session_id: &str,
+) -> bool {
+    let expected_file = format!("agent-{task_id}.jsonl");
+    task_transcript_path_matches(path, task_id, session_id)
+        || (path.file_name().and_then(|name| name.to_str()) == Some(expected_file.as_str())
+            && path
+                .parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str())
+                == Some("subagents")
+            && path
+                .parent()
+                .and_then(std::path::Path::parent)
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str())
+                == Some(session_id))
+}
+
 async fn read_file_tail(
     path: &str,
     task_id: &str,
@@ -435,7 +456,7 @@ async fn read_file_tail(
         return Err(std::io::Error::other("invalid task transcript path"));
     }
     let path = tokio::fs::canonicalize(path).await?;
-    if !task_transcript_path_matches(&path, task_id, session_id) {
+    if !canonical_task_transcript_path_matches(&path, task_id, session_id) {
         return Err(std::io::Error::other(
             "invalid canonical task transcript path",
         ));
@@ -922,17 +943,37 @@ mod subagent_route_tests {
 
         #[cfg(unix)]
         {
+            let subagents = temp.path().join("session-2/subagents");
+            let tasks = temp.path().join("session-2/tasks");
+            std::fs::create_dir_all(&subagents).unwrap();
+            std::fs::create_dir_all(&tasks).unwrap();
+            let transcript = subagents.join("agent-t2.jsonl");
+            std::fs::write(&transcript, b"sdk transcript").unwrap();
+            std::os::unix::fs::symlink(&transcript, tasks.join("t2.output")).unwrap();
+            assert_eq!(
+                read_file_tail(
+                    tasks.join("t2.output").to_str().unwrap(),
+                    "t2",
+                    "session-2",
+                    512
+                )
+                .await
+                .unwrap()
+                .0,
+                b"sdk transcript"
+            );
+
             let outside = temp.path().join("outside");
             std::fs::create_dir_all(&outside).unwrap();
             std::fs::write(outside.join("t1.output"), b"secret").unwrap();
-            let session = temp.path().join("session-2");
+            let session = temp.path().join("session-3");
             std::fs::create_dir_all(&session).unwrap();
             std::os::unix::fs::symlink(&outside, session.join("tasks")).unwrap();
             assert!(
                 read_file_tail(
                     session.join("tasks/t1.output").to_str().unwrap(),
                     "t1",
-                    "session-2",
+                    "session-3",
                     512
                 )
                 .await
