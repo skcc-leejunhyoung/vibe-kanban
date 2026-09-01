@@ -339,42 +339,106 @@ fn ensure_target_matches_executor(
     }
 }
 
-/// Find the SDK-reported transcript path for a Claude background task by
-/// scanning this process's own raw logs for its `task_notification`. The path
-/// never comes from the client, so no arbitrary-path access is possible.
-fn find_claude_task_output_file(messages: &[LogMsg], task_id: &str) -> Option<String> {
-    for msg in messages {
-        let LogMsg::Stdout(chunk) = msg else {
-            continue;
-        };
-        // Cheap prefilter before JSON parsing.
-        if !chunk.contains(task_id) || !chunk.contains("task_notification") {
-            continue;
+fn stdout_text(messages: &[LogMsg]) -> String {
+    messages
+        .iter()
+        .filter_map(|msg| match msg {
+            LogMsg::Stdout(chunk) => Some(chunk.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn json_has_codex_thread(value: &serde_json::Value, thread_id: &str) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => {
+            fields.get("agentThreadId").and_then(|value| value.as_str()) == Some(thread_id)
+                || fields
+                    .get("receiverThreadIds")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(thread_id)))
+                || fields
+                    .values()
+                    .any(|value| json_has_codex_thread(value, thread_id))
         }
-        for line in chunk.lines() {
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-                continue;
-            };
-            if value.get("subtype").and_then(|v| v.as_str()) == Some("task_notification")
-                && value.get("task_id").and_then(|v| v.as_str()) == Some(task_id)
-                && let Some(path) = value.get("output_file").and_then(|v| v.as_str())
-                && !path.is_empty()
-            {
-                return Some(path.to_string());
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| json_has_codex_thread(value, thread_id)),
+        _ => false,
+    }
+}
+
+fn process_owns_target(stdout: &str, target: &SubagentControlTarget) -> bool {
+    stdout.lines().any(|line| {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            return false;
+        };
+        match target {
+            SubagentControlTarget::Codex { thread_id } => json_has_codex_thread(&value, thread_id),
+            SubagentControlTarget::ClaudeCode { task_id, .. } => {
+                matches!(
+                    value.get("subtype").and_then(|value| value.as_str()),
+                    Some("task_started" | "task_notification")
+                ) && value.get("task_id").and_then(|value| value.as_str()) == Some(task_id)
             }
         }
-    }
-    None
+    })
+}
+
+/// Derive the SDK transcript path and session from this process's notification.
+fn find_claude_task_output_file(stdout: &str, task_id: &str) -> Option<(String, String)> {
+    stdout.lines().find_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+        if value.get("subtype").and_then(|value| value.as_str()) != Some("task_notification")
+            || value.get("task_id").and_then(|value| value.as_str()) != Some(task_id)
+        {
+            return None;
+        }
+        let path = value.get("output_file")?.as_str()?;
+        let session_id = value.get("session_id")?.as_str()?;
+        (!path.is_empty()).then(|| (path.to_string(), session_id.to_string()))
+    })
 }
 
 /// Read at most the last `max_bytes` of a regular file. Refuses special files
 /// and never buffers more than the cap, so a hostile/huge path can't blow up
 /// memory. Returns the bytes and whether the head was cut off.
-async fn read_file_tail(path: &str, max_bytes: usize) -> std::io::Result<(Vec<u8>, bool)> {
+fn task_transcript_path_matches(path: &std::path::Path, task_id: &str, session_id: &str) -> bool {
+    let expected_file = format!("{task_id}.output");
+    path.file_name().and_then(|name| name.to_str()) == Some(&expected_file)
+        && path
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str())
+            == Some("tasks")
+        && path
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str())
+            == Some(session_id)
+}
+
+async fn read_file_tail(
+    path: &str,
+    task_id: &str,
+    session_id: &str,
+    max_bytes: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-    let metadata = tokio::fs::metadata(path).await?;
-    if !metadata.is_file() {
+    let path = std::path::Path::new(path);
+    if !task_transcript_path_matches(path, task_id, session_id) {
+        return Err(std::io::Error::other("invalid task transcript path"));
+    }
+    let path = tokio::fs::canonicalize(path).await?;
+    if !task_transcript_path_matches(&path, task_id, session_id) {
+        return Err(std::io::Error::other(
+            "invalid canonical task transcript path",
+        ));
+    }
+    let metadata = tokio::fs::symlink_metadata(&path).await?;
+    if !metadata.file_type().is_file() {
         return Err(std::io::Error::other("not a regular file"));
     }
     let len = metadata.len();
@@ -447,6 +511,13 @@ async fn subagent_transcript(
     Json(target): Json<SubagentControlTarget>,
 ) -> Result<ResponseJson<ApiResponse<SubagentTranscript>>, ApiError> {
     ensure_target_matches_executor(&execution_process, &target)?;
+    let messages = raw_log_messages(&deployment, execution_process.id).await;
+    let stdout = stdout_text(&messages);
+    if !process_owns_target(&stdout, &target) {
+        return Err(ApiError::BadRequest(
+            "subagent target does not belong to this execution process".to_string(),
+        ));
+    }
 
     let content = match target {
         SubagentControlTarget::Codex { thread_id } => {
@@ -473,13 +544,16 @@ async fn subagent_transcript(
             // process's own logs (session-scoped permission check by
             // construction — only the executor that owns this process can have
             // written the notification line).
-            let messages = raw_log_messages(&deployment, execution_process.id).await;
-            let path = find_claude_task_output_file(&messages, &task_id).ok_or_else(|| {
-                ApiError::BadRequest("no transcript reported for this task".to_string())
-            })?;
-            let (bytes, truncated) = read_file_tail(&path, TRANSCRIPT_MAX_BYTES)
-                .await
-                .map_err(|e| ApiError::BadRequest(format!("transcript file unavailable: {e}")))?;
+            let (path, session_id) =
+                find_claude_task_output_file(&stdout, &task_id).ok_or_else(|| {
+                    ApiError::BadRequest("no transcript reported for this task".to_string())
+                })?;
+            let (bytes, truncated) =
+                read_file_tail(&path, &task_id, &session_id, TRANSCRIPT_MAX_BYTES)
+                    .await
+                    .map_err(|e| {
+                        ApiError::BadRequest(format!("transcript file unavailable: {e}"))
+                    })?;
             let text = String::from_utf8_lossy(&bytes);
             let mut content = task_output_to_markdown(&text);
             if truncated {
@@ -500,6 +574,12 @@ async fn subagent_stop(
     Json(target): Json<SubagentControlTarget>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     ensure_target_matches_executor(&execution_process, &target)?;
+    let messages = raw_log_messages(&deployment, execution_process.id).await;
+    if !process_owns_target(&stdout_text(&messages), &target) {
+        return Err(ApiError::BadRequest(
+            "subagent target does not belong to this execution process".to_string(),
+        ));
+    }
 
     // Stops need the live client; after the process exits only transcript
     // reads remain possible.
@@ -722,29 +802,48 @@ mod subagent_route_tests {
     fn output_file_is_derived_from_own_task_notification_only() {
         let messages = vec![
             LogMsg::Stdout(
-                r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"x","task_type":"local_agent"}"#.to_string(),
+                concat!(
+                    r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"x","task_type":"local_agent"}"#,
+                    "\n"
+                )
+                .to_string(),
             ),
             // Notification for a DIFFERENT task must not match.
             LogMsg::Stdout(
-                r#"{"type":"system","subtype":"task_notification","task_id":"other","status":"completed","output_file":"/tmp/other.output"}"#.to_string(),
+                concat!(
+                    r#"{"type":"system","subtype":"task_notification","task_id":"other","status":"completed","output_file":"/tmp/session-1/tasks/other.output","session_id":"session-1"}"#,
+                    "\n"
+                )
+                .to_string(),
             ),
             LogMsg::Stdout(
-                r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":"/tmp/tasks/t1.output"}"#.to_string(),
+                concat!(
+                    r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":"/tmp/session-1/tasks/t1.output","session_id":"session-1"}"#,
+                    "\n"
+                )
+                .to_string(),
             ),
         ];
+        let stdout = stdout_text(&messages);
         assert_eq!(
-            find_claude_task_output_file(&messages, "t1").as_deref(),
-            Some("/tmp/tasks/t1.output")
+            find_claude_task_output_file(&stdout, "t1"),
+            Some((
+                "/tmp/session-1/tasks/t1.output".to_string(),
+                "session-1".to_string()
+            ))
         );
-        assert_eq!(find_claude_task_output_file(&messages, "missing"), None);
+        assert_eq!(find_claude_task_output_file(&stdout, "missing"), None);
     }
 
     #[test]
     fn empty_output_file_yields_none() {
         let messages = vec![LogMsg::Stdout(
-            r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":""}"#.to_string(),
+            r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":"","session_id":"session-1"}"#.to_string(),
         )];
-        assert_eq!(find_claude_task_output_file(&messages, "t1"), None);
+        assert_eq!(
+            find_claude_task_output_file(&stdout_text(&messages), "t1"),
+            None
+        );
     }
 
     #[test]
@@ -752,13 +851,80 @@ mod subagent_route_tests {
         let chunk = concat!(
             r#"{"type":"assistant","message":{"role":"assistant","content":[]}}"#,
             "\n",
-            r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":"/tmp/tasks/t1.output"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","output_file":"/tmp/session-1/tasks/t1.output","session_id":"session-1"}"#,
             "\n",
         );
         let messages = vec![LogMsg::Stdout(chunk.to_string())];
         assert_eq!(
-            find_claude_task_output_file(&messages, "t1").as_deref(),
-            Some("/tmp/tasks/t1.output")
+            find_claude_task_output_file(&stdout_text(&messages), "t1"),
+            Some((
+                "/tmp/session-1/tasks/t1.output".to_string(),
+                "session-1".to_string()
+            ))
         );
+    }
+
+    #[test]
+    fn targets_must_be_present_in_the_process_logs_even_across_chunks() {
+        let messages = vec![
+            LogMsg::Stdout(
+                r#"{"method":"item/completed","params":{"item":{"type":"subAgentAct"#.to_string(),
+            ),
+            LogMsg::Stdout(
+                r#"ivity","agentThreadId":"thread-1"}}}
+{"type":"system","subtype":"task_started","task_id":"a0da1c1e716284dc6"}
+"#
+                .to_string(),
+            ),
+        ];
+        let stdout = stdout_text(&messages);
+        assert!(process_owns_target(&stdout, &codex_target()));
+        assert!(process_owns_target(&stdout, &claude_target()));
+        assert!(!process_owns_target(
+            &stdout,
+            &SubagentControlTarget::Codex {
+                thread_id: "other-thread".to_string()
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn transcript_file_must_match_the_sdk_task_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let task_dir = temp.path().join("session-1/tasks");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        let path = task_dir.join("t1.output");
+        std::fs::write(&path, b"transcript").unwrap();
+
+        let (bytes, truncated) = read_file_tail(path.to_str().unwrap(), "t1", "session-1", 512)
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"transcript");
+        assert!(!truncated);
+        assert!(
+            read_file_tail(path.to_str().unwrap(), "other-task", "session-1", 512)
+                .await
+                .is_err()
+        );
+
+        #[cfg(unix)]
+        {
+            let outside = temp.path().join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("t1.output"), b"secret").unwrap();
+            let session = temp.path().join("session-2");
+            std::fs::create_dir_all(&session).unwrap();
+            std::os::unix::fs::symlink(&outside, session.join("tasks")).unwrap();
+            assert!(
+                read_file_tail(
+                    session.join("tasks/t1.output").to_str().unwrap(),
+                    "t1",
+                    "session-2",
+                    512
+                )
+                .await
+                .is_err()
+            );
+        }
     }
 }
