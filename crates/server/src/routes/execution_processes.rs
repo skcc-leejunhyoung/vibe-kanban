@@ -350,20 +350,23 @@ fn stdout_text(messages: &[LogMsg]) -> String {
 }
 
 fn json_has_codex_thread(value: &serde_json::Value, thread_id: &str) -> bool {
-    match value {
-        serde_json::Value::Object(fields) => {
-            fields.get("agentThreadId").and_then(|value| value.as_str()) == Some(thread_id)
-                || fields
-                    .get("receiverThreadIds")
-                    .and_then(|value| value.as_array())
-                    .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(thread_id)))
-                || fields
-                    .values()
-                    .any(|value| json_has_codex_thread(value, thread_id))
+    if !matches!(
+        value.get("method").and_then(|value| value.as_str()),
+        Some("item/started" | "item/completed")
+    ) {
+        return false;
+    }
+    let Some(item) = value.get("params").and_then(|params| params.get("item")) else {
+        return false;
+    };
+    match item.get("type").and_then(|value| value.as_str()) {
+        Some("subAgentActivity") => {
+            item.get("agentThreadId").and_then(|value| value.as_str()) == Some(thread_id)
         }
-        serde_json::Value::Array(values) => values
-            .iter()
-            .any(|value| json_has_codex_thread(value, thread_id)),
+        Some("collabAgentToolCall") => item
+            .get("receiverThreadIds")
+            .and_then(|value| value.as_array())
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(thread_id))),
         _ => false,
     }
 }
@@ -886,6 +889,16 @@ mod subagent_route_tests {
                 thread_id: "other-thread".to_string()
             }
         ));
+    }
+
+    #[test]
+    fn codex_target_rejects_thread_ids_in_untrusted_nested_fields() {
+        let stdout = concat!(
+            r#"{"method":"item/completed","params":{"item":{"type":"dynamicToolCall","arguments":{"agentThreadId":"thread-1"}}}}"#,
+            "\n",
+            r#"{"method":"other/event","params":{"item":{"type":"subAgentActivity","agentThreadId":"thread-1"}}}"#,
+        );
+        assert!(!process_owns_target(stdout, &codex_target()));
     }
 
     #[tokio::test]
