@@ -48,7 +48,11 @@
       "todoOperation": "{{operation}} 待辦事項"
     },
     "subagent": {
-      "defaultType": "子代理"
+      "defaultType": "子代理",
+      "openTranscript": "開啟轉錄",
+      "stop": "停止子代理",
+      "transcriptTitle": "子代理轉錄",
+      "transcriptError": "轉錄載入失敗"
     },
     "loadingEarlierMessages": "正在載入先前的訊息",
     "backgroundWaiting": "正在等待背景工作完成"

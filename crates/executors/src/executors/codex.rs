@@ -3,6 +3,7 @@ pub mod jsonrpc;
 pub mod normalize_logs;
 pub mod review;
 pub mod slash_commands;
+pub mod transcript;
 use std::{
     collections::HashMap,
     env,
@@ -543,6 +544,9 @@ impl StandardCodingAgentExecutor for Codex {
 /// How long the short-lived `codex app-server` model probe may take before we
 /// fall back to the static catalog.
 const MODEL_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Offline thread-transcript probes read rollouts from disk; same order of
+/// work as model discovery.
+const THREAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn static_discovered_options() -> ExecutorDiscoveredOptions {
     ExecutorDiscoveredOptions {
@@ -595,6 +599,43 @@ impl Codex {
     async fn fetch_live_models(
         &self,
     ) -> Result<Vec<codex_app_server_protocol::Model>, ExecutorError> {
+        self.probe_app_server(MODEL_DISCOVERY_TIMEOUT, "discovering Codex models", {
+            |client| async move { collect_model_pages(|cursor| client.model_list(cursor)).await }
+        })
+        .await
+    }
+
+    /// Read a (sub)thread's transcript from a short-lived `codex app-server`.
+    /// Threads persist in CODEX_HOME rollouts, so this works after the session
+    /// process that spawned the thread has exited.
+    pub async fn read_thread_transcript(
+        &self,
+        thread_id: &str,
+    ) -> Result<codex_app_server_protocol::Thread, ExecutorError> {
+        let thread_id = thread_id.to_string();
+        self.probe_app_server(THREAD_READ_TIMEOUT, "reading Codex thread", {
+            |client| async move {
+                client
+                    .thread_read(thread_id, true)
+                    .await
+                    .map(|resp| resp.thread)
+            }
+        })
+        .await
+    }
+
+    /// Spawn a short-lived `codex app-server`, initialize it, run `task`, then
+    /// tear the process down again.
+    async fn probe_app_server<T, F, Fut>(
+        &self,
+        timeout: std::time::Duration,
+        what: &str,
+        task: F,
+    ) -> Result<T, ExecutorError>
+    where
+        F: FnOnce(Arc<AppServerClient>) -> Fut,
+        Fut: std::future::Future<Output = Result<T, ExecutorError>>,
+    {
         let command_parts = self.build_command_builder()?.build_initial()?;
         let (program_path, args) = command_parts.into_resolved().await?;
 
@@ -643,9 +684,9 @@ impl Codex {
         );
         client.connect(rpc_peer);
 
-        let result = tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
+        let result = tokio::time::timeout(timeout, async {
             client.initialize().await?;
-            collect_model_pages(|cursor| client.model_list(cursor)).await
+            task(client.clone()).await
         })
         .await;
 
@@ -653,11 +694,10 @@ impl Codex {
         let _ = child.kill().await;
 
         match result {
-            Ok(Ok(models)) => Ok(models),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err(ExecutorError::Io(std::io::Error::other(
-                "Timed out discovering Codex models",
-            ))),
+            Ok(inner) => inner,
+            Err(_) => Err(ExecutorError::Io(std::io::Error::other(format!(
+                "Timed out {what}"
+            )))),
         }
     }
 
@@ -905,30 +945,31 @@ impl Codex {
         let commit_reminder_prompt = env.commit_reminder_prompt.clone();
         let cancel_for_task = cancel.clone();
 
+        // Initialize the AppServerClient outside the task so a clone can be
+        // handed to the container for live subagent control.
+        let exit_signal_tx = ExitSignalSender::new(exit_signal_tx);
+        let log_writer = LogWriter::new(new_stdout);
+        let client = AppServerClient::new(
+            log_writer.clone(),
+            approvals,
+            auto_approve,
+            plan_mode,
+            repo_context,
+            commit_reminder,
+            commit_reminder_prompt,
+            cancel_for_task.clone(),
+        );
+        let rpc_peer = JsonRpcPeer::spawn(
+            child_stdin,
+            child_stdout,
+            client.clone(),
+            exit_signal_tx.clone(),
+            cancel_for_task,
+        );
+        client.connect(rpc_peer);
+        let subagent_handle = Some(crate::executors::SubagentLiveHandle::Codex(client.clone()));
+
         tokio::spawn(async move {
-            let exit_signal_tx = ExitSignalSender::new(exit_signal_tx);
-            let log_writer = LogWriter::new(new_stdout);
-
-            // Initialize the AppServerClient
-            let client = AppServerClient::new(
-                log_writer.clone(),
-                approvals,
-                auto_approve,
-                plan_mode,
-                repo_context,
-                commit_reminder,
-                commit_reminder_prompt,
-                cancel_for_task.clone(),
-            );
-            let rpc_peer = JsonRpcPeer::spawn(
-                child_stdin,
-                child_stdout,
-                client.clone(),
-                exit_signal_tx.clone(),
-                cancel_for_task,
-            );
-            client.connect(rpc_peer);
-
             let result = async {
                 client.initialize().await?;
                 task(client, exit_signal_tx.clone()).await
@@ -971,6 +1012,7 @@ impl Codex {
             child,
             exit_signal: Some(exit_signal_rx),
             cancel: Some(cancel),
+            subagent_handle,
         })
     }
 }

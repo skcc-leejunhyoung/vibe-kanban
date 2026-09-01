@@ -330,13 +330,23 @@ pub type ExecutorExitSignal = tokio::sync::oneshot::Receiver<ExecutorExitResult>
 /// When cancelled, the executor should attempt to cancel gracefully before being killed.
 pub type CancellationToken = tokio_util::sync::CancellationToken;
 
-#[derive(Debug)]
+/// Live per-process client handle for individual subagent control (transcript
+/// reads, `turn/interrupt` / `stop_task`). Valid only while the executor
+/// process runs; the container drops it alongside the child handle.
+#[derive(Clone)]
+pub enum SubagentLiveHandle {
+    ClaudeCode(claude::protocol::ProtocolPeer),
+    Codex(std::sync::Arc<codex::client::AppServerClient>),
+}
+
 pub struct SpawnedChild {
     pub child: AsyncGroupChild,
     /// Executor → Container: signals when executor wants to exit
     pub exit_signal: Option<ExecutorExitSignal>,
     /// Container → Executor: signals when container wants to cancel the execution
     pub cancel: Option<CancellationToken>,
+    /// Executor → Container: live client for individual subagent control.
+    pub subagent_handle: Option<SubagentLiveHandle>,
 }
 
 impl From<AsyncGroupChild> for SpawnedChild {
@@ -345,6 +355,7 @@ impl From<AsyncGroupChild> for SpawnedChild {
             child,
             exit_signal: None,
             cancel: None,
+            subagent_handle: None,
         }
     }
 }

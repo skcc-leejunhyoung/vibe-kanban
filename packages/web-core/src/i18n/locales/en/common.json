@@ -53,7 +53,11 @@
       "todoOperation": "{{operation}} todos"
     },
     "subagent": {
-      "defaultType": "Subagent"
+      "defaultType": "Subagent",
+      "openTranscript": "Open transcript",
+      "stop": "Stop subagent",
+      "transcriptTitle": "Subagent transcript",
+      "transcriptError": "Failed to load transcript"
     },
     "loadingEarlierMessages": "Loading earlier messages",
     "backgroundWaiting": "Waiting for background tasks to finish"

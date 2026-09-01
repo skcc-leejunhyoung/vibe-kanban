@@ -61,7 +61,11 @@
       "todoOperation": "{{operation}} tareas pendientes"
     },
     "subagent": {
-      "defaultType": "Subagente"
+      "defaultType": "Subagente",
+      "openTranscript": "Abrir transcripción",
+      "stop": "Detener subagente",
+      "transcriptTitle": "Transcripción del subagente",
+      "transcriptError": "No se pudo cargar la transcripción"
     },
     "loadingEarlierMessages": "Cargando mensajes anteriores",
     "backgroundWaiting": "Esperando a que terminen las tareas en segundo plano"

@@ -36,7 +36,7 @@ use executors::{
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
     },
-    executors::{ExecutorError, StandardCodingAgentExecutor},
+    executors::{ExecutorError, StandardCodingAgentExecutor, SubagentLiveHandle},
     logs::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
@@ -893,6 +893,12 @@ pub trait ContainerService {
     async fn get_msg_store_by_id(&self, uuid: &Uuid) -> Option<Arc<MsgStore>> {
         let map = self.msg_stores().read().await;
         map.get(uuid).cloned()
+    }
+
+    /// Live client handle for individual subagent control on a still-running
+    /// execution process; `None` once the process exited.
+    async fn subagent_handle(&self, _id: &Uuid) -> Option<SubagentLiveHandle> {
+        None
     }
 
     async fn git_branch_prefix(&self) -> String;

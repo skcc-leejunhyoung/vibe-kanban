@@ -57,4 +57,34 @@ describe('ChatSubagentEntry activity panel', () => {
 
     expect(html).toContain('1h 2m');
   });
+
+  it('shows transcript and stop buttons only when the callbacks exist', () => {
+    const html = render({
+      status: { status: 'created' },
+      onOpenTranscript: () => {},
+      onStop: () => {},
+    });
+
+    expect(html).toContain('conversation.subagent.openTranscript');
+    expect(html).toContain('conversation.subagent.stop');
+  });
+
+  it('renders no control buttons without capabilities', () => {
+    // Foreground subagents / completed tasks / rows without identifiers pass
+    // no callbacks — no stop or transcript affordance may appear.
+    const html = render({ status: { status: 'created' } });
+
+    expect(html).not.toContain('conversation.subagent.openTranscript');
+    expect(html).not.toContain('conversation.subagent.stop');
+  });
+
+  it('can show transcript without stop for finished activities', () => {
+    const html = render({
+      status: { status: 'success' },
+      onOpenTranscript: () => {},
+    });
+
+    expect(html).toContain('conversation.subagent.openTranscript');
+    expect(html).not.toContain('conversation.subagent.stop');
+  });
 });

@@ -1,10 +1,12 @@
-import type { KeyboardEvent, ReactNode } from 'react';
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   CaretDownIcon,
   CpuIcon,
   CheckCircleIcon,
+  FileTextIcon,
+  StopCircleIcon,
   XCircleIcon,
   CircleNotchIcon,
 } from '@phosphor-icons/react';
@@ -30,6 +32,10 @@ interface ChatSubagentEntryProps {
   durationMs?: number | null;
   expanded?: boolean;
   onToggle?: () => void;
+  /** Shows the transcript button when provided. */
+  onOpenTranscript?: () => void;
+  /** Shows the individual stop button when provided. */
+  onStop?: () => void;
   className?: string;
   status?: ToolStatusLike;
   workspaceId?: string;
@@ -59,6 +65,8 @@ export function ChatSubagentEntry({
   durationMs,
   expanded = false,
   onToggle,
+  onOpenTranscript,
+  onStop,
   className,
   status,
   workspaceId,
@@ -183,6 +191,34 @@ export function ChatSubagentEntry({
             </span>
           )}
         </div>
+        {onOpenTranscript && (
+          <button
+            type="button"
+            className="shrink-0 p-half rounded-sm text-low hover:text-normal hover:bg-panel"
+            title={t('conversation.subagent.openTranscript')}
+            aria-label={t('conversation.subagent.openTranscript')}
+            onClick={(event: MouseEvent) => {
+              event.stopPropagation();
+              onOpenTranscript();
+            }}
+          >
+            <FileTextIcon className="size-icon-xs" />
+          </button>
+        )}
+        {onStop && (
+          <button
+            type="button"
+            className="shrink-0 p-half rounded-sm text-low hover:text-error hover:bg-error/10"
+            title={t('conversation.subagent.stop')}
+            aria-label={t('conversation.subagent.stop')}
+            onClick={(event: MouseEvent) => {
+              event.stopPropagation();
+              onStop();
+            }}
+          >
+            <StopCircleIcon className="size-icon-xs" />
+          </button>
+        )}
         {isInteractive && (
           <CaretDownIcon
             className={cn(

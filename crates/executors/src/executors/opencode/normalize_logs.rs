@@ -1358,6 +1358,7 @@ impl ToolCallState {
                     .map(|o| ToolResult::markdown(o.to_string())),
                 last_activity: None,
                 duration_ms: None,
+                control: None,
             },
             ToolData::Question { questions } => ActionType::AskUserQuestion {
                 questions: questions.clone(),

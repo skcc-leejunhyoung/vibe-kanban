@@ -61,7 +61,11 @@
       "todoOperation": "{{operation}} 할 일"
     },
     "subagent": {
-      "defaultType": "서브에이전트"
+      "defaultType": "서브에이전트",
+      "openTranscript": "트랜스크립트 열기",
+      "stop": "서브에이전트 중단",
+      "transcriptTitle": "서브에이전트 트랜스크립트",
+      "transcriptError": "트랜스크립트를 불러오지 못했습니다"
     },
     "loadingEarlierMessages": "이전 메시지 불러오는 중",
     "backgroundWaiting": "백그라운드 작업이 끝나길 기다리는 중"

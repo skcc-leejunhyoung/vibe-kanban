@@ -385,6 +385,12 @@ export type InitRepoRequest = { parent_path: string, folder_name: string, };
 
 export type TagSearchParams = { search: string | null, };
 
+export type SubagentTranscript = {
+/**
+ * Flattened transcript markdown.
+ */
+content: string, };
+
 export type TokenResponse = { access_token: string, expires_at: string | null, };
 
 export type UserSystemInfo = { version: string, config: Config, config_revision: string, profiles_revision: string, machine_id: string, login_status: LoginStatus, remote_auth_degraded: string | null, environment: Environment,
@@ -1389,7 +1395,26 @@ last_activity: string | null,
  * executor events (not wall-clock at normalize time) so replaying
  * stored logs reproduces the same value.
  */
-duration_ms: number | null, } | { "action": "plan_presentation", plan: string, } | { "action": "todo_management", todos: Array<TodoItem>, operation: string, } | { "action": "ask_user_question", questions: Array<AskUserQuestionItem>, } | { "action": "other", description: string, };
+duration_ms: number | null,
+/**
+ * Executor-specific control handle (transcript / individual stop).
+ * `None` for activities that support neither (e.g. Claude foreground
+ * subagents, Codex review sub-tasks).
+ */
+control: SubagentControl | null, } | { "action": "plan_presentation", plan: string, } | { "action": "todo_management", todos: Array<TodoItem>, operation: string, } | { "action": "ask_user_question", questions: Array<AskUserQuestionItem>, } | { "action": "other", description: string, };
+
+export type SubagentControl = {
+/**
+ * A transcript can be fetched for this activity (live or after exit).
+ */
+can_open_transcript: boolean,
+/**
+ * Individual stop is supported while the subagent runs. Always false on
+ * terminal entries; the UI additionally requires a live parent process.
+ */
+can_stop: boolean, } & ({ "executor": "codex", thread_id: string, } | { "executor": "claude_code", task_id: string, output_file: string | null, });
+
+export type SubagentControlTarget = { "executor": "codex", thread_id: string, } | { "executor": "claude_code", task_id: string, output_file: string | null, };
 
 export type AnsweredQuestion = { question: string, answer: Array<string>, };
 

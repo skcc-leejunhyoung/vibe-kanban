@@ -48,7 +48,11 @@
       "todoOperation": "{{operation}} tâches à faire"
     },
     "subagent": {
-      "defaultType": "Sous-agent"
+      "defaultType": "Sous-agent",
+      "openTranscript": "Ouvrir la transcription",
+      "stop": "Arrêter le sous-agent",
+      "transcriptTitle": "Transcription du sous-agent",
+      "transcriptError": "Échec du chargement de la transcription"
     },
     "loadingEarlierMessages": "Chargement des messages précédents",
     "backgroundWaiting": "En attente de la fin des tâches en arrière-plan"

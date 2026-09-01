@@ -23,7 +23,8 @@ use codex_app_server_protocol::{
     ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
     ThreadItem, ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
     ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse,
-    TurnCompletedNotification, TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
+    TurnCompletedNotification, TurnInterruptParams, TurnInterruptResponse, TurnStartParams,
+    TurnStartResponse, TurnStatus, UserInput,
 };
 use codex_protocol::config_types::{CollaborationMode, ModeKind, Settings};
 use futures::TryFutureExt;
@@ -269,15 +270,33 @@ impl AppServerClient {
     pub async fn thread_read(
         &self,
         thread_id: String,
+        include_turns: bool,
     ) -> Result<ThreadReadResponse, ExecutorError> {
         let request = ClientRequest::ThreadRead {
             request_id: self.next_request_id(),
             params: ThreadReadParams {
                 thread_id,
-                include_turns: false,
+                include_turns,
             },
         };
         self.send_request(request, "thread/read").await
+    }
+
+    /// Interrupt whatever the given thread is currently doing. An empty
+    /// `turn_id` takes the app-server's startup-interrupt path, which submits
+    /// `Op::Interrupt` without needing the active turn id — exactly what we
+    /// want for stopping a collab child thread from outside.
+    pub async fn turn_interrupt(&self, thread_id: String) -> Result<(), ExecutorError> {
+        let request = ClientRequest::TurnInterrupt {
+            request_id: self.next_request_id(),
+            params: TurnInterruptParams {
+                thread_id,
+                turn_id: String::new(),
+            },
+        };
+        self.send_request::<TurnInterruptResponse>(request, "turn/interrupt")
+            .await?;
+        Ok(())
     }
 
     pub async fn config_batch_write(

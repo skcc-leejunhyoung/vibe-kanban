@@ -61,7 +61,11 @@
       "todoOperation": "{{operation}} Todo"
     },
     "subagent": {
-      "defaultType": "サブエージェント"
+      "defaultType": "サブエージェント",
+      "openTranscript": "トランスクリプトを開く",
+      "stop": "サブエージェントを停止",
+      "transcriptTitle": "サブエージェントのトランスクリプト",
+      "transcriptError": "トランスクリプトの読み込みに失敗しました"
     },
     "loadingEarlierMessages": "以前のメッセージを読み込み中",
     "backgroundWaiting": "バックグラウンドタスクの完了を待っています"

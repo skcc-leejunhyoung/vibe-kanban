@@ -301,6 +301,11 @@ pub enum ActionType {
         /// stored logs reproduces the same value.
         #[serde(default)]
         duration_ms: Option<u32>,
+        /// Executor-specific control handle (transcript / individual stop).
+        /// `None` for activities that support neither (e.g. Claude foreground
+        /// subagents, Codex review sub-tasks).
+        #[serde(default)]
+        control: Option<SubagentControl>,
     },
     PlanPresentation {
         plan: String,
@@ -314,6 +319,36 @@ pub enum ActionType {
     },
     Other {
         description: String,
+    },
+}
+
+/// Control handle preserved on a subagent activity so the shared UI can offer
+/// transcript access and individual stop without executor-specific logic.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct SubagentControl {
+    #[serde(flatten)]
+    pub target: SubagentControlTarget,
+    /// A transcript can be fetched for this activity (live or after exit).
+    pub can_open_transcript: bool,
+    /// Individual stop is supported while the subagent runs. Always false on
+    /// terminal entries; the UI additionally requires a live parent process.
+    pub can_stop: bool,
+}
+
+/// Executor-specific identifier of a subagent activity. The tag doubles as the
+/// routing key server-side so a Claude task id is never sent to Codex and vice
+/// versa.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[serde(tag = "executor", rename_all = "snake_case")]
+pub enum SubagentControlTarget {
+    /// Codex collab child thread (app-server `thread/read` / `turn/interrupt`).
+    Codex { thread_id: String },
+    /// Claude Code background task (`stop_task` control request; transcript
+    /// from the SDK-reported `task_notification.output_file`).
+    ClaudeCode {
+        task_id: String,
+        #[serde(default)]
+        output_file: Option<String>,
     },
 }
 

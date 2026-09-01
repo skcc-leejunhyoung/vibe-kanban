@@ -18,6 +18,8 @@ import {
   DirectoryListResponse,
   DirectoryEntry,
   ExecutionProcess,
+  SubagentControlTarget,
+  SubagentTranscript,
   ExecutionProcessRepoState,
   GitBranch,
   Repo,
@@ -1634,6 +1636,40 @@ export const executionProcessesApi = {
       hostId,
       {
         method: 'POST',
+      }
+    );
+    return handleApiResponse<void>(response);
+  },
+
+  /** Fetch the transcript of one subagent activity (Codex thread / Claude task). */
+  subagentTranscript: async (
+    processId: string,
+    target: SubagentControlTarget,
+    hostId?: string | null
+  ): Promise<SubagentTranscript> => {
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}/subagent/transcript`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(target),
+      }
+    );
+    return handleApiResponse<SubagentTranscript>(response);
+  },
+
+  /** Stop one running subagent without touching the rest of the turn. */
+  stopSubagent: async (
+    processId: string,
+    target: SubagentControlTarget,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}/subagent/stop`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(target),
       }
     );
     return handleApiResponse<void>(response);

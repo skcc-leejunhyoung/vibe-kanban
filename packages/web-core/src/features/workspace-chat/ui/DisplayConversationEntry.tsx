@@ -1,6 +1,7 @@
 import {
   useMemo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -12,11 +13,14 @@ import type { TFunction } from 'i18next';
 import {
   ActionType,
   BaseAgentCapability,
+  ExecutionProcessStatus,
   NormalizedEntry,
   ToolStatus,
   ToolResult,
   TodoItem,
   type RepoWithTargetBranch,
+  type SubagentControl,
+  type SubagentControlTarget,
 } from 'shared/types';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import { parseDiffStats } from '@/shared/lib/diffStatsParser';
@@ -29,9 +33,11 @@ import { getFileIcon } from '@/shared/lib/fileTypeIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useTheme } from '@/shared/hooks/useTheme';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
-import { attachmentsApi } from '@/shared/lib/api';
+import { attachmentsApi, executionProcessesApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
+import { SubagentTranscriptDialog } from '@/shared/dialogs/SubagentTranscriptDialog';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -249,6 +255,8 @@ function renderToolUseEntry(
         result={action_type.result}
         lastActivity={action_type.last_activity}
         durationMs={action_type.duration_ms}
+        control={action_type.control}
+        executionProcessId={executionProcessId}
         expansionKey={expansionKey}
         status={status}
         workspaceId={workspaceWithSession?.id}
@@ -1159,6 +1167,19 @@ function TodoManagementEntry({
   return <ChatTodoList todos={todos} expanded={expanded} onToggle={toggle} />;
 }
 
+/** Rebuild the plain control target from the flattened control blob. */
+function subagentControlTarget(
+  control: SubagentControl
+): SubagentControlTarget {
+  return control.executor === 'codex'
+    ? { executor: 'codex', thread_id: control.thread_id }
+    : {
+        executor: 'claude_code',
+        task_id: control.task_id,
+        output_file: control.output_file,
+      };
+}
+
 /**
  * Subagent/Task entry with expandable output
  */
@@ -1168,6 +1189,8 @@ function SubagentEntry({
   result,
   lastActivity,
   durationMs,
+  control,
+  executionProcessId,
   expansionKey,
   status,
   workspaceId,
@@ -1178,6 +1201,8 @@ function SubagentEntry({
   result: ToolResult | null | undefined;
   lastActivity: string | null | undefined;
   durationMs: number | null | undefined;
+  control: SubagentControl | null | undefined;
+  executionProcessId: string;
   expansionKey: string;
   status: ToolStatus;
   workspaceId: string | undefined;
@@ -1189,6 +1214,50 @@ function SubagentEntry({
     `subagent:${expansionKey}`,
     false
   );
+  const hostId = useHostId();
+  // Tolerate missing provider (entries rendered outside the chat shell): no
+  // process info means no stop button, never a crash.
+  const processesCtx = useContext(ExecutionProcessesContext);
+  const processRunning =
+    processesCtx?.executionProcessesByIdAll[executionProcessId]?.status ===
+    ExecutionProcessStatus.running;
+  const [stopping, setStopping] = useState(false);
+
+  const handleOpenTranscript = useCallback(() => {
+    if (!control) return;
+    void SubagentTranscriptDialog.show({
+      processId: executionProcessId,
+      target: subagentControlTarget(control),
+      title: description,
+      hostId,
+    });
+  }, [control, executionProcessId, description, hostId]);
+
+  const handleStop = useCallback(async () => {
+    if (!control || stopping) return;
+    setStopping(true);
+    try {
+      await executionProcessesApi.stopSubagent(
+        executionProcessId,
+        subagentControlTarget(control),
+        hostId
+      );
+      // The entry flips to failed/interrupted via the log stream; keep the
+      // button disabled meanwhile.
+    } catch (err) {
+      console.error('Failed to stop subagent:', err);
+      setStopping(false);
+    }
+  }, [control, stopping, executionProcessId, hostId]);
+
+  // Stop only makes sense while this activity still runs inside a live
+  // process; transcripts stay available after exit.
+  const showStop = Boolean(
+    control?.can_stop &&
+      status.status === 'created' &&
+      processRunning &&
+      !stopping
+  );
 
   return (
     <ChatSubagentEntry
@@ -1199,6 +1268,10 @@ function SubagentEntry({
       durationMs={durationMs}
       expanded={expanded}
       onToggle={hasResult ? toggle : undefined}
+      onOpenTranscript={
+        control?.can_open_transcript ? handleOpenTranscript : undefined
+      }
+      onStop={showStop ? handleStop : undefined}
       status={status}
       workspaceId={workspaceId}
       renderMarkdown={({ content, workspaceId }) => (

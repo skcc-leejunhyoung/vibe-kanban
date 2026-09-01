@@ -211,6 +211,16 @@ impl ProtocolPeer {
             .await
     }
 
+    /// Stop a single running background task (`stop_task` control request).
+    /// Fire-and-forget like `interrupt`: the CLI acks via a control_response we
+    /// don't correlate.
+    pub async fn stop_task(&self, task_id: String) -> Result<(), ExecutorError> {
+        self.send_json(&SDKControlRequest::new(SDKControlRequestType::StopTask {
+            task_id,
+        }))
+        .await
+    }
+
     pub async fn set_permission_mode(&self, mode: PermissionMode) -> Result<(), ExecutorError> {
         self.send_json(&SDKControlRequest::new(
             SDKControlRequestType::SetPermissionMode { mode },

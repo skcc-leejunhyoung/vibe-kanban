@@ -413,7 +413,7 @@ async fn fetch_status_message(
     if let Some(thread_id) = thread_id {
         lines.push(String::new());
         lines.push("## Thread".to_string());
-        match client.thread_read(thread_id.to_string()).await {
+        match client.thread_read(thread_id.to_string(), false).await {
             Ok(resp) => {
                 let thread = &resp.thread;
                 lines.push(format!("- **ID**: `{}`", thread.id));

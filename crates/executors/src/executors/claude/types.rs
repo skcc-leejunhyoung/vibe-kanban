@@ -199,6 +199,10 @@ pub enum SDKControlRequestType {
         hooks: Option<Value>,
     },
     Interrupt {},
+    /// Stop one running background task; the rest of the turn keeps running.
+    StopTask {
+        task_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

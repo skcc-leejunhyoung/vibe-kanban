@@ -39,7 +39,10 @@ use executors::{
     },
     approvals::{ExecutorApprovalService, NoopExecutorApprovalService},
     env::{ExecutionEnv, RepoContext},
-    executors::{BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal},
+    executors::{
+        BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal,
+        SubagentLiveHandle,
+    },
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
     model_selector::PermissionPolicy,
     profile::ExecutorConfig,
@@ -170,6 +173,9 @@ pub struct LocalContainerService {
     workspace_manager: WorkspaceManager,
     child_store: Arc<RwLock<HashMap<Uuid, Arc<RwLock<AsyncGroupChild>>>>>,
     cancellation_tokens: Arc<RwLock<HashMap<Uuid, CancellationToken>>>,
+    /// Live per-process clients for individual subagent control; removed
+    /// alongside the child handle so stops are rejected once the process died.
+    subagent_handles: Arc<RwLock<HashMap<Uuid, SubagentLiveHandle>>>,
     msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
     /// Tracks background tasks that stream logs to the database.
     /// When stopping execution, we await these to ensure logs are fully persisted.
@@ -222,6 +228,7 @@ impl LocalContainerService {
     ) -> Self {
         let child_store = Arc::new(RwLock::new(HashMap::new()));
         let cancellation_tokens = Arc::new(RwLock::new(HashMap::new()));
+        let subagent_handles = Arc::new(RwLock::new(HashMap::new()));
         let db_stream_handles = Arc::new(RwLock::new(HashMap::new()));
         let forwarder_handles = Arc::new(RwLock::new(HashMap::new()));
         let normalizer_handles = Arc::new(RwLock::new(HashMap::new()));
@@ -238,6 +245,7 @@ impl LocalContainerService {
             workspace_manager,
             child_store,
             cancellation_tokens,
+            subagent_handles,
             msg_stores,
             db_stream_handles,
             forwarder_handles,
@@ -339,6 +347,16 @@ impl LocalContainerService {
     async fn add_cancellation_token(&self, id: Uuid, token: CancellationToken) {
         let mut map = self.cancellation_tokens.write().await;
         map.insert(id, token);
+    }
+
+    async fn add_subagent_handle(&self, id: Uuid, handle: SubagentLiveHandle) {
+        let mut map = self.subagent_handles.write().await;
+        map.insert(id, handle);
+    }
+
+    async fn remove_subagent_handle(&self, id: &Uuid) {
+        let mut map = self.subagent_handles.write().await;
+        map.remove(id);
     }
 
     async fn take_cancellation_token(&self, id: &Uuid) -> Option<CancellationToken> {
@@ -961,6 +979,7 @@ impl LocalContainerService {
                 let _ = child.start_kill();
             }
             child_store.write().await.remove(&exec_id);
+            container.remove_subagent_handle(&exec_id).await;
         })
     }
 
@@ -2350,6 +2369,11 @@ impl ContainerService for LocalContainerService {
         &self.msg_stores
     }
 
+    async fn subagent_handle(&self, id: &Uuid) -> Option<SubagentLiveHandle> {
+        let map = self.subagent_handles.read().await;
+        map.get(id).cloned()
+    }
+
     fn db(&self) -> &DBService {
         &self.db
     }
@@ -2712,6 +2736,11 @@ impl ContainerService for LocalContainerService {
                 .await;
         }
 
+        // Store the live client handle for individual subagent control
+        if let Some(handle) = spawned.subagent_handle {
+            self.add_subagent_handle(execution_process.id, handle).await;
+        }
+
         // Spawn unified exit monitor: watches OS exit and optional executor signal
         let hn = self.spawn_exit_monitor(
             &execution_process.id,
@@ -2842,6 +2871,7 @@ impl ContainerService for LocalContainerService {
             }
         }
         self.remove_child_from_store(&execution_process.id).await;
+        self.remove_subagent_handle(&execution_process.id).await;
 
         // The exit monitor owns output drain, normalizer shutdown, storage
         // shutdown, and MsgStore removal. Do not race that pipeline here:

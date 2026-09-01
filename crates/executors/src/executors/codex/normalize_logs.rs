@@ -54,7 +54,8 @@ use crate::{
     logs::{
         ActionType, AnsweredQuestion, AskUserQuestionItem, AskUserQuestionOption,
         CommandExitStatus, CommandRunResult, FileChange, NormalizedEntry, NormalizedEntryError,
-        NormalizedEntryType, TodoItem, ToolResult, ToolResultValueType, ToolStatus,
+        NormalizedEntryType, SubagentControl, SubagentControlTarget, TodoItem, ToolResult,
+        ToolResultValueType, ToolStatus,
         plain_text_processor::PlainTextLogProcessor,
         utils::{
             ConversationPatch, EntryIndexProvider, images,
@@ -337,6 +338,9 @@ impl ToNormalizedEntry for ReviewState {
                     result: self.result.clone(),
                     last_activity: None,
                     duration_ms: None,
+                    // Review runs on the session thread itself — no separate
+                    // child thread to read or interrupt.
+                    control: None,
                 },
                 status: self.status.clone(),
             },
@@ -360,6 +364,9 @@ struct CollabAgentTaskState {
     /// replayed logs reproduce the same elapsed values.
     started_at_ms: Option<i64>,
     duration_ms: Option<u32>,
+    /// Real agent thread id, once the spawn revealed it (`None` while the row
+    /// is still keyed by the `call:<id>` placeholder).
+    thread_id: Option<String>,
 }
 
 impl CollabAgentTaskState {
@@ -373,6 +380,7 @@ impl CollabAgentTaskState {
             result: None,
             started_at_ms: Some(started_at_ms),
             duration_ms: None,
+            thread_id: None,
         }
     }
 
@@ -388,6 +396,11 @@ impl CollabAgentTaskState {
 
 impl ToNormalizedEntry for CollabAgentTaskState {
     fn to_normalized_entry(&self) -> NormalizedEntry {
+        let control = self.thread_id.clone().map(|thread_id| SubagentControl {
+            target: SubagentControlTarget::Codex { thread_id },
+            can_open_transcript: true,
+            can_stop: !matches!(self.status, ToolStatus::Success | ToolStatus::Failed),
+        });
         NormalizedEntry {
             timestamp: None,
             entry_type: NormalizedEntryType::ToolUse {
@@ -398,6 +411,7 @@ impl ToNormalizedEntry for CollabAgentTaskState {
                     result: self.result.clone(),
                     last_activity: self.last_activity.clone(),
                     duration_ms: self.duration_ms,
+                    control,
                 },
                 status: self.status.clone(),
             },
@@ -1370,6 +1384,11 @@ fn upsert_collab_agent(
     let task = agents.entry(key.to_string()).or_insert_with(|| {
         CollabAgentTaskState::new(COLLAB_AGENT_FALLBACK_DESCRIPTION.to_string(), event_at_ms)
     });
+    // Rows keyed by a real thread id (not the `call:<id>` spawn placeholder)
+    // are individually controllable; record the id for the control handle.
+    if task.thread_id.is_none() && !key.starts_with("call:") {
+        task.thread_id = Some(key.to_string());
+    }
     // Freeze the elapsed time once the agent reached a terminal status: Codex
     // re-lists finished agents in later `wait` snapshots, and re-touching them
     // would inflate the duration to the unrelated wait's timestamp. Capture the
@@ -3608,6 +3627,7 @@ mod tests {
                         result,
                         last_activity,
                         duration_ms,
+                        ..
                     },
                 status,
                 ..
@@ -3619,6 +3639,16 @@ mod tests {
                 result.as_ref().and_then(|r| r.value.as_str()),
                 status,
             ),
+            other => panic!("expected TaskCreate entry, got {other:?}"),
+        }
+    }
+
+    fn collab_task_control(entry: &NormalizedEntry) -> Option<&SubagentControl> {
+        match &entry.entry_type {
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::TaskCreate { control, .. },
+                ..
+            } => control.as_ref(),
             other => panic!("expected TaskCreate entry, got {other:?}"),
         }
     }
@@ -3813,6 +3843,57 @@ mod tests {
         assert_eq!(last_activity, Some("Interrupted"));
         assert_eq!(duration_ms, Some(4_000));
         assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn collab_spawn_attaches_thread_control() {
+        let entries =
+            normalize_lines(&[spawn_started_line(1_000), spawn_completed_line(3_000)]).await;
+
+        let control = collab_task_control(tool_use(&entries, "agent"))
+            .expect("spawned agent row carries a control handle");
+        assert!(control.can_stop);
+        assert!(control.can_open_transcript);
+        assert_eq!(
+            control.target,
+            SubagentControlTarget::Codex {
+                thread_id: "agent-t1".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn collab_spawn_placeholder_has_no_control_until_thread_known() {
+        // Before the spawn completes there is no thread id to route a stop or
+        // transcript request to.
+        let entries = normalize_lines(&[spawn_started_line(1_000)]).await;
+        assert!(collab_task_control(tool_use(&entries, "agent")).is_none());
+    }
+
+    #[tokio::test]
+    async fn interrupted_subagent_control_drops_stop() {
+        let entries = normalize_lines(&[
+            spawn_started_line(1_000),
+            spawn_completed_line(3_000),
+            collab_item_line(
+                "item/completed",
+                "completedAtMs",
+                6_000,
+                json!({
+                    "type": "subAgentActivity",
+                    "id": "activity-1",
+                    "kind": "interrupted",
+                    "agentThreadId": "agent-t1",
+                    "agentPath": "/root/worker"
+                }),
+            ),
+        ])
+        .await;
+
+        let control = collab_task_control(tool_use(&entries, "agent"))
+            .expect("terminal agent row keeps its identity");
+        assert!(!control.can_stop);
+        assert!(control.can_open_transcript);
     }
 
     #[tokio::test]

@@ -46,7 +46,8 @@ use crate::{
     },
     logs::{
         ActionType, AnsweredQuestion, AskUserQuestionItem, AskUserQuestionOption, FileChange,
-        NormalizedEntry, NormalizedEntryError, NormalizedEntryType, TodoItem, ToolStatus,
+        NormalizedEntry, NormalizedEntryError, NormalizedEntryType, SubagentControl,
+        SubagentControlTarget, TodoItem, ToolStatus,
         plain_text_processor::PlainTextLogProcessor,
         utils::{
             EntryIndexProvider, images,
@@ -717,26 +718,29 @@ impl ClaudeCode {
         // Create cancellation token for graceful shutdown
         let cancel = CancellationToken::new();
 
-        // Spawn task to handle the SDK client with control protocol
+        // Set up the SDK client with control protocol; the peer is created here
+        // so its clone can be handed to the container for live subagent control.
         let prompt_clone = combined_prompt.clone();
         let approvals_clone = self.approvals_service.clone();
         let repo_context = env.repo_context.clone();
         let commit_reminder = env.commit_reminder;
         let commit_reminder_prompt = env.commit_reminder_prompt.clone();
         let cancel_for_task = cancel.clone();
+        let log_writer = LogWriter::new(new_stdout);
+        let client = ClaudeAgentClient::new(
+            log_writer.clone(),
+            approvals_clone,
+            repo_context,
+            commit_reminder,
+            commit_reminder_prompt,
+            cancel_for_task.clone(),
+        );
+        let protocol_peer =
+            ProtocolPeer::spawn(child_stdin, child_stdout, client.clone(), cancel_for_task);
+        let subagent_handle = Some(crate::executors::SubagentLiveHandle::ClaudeCode(
+            protocol_peer.clone(),
+        ));
         tokio::spawn(async move {
-            let log_writer = LogWriter::new(new_stdout);
-            let client = ClaudeAgentClient::new(
-                log_writer.clone(),
-                approvals_clone,
-                repo_context,
-                commit_reminder,
-                commit_reminder_prompt,
-                cancel_for_task.clone(),
-            );
-            let protocol_peer =
-                ProtocolPeer::spawn(child_stdin, child_stdout, client.clone(), cancel_for_task);
-
             // Initialize control protocol
             if let Err(e) = protocol_peer.initialize(hooks).await {
                 tracing::error!("Failed to initialize control protocol: {e}");
@@ -763,6 +767,7 @@ impl ClaudeCode {
             child,
             exit_signal: None,
             cancel: Some(cancel),
+            subagent_handle,
         })
     }
 }
@@ -810,6 +815,50 @@ fn initial_context_window_for_model(model: &str) -> u32 {
         1_000_000
     } else {
         DEFAULT_CLAUDE_CONTEXT_WINDOW
+    }
+}
+
+/// Flatten a background task's SDK transcript (the JSONL file reported by
+/// `task_notification.output_file`) into display markdown for the shared
+/// subagent transcript viewer. Unparseable lines are skipped, not fatal.
+pub fn task_output_to_markdown(jsonl: &str) -> String {
+    let mut sections: Vec<String> = Vec::new();
+    for line in jsonl.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<ClaudeJson>(line) else {
+            continue;
+        };
+        let (label, message) = match &event {
+            ClaudeJson::User { message, .. } => ("User", message),
+            ClaudeJson::Assistant { message, .. } => ("Agent", message),
+            _ => continue,
+        };
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(text) = message.content.as_text().filter(|t| !t.trim().is_empty()) {
+            parts.push(text.trim().to_string());
+        }
+        for item in message.content.items() {
+            match item {
+                ClaudeContentItem::Text { text } if !text.trim().is_empty() => {
+                    parts.push(text.trim().to_string());
+                }
+                ClaudeContentItem::ToolUse { tool_data, .. } => {
+                    parts.push(format!("_Tool:_ `{}`", tool_data.get_name()));
+                }
+                _ => {}
+            }
+        }
+        if !parts.is_empty() {
+            sections.push(format!("**{label}**\n\n{}", parts.join("\n\n")));
+        }
+    }
+    if sections.is_empty() {
+        "_No transcript content._".to_string()
+    } else {
+        sections.join("\n\n")
     }
 }
 
@@ -1305,6 +1354,9 @@ impl ClaudeLogProcessor {
                     result: None,
                     last_activity: None,
                     duration_ms: None,
+                    // Foreground subagents have no individually controllable
+                    // handle; background tasks gain one via `task_started`.
+                    control: None,
                 }
             }
             ClaudeToolData::ExitPlanMode { plan } => {
@@ -1482,6 +1534,8 @@ impl ClaudeLogProcessor {
                 prompt,
                 summary,
                 usage,
+                task_id,
+                output_file,
                 ..
             } => {
                 // emit billing warning if required
@@ -1516,40 +1570,48 @@ impl ClaudeLogProcessor {
                     // avoid stacking a new "System: thinking_tokens" row per event.
                     Some("thinking_tokens") => {}
                     Some("task_started") => {
-                        if let Some(tool_use_id) = tool_use_id
-                            && !self.tool_map.contains_key(tool_use_id)
-                        {
-                            let desc = description.clone().unwrap_or_else(|| "Task".to_string());
-                            // Prefer the specific agent role over the generic
-                            // task kind (`local_agent` / `local_bash`).
-                            let role = subagent_type.clone().or_else(|| task_type.clone());
-                            let entry = Self::tool_use_entry(
-                                "Task".to_string(),
-                                ActionType::TaskCreate {
-                                    description: desc.clone(),
-                                    subagent_type: role.clone(),
-                                    result: None,
-                                    last_activity: None,
-                                    duration_ms: None,
-                                },
-                                ToolStatus::Created,
-                                desc.clone(),
-                            );
-                            let idx = entry_index_provider.next();
-                            patches.push(ConversationPatch::add_normalized_entry(idx, entry));
-                            self.tool_map.insert(
-                                tool_use_id.clone(),
-                                ClaudeToolCallInfo {
-                                    entry_index: idx,
-                                    tool_name: "Task".to_string(),
-                                    tool_data: ClaudeToolData::Task {
-                                        subagent_type: role,
-                                        description: description.clone(),
-                                        prompt: prompt.clone(),
+                        if let Some(tool_use_id) = tool_use_id {
+                            // Only `task_started` (the background-task registry
+                            // event) carries a stoppable task id; foreground
+                            // subagents never emit it.
+                            let meta = self.task_meta.entry(tool_use_id.clone()).or_default();
+                            meta.task_id = task_id.clone();
+                            let control = meta.control();
+                            if !self.tool_map.contains_key(tool_use_id) {
+                                let desc =
+                                    description.clone().unwrap_or_else(|| "Task".to_string());
+                                // Prefer the specific agent role over the generic
+                                // task kind (`local_agent` / `local_bash`).
+                                let role = subagent_type.clone().or_else(|| task_type.clone());
+                                let entry = Self::tool_use_entry(
+                                    "Task".to_string(),
+                                    ActionType::TaskCreate {
+                                        description: desc.clone(),
+                                        subagent_type: role.clone(),
+                                        result: None,
+                                        last_activity: None,
+                                        duration_ms: None,
+                                        control,
                                     },
-                                    content: desc,
-                                },
-                            );
+                                    ToolStatus::Created,
+                                    desc.clone(),
+                                );
+                                let idx = entry_index_provider.next();
+                                patches.push(ConversationPatch::add_normalized_entry(idx, entry));
+                                self.tool_map.insert(
+                                    tool_use_id.clone(),
+                                    ClaudeToolCallInfo {
+                                        entry_index: idx,
+                                        tool_name: "Task".to_string(),
+                                        tool_data: ClaudeToolData::Task {
+                                            subagent_type: role,
+                                            description: description.clone(),
+                                            prompt: prompt.clone(),
+                                        },
+                                        content: desc,
+                                    },
+                                );
+                            }
                         }
                     }
                     Some("task_progress") => {
@@ -1584,8 +1646,9 @@ impl ClaudeLogProcessor {
                                     description: task_desc.unwrap_or_else(|| info.content.clone()),
                                     subagent_type,
                                     result: None,
-                                    last_activity: meta.last_activity,
+                                    last_activity: meta.last_activity.clone(),
                                     duration_ms: meta.duration_ms,
+                                    control: meta.control(),
                                 },
                                 ToolStatus::Created,
                                 desc.clone(),
@@ -1606,7 +1669,20 @@ impl ClaudeLogProcessor {
                                 _ => ToolStatus::Success,
                             };
                             let (subagent_type, task_desc) = Self::task_tool_fields(&info);
-                            let meta = self.task_meta.get(tool_use_id).cloned().unwrap_or_default();
+                            let meta = self.task_meta.entry(tool_use_id.clone()).or_default();
+                            meta.finished = true;
+                            // Terminal entries never show a stop button, so
+                            // accepting the notification's task id (e.g. when a
+                            // replay missed `task_started`) can't mislabel a
+                            // foreground subagent as stoppable.
+                            if meta.task_id.is_none() {
+                                meta.task_id = task_id.clone();
+                            }
+                            if let Some(path) = output_file.clone().filter(|path| !path.is_empty())
+                            {
+                                meta.output_file = Some(path);
+                            }
+                            let meta = meta.clone();
                             let desc = summary
                                 .clone()
                                 .or(description.clone())
@@ -1618,8 +1694,9 @@ impl ClaudeLogProcessor {
                                     description: desc.clone(),
                                     subagent_type,
                                     result: None,
-                                    last_activity: meta.last_activity,
+                                    last_activity: meta.last_activity.clone(),
                                     duration_ms: meta.duration_ms,
+                                    control: meta.control(),
                                 },
                                 task_status,
                                 desc,
@@ -1711,6 +1788,7 @@ impl ClaudeLogProcessor {
                                         ActionType::TaskCreate {
                                             last_activity,
                                             duration_ms,
+                                            control,
                                             ..
                                         },
                                     ..
@@ -1718,6 +1796,7 @@ impl ClaudeLogProcessor {
                             {
                                 *last_activity = meta.last_activity.clone();
                                 *duration_ms = meta.duration_ms;
+                                *control = meta.control();
                             }
                             // Tool calls are tracked via `tool_map`, never the streaming
                             // `contents` map (which only holds text/thinking), so reuse
@@ -1910,34 +1989,46 @@ impl ClaudeLogProcessor {
                             );
                             patches.push(ConversationPatch::replace(info.entry_index, entry));
                         } else if matches!(info.tool_data, ClaudeToolData::Task { .. }) {
-                            // Handle Task tool results - capture subagent output
-                            let (res_type, res_value) =
-                                Self::normalize_claude_tool_result_value(content);
+                            // A background task's tool_result is only the launch
+                            // ack; the task keeps running and finishes via
+                            // `task_notification`. Finalizing here would flash
+                            // Success and drop the stop capability mid-run.
+                            let is_background_launch_ack = self
+                                .task_meta
+                                .get(tool_use_id)
+                                .is_some_and(|meta| meta.task_id.is_some() && !meta.finished);
+                            if !is_background_launch_ack {
+                                // Handle Task tool results - capture subagent output
+                                let (res_type, res_value) =
+                                    Self::normalize_claude_tool_result_value(content);
 
-                            let status = if is_error.unwrap_or(false) {
-                                ToolStatus::Failed
-                            } else {
-                                ToolStatus::Success
-                            };
+                                let status = if is_error.unwrap_or(false) {
+                                    ToolStatus::Failed
+                                } else {
+                                    ToolStatus::Success
+                                };
 
-                            let (subagent_type, task_desc) = Self::task_tool_fields(&info);
-                            let meta = self.task_meta.remove(tool_use_id).unwrap_or_default();
-                            let entry = Self::tool_use_entry(
-                                info.tool_name.clone(),
-                                ActionType::TaskCreate {
-                                    description: task_desc.unwrap_or_else(|| info.content.clone()),
-                                    subagent_type,
-                                    result: Some(crate::logs::ToolResult {
-                                        r#type: res_type,
-                                        value: res_value,
-                                    }),
-                                    last_activity: meta.last_activity,
-                                    duration_ms: meta.duration_ms,
-                                },
-                                status,
-                                info.content.clone(),
-                            );
-                            patches.push(ConversationPatch::replace(info.entry_index, entry));
+                                let (subagent_type, task_desc) = Self::task_tool_fields(&info);
+                                let meta = self.task_meta.remove(tool_use_id).unwrap_or_default();
+                                let entry = Self::tool_use_entry(
+                                    info.tool_name.clone(),
+                                    ActionType::TaskCreate {
+                                        description: task_desc
+                                            .unwrap_or_else(|| info.content.clone()),
+                                        subagent_type,
+                                        result: Some(crate::logs::ToolResult {
+                                            r#type: res_type,
+                                            value: res_value,
+                                        }),
+                                        last_activity: meta.last_activity.clone(),
+                                        duration_ms: meta.duration_ms,
+                                        control: meta.control(),
+                                    },
+                                    status,
+                                    info.content.clone(),
+                                );
+                                patches.push(ConversationPatch::replace(info.entry_index, entry));
+                            }
                         } else if matches!(
                             info.tool_data,
                             ClaudeToolData::Unknown { .. }
@@ -2698,6 +2789,7 @@ impl StreamingContentState {
 }
 
 // Data structures for parsing Claude's JSON output format
+#[allow(clippy::large_enum_variant)]
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClaudeJson {
@@ -2740,6 +2832,10 @@ pub enum ClaudeJson {
         /// `task_progress` usage blob (`{total_tokens, tool_uses, duration_ms}`).
         #[serde(default)]
         usage: Option<serde_json::Value>,
+        /// `task_notification` SDK transcript path; empty string for tasks
+        /// without one (`local_bash`).
+        #[serde(default)]
+        output_file: Option<String>,
     },
     Assistant {
         message: ClaudeMessage,
@@ -3164,6 +3260,27 @@ struct ClaudeToolCallInfo {
 struct ClaudeTaskMeta {
     last_activity: Option<String>,
     duration_ms: Option<u32>,
+    /// Background task id from `task_started`. Foreground subagents never get
+    /// one, which is exactly what gates the individual-stop capability.
+    task_id: Option<String>,
+    /// SDK transcript path from `task_notification` (empty for bash tasks).
+    output_file: Option<String>,
+    /// Set once `task_notification` reported a terminal status.
+    finished: bool,
+}
+
+impl ClaudeTaskMeta {
+    fn control(&self) -> Option<SubagentControl> {
+        let task_id = self.task_id.clone()?;
+        Some(SubagentControl {
+            target: SubagentControlTarget::ClaudeCode {
+                task_id,
+                output_file: self.output_file.clone(),
+            },
+            can_open_transcript: self.output_file.is_some(),
+            can_stop: !self.finished,
+        })
+    }
 }
 
 /// A single question from AskUserQuestion tool input.
@@ -4785,6 +4902,7 @@ mod tests {
                         result,
                         last_activity,
                         duration_ms,
+                        ..
                     },
                 status,
                 ..
@@ -4796,6 +4914,16 @@ mod tests {
                 result.is_some(),
                 status,
             ),
+            other => panic!("expected TaskCreate entry, got {other:?}"),
+        }
+    }
+
+    fn task_control(entry: &NormalizedEntry) -> Option<&SubagentControl> {
+        match &entry.entry_type {
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::TaskCreate { control, .. },
+                ..
+            } => control.as_ref(),
             other => panic!("expected TaskCreate entry, got {other:?}"),
         }
     }
@@ -4889,8 +5017,10 @@ mod tests {
 
     #[test]
     fn task_tool_result_keeps_duration_and_sets_result() {
+        // Foreground subagent (no task_started): the tool_result IS the final
+        // report and must finalize the entry while keeping live metadata.
         let entries = normalize_sequence(&[
-            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"agent"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"Task","input":{"subagent_type":"Explore","description":"Audit auth flow","prompt":"deep dive"}}]}}"#,
             r#"{"type":"system","subtype":"task_progress","task_id":"t1","tool_use_id":"tool_1","description":"Running checks","usage":{"duration_ms":12000}}"#,
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"All good","is_error":false}]}}"#,
         ]);
@@ -4901,6 +5031,106 @@ mod tests {
         assert_eq!(duration_ms, Some(12000));
         assert!(has_result);
         assert!(matches!(status, ToolStatus::Success));
+    }
+
+    #[test]
+    fn background_launch_ack_does_not_finalize_running_task() {
+        // A background task's tool_result is only the spawn ack; flashing
+        // Success (and dropping the stop control) mid-run would be wrong.
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"local_agent"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"Async agent launched successfully","is_error":false}]}}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let (_, _, _, _, has_result, status) = task_create_fields(&entries[0]);
+        assert!(!has_result);
+        assert!(matches!(status, ToolStatus::Created));
+        let control = task_control(&entries[0]).expect("background task keeps its control");
+        assert!(control.can_stop);
+    }
+
+    #[test]
+    fn task_started_attaches_stoppable_control_without_transcript() {
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"a0da1c1e716284dc6","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"local_agent"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let control = task_control(&entries[0]).expect("task_started carries a control handle");
+        assert!(control.can_stop);
+        assert!(!control.can_open_transcript);
+        match &control.target {
+            SubagentControlTarget::ClaudeCode {
+                task_id,
+                output_file,
+            } => {
+                assert_eq!(task_id, "a0da1c1e716284dc6");
+                assert!(output_file.is_none());
+            }
+            other => panic!("expected ClaudeCode target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_notification_output_file_enables_transcript_and_drops_stop() {
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"local_agent"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"tool_1","status":"completed","output_file":"/tmp/tasks/t1.output","summary":"done"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let control = task_control(&entries[0]).expect("finished task keeps its identity");
+        assert!(!control.can_stop);
+        assert!(control.can_open_transcript);
+        match &control.target {
+            SubagentControlTarget::ClaudeCode { output_file, .. } => {
+                assert_eq!(output_file.as_deref(), Some("/tmp/tasks/t1.output"));
+            }
+            other => panic!("expected ClaudeCode target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bash_task_empty_output_file_has_no_transcript() {
+        // local_bash notifications report output_file:"" — no transcript.
+        let entries = normalize_sequence(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"tool_1","description":"Run tests","task_type":"local_bash"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"tool_1","status":"completed","output_file":""}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        let control = task_control(&entries[0]).expect("finished task keeps its identity");
+        assert!(!control.can_open_transcript);
+        assert!(!control.can_stop);
+    }
+
+    #[test]
+    fn foreground_task_has_no_control() {
+        // No task_started ⇒ foreground subagent ⇒ no per-task stop exists;
+        // exposing a control here would render a stop button that can't work.
+        let entries = normalize_sequence(&[
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"Task","input":{"subagent_type":"Explore","description":"Audit auth flow","prompt":"deep dive"}}]}}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"t1","tool_use_id":"tool_1","description":"Reading src/auth.rs","usage":{"duration_ms":100}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"report","is_error":false}]}}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        assert!(task_control(&entries[0]).is_none());
+    }
+
+    #[test]
+    fn task_output_to_markdown_flattens_transcript() {
+        let jsonl = concat!(
+            r#"{"parentUuid":null,"isSidechain":true,"agentId":"a1","type":"user","message":{"role":"user","content":"Investigate the flow"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Read","input":{"file_path":"/tmp/x"}},{"type":"text","text":"Here is my report."}]}}"#,
+            "\n",
+            "not json\n",
+        );
+        let markdown = task_output_to_markdown(jsonl);
+        assert!(markdown.contains("**User**\n\nInvestigate the flow"));
+        assert!(markdown.contains("_Tool:_ `Read`"));
+        assert!(markdown.contains("Here is my report."));
+        assert_eq!(
+            task_output_to_markdown(""),
+            "_No transcript content._".to_string()
+        );
     }
 
     #[test]
