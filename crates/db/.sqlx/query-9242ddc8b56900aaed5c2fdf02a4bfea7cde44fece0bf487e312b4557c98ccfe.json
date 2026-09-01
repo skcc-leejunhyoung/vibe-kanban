@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO session_message_index_state (execution_id, indexed_at)\n               VALUES ($1, datetime('now', 'subsec'))\n               ON CONFLICT(execution_id) DO UPDATE SET indexed_at = excluded.indexed_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9242ddc8b56900aaed5c2fdf02a4bfea7cde44fece0bf487e312b4557c98ccfe"
+}

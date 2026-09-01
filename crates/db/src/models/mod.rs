@@ -13,6 +13,7 @@ pub mod requests;
 pub mod scheduled_resume;
 pub mod scratch;
 pub mod session;
+pub mod session_message_index;
 pub mod tag;
 pub mod task;
 pub mod vibe_run;

@@ -98,6 +98,14 @@ async fn main() -> Result<(), VibeKanbanError> {
     // or a failed follow-up spawn) so they never stall silently in a
     // non-terminal phase.
     server::vibe_run_watcher::spawn(deployment.clone());
+    // One-time background backfill of the session message search index for
+    // executions that finished before indexing existed (or missed at exit).
+    {
+        let deployment = deployment.clone();
+        tokio::spawn(async move {
+            services::services::session_message_indexer::backfill(deployment.container()).await;
+        });
+    }
     let port = std::env::var("BACKEND_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()

@@ -25,6 +25,7 @@ use db::{
         repo::Repo,
         scratch::{Scratch, ScratchType},
         session::{CreateSession, Session},
+        session_message_index::SessionMessageIndex,
         vibe_run::VibeRun,
         workspace::Workspace,
         workspace_repo::WorkspaceRepo,
@@ -59,7 +60,7 @@ use services::services::{
     notification::NotificationService,
     queued_message::QueuedMessageService,
     remote_client::RemoteClient,
-    remote_sync, vibe_orchestrator,
+    remote_sync, session_message_indexer, vibe_orchestrator,
     vibe_orchestrator::{
         FinalizeInput, MergeOutcome, PostMergeAction, VibeAction, VibeBounds, VibePhase,
         VibeResult, decide_after_merge, decide_finalize_action, parse_vibe_result,
@@ -850,6 +851,36 @@ impl LocalContainerService {
                 // Update executor session summary if available
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {
                     tracing::warn!("Failed to update executor session summary: {}", e);
+                }
+
+                // Index this turn's conversation for MCP session search. The
+                // normalizer handles were joined above, so the MsgStore
+                // history is final at this point.
+                if matches!(
+                    ctx.execution_process.run_reason,
+                    ExecutionProcessRunReason::CodingAgent
+                ) {
+                    let rows = msg_stores.read().await.get(&exec_id).map(|store| {
+                        let history = store.get_history();
+                        session_message_indexer::collect_indexable_rows(history.iter().filter_map(
+                            |msg| match msg {
+                                LogMsg::JsonPatch(patch) => Some(patch),
+                                _ => None,
+                            },
+                        ))
+                    });
+                    if let Some(rows) = rows
+                        && let Err(e) = SessionMessageIndex::rebuild_for_execution(
+                            &db.pool,
+                            session_id,
+                            exec_id,
+                            ctx.execution_process.created_at,
+                            &rows,
+                        )
+                        .await
+                    {
+                        tracing::warn!("Failed to index session messages for {}: {}", exec_id, e);
+                    }
                 }
 
                 // If this execution stopped because a usage rate limit was

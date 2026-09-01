@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "WITH ordered AS (\n                   SELECT execution_id, entry_index, entry_type, tool_name, content, created_at,\n                          ROW_NUMBER() OVER (ORDER BY created_at, execution_id, entry_index) AS rn\n                   FROM session_message_index\n                   WHERE session_id = $1\n               ),\n               target AS (\n                   SELECT rn FROM ordered WHERE execution_id = $2 AND entry_index = $3\n               )\n               SELECT o.execution_id AS \"execution_id!: Uuid\",\n                      o.entry_index AS \"entry_index!: i64\",\n                      o.entry_type AS \"entry_type!\",\n                      o.tool_name,\n                      o.content AS \"content!\",\n                      o.created_at AS \"created_at!: DateTime<Utc>\"\n               FROM ordered o, target t\n               WHERE o.rn BETWEEN t.rn - $4 AND t.rn + $4\n               ORDER BY o.rn",
+  "describe": {
+    "columns": [
+      {
+        "name": "execution_id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "entry_index!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "entry_type!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "tool_name",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "content!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "5bb62282e562965fdfaaabe858c8b83c910b581c7beb0b5489e2bd05049c050e"
+}

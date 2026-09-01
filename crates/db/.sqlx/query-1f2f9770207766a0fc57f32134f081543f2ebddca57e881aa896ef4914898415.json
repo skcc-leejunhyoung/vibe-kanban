@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT ep.id AS \"execution_id!: Uuid\",\n                      ep.session_id AS \"session_id!: Uuid\",\n                      ep.created_at AS \"created_at!: DateTime<Utc>\"\n               FROM execution_processes ep\n               WHERE ep.run_reason = 'codingagent'\n                 AND ep.status != 'running'\n                 AND NOT EXISTS (\n                     SELECT 1 FROM session_message_index_state st\n                     WHERE st.execution_id = ep.id\n                 )\n               ORDER BY ep.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "execution_id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "session_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "1f2f9770207766a0fc57f32134f081543f2ebddca57e881aa896ef4914898415"
+}

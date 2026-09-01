@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO session_message_index\n                   (session_id, execution_id, entry_index, entry_type, tool_name, content, created_at)\n                   VALUES ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "b818d39d2d4c984d883f3873095b8d32d249fec285384d34081d5aa9591c589d"
+}

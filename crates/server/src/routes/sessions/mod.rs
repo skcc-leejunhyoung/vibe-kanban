@@ -1,5 +1,6 @@
 pub mod queue;
 pub mod review;
+pub mod search;
 
 use std::str::FromStr;
 
@@ -718,6 +719,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/review", post(review::start_review))
         .route("/vibe-review", post(review::vibe_review))
         .route("/vibe-review/status", get(review::vibe_review_status))
+        .route("/message-slice", get(search::get_session_message_slice))
         .layer(from_fn_with_state(
             deployment.clone(),
             load_session_middleware,
@@ -725,6 +727,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 
     let sessions_router = Router::new()
         .route("/", get(get_sessions).post(create_session))
+        .route("/search", get(search::search_session_messages))
         .nest("/{session_id}", session_id_router)
         .nest("/{session_id}/queue", queue::router(deployment));
 
