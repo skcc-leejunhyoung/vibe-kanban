@@ -1421,6 +1421,26 @@ fn apply_collab_agent_state(task: &mut CollabAgentTaskState, agent_state: &AppCo
     }
 }
 
+fn interrupt_running_collab_agents(
+    state: &mut LogState,
+    msg_store: &Arc<MsgStore>,
+    event_at_ms: Option<i64>,
+) {
+    for task in state.collab_agents.values_mut() {
+        if !matches!(task.status, ToolStatus::Created) {
+            continue;
+        }
+        task.status = ToolStatus::Failed;
+        task.last_activity = Some("Interrupted".to_string());
+        if let Some(event_at_ms) = event_at_ms {
+            task.touch(event_at_ms);
+        }
+        if let Some(index) = task.index {
+            replace_normalized_entry(msg_store, index, task.to_normalized_entry());
+        }
+    }
+}
+
 /// Normalize Codex collab (multi-agent) thread items into one `TaskCreate`
 /// entry per spawned agent — the same shape Claude Code Task events use — so
 /// the shared subagent panel renders both. Wait/SendInput/Close calls don't get
@@ -1719,10 +1739,17 @@ fn handle_direct_notification(
             );
             true
         }
+        ServerNotification::TurnCompleted(notification) => {
+            interrupt_running_collab_agents(
+                state,
+                msg_store,
+                notification.turn.completed_at.map(|seconds| seconds * 1000),
+            );
+            true
+        }
         ServerNotification::FileChangeOutputDelta(FileChangeOutputDeltaNotification { .. })
         | ServerNotification::McpToolCallProgress(McpToolCallProgressNotification { .. })
         | ServerNotification::ThreadStatusChanged(..)
-        | ServerNotification::TurnCompleted(..)
         | ServerNotification::TurnStarted(..) => true,
         ServerNotification::ItemStarted(notification) => {
             handle_direct_item_started(notification, state, msg_store, entry_index, worktree_path);
@@ -3540,6 +3567,27 @@ mod tests {
         )
     }
 
+    fn turn_completed_line(completed_at: i64) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-main",
+                "turn": {
+                    "id": "turn-1",
+                    "items": [],
+                    "itemsView": "notLoaded",
+                    "status": "completed",
+                    "error": null,
+                    "startedAt": 1,
+                    "completedAt": completed_at,
+                    "durationMs": (completed_at - 1) * 1000
+                }
+            }
+        })
+        .to_string()
+    }
+
     #[allow(clippy::type_complexity)]
     fn collab_task_fields(
         entry: &NormalizedEntry,
@@ -3748,6 +3796,22 @@ mod tests {
 
         let (_, _, last_activity, _, _, status) = collab_task_fields(tool_use(&entries, "agent"));
         assert_eq!(last_activity, Some("Interrupted"));
+        assert!(matches!(status, ToolStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn turn_completion_interrupts_uncollected_subagent() {
+        let entries = normalize_lines(&[
+            spawn_started_line(1_000),
+            spawn_completed_line(3_000),
+            turn_completed_line(5),
+        ])
+        .await;
+
+        let (_, _, last_activity, duration_ms, _, status) =
+            collab_task_fields(tool_use(&entries, "agent"));
+        assert_eq!(last_activity, Some("Interrupted"));
+        assert_eq!(duration_ms, Some(4_000));
         assert!(matches!(status, ToolStatus::Failed));
     }
 
