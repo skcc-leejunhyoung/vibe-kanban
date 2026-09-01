@@ -551,7 +551,14 @@ async fn subagent_transcript(
                 .await
             {
                 Some(SubagentLiveHandle::Codex(client)) => {
-                    client.thread_read(thread_id, true).await?.thread
+                    match client.thread_read(thread_id.clone(), true).await {
+                        Ok(response) => response.thread,
+                        Err(_) => {
+                            codex_from_process(&execution_process)?
+                                .read_thread_transcript(&thread_id)
+                                .await?
+                        }
+                    }
                 }
                 // Process exited (or a non-Codex handle, excluded by the guard
                 // above): read the persisted rollout via a one-shot app-server.
