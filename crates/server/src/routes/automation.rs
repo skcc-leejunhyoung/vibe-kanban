@@ -13,14 +13,17 @@
 use std::sync::OnceLock;
 
 use axum::{
-    Router,
+    Json, Router,
     body::Bytes,
     extract::{Path, RawQuery},
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::any,
+    routing::{any, post},
 };
+use deployment::Deployment;
 use reqwest::Client;
+use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::DeploymentImpl;
 
@@ -53,7 +56,27 @@ fn worker_token() -> Option<String> {
 }
 
 pub fn router() -> Router<DeploymentImpl> {
-    Router::new().route("/automation/{*tail}", any(proxy))
+    Router::new()
+        .route("/automation/{*tail}", any(proxy))
+        .route("/automation-actions/notification", post(notification))
+}
+
+#[derive(Deserialize)]
+struct NotificationAction {
+    title: String,
+    message: String,
+    workspace_id: Option<Uuid>,
+}
+
+async fn notification(
+    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
+    Json(action): Json<NotificationAction>,
+) -> StatusCode {
+    deployment
+        .notification()
+        .notify(&action.title, &action.message, action.workspace_id)
+        .await;
+    StatusCode::NO_CONTENT
 }
 
 /// Forward `/api/automation/<tail>` to `<worker>/api/<tail>`, preserving method,

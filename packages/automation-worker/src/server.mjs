@@ -50,6 +50,7 @@ import {
   selectPullRequestLinkForProject,
 } from './pull-request-links.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { eventMatchesRoutine, normalizeRoutine, redactEvent, scheduleOccurrence } from './routines.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
 const DATA_DIR = process.env.AUTOMATION_DATA_DIR || path.resolve('data');
@@ -228,6 +229,9 @@ const defaultState = {
     },
   ],
   retryQueue: [],
+  routines: [],
+  routineRuns: [],
+  routineOccurrences: {},
   githubIssueLinkOperations: [],
   pullRequestLinkOperations: [],
 };
@@ -248,6 +252,7 @@ const pollInFlight = new Map();
 // trigger and poll-driven pass never run the same item (and its side effect)
 // twice.
 const retryInFlight = new Set();
+const routineInFlight = new Set();
 const githubIssueLinkInFlight = new Map();
 let writeQueue = Promise.resolve();
 
@@ -286,6 +291,9 @@ function ensureDefaults() {
   state.connectors ||= [];
   state.rules ||= [];
   state.retryQueue ||= [];
+  state.routines ||= [];
+  state.routineRuns ||= [];
+  state.routineOccurrences ||= {};
   state.githubIssueLinkOperations ||= [];
   state.pullRequestLinkOperations ||= [];
   for (const connector of defaultState.connectors) {
@@ -356,6 +364,41 @@ async function route(req, res) {
 
   if (url.pathname === '/api/logs' && req.method === 'GET') {
     sendJson(res, 200, logs);
+    return;
+  }
+
+  if (url.pathname === '/api/routines' && req.method === 'POST') {
+    const input = await readBodyJson(req);
+    const routine = normalizeRoutine({ ...input, id: input.id || randomUUID() });
+    const index = state.routines.findIndex((item) => item.id === routine.id);
+    if (index >= 0) state.routines[index] = routine;
+    else state.routines.push(routine);
+    await persistState();
+    sendState(res);
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/routines/') && url.pathname.endsWith('/run') && req.method === 'POST') {
+    const id = decodeURIComponent(url.pathname.split('/').at(-2) || '');
+    const routine = state.routines.find((item) => item.id === id);
+    if (!routine) throw new Error(`routine not found: ${id}`);
+    sendJson(res, 200, await runRoutine(routine, { source: 'manual', type: 'manual', id: randomUUID() }, `manual:${randomUUID()}`));
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/routines/') && req.method === 'DELETE') {
+    const id = decodeURIComponent(url.pathname.split('/').pop() || '');
+    state.routines = state.routines.filter((item) => item.id !== id);
+    await persistState();
+    sendState(res);
+    return;
+  }
+
+  if (url.pathname === '/api/events' && req.method === 'POST') {
+    const event = await readBodyJson(req);
+    if (!event.id || !event.type) throw new Error('event id and type are required');
+    await dispatchRoutineEvent({ ...event, source: event.source || 'vibe' });
+    sendJson(res, 202, { ok: true });
     return;
   }
 
@@ -669,6 +712,10 @@ function scheduleAll() {
   // Master switch off: leave every timer cleared so the worker idles.
   if (state.enabled === false) return;
 
+  const routineTimer = setInterval(runDueRoutines, 30000);
+  timers.set('routines', routineTimer);
+  runDueRoutines();
+
   for (const connector of state.connectors) {
     if (!connector.enabled || !POLLABLE_TYPES.has(connector.type)) continue;
     // Guard against a non-numeric config value: Number("abc") is NaN, and
@@ -692,6 +739,81 @@ function scheduleAll() {
       });
     });
   }
+}
+
+async function runDueRoutines() {
+  const now = new Date();
+  for (const routine of state.routines || []) {
+    if (!routine.enabled) continue;
+    let occurrence;
+    try { occurrence = scheduleOccurrence(routine, now); } catch (error) {
+      await log('error', 'routine schedule invalid', { routineId: routine.id, error: errorMessage(error) });
+      continue;
+    }
+    if (!occurrence || state.routineOccurrences[routine.id] === occurrence) continue;
+    state.routineOccurrences[routine.id] = occurrence;
+    await persistState();
+    await runRoutine(routine, { id: occurrence, type: 'schedule', source: 'schedule' }, occurrence);
+  }
+}
+
+async function dispatchRoutineEvent(event) {
+  for (const routine of state.routines || []) {
+    if (!eventMatchesRoutine(routine, event)) continue;
+    await runRoutine(routine, event, `${routine.id}:${event.id}`);
+  }
+}
+
+async function runRoutine(routine, event, idempotencyKey) {
+  if (routineInFlight.has(routine.id)) return { ok: false, status: 'busy' };
+  if ((state.routineRuns || []).some((run) => run.idempotencyKey === idempotencyKey)) return { ok: true, status: 'duplicate' };
+  const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: redactEvent(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, error: null };
+  state.routineRuns.unshift(run);
+  state.routineRuns = state.routineRuns.slice(0, MAX_LOGS);
+  routineInFlight.add(routine.id);
+  await persistState();
+  try {
+    run.result = await executeRoutineAction(routine, event);
+    run.status = 'succeeded';
+  } catch (error) {
+    run.status = 'retrying';
+    run.error = errorMessage(error);
+    await enqueueRoutineRetry(routine, event, idempotencyKey, error);
+  } finally {
+    run.finishedAt = new Date().toISOString();
+    routineInFlight.delete(routine.id);
+    await persistState();
+  }
+  return { ok: run.status === 'succeeded', run };
+}
+
+async function executeRoutineAction(routine, event) {
+  const action = routine.action || {};
+  const connector = findConnector(String(action.connectorId || 'vibe-default'));
+  if (!connector.enabled || connector.type !== 'vibe_kanban') throw new Error('enabled Vibe connector is required');
+  const input = cloneData(action.input || {});
+  const hostPrefix = action.targetHostId ? `/api/host/${encodeURIComponent(action.targetHostId)}` : '';
+  const meta = { origin_routine_id: routine.id, routine_chain: [...(event.routineChain || []), routine.id] };
+  if (action.type === 'create_issue') return createVibeIssue(connector.id, { ...input, automation: meta }, event, { id: routine.id });
+  if (action.type === 'start_workspace') return vibeApi(connector, 'POST', `${hostPrefix}/api/workspaces/start`, { ...input, automation: meta });
+  if (action.type === 'send_prompt') {
+    if (!input.sessionId) throw new Error('sessionId is required');
+    const { sessionId, ...payload } = input;
+    return vibeApi(connector, 'POST', `${hostPrefix}/api/sessions/${encodeURIComponent(sessionId)}/follow-up`, payload);
+  }
+  if (action.type === 'notification')
+    return vibeApi(
+      connector,
+      'POST',
+      `${hostPrefix}/api/automation-actions/notification`,
+      input
+    );
+  throw new Error(`unsupported routine action: ${action.type}`);
+}
+
+async function enqueueRoutineRetry(routine, event, idempotencyKey, error) {
+  const syntheticRule = { id: `routine:${routine.id}` };
+  await enqueueRetry(syntheticRule, { ...redactEvent(event), routineId: routine.id, routineIdempotencyKey: idempotencyKey }, error);
 }
 
 function pollConnector(id, manual) {
@@ -2808,8 +2930,14 @@ async function processRetryQueue({
     // idempotency key, so a double run means a duplicate side effect.
     if (retryInFlight.has(item.id)) continue;
 
+    const routineId = item.ruleId.startsWith('routine:')
+      ? item.ruleId.slice('routine:'.length)
+      : null;
+    const routine = routineId
+      ? state.routines.find((entry) => entry.id === routineId)
+      : null;
     const rule = state.rules.find((entry) => entry.id === item.ruleId);
-    if (!rule) {
+    if (!rule && !routine) {
       // The rule was deleted; the item can never succeed — drop it.
       removeRetryItem(item.id);
       await log('warn', 'retry item dropped (rule missing)', {
@@ -2818,12 +2946,26 @@ async function processRetryQueue({
       });
       continue;
     }
-    if (!rule.enabled) continue;
+    if (rule && !rule.enabled) continue;
+    if (routine && !routine.enabled) continue;
 
     retryInFlight.add(item.id);
     summary.retried += 1;
     try {
-      await runRule(rule, item.event);
+      if (routine) {
+        await executeRoutineAction(routine, item.event);
+        const run = state.routineRuns.find(
+          (entry) => entry.idempotencyKey === item.event.routineIdempotencyKey
+        );
+        if (run) {
+          run.status = 'succeeded';
+          run.error = null;
+          run.attempts = item.attempts + 1;
+          run.finishedAt = new Date().toISOString();
+        }
+      } else {
+        await runRule(rule, item.event);
+      }
       removeRetryItem(item.id);
       summary.succeeded += 1;
       await log('info', 'retry succeeded', {

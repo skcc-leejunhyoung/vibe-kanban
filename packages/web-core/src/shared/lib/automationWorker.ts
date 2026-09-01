@@ -82,12 +82,35 @@ export interface AutomationRetryItem {
   nextAttemptAt: number | null;
 }
 
+export interface AutomationRoutine {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger: Record<string, unknown> & { type: string };
+  condition: Record<string, unknown> | null;
+  action: Record<string, unknown> & { type: string };
+}
+
+export interface AutomationRoutineRun {
+  id: string;
+  routineId: string;
+  status: string;
+  trigger: Record<string, unknown>;
+  targetHostId: string | null;
+  startedAt: string;
+  finishedAt?: string;
+  attempts: number;
+  error: string | null;
+}
+
 export interface AutomationState {
   // Master switch. When false the worker installs no poll timers (idles).
   enabled: boolean;
   connectors: AutomationConnector[];
   rules: AutomationRule[];
   retryQueue: AutomationRetryItem[];
+  routines: AutomationRoutine[];
+  routineRuns: AutomationRoutineRun[];
 }
 
 export interface AutomationLogEntry {

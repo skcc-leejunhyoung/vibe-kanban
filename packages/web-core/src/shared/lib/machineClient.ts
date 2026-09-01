@@ -35,6 +35,7 @@ import type {
   GithubProjectsMetadata,
   LinkGithubIssueRequest,
   AutomationRetryItem,
+  AutomationRoutine,
   AutomationRule,
   AutomationState,
 } from './automationWorker';
@@ -99,6 +100,11 @@ export interface MachineClient {
   deleteAutomationConnector: (id: string) => Promise<AutomationState>;
   saveAutomationRule: (rule: AutomationRule) => Promise<AutomationState>;
   deleteAutomationRule: (id: string) => Promise<AutomationState>;
+  saveAutomationRoutine: (
+    routine: AutomationRoutine
+  ) => Promise<AutomationState>;
+  deleteAutomationRoutine: (id: string) => Promise<AutomationState>;
+  runAutomationRoutine: (id: string) => Promise<unknown>;
   pollAutomationConnector: (id: string) => Promise<unknown>;
   getGithubProjectsMetadata: (
     connectorId: string
@@ -426,6 +432,31 @@ export function createMachineClient(
           target,
           `/api/automation/rules/${encodeURIComponent(id)}`,
           { method: 'DELETE' }
+        )
+      ),
+    saveAutomationRoutine: async (routine) =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(runtime, target, '/api/automation/routines', {
+          method: 'POST',
+          body: JSON.stringify(routine),
+        })
+      ),
+    deleteAutomationRoutine: async (id) =>
+      readAutomationJson<AutomationState>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/automation/routines/${encodeURIComponent(id)}`,
+          { method: 'DELETE' }
+        )
+      ),
+    runAutomationRoutine: async (id) =>
+      readAutomationJson<unknown>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          `/api/automation/routines/${encodeURIComponent(id)}/run`,
+          { method: 'POST' }
         )
       ),
     pollAutomationConnector: async (id) =>

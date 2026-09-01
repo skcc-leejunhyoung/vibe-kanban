@@ -29,6 +29,7 @@ import {
   type AutomationConnectorType,
   type AutomationLogEntry,
   type AutomationRule,
+  type AutomationRoutine,
   type AutomationState,
   type GithubIssueSyncRuleConfig,
   type GithubProjectMetadata,
@@ -58,6 +59,14 @@ interface RuleDraft {
   kind: string;
   config: Record<string, unknown>;
   script: string;
+  isNew: boolean;
+}
+
+interface RoutineDraft {
+  id: string;
+  name: string;
+  enabled: boolean;
+  definitionText: string;
   isNew: boolean;
 }
 
@@ -380,6 +389,7 @@ export function AutomationSettingsSection() {
 
   const [connector, setConnector] = useState<ConnectorDraft | null>(null);
   const [rule, setRule] = useState<RuleDraft | null>(null);
+  const [routine, setRoutine] = useState<RoutineDraft | null>(null);
 
   const refreshLogs = useCallback(async () => {
     if (!machineClient) return;
@@ -700,6 +710,84 @@ export function AutomationSettingsSection() {
       setRule((cur) => (cur?.id === id ? null : cur));
       return next;
     });
+
+  const editRoutine = (item: AutomationRoutine) =>
+    setRoutine({
+      id: item.id,
+      name: item.name,
+      enabled: item.enabled,
+      definitionText: JSON.stringify(
+        {
+          trigger: item.trigger,
+          condition: item.condition,
+          action: item.action,
+        },
+        null,
+        2
+      ),
+      isNew: false,
+    });
+
+  const addRoutine = () =>
+    setRoutine({
+      id: randomId('routine'),
+      name: 'Untitled routine',
+      enabled: false,
+      definitionText: JSON.stringify(
+        {
+          trigger: {
+            type: 'schedule',
+            cron: '0 9 * * 1-5',
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          },
+          condition: null,
+          action: {
+            type: 'notification',
+            connectorId: 'vibe-default',
+            input: { title: '', body: '' },
+          },
+        },
+        null,
+        2
+      ),
+      isNew: true,
+    });
+
+  const saveRoutine = () => {
+    if (!routine) return;
+    let definition: Pick<AutomationRoutine, 'trigger' | 'condition' | 'action'>;
+    try {
+      definition = JSON.parse(routine.definitionText);
+    } catch {
+      setError(
+        t('settings.automation.errors.invalidJson', 'Config is not valid JSON.')
+      );
+      return;
+    }
+    run(async () => {
+      const next = await machineClient.saveAutomationRoutine({
+        id: routine.id,
+        name: routine.name,
+        enabled: routine.enabled,
+        ...definition,
+      });
+      setRoutine(null);
+      return next;
+    }, 'Routine saved.');
+  };
+
+  const deleteRoutine = (id: string) =>
+    run(async () => {
+      const next = await machineClient.deleteAutomationRoutine(id);
+      setRoutine(null);
+      return next;
+    });
+
+  const runRoutineNow = (id: string) =>
+    run(async () => {
+      await machineClient.runAutomationRoutine(id);
+      return machineClient.getAutomationState();
+    }, 'Routine started.');
 
   const masterOn = state?.enabled !== false;
 
@@ -1197,6 +1285,103 @@ export function AutomationSettingsSection() {
                 />
               )}
             </div>
+          </div>
+        )}
+      </SettingsCard>
+
+      <SettingsCard
+        title="Routines"
+        description="Bind a schedule or Vibe event to one typed action. Definitions are JSON; scripts remain in Rules."
+        headerAction={
+          <PrimaryButton
+            variant="secondary"
+            value="Add routine"
+            onClick={addRoutine}
+            disabled={busy}
+          />
+        }
+      >
+        <ItemList
+          items={state?.routines ?? []}
+          selectedId={routine?.id ?? null}
+          getKey={(item) => item.id}
+          isEnabled={(item) => item.enabled}
+          onSelect={editRoutine}
+          render={(item) => (
+            <span className="font-medium text-normal truncate">
+              {item.name} · {item.trigger.type} → {item.action.type}
+            </span>
+          )}
+          emptyText="No routines yet."
+        />
+        {routine && (
+          <div className="space-y-4 rounded-sm border border-border p-4">
+            <SettingsField label="Name">
+              <SettingsInput
+                value={routine.name}
+                onChange={(name) => setRoutine({ ...routine, name })}
+              />
+            </SettingsField>
+            <SettingsCheckbox
+              id="automation-routine-enabled"
+              label="Enabled"
+              checked={routine.enabled}
+              onChange={(enabled) => setRoutine({ ...routine, enabled })}
+            />
+            <SettingsField label="Trigger / condition / action (JSON)">
+              <SettingsTextarea
+                value={routine.definitionText}
+                onChange={(definitionText) =>
+                  setRoutine({ ...routine, definitionText })
+                }
+                rows={14}
+                monospace
+              />
+            </SettingsField>
+            <div className="flex flex-wrap gap-2">
+              <PrimaryButton
+                value="Save"
+                onClick={saveRoutine}
+                disabled={busy}
+              />
+              {!routine.isNew && (
+                <PrimaryButton
+                  variant="secondary"
+                  value="Run now"
+                  onClick={() => runRoutineNow(routine.id)}
+                  disabled={busy}
+                />
+              )}
+              <PrimaryButton
+                variant="tertiary"
+                value="Cancel"
+                onClick={() => setRoutine(null)}
+                disabled={busy}
+              />
+              {!routine.isNew && (
+                <PrimaryButton
+                  variant="tertiary"
+                  value="Delete"
+                  onClick={() => deleteRoutine(routine.id)}
+                  disabled={busy}
+                />
+              )}
+            </div>
+          </div>
+        )}
+        {!!state?.routineRuns?.length && (
+          <div className="mt-4 space-y-2">
+            {state.routineRuns.slice(0, 10).map((item) => (
+              <div
+                key={item.id}
+                className="rounded-sm border border-border p-3 text-xs"
+              >
+                {item.routineId} · {item.status} ·{' '}
+                {new Date(item.startedAt).toLocaleString()}
+                {item.targetHostId ? ` · ${item.targetHostId}` : ''}
+                {item.error ? ` · ${item.error}` : ''}
+              </div>
+            ))}
           </div>
         )}
       </SettingsCard>
