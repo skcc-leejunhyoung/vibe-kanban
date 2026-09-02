@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { eventMatchesRoutine, normalizeRoutine, redactEvent, routineEventKey, routineRunTrigger, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
+import { automationEventKey, eventMatchesRoutine, normalizeRoutine, redactEvent, routineEventKey, routineRunTrigger, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
 
 test('cron occurrences are keyed by local timezone minute', () => {
   const routine = normalizeRoutine({ id: 'daily', enabled: true, trigger: { type: 'schedule', cron: '30 9 * * 1-5', timezone: 'Asia/Seoul' }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'host', input: { title: 'a', message: 'b' } } });
@@ -48,6 +48,10 @@ test('event keys include source and type', () => {
     routineEventKey('routine', { source: 'github', type: 'issue', id: '1' }),
     routineEventKey('routine', { source: 'vibe', type: 'issue_created', id: '1' })
   );
+});
+
+test('automation ingress keys deduplicate redelivery by source, type and id', () => {
+  assert.equal(automationEventKey({ source: 'vibe', type: 'issue_created', id: '1' }), 'vibe:issue_created:1');
 });
 
 test('host scope denies projects and repositories unless explicitly allowed', () => {

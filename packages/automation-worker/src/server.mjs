@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import {
+  automationEventKey,
   isNotifiableReview,
   mapWithConcurrency,
   recentlyUpdatedPrs,
@@ -248,6 +249,7 @@ const defaultState = {
   routineDeadlines: [],
   githubIssueLinkOperations: [],
   pullRequestLinkOperations: [],
+  eventReceipts: {},
 };
 
 let state = structuredClone(defaultState);
@@ -268,6 +270,7 @@ const pollInFlight = new Map();
 const retryInFlight = new Set();
 const routineInFlight = new Set();
 const routineHostInFlight = new Set();
+const eventInFlight = new Map();
 const githubIssueLinkInFlight = new Map();
 let writeQueue = Promise.resolve();
 
@@ -319,6 +322,10 @@ function ensureDefaults() {
   state.routineDeadlines ||= [];
   state.githubIssueLinkOperations ||= [];
   state.pullRequestLinkOperations ||= [];
+  state.eventReceipts ||= {};
+  for (const [key, receipt] of Object.entries(state.eventReceipts)) {
+    if (receipt.status === 'running') delete state.eventReceipts[key];
+  }
   for (const connector of defaultState.connectors) {
     if (!state.connectors.some((item) => item.id === connector.id)) {
       state.connectors.push(structuredClone(connector));
@@ -434,8 +441,20 @@ async function route(req, res) {
     const event = await readBodyJson(req);
     if (!event.id || !event.type) throw new Error('event id and type are required');
     const normalizedEvent = { ...event, source: event.source || 'vibe' };
-    await runRules(normalizedEvent);
-    await dispatchRoutineEvent(normalizedEvent);
+    const key = automationEventKey(normalizedEvent);
+    if (state.eventReceipts[key]?.status === 'succeeded') {
+      sendJson(res, 202, { ok: true, duplicate: true });
+      return;
+    }
+    const existing = eventInFlight.get(key);
+    if (existing) await existing;
+    else {
+      const run = processAutomationEvent(key, normalizedEvent).finally(() =>
+        eventInFlight.delete(key)
+      );
+      eventInFlight.set(key, run);
+      await run;
+    }
     sendJson(res, 202, { ok: true });
     return;
   }
@@ -836,6 +855,23 @@ async function dispatchRoutineEvent(event) {
     const key = routineEventKey(routine.id, event);
     const result = await runRoutine(routine, event, key);
     if (result.status === 'busy') await queueRoutineEvent(routine.id, event, key);
+  }
+}
+
+async function processAutomationEvent(key, event) {
+  state.eventReceipts[key] = { status: 'running', receivedAt: Date.now() };
+  await persistState();
+  try {
+    await runRules(event);
+    await dispatchRoutineEvent(event);
+    // ponytail: receipts stay in the existing state file; move them to a DB
+    // only when event volume makes state-file growth measurable.
+    state.eventReceipts[key].status = 'succeeded';
+    await persistState();
+  } catch (error) {
+    delete state.eventReceipts[key];
+    await persistState();
+    throw error;
   }
 }
 

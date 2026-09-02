@@ -15,7 +15,8 @@ pub async fn emit_event(pool: &SqlitePool, event_type: &str, id: impl ToString, 
         tracing::warn!(%error, %event_type, "failed to persist automation event");
         return;
     }
-    drain(pool).await;
+    let pool = pool.clone();
+    tokio::spawn(async move { drain(&pool).await });
 }
 
 async fn persist(pool: &SqlitePool, key: &str, event: &Value) -> Result<(), sqlx::Error> {

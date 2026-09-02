@@ -342,7 +342,6 @@ async fn create_issue(
     }
 
     let event_issue = response.data.clone();
-    let event_pool = state.pool().clone();
     let origin_routine_id = headers
         .get("x-vibe-routine-id")
         .and_then(|value| value.to_str().ok())
@@ -352,21 +351,19 @@ async fn create_issue(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
         .unwrap_or_default();
-    tokio::spawn(async move {
-        crate::automation::emit_event(
-            &event_pool,
-            "issue_created",
-            event_issue.id,
-            serde_json::json!({
-                "issueId": event_issue.id,
-                "projectId": event_issue.project_id,
-                "title": event_issue.title,
-                "originRoutineId": origin_routine_id,
-                "routineChain": routine_chain,
-            }),
-        )
-        .await;
-    });
+    crate::automation::emit_event(
+        state.pool(),
+        "issue_created",
+        event_issue.id,
+        serde_json::json!({
+            "issueId": event_issue.id,
+            "projectId": event_issue.project_id,
+            "title": event_issue.title,
+            "originRoutineId": origin_routine_id,
+            "routineChain": routine_chain,
+        }),
+    )
+    .await;
 
     Ok(Json(response))
 }

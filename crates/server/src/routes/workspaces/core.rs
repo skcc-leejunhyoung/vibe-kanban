@@ -86,16 +86,13 @@ pub async fn update_workspace(
     }
     if is_archiving {
         let workspace_id = workspace.id;
-        let pool = deployment.db().pool.clone();
-        tokio::spawn(async move {
-            services::services::automation::emit_event(
-                &pool,
-                "workspace_archived",
-                workspace_id,
-                serde_json::json!({ "workspaceId": workspace_id }),
-            )
-            .await;
-        });
+        services::services::automation::emit_event(
+            &deployment.db().pool,
+            "workspace_archived",
+            workspace_id,
+            serde_json::json!({ "workspaceId": workspace_id }),
+        )
+        .await;
     }
 
     Ok(ResponseJson(ApiResponse::success(updated)))

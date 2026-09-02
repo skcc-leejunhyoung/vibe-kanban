@@ -76,16 +76,13 @@ impl EventService {
         if process.status == db::models::execution_process::ExecutionProcessStatus::Completed {
             let process_id = process.id;
             let session_id = process.session_id;
-            let pool = self.db.pool.clone();
-            tokio::spawn(async move {
-                super::automation::emit_event(
-                    &pool,
-                    "execution_completed",
-                    process_id,
-                    json!({ "executionProcessId": process_id, "sessionId": session_id }),
-                )
-                .await;
-            });
+            super::automation::emit_event(
+                &self.db.pool,
+                "execution_completed",
+                process_id,
+                json!({ "executionProcessId": process_id, "sessionId": session_id }),
+            )
+            .await;
         }
         Ok(())
     }

@@ -192,6 +192,10 @@ export function routineEventKey(routineId, event) {
   return `${routineId}:${event.source || 'unknown'}:${event.type}:${event.id}`;
 }
 
+export function automationEventKey(event) {
+  return `${event.source || 'vibe'}:${event.type}:${event.id}`;
+}
+
 export function validateRoutineScope(bridge, input) {
   const projectId = input.linked_issue?.remote_project_id || input.scope?.projectId;
   if (projectId && !bridge.projectIds?.includes(projectId))
