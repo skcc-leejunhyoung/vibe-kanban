@@ -3494,6 +3494,12 @@ async function createVibeIssue(connectorId, input, event, rule) {
       source_event_ts: event.ts || null,
       automation_rule_id: rule.id,
       ...(input.extension_metadata || {}),
+      ...(event.originRoutineId
+        ? {
+            origin_routine_id: event.originRoutineId,
+            routine_chain: event.routineChain || [],
+          }
+        : {}),
     },
   };
 

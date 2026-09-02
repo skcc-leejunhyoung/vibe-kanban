@@ -1,20 +1,51 @@
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 
-pub async fn emit_event(pool: &PgPool, event_type: &str, id: impl ToString, data: Value) {
-    let mut event =
-        serde_json::json!({ "id": id.to_string(), "type": event_type, "source": "vibe" });
-    if let (Some(event), Some(data)) = (event.as_object_mut(), data.as_object()) {
-        event.extend(data.clone());
+pub enum ActionReceipt {
+    Claimed,
+    Running,
+    Succeeded(Value),
+}
+
+pub async fn begin_action(
+    pool: &PgPool,
+    key: &str,
+    action: &str,
+) -> Result<ActionReceipt, sqlx::Error> {
+    let inserted = sqlx::query("INSERT INTO automation_action_receipts (idempotency_key, action, status) VALUES ($1, $2, 'running') ON CONFLICT (idempotency_key) DO NOTHING")
+        .bind(key).bind(action).execute(pool).await?;
+    if inserted.rows_affected() == 1 {
+        return Ok(ActionReceipt::Claimed);
     }
-    let key = format!("{event_type}:{}", id.to_string());
-    if let Err(error) = sqlx::query("INSERT INTO automation_event_outbox (id, payload) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
-        .bind(key).bind(event).execute(pool).await {
-        tracing::warn!(%error, %event_type, "failed to persist automation event");
-        return;
-    }
-    let pool = pool.clone();
-    tokio::spawn(async move { drain(&pool).await });
+    let row = sqlx::query("SELECT action, status, response FROM automation_action_receipts WHERE idempotency_key = $1")
+        .bind(key).fetch_one(pool).await?;
+    let stored_action: String = row.get("action");
+    let status: String = row.get("status");
+    let response: Option<Value> = row.get("response");
+    Ok(if stored_action == action && status == "succeeded" {
+        ActionReceipt::Succeeded(response.unwrap_or(Value::Null))
+    } else {
+        ActionReceipt::Running
+    })
+}
+
+pub async fn complete_action<T: serde::Serialize>(
+    pool: &PgPool,
+    key: &str,
+    response: &T,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE automation_action_receipts SET status = 'succeeded', response = $1, updated_at = NOW() WHERE idempotency_key = $2")
+        .bind(serde_json::to_value(response).unwrap_or(Value::Null)).bind(key).execute(pool).await?;
+    Ok(())
+}
+
+pub async fn release_action(pool: &PgPool, key: &str) {
+    let _ = sqlx::query(
+        "DELETE FROM automation_action_receipts WHERE idempotency_key = $1 AND status = 'running'",
+    )
+    .bind(key)
+    .execute(pool)
+    .await;
 }
 
 pub fn spawn_outbox(pool: PgPool) {

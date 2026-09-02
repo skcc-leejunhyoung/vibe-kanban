@@ -23,11 +23,12 @@ use axum::{
 use db::models::execution_process::ExecutionProcess;
 use deployment::Deployment;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use services::services::container::ContainerService;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::DeploymentImpl;
+use crate::{DeploymentImpl, error::ApiError};
 
 static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 
@@ -85,14 +86,78 @@ struct NotificationAction {
 
 async fn notification(
     axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
+    headers: HeaderMap,
     Json(action): Json<NotificationAction>,
-) -> StatusCode {
+) -> Result<StatusCode, ApiError> {
+    let key = match claim_action::<()>(&deployment.db().pool, &headers, "notification").await? {
+        ActionClaim::Execute(key) => key,
+        ActionClaim::Replay(()) => return Ok(StatusCode::NO_CONTENT),
+    };
     deployment
         .container()
         .notification_service()
         .notify(&action.title, &action.message, action.workspace_id)
         .await;
-    StatusCode::NO_CONTENT
+    complete_action(&deployment.db().pool, key.as_deref(), &()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    let Some(value) = headers.get("idempotency-key") else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("invalid idempotency-key header".to_string()))?
+        .trim();
+    if value.is_empty() || value.len() > 200 {
+        return Err(ApiError::BadRequest(
+            "idempotency-key must contain 1-200 characters".to_string(),
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+pub(crate) enum ActionClaim<T> {
+    Execute(Option<String>),
+    Replay(T),
+}
+
+pub(crate) async fn claim_action<T: DeserializeOwned>(
+    pool: &SqlitePool,
+    headers: &HeaderMap,
+    action: &str,
+) -> Result<ActionClaim<T>, ApiError> {
+    let key = idempotency_key(headers)?;
+    let Some(key) = key else {
+        return Ok(ActionClaim::Execute(None));
+    };
+    match services::services::automation::begin_action(pool, &key, action).await? {
+        services::services::automation::ActionReceipt::Claimed => {
+            Ok(ActionClaim::Execute(Some(key)))
+        }
+        services::services::automation::ActionReceipt::Running => Err(ApiError::Conflict(
+            "automation action is already running".to_string(),
+        )),
+        services::services::automation::ActionReceipt::Succeeded(response) => {
+            serde_json::from_value(response)
+                .map(ActionClaim::Replay)
+                .map_err(|error| {
+                    ApiError::BadGateway(format!("invalid automation receipt: {error}"))
+                })
+        }
+    }
+}
+
+pub(crate) async fn complete_action<T: Serialize>(
+    pool: &SqlitePool,
+    key: Option<&str>,
+    response: &T,
+) -> Result<(), ApiError> {
+    if let Some(key) = key {
+        services::services::automation::complete_action(pool, key, response).await?;
+    }
+    Ok(())
 }
 
 /// Forward `/api/automation/<tail>` to `<worker>/api/<tail>`, preserving method,

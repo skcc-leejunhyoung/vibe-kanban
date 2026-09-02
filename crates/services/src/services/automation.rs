@@ -1,31 +1,69 @@
 use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 
-pub async fn emit_event(pool: &SqlitePool, event_type: &str, id: impl ToString, data: Value) {
-    let mut event = serde_json::json!({
-        "id": id.to_string(),
-        "type": event_type,
-        "source": "vibe",
-    });
-    if let (Some(event), Some(data)) = (event.as_object_mut(), data.as_object()) {
-        event.extend(data.clone());
-    }
-    let key = format!("{event_type}:{}", id.to_string());
-    if let Err(error) = persist(pool, &key, &event).await {
-        tracing::warn!(%error, %event_type, "failed to persist automation event");
-        return;
-    }
-    let pool = pool.clone();
-    tokio::spawn(async move { drain(&pool).await });
+#[derive(Debug, PartialEq)]
+pub enum ActionReceipt {
+    Claimed,
+    Running,
+    Succeeded(serde_json::Value),
 }
 
-async fn persist(pool: &SqlitePool, key: &str, event: &Value) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT OR IGNORE INTO automation_event_outbox (id, payload) VALUES (?, ?)")
+pub async fn begin_action(
+    pool: &SqlitePool,
+    key: &str,
+    action: &str,
+) -> Result<ActionReceipt, sqlx::Error> {
+    let inserted = sqlx::query("INSERT OR IGNORE INTO automation_action_receipts (idempotency_key, action, status) VALUES (?, ?, 'running')")
         .bind(key)
-        .bind(event.to_string())
+        .bind(action)
+        .execute(pool)
+        .await?;
+    if inserted.rows_affected() == 1 {
+        return Ok(ActionReceipt::Claimed);
+    }
+    let row = sqlx::query(
+        "SELECT action, status, response FROM automation_action_receipts WHERE idempotency_key = ?",
+    )
+    .bind(key)
+    .fetch_one(pool)
+    .await?;
+    let stored_action: String = row.get("action");
+    if stored_action != action {
+        return Ok(ActionReceipt::Running);
+    }
+    let status: String = row.get("status");
+    let response: Option<String> = row.get("response");
+    Ok(if status == "succeeded" {
+        ActionReceipt::Succeeded(
+            response
+                .and_then(|value| serde_json::from_str(&value).ok())
+                .unwrap_or(serde_json::Value::Null),
+        )
+    } else {
+        ActionReceipt::Running
+    })
+}
+
+pub async fn complete_action<T: serde::Serialize>(
+    pool: &SqlitePool,
+    key: &str,
+    response: &T,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE automation_action_receipts SET status = 'succeeded', response = ?, updated_at = CURRENT_TIMESTAMP WHERE idempotency_key = ?")
+        .bind(serde_json::to_string(response).unwrap_or_else(|_| "null".to_string()))
+        .bind(key)
         .execute(pool)
         .await?;
     Ok(())
+}
+
+pub async fn release_action(pool: &SqlitePool, key: &str) {
+    let _ = sqlx::query(
+        "DELETE FROM automation_action_receipts WHERE idempotency_key = ? AND status = 'running'",
+    )
+    .bind(key)
+    .execute(pool)
+    .await;
 }
 
 pub fn spawn_outbox(pool: SqlitePool) {
@@ -90,24 +128,114 @@ fn endpoint() -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+    use uuid::Uuid;
+
     use super::*;
 
     #[tokio::test]
-    async fn persists_event_until_delivery_succeeds() {
+    async fn action_receipt_is_reused_after_success() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query("CREATE TABLE automation_event_outbox (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+        sqlx::query("CREATE TABLE automation_action_receipts (idempotency_key TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, response TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)")
             .execute(&pool).await.unwrap();
-        persist(&pool, "issue_created:1", &serde_json::json!({ "id": "1" }))
+        assert_eq!(
+            begin_action(&pool, "key", "notify").await.unwrap(),
+            ActionReceipt::Claimed
+        );
+        assert_eq!(
+            begin_action(&pool, "key", "notify").await.unwrap(),
+            ActionReceipt::Running
+        );
+        release_action(&pool, "key").await;
+        assert_eq!(
+            begin_action(&pool, "key", "notify").await.unwrap(),
+            ActionReceipt::Claimed
+        );
+        complete_action(&pool, "key", &serde_json::json!({ "ok": true }))
             .await
             .unwrap();
-        persist(&pool, "issue_created:1", &serde_json::json!({ "id": "1" }))
+        assert_eq!(
+            begin_action(&pool, "key", "notify").await.unwrap(),
+            ActionReceipt::Succeeded(serde_json::json!({ "ok": true }))
+        );
+    }
+
+    #[tokio::test]
+    async fn source_changes_enqueue_events_in_the_same_database_write() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let process_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/test')")
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO execution_processes (id, session_id, run_reason, status) VALUES (?, ?, 'codingagent', 'running')")
+            .bind(process_id)
+            .bind(session_id)
+            .execute(&pool)
             .await
             .unwrap();
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM automation_event_outbox")
-            .fetch_one(&pool)
+        sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+            .bind(workspace_id)
+            .execute(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 1);
+        sqlx::query("UPDATE execution_processes SET status = 'completed' WHERE id = ?")
+            .bind(process_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let payloads: Vec<String> =
+            sqlx::query_scalar("SELECT payload FROM automation_event_outbox ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(payloads.len(), 2);
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.contains(&workspace_id.to_string()))
+        );
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.contains(&process_id.to_string()))
+        );
+
+        let rolled_back_workspace_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/rollback')")
+            .bind(rolled_back_workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+            .bind(rolled_back_workspace_id)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        transaction.rollback().await.unwrap();
+        let rolled_back_events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM automation_event_outbox WHERE payload LIKE ?")
+                .bind(format!("%{rolled_back_workspace_id}%"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rolled_back_events, 0);
     }
 }

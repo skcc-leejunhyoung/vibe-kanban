@@ -73,17 +73,6 @@ impl EventService {
             process.session_id,
         )
         .await?;
-        if process.status == db::models::execution_process::ExecutionProcessStatus::Completed {
-            let process_id = process.id;
-            let session_id = process.session_id;
-            super::automation::emit_event(
-                &self.db.pool,
-                "execution_completed",
-                process_id,
-                json!({ "executionProcessId": process_id, "sessionId": session_id }),
-            )
-            .await;
-        }
         Ok(())
     }
 

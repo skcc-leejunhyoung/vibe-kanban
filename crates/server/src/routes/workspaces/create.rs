@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use axum::{Json, extract::State, response::Json as ResponseJson};
+use axum::{Json, extract::State, http::HeaderMap, response::Json as ResponseJson};
 use db::models::{
     pending_execution_start::PendingExecutionStart,
     repo::Repo,
@@ -670,6 +670,36 @@ pub async fn create_workspace_without_starting(
 }
 
 pub async fn create_and_start_workspace(
+    State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateAndStartWorkspaceRequest>,
+) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {
+    let pool = deployment.db().pool.clone();
+    let key = match crate::routes::automation::claim_action::<
+        ApiResponse<CreateAndStartWorkspaceResponse>,
+    >(&pool, &headers, "start_workspace")
+    .await?
+    {
+        crate::routes::automation::ActionClaim::Execute(key) => key,
+        crate::routes::automation::ActionClaim::Replay(response) => {
+            return Ok(ResponseJson(response));
+        }
+    };
+    let result = create_and_start_workspace_inner(State(deployment), Json(payload)).await;
+    match &result {
+        Ok(response) => {
+            crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
+        }
+        Err(_) => {
+            if let Some(key) = key.as_deref() {
+                services::services::automation::release_action(&pool, key).await;
+            }
+        }
+    }
+    result
+}
+
+async fn create_and_start_workspace_inner(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {

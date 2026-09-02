@@ -309,7 +309,88 @@ async fn create_issue(
     headers: HeaderMap,
     Json(payload): Json<CreateIssueRequest>,
 ) -> Result<Json<MutationResponse<Issue>>, ErrorResponse> {
+    let key = headers
+        .get("idempotency-key")
+        .map(|value| {
+            value
+                .to_str()
+                .map(str::trim)
+                .map(str::to_owned)
+                .map_err(|_| ErrorResponse::new(StatusCode::BAD_REQUEST, "invalid idempotency-key"))
+        })
+        .transpose()?;
+    if key
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.len() > 200)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "idempotency-key must contain 1-200 characters",
+        ));
+    }
+    let receipt_key = key.as_ref().map(|key| format!("{}:{key}", ctx.user.id));
+    if let Some(key) = receipt_key.as_deref() {
+        match crate::automation::begin_action(state.pool(), key, "create_issue")
+            .await
+            .map_err(|error| db_error(error, "failed to claim automation action"))?
+        {
+            crate::automation::ActionReceipt::Claimed => {}
+            crate::automation::ActionReceipt::Running => {
+                return Err(ErrorResponse::new(
+                    StatusCode::CONFLICT,
+                    "automation action is already running",
+                ));
+            }
+            crate::automation::ActionReceipt::Succeeded(response) => {
+                return serde_json::from_value(response).map(Json).map_err(|error| {
+                    tracing::error!(?error, "invalid automation action receipt");
+                    ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "invalid action receipt")
+                });
+            }
+        }
+    }
+    let result =
+        create_issue_inner(State(state.clone()), Extension(ctx), headers, Json(payload)).await;
+    match &result {
+        Ok(response) => {
+            if let Some(key) = receipt_key.as_deref() {
+                crate::automation::complete_action(state.pool(), key, &response.0)
+                    .await
+                    .map_err(|error| db_error(error, "failed to complete automation action"))?;
+            }
+        }
+        Err(_) => {
+            if let Some(key) = receipt_key.as_deref() {
+                crate::automation::release_action(state.pool(), key).await;
+            }
+        }
+    }
+    result
+}
+
+async fn create_issue_inner(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    headers: HeaderMap,
+    Json(mut payload): Json<CreateIssueRequest>,
+) -> Result<Json<MutationResponse<Issue>>, ErrorResponse> {
     ensure_project_access(state.pool(), ctx.user.id, payload.project_id).await?;
+
+    if let Some(metadata) = payload.extension_metadata.as_object_mut() {
+        if let Some(origin) = headers
+            .get("x-vibe-routine-id")
+            .and_then(|value| value.to_str().ok())
+        {
+            metadata.insert("origin_routine_id".to_string(), origin.into());
+        }
+        if let Some(chain) = headers
+            .get("x-vibe-routine-chain")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| serde_json::from_str(value).ok())
+        {
+            metadata.insert("routine_chain".to_string(), chain);
+        }
+    }
 
     let response = IssueRepository::create(
         state.pool(),
@@ -340,30 +421,6 @@ async fn create_issue(
     {
         tracing::warn!(?e, issue_id = %response.data.id, "failed to auto-follow issue for creator");
     }
-
-    let event_issue = response.data.clone();
-    let origin_routine_id = headers
-        .get("x-vibe-routine-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let routine_chain = headers
-        .get("x-vibe-routine-chain")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
-        .unwrap_or_default();
-    crate::automation::emit_event(
-        state.pool(),
-        "issue_created",
-        event_issue.id,
-        serde_json::json!({
-            "issueId": event_issue.id,
-            "projectId": event_issue.project_id,
-            "title": event_issue.title,
-            "originRoutineId": origin_routine_id,
-            "routineChain": routine_chain,
-        }),
-    )
-    .await;
 
     Ok(Json(response))
 }

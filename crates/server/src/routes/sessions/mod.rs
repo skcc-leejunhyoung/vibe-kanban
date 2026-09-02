@@ -7,7 +7,7 @@ use std::str::FromStr;
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::from_fn_with_state,
     response::Json as ResponseJson,
     routing::{get, post},
@@ -331,6 +331,39 @@ fn resolve_followup_executor_config(
 }
 
 pub async fn follow_up(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateFollowUpAttempt>,
+) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
+    let pool = deployment.db().pool.clone();
+    let key = match crate::routes::automation::claim_action::<ApiResponse<ExecutionProcess>>(
+        &pool,
+        &headers,
+        "send_prompt",
+    )
+    .await?
+    {
+        crate::routes::automation::ActionClaim::Execute(key) => key,
+        crate::routes::automation::ActionClaim::Replay(response) => {
+            return Ok(ResponseJson(response));
+        }
+    };
+    let result = follow_up_inner(Extension(session), State(deployment), Json(payload)).await;
+    match &result {
+        Ok(response) => {
+            crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
+        }
+        Err(_) => {
+            if let Some(key) = key.as_deref() {
+                services::services::automation::release_action(&pool, key).await;
+            }
+        }
+    }
+    result
+}
+
+async fn follow_up_inner(
     Extension(mut session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateFollowUpAttempt>,
