@@ -148,12 +148,16 @@ Supported relationship types: `blocking`, `related`, `has_duplicate`.
 | `list_sessions` | List sessions for a workspace | None | `workspace_id` | Session list |
 | `run_session_prompt` | Run a coding-agent prompt inside an existing session | `session_id`<br/>`prompt` | None | Execution details |
 | `get_execution` | Inspect execution status and final message | `execution_id` | None | Execution details |
+| `search_sessions` | Search past session conversations by content across all workspaces | `query` | `repo_id`<br/>`entry_types`<br/>`limit` | Ranked hits with session/workspace context and a snippet |
+| `get_session_slice` | Read the conversation around a `search_sessions` hit | `session_id`<br/>`execution_id`<br/>`entry_index` | `radius` | Entries around the hit, in session order |
 
 The `repositories` parameter is an array of objects with:
 - `repo_id`: The repository ID (UUID)
 - `branch`: The branch for this repository
 
 When `issue_id` is provided, the workspace is automatically linked to the remote issue. If `prompt` is omitted, the linked issue's title and description are used as the workspace prompt.
+
+`search_sessions` matches substrings in indexed conversation entries (user prompts, assistant and thinking messages, tool-use summary lines, system and error messages; tool result payloads are not indexed). `entry_types` filters by entry kind, for example `["user_message", "tool_use"]`. Pass a hit's `session_id`, `execution_id` and `entry_index` to `get_session_slice` to read the surrounding conversation without loading the whole transcript.
 
 ### Supported Executors
 

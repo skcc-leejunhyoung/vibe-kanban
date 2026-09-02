@@ -329,7 +329,37 @@ mod tests {
         .unwrap();
         assert!(hits.is_empty());
 
-        // Repo filter with a repo the workspace doesn't contain.
+        // Multi-value entry-type filter and limit (a space matches every row).
+        let hits = SessionMessageIndex::search(
+            &pool,
+            " ",
+            None,
+            Some(r#"["user_message","assistant_message"]"#.to_string()),
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].execution_id, exec2, "newest turn first");
+
+        // Repo filter: a repo the workspace contains matches, a foreign one doesn't.
+        let repo_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO repos (id, path, name, display_name) VALUES ($1, '/tmp/probe-repo', 'probe', 'probe')")
+            .bind(repo_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workspace_repos (id, workspace_id, repo_id, target_branch) SELECT $1, workspace_id, $2, 'main' FROM sessions WHERE id = $3")
+            .bind(Uuid::new_v4())
+            .bind(repo_id)
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let hits = SessionMessageIndex::search(&pool, "결정", Some(repo_id), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
         let hits = SessionMessageIndex::search(&pool, "결정", Some(Uuid::new_v4()), None, 10)
             .await
             .unwrap();
