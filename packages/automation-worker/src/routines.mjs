@@ -219,6 +219,24 @@ export function redactEvent(value, key = '') {
   );
 }
 
+export function routineRunTrigger(event) {
+  const keys = [
+    'id',
+    'type',
+    'source',
+    'issueId',
+    'executionProcessId',
+    'workspaceId',
+    'projectId',
+    'sessionId',
+  ];
+  return Object.fromEntries(
+    keys
+      .filter((key) => event?.[key] !== undefined)
+      .map((key) => [key, redactEvent(event[key], key)])
+  );
+}
+
 function parseCron(value) {
   const fields = String(value || '').trim().split(/\s+/);
   if (fields.length !== 5) throw new Error('cron must have 5 fields');

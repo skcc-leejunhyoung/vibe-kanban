@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { eventMatchesRoutine, normalizeRoutine, redactEvent, routineEventKey, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
+import { eventMatchesRoutine, normalizeRoutine, redactEvent, routineEventKey, routineRunTrigger, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
 
 test('cron occurrences are keyed by local timezone minute', () => {
   const routine = normalizeRoutine({ id: 'daily', enabled: true, trigger: { type: 'schedule', cron: '30 9 * * 1-5', timezone: 'Asia/Seoul' }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'host', input: { title: 'a', message: 'b' } } });
@@ -26,6 +26,10 @@ test('events reject self recursion and redact sensitive fields', () => {
   const routine = normalizeRoutine({ id: 'r1', enabled: true, trigger: { type: 'issue_created' }, action: { type: 'create_issue', connectorId: 'vibe', input: { title: 'a' } } });
   assert.equal(eventMatchesRoutine(routine, { type: 'issue_created', originRoutineId: 'r1' }), false);
   assert.deepEqual(redactEvent({ type: 'issue_created', nested: { bearerToken: 'nope', title: 'ok' } }), { type: 'issue_created', nested: { title: 'ok' } });
+});
+
+test('run history keeps only trigger identity and routing fields', () => {
+  assert.deepEqual(routineRunTrigger({ id: '1', type: 'issue_created', source: 'vibe', issueId: 'issue', title: 'private title', raw: { body: 'private body' }, token: 'secret' }), { id: '1', type: 'issue_created', source: 'vibe', issueId: 'issue' });
 });
 
 test('workspace actions require explicit scope, executor and safety policies', () => {

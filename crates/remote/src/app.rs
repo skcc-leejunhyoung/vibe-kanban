@@ -28,6 +28,7 @@ impl Server {
         db::migrate(&pool)
             .await
             .context("failed to run database migrations")?;
+        crate::automation::spawn_outbox(pool.clone());
 
         let mut backfilled_snapshots = 0;
         loop {

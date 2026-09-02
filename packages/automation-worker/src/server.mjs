@@ -54,6 +54,7 @@ import {
   eventMatchesRoutine,
   normalizeRoutine,
   redactEvent,
+  routineRunTrigger,
   routineEventKey,
   scheduleOccurrence,
   validateRoutineScope,
@@ -882,7 +883,7 @@ async function runRoutine(routine, event, idempotencyKey) {
   const existingClaim = state.routineClaims[idempotencyKey];
   if (existingClaim)
     return { ok: existingClaim.status === 'succeeded', status: existingClaim.status };
-  const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: redactEvent(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, maxAttempts: RETRY_MAX_ATTEMPTS, error: null };
+  const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: routineRunTrigger(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, maxAttempts: RETRY_MAX_ATTEMPTS, error: null };
   state.routineRuns.unshift(run);
   state.routineRuns = state.routineRuns.slice(0, MAX_LOGS);
   state.routineClaims[idempotencyKey] = { runId: run.id, status: 'running' };

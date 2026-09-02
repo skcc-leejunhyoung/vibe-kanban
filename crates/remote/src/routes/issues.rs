@@ -342,6 +342,7 @@ async fn create_issue(
     }
 
     let event_issue = response.data.clone();
+    let event_pool = state.pool().clone();
     let origin_routine_id = headers
         .get("x-vibe-routine-id")
         .and_then(|value| value.to_str().ok())
@@ -353,6 +354,7 @@ async fn create_issue(
         .unwrap_or_default();
     tokio::spawn(async move {
         crate::automation::emit_event(
+            &event_pool,
             "issue_created",
             event_issue.id,
             serde_json::json!({
