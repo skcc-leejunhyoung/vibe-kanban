@@ -59,6 +59,22 @@ pub fn index_rows<'a>(
         .collect()
 }
 
+/// [`index_rows`] off the async workers. Each patch is round-tripped through
+/// `serde_json::Value` and a long turn holds tens of thousands of them, so
+/// running this inline on a tokio worker stalls the runtime (and with it the
+/// supervisor's `/api/health` probe) for seconds at every turn end.
+pub async fn index_rows_blocking(
+    action: Option<ExecutorAction>,
+    patches: Vec<Patch>,
+) -> Vec<NewSessionMessage> {
+    tokio::task::spawn_blocking(move || index_rows(action.as_ref(), patches.iter()))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Session message extraction task failed: {}", e);
+            Vec::new()
+        })
+}
+
 /// Coalesce a patch stream (adds, replaces, removes) into the final indexable
 /// rows, keyed by entry index.
 pub fn collect_indexable_rows<'a>(
@@ -187,7 +203,7 @@ pub async fn backfill(container: &(impl ContainerService + Sync)) {
                 }
             }
         }
-        let rows = index_rows(action.as_ref(), patches.iter());
+        let rows = index_rows_blocking(action, patches).await;
         if let Err(e) = SessionMessageIndex::rebuild_for_execution(
             &pool,
             item.session_id,

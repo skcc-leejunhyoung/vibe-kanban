@@ -1037,11 +1037,21 @@ pub trait ContainerService {
                     }
                 };
 
+            let current_dir = self.workspace_to_current_dir(&workspace);
+
             // A worktree-deleted workspace (archived / cleaned up) only needs its
             // stored logs here. Don't recreate its checkout: that can fail
             // indefinitely when its branch is now held by another worktree, which
             // spun a fail-retry loop. Normalize against whatever directory we have.
+            //
+            // Replay is a read path, so only materialize a checkout that is
+            // actually missing: `ensure_container_exists` also touches the
+            // workspace (`updated_at`), and the session-search backfill replays
+            // every historical execution — touching hundreds of workspaces would
+            // reshuffle the recency-ordered workspace list. Interactive opens
+            // still touch via the workspace stream routes.
             if !workspace.worktree_deleted
+                && !current_dir.exists()
                 && let Err(err) = self.ensure_container_exists(&workspace).await
             {
                 tracing::warn!(
@@ -1050,8 +1060,6 @@ pub trait ContainerService {
                     err
                 );
             }
-
-            let current_dir = self.workspace_to_current_dir(&workspace);
 
             let executor_action = if let Ok(executor_action) = process.executor_action() {
                 executor_action

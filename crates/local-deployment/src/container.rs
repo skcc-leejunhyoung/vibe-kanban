@@ -860,19 +860,20 @@ impl LocalContainerService {
                     ctx.execution_process.run_reason,
                     ExecutionProcessRunReason::CodingAgent
                 ) {
-                    let action = ctx.execution_process.executor_action().ok();
-                    let rows = msg_stores.read().await.get(&exec_id).map(|store| {
-                        let history = store.get_history();
-                        session_message_indexer::index_rows(
-                            action,
-                            history.iter().filter_map(|msg| match msg {
+                    let action = ctx.execution_process.executor_action().ok().cloned();
+                    let store = msg_stores.read().await.get(&exec_id).cloned();
+                    if let Some(store) = store {
+                        let patches = store
+                            .get_history()
+                            .into_iter()
+                            .filter_map(|msg| match msg {
                                 LogMsg::JsonPatch(patch) => Some(patch),
                                 _ => None,
-                            }),
-                        )
-                    });
-                    if let Some(rows) = rows
-                        && let Err(e) = SessionMessageIndex::rebuild_for_execution(
+                            })
+                            .collect();
+                        let rows =
+                            session_message_indexer::index_rows_blocking(action, patches).await;
+                        if let Err(e) = SessionMessageIndex::rebuild_for_execution(
                             &db.pool,
                             session_id,
                             exec_id,
@@ -880,8 +881,13 @@ impl LocalContainerService {
                             &rows,
                         )
                         .await
-                    {
-                        tracing::warn!("Failed to index session messages for {}: {}", exec_id, e);
+                        {
+                            tracing::warn!(
+                                "Failed to index session messages for {}: {}",
+                                exec_id,
+                                e
+                            );
+                        }
                     }
                 }
 
