@@ -5,6 +5,13 @@ const CRON_PARTS = [
   [1, 12],
   [0, 6],
 ];
+const PERMISSION_POLICIES = new Set(['AUTO', 'DONT_ASK', 'SUPERVISED', 'PLAN']);
+const SANDBOX_POLICIES = new Set([
+  'auto',
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+]);
 
 export function normalizeRoutine(input) {
   if (!input || typeof input !== 'object') throw new Error('invalid routine');
@@ -17,6 +24,13 @@ export function normalizeRoutine(input) {
     throw new Error('unsupported routine action');
   }
   if (!action.connectorId) throw new Error('action connectorId is required');
+  if (!action.input || typeof action.input !== 'object' || Array.isArray(action.input))
+    throw new Error('action input must be an object');
+  if (
+    input.condition !== undefined &&
+    input.condition !== null &&
+    (typeof input.condition !== 'object' || Array.isArray(input.condition))
+  ) throw new Error('condition must be an object or null');
   if (
     ['start_workspace', 'send_prompt', 'notification'].includes(action.type) &&
     !action.targetHostId
@@ -32,20 +46,30 @@ export function normalizeRoutine(input) {
       throw new Error('start_workspace executor is required');
     if (!actionInput.executor_config?.permission_policy)
       throw new Error('start_workspace approval policy is required');
+    if (!PERMISSION_POLICIES.has(actionInput.executor_config.permission_policy))
+      throw new Error('start_workspace approval policy is invalid');
+    if (!SANDBOX_POLICIES.has(actionInput.sandbox_policy))
+      throw new Error('start_workspace sandbox policy is required');
     if (!Number.isFinite(actionInput.max_execution_seconds) || actionInput.max_execution_seconds < 1)
       throw new Error('start_workspace max execution time is required');
   }
   if (action.type === 'send_prompt') {
     if (!actionInput.sessionId || !actionInput.prompt)
       throw new Error('send_prompt sessionId and prompt are required');
+    if (!actionInput.executor_config?.executor)
+      throw new Error('send_prompt executor is required');
     if (!actionInput.executor_config?.permission_policy)
       throw new Error('send_prompt approval policy is required');
+    if (!PERMISSION_POLICIES.has(actionInput.executor_config.permission_policy))
+      throw new Error('send_prompt approval policy is invalid');
+    if (!SANDBOX_POLICIES.has(actionInput.sandbox_policy))
+      throw new Error('send_prompt sandbox policy is required');
   }
   if (action.type === 'notification' && (!actionInput.title || !actionInput.message))
     throw new Error('notification title and message are required');
   if (trigger.type === 'schedule') {
     if (!trigger.at && !trigger.cron) throw new Error('schedule needs at or cron');
-    if (trigger.at && !Number.isFinite(Date.parse(trigger.at))) throw new Error('invalid schedule time');
+    if (trigger.at) zonedDate(trigger.at, trigger.timezone);
     if (trigger.cron) parseCron(trigger.cron);
     if (!trigger.timezone) throw new Error('schedule timezone is required');
     new Intl.DateTimeFormat('en-US', { timeZone: trigger.timezone }).format();
@@ -66,7 +90,7 @@ export function scheduleOccurrence(routine, now = new Date()) {
   const trigger = routine.trigger || {};
   if (trigger.type !== 'schedule') return null;
   if (trigger.at) {
-    const time = Date.parse(trigger.at);
+    const time = zonedDate(trigger.at, trigger.timezone).getTime();
     return time <= now.getTime() ? `once:${new Date(time).toISOString()}` : null;
   }
   const timezone = trigger.timezone;
@@ -93,6 +117,57 @@ export function scheduleOccurrence(routine, now = new Date()) {
   return `cron:${timezone}:${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
 
+function zonedDate(value, timezone) {
+  if (/(?:Z|[+-]\d\d:\d\d)$/i.test(value)) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) throw new Error('invalid schedule time');
+    return date;
+  }
+  const match = String(value).match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+  );
+  if (!match) throw new Error('invalid schedule time');
+  const wanted = match.slice(1).map(Number);
+  let timestamp = Date.UTC(
+    wanted[0],
+    wanted[1] - 1,
+    wanted[2],
+    wanted[3],
+    wanted[4],
+    wanted[5] || 0
+  );
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const parts = Object.fromEntries(
+      formatter.formatToParts(new Date(timestamp))
+        .filter((part) => part.type !== 'literal')
+        .map((part) => [part.type, Number(part.value)])
+    );
+    const actual = Date.UTC(
+      parts.year, parts.month - 1, parts.day,
+      parts.hour, parts.minute, parts.second
+    );
+    timestamp += Date.UTC(
+      wanted[0], wanted[1] - 1, wanted[2],
+      wanted[3], wanted[4], wanted[5] || 0
+    ) - actual;
+  }
+  const resolved = Object.fromEntries(
+    formatter.formatToParts(new Date(timestamp))
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, Number(part.value)])
+  );
+  if (
+    [resolved.year, resolved.month, resolved.day, resolved.hour, resolved.minute, resolved.second]
+      .some((part, index) => part !== [wanted[0], wanted[1], wanted[2], wanted[3], wanted[4], wanted[5] || 0][index])
+  ) throw new Error('schedule time does not exist in timezone');
+  return new Date(timestamp);
+}
+
 export function eventMatchesRoutine(routine, event) {
   if (!routine.enabled || routine.trigger?.type !== event.type) return false;
   if (
@@ -103,6 +178,20 @@ export function eventMatchesRoutine(routine, event) {
   const condition = routine.condition;
   if (!condition) return true;
   return Object.entries(condition).every(([key, value]) => event[key] === value);
+}
+
+export function routineEventKey(routineId, event) {
+  return `${routineId}:${event.source || 'unknown'}:${event.type}:${event.id}`;
+}
+
+export function validateRoutineScope(bridge, input) {
+  const projectId = input.linked_issue?.remote_project_id;
+  if (projectId && !bridge.projectIds?.includes(projectId))
+    throw new Error(`project is outside target host scope: ${projectId}`);
+  for (const repo of input.repos || []) {
+    if (!bridge.repositoryIds?.includes(repo.repo_id))
+      throw new Error(`repository is outside target host scope: ${repo.repo_id}`);
+  }
 }
 
 export function redactEvent(value, key = '') {

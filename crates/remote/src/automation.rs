@@ -17,13 +17,26 @@ pub async fn emit_event(event_type: &str, id: impl ToString, data: Value) {
     if let (Some(event), Some(data)) = (event.as_object_mut(), data.as_object()) {
         event.extend(data.clone());
     }
-    if let Err(error) = reqwest::Client::new()
-        .post(format!("{}/api/events", url.trim_end_matches('/')))
-        .bearer_auth(token)
-        .json(&event)
-        .send()
-        .await
-    {
-        tracing::warn!(%error, %event_type, "failed to emit automation event");
+    let client = reqwest::Client::new();
+    for attempt in 1..=5 {
+        match client
+            .post(format!("{}/api/events", url.trim_end_matches('/')))
+            .timeout(std::time::Duration::from_secs(10))
+            .bearer_auth(&token)
+            .json(&event)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response) => {
+                tracing::warn!(status = %response.status(), %event_type, attempt, "automation event rejected")
+            }
+            Err(error) => {
+                tracing::warn!(%error, %event_type, attempt, "failed to emit automation event")
+            }
+        }
+        if attempt < 5 {
+            tokio::time::sleep(std::time::Duration::from_secs(attempt)).await;
+        }
     }
 }

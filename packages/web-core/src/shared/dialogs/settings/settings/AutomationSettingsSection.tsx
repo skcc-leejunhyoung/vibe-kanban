@@ -30,6 +30,8 @@ import {
   type AutomationLogEntry,
   type AutomationRule,
   type AutomationRoutine,
+  type AutomationRoutineAction,
+  type AutomationRoutineTrigger,
   type AutomationState,
   type GithubIssueSyncRuleConfig,
   type GithubProjectMetadata,
@@ -66,7 +68,12 @@ interface RoutineDraft {
   id: string;
   name: string;
   enabled: boolean;
-  definitionText: string;
+  trigger: AutomationRoutineTrigger;
+  conditionText: string;
+  actionType: AutomationRoutineAction['type'];
+  connectorId: string;
+  targetHostId: string;
+  actionInputText: string;
   isNew: boolean;
 }
 
@@ -79,6 +86,39 @@ const EMPTY_GITHUB_SYNC_CONFIG: GithubIssueSyncRuleConfig = {
   statusMappings: [],
   fields: { title: true, description: true, status: true, comments: true },
 };
+
+function defaultRoutineActionInput(
+  type: AutomationRoutineAction['type']
+): Record<string, unknown> {
+  if (type === 'create_issue') return { title: '', description: '' };
+  if (type === 'notification') return { title: '', message: '' };
+  if (type === 'send_prompt')
+    return {
+      sessionId: '',
+      prompt: '',
+      sandbox_policy: 'workspace-write',
+      executor_config: { executor: 'CODEX', permission_policy: 'DONT_ASK' },
+    };
+  return {
+    name: '',
+    repos: [],
+    linked_issue: null,
+    prompt: '',
+    sandbox_policy: 'workspace-write',
+    max_execution_seconds: 3600,
+    executor_config: {
+      executor: 'CODEX',
+      permission_policy: 'DONT_ASK',
+    },
+  };
+}
+
+function localDateTimeValue(): string {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
+}
 
 function asGithubSyncConfig(
   value: Record<string, unknown>
@@ -716,15 +756,13 @@ export function AutomationSettingsSection() {
       id: item.id,
       name: item.name,
       enabled: item.enabled,
-      definitionText: JSON.stringify(
-        {
-          trigger: item.trigger,
-          condition: item.condition,
-          action: item.action,
-        },
-        null,
-        2
-      ),
+      trigger: item.trigger,
+      conditionText: JSON.stringify(item.condition, null, 2),
+      actionType: item.action.type,
+      connectorId: item.action.connectorId,
+      targetHostId:
+        'targetHostId' in item.action ? item.action.targetHostId : '',
+      actionInputText: JSON.stringify(item.action.input, null, 2),
       isNew: false,
     });
 
@@ -733,44 +771,48 @@ export function AutomationSettingsSection() {
       id: randomId('routine'),
       name: 'Untitled routine',
       enabled: false,
-      definitionText: JSON.stringify(
-        {
-          trigger: {
-            type: 'schedule',
-            cron: '0 9 * * 1-5',
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          },
-          condition: null,
-          action: {
-            type: 'notification',
-            connectorId: 'vibe-default',
-            targetHostId: '',
-            input: { title: '', message: '' },
-          },
-        },
-        null,
-        2
-      ),
+      trigger: {
+        type: 'schedule',
+        cron: '0 9 * * 1-5',
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+      conditionText: 'null',
+      actionType: 'notification',
+      connectorId: 'vibe-default',
+      targetHostId: '',
+      actionInputText: JSON.stringify({ title: '', message: '' }, null, 2),
       isNew: true,
     });
 
   const saveRoutine = () => {
     if (!routine) return;
-    let definition: Pick<AutomationRoutine, 'trigger' | 'condition' | 'action'>;
+    let condition: Record<string, unknown> | null;
+    let input: Record<string, unknown>;
     try {
-      definition = JSON.parse(routine.definitionText);
+      condition = JSON.parse(routine.conditionText);
+      input = JSON.parse(routine.actionInputText);
     } catch {
       setError(
         t('settings.automation.errors.invalidJson', 'Config is not valid JSON.')
       );
       return;
     }
+    const action = {
+      type: routine.actionType,
+      connectorId: routine.connectorId,
+      ...(routine.actionType === 'create_issue'
+        ? {}
+        : { targetHostId: routine.targetHostId }),
+      input,
+    } as AutomationRoutineAction;
     run(async () => {
       const next = await machineClient.saveAutomationRoutine({
         id: routine.id,
         name: routine.name,
         enabled: routine.enabled,
-        ...definition,
+        trigger: routine.trigger,
+        condition,
+        action,
       });
       setRoutine(null);
       return next;
@@ -791,6 +833,8 @@ export function AutomationSettingsSection() {
     }, 'Routine started.');
 
   const masterOn = state?.enabled !== false;
+  const scheduleTrigger =
+    routine?.trigger.type === 'schedule' ? routine.trigger : null;
 
   return (
     <div className="space-y-6">
@@ -1329,13 +1373,163 @@ export function AutomationSettingsSection() {
               checked={routine.enabled}
               onChange={(enabled) => setRoutine({ ...routine, enabled })}
             />
-            <SettingsField label="Trigger / condition / action (JSON)">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <SettingsField label="Trigger">
+                <SettingsSelect
+                  value={routine.trigger.type}
+                  options={[
+                    { value: 'schedule', label: 'Schedule' },
+                    { value: 'issue_created', label: 'Issue created' },
+                    {
+                      value: 'execution_completed',
+                      label: 'Execution completed',
+                    },
+                    {
+                      value: 'workspace_archived',
+                      label: 'Workspace archived',
+                    },
+                  ]}
+                  onChange={(type) =>
+                    setRoutine({
+                      ...routine,
+                      trigger:
+                        type === 'schedule'
+                          ? {
+                              type,
+                              cron: '0 9 * * 1-5',
+                              timezone:
+                                Intl.DateTimeFormat().resolvedOptions()
+                                  .timeZone,
+                            }
+                          : { type },
+                    })
+                  }
+                />
+              </SettingsField>
+              <SettingsField label="Action">
+                <SettingsSelect
+                  value={routine.actionType}
+                  options={[
+                    { value: 'create_issue', label: 'Create issue' },
+                    { value: 'start_workspace', label: 'Start workspace' },
+                    { value: 'send_prompt', label: 'Send prompt' },
+                    { value: 'notification', label: 'Notification' },
+                  ]}
+                  onChange={(actionType) =>
+                    setRoutine({
+                      ...routine,
+                      actionType,
+                      actionInputText: JSON.stringify(
+                        defaultRoutineActionInput(actionType),
+                        null,
+                        2
+                      ),
+                    })
+                  }
+                />
+              </SettingsField>
+            </div>
+            {scheduleTrigger && (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <SettingsField label="Schedule type">
+                  <SettingsSelect
+                    value={scheduleTrigger.at ? 'once' : 'cron'}
+                    options={[
+                      { value: 'cron', label: 'Recurring cron' },
+                      { value: 'once', label: 'Run once' },
+                    ]}
+                    onChange={(mode) =>
+                      setRoutine({
+                        ...routine,
+                        trigger:
+                          mode === 'once'
+                            ? {
+                                type: 'schedule',
+                                at: localDateTimeValue(),
+                                timezone: scheduleTrigger.timezone,
+                              }
+                            : {
+                                type: 'schedule',
+                                cron: '0 9 * * 1-5',
+                                timezone: scheduleTrigger.timezone,
+                              },
+                      })
+                    }
+                  />
+                </SettingsField>
+                <SettingsField
+                  label={
+                    scheduleTrigger.at ? 'Local date/time' : '5-field cron'
+                  }
+                >
+                  <SettingsInput
+                    value={scheduleTrigger.at ?? scheduleTrigger.cron ?? ''}
+                    onChange={(value) =>
+                      setRoutine({
+                        ...routine,
+                        trigger: scheduleTrigger.at
+                          ? { ...scheduleTrigger, at: value }
+                          : { ...scheduleTrigger, cron: value },
+                      })
+                    }
+                  />
+                </SettingsField>
+                <SettingsField label="Timezone">
+                  <SettingsInput
+                    value={scheduleTrigger.timezone}
+                    onChange={(timezone) =>
+                      setRoutine({
+                        ...routine,
+                        trigger: { ...scheduleTrigger, timezone },
+                      })
+                    }
+                  />
+                </SettingsField>
+              </div>
+            )}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <SettingsField label="Vibe connector">
+                <SettingsSelect
+                  value={routine.connectorId}
+                  options={(state?.connectors ?? [])
+                    .filter((item) => item.type === 'vibe_kanban')
+                    .map((item) => ({ value: item.id, label: item.name }))}
+                  onChange={(connectorId) =>
+                    setRoutine({ ...routine, connectorId })
+                  }
+                />
+              </SettingsField>
+              {routine.actionType !== 'create_issue' && (
+                <SettingsField label="Target host ID">
+                  <SettingsInput
+                    value={routine.targetHostId}
+                    onChange={(targetHostId) =>
+                      setRoutine({ ...routine, targetHostId })
+                    }
+                  />
+                </SettingsField>
+              )}
+            </div>
+            <SettingsField
+              label="Condition (JSON)"
+              description="Match normalized event fields. Use null to run for every matching trigger."
+            >
               <SettingsTextarea
-                value={routine.definitionText}
-                onChange={(definitionText) =>
-                  setRoutine({ ...routine, definitionText })
+                value={routine.conditionText}
+                onChange={(conditionText) =>
+                  setRoutine({ ...routine, conditionText })
                 }
-                rows={14}
+                rows={4}
+                monospace
+              />
+            </SettingsField>
+            <SettingsField label="Action input (JSON)">
+              <SettingsTextarea
+                value={routine.actionInputText}
+                onChange={(actionInputText) =>
+                  setRoutine({ ...routine, actionInputText })
+                }
+                rows={10}
                 monospace
               />
             </SettingsField>

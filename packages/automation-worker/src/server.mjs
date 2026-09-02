@@ -50,7 +50,14 @@ import {
   selectPullRequestLinkForProject,
 } from './pull-request-links.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { eventMatchesRoutine, normalizeRoutine, redactEvent, scheduleOccurrence } from './routines.mjs';
+import {
+  eventMatchesRoutine,
+  normalizeRoutine,
+  redactEvent,
+  routineEventKey,
+  scheduleOccurrence,
+  validateRoutineScope,
+} from './routines.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
 const DATA_DIR = process.env.AUTOMATION_DATA_DIR || path.resolve('data');
@@ -172,6 +179,7 @@ const defaultState = {
         bearerToken: '',
         projectId: '',
         statusId: '',
+        hostBridges: {},
       },
     },
     {
@@ -233,7 +241,10 @@ const defaultState = {
   routineRuns: [],
   routineOccurrences: {},
   routineIdempotency: {},
+  routineClaims: {},
   routineOrigins: {},
+  pendingRoutineEvents: [],
+  routineDeadlines: [],
   githubIssueLinkOperations: [],
   pullRequestLinkOperations: [],
 };
@@ -255,6 +266,7 @@ const pollInFlight = new Map();
 // twice.
 const retryInFlight = new Set();
 const routineInFlight = new Set();
+const routineHostInFlight = new Set();
 const githubIssueLinkInFlight = new Map();
 let writeQueue = Promise.resolve();
 
@@ -286,6 +298,9 @@ async function bootstrap() {
   ensureDefaults();
   await persistState();
   scheduleAll();
+  restoreRoutineDeadlines();
+  await restoreInterruptedRoutineRuns();
+  await drainPendingRoutineEvents();
 }
 
 function ensureDefaults() {
@@ -297,7 +312,10 @@ function ensureDefaults() {
   state.routineRuns ||= [];
   state.routineOccurrences ||= {};
   state.routineIdempotency ||= {};
+  state.routineClaims ||= {};
   state.routineOrigins ||= {};
+  state.pendingRoutineEvents ||= [];
+  state.routineDeadlines ||= [];
   state.githubIssueLinkOperations ||= [];
   state.pullRequestLinkOperations ||= [];
   for (const connector of defaultState.connectors) {
@@ -312,6 +330,12 @@ function ensureDefaults() {
     } else if (rule.kind === 'github_issue_sync' && !existing.kind) {
       existing.kind = rule.kind;
       existing.config = structuredClone(rule.config);
+    }
+  }
+  for (const run of state.routineRuns) {
+    if (run.status === 'running') {
+      run.status = 'retrying';
+      delete state.routineClaims[run.idempotencyKey];
     }
   }
 }
@@ -393,6 +417,13 @@ async function route(req, res) {
   if (url.pathname.startsWith('/api/routines/') && req.method === 'DELETE') {
     const id = decodeURIComponent(url.pathname.split('/').pop() || '');
     state.routines = state.routines.filter((item) => item.id !== id);
+    state.pendingRoutineEvents = state.pendingRoutineEvents.filter(
+      (item) => item.routineId !== id
+    );
+    state.retryQueue = state.retryQueue.filter(
+      (item) => item.ruleId !== `routine:${id}`
+    );
+    delete state.routineOccurrences[id];
     await persistState();
     sendState(res);
     return;
@@ -401,7 +432,9 @@ async function route(req, res) {
   if (url.pathname === '/api/events' && req.method === 'POST') {
     const event = await readBodyJson(req);
     if (!event.id || !event.type) throw new Error('event id and type are required');
-    await dispatchRoutineEvent({ ...event, source: event.source || 'vibe' });
+    const normalizedEvent = { ...event, source: event.source || 'vibe' };
+    await runRules(normalizedEvent);
+    await dispatchRoutineEvent(normalizedEvent);
     sendJson(res, 202, { ok: true });
     return;
   }
@@ -498,6 +531,7 @@ async function route(req, res) {
   if (url.pathname === '/api/test-event' && req.method === 'POST') {
     const event = await readBodyJson(req);
     await runRules(event);
+    if (event.id && event.type) await dispatchRoutineEvent(event);
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -771,6 +805,7 @@ async function runDueRoutines() {
       await persistState();
     }
   }
+  await drainPendingRoutineEvents();
   await processRetryQueue();
 }
 
@@ -778,33 +813,82 @@ async function dispatchRoutineEvent(event) {
   event = { ...event, ...(state.routineOrigins[event.id] || {}) };
   for (const routine of state.routines || []) {
     if (!eventMatchesRoutine(routine, event)) continue;
-    await runRoutine(routine, event, `${routine.id}:${event.id}`);
+    const key = routineEventKey(routine.id, event);
+    const result = await runRoutine(routine, event, key);
+    if (result.status === 'busy') await queueRoutineEvent(routine.id, event, key);
+  }
+}
+
+async function queueRoutineEvent(routineId, event, idempotencyKey) {
+  if (
+    state.routineIdempotency[idempotencyKey] ||
+    state.pendingRoutineEvents.some((item) => item.idempotencyKey === idempotencyKey)
+  ) return;
+  state.pendingRoutineEvents.push({ routineId, event: redactEvent(event), idempotencyKey });
+  await persistState();
+}
+
+async function drainPendingRoutineEvents() {
+  for (const item of [...state.pendingRoutineEvents]) {
+    const routine = state.routines.find((entry) => entry.id === item.routineId);
+    if (!routine || !routine.enabled) continue;
+    const result = await runRoutine(routine, item.event, item.idempotencyKey);
+    if (result.status === 'busy') continue;
+    state.pendingRoutineEvents = state.pendingRoutineEvents.filter(
+      (entry) => entry.idempotencyKey !== item.idempotencyKey
+    );
+    await persistState();
   }
 }
 
 async function runRoutine(routine, event, idempotencyKey) {
   if (routineInFlight.has(routine.id)) return { ok: false, status: 'busy' };
+  const targetHostId = routine.action?.targetHostId;
+  if (targetHostId && routineHostInFlight.has(targetHostId))
+    return { ok: false, status: 'busy' };
   if (state.routineIdempotency[idempotencyKey])
-    return { ok: true, status: 'duplicate' };
+    return { ok: true, status: 'succeeded' };
+  const existingClaim = state.routineClaims[idempotencyKey];
+  if (existingClaim)
+    return { ok: existingClaim.status === 'succeeded', status: existingClaim.status };
   const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: redactEvent(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, maxAttempts: RETRY_MAX_ATTEMPTS, error: null };
   state.routineRuns.unshift(run);
   state.routineRuns = state.routineRuns.slice(0, MAX_LOGS);
-  state.routineIdempotency[idempotencyKey] = run.id;
+  state.routineClaims[idempotencyKey] = { runId: run.id, status: 'running' };
   routineInFlight.add(routine.id);
+  if (targetHostId) routineHostInFlight.add(targetHostId);
   await persistState();
   try {
-    await executeRoutineAction(routine, event);
+    await executeRoutineAction(routine, {
+      ...event,
+      routineIdempotencyKey: idempotencyKey,
+    });
     run.status = 'succeeded';
+    state.routineIdempotency[idempotencyKey] = run.id;
+    state.routineClaims[idempotencyKey].status = 'succeeded';
   } catch (error) {
     run.status = 'retrying';
+    state.routineClaims[idempotencyKey].status = 'retrying';
     run.error = errorMessage(error);
     await enqueueRoutineRetry(routine, event, idempotencyKey, error);
   } finally {
     run.finishedAt = new Date().toISOString();
     routineInFlight.delete(routine.id);
+    if (targetHostId) routineHostInFlight.delete(targetHostId);
     await persistState();
   }
   return { ok: run.status === 'succeeded', run };
+}
+
+async function restoreInterruptedRoutineRuns() {
+  for (const run of state.routineRuns) {
+    if (run.status !== 'retrying' || !run.idempotencyKey) continue;
+    const hasRetry = state.retryQueue.some(
+      (item) => item.event?.routineIdempotencyKey === run.idempotencyKey
+    );
+    if (!hasRetry)
+      await queueRoutineEvent(run.routineId, run.trigger, run.idempotencyKey);
+  }
 }
 
 async function executeRoutineAction(routine, event) {
@@ -818,7 +902,11 @@ async function executeRoutineAction(routine, event) {
   if (action.targetHostId && !bridge?.baseUrl)
     throw new Error(`target host offline or unconfigured: ${action.targetHostId}`);
   if (bridge) validateRoutineScope(bridge, input);
-  const meta = { originRoutineId: routine.id, routineChain: [...(event.routineChain || []), routine.id] };
+  const meta = {
+    originRoutineId: routine.id,
+    routineChain: [...(event.routineChain || []), routine.id],
+    idempotencyKey: event.routineIdempotencyKey,
+  };
   if (action.type === 'create_issue') {
     const result = await createVibeIssue(
       connector.id,
@@ -830,15 +918,20 @@ async function executeRoutineAction(routine, event) {
     return result;
   }
   if (action.type === 'start_workspace') {
-    const { max_execution_seconds: maxExecutionSeconds, ...payload } = input;
+    const {
+      max_execution_seconds: maxExecutionSeconds,
+      sandbox_policy: _sandboxPolicy,
+      ...payload
+    } = input;
     const result = await vibeApi(
       connector,
       'POST',
       '/api/workspaces/start',
       payload,
-      bridge.baseUrl
+      bridge.baseUrl,
+      meta
     );
-    scheduleRoutineStop(connector, bridge.baseUrl, result, maxExecutionSeconds);
+    await scheduleRoutineStop(connector, bridge.baseUrl, result, maxExecutionSeconds);
     await Promise.all([
       rememberRoutineOrigin(result?.data?.workspace?.id, meta),
       rememberRoutineOrigin(result?.data?.execution_process?.id, meta),
@@ -847,14 +940,17 @@ async function executeRoutineAction(routine, event) {
   }
   if (action.type === 'send_prompt') {
     if (!input.sessionId) throw new Error('sessionId is required');
-    const { sessionId, ...payload } = input;
-    return vibeApi(
+    const { sessionId, sandbox_policy: _sandboxPolicy, ...payload } = input;
+    const result = await vibeApi(
       connector,
       'POST',
       `/api/sessions/${encodeURIComponent(sessionId)}/follow-up`,
       payload,
-      bridge.baseUrl
+      bridge.baseUrl,
+      meta
     );
+    await rememberRoutineOrigin(result?.data?.id, meta);
+    return result;
   }
   if (action.type === 'notification')
     return vibeApi(
@@ -862,7 +958,8 @@ async function executeRoutineAction(routine, event) {
       'POST',
       '/api/automation-actions/notification',
       input,
-      bridge.baseUrl
+      bridge.baseUrl,
+      meta
     );
   throw new Error(`unsupported routine action: ${action.type}`);
 }
@@ -870,45 +967,60 @@ async function executeRoutineAction(routine, event) {
 async function rememberRoutineOrigin(id, meta) {
   if (!id) return;
   state.routineOrigins[String(id)] = meta;
+  const keys = Object.keys(state.routineOrigins);
+  for (const stale of keys.slice(0, Math.max(0, keys.length - MAX_LOGS)))
+    delete state.routineOrigins[stale];
   await persistState();
 }
 
-function validateRoutineScope(bridge, input) {
-  const projectId = input.linked_issue?.remote_project_id;
-  if (
-    projectId &&
-    Array.isArray(bridge.projectIds) &&
-    !bridge.projectIds.includes(projectId)
-  )
-    throw new Error(`project is outside target host scope: ${projectId}`);
-  const allowedRepos = Array.isArray(bridge.repositoryIds)
-    ? bridge.repositoryIds
-    : [];
-  for (const repo of input.repos || []) {
-    const repoId = repo.repo_id;
-    if (allowedRepos.length && !allowedRepos.includes(repoId))
-      throw new Error(`repository is outside target host scope: ${repoId}`);
-  }
-}
-
-function scheduleRoutineStop(connector, baseUrl, result, seconds) {
+async function scheduleRoutineStop(connector, baseUrl, result, seconds) {
   const workspaceId = result?.data?.workspace?.id;
   if (!workspaceId || !seconds) return;
-  // ponytail: in-process timeout; persist deadlines if restart-safe cancellation is required.
-  const timer = setTimeout(() => {
-    vibeApi(
+  const deadline = {
+    workspaceId,
+    connectorId: connector.id,
+    baseUrl,
+    stopAt: Date.now() + seconds * 1000,
+  };
+  state.routineDeadlines = state.routineDeadlines.filter(
+    (item) => item.workspaceId !== workspaceId
+  );
+  state.routineDeadlines.push(deadline);
+  await persistState();
+  armRoutineDeadline(deadline);
+}
+
+function restoreRoutineDeadlines() {
+  for (const deadline of state.routineDeadlines) armRoutineDeadline(deadline);
+}
+
+function armRoutineDeadline(deadline) {
+  const delay = Math.max(0, deadline.stopAt - Date.now());
+  const timer = setTimeout(async () => {
+    const connector = state.connectors.find((item) => item.id === deadline.connectorId);
+    try {
+      if (!connector) throw new Error(`connector not found: ${deadline.connectorId}`);
+      await vibeApi(
       connector,
       'POST',
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/execution/stop`,
+      `/api/workspaces/${encodeURIComponent(deadline.workspaceId)}/execution/stop`,
       undefined,
-      baseUrl
-    ).catch((error) =>
-      log('error', 'routine execution timeout stop failed', {
-        workspaceId,
+      deadline.baseUrl
+      );
+      state.routineDeadlines = state.routineDeadlines.filter(
+        (item) => item.workspaceId !== deadline.workspaceId
+      );
+      await persistState();
+    } catch (error) {
+      await log('error', 'routine execution timeout stop failed', {
+        workspaceId: deadline.workspaceId,
         error: errorMessage(error),
-      })
-    );
-  }, seconds * 1000);
+      });
+      deadline.stopAt = Date.now() + retryDelay(1);
+      await persistState();
+      armRoutineDeadline(deadline);
+    }
+  }, delay);
   if (typeof timer.unref === 'function') timer.unref();
 }
 
@@ -3063,6 +3175,9 @@ async function processRetryQueue({
           run.error = null;
           run.attempts = item.attempts + 1;
           run.finishedAt = new Date().toISOString();
+          state.routineIdempotency[item.event.routineIdempotencyKey] = run.id;
+          if (state.routineClaims[item.event.routineIdempotencyKey])
+            state.routineClaims[item.event.routineIdempotencyKey].status = 'succeeded';
         }
       } else {
         await runRule(rule, item.event);
@@ -3092,6 +3207,8 @@ async function processRetryQueue({
             run.error = item.lastError;
             run.attempts = item.attempts;
             run.finishedAt = new Date().toISOString();
+            if (state.routineClaims[item.event.routineIdempotencyKey])
+              state.routineClaims[item.event.routineIdempotencyKey].status = 'exhausted';
           }
         }
         await log('error', 'retry exhausted', {
@@ -3449,6 +3566,9 @@ async function vibeApi(
       headers['x-vibe-routine-chain'] = JSON.stringify(
         routineMeta.routineChain || []
       );
+    }
+    if (routineMeta?.idempotencyKey) {
+      headers['idempotency-key'] = routineMeta.idempotencyKey;
     }
     const response = await fetch(`${baseUrl}${path}`, {
       method,

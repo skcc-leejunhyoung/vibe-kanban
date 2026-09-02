@@ -12,19 +12,33 @@ pub async fn emit_event(event_type: &str, id: impl ToString, data: Value) {
     if let (Some(event), Some(data)) = (event.as_object_mut(), data.as_object()) {
         event.extend(data.clone());
     }
-    let result = reqwest::Client::new()
-        .post(format!("{}/api/events", url.trim_end_matches('/')))
-        .bearer_auth(token)
-        .json(&event)
-        .send()
-        .await;
-    if let Err(error) = result {
-        tracing::warn!(%error, %event_type, "failed to emit automation event");
+    let client = reqwest::Client::new();
+    for attempt in 1..=5 {
+        match client
+            .post(format!("{}/api/events", url.trim_end_matches('/')))
+            .timeout(std::time::Duration::from_secs(10))
+            .bearer_auth(&token)
+            .json(&event)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response) => {
+                tracing::warn!(status = %response.status(), %event_type, attempt, "automation event rejected")
+            }
+            Err(error) => {
+                tracing::warn!(%error, %event_type, attempt, "failed to emit automation event")
+            }
+        }
+        if attempt < 5 {
+            tokio::time::sleep(std::time::Duration::from_secs(attempt)).await;
+        }
     }
 }
 
 fn endpoint() -> Option<(String, String)> {
-    let url = std::env::var("AUTOMATION_WORKER_URL").ok()?;
+    let url = std::env::var("AUTOMATION_WORKER_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
     let token = std::env::var("AUTOMATION_WORKER_TOKEN")
         .or_else(|_| std::env::var("ADMIN_TOKEN"))
         .ok()?;

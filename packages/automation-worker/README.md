@@ -129,3 +129,33 @@ the same UI works from the local and remote web apps. The proxy reads:
 
 The master on/off toggle on that settings page flips the worker's `enabled`
 flag: when off, the worker stays up but installs no poll timers (it idles).
+
+## Routines
+
+Routines bind a schedule or Vibe event to one typed action. Schedule triggers
+use either a one-time local timestamp plus an IANA timezone, or a five-field
+cron expression plus an IANA timezone. Internal events are accepted at
+`POST /api/events`; they also pass through the existing trusted Rules before
+matching Routines.
+
+Host actions (`start_workspace`, `send_prompt`, and `notification`) require an
+explicit `targetHostId`. Configure that host under the Vibe connector's
+`hostBridges` map. Project and repository allowlists are deny-by-default:
+
+```json
+{
+  "hostBridges": {
+    "<host uuid>": {
+      "baseUrl": "http://host.docker.internal:47823",
+      "projectIds": ["<project uuid>"],
+      "repositoryIds": ["<repository uuid>"]
+    }
+  }
+}
+```
+
+Workspace actions must include an approval policy, a declared sandbox policy,
+and a maximum execution time. Routine event claims, pending busy events,
+retries, origin chains, and execution deadlines are persisted in `state.json`
+so worker restarts resume them. Action requests carry an `Idempotency-Key`
+header for target APIs that support durable side-effect deduplication.

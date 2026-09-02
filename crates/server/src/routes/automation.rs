@@ -23,6 +23,7 @@ use axum::{
 use deployment::Deployment;
 use reqwest::Client;
 use serde::Deserialize;
+use services::services::container::ContainerService;
 use uuid::Uuid;
 
 use crate::DeploymentImpl;
@@ -73,7 +74,8 @@ async fn notification(
     Json(action): Json<NotificationAction>,
 ) -> StatusCode {
     deployment
-        .notification()
+        .container()
+        .notification_service()
         .notify(&action.title, &action.message, action.workspace_id)
         .await;
     StatusCode::NO_CONTENT

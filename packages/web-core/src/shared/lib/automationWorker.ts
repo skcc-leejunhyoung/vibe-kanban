@@ -98,13 +98,20 @@ export type AutomationRoutineAction =
       type: 'start_workspace';
       connectorId: string;
       targetHostId: string;
-      input: Record<string, unknown> & { max_execution_seconds: number };
+      input: Record<string, unknown> & {
+        sandbox_policy: string;
+        max_execution_seconds: number;
+      };
     }
   | {
       type: 'send_prompt';
       connectorId: string;
       targetHostId: string;
-      input: Record<string, unknown> & { sessionId: string; prompt: string };
+      input: Record<string, unknown> & {
+        sessionId: string;
+        prompt: string;
+        sandbox_policy: string;
+      };
     }
   | {
       type: 'notification';
@@ -172,6 +179,7 @@ export const AUTOMATION_CONNECTOR_DEFAULTS: Record<
     bearerToken: '',
     projectId: '',
     statusId: '',
+    hostBridges: {},
   },
   github: {
     token: '',
