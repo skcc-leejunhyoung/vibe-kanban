@@ -66,8 +66,10 @@ fn to_row(index: usize, entry: NormalizedEntry) -> Option<NewSessionMessage> {
         | NormalizedEntryType::BackgroundTasksWaiting { .. } => return None,
     };
     let mut content = entry.content.trim().to_string();
-    if content.is_empty()
-        && let NormalizedEntryType::UserAnsweredQuestions { answers } = &entry.entry_type
+    // The rendered content is just "Answered N questions"; index the actual
+    // question/answer text so the user's decisions are searchable.
+    if let NormalizedEntryType::UserAnsweredQuestions { answers } = &entry.entry_type
+        && !answers.is_empty()
     {
         content = answers
             .iter()
@@ -189,6 +191,26 @@ mod tests {
         assert_eq!(rows[0].content, "지난주 검색 결정");
         assert_eq!(rows[1].entry_index, 2);
         assert_eq!(rows[1].content, "final answer");
+    }
+
+    #[test]
+    fn answered_questions_index_question_and_answer_text() {
+        let patches = [ConversationPatch::add_normalized_entry(
+            0,
+            entry(
+                NormalizedEntryType::UserAnsweredQuestions {
+                    answers: vec![executors::logs::AnsweredQuestion {
+                        question: "인증 방식은?".to_string(),
+                        answer: vec!["OAuth".to_string()],
+                    }],
+                },
+                "Answered 1 question",
+            ),
+        )];
+        let rows = collect_indexable_rows(patches.iter());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].content.contains("인증 방식은?"));
+        assert!(rows[0].content.contains("OAuth"));
     }
 
     #[test]
