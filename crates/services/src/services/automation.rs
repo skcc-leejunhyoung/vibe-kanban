@@ -57,15 +57,6 @@ pub async fn complete_action<T: serde::Serialize>(
     Ok(())
 }
 
-pub async fn release_action(pool: &SqlitePool, key: &str) {
-    let _ = sqlx::query(
-        "DELETE FROM automation_action_receipts WHERE idempotency_key = ? AND status = 'running'",
-    )
-    .bind(key)
-    .execute(pool)
-    .await;
-}
-
 pub fn spawn_outbox(pool: SqlitePool) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
@@ -145,11 +136,6 @@ mod tests {
         assert_eq!(
             begin_action(&pool, "key", "notify").await.unwrap(),
             ActionReceipt::Running
-        );
-        release_action(&pool, "key").await;
-        assert_eq!(
-            begin_action(&pool, "key", "notify").await.unwrap(),
-            ActionReceipt::Claimed
         );
         complete_action(&pool, "key", &serde_json::json!({ "ok": true }))
             .await

@@ -690,11 +690,9 @@ pub async fn create_and_start_workspace(
         Ok(response) => {
             crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
         }
-        Err(_) => {
-            if let Some(key) = key.as_deref() {
-                services::services::automation::release_action(&pool, key).await;
-            }
-        }
+        // An error can happen after the workspace or execution record exists.
+        // Keep the claim so an automatic retry cannot duplicate that side effect.
+        Err(_) => {}
     }
     result
 }

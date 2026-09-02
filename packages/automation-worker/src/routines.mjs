@@ -196,6 +196,10 @@ export function automationEventKey(event) {
   return `${event.source || 'vibe'}:${event.type}:${event.id}`;
 }
 
+export function isIndeterminateActionError(error) {
+  return /409[\s\S]*automation action is already running/i.test(String(error));
+}
+
 export function validateRoutineScope(bridge, input) {
   const projectId = input.linked_issue?.remote_project_id || input.scope?.projectId;
   if (projectId && !bridge.projectIds?.includes(projectId))

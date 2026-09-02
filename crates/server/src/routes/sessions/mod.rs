@@ -354,11 +354,9 @@ pub async fn follow_up(
         Ok(response) => {
             crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
         }
-        Err(_) => {
-            if let Some(key) = key.as_deref() {
-                services::services::automation::release_action(&pool, key).await;
-            }
-        }
+        // Spawn failures can be ambiguous after an execution record was created.
+        // Keep the claim so retrying cannot send the same prompt twice.
+        Err(_) => {}
     }
     result
 }

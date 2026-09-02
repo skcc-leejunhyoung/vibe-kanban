@@ -53,6 +53,7 @@ import {
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import {
   eventMatchesRoutine,
+  isIndeterminateActionError,
   normalizeRoutine,
   redactEvent,
   routineRunTrigger,
@@ -817,7 +818,11 @@ async function runDueRoutines() {
     if (!occurrence || state.routineOccurrences[routine.id] === occurrence) continue;
     const event = { id: occurrence, type: 'schedule', source: 'schedule' };
     try {
-      if (!(await routineConditionMatches(routine, event))) continue;
+      if (!(await routineConditionMatches(routine, event))) {
+        state.routineOccurrences[routine.id] = occurrence;
+        await persistState();
+        continue;
+      }
     } catch (error) {
       await log('error', 'routine condition failed', {
         routineId: routine.id,
@@ -3278,6 +3283,10 @@ async function processRetryQueue({
       item.attempts += 1;
       item.lastError = errorMessage(error);
       item.updatedAt = Date.now();
+      if (routine && isIndeterminateActionError(item.lastError)) {
+        item.attempts = item.maxAttempts;
+        item.lastError = `${item.lastError}; outcome is indeterminate, review the target before running again`;
+      }
       if (item.attempts >= item.maxAttempts) {
         item.status = 'exhausted';
         item.nextAttemptAt = null;
