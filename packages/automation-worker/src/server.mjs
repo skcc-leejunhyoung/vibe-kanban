@@ -795,9 +795,19 @@ async function runDueRoutines() {
       continue;
     }
     if (!occurrence || state.routineOccurrences[routine.id] === occurrence) continue;
+    const event = { id: occurrence, type: 'schedule', source: 'schedule' };
+    try {
+      if (!(await routineConditionMatches(routine, event))) continue;
+    } catch (error) {
+      await log('error', 'routine condition failed', {
+        routineId: routine.id,
+        error: errorMessage(error),
+      });
+      continue;
+    }
     const result = await runRoutine(
       routine,
-      { id: occurrence, type: 'schedule', source: 'schedule' },
+      event,
       `${routine.id}:${occurrence}`
     );
     if (result.status !== 'busy') {
@@ -813,10 +823,31 @@ async function dispatchRoutineEvent(event) {
   event = { ...event, ...(state.routineOrigins[event.id] || {}) };
   for (const routine of state.routines || []) {
     if (!eventMatchesRoutine(routine, event)) continue;
+    try {
+      if (!(await routineConditionMatches(routine, event))) continue;
+    } catch (error) {
+      await log('error', 'routine condition failed', {
+        routineId: routine.id,
+        error: errorMessage(error),
+      });
+      continue;
+    }
     const key = routineEventKey(routine.id, event);
     const result = await runRoutine(routine, event, key);
     if (result.status === 'busy') await queueRoutineEvent(routine.id, event, key);
   }
+}
+
+async function routineConditionMatches(routine, event) {
+  const ruleId = routine.condition?.ruleId;
+  if (!ruleId) return true;
+  const rule = state.rules.find((item) => item.id === ruleId);
+  if (!rule?.enabled || rule.kind !== 'condition')
+    throw new Error(`enabled condition rule not found: ${ruleId}`);
+  const result = Boolean(await runRule(rule, event, true));
+  return routine.condition.expected === undefined
+    ? result
+    : result === Boolean(routine.condition.expected);
 }
 
 async function queueRoutineEvent(routineId, event, idempotencyKey) {
@@ -902,6 +933,19 @@ async function executeRoutineAction(routine, event) {
   if (action.targetHostId && !bridge?.baseUrl)
     throw new Error(`target host offline or unconfigured: ${action.targetHostId}`);
   if (bridge) validateRoutineScope(bridge, input);
+  if (bridge) {
+    const host = await vibeApi(
+      connector,
+      'GET',
+      '/api/automation-actions/status',
+      undefined,
+      bridge.baseUrl
+    );
+    if (host?.hostId !== action.targetHostId)
+      throw new Error(`target host identity mismatch: ${action.targetHostId}`);
+    if (action.type === 'start_workspace' && host.busy)
+      throw new Error(`target host busy: ${action.targetHostId}`);
+  }
   const meta = {
     originRoutineId: routine.id,
     routineChain: [...(event.routineChain || []), routine.id],
@@ -918,11 +962,7 @@ async function executeRoutineAction(routine, event) {
     return result;
   }
   if (action.type === 'start_workspace') {
-    const {
-      max_execution_seconds: maxExecutionSeconds,
-      sandbox_policy: _sandboxPolicy,
-      ...payload
-    } = input;
+    const { max_execution_seconds: maxExecutionSeconds, ...payload } = input;
     const result = await vibeApi(
       connector,
       'POST',
@@ -940,7 +980,7 @@ async function executeRoutineAction(routine, event) {
   }
   if (action.type === 'send_prompt') {
     if (!input.sessionId) throw new Error('sessionId is required');
-    const { sessionId, sandbox_policy: _sandboxPolicy, ...payload } = input;
+    const { sessionId, scope: _scope, ...payload } = input;
     const result = await vibeApi(
       connector,
       'POST',
@@ -3063,7 +3103,7 @@ async function slackPermalink(token, channel, messageTs) {
 
 async function runRules(event) {
   for (const rule of state.rules) {
-    if (!rule.enabled) continue;
+    if (!rule.enabled || rule.kind === 'condition') continue;
     try {
       await runRule(rule, event);
     } catch (error) {
@@ -3161,8 +3201,16 @@ async function processRetryQueue({
     }
     if (rule && !rule.enabled) continue;
     if (routine && !routine.enabled) continue;
+    const targetHostId = routine?.action?.targetHostId;
+    if (
+      routine &&
+      (routineInFlight.has(routine.id) ||
+        (targetHostId && routineHostInFlight.has(targetHostId)))
+    ) continue;
 
     retryInFlight.add(item.id);
+    if (routine) routineInFlight.add(routine.id);
+    if (targetHostId) routineHostInFlight.add(targetHostId);
     summary.retried += 1;
     try {
       if (routine) {
@@ -3230,6 +3278,8 @@ async function processRetryQueue({
       }
     } finally {
       retryInFlight.delete(item.id);
+      if (routine) routineInFlight.delete(routine.id);
+      if (targetHostId) routineHostInFlight.delete(targetHostId);
     }
   }
   if (summary.retried > 0) await persistState();
@@ -3237,14 +3287,14 @@ async function processRetryQueue({
   return { ok: true, ...summary };
 }
 
-async function runRule(rule, event) {
+async function runRule(rule, event, conditionOnly = false) {
   if (!shouldRunGithubIssueSyncRule(rule, event)) return;
   // Hand the script a detached copy so a rule can't mutate live state/event.
   // (Hygiene, not a security boundary — vm is not a sandbox.)
   const safeEvent = cloneData(event);
   const context = {
     event: safeEvent,
-    ctx: createRuleContext(rule, safeEvent),
+    ctx: createRuleContext(rule, safeEvent, conditionOnly),
     console: {
       log: (...args) => log('info', 'rule console', { ruleId: rule.id, args }),
       warn: (...args) => log('warn', 'rule console', { ruleId: rule.id, args }),
@@ -3262,12 +3312,13 @@ async function runRule(rule, event) {
   // The vm timeout only bounds synchronous code; bound async work on the clock
   // too so a slow/hung rule cannot stall the poll loop indefinitely.
   if (result && typeof result.then === 'function') {
-    await withTimeout(result, RULE_TIMEOUT_MS, `rule ${rule.id} timed out`);
+    return await withTimeout(result, RULE_TIMEOUT_MS, `rule ${rule.id} timed out`);
   }
+  return result;
 }
 
-function createRuleContext(rule, event) {
-  return {
+function createRuleContext(rule, event, conditionOnly = false) {
+  const context = {
     log: (level, message, meta = {}) =>
       log(level, message, { ruleId: rule.id, ...meta }),
     connectors: cloneData(state.connectors),
@@ -3291,6 +3342,8 @@ function createRuleContext(rule, event) {
       },
     },
   };
+  if (conditionOnly) delete context.actions;
+  return context;
 }
 
 async function createVibePullRequestCommentNotification(connectorId, input) {

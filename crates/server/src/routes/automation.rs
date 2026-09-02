@@ -18,8 +18,9 @@ use axum::{
     extract::{Path, RawQuery},
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{any, post},
+    routing::{any, get, post},
 };
+use db::models::execution_process::ExecutionProcess;
 use deployment::Deployment;
 use reqwest::Client;
 use serde::Deserialize;
@@ -59,7 +60,20 @@ fn worker_token() -> Option<String> {
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/automation/{*tail}", any(proxy))
+        .route("/automation-actions/status", get(host_status))
         .route("/automation-actions/notification", post(notification))
+}
+
+async fn host_status(
+    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let running = ExecutionProcess::find_running(&deployment.db().pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({
+        "hostId": deployment.user_id(),
+        "busy": !running.is_empty(),
+    })))
 }
 
 #[derive(Deserialize)]

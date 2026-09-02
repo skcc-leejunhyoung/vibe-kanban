@@ -765,6 +765,7 @@ impl StandardCodingAgentExecutor for Opencode {
             model_id: self.model.clone(),
             agent_id: self.agent.clone(),
             reasoning_id: self.variant.clone(),
+            sandbox_policy: None,
             permission_policy: Some(if self.auto_approve {
                 PermissionPolicy::Auto
             } else {

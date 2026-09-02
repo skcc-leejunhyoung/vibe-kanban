@@ -28,10 +28,15 @@ test('events reject self recursion and redact sensitive fields', () => {
   assert.deepEqual(redactEvent({ type: 'issue_created', nested: { bearerToken: 'nope', title: 'ok' } }), { type: 'issue_created', nested: { title: 'ok' } });
 });
 
-test('workspace actions require explicit sandbox and approval policies', () => {
-  const base = { trigger: { type: 'issue_created' }, action: { type: 'start_workspace', connectorId: 'vibe', targetHostId: 'host', input: { prompt: 'go', repos: [{ repo_id: 'repo' }], executor_config: { executor: 'CODEX', permission_policy: 'DONT_ASK' }, max_execution_seconds: 60 } } };
+test('workspace actions require explicit scope, executor and safety policies', () => {
+  const base = { trigger: { type: 'issue_created' }, action: { type: 'start_workspace', connectorId: 'vibe', targetHostId: 'host', input: { prompt: 'go', repos: [{ repo_id: 'repo' }], linked_issue: { remote_project_id: 'project', issue_id: 'issue' }, executor_config: { executor: 'CODEX', variant: 'DEFAULT', permission_policy: 'DONT_ASK' }, max_execution_seconds: 60 } } };
   assert.throws(() => normalizeRoutine(base), /sandbox policy/);
-  assert.doesNotThrow(() => normalizeRoutine({ ...base, action: { ...base.action, input: { ...base.action.input, sandbox_policy: 'workspace-write' } } }));
+  assert.doesNotThrow(() => normalizeRoutine({ ...base, action: { ...base.action, input: { ...base.action.input, executor_config: { ...base.action.input.executor_config, sandbox_policy: 'workspace-write' } } } }));
+});
+
+test('condition rule metadata is not compared with event fields', () => {
+  const routine = normalizeRoutine({ id: 'r1', enabled: true, trigger: { type: 'issue_created' }, condition: { projectId: 'p1', ruleId: 'condition-1', expected: true }, action: { type: 'create_issue', connectorId: 'vibe', input: { title: 'a' } } });
+  assert.equal(eventMatchesRoutine(routine, { type: 'issue_created', projectId: 'p1' }), true);
 });
 
 test('event keys include source and type', () => {
@@ -45,6 +50,7 @@ test('host scope denies projects and repositories unless explicitly allowed', ()
   const input = { linked_issue: { remote_project_id: 'project' }, repos: [{ repo_id: 'repo' }] };
   assert.throws(() => validateRoutineScope({}, input), /project/);
   assert.doesNotThrow(() => validateRoutineScope({ projectIds: ['project'], repositoryIds: ['repo'] }, input));
+  assert.throws(() => validateRoutineScope({ projectIds: ['project'], repositoryIds: [] }, { scope: { projectId: 'project', repositoryIds: ['repo'] } }), /repository/);
 });
 
 test('routine condition and action input require object shapes', () => {

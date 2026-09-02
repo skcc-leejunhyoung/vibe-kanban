@@ -44,11 +44,15 @@ export function normalizeRoutine(input) {
       throw new Error('start_workspace prompt and repos are required');
     if (!actionInput.executor_config?.executor)
       throw new Error('start_workspace executor is required');
+    if (!actionInput.executor_config?.variant)
+      throw new Error('start_workspace executor variant is required');
+    if (!actionInput.linked_issue?.remote_project_id || !actionInput.linked_issue?.issue_id)
+      throw new Error('start_workspace project and issue are required');
     if (!actionInput.executor_config?.permission_policy)
       throw new Error('start_workspace approval policy is required');
     if (!PERMISSION_POLICIES.has(actionInput.executor_config.permission_policy))
       throw new Error('start_workspace approval policy is invalid');
-    if (!SANDBOX_POLICIES.has(actionInput.sandbox_policy))
+    if (!SANDBOX_POLICIES.has(actionInput.executor_config.sandbox_policy))
       throw new Error('start_workspace sandbox policy is required');
     if (!Number.isFinite(actionInput.max_execution_seconds) || actionInput.max_execution_seconds < 1)
       throw new Error('start_workspace max execution time is required');
@@ -58,11 +62,13 @@ export function normalizeRoutine(input) {
       throw new Error('send_prompt sessionId and prompt are required');
     if (!actionInput.executor_config?.executor)
       throw new Error('send_prompt executor is required');
+    if (!actionInput.scope?.projectId || !actionInput.scope?.repositoryIds?.length)
+      throw new Error('send_prompt project and repository scope are required');
     if (!actionInput.executor_config?.permission_policy)
       throw new Error('send_prompt approval policy is required');
     if (!PERMISSION_POLICIES.has(actionInput.executor_config.permission_policy))
       throw new Error('send_prompt approval policy is invalid');
-    if (!SANDBOX_POLICIES.has(actionInput.sandbox_policy))
+    if (!SANDBOX_POLICIES.has(actionInput.executor_config.sandbox_policy))
       throw new Error('send_prompt sandbox policy is required');
   }
   if (action.type === 'notification' && (!actionInput.title || !actionInput.message))
@@ -177,7 +183,9 @@ export function eventMatchesRoutine(routine, event) {
     return false;
   const condition = routine.condition;
   if (!condition) return true;
-  return Object.entries(condition).every(([key, value]) => event[key] === value);
+  return Object.entries(condition).every(
+    ([key, value]) => ['ruleId', 'expected'].includes(key) || event[key] === value
+  );
 }
 
 export function routineEventKey(routineId, event) {
@@ -185,12 +193,16 @@ export function routineEventKey(routineId, event) {
 }
 
 export function validateRoutineScope(bridge, input) {
-  const projectId = input.linked_issue?.remote_project_id;
+  const projectId = input.linked_issue?.remote_project_id || input.scope?.projectId;
   if (projectId && !bridge.projectIds?.includes(projectId))
     throw new Error(`project is outside target host scope: ${projectId}`);
   for (const repo of input.repos || []) {
     if (!bridge.repositoryIds?.includes(repo.repo_id))
       throw new Error(`repository is outside target host scope: ${repo.repo_id}`);
+  }
+  for (const repositoryId of input.scope?.repositoryIds || []) {
+    if (!bridge.repositoryIds?.includes(repositoryId))
+      throw new Error(`repository is outside target host scope: ${repositoryId}`);
   }
 }
 

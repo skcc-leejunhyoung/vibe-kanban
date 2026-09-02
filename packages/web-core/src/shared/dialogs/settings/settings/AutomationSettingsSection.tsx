@@ -96,19 +96,24 @@ function defaultRoutineActionInput(
     return {
       sessionId: '',
       prompt: '',
-      sandbox_policy: 'workspace-write',
-      executor_config: { executor: 'CODEX', permission_policy: 'DONT_ASK' },
+      scope: { projectId: '', repositoryIds: [] },
+      executor_config: {
+        executor: 'CODEX',
+        permission_policy: 'DONT_ASK',
+        sandbox_policy: 'workspace-write',
+      },
     };
   return {
     name: '',
     repos: [],
-    linked_issue: null,
+    linked_issue: { remote_project_id: '', issue_id: '' },
     prompt: '',
-    sandbox_policy: 'workspace-write',
     max_execution_seconds: 3600,
     executor_config: {
       executor: 'CODEX',
+      variant: 'DEFAULT',
       permission_policy: 'DONT_ASK',
+      sandbox_policy: 'workspace-write',
     },
   };
 }
@@ -1512,7 +1517,7 @@ export function AutomationSettingsSection() {
             </div>
             <SettingsField
               label="Condition (JSON)"
-              description="Match normalized event fields. Use null to run for every matching trigger."
+              description="Match event fields. Add ruleId for a trusted condition rule, or use null to always run."
             >
               <SettingsTextarea
                 value={routine.conditionText}
@@ -1572,7 +1577,10 @@ export function AutomationSettingsSection() {
                 className="rounded-sm border border-border p-3 text-xs"
               >
                 {item.routineId} · {item.status} ·{' '}
-                {new Date(item.startedAt).toLocaleString()}
+                {String(
+                  item.trigger?.source ?? item.trigger?.type ?? 'unknown'
+                )}{' '}
+                · {new Date(item.startedAt).toLocaleString()}
                 {item.targetHostId ? ` · ${item.targetHostId}` : ''}
                 {` · ${item.attempts}/${item.maxAttempts}`}
                 {item.error ? ` · ${item.error}` : ''}
@@ -1635,6 +1643,17 @@ export function AutomationSettingsSection() {
               checked={rule.enabled}
               onChange={(v) => setRule({ ...rule, enabled: v })}
             />
+            <SettingsField label="Rule type">
+              <SettingsSelect
+                value={rule.kind}
+                options={[
+                  { value: 'script', label: 'Action rule' },
+                  { value: 'condition', label: 'Routine condition' },
+                  { value: 'github_issue_sync', label: 'GitHub issue sync' },
+                ]}
+                onChange={(kind) => setRule({ ...rule, kind })}
+              />
+            </SettingsField>
             {rule.kind === 'github_issue_sync' ? (
               <GithubIssueSyncRuleEditor
                 machineClient={machineClient}

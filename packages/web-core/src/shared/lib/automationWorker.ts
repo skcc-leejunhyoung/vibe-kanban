@@ -17,7 +17,7 @@ export interface AutomationRule {
   id: string;
   name: string;
   enabled: boolean;
-  kind?: 'script' | 'github_issue_sync' | string;
+  kind?: 'script' | 'condition' | 'github_issue_sync' | string;
   config?: GithubIssueSyncRuleConfig | Record<string, unknown>;
   script: string;
 }
@@ -99,7 +99,6 @@ export type AutomationRoutineAction =
       connectorId: string;
       targetHostId: string;
       input: Record<string, unknown> & {
-        sandbox_policy: string;
         max_execution_seconds: number;
       };
     }
@@ -110,7 +109,7 @@ export type AutomationRoutineAction =
       input: Record<string, unknown> & {
         sessionId: string;
         prompt: string;
-        sandbox_policy: string;
+        scope: { projectId: string; repositoryIds: string[] };
       };
     }
   | {

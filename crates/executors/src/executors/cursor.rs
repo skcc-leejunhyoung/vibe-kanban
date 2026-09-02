@@ -638,6 +638,7 @@ impl StandardCodingAgentExecutor for CursorAgent {
             model_id: self.model.clone(),
             agent_id: None,
             reasoning_id: self.reasoning.clone(),
+            sandbox_policy: None,
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
         }
     }

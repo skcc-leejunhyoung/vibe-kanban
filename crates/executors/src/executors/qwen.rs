@@ -184,6 +184,7 @@ impl StandardCodingAgentExecutor for QwenCode {
             model_id: self.model.clone(),
             agent_id: self.agent.clone(),
             reasoning_id: None,
+            sandbox_policy: None,
             permission_policy: Some(if self.yolo.unwrap_or(false) {
                 PermissionPolicy::Auto
             } else {

@@ -353,6 +353,9 @@ pub struct Codex {
 #[async_trait]
 impl StandardCodingAgentExecutor for Codex {
     fn apply_overrides(&mut self, executor_config: &ExecutorConfig) {
+        if let Some(sandbox) = &executor_config.sandbox_policy {
+            self.sandbox = Some(sandbox.clone());
+        }
         if let Some(model_id) = &executor_config.model_id {
             self.model = Some(model_id.clone());
         }
@@ -477,6 +480,7 @@ impl StandardCodingAgentExecutor for Codex {
                 .model_reasoning_effort
                 .as_ref()
                 .map(|e| e.as_str().to_string()),
+            sandbox_policy: self.sandbox.clone(),
             permission_policy: Some(permission_policy),
         }
     }
@@ -1035,10 +1039,24 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AskForApproval, Codex, ReasoningEffort, collect_model_pages, model_selector_from_live,
-        resolve_model, static_model_selector,
+        AskForApproval, Codex, ReasoningEffort, SandboxMode, collect_model_pages,
+        model_selector_from_live, resolve_model, static_model_selector,
     };
-    use crate::executors::StandardCodingAgentExecutor;
+    use crate::{
+        executors::{BaseCodingAgent, StandardCodingAgentExecutor},
+        profile::ExecutorConfig,
+    };
+
+    #[test]
+    fn applies_per_run_sandbox_override() {
+        let mut codex: Codex = serde_json::from_value(json!({})).unwrap();
+        let mut config = ExecutorConfig::new(BaseCodingAgent::Codex);
+        config.sandbox_policy = Some(SandboxMode::ReadOnly);
+
+        codex.apply_overrides(&config);
+
+        assert_eq!(codex.sandbox, Some(SandboxMode::ReadOnly));
+    }
 
     fn live_model(value: serde_json::Value) -> codex_app_server_protocol::Model {
         let mut base = json!({

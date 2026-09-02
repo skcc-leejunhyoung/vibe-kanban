@@ -12,7 +12,10 @@ use thiserror::Error;
 use ts_rs::TS;
 
 use crate::{
-    executors::{AvailabilityInfo, BaseCodingAgent, CodingAgent, StandardCodingAgentExecutor},
+    executors::{
+        AvailabilityInfo, BaseCodingAgent, CodingAgent, StandardCodingAgentExecutor,
+        codex::SandboxMode,
+    },
     model_selector::PermissionPolicy,
 };
 
@@ -144,6 +147,9 @@ pub struct ExecutorConfig {
     /// Permission policy override
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_policy: Option<PermissionPolicy>,
+    /// Codex sandbox override for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_policy: Option<SandboxMode>,
 }
 
 impl ExecutorConfig {
@@ -156,6 +162,7 @@ impl ExecutorConfig {
             agent_id: None,
             reasoning_id: None,
             permission_policy: None,
+            sandbox_policy: None,
         }
     }
 
@@ -173,6 +180,7 @@ impl ExecutorConfig {
             || self.agent_id.is_some()
             || self.reasoning_id.is_some()
             || self.permission_policy.is_some()
+            || self.sandbox_policy.is_some()
     }
 }
 
@@ -185,6 +193,7 @@ impl From<ExecutorProfileId> for ExecutorConfig {
             agent_id: None,
             reasoning_id: None,
             permission_policy: None,
+            sandbox_policy: None,
         }
     }
 }

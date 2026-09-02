@@ -186,6 +186,7 @@ impl StandardCodingAgentExecutor for Copilot {
             model_id: self.model.clone(),
             agent_id: None,
             reasoning_id: None,
+            sandbox_policy: None,
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
         }
     }

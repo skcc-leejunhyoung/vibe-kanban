@@ -229,6 +229,7 @@ impl StandardCodingAgentExecutor for Droid {
                 .reasoning_effort
                 .as_ref()
                 .map(|e| e.as_ref().to_string()),
+            sandbox_policy: None,
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
         }
     }
