@@ -1221,6 +1221,9 @@ function SubagentEntry({
   const processRunning =
     processesCtx?.executionProcessesByIdAll[executionProcessId]?.status ===
     ExecutionProcessStatus.running;
+  const liveRef = useRef(processRunning && status.status === 'created');
+  liveRef.current = processRunning && status.status === 'created';
+  useEffect(() => () => void (liveRef.current = false), []);
   const [stopping, setStopping] = useState(false);
 
   const handleOpenTranscript = useCallback(() => {
@@ -1230,16 +1233,9 @@ function SubagentEntry({
       target: subagentControlTarget(control),
       title: description,
       hostId,
-      live: processRunning && status.status === 'created',
+      isLive: () => liveRef.current,
     });
-  }, [
-    control,
-    executionProcessId,
-    description,
-    hostId,
-    processRunning,
-    status.status,
-  ]);
+  }, [control, executionProcessId, description, hostId]);
 
   const handleStop = useCallback(async () => {
     if (!control || stopping) return;

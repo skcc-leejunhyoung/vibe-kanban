@@ -21,13 +21,15 @@ export interface SubagentTranscriptDialogProps {
   target: SubagentControlTarget;
   title?: string;
   hostId?: string | null;
-  live?: boolean;
+  isLive?: () => boolean;
 }
 
 export interface TranscriptMessage {
   role: 'user' | 'agent';
   content: string;
 }
+
+export const shouldPollTranscript = (isLive?: () => boolean) => isLive?.();
 
 export function parseTranscriptMessages(content: string): TranscriptMessage[] {
   const marker = /(?:^|\n\n)\*\*(User|Agent)\*\*\n\n/g;
@@ -70,14 +72,15 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
             if (!cancelled)
               setError(err instanceof Error ? err.message : String(err));
           });
-        if (!cancelled && props.live) timeout = window.setTimeout(load, 2000);
+        if (!cancelled && shouldPollTranscript(props.isLive))
+          timeout = window.setTimeout(load, 2000);
       };
       void load();
       return () => {
         cancelled = true;
         if (timeout !== undefined) window.clearTimeout(timeout);
       };
-    }, [props.processId, props.target, props.hostId, props.live]);
+    }, [props.processId, props.target, props.hostId, props.isLive]);
 
     const renderMarkdown = (value: string) => (
       <ChatMarkdown
