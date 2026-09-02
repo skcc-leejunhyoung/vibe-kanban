@@ -1230,8 +1230,16 @@ function SubagentEntry({
       target: subagentControlTarget(control),
       title: description,
       hostId,
+      live: processRunning && status.status === 'created',
     });
-  }, [control, executionProcessId, description, hostId]);
+  }, [
+    control,
+    executionProcessId,
+    description,
+    hostId,
+    processRunning,
+    status.status,
+  ]);
 
   const handleStop = useCallback(async () => {
     if (!control || stopping) return;

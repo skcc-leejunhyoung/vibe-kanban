@@ -403,6 +403,38 @@ fn find_claude_task_output_file(stdout: &str, task_id: &str) -> Option<(String, 
     })
 }
 
+fn find_claude_session_id(stdout: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+        value
+            .get("session_id")
+            .and_then(|value| value.as_str())
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_string)
+    })
+}
+
+async fn find_live_claude_task_output_file(
+    stdout: &str,
+    task_id: &str,
+) -> Option<(String, String)> {
+    let session_id = find_claude_session_id(stdout)?;
+    let projects = executors::executors::claude::claude_projects_dir()?;
+    let mut entries = tokio::fs::read_dir(projects).await.ok()?;
+    let file_name = format!("agent-{task_id}.jsonl");
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry
+            .path()
+            .join(&session_id)
+            .join("subagents")
+            .join(&file_name);
+        if tokio::fs::try_exists(&path).await.ok()? {
+            return Some((path.to_string_lossy().into_owned(), session_id));
+        }
+    }
+    None
+}
+
 /// Read at most the last `max_bytes` of a regular file. Refuses special files
 /// and never buffers more than the cap, so a hostile/huge path can't blow up
 /// memory. Returns the bytes and whether the head was cut off.
@@ -452,7 +484,7 @@ async fn read_file_tail(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let path = std::path::Path::new(path);
-    if !task_transcript_path_matches(path, task_id, session_id) {
+    if !canonical_task_transcript_path_matches(path, task_id, session_id) {
         return Err(std::io::Error::other("invalid task transcript path"));
     }
     let path = tokio::fs::canonicalize(path).await?;
@@ -571,14 +603,16 @@ async fn subagent_transcript(
             thread_transcript_markdown(&thread)
         }
         SubagentControlTarget::ClaudeCode { task_id, .. } => {
-            // Ignore any client-sent output_file; re-derive it from the
-            // process's own logs (session-scoped permission check by
-            // construction — only the executor that owns this process can have
-            // written the notification line).
-            let (path, session_id) =
-                find_claude_task_output_file(&stdout, &task_id).ok_or_else(|| {
-                    ApiError::BadRequest("no transcript reported for this task".to_string())
-                })?;
+            // Ignore any client-sent output_file; derive a completed path from
+            // the process logs or a live path from the same logged session.
+            let (path, session_id) = match find_claude_task_output_file(&stdout, &task_id) {
+                Some(transcript) => transcript,
+                None => find_live_claude_task_output_file(&stdout, &task_id)
+                    .await
+                    .ok_or_else(|| {
+                        ApiError::BadRequest("no transcript reported for this task".to_string())
+                    })?,
+            };
             let (bytes, truncated) =
                 read_file_tail(&path, &task_id, &session_id, TRANSCRIPT_MAX_BYTES)
                     .await
@@ -956,6 +990,13 @@ mod subagent_route_tests {
             std::fs::create_dir_all(&tasks).unwrap();
             let transcript = subagents.join("agent-t2.jsonl");
             std::fs::write(&transcript, b"sdk transcript").unwrap();
+            assert_eq!(
+                read_file_tail(transcript.to_str().unwrap(), "t2", "session-2", 512)
+                    .await
+                    .unwrap()
+                    .0,
+                b"sdk transcript"
+            );
             std::os::unix::fs::symlink(&transcript, tasks.join("t2.output")).unwrap();
             assert_eq!(
                 read_file_tail(

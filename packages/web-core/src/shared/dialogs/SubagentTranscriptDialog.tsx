@@ -9,6 +9,9 @@ import {
 import { create, useModal } from '@ebay/nice-modal-react';
 import { Loader2 } from 'lucide-react';
 import type { SubagentControlTarget } from 'shared/types';
+import { ChatAssistantMessage } from '@vibe/ui/components/ChatAssistantMessage';
+import { ChatMarkdown } from '@vibe/ui/components/ChatMarkdown';
+import { ChatUserMessage } from '@vibe/ui/components/ChatUserMessage';
 import { defineModal } from '@/shared/lib/modals';
 import { executionProcessesApi } from '@/shared/lib/api';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
@@ -18,6 +21,30 @@ export interface SubagentTranscriptDialogProps {
   target: SubagentControlTarget;
   title?: string;
   hostId?: string | null;
+  live?: boolean;
+}
+
+export interface TranscriptMessage {
+  role: 'user' | 'agent';
+  content: string;
+}
+
+export function parseTranscriptMessages(content: string): TranscriptMessage[] {
+  const marker = /(?:^|\n\n)\*\*(User|Agent)\*\*\n\n/g;
+  const matches = [...content.matchAll(marker)];
+  if (matches.length === 0) return [{ role: 'agent', content }];
+
+  return matches
+    .map((match, index) => ({
+      role: match[1].toLowerCase() as TranscriptMessage['role'],
+      content: content
+        .slice(
+          (match.index ?? 0) + match[0].length,
+          matches[index + 1]?.index ?? content.length
+        )
+        .trim(),
+    }))
+    .filter((message) => message.content.length > 0);
 }
 
 const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
@@ -29,19 +56,38 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
 
     useEffect(() => {
       let cancelled = false;
-      executionProcessesApi
-        .subagentTranscript(props.processId, props.target, props.hostId)
-        .then((transcript) => {
-          if (!cancelled) setContent(transcript.content);
-        })
-        .catch((err: unknown) => {
-          if (!cancelled)
-            setError(err instanceof Error ? err.message : String(err));
-        });
+      let timeout: number | undefined;
+      const load = async () => {
+        await executionProcessesApi
+          .subagentTranscript(props.processId, props.target, props.hostId)
+          .then((transcript) => {
+            if (!cancelled) {
+              setContent(transcript.content);
+              setError(null);
+            }
+          })
+          .catch((err: unknown) => {
+            if (!cancelled)
+              setError(err instanceof Error ? err.message : String(err));
+          });
+        if (!cancelled && props.live) timeout = window.setTimeout(load, 2000);
+      };
+      void load();
       return () => {
         cancelled = true;
+        if (timeout !== undefined) window.clearTimeout(timeout);
       };
-    }, [props.processId, props.target, props.hostId]);
+    }, [props.processId, props.target, props.hostId, props.live]);
+
+    const renderMarkdown = (value: string) => (
+      <ChatMarkdown
+        content={value}
+        maxWidth="none"
+        renderContent={({ content, className }) => (
+          <WYSIWYGEditor value={content} disabled className={className} />
+        )}
+      />
+    );
 
     return (
       <Dialog
@@ -58,7 +104,7 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
             </DialogTitle>
           </DialogHeader>
           <div className="max-h-[70vh] overflow-y-auto px-4 py-4">
-            {error ? (
+            {error && content == null ? (
               <p className="text-sm text-error">
                 {t('conversation.subagent.transcriptError')}: {error}
               </p>
@@ -67,7 +113,23 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
                 <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
               </div>
             ) : (
-              <WYSIWYGEditor value={content} disabled />
+              <div className="space-y-4">
+                {parseTranscriptMessages(content).map((message, index) =>
+                  message.role === 'user' ? (
+                    <ChatUserMessage
+                      key={index}
+                      content={message.content}
+                      renderMarkdown={({ content }) => renderMarkdown(content)}
+                    />
+                  ) : (
+                    <ChatAssistantMessage
+                      key={index}
+                      content={message.content}
+                      renderMarkdown={({ content }) => renderMarkdown(content)}
+                    />
+                  )
+                )}
+              </div>
             )}
           </div>
         </DialogContent>

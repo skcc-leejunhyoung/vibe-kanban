@@ -862,6 +862,10 @@ pub fn task_output_to_markdown(jsonl: &str) -> String {
     }
 }
 
+pub fn claude_projects_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".claude/projects"))
+}
+
 /// Internal stdout marker the Stop hook callback uses to forward agent-scheduled
 /// wakeups (session_crons) to the log storage consumer. The JSON array of crons
 /// follows the prefix on the same line. Not part of the Claude CLI protocol.
@@ -1576,6 +1580,7 @@ impl ClaudeLogProcessor {
                             // subagents never emit it.
                             let meta = self.task_meta.entry(tool_use_id.clone()).or_default();
                             meta.task_id = task_id.clone();
+                            meta.has_live_transcript = task_type.as_deref() != Some("local_bash");
                             let control = meta.control();
                             if !self.tool_map.contains_key(tool_use_id) {
                                 let desc =
@@ -3265,6 +3270,8 @@ struct ClaudeTaskMeta {
     task_id: Option<String>,
     /// SDK transcript path from `task_notification` (empty for bash tasks).
     output_file: Option<String>,
+    /// Agent tasks stream JSONL while running; background shell tasks do not.
+    has_live_transcript: bool,
     /// Set once `task_notification` reported a terminal status.
     finished: bool,
 }
@@ -3277,7 +3284,7 @@ impl ClaudeTaskMeta {
                 task_id,
                 output_file: self.output_file.clone(),
             },
-            can_open_transcript: self.output_file.is_some(),
+            can_open_transcript: self.has_live_transcript || self.output_file.is_some(),
             can_stop: !self.finished,
         })
     }
@@ -5050,14 +5057,14 @@ mod tests {
     }
 
     #[test]
-    fn task_started_attaches_stoppable_control_without_transcript() {
+    fn task_started_attaches_live_transcript_control() {
         let entries = normalize_sequence(&[
             r#"{"type":"system","subtype":"task_started","task_id":"a0da1c1e716284dc6","tool_use_id":"tool_1","description":"Audit auth flow","task_type":"local_agent"}"#,
         ]);
         assert_eq!(entries.len(), 1);
         let control = task_control(&entries[0]).expect("task_started carries a control handle");
         assert!(control.can_stop);
-        assert!(!control.can_open_transcript);
+        assert!(control.can_open_transcript);
         match &control.target {
             SubagentControlTarget::ClaudeCode {
                 task_id,
