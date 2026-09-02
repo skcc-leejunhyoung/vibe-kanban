@@ -860,14 +860,16 @@ impl LocalContainerService {
                     ctx.execution_process.run_reason,
                     ExecutionProcessRunReason::CodingAgent
                 ) {
+                    let action = ctx.execution_process.executor_action().ok();
                     let rows = msg_stores.read().await.get(&exec_id).map(|store| {
                         let history = store.get_history();
-                        session_message_indexer::collect_indexable_rows(history.iter().filter_map(
-                            |msg| match msg {
+                        session_message_indexer::index_rows(
+                            action,
+                            history.iter().filter_map(|msg| match msg {
                                 LogMsg::JsonPatch(patch) => Some(patch),
                                 _ => None,
-                            },
-                        ))
+                            }),
+                        )
                     });
                     if let Some(rows) = rows
                         && let Err(e) = SessionMessageIndex::rebuild_for_execution(

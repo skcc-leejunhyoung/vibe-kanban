@@ -361,6 +361,20 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+
+        // Deleting the session cascades to index rows and state markers.
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (rows, markers): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM session_message_index), (SELECT COUNT(*) FROM session_message_index_state)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((rows, markers), (0, 0));
     }
 
     #[tokio::test]

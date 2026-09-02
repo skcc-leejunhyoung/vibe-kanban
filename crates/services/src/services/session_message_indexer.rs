@@ -3,17 +3,61 @@
 //! immutable: the exit monitor for live processes, and a startup backfill for
 //! historical ones.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
-use db::models::session_message_index::{NewSessionMessage, SessionMessageIndex};
-use executors::logs::{
-    NormalizedEntry, NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch,
+use db::models::{
+    execution_process::ExecutionProcess,
+    session_message_index::{NewSessionMessage, SessionMessageIndex},
+};
+use executors::{
+    actions::{ExecutorAction, ExecutorActionType},
+    logs::{
+        NormalizedEntry, NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch,
+    },
 };
 use futures::StreamExt;
 use json_patch::Patch;
 use utils::log_msg::LogMsg;
 
 use crate::services::container::ContainerService;
+
+const BACKFILL_INITIAL_DELAY: Duration = Duration::from_secs(60);
+const BACKFILL_ITEM_PAUSE: Duration = Duration::from_millis(500);
+/// Index position of the synthesized turn prompt; sorts before every
+/// normalized entry of the execution.
+pub const PROMPT_ENTRY_INDEX: i64 = -1;
+
+/// The user's prompt for a turn is not a normalized entry (no executor emits
+/// one; the UI synthesizes it from the action), so index it as a leading
+/// `user_message` row.
+pub fn prompt_row(action: &ExecutorAction) -> Option<NewSessionMessage> {
+    let prompt = match action.typ() {
+        ExecutorActionType::CodingAgentInitialRequest(request) => &request.prompt,
+        ExecutorActionType::CodingAgentFollowUpRequest(request) => &request.prompt,
+        ExecutorActionType::ReviewRequest(request) => &request.prompt,
+        _ => return None,
+    };
+    let content = prompt.trim();
+    (!content.is_empty()).then(|| NewSessionMessage {
+        entry_index: PROMPT_ENTRY_INDEX,
+        entry_type: "user_message".to_string(),
+        tool_name: None,
+        content: content.to_string(),
+    })
+}
+
+/// All index rows for an execution: the turn prompt followed by the coalesced
+/// normalized entries.
+pub fn index_rows<'a>(
+    action: Option<&ExecutorAction>,
+    patches: impl IntoIterator<Item = &'a Patch>,
+) -> Vec<NewSessionMessage> {
+    action
+        .and_then(prompt_row)
+        .into_iter()
+        .chain(collect_indexable_rows(patches))
+        .collect()
+}
 
 /// Coalesce a patch stream (adds, replaces, removes) into the final indexable
 /// rows, keyed by entry index.
@@ -77,7 +121,12 @@ fn to_row(index: usize, entry: NormalizedEntry) -> Option<NewSessionMessage> {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    if content.is_empty() {
+    // Lines an executor could not parse are surfaced as system messages
+    // carrying the raw JSON; that is noise (and can be tens of KB per row).
+    if content.is_empty()
+        || (matches!(entry.entry_type, NormalizedEntryType::SystemMessage)
+            && content.starts_with("Unrecognized JSON message"))
+    {
         return None;
     }
     Some(NewSessionMessage {
@@ -108,23 +157,37 @@ pub async fn backfill(container: &(impl ContainerService + Sync)) {
         "Backfilling session message index for {} executions",
         pending.len()
     );
-    for item in pending {
-        let rows = match container.stream_normalized_logs(&item.execution_id).await {
-            Some(mut stream) => {
-                let mut patches = Vec::new();
-                while let Some(msg) = stream.next().await {
-                    match msg {
-                        Ok(LogMsg::JsonPatch(patch)) => patches.push(patch),
-                        Ok(LogMsg::Finished) | Err(_) => break,
-                        Ok(_) => {}
-                    }
+    // Let startup (health probes, first workspace opens) settle before the
+    // sweep, and pace items so interactive replays waiting on the shared
+    // semaphore get in between them.
+    tokio::time::sleep(BACKFILL_INITIAL_DELAY).await;
+    let total = pending.len();
+    for (done, item) in pending.into_iter().enumerate() {
+        if done > 0 {
+            tokio::time::sleep(BACKFILL_ITEM_PAUSE).await;
+        }
+        if done > 0 && done % 200 == 0 {
+            tracing::info!("Session message index backfill: {done}/{total}");
+        }
+        let action = ExecutionProcess::find_by_id(&pool, item.execution_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|process| process.executor_action().ok().cloned());
+        // No logs / unsupported action yields no patches; the prompt row (if
+        // any) is still written and the execution is marked so the backfill
+        // never rescans it.
+        let mut patches = Vec::new();
+        if let Some(mut stream) = container.stream_normalized_logs(&item.execution_id).await {
+            while let Some(msg) = stream.next().await {
+                match msg {
+                    Ok(LogMsg::JsonPatch(patch)) => patches.push(patch),
+                    Ok(LogMsg::Finished) | Err(_) => break,
+                    Ok(_) => {}
                 }
-                collect_indexable_rows(patches.iter())
             }
-            // No logs / unsupported action: mark as indexed so the backfill
-            // never rescans it.
-            None => Vec::new(),
-        };
+        }
+        let rows = index_rows(action.as_ref(), patches.iter());
         if let Err(e) = SessionMessageIndex::rebuild_for_execution(
             &pool,
             item.session_id,
@@ -211,6 +274,46 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].content.contains("인증 방식은?"));
         assert!(rows[0].content.contains("OAuth"));
+    }
+
+    #[test]
+    fn prompt_is_indexed_as_leading_user_message() {
+        // Same JSON shape as a stored `executor_action` row.
+        let action: ExecutorAction = serde_json::from_value(serde_json::json!({
+            "typ": {
+                "type": "CodingAgentFollowUpRequest",
+                "prompt": "  좋아. 수정 커밋 올려줘. ",
+                "session_id": "01a0605b-5831-7130-93a4-5f2247856867",
+                "reset_to_message_id": null,
+                "executor_config": {"executor": "CODEX", "variant": "DEFAULT"},
+                "working_dir": null
+            },
+            "next_action": null
+        }))
+        .unwrap();
+        let patches = [ConversationPatch::add_normalized_entry(
+            0,
+            entry(NormalizedEntryType::AssistantMessage, "done"),
+        )];
+        let rows = index_rows(Some(&action), patches.iter());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].entry_index, PROMPT_ENTRY_INDEX);
+        assert_eq!(rows[0].entry_type, "user_message");
+        assert_eq!(rows[0].content, "좋아. 수정 커밋 올려줘.");
+        assert_eq!(rows[1].entry_index, 0);
+        assert!(index_rows(None, patches.iter()).len() == 1);
+    }
+
+    #[test]
+    fn unparsed_json_system_messages_are_skipped() {
+        let patches = [ConversationPatch::add_normalized_entry(
+            0,
+            entry(
+                NormalizedEntryType::SystemMessage,
+                "Unrecognized JSON message: {\"id\":1}",
+            ),
+        )];
+        assert!(collect_indexable_rows(patches.iter()).is_empty());
     }
 
     #[test]
