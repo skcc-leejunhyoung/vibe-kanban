@@ -72,7 +72,20 @@ impl EventService {
             self.msg_store.clone(),
             process.session_id,
         )
-        .await
+        .await?;
+        if process.status == db::models::execution_process::ExecutionProcessStatus::Completed {
+            let process_id = process.id;
+            let session_id = process.session_id;
+            tokio::spawn(async move {
+                super::automation::emit_event(
+                    "execution_completed",
+                    process_id,
+                    json!({ "executionProcessId": process_id, "sessionId": session_id }),
+                )
+                .await;
+            });
+        }
+        Ok(())
     }
 
     /// Creates the hook function that should be used with DBService::new_with_after_connect

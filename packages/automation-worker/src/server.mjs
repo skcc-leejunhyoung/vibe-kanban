@@ -232,6 +232,8 @@ const defaultState = {
   routines: [],
   routineRuns: [],
   routineOccurrences: {},
+  routineIdempotency: {},
+  routineOrigins: {},
   githubIssueLinkOperations: [],
   pullRequestLinkOperations: [],
 };
@@ -294,6 +296,8 @@ function ensureDefaults() {
   state.routines ||= [];
   state.routineRuns ||= [];
   state.routineOccurrences ||= {};
+  state.routineIdempotency ||= {};
+  state.routineOrigins ||= {};
   state.githubIssueLinkOperations ||= [];
   state.pullRequestLinkOperations ||= [];
   for (const connector of defaultState.connectors) {
@@ -712,9 +716,15 @@ function scheduleAll() {
   // Master switch off: leave every timer cleared so the worker idles.
   if (state.enabled === false) return;
 
-  const routineTimer = setInterval(runDueRoutines, 30000);
+  const routineTimer = setInterval(() => {
+    runDueRoutines().catch((error) =>
+      log('error', 'routine scheduler failed', { error: errorMessage(error) })
+    );
+  }, 30000);
   timers.set('routines', routineTimer);
-  runDueRoutines();
+  runDueRoutines().catch((error) =>
+    log('error', 'routine scheduler failed', { error: errorMessage(error) })
+  );
 
   for (const connector of state.connectors) {
     if (!connector.enabled || !POLLABLE_TYPES.has(connector.type)) continue;
@@ -751,13 +761,21 @@ async function runDueRoutines() {
       continue;
     }
     if (!occurrence || state.routineOccurrences[routine.id] === occurrence) continue;
-    state.routineOccurrences[routine.id] = occurrence;
-    await persistState();
-    await runRoutine(routine, { id: occurrence, type: 'schedule', source: 'schedule' }, occurrence);
+    const result = await runRoutine(
+      routine,
+      { id: occurrence, type: 'schedule', source: 'schedule' },
+      `${routine.id}:${occurrence}`
+    );
+    if (result.status !== 'busy') {
+      state.routineOccurrences[routine.id] = occurrence;
+      await persistState();
+    }
   }
+  await processRetryQueue();
 }
 
 async function dispatchRoutineEvent(event) {
+  event = { ...event, ...(state.routineOrigins[event.id] || {}) };
   for (const routine of state.routines || []) {
     if (!eventMatchesRoutine(routine, event)) continue;
     await runRoutine(routine, event, `${routine.id}:${event.id}`);
@@ -766,14 +784,16 @@ async function dispatchRoutineEvent(event) {
 
 async function runRoutine(routine, event, idempotencyKey) {
   if (routineInFlight.has(routine.id)) return { ok: false, status: 'busy' };
-  if ((state.routineRuns || []).some((run) => run.idempotencyKey === idempotencyKey)) return { ok: true, status: 'duplicate' };
-  const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: redactEvent(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, error: null };
+  if (state.routineIdempotency[idempotencyKey])
+    return { ok: true, status: 'duplicate' };
+  const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: redactEvent(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, maxAttempts: RETRY_MAX_ATTEMPTS, error: null };
   state.routineRuns.unshift(run);
   state.routineRuns = state.routineRuns.slice(0, MAX_LOGS);
+  state.routineIdempotency[idempotencyKey] = run.id;
   routineInFlight.add(routine.id);
   await persistState();
   try {
-    run.result = await executeRoutineAction(routine, event);
+    await executeRoutineAction(routine, event);
     run.status = 'succeeded';
   } catch (error) {
     run.status = 'retrying';
@@ -792,23 +812,104 @@ async function executeRoutineAction(routine, event) {
   const connector = findConnector(String(action.connectorId || 'vibe-default'));
   if (!connector.enabled || connector.type !== 'vibe_kanban') throw new Error('enabled Vibe connector is required');
   const input = cloneData(action.input || {});
-  const hostPrefix = action.targetHostId ? `/api/host/${encodeURIComponent(action.targetHostId)}` : '';
-  const meta = { origin_routine_id: routine.id, routine_chain: [...(event.routineChain || []), routine.id] };
-  if (action.type === 'create_issue') return createVibeIssue(connector.id, { ...input, automation: meta }, event, { id: routine.id });
-  if (action.type === 'start_workspace') return vibeApi(connector, 'POST', `${hostPrefix}/api/workspaces/start`, { ...input, automation: meta });
+  const bridge = action.targetHostId
+    ? connector.config?.hostBridges?.[action.targetHostId]
+    : null;
+  if (action.targetHostId && !bridge?.baseUrl)
+    throw new Error(`target host offline or unconfigured: ${action.targetHostId}`);
+  if (bridge) validateRoutineScope(bridge, input);
+  const meta = { originRoutineId: routine.id, routineChain: [...(event.routineChain || []), routine.id] };
+  if (action.type === 'create_issue') {
+    const result = await createVibeIssue(
+      connector.id,
+      input,
+      { ...event, ...meta },
+      { id: routine.id }
+    );
+    await rememberRoutineOrigin(result?.data?.id, meta);
+    return result;
+  }
+  if (action.type === 'start_workspace') {
+    const { max_execution_seconds: maxExecutionSeconds, ...payload } = input;
+    const result = await vibeApi(
+      connector,
+      'POST',
+      '/api/workspaces/start',
+      payload,
+      bridge.baseUrl
+    );
+    scheduleRoutineStop(connector, bridge.baseUrl, result, maxExecutionSeconds);
+    await Promise.all([
+      rememberRoutineOrigin(result?.data?.workspace?.id, meta),
+      rememberRoutineOrigin(result?.data?.execution_process?.id, meta),
+    ]);
+    return result;
+  }
   if (action.type === 'send_prompt') {
     if (!input.sessionId) throw new Error('sessionId is required');
     const { sessionId, ...payload } = input;
-    return vibeApi(connector, 'POST', `${hostPrefix}/api/sessions/${encodeURIComponent(sessionId)}/follow-up`, payload);
+    return vibeApi(
+      connector,
+      'POST',
+      `/api/sessions/${encodeURIComponent(sessionId)}/follow-up`,
+      payload,
+      bridge.baseUrl
+    );
   }
   if (action.type === 'notification')
     return vibeApi(
       connector,
       'POST',
-      `${hostPrefix}/api/automation-actions/notification`,
-      input
+      '/api/automation-actions/notification',
+      input,
+      bridge.baseUrl
     );
   throw new Error(`unsupported routine action: ${action.type}`);
+}
+
+async function rememberRoutineOrigin(id, meta) {
+  if (!id) return;
+  state.routineOrigins[String(id)] = meta;
+  await persistState();
+}
+
+function validateRoutineScope(bridge, input) {
+  const projectId = input.linked_issue?.remote_project_id;
+  if (
+    projectId &&
+    Array.isArray(bridge.projectIds) &&
+    !bridge.projectIds.includes(projectId)
+  )
+    throw new Error(`project is outside target host scope: ${projectId}`);
+  const allowedRepos = Array.isArray(bridge.repositoryIds)
+    ? bridge.repositoryIds
+    : [];
+  for (const repo of input.repos || []) {
+    const repoId = repo.repo_id;
+    if (allowedRepos.length && !allowedRepos.includes(repoId))
+      throw new Error(`repository is outside target host scope: ${repoId}`);
+  }
+}
+
+function scheduleRoutineStop(connector, baseUrl, result, seconds) {
+  const workspaceId = result?.data?.workspace?.id;
+  if (!workspaceId || !seconds) return;
+  // ponytail: in-process timeout; persist deadlines if restart-safe cancellation is required.
+  const timer = setTimeout(() => {
+    vibeApi(
+      connector,
+      'POST',
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/execution/stop`,
+      undefined,
+      baseUrl
+    ).catch((error) =>
+      log('error', 'routine execution timeout stop failed', {
+        workspaceId,
+        error: errorMessage(error),
+      })
+    );
+  }, seconds * 1000);
+  if (typeof timer.unref === 'function') timer.unref();
 }
 
 async function enqueueRoutineRetry(routine, event, idempotencyKey, error) {
@@ -2981,6 +3082,18 @@ async function processRetryQueue({
         item.status = 'exhausted';
         item.nextAttemptAt = null;
         summary.exhausted += 1;
+        if (routine) {
+          const run = state.routineRuns.find(
+            (entry) =>
+              entry.idempotencyKey === item.event.routineIdempotencyKey
+          );
+          if (run) {
+            run.status = 'exhausted';
+            run.error = item.lastError;
+            run.attempts = item.attempts;
+            run.finishedAt = new Date().toISOString();
+          }
+        }
         await log('error', 'retry exhausted', {
           retryId: item.id,
           ruleId: item.ruleId,
@@ -3187,7 +3300,7 @@ async function createVibeIssue(connectorId, input, event, rule) {
     payload.parent_issue_id = issueMap[input.parentKey];
   }
 
-  const body = await postVibeIssue(connector, payload);
+  const body = await postVibeIssue(connector, payload, event);
   const createdId = body && body.data && body.data.id;
   if (input.sourceKey && createdId) {
     issueMap[input.sourceKey] = createdId;
@@ -3314,15 +3427,28 @@ async function createVibeIssue(connectorId, input, event, rule) {
 }
 
 // Generic Vibe remote API call with access-token auth + one 401 retry.
-async function vibeApi(connector, method, path, payload) {
+async function vibeApi(
+  connector,
+  method,
+  path,
+  payload,
+  baseUrlOverride,
+  routineMeta
+) {
   const config = connector.config || {};
-  const baseUrl = String(config.baseUrl || '').replace(/\/+$/, '');
+  const baseUrl = String(baseUrlOverride || config.baseUrl || '').replace(/\/+$/, '');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const accessToken = await getVibeAccessToken(connector, attempt > 0);
     const headers = { 'content-type': 'application/json' };
     if (accessToken) headers.authorization = `Bearer ${accessToken}`;
     if (config.authHeaderName && config.authHeaderValue) {
       headers[String(config.authHeaderName)] = String(config.authHeaderValue);
+    }
+    if (routineMeta?.originRoutineId) {
+      headers['x-vibe-routine-id'] = routineMeta.originRoutineId;
+      headers['x-vibe-routine-chain'] = JSON.stringify(
+        routineMeta.routineChain || []
+      );
     }
     const response = await fetch(`${baseUrl}${path}`, {
       method,
@@ -3353,8 +3479,8 @@ async function vibeApi(connector, method, path, payload) {
   throw new Error(`Vibe ${method} ${path} failed after token refresh`);
 }
 
-function postVibeIssue(connector, payload) {
-  return vibeApi(connector, 'POST', '/v1/issues', payload);
+function postVibeIssue(connector, payload, event) {
+  return vibeApi(connector, 'POST', '/v1/issues', payload, undefined, event);
 }
 
 // Resolve a tag id by name within the project, creating the tag if absent.

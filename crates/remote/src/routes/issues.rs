@@ -6,7 +6,7 @@ use api_types::{
 use axum::{
     Json,
     extract::{Extension, Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::post,
 };
 use serde::{Deserialize, Serialize};
@@ -306,6 +306,7 @@ async fn mark_issue_for_review(
 async fn create_issue(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
+    headers: HeaderMap,
     Json(payload): Json<CreateIssueRequest>,
 ) -> Result<Json<MutationResponse<Issue>>, ErrorResponse> {
     ensure_project_access(state.pool(), ctx.user.id, payload.project_id).await?;
@@ -339,6 +340,31 @@ async fn create_issue(
     {
         tracing::warn!(?e, issue_id = %response.data.id, "failed to auto-follow issue for creator");
     }
+
+    let event_issue = response.data.clone();
+    let origin_routine_id = headers
+        .get("x-vibe-routine-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let routine_chain = headers
+        .get("x-vibe-routine-chain")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default();
+    tokio::spawn(async move {
+        crate::automation::emit_event(
+            "issue_created",
+            event_issue.id,
+            serde_json::json!({
+                "issueId": event_issue.id,
+                "projectId": event_issue.project_id,
+                "title": event_issue.title,
+                "originRoutineId": origin_routine_id,
+                "routineChain": routine_chain,
+            }),
+        )
+        .await;
+    });
 
     Ok(Json(response))
 }

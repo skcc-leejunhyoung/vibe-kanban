@@ -84,6 +84,17 @@ pub async fn update_workspace(
     if is_archiving && let Err(e) = deployment.container().archive_workspace(workspace.id).await {
         tracing::error!("Failed to archive workspace {}: {}", workspace.id, e);
     }
+    if is_archiving {
+        let workspace_id = workspace.id;
+        tokio::spawn(async move {
+            services::services::automation::emit_event(
+                "workspace_archived",
+                workspace_id,
+                serde_json::json!({ "workspaceId": workspace_id }),
+            )
+            .await;
+        });
+    }
 
     Ok(ResponseJson(ApiResponse::success(updated)))
 }

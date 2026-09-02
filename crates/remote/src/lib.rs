@@ -2,6 +2,7 @@ mod app;
 pub mod attachments;
 pub mod audit;
 mod auth;
+mod automation;
 pub mod azure_blob;
 pub mod config;
 pub mod db;

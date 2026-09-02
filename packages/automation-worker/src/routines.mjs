@@ -16,11 +16,39 @@ export function normalizeRoutine(input) {
   if (!['create_issue', 'start_workspace', 'send_prompt', 'notification'].includes(action.type)) {
     throw new Error('unsupported routine action');
   }
+  if (!action.connectorId) throw new Error('action connectorId is required');
+  if (
+    ['start_workspace', 'send_prompt', 'notification'].includes(action.type) &&
+    !action.targetHostId
+  )
+    throw new Error(`${action.type} targetHostId is required`);
+  const actionInput = action.input || {};
+  if (action.type === 'create_issue' && !actionInput.title)
+    throw new Error('create_issue title is required');
+  if (action.type === 'start_workspace') {
+    if (!actionInput.prompt || !Array.isArray(actionInput.repos) || !actionInput.repos.length)
+      throw new Error('start_workspace prompt and repos are required');
+    if (!actionInput.executor_config?.executor)
+      throw new Error('start_workspace executor is required');
+    if (!actionInput.executor_config?.permission_policy)
+      throw new Error('start_workspace approval policy is required');
+    if (!Number.isFinite(actionInput.max_execution_seconds) || actionInput.max_execution_seconds < 1)
+      throw new Error('start_workspace max execution time is required');
+  }
+  if (action.type === 'send_prompt') {
+    if (!actionInput.sessionId || !actionInput.prompt)
+      throw new Error('send_prompt sessionId and prompt are required');
+    if (!actionInput.executor_config?.permission_policy)
+      throw new Error('send_prompt approval policy is required');
+  }
+  if (action.type === 'notification' && (!actionInput.title || !actionInput.message))
+    throw new Error('notification title and message are required');
   if (trigger.type === 'schedule') {
     if (!trigger.at && !trigger.cron) throw new Error('schedule needs at or cron');
     if (trigger.at && !Number.isFinite(Date.parse(trigger.at))) throw new Error('invalid schedule time');
     if (trigger.cron) parseCron(trigger.cron);
-    if (trigger.timezone) new Intl.DateTimeFormat('en-US', { timeZone: trigger.timezone }).format();
+    if (!trigger.timezone) throw new Error('schedule timezone is required');
+    new Intl.DateTimeFormat('en-US', { timeZone: trigger.timezone }).format();
   }
   return {
     id: String(input.id || ''),
@@ -41,7 +69,7 @@ export function scheduleOccurrence(routine, now = new Date()) {
     const time = Date.parse(trigger.at);
     return time <= now.getTime() ? `once:${new Date(time).toISOString()}` : null;
   }
-  const timezone = trigger.timezone || 'UTC';
+  const timezone = trigger.timezone;
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat('en-CA', {
       timeZone: timezone,
@@ -52,25 +80,42 @@ export function scheduleOccurrence(routine, now = new Date()) {
   const values = [Number(parts.minute), Number(parts.hour), Number(parts.day), Number(parts.month),
     ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday)];
   const cron = parseCron(trigger.cron);
-  if (!cron.every((allowed, index) => allowed.has(values[index]))) return null;
+  const minuteHourMonthMatch = [0, 1, 3].every((index) =>
+    cron[index].has(values[index])
+  );
+  const dayOfMonthMatch = cron[2].has(values[2]);
+  const dayOfWeekMatch = cron[4].has(values[4]);
+  const dayMatches =
+    cron[2].wildcard || cron[4].wildcard
+      ? dayOfMonthMatch && dayOfWeekMatch
+      : dayOfMonthMatch || dayOfWeekMatch;
+  if (!minuteHourMonthMatch || !dayMatches) return null;
   return `cron:${timezone}:${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
 
 export function eventMatchesRoutine(routine, event) {
   if (!routine.enabled || routine.trigger?.type !== event.type) return false;
-  if (event.originRoutineId === routine.id || event.routineChain?.includes(routine.id)) return false;
+  if (
+    event.originRoutineId === routine.id ||
+    event.routineChain?.includes(routine.id)
+  )
+    return false;
   const condition = routine.condition;
   if (!condition) return true;
   return Object.entries(condition).every(([key, value]) => event[key] === value);
 }
 
-export function redactEvent(event) {
-  const safe = {};
-  for (const [key, value] of Object.entries(event || {})) {
-    if (/token|secret|credential|authorization|payload/i.test(key)) continue;
-    safe[key] = typeof value === 'string' ? value.slice(0, 500) : value;
-  }
-  return safe;
+export function redactEvent(value, key = '') {
+  if (/token|secret|credential|authorization|password/i.test(key)) return undefined;
+  if (typeof value === 'string') return value.slice(0, 500);
+  if (Array.isArray(value))
+    return value.map((item) => redactEvent(item)).filter((item) => item !== undefined);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([childKey, child]) => [childKey, redactEvent(child, childKey)])
+      .filter(([, child]) => child !== undefined)
+  );
 }
 
 function parseCron(value) {
@@ -81,6 +126,7 @@ function parseCron(value) {
 
 function parseCronField(field, min, max) {
   const values = new Set();
+  values.wildcard = field === '*' || field.startsWith('*/');
   for (const item of field.split(',')) {
     const [range, stepText] = item.split('/');
     const step = stepText === undefined ? 1 : Number(stepText);

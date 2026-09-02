@@ -82,13 +82,44 @@ export interface AutomationRetryItem {
   nextAttemptAt: number | null;
 }
 
+export type AutomationRoutineTrigger =
+  | { type: 'schedule'; at?: string; cron?: string; timezone: string }
+  | {
+      type: 'issue_created' | 'execution_completed' | 'workspace_archived';
+    };
+
+export type AutomationRoutineAction =
+  | {
+      type: 'create_issue';
+      connectorId: string;
+      input: { title: string; description?: string };
+    }
+  | {
+      type: 'start_workspace';
+      connectorId: string;
+      targetHostId: string;
+      input: Record<string, unknown> & { max_execution_seconds: number };
+    }
+  | {
+      type: 'send_prompt';
+      connectorId: string;
+      targetHostId: string;
+      input: Record<string, unknown> & { sessionId: string; prompt: string };
+    }
+  | {
+      type: 'notification';
+      connectorId: string;
+      targetHostId: string;
+      input: { title: string; message: string; workspace_id?: string };
+    };
+
 export interface AutomationRoutine {
   id: string;
   name: string;
   enabled: boolean;
-  trigger: Record<string, unknown> & { type: string };
+  trigger: AutomationRoutineTrigger;
   condition: Record<string, unknown> | null;
-  action: Record<string, unknown> & { type: string };
+  action: AutomationRoutineAction;
 }
 
 export interface AutomationRoutineRun {
@@ -100,6 +131,7 @@ export interface AutomationRoutineRun {
   startedAt: string;
   finishedAt?: string;
   attempts: number;
+  maxAttempts: number;
   error: string | null;
 }
 

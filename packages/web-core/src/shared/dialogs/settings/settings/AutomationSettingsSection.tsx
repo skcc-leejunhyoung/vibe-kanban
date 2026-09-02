@@ -744,7 +744,8 @@ export function AutomationSettingsSection() {
           action: {
             type: 'notification',
             connectorId: 'vibe-default',
-            input: { title: '', body: '' },
+            targetHostId: '',
+            input: { title: '', message: '' },
           },
         },
         null,
@@ -1379,6 +1380,7 @@ export function AutomationSettingsSection() {
                 {item.routineId} · {item.status} ·{' '}
                 {new Date(item.startedAt).toLocaleString()}
                 {item.targetHostId ? ` · ${item.targetHostId}` : ''}
+                {` · ${item.attempts}/${item.maxAttempts}`}
                 {item.error ? ` · ${item.error}` : ''}
               </div>
             ))}
