@@ -51,21 +51,10 @@
       ]
     },
     "model_reasoning_effort": {
-      "description": "Reasoning effort for the underlying model",
+      "description": "Reasoning effort advertised by Codex model discovery.",
       "type": [
         "string",
         "null"
-      ],
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-        "ultra",
-        null
       ]
     },
     "model_reasoning_summary": {

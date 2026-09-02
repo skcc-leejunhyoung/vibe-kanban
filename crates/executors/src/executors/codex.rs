@@ -36,15 +36,14 @@ pub(crate) fn resolve_model(model: Option<&str>) -> (Option<&str>, bool) {
 /// dropdown reflects what each tier actually supports rather than one blanket
 /// list. Adjust the groupings here when a model's supported efforts change.
 fn codex_reasoning_options(model_id: &str) -> Vec<ReasoningOption> {
-    use ReasoningEffort::*;
-    let efforts: &[ReasoningEffort] = match model_id {
-        "gpt-5.6-sol" | "gpt-5.6-terra" => &[Low, Medium, High, Xhigh, Max, Ultra],
-        "gpt-5.6-luna" => &[Low, Medium, High, Xhigh, Max],
+    let efforts: &[&str] = match model_id {
+        "gpt-5.6-sol" | "gpt-5.6-terra" => &["low", "medium", "high", "xhigh", "max", "ultra"],
+        "gpt-5.6-luna" => &["low", "medium", "high", "xhigh", "max"],
         // The v0.144.2 model catalog exposes the same base range for the
         // remaining picker-visible models.
-        _ => &[Low, Medium, High, Xhigh],
+        _ => &["low", "medium", "high", "xhigh"],
     };
-    ReasoningOption::from_names(efforts.iter().map(|e| e.as_ref().to_string()))
+    ReasoningOption::from_names(efforts.iter().map(|effort| effort.to_string()))
 }
 
 /// Whether a Codex model exposes the "fast" (high-throughput) service tier as a
@@ -197,7 +196,7 @@ use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use strum_macros::{AsRefStr, EnumString};
+use strum_macros::AsRefStr;
 use tokio::process::Command;
 use ts_rs::TS;
 use workspace_utils::{command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore};
@@ -250,19 +249,28 @@ pub enum AskForApproval {
     Never,
 }
 
-/// Reasoning effort for the underlying model
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS, JsonSchema, AsRefStr, EnumString)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
-pub enum ReasoningEffort {
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-    Ultra,
+/// Reasoning effort advertised by Codex model discovery.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS, JsonSchema)]
+#[serde(transparent)]
+#[ts(type = "string")]
+pub struct ReasoningEffort(String);
+
+impl ReasoningEffort {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for ReasoningEffort {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() {
+            Err("reasoning effort must not be empty")
+        } else {
+            Ok(Self(value.to_string()))
+        }
+    }
 }
 
 /// Model reasoning summary style
@@ -349,7 +357,7 @@ impl StandardCodingAgentExecutor for Codex {
             self.model = Some(model_id.clone());
         }
         if let Some(reasoning_id) = &executor_config.reasoning_id
-            && let Ok(reasoning_effort) = ReasoningEffort::from_str(reasoning_id)
+            && let Ok(reasoning_effort) = reasoning_id.parse()
         {
             self.model_reasoning_effort = Some(reasoning_effort)
         }
@@ -468,7 +476,7 @@ impl StandardCodingAgentExecutor for Codex {
             reasoning_id: self
                 .model_reasoning_effort
                 .as_ref()
-                .map(|e| e.as_ref().to_string()),
+                .map(|e| e.as_str().to_string()),
             permission_policy: Some(permission_policy),
         }
     }
@@ -670,6 +678,7 @@ impl Codex {
             None,
             false,
             false,
+            None,
             crate::env::RepoContext::default(),
             false,
             String::new(),
@@ -788,7 +797,7 @@ impl Codex {
         if let Some(effort) = &self.model_reasoning_effort {
             overrides.insert(
                 "model_reasoning_effort".to_string(),
-                Value::String(effort.as_ref().to_string()),
+                Value::String(effort.as_str().to_string()),
             );
         }
 
@@ -954,6 +963,9 @@ impl Codex {
             approvals,
             auto_approve,
             plan_mode,
+            self.model_reasoning_effort
+                .as_ref()
+                .and_then(|effort| effort.as_str().parse().ok()),
             repo_context,
             commit_reminder,
             commit_reminder_prompt,
@@ -1264,19 +1276,19 @@ mod tests {
 
     #[test]
     fn reasoning_effort_parses_latest_codex_values() {
-        assert_eq!("none".parse::<ReasoningEffort>(), Ok(ReasoningEffort::None));
-        assert_eq!(
-            "minimal".parse::<ReasoningEffort>(),
-            Ok(ReasoningEffort::Minimal)
-        );
-        assert_eq!(
-            "xhigh".parse::<ReasoningEffort>(),
-            Ok(ReasoningEffort::Xhigh)
-        );
-        assert_eq!("max".parse::<ReasoningEffort>(), Ok(ReasoningEffort::Max));
-        assert_eq!(
-            "ultra".parse::<ReasoningEffort>(),
-            Ok(ReasoningEffort::Ultra)
-        );
+        for effort in [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra",
+            "future-effort",
+        ] {
+            assert_eq!(effort.parse::<ReasoningEffort>().unwrap().as_str(), effort);
+        }
+        assert!("".parse::<ReasoningEffort>().is_err());
     }
 }

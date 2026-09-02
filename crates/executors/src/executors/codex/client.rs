@@ -26,7 +26,10 @@ use codex_app_server_protocol::{
     TurnCompletedNotification, TurnInterruptParams, TurnInterruptResponse, TurnStartParams,
     TurnStartResponse, TurnStatus, UserInput,
 };
-use codex_protocol::config_types::{CollaborationMode, ModeKind, Settings};
+use codex_protocol::{
+    config_types::{CollaborationMode, ModeKind, Settings},
+    openai_models::ReasoningEffort,
+};
 use futures::TryFutureExt;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{self, Value};
@@ -59,6 +62,7 @@ pub struct AppServerClient {
     pending_feedback: Mutex<VecDeque<String>>,
     auto_approve: bool,
     plan_mode: bool,
+    reasoning_effort: Option<ReasoningEffort>,
     resolved_model: OnceLock<String>,
     pending_plan: Mutex<Option<PendingPlan>>,
     repo_context: RepoContext,
@@ -75,6 +79,7 @@ impl AppServerClient {
         approvals: Option<Arc<dyn ExecutorApprovalService>>,
         auto_approve: bool,
         plan_mode: bool,
+        reasoning_effort: Option<ReasoningEffort>,
         repo_context: RepoContext,
         commit_reminder: bool,
         commit_reminder_prompt: String,
@@ -86,6 +91,7 @@ impl AppServerClient {
             approvals,
             auto_approve,
             plan_mode,
+            reasoning_effort,
             resolved_model: OnceLock::new(),
             pending_plan: Mutex::new(None),
             thread_id: Mutex::new(None),
@@ -186,7 +192,7 @@ impl AppServerClient {
             mode,
             settings: Settings {
                 model,
-                reasoning_effort: None,
+                reasoning_effort: self.reasoning_effort.clone(),
                 developer_instructions: None,
             },
         })
@@ -1166,6 +1172,38 @@ mod tests {
     use codex_app_server_protocol::RateLimitReachedType;
 
     use super::*;
+
+    #[test]
+    fn collaboration_mode_preserves_every_reasoning_effort() {
+        for effort in [
+            ReasoningEffort::None,
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Max,
+            ReasoningEffort::Ultra,
+            ReasoningEffort::Custom("future-effort".to_string()),
+        ] {
+            let client = AppServerClient::new(
+                LogWriter::new(tokio::io::sink()),
+                None,
+                false,
+                false,
+                Some(effort.clone()),
+                RepoContext::default(),
+                false,
+                String::new(),
+                CancellationToken::new(),
+            );
+            client.set_resolved_model("gpt-5.6-sol".to_string());
+
+            let mode = client.initial_collaboration_mode().unwrap();
+
+            assert_eq!(mode.settings.reasoning_effort, Some(effort));
+        }
+    }
 
     fn window(used_percent: i32, resets_at: Option<i64>) -> RateLimitWindow {
         RateLimitWindow {
