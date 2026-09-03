@@ -1106,6 +1106,7 @@ impl ClaudeLogProcessor {
             ClaudeJson::ControlResponse { .. } => None,
             ClaudeJson::ControlCancelRequest { .. } => None,
             ClaudeJson::RateLimitEvent { session_id, .. } => session_id.clone(),
+            ClaudeJson::ToolProgress { .. } => None,
             ClaudeJson::Unknown { .. } => None,
         }
     }
@@ -1567,7 +1568,9 @@ impl ClaudeLogProcessor {
                         // We'll send system initialized message with first assistant message that has a model field.
                     }
                     Some("status") => {
-                        if let Some(status) = status {
+                        if let Some(status) = status
+                            && status != "requesting"
+                        {
                             patches.push(add_system_message(status.clone(), entry_index_provider));
                         }
                     }
@@ -1577,6 +1580,13 @@ impl ClaudeLogProcessor {
                     // thinking entry (via thinking deltas), so skip it here to
                     // avoid stacking a new "System: thinking_tokens" row per event.
                     Some("thinking_tokens") => {}
+                    Some(
+                        "hook_started"
+                        | "hook_response"
+                        | "background_tasks_changed"
+                        | "task_updated"
+                        | "notification",
+                    ) => {}
                     Some("task_started") => {
                         if let Some(tool_use_id) = tool_use_id {
                             // Only `task_started` (the background-task registry
@@ -2430,17 +2440,7 @@ impl ClaudeLogProcessor {
                 }
             }
             ClaudeJson::Unknown { data } => {
-                let entry = NormalizedEntry {
-                    timestamp: None,
-                    entry_type: NormalizedEntryType::SystemMessage,
-                    content: format!(
-                        "Unrecognized JSON message: {}",
-                        serde_json::to_value(data).unwrap_or_default()
-                    ),
-                    metadata: None,
-                };
-                let idx = entry_index_provider.next();
-                patches.push(ConversationPatch::add_normalized_entry(idx, entry));
+                tracing::debug!(?data, "Unrecognized Claude JSON message");
             }
             ClaudeJson::RateLimitEvent {
                 rate_limit_info, ..
@@ -2455,7 +2455,8 @@ impl ClaudeLogProcessor {
                     self.rate_limit_reported = true;
                 }
             }
-            ClaudeJson::ControlRequest { .. }
+            ClaudeJson::ToolProgress { .. }
+            | ClaudeJson::ControlRequest { .. }
             | ClaudeJson::ControlResponse { .. }
             | ClaudeJson::ControlCancelRequest { .. } => {}
         }
@@ -2939,6 +2940,7 @@ pub enum ClaudeJson {
         #[serde(default)]
         rate_limit_info: Option<serde_json::Value>,
     },
+    ToolProgress {},
     // Catch-all for unknown message types
     #[serde(untagged)]
     Unknown {
@@ -3509,6 +3511,65 @@ mod tests {
             entries[0].content,
             "System initialized with model: claude-sonnet-4-20250514"
         );
+    }
+
+    #[test]
+    fn internal_cli_events_are_hidden_but_meaningful_statuses_remain() {
+        for subtype in [
+            "hook_started",
+            "hook_response",
+            "background_tasks_changed",
+            "task_updated",
+            "notification",
+        ] {
+            let parsed: ClaudeJson = serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": subtype,
+            }))
+            .unwrap();
+            assert!(
+                normalize(&parsed, "").is_empty(),
+                "{subtype} must be hidden"
+            );
+        }
+
+        let requesting: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "status",
+            "status": "requesting",
+        }))
+        .unwrap();
+        assert!(normalize(&requesting, "").is_empty());
+
+        let tool_progress: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "tool_progress",
+            "tool_use_id": "tool_1",
+            "tool_name": "Bash",
+            "elapsed_time_seconds": 30,
+        }))
+        .unwrap();
+        assert!(matches!(&tool_progress, ClaudeJson::ToolProgress { .. }));
+        assert!(normalize(&tool_progress, "").is_empty());
+
+        let unknown: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "future_event",
+            "payload": {"value": 1},
+        }))
+        .unwrap();
+        assert!(matches!(&unknown, ClaudeJson::Unknown { .. }));
+        assert!(normalize(&unknown, "").is_empty());
+
+        for status in ["Stop hook feedback", "Context compacted"] {
+            let parsed: ClaudeJson = serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "status",
+                "status": status,
+            }))
+            .unwrap();
+            let entries = normalize(&parsed, "");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].content, status);
+        }
     }
 
     #[test]
