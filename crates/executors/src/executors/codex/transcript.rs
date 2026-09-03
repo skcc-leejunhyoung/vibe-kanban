@@ -77,6 +77,7 @@ fn thread_item_markdown(item: &ThreadItem) -> Option<String> {
         }
         ThreadItem::McpToolCall { server, tool, .. } => Some(format!("_Tool:_ `{server}/{tool}`")),
         ThreadItem::DynamicToolCall { tool, .. } => Some(format!("_Tool:_ `{tool}`")),
+        ThreadItem::FunctionCallOutput { .. } => None,
         _ => None,
     }
 }

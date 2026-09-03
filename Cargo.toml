@@ -58,3 +58,8 @@ aws-lc-rs = "=1.16.0"
 debug = 1
 split-debuginfo = "packed"
 strip = true
+
+[patch."https://github.com/openai/codex.git"]
+# app-server-protocol only uses codex-rollout's history type re-exports. Avoid
+# pulling its SQLx 0.9 state backend into this SQLx 0.8 workspace.
+codex-rollout = { path = "crates/codex-rollout-compat" }

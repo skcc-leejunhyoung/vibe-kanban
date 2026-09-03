@@ -583,7 +583,7 @@ async fn subagent_transcript(
                 .await
             {
                 Some(SubagentLiveHandle::Codex(client)) => {
-                    match client.thread_read(thread_id.clone(), true).await {
+                    match client.thread_read_full(thread_id.clone()).await {
                         Ok(response) => response.thread,
                         Err(_) => {
                             codex_from_process(&execution_process)?

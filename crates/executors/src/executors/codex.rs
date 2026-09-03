@@ -628,7 +628,7 @@ impl Codex {
         self.probe_app_server(THREAD_READ_TIMEOUT, "reading Codex thread", {
             |client| async move {
                 client
-                    .thread_read(thread_id, true)
+                    .thread_read_full(thread_id)
                     .await
                     .map(|resp| resp.thread)
             }
@@ -1269,6 +1269,24 @@ mod tests {
         assert!(matches!(
             item,
             codex_app_server_protocol::ThreadItem::SubAgentActivity { .. }
+        ));
+    }
+
+    #[test]
+    fn decodes_function_call_output_from_thread_history() {
+        let item =
+            serde_json::from_value::<codex_app_server_protocol::ThreadItem>(serde_json::json!({
+                "type": "functionCallOutput",
+                "id": "output-1",
+                "name": "send_message",
+                "namespace": "collaboration",
+                "output": "delivered"
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            item,
+            codex_app_server_protocol::ThreadItem::FunctionCallOutput { .. }
         ));
     }
 

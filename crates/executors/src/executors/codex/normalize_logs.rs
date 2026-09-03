@@ -824,6 +824,9 @@ fn dynamic_tool_markdown_from_app_items(
             AppDynamicToolCallOutputContentItem::InputImage { image_url } => {
                 dynamic_tool_image_markdown(image_url, worktree_path)
             }
+            AppDynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                format!("Audio: {audio_url}")
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -839,6 +842,9 @@ fn dynamic_tool_markdown_from_core_items(
             CoreDynamicToolCallOutputContentItem::InputText { text } => text.clone(),
             CoreDynamicToolCallOutputContentItem::InputImage { image_url } => {
                 dynamic_tool_image_markdown(image_url, worktree_path)
+            }
+            CoreDynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                format!("Audio: {audio_url}")
             }
         })
         .collect::<Vec<_>>()
@@ -1159,6 +1165,7 @@ fn handle_direct_item_started(
         | AppThreadItem::SubAgentActivity { .. }) => {
             handle_collab_thread_item(state, msg_store, entry_index, event_at_ms, item);
         }
+        AppThreadItem::FunctionCallOutput { .. } => {}
         _ => {}
     }
 }
@@ -1361,6 +1368,7 @@ fn handle_direct_item_completed(
         | AppThreadItem::SubAgentActivity { .. }) => {
             handle_collab_thread_item(state, msg_store, entry_index, event_at_ms, item);
         }
+        AppThreadItem::FunctionCallOutput { .. } => {}
         _ => {}
     }
 }
@@ -1531,7 +1539,10 @@ fn handle_collab_thread_item(
                         },
                     );
                 }
-                AppCollabAgentTool::SendInput | AppCollabAgentTool::ResumeAgent => {
+                AppCollabAgentTool::SendInput
+                | AppCollabAgentTool::ResumeAgent
+                | AppCollabAgentTool::SendMessage
+                | AppCollabAgentTool::FollowupTask => {
                     if !call_failed {
                         let activity = prompt.as_deref().and_then(collab_prompt_line);
                         for thread_id in &receiver_thread_ids {
@@ -1551,7 +1562,10 @@ fn handle_collab_thread_item(
                         }
                     }
                 }
-                AppCollabAgentTool::Wait | AppCollabAgentTool::CloseAgent => {}
+                AppCollabAgentTool::Wait
+                | AppCollabAgentTool::CloseAgent
+                | AppCollabAgentTool::InterruptAgent
+                | AppCollabAgentTool::ListAgents => {}
             }
             for (thread_id, agent_state) in &agents_states {
                 // A NotFound answer for a thread we never rendered must not
@@ -1605,6 +1619,10 @@ fn handle_collab_thread_item(
                         AppSubAgentActivityKind::Interrupted => {
                             task.status = ToolStatus::Failed;
                             task.last_activity = Some("Interrupted".to_string());
+                        }
+                        AppSubAgentActivityKind::Completed => {
+                            task.status = ToolStatus::Success;
+                            task.last_activity = Some("Completed".to_string());
                         }
                     }
                 },
@@ -2591,6 +2609,7 @@ pub fn normalize_logs(
                 EventMsg::Error(ErrorEvent {
                     message,
                     codex_error_info,
+                    ..
                 }) => {
                     add_normalized_entry(
                         &msg_store,
@@ -2665,6 +2684,7 @@ pub fn normalize_logs(
                     turn_id: _,
                     questions: event_questions,
                     auto_resolution_ms: _,
+                    ..
                 }) => {
                     state.assistant = None;
                     state.thinking = None;
