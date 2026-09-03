@@ -55,7 +55,7 @@ import {
   eventMatchesRoutine,
   isIndeterminateActionError,
   normalizeRoutine,
-  recoverInterruptedRoutineRuns,
+  recoverInterruptedAutomationState,
   redactEvent,
   routineRunTrigger,
   routineEventKey,
@@ -325,9 +325,6 @@ function ensureDefaults() {
   state.githubIssueLinkOperations ||= [];
   state.pullRequestLinkOperations ||= [];
   state.eventReceipts ||= {};
-  for (const [key, receipt] of Object.entries(state.eventReceipts)) {
-    if (receipt.status === 'running') delete state.eventReceipts[key];
-  }
   for (const connector of defaultState.connectors) {
     if (!state.connectors.some((item) => item.id === connector.id)) {
       state.connectors.push(structuredClone(connector));
@@ -342,7 +339,7 @@ function ensureDefaults() {
       existing.config = structuredClone(rule.config);
     }
   }
-  recoverInterruptedRoutineRuns(state);
+  recoverInterruptedAutomationState(state);
 }
 
 async function route(req, res) {
@@ -439,8 +436,9 @@ async function route(req, res) {
     if (!event.id || !event.type) throw new Error('event id and type are required');
     const normalizedEvent = { ...event, source: event.source || 'vibe' };
     const key = automationEventKey(normalizedEvent);
-    if (state.eventReceipts[key]?.status === 'succeeded') {
-      sendJson(res, 202, { ok: true, duplicate: true });
+    const receipt = state.eventReceipts[key];
+    if (receipt) {
+      sendJson(res, 202, { ok: true, duplicate: true, status: receipt.status });
       return;
     }
     const existing = eventInFlight.get(key);

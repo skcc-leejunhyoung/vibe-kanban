@@ -200,7 +200,10 @@ export function isIndeterminateActionError(error) {
   return /409[\s\S]*automation action is already running/i.test(String(error));
 }
 
-export function recoverInterruptedRoutineRuns(state) {
+export function recoverInterruptedAutomationState(state) {
+  for (const receipt of Object.values(state.eventReceipts || {})) {
+    if (receipt.status === 'running') receipt.status = 'indeterminate';
+  }
   for (const run of state.routineRuns || []) {
     if (run.status !== 'running' || !run.idempotencyKey) continue;
     run.status = 'exhausted';
