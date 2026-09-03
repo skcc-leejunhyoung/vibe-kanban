@@ -200,6 +200,16 @@ export function isIndeterminateActionError(error) {
   return /409[\s\S]*automation action is already running/i.test(String(error));
 }
 
+export function recoverInterruptedRoutineRuns(state) {
+  for (const run of state.routineRuns || []) {
+    if (run.status !== 'running' || !run.idempotencyKey) continue;
+    run.status = 'exhausted';
+    run.error = 'interrupted with an indeterminate action outcome; review the target before running again';
+    run.finishedAt ||= new Date().toISOString();
+    state.routineClaims[run.idempotencyKey] = { runId: run.id, status: 'exhausted' };
+  }
+}
+
 export function validateRoutineScope(bridge, input) {
   const projectId = input.linked_issue?.remote_project_id || input.scope?.projectId;
   if (projectId && !bridge.projectIds?.includes(projectId))

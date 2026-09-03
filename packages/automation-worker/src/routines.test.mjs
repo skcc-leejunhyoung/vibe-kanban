@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { automationEventKey, eventMatchesRoutine, isIndeterminateActionError, normalizeRoutine, redactEvent, routineEventKey, routineRunTrigger, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
+import { automationEventKey, eventMatchesRoutine, isIndeterminateActionError, normalizeRoutine, recoverInterruptedRoutineRuns, redactEvent, routineEventKey, routineRunTrigger, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
 
 test('cron occurrences are keyed by local timezone minute', () => {
   const routine = normalizeRoutine({ id: 'daily', enabled: true, trigger: { type: 'schedule', cron: '30 9 * * 1-5', timezone: 'Asia/Seoul' }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'host', input: { title: 'a', message: 'b' } } });
@@ -57,6 +57,16 @@ test('automation ingress keys deduplicate redelivery by source, type and id', ()
 test('an already-running typed action is not retried automatically', () => {
   assert.equal(isIndeterminateActionError('Vibe POST failed: 409 automation action is already running'), true);
   assert.equal(isIndeterminateActionError('target host offline'), false);
+});
+
+test('an interrupted routine keeps its claim and is not retried automatically', () => {
+  const state = {
+    routineRuns: [{ id: 'run-1', idempotencyKey: 'key-1', status: 'running' }],
+    routineClaims: { 'key-1': { runId: 'run-1', status: 'running' } },
+  };
+  recoverInterruptedRoutineRuns(state);
+  assert.equal(state.routineRuns[0].status, 'exhausted');
+  assert.equal(state.routineClaims['key-1'].status, 'exhausted');
 });
 
 test('host scope denies projects and repositories unless explicitly allowed', () => {

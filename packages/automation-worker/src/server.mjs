@@ -55,6 +55,7 @@ import {
   eventMatchesRoutine,
   isIndeterminateActionError,
   normalizeRoutine,
+  recoverInterruptedRoutineRuns,
   redactEvent,
   routineRunTrigger,
   routineEventKey,
@@ -341,12 +342,7 @@ function ensureDefaults() {
       existing.config = structuredClone(rule.config);
     }
   }
-  for (const run of state.routineRuns) {
-    if (run.status === 'running') {
-      run.status = 'retrying';
-      delete state.routineClaims[run.idempotencyKey];
-    }
-  }
+  recoverInterruptedRoutineRuns(state);
 }
 
 async function route(req, res) {

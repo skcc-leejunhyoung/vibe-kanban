@@ -147,6 +147,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unfinished_action_receipt_blocks_duplicate_side_effects() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE automation_action_receipts (idempotency_key TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, response TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            .execute(&pool).await.unwrap();
+        assert_eq!(
+            begin_action(&pool, "key", "start_workspace").await.unwrap(),
+            ActionReceipt::Claimed
+        );
+        assert_eq!(
+            begin_action(&pool, "key", "start_workspace").await.unwrap(),
+            ActionReceipt::Running
+        );
+    }
+
+    #[tokio::test]
     async fn source_changes_enqueue_events_in_the_same_database_write() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
