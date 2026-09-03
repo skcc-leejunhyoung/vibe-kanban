@@ -1574,7 +1574,12 @@ impl ClaudeLogProcessor {
                             patches.push(add_system_message(status.clone(), entry_index_provider));
                         }
                     }
-                    Some("compact_boundary") => {}
+                    Some("compact_boundary") => {
+                        patches.push(add_system_message(
+                            "Context compacted".to_string(),
+                            entry_index_provider,
+                        ));
+                    }
                     // Progress-only signal emitted during redacted/extended
                     // thinking. The estimate is already surfaced in the live
                     // thinking entry (via thinking deltas), so skip it here to
@@ -3574,23 +3579,36 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].content, "compacting");
 
-        for content in [
-            "Stop hook feedback: Finish the requested verification",
-            "Context compacted",
-        ] {
-            let parsed: ClaudeJson = serde_json::from_value(serde_json::json!({
-                "type": "user",
-                "message": {
-                    "role": "user",
-                    "content": content,
-                },
-                "isMeta": true,
-            }))
-            .unwrap();
-            let entries = normalize(&parsed, "");
-            assert_eq!(entries.len(), 1);
-            assert_eq!(entries[0].content, content);
-        }
+        let compact_boundary: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": "message_2",
+            "session_id": "session_1",
+            "compact_metadata": {
+                "trigger": "auto",
+                "pre_tokens": 120000,
+            },
+        }))
+        .unwrap();
+        let entries = normalize(&compact_boundary, "");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "Context compacted");
+
+        let stop_hook_feedback: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": "Stop hook feedback: Finish the requested verification",
+            },
+            "isMeta": true,
+        }))
+        .unwrap();
+        let entries = normalize(&stop_hook_feedback, "");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].content,
+            "Stop hook feedback: Finish the requested verification"
+        );
     }
 
     #[test]
