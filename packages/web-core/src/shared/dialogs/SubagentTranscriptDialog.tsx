@@ -9,11 +9,19 @@ import {
 import { create, useModal } from '@ebay/nice-modal-react';
 import { Loader2 } from 'lucide-react';
 import { RobotIcon, UserIcon } from '@phosphor-icons/react';
-import type { SubagentControlTarget } from 'shared/types';
+import type {
+  NormalizedEntry,
+  RepoWithTargetBranch,
+  SubagentControlTarget,
+  SubagentTranscript,
+} from 'shared/types';
 import { ChatMarkdown } from '@vibe/ui/components/ChatMarkdown';
 import { defineModal } from '@/shared/lib/modals';
 import { executionProcessesApi } from '@/shared/lib/api';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
+import type { WorkspaceWithSession } from '@/shared/types/attempt';
+import type { UseResetProcessResult } from '@/features/workspace-chat/model/hooks/useResetProcess';
+import DisplayConversationEntry from '@/features/workspace-chat/ui/DisplayConversationEntry';
 
 export interface SubagentTranscriptDialogProps {
   processId: string;
@@ -21,6 +29,9 @@ export interface SubagentTranscriptDialogProps {
   title?: string;
   hostId?: string | null;
   isLive?: () => boolean;
+  workspaceWithSession: WorkspaceWithSession;
+  resetAction: UseResetProcessResult;
+  repos: RepoWithTargetBranch[];
 }
 
 export interface TranscriptMessage {
@@ -84,7 +95,9 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
   (props) => {
     const modal = useModal();
     const { t } = useTranslation();
-    const [content, setContent] = useState<string | null>(null);
+    const [transcript, setTranscript] = useState<SubagentTranscript | null>(
+      null
+    );
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
@@ -95,7 +108,7 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
           .subagentTranscript(props.processId, props.target, props.hostId)
           .then((transcript) => {
             if (!cancelled) {
-              setContent(transcript.content);
+              setTranscript(transcript);
               setError(null);
             }
           })
@@ -123,6 +136,44 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
       />
     );
 
+    const messageLabel = (role: TranscriptMessage['role']) =>
+      role === 'user'
+        ? `${t('conversation.input')} · ${t('conversation.you', {
+            ns: 'tasks',
+          })}`
+        : `${t('conversation.output')} · ${t('modelSelector.agent')}`;
+
+    const renderStructuredEntry = (entry: NormalizedEntry, index: number) => {
+      const type = entry.entry_type.type;
+      if (type === 'user_message' || type === 'assistant_message') {
+        const role = type === 'user_message' ? 'user' : 'agent';
+        return (
+          <TranscriptMessageFrame
+            key={index}
+            role={role}
+            label={messageLabel(role)}
+          >
+            {renderMarkdown(entry.content)}
+          </TranscriptMessageFrame>
+        );
+      }
+
+      return (
+        <DisplayConversationEntry
+          key={index}
+          expansionKey={`transcript:${props.processId}:${index}`}
+          executionProcessId={props.processId}
+          workspaceWithSession={props.workspaceWithSession}
+          resetAction={props.resetAction}
+          repos={props.repos}
+          entry={entry}
+          aggregatedGroup={null}
+          aggregatedDiffGroup={null}
+          aggregatedThinkingGroup={null}
+        />
+      );
+    };
+
     return (
       <Dialog
         open={modal.visible}
@@ -138,34 +189,29 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
             </DialogTitle>
           </DialogHeader>
           <div className="max-h-[70vh] overflow-y-auto px-4 py-4">
-            {error && content == null ? (
+            {error && transcript == null ? (
               <p className="text-sm text-error">
                 {t('conversation.subagent.transcriptError')}: {error}
               </p>
-            ) : content == null ? (
+            ) : transcript == null ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
               </div>
             ) : (
               <div className="space-y-4">
-                {parseTranscriptMessages(content).map((message, index) => (
-                  <TranscriptMessageFrame
-                    key={index}
-                    role={message.role}
-                    label={
-                      message.role === 'user'
-                        ? `${t('conversation.input')} · ${t(
-                            'conversation.you',
-                            { ns: 'tasks' }
-                          )}`
-                        : `${t('conversation.output')} · ${t(
-                            'modelSelector.agent'
-                          )}`
-                    }
-                  >
-                    {renderMarkdown(message.content)}
-                  </TranscriptMessageFrame>
-                ))}
+                {transcript.entries?.length
+                  ? transcript.entries.map(renderStructuredEntry)
+                  : parseTranscriptMessages(transcript.content).map(
+                      (message, index) => (
+                        <TranscriptMessageFrame
+                          key={index}
+                          role={message.role}
+                          label={messageLabel(message.role)}
+                        >
+                          {renderMarkdown(message.content)}
+                        </TranscriptMessageFrame>
+                      )
+                    )}
               </div>
             )}
           </div>

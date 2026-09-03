@@ -5,7 +5,7 @@ pub mod slash_commands;
 pub mod types;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -51,7 +51,7 @@ use crate::{
         plain_text_processor::PlainTextLogProcessor,
         utils::{
             EntryIndexProvider, images,
-            patch::{self, ConversationPatch},
+            patch::{self, ConversationPatch, extract_normalized_entry_from_patch},
             shell_command_parsing::CommandCategory,
         },
     },
@@ -861,6 +861,80 @@ pub fn task_output_to_markdown(jsonl: &str) -> String {
     } else {
         sections.join("\n\n")
     }
+}
+
+/// Normalize a background task transcript with the same entry model used by
+/// the main conversation. Replacement patches update their original slot so
+/// completed tool calls include their final status and output.
+pub fn task_output_to_entries(jsonl: &str, worktree_path: &str) -> Vec<NormalizedEntry> {
+    let mut processor = ClaudeLogProcessor::new_with_strategy(HistoryStrategy::Default);
+    let entry_index = EntryIndexProvider::default();
+    let mut entries = BTreeMap::new();
+
+    for line in jsonl.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Ok(event) = serde_json::from_str::<ClaudeJson>(line) else {
+            continue;
+        };
+
+        let direct_user_text = if let ClaudeJson::User {
+            message,
+            is_synthetic,
+            ..
+        } = &event
+            && !is_synthetic
+        {
+            message.content.as_text().cloned()
+        } else {
+            None
+        };
+
+        if let ClaudeJson::User {
+            message,
+            is_synthetic,
+            ..
+        } = &event
+            && !is_synthetic
+        {
+            let mut parts = message
+                .content
+                .as_text()
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            parts.extend(message.content.items().filter_map(|item| match item {
+                ClaudeContentItem::Text { text } if !text.trim().is_empty() => {
+                    Some(text.trim().to_string())
+                }
+                _ => None,
+            }));
+            if !parts.is_empty() {
+                entries.insert(
+                    entry_index.next(),
+                    NormalizedEntry {
+                        timestamp: None,
+                        entry_type: NormalizedEntryType::UserMessage,
+                        content: parts.join("\n\n"),
+                        metadata: None,
+                    },
+                );
+            }
+        }
+
+        for patch in processor.normalize_entries(&event, worktree_path, &entry_index) {
+            if let Some((index, entry)) = extract_normalized_entry_from_patch(&patch) {
+                // The normalizer treats Claude's direct string user payload as
+                // a system line; in a transcript it is the subagent's input.
+                if direct_user_text.is_some()
+                    && matches!(entry.entry_type, NormalizedEntryType::SystemMessage)
+                {
+                    continue;
+                }
+                entries.insert(index, entry);
+            }
+        }
+    }
+
+    entries.into_values().collect()
 }
 
 pub fn claude_projects_dir() -> Option<PathBuf> {
@@ -5139,6 +5213,46 @@ mod tests {
             task_output_to_markdown(""),
             "_No transcript content._".to_string()
         );
+    }
+
+    #[test]
+    fn task_output_entries_preserve_messages_thinking_and_tool_results() {
+        let jsonl = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"Run the checks"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Inspecting"},{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"{\"output\":\"ok\",\"exitCode\":0}","is_error":false}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}"#,
+        );
+
+        let entries = task_output_to_entries(jsonl, "/tmp");
+        assert_eq!(entries.len(), 4);
+        assert!(matches!(
+            &entries[0],
+            NormalizedEntry {
+                entry_type: NormalizedEntryType::UserMessage,
+                content,
+                ..
+            } if content == "Run the checks"
+        ));
+        assert!(matches!(
+            &entries[1].entry_type,
+            NormalizedEntryType::Thinking
+        ));
+        assert!(matches!(
+            &entries[2].entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::CommandRun { result: Some(result), .. },
+                status: ToolStatus::Success,
+                ..
+            } if result.output.as_deref() == Some("ok")
+        ));
+        assert!(matches!(
+            &entries[3].entry_type,
+            NormalizedEntryType::AssistantMessage
+        ));
     }
 
     #[test]

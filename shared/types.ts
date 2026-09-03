@@ -387,9 +387,13 @@ export type TagSearchParams = { search: string | null, };
 
 export type SubagentTranscript = {
 /**
- * Flattened transcript markdown.
+ * Flattened transcript markdown for older clients.
  */
-content: string, };
+content: string,
+/**
+ * Structured entries rendered by the same components as the main chat.
+ */
+entries: Array<NormalizedEntry>, };
 
 export type TokenResponse = { access_token: string, expires_at: string | null, };
 

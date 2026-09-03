@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
     time::Duration,
@@ -16,7 +16,7 @@ use codex_app_server_protocol::{
     ItemStartedNotification as AppItemStartedNotification, JSONRPCNotification, JSONRPCRequest,
     JSONRPCResponse, McpToolCallProgressNotification, McpToolCallStatus as AppMcpToolCallStatus,
     PatchApplyStatus as AppPatchApplyStatus, ServerNotification, ServerRequest,
-    SubAgentActivityKind as AppSubAgentActivityKind, ThreadForkResponse,
+    SubAgentActivityKind as AppSubAgentActivityKind, Thread as AppThread, ThreadForkResponse,
     ThreadItem as AppThreadItem, ThreadStartResponse, ThreadTokenUsageUpdatedNotification,
     ToolRequestUserInputQuestion,
 };
@@ -59,7 +59,10 @@ use crate::{
         plain_text_processor::PlainTextLogProcessor,
         utils::{
             ConversationPatch, EntryIndexProvider, images,
-            patch::{add_normalized_entry, replace_normalized_entry, upsert_normalized_entry},
+            patch::{
+                add_normalized_entry, extract_normalized_entry_from_patch,
+                replace_normalized_entry, upsert_normalized_entry,
+            },
             shell_command_parsing::{CommandCategory, unwrap_shell_command},
         },
     },
@@ -71,6 +74,81 @@ trait ToNormalizedEntry {
 
 trait ToNormalizedEntryOpt {
     fn to_normalized_entry_opt(&self) -> Option<NormalizedEntry>;
+}
+
+/// Replay completed `thread/read` items through the normalizer used by the
+/// live chat and return its final entry state (replacement patches win).
+pub fn normalize_thread_transcript(
+    thread: &AppThread,
+    worktree_path: &str,
+) -> Vec<NormalizedEntry> {
+    let msg_store = Arc::new(MsgStore::new_for_replay());
+    let entry_index = EntryIndexProvider::default();
+    let mut state = LogState::new(entry_index.clone());
+
+    for turn in &thread.turns {
+        for item in &turn.items {
+            if let AppThreadItem::UserMessage { content, .. } = item {
+                let content = content
+                    .iter()
+                    .filter_map(|input| match input {
+                        codex_app_server_protocol::UserInput::Text { text, .. } => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !content.is_empty() {
+                    add_normalized_entry(
+                        &msg_store,
+                        &entry_index,
+                        NormalizedEntry {
+                            timestamp: None,
+                            entry_type: NormalizedEntryType::UserMessage,
+                            content,
+                            metadata: None,
+                        },
+                    );
+                }
+                continue;
+            }
+
+            handle_direct_item_started(
+                AppItemStartedNotification {
+                    item: item.clone(),
+                    thread_id: thread.id.clone(),
+                    turn_id: turn.id.clone(),
+                    started_at_ms: 0,
+                },
+                &mut state,
+                &msg_store,
+                &entry_index,
+                worktree_path,
+            );
+            handle_direct_item_completed(
+                AppItemCompletedNotification {
+                    item: item.clone(),
+                    thread_id: thread.id.clone(),
+                    turn_id: turn.id.clone(),
+                    completed_at_ms: 0,
+                },
+                &mut state,
+                &msg_store,
+                &entry_index,
+                worktree_path,
+            );
+        }
+    }
+
+    msg_store
+        .get_replay_patches()
+        .into_iter()
+        .flatten()
+        .filter_map(|patch| extract_normalized_entry_from_patch(&patch))
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]

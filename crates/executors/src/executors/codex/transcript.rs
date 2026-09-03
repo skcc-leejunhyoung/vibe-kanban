@@ -1,7 +1,13 @@
-//! Flatten a Codex `thread/read` response into display markdown for the
-//! shared subagent transcript viewer.
+//! Convert a Codex `thread/read` response for the shared subagent transcript
+//! viewer.
 
 use codex_app_server_protocol::{Thread, ThreadItem, UserInput};
+
+use crate::{executors::codex::normalize_logs::normalize_thread_transcript, logs::NormalizedEntry};
+
+pub fn thread_transcript_entries(thread: &Thread, worktree_path: &str) -> Vec<NormalizedEntry> {
+    normalize_thread_transcript(thread, worktree_path)
+}
 
 pub fn thread_transcript_markdown(thread: &Thread) -> String {
     let mut messages: Vec<(&str, String)> = Vec::new();
@@ -97,6 +103,7 @@ fn thread_item_markdown(item: &ThreadItem) -> Option<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logs::{ActionType, CommandExitStatus, NormalizedEntryType, ToolStatus};
 
     fn thread_with_items(items: Vec<ThreadItem>) -> Thread {
         // Thread has many required fields; deserialize a minimal JSON skeleton
@@ -143,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn flattens_messages_commands_and_reasoning() {
+    fn flattens_and_normalizes_messages_commands_and_reasoning() {
         let items: Vec<ThreadItem> = vec![
             serde_json::from_value(serde_json::json!({
                 "type": "userMessage",
@@ -167,8 +174,8 @@ mod tests {
                 "processId": null,
                 "status": "completed",
                 "commandActions": [],
-                "aggregatedOutput": null,
-                "exitCode": 1,
+                "aggregatedOutput": "ok",
+                "exitCode": 0,
                 "durationMs": null,
             }))
             .unwrap(),
@@ -180,16 +187,47 @@ mod tests {
             .unwrap(),
         ];
 
-        let markdown = thread_transcript_markdown(&thread_with_items(items));
+        let thread = thread_with_items(items);
         assert_eq!(
-            markdown,
-            "**User**\n\nFix the bug\n\n**Agent**\n\n_Thinking:_ Scanning the module\n\n`$ cargo test` (exit 1)\n\nDone."
+            thread_transcript_markdown(&thread),
+            "**User**\n\nFix the bug\n\n**Agent**\n\n_Thinking:_ Scanning the module\n\n`$ cargo test`\n\nDone."
         );
+
+        let entries = thread_transcript_entries(&thread, "/");
+        assert_eq!(entries.len(), 4);
+        assert!(matches!(
+            &entries[0].entry_type,
+            NormalizedEntryType::UserMessage
+        ));
+        assert!(matches!(
+            &entries[1].entry_type,
+            NormalizedEntryType::Thinking
+        ));
+        assert!(matches!(
+            &entries[2].entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::CommandRun { result: Some(result), .. },
+                status: ToolStatus::Success,
+                ..
+            } if result.output.as_deref() == Some("ok")
+                && matches!(
+                    &result.exit_status,
+                    Some(CommandExitStatus::ExitCode { code: 0 })
+                )
+        ));
+        assert!(matches!(
+            &entries[3].entry_type,
+            NormalizedEntryType::AssistantMessage
+        ));
     }
 
     #[test]
     fn empty_thread_yields_placeholder() {
-        let markdown = thread_transcript_markdown(&thread_with_items(vec![]));
-        assert_eq!(markdown, "_No transcript content._");
+        let thread = thread_with_items(vec![]);
+        assert_eq!(
+            thread_transcript_markdown(&thread),
+            "_No transcript content._"
+        );
+        assert!(thread_transcript_entries(&thread, "/").is_empty());
     }
 }

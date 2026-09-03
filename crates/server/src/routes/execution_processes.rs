@@ -21,9 +21,10 @@ use deployment::Deployment;
 use executors::{
     executors::{
         BaseCodingAgent, CodingAgent, StandardCodingAgentExecutor, SubagentLiveHandle,
-        claude::task_output_to_markdown, codex::transcript::thread_transcript_markdown,
+        claude::{task_output_to_entries, task_output_to_markdown},
+        codex::transcript::{thread_transcript_entries, thread_transcript_markdown},
     },
-    logs::SubagentControlTarget,
+    logs::{NormalizedEntry, NormalizedEntryType, SubagentControlTarget},
     profile::ExecutorConfigs,
 };
 use futures_util::{StreamExt, TryStreamExt};
@@ -295,8 +296,10 @@ async fn stop_execution_process(
 
 #[derive(Debug, Serialize, TS)]
 pub struct SubagentTranscript {
-    /// Flattened transcript markdown.
+    /// Flattened transcript markdown for older clients.
     pub content: String,
+    /// Structured entries rendered by the same components as the main chat.
+    pub entries: Vec<NormalizedEntry>,
 }
 
 /// Keep only the tail of oversized transcripts; the viewer is a dialog, not a
@@ -575,7 +578,15 @@ async fn subagent_transcript(
         ));
     }
 
-    let content = match target {
+    let worktree_path = execution_process
+        .parent_workspace_and_session(&deployment.db().pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|(workspace, _)| workspace.container_ref)
+        .unwrap_or_default();
+
+    let (content, entries) = match target {
         SubagentControlTarget::Codex { thread_id } => {
             let thread = match deployment
                 .container()
@@ -600,7 +611,10 @@ async fn subagent_transcript(
                         .await?
                 }
             };
-            thread_transcript_markdown(&thread)
+            (
+                thread_transcript_markdown(&thread),
+                thread_transcript_entries(&thread, &worktree_path),
+            )
         }
         SubagentControlTarget::ClaudeCode { task_id, .. } => {
             // Ignore any client-sent output_file; derive a completed path from
@@ -621,15 +635,26 @@ async fn subagent_transcript(
                     })?;
             let text = String::from_utf8_lossy(&bytes);
             let mut content = task_output_to_markdown(&text);
+            let mut entries = task_output_to_entries(&text, &worktree_path);
             if truncated {
                 content = format!("_… transcript truncated …_\n\n{content}");
+                entries.insert(
+                    0,
+                    NormalizedEntry {
+                        timestamp: None,
+                        entry_type: NormalizedEntryType::SystemMessage,
+                        content: "… transcript truncated …".to_string(),
+                        metadata: None,
+                    },
+                );
             }
-            content
+            (content, entries)
         }
     };
 
     Ok(ResponseJson(ApiResponse::success(SubagentTranscript {
         content,
+        entries,
     })))
 }
 

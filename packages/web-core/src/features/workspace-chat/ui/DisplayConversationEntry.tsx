@@ -37,7 +37,6 @@ import { attachmentsApi, executionProcessesApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
-import { SubagentTranscriptDialog } from '@/shared/dialogs/SubagentTranscriptDialog';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -261,6 +260,9 @@ function renderToolUseEntry(
         status={status}
         workspaceId={workspaceWithSession?.id}
         sessionId={sessionId}
+        workspaceWithSession={workspaceWithSession}
+        resetAction={props.resetAction}
+        repos={repos}
       />
     );
   }
@@ -1195,6 +1197,9 @@ function SubagentEntry({
   status,
   workspaceId,
   sessionId,
+  workspaceWithSession,
+  resetAction,
+  repos,
 }: {
   description: string;
   subagentType: string | null | undefined;
@@ -1207,6 +1212,9 @@ function SubagentEntry({
   status: ToolStatus;
   workspaceId: string | undefined;
   sessionId: string | undefined;
+  workspaceWithSession: WorkspaceWithSession;
+  resetAction: UseResetProcessResult;
+  repos: RepoWithTargetBranch[];
 }) {
   // Only auto-expand if there's a result to show
   const hasResult = Boolean(result?.value);
@@ -1228,14 +1236,28 @@ function SubagentEntry({
 
   const handleOpenTranscript = useCallback(() => {
     if (!control) return;
-    void SubagentTranscriptDialog.show({
-      processId: executionProcessId,
-      target: subagentControlTarget(control),
-      title: description,
-      hostId,
-      isLive: () => liveRef.current,
-    });
-  }, [control, executionProcessId, description, hostId]);
+    void import('@/shared/dialogs/SubagentTranscriptDialog').then(
+      ({ SubagentTranscriptDialog }) =>
+        SubagentTranscriptDialog.show({
+          processId: executionProcessId,
+          target: subagentControlTarget(control),
+          title: description,
+          hostId,
+          isLive: () => liveRef.current,
+          workspaceWithSession,
+          resetAction,
+          repos,
+        })
+    );
+  }, [
+    control,
+    executionProcessId,
+    description,
+    hostId,
+    workspaceWithSession,
+    resetAction,
+    repos,
+  ]);
 
   const handleStop = useCallback(async () => {
     if (!control || stopping) return;
