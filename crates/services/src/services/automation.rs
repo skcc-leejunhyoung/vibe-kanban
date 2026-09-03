@@ -168,9 +168,15 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO execution_processes (id, session_id, run_reason, status) VALUES (?, ?, 'codingagent', 'running')")
+        sqlx::query("INSERT INTO execution_processes (id, session_id, run_reason, status, executor_action) VALUES (?, ?, 'codingagent', 'running', ?)")
             .bind(process_id)
             .bind(session_id)
+            .bind(serde_json::json!({
+                "automation_origin": {
+                    "routine_id": "routine-child",
+                    "routine_chain": ["routine-parent", "routine-child"]
+                }
+            }).to_string())
             .execute(&pool)
             .await
             .unwrap();
@@ -201,6 +207,16 @@ mod tests {
             payloads
                 .iter()
                 .any(|payload| payload.contains(&process_id.to_string()))
+        );
+        let execution_payload: serde_json::Value = payloads
+            .iter()
+            .find(|payload| payload.contains(&process_id.to_string()))
+            .and_then(|payload| serde_json::from_str(payload).ok())
+            .unwrap();
+        assert_eq!(execution_payload["originRoutineId"], "routine-child");
+        assert_eq!(
+            execution_payload["routineChain"],
+            serde_json::json!(["routine-parent", "routine-child"])
         );
 
         let rolled_back_workspace_id = Uuid::new_v4();

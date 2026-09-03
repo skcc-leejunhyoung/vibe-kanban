@@ -845,7 +845,7 @@ async function runDueRoutines() {
 }
 
 async function dispatchRoutineEvent(event) {
-  event = { ...event, ...(state.routineOrigins[event.id] || {}) };
+  event = { ...(state.routineOrigins[event.id] || {}), ...event };
   for (const routine of state.routines || []) {
     if (!eventMatchesRoutine(routine, event)) continue;
     try {

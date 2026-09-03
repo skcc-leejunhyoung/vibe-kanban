@@ -31,7 +31,7 @@ use executors::executors::qa_mock::QaMockExecutor;
 use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
-        ExecutorAction, ExecutorActionType,
+        AutomationOrigin, ExecutorAction, ExecutorActionType,
         coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
@@ -1286,6 +1286,17 @@ pub trait ContainerService {
         executor_config: ExecutorConfig,
         prompt: String,
     ) -> Result<ExecutionProcess, ContainerError> {
+        self.start_workspace_with_origin(workspace, executor_config, prompt, None)
+            .await
+    }
+
+    async fn start_workspace_with_origin(
+        &self,
+        workspace: &Workspace,
+        executor_config: ExecutorConfig,
+        prompt: String,
+        automation_origin: Option<AutomationOrigin>,
+    ) -> Result<ExecutionProcess, ContainerError> {
         // Ensure the container/worktree exists (idempotent): reuse an existing
         // worktree when present, otherwise create one. Review-mode workspaces
         // arrive with the worktree already materialized and checked out on the
@@ -1340,7 +1351,8 @@ pub trait ContainerService {
                 handoff_user_prompt: None,
             }),
             cleanup_action.map(Box::new),
-        );
+        )
+        .with_automation_origin(automation_origin.clone());
 
         let execution_process = if workspace.in_place {
             // Skip all setup-script orchestration; run the coding agent directly.
@@ -1359,7 +1371,7 @@ pub trait ContainerService {
                         .start_execution(
                             &workspace,
                             &session,
-                            &action,
+                            &action.with_automation_origin(automation_origin.clone()),
                             &ExecutionProcessRunReason::SetupScript,
                         )
                         .await
@@ -1376,7 +1388,8 @@ pub trait ContainerService {
             .await?
         } else {
             // Any sequential: chain ALL setups → coding agent via next_action
-            let main_action = Self::build_sequential_setup_chain(&repos_with_setup, coding_action);
+            let main_action = Self::build_sequential_setup_chain(&repos_with_setup, coding_action)
+                .with_automation_origin(automation_origin);
             self.start_execution(
                 &workspace,
                 &session,
@@ -1405,6 +1418,7 @@ pub trait ContainerService {
         workspace: &Workspace,
         executor_config: ExecutorConfig,
         prompt: String,
+        automation_origin: Option<AutomationOrigin>,
     ) -> Result<(Session, ExecutionProcess, ExecutorAction), ContainerError> {
         // Ensure the container/worktree exists immediately so other endpoints
         // (diff, attachment import, status, etc.) called by the frontend
@@ -1458,6 +1472,7 @@ pub trait ContainerService {
                 ExecutionProcessRunReason::SetupScript,
             )
         };
+        let main_action = main_action.with_automation_origin(automation_origin);
 
         let record = self
             .create_execution_record(&workspace, &session, &main_action, &run_reason)

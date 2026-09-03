@@ -1159,7 +1159,11 @@ reasoning_id?: string | null,
 /**
  * Permission policy override
  */
-permission_policy?: PermissionPolicy | null, };
+permission_policy?: PermissionPolicy | null,
+/**
+ * Codex sandbox override for this run.
+ */
+sandbox_policy?: SandboxMode | null, };
 
 export type ScriptContext = "SetupScript" | "CleanupScript" | "ArchiveScript" | "DevServer" | "ToolInstallScript";
 

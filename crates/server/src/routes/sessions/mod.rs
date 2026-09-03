@@ -337,6 +337,7 @@ pub async fn follow_up(
     Json(payload): Json<CreateFollowUpAttempt>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
     let pool = deployment.db().pool.clone();
+    let origin = crate::routes::automation::automation_origin(&headers)?;
     let key = match crate::routes::automation::claim_action::<ApiResponse<ExecutionProcess>>(
         &pool,
         &headers,
@@ -349,7 +350,8 @@ pub async fn follow_up(
             return Ok(ResponseJson(response));
         }
     };
-    let result = follow_up_inner(Extension(session), State(deployment), Json(payload)).await;
+    let result =
+        follow_up_inner(Extension(session), State(deployment), Json(payload), origin).await;
     match &result {
         Ok(response) => {
             crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
@@ -365,6 +367,7 @@ async fn follow_up_inner(
     Extension(mut session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateFollowUpAttempt>,
+    automation_origin: Option<executors::actions::AutomationOrigin>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
     let pool = &deployment.db().pool;
 
@@ -470,7 +473,8 @@ async fn follow_up_inner(
         })
     };
 
-    let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
+    let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new))
+        .with_automation_origin(automation_origin);
 
     // Blocker gating: if the workspace is linked to an upstream issue (task_id)
     // and that issue has unresolved blockers, create the execution_process row

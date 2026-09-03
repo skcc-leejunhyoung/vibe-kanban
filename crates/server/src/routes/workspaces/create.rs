@@ -675,6 +675,7 @@ pub async fn create_and_start_workspace(
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {
     let pool = deployment.db().pool.clone();
+    let origin = crate::routes::automation::automation_origin(&headers)?;
     let key = match crate::routes::automation::claim_action::<
         ApiResponse<CreateAndStartWorkspaceResponse>,
     >(&pool, &headers, "start_workspace")
@@ -685,7 +686,7 @@ pub async fn create_and_start_workspace(
             return Ok(ResponseJson(response));
         }
     };
-    let result = create_and_start_workspace_inner(State(deployment), Json(payload)).await;
+    let result = create_and_start_workspace_inner(State(deployment), Json(payload), origin).await;
     match &result {
         Ok(response) => {
             crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
@@ -700,6 +701,7 @@ pub async fn create_and_start_workspace(
 async fn create_and_start_workspace_inner(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
+    automation_origin: Option<executors::actions::AutomationOrigin>,
 ) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {
     let CreateAndStartWorkspaceRequest {
         name,
@@ -870,7 +872,12 @@ async fn create_and_start_workspace_inner(
     let execution_process = if let Some((task_id, blocker_count)) = gated_blocker {
         let (session, record, main_action) = deployment
             .container()
-            .start_workspace_deferred(&workspace, executor_config.clone(), workspace_prompt)
+            .start_workspace_deferred(
+                &workspace,
+                executor_config.clone(),
+                workspace_prompt,
+                automation_origin,
+            )
             .await?;
 
         match PendingExecutionStart::create(
@@ -907,7 +914,12 @@ async fn create_and_start_workspace_inner(
     } else {
         deployment
             .container()
-            .start_workspace(&workspace, executor_config.clone(), workspace_prompt)
+            .start_workspace_with_origin(
+                &workspace,
+                executor_config.clone(),
+                workspace_prompt,
+                automation_origin,
+            )
             .await?
     };
 

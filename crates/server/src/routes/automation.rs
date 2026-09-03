@@ -22,6 +22,7 @@ use axum::{
 };
 use db::models::execution_process::ExecutionProcess;
 use deployment::Deployment;
+use executors::actions::AutomationOrigin;
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use services::services::container::ContainerService;
@@ -116,6 +117,42 @@ pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, Api
         ));
     }
     Ok(Some(value.to_string()))
+}
+
+pub(crate) fn automation_origin(headers: &HeaderMap) -> Result<Option<AutomationOrigin>, ApiError> {
+    let Some(routine_id) = headers.get("x-vibe-routine-id") else {
+        return Ok(None);
+    };
+    let routine_id = routine_id
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("invalid x-vibe-routine-id header".to_string()))?
+        .trim();
+    if routine_id.is_empty() || routine_id.len() > 200 {
+        return Err(ApiError::BadRequest(
+            "x-vibe-routine-id must contain 1-200 characters".to_string(),
+        ));
+    }
+    let routine_chain = headers
+        .get("x-vibe-routine-chain")
+        .map(|value| {
+            let value = value.to_str().map_err(|_| {
+                ApiError::BadRequest("invalid x-vibe-routine-chain header".to_string())
+            })?;
+            serde_json::from_str::<Vec<String>>(value).map_err(|_| {
+                ApiError::BadRequest("x-vibe-routine-chain must be a JSON string array".to_string())
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if routine_chain.len() > 32 || routine_chain.iter().any(|item| item.len() > 200) {
+        return Err(ApiError::BadRequest(
+            "x-vibe-routine-chain exceeds its size limit".to_string(),
+        ));
+    }
+    Ok(Some(AutomationOrigin {
+        routine_id: routine_id.to_string(),
+        routine_chain,
+    }))
 }
 
 pub(crate) enum ActionClaim<T> {
