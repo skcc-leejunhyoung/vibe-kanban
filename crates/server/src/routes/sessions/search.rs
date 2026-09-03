@@ -22,14 +22,23 @@ use crate::{DeploymentImpl, error::ApiError};
 const DEFAULT_SEARCH_LIMIT: i64 = 20;
 const MAX_SEARCH_LIMIT: i64 = 100;
 const DEFAULT_SLICE_RADIUS: i64 = 5;
-const MAX_SLICE_RADIUS: i64 = 50;
+/// Bounds the DB fetch only; the response size is governed by the byte budget.
+/// Large enough to cover any indexed session (the biggest holds ~2.2k rows).
+const MAX_SLICE_RADIUS: i64 = 2000;
+/// Content bytes a single slice response may carry. Measured on a real index,
+/// 88% of sessions fit whole under this, so "read the whole session" is one
+/// call for most and a short re-anchored walk for the rest.
+const SLICE_BUDGET_BYTES: usize = 64 * 1024;
 /// Bytes of context kept on each side of the first match in a snippet.
 const SNIPPET_CONTEXT_BYTES: usize = 160;
 
 #[derive(Debug, Deserialize)]
 pub struct SessionSearchQuery {
-    pub q: String,
+    /// Substring to match. May be omitted when `session_id` is given, which
+    /// then lists that session's entries (e.g. its turn prompts).
+    pub q: Option<String>,
     pub repo_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
     /// Comma-separated entry types, e.g. `user_message,tool_use`.
     pub entry_types: Option<String>,
     pub limit: Option<i64>,
@@ -54,10 +63,10 @@ pub async fn search_session_messages(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<SessionSearchQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<SessionSearchHit>>>, ApiError> {
-    let q = query.q.trim();
-    if q.is_empty() {
+    let q = query.q.as_deref().unwrap_or_default().trim();
+    if q.is_empty() && query.session_id.is_none() {
         return Err(ApiError::BadRequest(
-            "Query parameter 'q' is required and cannot be empty".to_string(),
+            "Query parameter 'q' is required unless 'session_id' is given".to_string(),
         ));
     }
     let entry_types_json = query.entry_types.as_deref().and_then(|raw| {
@@ -81,6 +90,7 @@ pub async fn search_session_messages(
         &deployment.db().pool,
         q,
         query.repo_id,
+        query.session_id,
         entry_types_json,
         limit,
     )
@@ -113,11 +123,20 @@ pub struct SessionSliceQuery {
     pub radius: Option<i64>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SessionSliceResponse {
+    pub entries: Vec<SessionMessageSliceRow>,
+    /// Entries within `radius` existed before/after `entries` but were cut by
+    /// the byte budget; re-anchor on the first/last returned entry to continue.
+    pub truncated_before: bool,
+    pub truncated_after: bool,
+}
+
 pub async fn get_session_message_slice(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<SessionSliceQuery>,
-) -> Result<ResponseJson<ApiResponse<Vec<SessionMessageSliceRow>>>, ApiError> {
+) -> Result<ResponseJson<ApiResponse<SessionSliceResponse>>, ApiError> {
     let radius = query
         .radius
         .unwrap_or(DEFAULT_SLICE_RADIUS)
@@ -130,7 +149,59 @@ pub async fn get_session_message_slice(
         radius,
     )
     .await?;
-    Ok(ResponseJson(ApiResponse::success(rows)))
+    let hit = rows
+        .iter()
+        .position(|r| r.execution_id == query.execution_id && r.entry_index == query.entry_index);
+    Ok(ResponseJson(ApiResponse::success(apply_slice_budget(
+        rows,
+        hit,
+        SLICE_BUDGET_BYTES,
+    ))))
+}
+
+/// Keep `rows` (session order, hit at `hit`) within `budget` content bytes by
+/// growing outward from the hit one entry per side at a time, so the hit and
+/// its nearest context always survive and the far edges are cut first. The hit
+/// itself is kept even if it alone exceeds the budget.
+fn apply_slice_budget(
+    rows: Vec<SessionMessageSliceRow>,
+    hit: Option<usize>,
+    budget: usize,
+) -> SessionSliceResponse {
+    let Some(hit) = hit else {
+        return SessionSliceResponse {
+            entries: Vec::new(),
+            truncated_before: false,
+            truncated_after: false,
+        };
+    };
+    let (mut lo, mut hi) = (hit, hit);
+    let mut used = rows[hit].content.len();
+    loop {
+        let mut grew = false;
+        if lo > 0 && used + rows[lo - 1].content.len() <= budget {
+            lo -= 1;
+            used += rows[lo].content.len();
+            grew = true;
+        }
+        if hi + 1 < rows.len() && used + rows[hi + 1].content.len() <= budget {
+            hi += 1;
+            used += rows[hi].content.len();
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
+    }
+    let truncated_after = hi + 1 < rows.len();
+    let mut entries = rows;
+    entries.truncate(hi + 1);
+    entries.drain(..lo);
+    SessionSliceResponse {
+        entries,
+        truncated_before: lo > 0,
+        truncated_after,
+    }
 }
 
 /// Trim `content` to a window around the first (case-insensitive) match of
@@ -170,6 +241,52 @@ fn snippet_around_match(content: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(i: i64, bytes: usize) -> SessionMessageSliceRow {
+        SessionMessageSliceRow {
+            execution_id: Uuid::nil(),
+            entry_index: i,
+            entry_type: "assistant_message".to_string(),
+            tool_name: None,
+            content: "x".repeat(bytes),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn slice_budget_grows_outward_from_hit_and_flags_cut_edges() {
+        // 7 rows of 10 bytes, hit in the middle, budget for 5 rows.
+        let rows = (0..7).map(|i| row(i, 10)).collect();
+        let out = apply_slice_budget(rows, Some(3), 50);
+        let kept: Vec<i64> = out.entries.iter().map(|r| r.entry_index).collect();
+        assert_eq!(kept, vec![1, 2, 3, 4, 5]);
+        assert!(out.truncated_before && out.truncated_after);
+
+        // Hit at the start: the whole budget goes forward, nothing to cut before.
+        let rows = (0..7).map(|i| row(i, 10)).collect();
+        let out = apply_slice_budget(rows, Some(0), 35);
+        let kept: Vec<i64> = out.entries.iter().map(|r| r.entry_index).collect();
+        assert_eq!(kept, vec![0, 1, 2]);
+        assert!(!out.truncated_before && out.truncated_after);
+
+        // Everything fits: no flags.
+        let rows = (0..3).map(|i| row(i, 10)).collect();
+        let out = apply_slice_budget(rows, Some(1), 1000);
+        assert_eq!(out.entries.len(), 3);
+        assert!(!out.truncated_before && !out.truncated_after);
+
+        // A huge neighbour blocks one side only; the hit is always kept.
+        let rows = vec![row(0, 500), row(1, 10), row(2, 10)];
+        let out = apply_slice_budget(rows, Some(1), 30);
+        let kept: Vec<i64> = out.entries.iter().map(|r| r.entry_index).collect();
+        assert_eq!(kept, vec![1, 2]);
+        assert!(out.truncated_before && !out.truncated_after);
+        let out = apply_slice_budget(vec![row(0, 500)], Some(0), 30);
+        assert_eq!(out.entries.len(), 1, "oversized hit is still returned");
+
+        // Unknown anchor yields nothing.
+        assert!(apply_slice_budget(Vec::new(), None, 30).entries.is_empty());
+    }
 
     #[test]
     fn snippet_centers_on_korean_match_at_char_boundaries() {

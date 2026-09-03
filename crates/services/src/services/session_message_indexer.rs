@@ -107,6 +107,12 @@ pub fn collect_indexable_rows<'a>(
 /// Map a normalized entry to an index row. Only conversation-shaped entries
 /// are indexed; UI/status entries (loading, token usage, …) and tool result
 /// payloads (which live in entry metadata, not `content`) are excluded.
+///
+/// System messages are excluded too: measured over a real index they were 17%
+/// of all rows and none were worth a search — CLI spinner lines ("requesting"),
+/// hook/status events, model banners, compaction notices, unparsed-JSON dumps
+/// and half-megabyte skill bodies. Executor failures are `ErrorMessage`, which
+/// stays indexed.
 fn to_row(index: usize, entry: NormalizedEntry) -> Option<NewSessionMessage> {
     let (entry_type, tool_name) = match &entry.entry_type {
         NormalizedEntryType::UserMessage => ("user_message", None),
@@ -116,10 +122,10 @@ fn to_row(index: usize, entry: NormalizedEntry) -> Option<NewSessionMessage> {
         NormalizedEntryType::AssistantMessage => ("assistant_message", None),
         NormalizedEntryType::Thinking => ("thinking", None),
         NormalizedEntryType::ToolUse { tool_name, .. } => ("tool_use", Some(tool_name.clone())),
-        NormalizedEntryType::SystemMessage => ("system_message", None),
         NormalizedEntryType::ErrorMessage { .. } => ("error_message", None),
         NormalizedEntryType::UserAnsweredQuestions { .. } => ("user_answered_questions", None),
-        NormalizedEntryType::Loading
+        NormalizedEntryType::SystemMessage
+        | NormalizedEntryType::Loading
         | NormalizedEntryType::NextAction { .. }
         | NormalizedEntryType::TokenUsageInfo(_)
         | NormalizedEntryType::RateLimitInfo(_)
@@ -137,12 +143,7 @@ fn to_row(index: usize, entry: NormalizedEntry) -> Option<NewSessionMessage> {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    // Lines an executor could not parse are surfaced as system messages
-    // carrying the raw JSON; that is noise (and can be tens of KB per row).
-    if content.is_empty()
-        || (matches!(entry.entry_type, NormalizedEntryType::SystemMessage)
-            && content.starts_with("Unrecognized JSON message"))
-    {
+    if content.is_empty() {
         return None;
     }
     Some(NewSessionMessage {
@@ -321,15 +322,37 @@ mod tests {
     }
 
     #[test]
-    fn unparsed_json_system_messages_are_skipped() {
-        let patches = [ConversationPatch::add_normalized_entry(
-            0,
-            entry(
-                NormalizedEntryType::SystemMessage,
-                "Unrecognized JSON message: {\"id\":1}",
+    fn system_messages_are_skipped_but_errors_are_kept() {
+        let patches = [
+            ConversationPatch::add_normalized_entry(
+                0,
+                entry(NormalizedEntryType::SystemMessage, "requesting"),
             ),
-        )];
-        assert!(collect_indexable_rows(patches.iter()).is_empty());
+            ConversationPatch::add_normalized_entry(
+                1,
+                entry(NormalizedEntryType::SystemMessage, "System: hook_started"),
+            ),
+            ConversationPatch::add_normalized_entry(
+                2,
+                entry(
+                    NormalizedEntryType::SystemMessage,
+                    "Unrecognized JSON message: {\"id\":1}",
+                ),
+            ),
+            ConversationPatch::add_normalized_entry(
+                3,
+                entry(
+                    NormalizedEntryType::ErrorMessage {
+                        error_type: executors::logs::NormalizedEntryError::Other,
+                    },
+                    "OAuth session expired",
+                ),
+            ),
+        ];
+        let rows = collect_indexable_rows(patches.iter());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry_index, 3);
+        assert_eq!(rows[0].entry_type, "error_message");
     }
 
     #[test]

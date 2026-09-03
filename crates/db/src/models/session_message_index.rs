@@ -91,14 +91,16 @@ impl SessionMessageIndex {
         tx.commit().await
     }
 
-    /// Substring search over indexed conversation entries, newest first.
-    /// `entry_types_json` is a JSON array of entry_type strings, e.g.
-    /// `["user_message","tool_use"]`.
+    /// Substring search over indexed conversation entries, newest first. An
+    /// empty `query` matches every row (useful with `session_id` to list a
+    /// session's turns). `entry_types_json` is a JSON array of entry_type
+    /// strings, e.g. `["user_message","tool_use"]`.
     // ponytail: LIKE '%q%' full scan — upgrade to FTS5 if it measurably slows.
     pub async fn search(
         pool: &SqlitePool,
         query: &str,
         repo_id: Option<Uuid>,
+        session_id: Option<Uuid>,
         entry_types_json: Option<String>,
         limit: i64,
     ) -> Result<Vec<SessionMessageHit>, sqlx::Error> {
@@ -129,13 +131,15 @@ impl SessionMessageIndex {
                      SELECT 1 FROM workspace_repos wr
                      WHERE wr.workspace_id = s.workspace_id AND wr.repo_id = $2
                  ))
-                 AND ($3 IS NULL OR smi.entry_type IN (
-                     SELECT je.value FROM json_each($3) je
+                 AND ($3 IS NULL OR smi.session_id = $3)
+                 AND ($4 IS NULL OR smi.entry_type IN (
+                     SELECT je.value FROM json_each($4) je
                  ))
                ORDER BY smi.created_at DESC, smi.execution_id, smi.entry_index
-               LIMIT $4"#,
+               LIMIT $5"#,
             pattern,
             repo_id,
+            session_id,
             entry_types_json,
             limit
         )
@@ -296,7 +300,7 @@ mod tests {
         .unwrap();
 
         // Substring search inside a Korean word, newest hit first.
-        let hits = SessionMessageIndex::search(&pool, "결정", None, None, 10)
+        let hits = SessionMessageIndex::search(&pool, "결정", None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(hits.len(), 1);
@@ -305,13 +309,13 @@ mod tests {
         assert_eq!(hits[0].workspace_name.as_deref(), Some("검색 워크스페이스"));
 
         // LIKE wildcards in the query are escaped, not interpreted.
-        let hits = SessionMessageIndex::search(&pool, "100%", None, None, 10)
+        let hits = SessionMessageIndex::search(&pool, "100%", None, None, None, 10)
             .await
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].execution_id, exec2);
         assert!(
-            SessionMessageIndex::search(&pool, "100% 없음", None, None, 10)
+            SessionMessageIndex::search(&pool, "100% 없음", None, None, None, 10)
                 .await
                 .unwrap()
                 .is_empty()
@@ -321,6 +325,7 @@ mod tests {
         let hits = SessionMessageIndex::search(
             &pool,
             "결정",
+            None,
             None,
             Some(r#"["assistant_message"]"#.to_string()),
             10,
@@ -333,6 +338,7 @@ mod tests {
         let hits = SessionMessageIndex::search(
             &pool,
             " ",
+            None,
             None,
             Some(r#"["user_message","assistant_message"]"#.to_string()),
             2,
@@ -356,14 +362,46 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let hits = SessionMessageIndex::search(&pool, "결정", Some(repo_id), None, 10)
+        let hits = SessionMessageIndex::search(&pool, "결정", Some(repo_id), None, None, 10)
             .await
             .unwrap();
         assert_eq!(hits.len(), 1);
-        let hits = SessionMessageIndex::search(&pool, "결정", Some(Uuid::new_v4()), None, 10)
+        let hits = SessionMessageIndex::search(&pool, "결정", Some(Uuid::new_v4()), None, None, 10)
             .await
             .unwrap();
         assert!(hits.is_empty());
+
+        // Session filter: another session with the same text is excluded, and an
+        // empty query lists every row of that session (turn outline use case).
+        let other_session = seed_session(&pool).await;
+        let other_exec = seed_execution(&pool, other_session, "completed").await;
+        SessionMessageIndex::rebuild_for_execution(
+            &pool,
+            other_session,
+            other_exec,
+            t2,
+            &[message(0, "user_message", "다른 세션의 결정")],
+        )
+        .await
+        .unwrap();
+        let hits = SessionMessageIndex::search(&pool, "결정", None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        let hits = SessionMessageIndex::search(&pool, "결정", None, Some(session_id), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, session_id);
+        let hits = SessionMessageIndex::search(&pool, "", None, Some(session_id), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            hits.len(),
+            3,
+            "empty query matches every row of the session"
+        );
+        assert!(hits.iter().all(|h| h.session_id == session_id));
 
         // Slice around the last entry of exec1 crosses into exec2.
         let slice = SessionMessageIndex::slice(&pool, session_id, exec1, 1, 1)
@@ -386,15 +424,16 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            SessionMessageIndex::search(&pool, "100%", None, None, 10)
+            SessionMessageIndex::search(&pool, "100%", None, None, None, 10)
                 .await
                 .unwrap()
                 .is_empty()
         );
 
-        // Deleting the session cascades to index rows and state markers.
-        sqlx::query("DELETE FROM sessions WHERE id = $1")
+        // Deleting the sessions cascades to index rows and state markers.
+        sqlx::query("DELETE FROM sessions WHERE id IN ($1, $2)")
             .bind(session_id)
+            .bind(other_session)
             .execute(&pool)
             .await
             .unwrap();
