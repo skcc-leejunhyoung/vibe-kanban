@@ -1582,6 +1582,7 @@ impl ClaudeLogProcessor {
                     Some("thinking_tokens") => {}
                     Some(
                         "hook_started"
+                        | "hook_progress"
                         | "hook_response"
                         | "background_tasks_changed"
                         | "task_updated"
@@ -3517,6 +3518,7 @@ mod tests {
     fn internal_cli_events_are_hidden_but_meaningful_statuses_remain() {
         for subtype in [
             "hook_started",
+            "hook_progress",
             "hook_response",
             "background_tasks_changed",
             "task_updated",
@@ -3545,7 +3547,10 @@ mod tests {
             "type": "tool_progress",
             "tool_use_id": "tool_1",
             "tool_name": "Bash",
+            "parent_tool_use_id": null,
             "elapsed_time_seconds": 30,
+            "uuid": "message_1",
+            "session_id": "session_1",
         }))
         .unwrap();
         assert!(matches!(&tool_progress, ClaudeJson::ToolProgress { .. }));
@@ -3559,16 +3564,32 @@ mod tests {
         assert!(matches!(&unknown, ClaudeJson::Unknown { .. }));
         assert!(normalize(&unknown, "").is_empty());
 
-        for status in ["Stop hook feedback", "Context compacted"] {
+        let compacting: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "status",
+            "status": "compacting",
+        }))
+        .unwrap();
+        let entries = normalize(&compacting, "");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "compacting");
+
+        for content in [
+            "Stop hook feedback: Finish the requested verification",
+            "Context compacted",
+        ] {
             let parsed: ClaudeJson = serde_json::from_value(serde_json::json!({
-                "type": "system",
-                "subtype": "status",
-                "status": status,
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": content,
+                },
+                "isMeta": true,
             }))
             .unwrap();
             let entries = normalize(&parsed, "");
             assert_eq!(entries.len(), 1);
-            assert_eq!(entries[0].content, status);
+            assert_eq!(entries[0].content, content);
         }
     }
 
