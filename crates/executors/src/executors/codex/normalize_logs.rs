@@ -1887,10 +1887,11 @@ const SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
     // exists on disk but isn't indexed in the state DB — even when the Sqlite feature flag is
     // disabled (which is the default). See: https://github.com/openai/codex/commit/c38a5958
     "state db missing rollout path for",
-    // A Codex upgrade can leave models_cache.json in the previous schema. The CLI logs this
-    // while discarding the stale cache and refreshing the model catalog, so it is not an agent
-    // response parsing failure and should not be surfaced as a failed turn.
-    "failed to load models cache: missing field `supports_reasoning_summaries`",
+    // Coexisting Codex versions can rewrite models_cache.json with incompatible schemas. Cache
+    // load and TTL renewal failures recover by refreshing the model catalog, so neither should be
+    // surfaced as a failed turn.
+    "failed to load models cache",
+    "failed to renew cache TTL",
 ];
 
 /// Codex-specific stderr normalizer that filters noisy internal messages.
@@ -3167,6 +3168,29 @@ mod tests {
         }
 
         latest_normalized_entries(&msg_store)
+    }
+
+    #[tokio::test]
+    async fn suppresses_model_cache_warnings_but_keeps_capacity_errors() {
+        let msg_store = Arc::new(MsgStore::new());
+        msg_store.push(LogMsg::Stderr(
+            [
+                "failed to load models cache: missing field `base_instructions`",
+                "failed to renew cache TTL: missing field `supports_reasoning_summaries`",
+                "Error: Selected model is at capacity",
+            ]
+            .join("\n")
+                + "\n",
+        ));
+        msg_store.push_finished();
+
+        for handle in normalize_logs(msg_store.clone(), Path::new("/tmp/test-worktree")) {
+            handle.await.unwrap();
+        }
+
+        let entries = latest_normalized_entries(&msg_store);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "Error: Selected model is at capacity\n");
     }
 
     #[test]

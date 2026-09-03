@@ -60,7 +60,10 @@ use crate::{
     stdout_dup::create_stdout_pipe_writer,
 };
 
-const SUPPRESSED_STDERR_PATTERNS: &[&str] = &["[WARN] Fast mode requires the native binary"];
+const SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
+    "[WARN] Fast mode requires the native binary",
+    "permissions.allow entries from .claude/settings.json: this workspace has not been trusted",
+];
 
 fn base_command(claude_code_router: bool) -> &'static str {
     if claude_code_router {
@@ -3359,6 +3362,35 @@ impl ClaudeToolData {
 mod tests {
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
+
+    #[tokio::test]
+    async fn suppresses_untrusted_workspace_warning_but_keeps_real_stderr() {
+        use workspace_utils::log_msg::LogMsg;
+
+        let msg_store = Arc::new(MsgStore::new());
+        msg_store.push(LogMsg::Stderr(
+            "Ignoring 51 permissions.allow entries from .claude/settings.json: this workspace has not been trusted\nError: Claude process failed\n"
+                .to_string(),
+        ));
+        msg_store.push_finished();
+
+        normalize_claude_stderr_logs(msg_store.clone(), EntryIndexProvider::test_new())
+            .await
+            .unwrap();
+
+        let entries: Vec<_> = msg_store
+            .get_history()
+            .into_iter()
+            .filter_map(|msg| match msg {
+                LogMsg::JsonPatch(patch) => extract_normalized_entry_from_patch(&patch),
+                _ => None,
+            })
+            .map(|(_, entry)| entry)
+            .collect();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "Error: Claude process failed\n");
+    }
 
     #[test]
     fn unsupported_live_models_preserve_cached_selector() {
