@@ -17,7 +17,6 @@ BEGIN
                 FROM sessions s
                 JOIN execution_processes ep ON ep.session_id = s.id
                 WHERE s.workspace_id = NEW.id
-                  AND json_extract(ep.executor_action, '$.automation_origin.routine_id') IS NOT NULL
                 ORDER BY ep.created_at
                 LIMIT 1
             ),
@@ -26,7 +25,6 @@ BEGIN
                 FROM sessions s
                 JOIN execution_processes ep ON ep.session_id = s.id
                 WHERE s.workspace_id = NEW.id
-                  AND json_extract(ep.executor_action, '$.automation_origin.routine_id') IS NOT NULL
                 ORDER BY ep.created_at
                 LIMIT 1
             ), '[]'))

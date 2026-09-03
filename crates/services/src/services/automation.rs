@@ -229,6 +229,58 @@ mod tests {
             serde_json::json!(["routine-parent", "routine-child"])
         );
 
+        let manual_workspace_id = Uuid::new_v4();
+        let manual_session_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/manual')")
+            .bind(manual_workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
+            .bind(manual_session_id)
+            .bind(manual_workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (action, created_at) in [
+            (serde_json::json!({}), "2026-09-03T00:00:00Z"),
+            (
+                serde_json::json!({
+                    "automation_origin": {
+                        "routine_id": "later-prompt",
+                        "routine_chain": ["later-prompt"]
+                    }
+                }),
+                "2026-09-03T00:01:00Z",
+            ),
+        ] {
+            sqlx::query("INSERT INTO execution_processes (id, session_id, run_reason, status, executor_action, created_at) VALUES (?, ?, 'codingagent', 'completed', ?, ?)")
+                .bind(Uuid::new_v4())
+                .bind(manual_session_id)
+                .bind(action.to_string())
+                .bind(created_at)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+            .bind(manual_workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let manual_payload: serde_json::Value = sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM automation_event_outbox WHERE payload LIKE ?",
+        )
+        .bind(format!("%{manual_workspace_id}%"))
+        .fetch_one(&pool)
+        .await
+        .and_then(|payload| {
+            serde_json::from_str(&payload).map_err(|error| sqlx::Error::Decode(Box::new(error)))
+        })
+        .unwrap();
+        assert!(manual_payload["originRoutineId"].is_null());
+        assert_eq!(manual_payload["routineChain"], serde_json::json!([]));
+
         let rolled_back_workspace_id = Uuid::new_v4();
         sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/rollback')")
             .bind(rolled_back_workspace_id)
