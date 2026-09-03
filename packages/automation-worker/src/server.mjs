@@ -3,7 +3,6 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import {
-  automationEventKey,
   isNotifiableReview,
   mapWithConcurrency,
   recentlyUpdatedPrs,
@@ -52,6 +51,7 @@ import {
 } from './pull-request-links.mjs';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import {
+  automationEventKey,
   eventMatchesRoutine,
   isIndeterminateActionError,
   normalizeRoutine,
