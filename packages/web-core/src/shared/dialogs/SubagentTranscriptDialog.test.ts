@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   parseTranscriptMessages,
   shouldPollTranscript,
+  TranscriptMessageFrame,
 } from './SubagentTranscriptDialog';
 
 describe('parseTranscriptMessages', () => {
@@ -22,5 +25,27 @@ describe('parseTranscriptMessages', () => {
     expect(shouldPollTranscript(isLive)).toBe(true);
     live = false;
     expect(shouldPollTranscript(isLive)).toBe(false);
+  });
+
+  it('visually and semantically separates input from output', () => {
+    const input = renderToStaticMarkup(
+      createElement(
+        TranscriptMessageFrame,
+        { role: 'user', label: 'Input' },
+        'question'
+      )
+    );
+    const output = renderToStaticMarkup(
+      createElement(
+        TranscriptMessageFrame,
+        { role: 'agent', label: 'Output' },
+        'answer'
+      )
+    );
+
+    expect(input).toContain('aria-label="Input"');
+    expect(input).toContain('justify-end');
+    expect(output).toContain('aria-label="Output"');
+    expect(output).toContain('justify-start');
   });
 });

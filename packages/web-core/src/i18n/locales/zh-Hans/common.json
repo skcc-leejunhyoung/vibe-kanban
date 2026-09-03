@@ -33,6 +33,7 @@
     "browserDefault": "浏览器默认"
   },
   "conversation": {
+    "input": "输入",
     "plan": "计划",
     "output": "输出",
     "deniedByUser": "用户拒绝了 {{toolName}}",

@@ -4,22 +4,33 @@
 use codex_app_server_protocol::{Thread, ThreadItem, UserInput};
 
 pub fn thread_transcript_markdown(thread: &Thread) -> String {
-    let mut sections: Vec<String> = Vec::new();
+    let mut messages: Vec<(&str, String)> = Vec::new();
     for turn in &thread.turns {
         for item in &turn.items {
-            if let Some(section) = thread_item_markdown(item) {
-                sections.push(section);
+            if let Some((role, content)) = thread_item_markdown(item) {
+                if let Some((last_role, last_content)) = messages.last_mut()
+                    && *last_role == role
+                {
+                    last_content.push_str("\n\n");
+                    last_content.push_str(&content);
+                } else {
+                    messages.push((role, content));
+                }
             }
         }
     }
-    if sections.is_empty() {
+    if messages.is_empty() {
         "_No transcript content._".to_string()
     } else {
-        sections.join("\n\n")
+        messages
+            .into_iter()
+            .map(|(role, content)| format!("**{role}**\n\n{content}"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }
 
-fn thread_item_markdown(item: &ThreadItem) -> Option<String> {
+fn thread_item_markdown(item: &ThreadItem) -> Option<(&'static str, String)> {
     match item {
         ThreadItem::UserMessage { content, .. } => {
             let text = content
@@ -33,21 +44,21 @@ fn thread_item_markdown(item: &ThreadItem) -> Option<String> {
             if text.is_empty() {
                 None
             } else {
-                Some(format!("**User**\n\n{text}"))
+                Some(("User", text))
             }
         }
         ThreadItem::AgentMessage { text, .. } => {
             if text.is_empty() {
                 None
             } else {
-                Some(format!("**Agent**\n\n{text}"))
+                Some(("Agent", text.clone()))
             }
         }
         ThreadItem::Plan { text, .. } => {
             if text.is_empty() {
                 None
             } else {
-                Some(format!("**Plan**\n\n{text}"))
+                Some(("Agent", format!("**Plan**\n\n{text}")))
             }
         }
         ThreadItem::Reasoning { summary, .. } => {
@@ -55,7 +66,7 @@ fn thread_item_markdown(item: &ThreadItem) -> Option<String> {
             if text.is_empty() {
                 None
             } else {
-                Some(format!("_Thinking:_ {text}"))
+                Some(("Agent", format!("_Thinking:_ {text}")))
             }
         }
         ThreadItem::CommandExecution {
@@ -65,7 +76,7 @@ fn thread_item_markdown(item: &ThreadItem) -> Option<String> {
                 .filter(|code| *code != 0)
                 .map(|code| format!(" (exit {code})"))
                 .unwrap_or_default();
-            Some(format!("`$ {command}`{suffix}"))
+            Some(("Agent", format!("`$ {command}`{suffix}")))
         }
         ThreadItem::FileChange { changes, .. } => {
             let paths = changes
@@ -73,10 +84,12 @@ fn thread_item_markdown(item: &ThreadItem) -> Option<String> {
                 .map(|change| format!("`{}`", change.path))
                 .collect::<Vec<_>>()
                 .join(", ");
-            Some(format!("_Edited:_ {paths}"))
+            Some(("Agent", format!("_Edited:_ {paths}")))
         }
-        ThreadItem::McpToolCall { server, tool, .. } => Some(format!("_Tool:_ `{server}/{tool}`")),
-        ThreadItem::DynamicToolCall { tool, .. } => Some(format!("_Tool:_ `{tool}`")),
+        ThreadItem::McpToolCall { server, tool, .. } => {
+            Some(("Agent", format!("_Tool:_ `{server}/{tool}`")))
+        }
+        ThreadItem::DynamicToolCall { tool, .. } => Some(("Agent", format!("_Tool:_ `{tool}`"))),
         _ => None,
     }
 }
@@ -168,10 +181,10 @@ mod tests {
         ];
 
         let markdown = thread_transcript_markdown(&thread_with_items(items));
-        assert!(markdown.contains("**User**\n\nFix the bug"));
-        assert!(markdown.contains("_Thinking:_ Scanning the module"));
-        assert!(markdown.contains("`$ cargo test` (exit 1)"));
-        assert!(markdown.contains("**Agent**\n\nDone."));
+        assert_eq!(
+            markdown,
+            "**User**\n\nFix the bug\n\n**Agent**\n\n_Thinking:_ Scanning the module\n\n`$ cargo test` (exit 1)\n\nDone."
+        );
     }
 
     #[test]

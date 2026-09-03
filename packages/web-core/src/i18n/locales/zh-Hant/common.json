@@ -33,6 +33,7 @@
     "browserDefault": "瀏覽器預設"
   },
   "conversation": {
+    "input": "輸入",
     "plan": "計畫",
     "output": "輸出",
     "deniedByUser": "使用者拒絕了 {{toolName}}",

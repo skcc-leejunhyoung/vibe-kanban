@@ -46,6 +46,7 @@
     "selectOption": "옵션 선택..."
   },
   "conversation": {
+    "input": "입력",
     "deniedByUser": "{{toolName}} 사용자에 의해 거부됨",
     "output": "출력",
     "plan": "계획",

@@ -46,6 +46,7 @@
     "selectOption": "Seleccionar una opción..."
   },
   "conversation": {
+    "input": "Entrada",
     "deniedByUser": "{{toolName}} denegado por el usuario",
     "output": "Salida",
     "plan": "Plan",

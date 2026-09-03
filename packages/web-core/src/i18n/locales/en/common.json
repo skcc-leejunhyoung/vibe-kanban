@@ -38,6 +38,7 @@
     "browserDefault": "Browser Default"
   },
   "conversation": {
+    "input": "Input",
     "plan": "Plan",
     "output": "Output",
     "deniedByUser": "{{toolName}} denied by user",

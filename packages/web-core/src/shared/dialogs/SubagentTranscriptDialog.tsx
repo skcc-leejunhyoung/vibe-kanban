@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Dialog,
@@ -8,10 +8,9 @@ import {
 } from '@vibe/ui/components/KeyboardDialog';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { Loader2 } from 'lucide-react';
+import { RobotIcon, UserIcon } from '@phosphor-icons/react';
 import type { SubagentControlTarget } from 'shared/types';
-import { ChatAssistantMessage } from '@vibe/ui/components/ChatAssistantMessage';
 import { ChatMarkdown } from '@vibe/ui/components/ChatMarkdown';
-import { ChatUserMessage } from '@vibe/ui/components/ChatUserMessage';
 import { defineModal } from '@/shared/lib/modals';
 import { executionProcessesApi } from '@/shared/lib/api';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
@@ -27,6 +26,38 @@ export interface SubagentTranscriptDialogProps {
 export interface TranscriptMessage {
   role: 'user' | 'agent';
   content: string;
+}
+
+export function TranscriptMessageFrame({
+  role,
+  label,
+  children,
+}: {
+  role: TranscriptMessage['role'];
+  label: string;
+  children: ReactNode;
+}) {
+  const user = role === 'user';
+  const Icon = user ? UserIcon : RobotIcon;
+  return (
+    <section
+      aria-label={label}
+      data-transcript-role={role}
+      className={`flex ${user ? 'justify-end' : 'justify-start'}`}
+    >
+      <div
+        className={`w-full max-w-[85%] overflow-hidden rounded-lg border ${
+          user ? 'border-brand/30 bg-brand/10' : 'border-border bg-panel'
+        }`}
+      >
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs font-medium text-low">
+          <Icon className="size-icon-xs" aria-hidden />
+          {label}
+        </div>
+        <div className="px-3 py-2">{children}</div>
+      </div>
+    </section>
+  );
 }
 
 export const shouldPollTranscript = (isLive?: () => boolean) => isLive?.();
@@ -117,21 +148,24 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
               </div>
             ) : (
               <div className="space-y-4">
-                {parseTranscriptMessages(content).map((message, index) =>
-                  message.role === 'user' ? (
-                    <ChatUserMessage
-                      key={index}
-                      content={message.content}
-                      renderMarkdown={({ content }) => renderMarkdown(content)}
-                    />
-                  ) : (
-                    <ChatAssistantMessage
-                      key={index}
-                      content={message.content}
-                      renderMarkdown={({ content }) => renderMarkdown(content)}
-                    />
-                  )
-                )}
+                {parseTranscriptMessages(content).map((message, index) => (
+                  <TranscriptMessageFrame
+                    key={index}
+                    role={message.role}
+                    label={
+                      message.role === 'user'
+                        ? `${t('conversation.input')} · ${t(
+                            'conversation.you',
+                            { ns: 'tasks' }
+                          )}`
+                        : `${t('conversation.output')} · ${t(
+                            'modelSelector.agent'
+                          )}`
+                    }
+                  >
+                    {renderMarkdown(message.content)}
+                  </TranscriptMessageFrame>
+                ))}
               </div>
             )}
           </div>
