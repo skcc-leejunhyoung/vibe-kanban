@@ -4,6 +4,7 @@ import {
   buildWorkspacePath,
   collapseSelfHostId,
   resolveDestinationHostId,
+  resolveLocalHostId,
 } from './appNavigation';
 
 describe('buildWorkspacePath', () => {
@@ -113,5 +114,15 @@ describe('collapseSelfHostId', () => {
 
   it('does not collapse anything while the self host id is unknown', () => {
     expect(collapseSelfHostId('remote-host', null)).toBe('remote-host');
+  });
+});
+
+describe('resolveLocalHostId', () => {
+  it('waits before routing a host-scoped request while self is unknown', () => {
+    expect(resolveLocalHostId('route-host', null, true)).toBeUndefined();
+  });
+
+  it('does not delay direct local requests', () => {
+    expect(resolveLocalHostId(null, null, true)).toBeNull();
   });
 });

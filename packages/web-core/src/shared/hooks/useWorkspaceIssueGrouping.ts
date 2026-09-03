@@ -92,7 +92,7 @@ export function useWorkspaceIssueGrouping(
 ): Map<string, WorkspaceIssueMeta | null> {
   const { isSignedIn } = useAuth();
   const { workspaces: remoteWorkspaces } = useUserContext();
-  const selfCloudHostId = useSelfCloudHostId();
+  const { hostId: selfCloudHostId } = useSelfCloudHostId();
   const active = enabled && isSignedIn;
 
   const { data: allProjects } = useAllOrganizationProjects({ enabled: active });

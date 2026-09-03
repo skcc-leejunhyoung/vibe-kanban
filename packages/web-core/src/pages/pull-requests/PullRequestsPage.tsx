@@ -225,7 +225,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const queryClient = useQueryClient();
   const { workspaces } = useUserContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
-  const selfHostId = useSelfCloudHostId();
+  const { hostId: selfHostId } = useSelfCloudHostId();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );

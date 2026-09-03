@@ -186,6 +186,15 @@ export function collapseSelfHostId(
   return routeHostId;
 }
 
+export function resolveLocalHostId(
+  routeHostId: string | null,
+  selfHostId: string | null,
+  isSelfHostPending: boolean
+): string | null | undefined {
+  if (routeHostId !== null && isSelfHostPending) return undefined;
+  return collapseSelfHostId(routeHostId, selfHostId);
+}
+
 export function resolveDestinationHostId(
   destination: AppDestination,
   currentHostId: string | null

@@ -14,9 +14,12 @@ const SELF_CLOUD_HOST_ID_QUERY_KEY = ['relay', 'self-host-id'] as const;
  * only meaningful in the local runtime — the remote (cloud) app reaches every
  * host, including this one, exclusively through the relay.
  */
-export function useSelfCloudHostId(): string | null {
+export function useSelfCloudHostId(): {
+  hostId: string | null;
+  isPending: boolean;
+} {
   const runtime = useAppRuntime();
-  const { data } = useQuery({
+  const { data, isPending } = useQuery({
     queryKey: SELF_CLOUD_HOST_ID_QUERY_KEY,
     queryFn: () => relayApi.getSelfRelayHostId(),
     enabled: runtime === 'local',
@@ -25,5 +28,8 @@ export function useSelfCloudHostId(): string | null {
     refetchOnWindowFocus: false,
   });
 
-  return data ?? null;
+  return {
+    hostId: data ?? null,
+    isPending: runtime === 'local' && isPending,
+  };
 }
