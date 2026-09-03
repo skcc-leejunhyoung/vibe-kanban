@@ -172,6 +172,7 @@ where
 pub(crate) fn fork_params_from(thread_id: String, params: ThreadStartParams) -> ThreadForkParams {
     ThreadForkParams {
         thread_id,
+        exclude_turns: true,
         model: params.model,
         model_provider: params.model_provider,
         cwd: params.cwd,
@@ -1046,6 +1047,17 @@ mod tests {
         executors::{BaseCodingAgent, StandardCodingAgentExecutor},
         profile::ExecutorConfig,
     };
+
+    #[test]
+    fn fork_excludes_deprecated_full_history_hydration() {
+        let params = super::fork_params_from(
+            "thread-1".to_string(),
+            codex_app_server_protocol::ThreadStartParams::default(),
+        );
+
+        assert!(params.exclude_turns);
+        assert_eq!(serde_json::to_value(params).unwrap()["excludeTurns"], true);
+    }
 
     #[test]
     fn applies_per_run_sandbox_override() {
