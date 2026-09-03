@@ -687,13 +687,10 @@ pub async fn create_and_start_workspace(
         }
     };
     let result = create_and_start_workspace_inner(State(deployment), Json(payload), origin).await;
-    match &result {
-        Ok(response) => {
-            crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
-        }
-        // An error can happen after the workspace or execution record exists.
-        // Keep the claim so an automatic retry cannot duplicate that side effect.
-        Err(_) => {}
+    // An error can happen after the workspace or execution record exists.
+    // Keep the claim so an automatic retry cannot duplicate that side effect.
+    if let Ok(response) = &result {
+        crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
     }
     result
 }

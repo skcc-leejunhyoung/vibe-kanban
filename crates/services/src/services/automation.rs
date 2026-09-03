@@ -218,6 +218,16 @@ mod tests {
             execution_payload["routineChain"],
             serde_json::json!(["routine-parent", "routine-child"])
         );
+        let workspace_payload: serde_json::Value = payloads
+            .iter()
+            .find(|payload| payload.contains(&workspace_id.to_string()))
+            .and_then(|payload| serde_json::from_str(payload).ok())
+            .unwrap();
+        assert_eq!(workspace_payload["originRoutineId"], "routine-child");
+        assert_eq!(
+            workspace_payload["routineChain"],
+            serde_json::json!(["routine-parent", "routine-child"])
+        );
 
         let rolled_back_workspace_id = Uuid::new_v4();
         sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/rollback')")

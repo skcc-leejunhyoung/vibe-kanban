@@ -352,13 +352,10 @@ pub async fn follow_up(
     };
     let result =
         follow_up_inner(Extension(session), State(deployment), Json(payload), origin).await;
-    match &result {
-        Ok(response) => {
-            crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
-        }
-        // Spawn failures can be ambiguous after an execution record was created.
-        // Keep the claim so retrying cannot send the same prompt twice.
-        Err(_) => {}
+    // Spawn failures can be ambiguous after an execution record was created.
+    // Keep the claim so retrying cannot send the same prompt twice.
+    if let Ok(response) = &result {
+        crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
     }
     result
 }
@@ -784,6 +781,7 @@ mod tests {
             agent_id: None,
             reasoning_id: Some("high".to_string()),
             permission_policy: None,
+            sandbox_policy: None,
         }
     }
 

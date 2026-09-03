@@ -103,6 +103,7 @@ async fn notification(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
     let Some(value) = headers.get("idempotency-key") else {
         return Ok(None);
@@ -119,6 +120,7 @@ pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, Api
     Ok(Some(value.to_string()))
 }
 
+#[allow(clippy::result_large_err)]
 pub(crate) fn automation_origin(headers: &HeaderMap) -> Result<Option<AutomationOrigin>, ApiError> {
     let Some(routine_id) = headers.get("x-vibe-routine-id") else {
         return Ok(None);
