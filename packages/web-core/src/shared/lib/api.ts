@@ -1296,7 +1296,7 @@ export const workspacesApi = {
     const timeoutController = new AbortController();
     const timeout = globalThis.setTimeout(
       () => timeoutController.abort(),
-      150_000
+      360_000
     );
     const requestSignal = signal
       ? AbortSignal.any([signal, timeoutController.signal])

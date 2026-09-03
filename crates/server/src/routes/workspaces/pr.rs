@@ -359,8 +359,8 @@ pub struct SetPrReviewThreadResolvedRequest {
 
 /// Whole-request budget for PR title/description generation: container reuse +
 /// agent run + capture. The client timeout must strictly exceed this.
-const PR_GENERATE_TIMEOUT: Duration = Duration::from_secs(120);
-const PR_GENERATE_RUNNING_JOB_TTL: Duration = Duration::from_secs(150);
+const PR_GENERATE_TIMEOUT: Duration = Duration::from_secs(300);
+const PR_GENERATE_RUNNING_JOB_TTL: Duration = Duration::from_secs(360);
 const PR_GENERATE_FINISHED_JOB_TTL: Duration = Duration::from_secs(10 * 60);
 /// How often to poll the execution-process status while waiting for the agent.
 const PR_GENERATE_POLL_INTERVAL: Duration = Duration::from_millis(750);
