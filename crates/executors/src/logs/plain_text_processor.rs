@@ -196,6 +196,8 @@ impl PlainTextLogProcessor {
             return vec![];
         }
 
+        let mut patches = Vec::new();
+
         if !self.buffer.is_empty() {
             // If the new content arrived after the (**Optional**) time threshold between messages, we consider it a new entry.
             // Useful for stderr streams where we want to group related lines into a single entry.
@@ -205,7 +207,7 @@ impl PlainTextLogProcessor {
             {
                 let lines = self.buffer.flush();
                 if !lines.is_empty() {
-                    return vec![self.create_patch(lines)];
+                    patches.push(self.create_patch(lines));
                 }
                 self.current_entry_index = None;
             }
@@ -220,7 +222,7 @@ impl PlainTextLogProcessor {
         };
 
         if formatted_chunk.is_empty() {
-            return vec![];
+            return patches;
         }
 
         // Let the buffer handle text buffering
@@ -231,11 +233,9 @@ impl PlainTextLogProcessor {
             self.buffer.recompute_len();
             if self.buffer.is_empty() {
                 // Nothing left to process after transformation
-                return vec![];
+                return patches;
             }
         }
-
-        let mut patches = Vec::new();
 
         // Check if we have a custom message boundary predicate
         loop {
@@ -362,7 +362,9 @@ impl PlainTextLogProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::logs::{NormalizedEntryType, ToolStatus};
+    use crate::logs::{
+        NormalizedEntryType, ToolStatus, utils::patch::extract_normalized_entry_from_patch,
+    };
 
     #[test]
     fn test_plain_buffer_flush() {
@@ -417,6 +419,28 @@ mod tests {
 
         let patches = processor.process("hello world\n".to_string());
         assert_eq!(patches.len(), 1);
+    }
+
+    #[test]
+    fn test_processor_time_gap_keeps_new_chunk() {
+        let mut processor = PlainTextLogProcessor::builder()
+            .normalized_entry_producer(|content| NormalizedEntry {
+                timestamp: None,
+                entry_type: NormalizedEntryType::SystemMessage,
+                content,
+                metadata: None,
+            })
+            .time_gap(Duration::ZERO)
+            .index_provider(EntryIndexProvider::test_new())
+            .build();
+
+        let first_patches = processor.process("first\n".to_string());
+        let patches = processor.process("second\n".to_string());
+        let (index, entry) = extract_normalized_entry_from_patch(patches.last().unwrap()).unwrap();
+
+        assert_eq!(first_patches.len(), 1);
+        assert_eq!(index, 1);
+        assert_eq!(entry.content, "second\n");
     }
 
     #[test]
