@@ -47,6 +47,7 @@ use workspace_utils::{
     diff::normalize_unified_diff,
     msg_store::MsgStore,
     path::make_path_relative,
+    stream_lines::LinesStreamExt,
 };
 
 use crate::{
@@ -1900,7 +1901,7 @@ fn normalize_codex_stderr_logs(
     entry_index_provider: EntryIndexProvider,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut stderr = msg_store.stderr_chunked_stream();
+        let mut stderr = msg_store.stderr_chunked_stream().lines();
         let mut processor = PlainTextLogProcessor::builder()
             .normalized_entry_producer(|content: String| NormalizedEntry {
                 timestamp: None,
@@ -1912,17 +1913,16 @@ fn normalize_codex_stderr_logs(
             })
             .time_gap(Duration::from_secs(2))
             .index_provider(entry_index_provider)
-            .transform_lines(Box::new(|lines: &mut Vec<String>| {
-                lines.retain(|line| {
-                    !SUPPRESSED_STDERR_PATTERNS
-                        .iter()
-                        .any(|pattern| line.contains(pattern))
-                });
-            }))
             .build();
 
-        while let Some(Ok(chunk)) = stderr.next().await {
-            for patch in processor.process(chunk) {
+        while let Some(Ok(line)) = stderr.next().await {
+            if SUPPRESSED_STDERR_PATTERNS
+                .iter()
+                .any(|pattern| line.contains(pattern))
+            {
+                continue;
+            }
+            for patch in processor.process(line + "\n") {
                 msg_store.push_patch(patch);
             }
         }
@@ -3173,14 +3173,13 @@ mod tests {
     #[tokio::test]
     async fn suppresses_model_cache_warnings_but_keeps_capacity_errors() {
         let msg_store = Arc::new(MsgStore::new());
+        msg_store.push(LogMsg::Stderr("failed to load models ca".to_string()));
         msg_store.push(LogMsg::Stderr(
-            [
-                "failed to load models cache: missing field `base_instructions`",
-                "failed to renew cache TTL: missing field `supports_reasoning_summaries`",
-                "Error: Selected model is at capacity",
-            ]
-            .join("\n")
-                + "\n",
+            "che: missing field `base_instructions`\nfailed to renew cache T".to_string(),
+        ));
+        msg_store.push(LogMsg::Stderr(
+            "TL: missing field `supports_reasoning_summaries`\nError: Selected model is at capacity\n"
+                .to_string(),
         ));
         msg_store.push_finished();
 
@@ -3189,6 +3188,12 @@ mod tests {
         }
 
         let entries = latest_normalized_entries(&msg_store);
+        let patch_count = msg_store
+            .get_history()
+            .iter()
+            .filter(|msg| matches!(msg, LogMsg::JsonPatch(_)))
+            .count();
+        assert_eq!(patch_count, 1);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].content, "Error: Selected model is at capacity\n");
     }

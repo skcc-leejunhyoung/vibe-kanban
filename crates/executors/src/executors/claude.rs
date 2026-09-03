@@ -26,6 +26,7 @@ use workspace_utils::{
     log_msg::LogMsg,
     msg_store::MsgStore,
     path::make_path_relative,
+    stream_lines::LinesStreamExt,
 };
 
 use self::{
@@ -78,7 +79,7 @@ fn normalize_claude_stderr_logs(
     entry_index_provider: EntryIndexProvider,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut stderr = msg_store.stderr_chunked_stream();
+        let mut stderr = msg_store.stderr_chunked_stream().lines();
 
         let mut processor = PlainTextLogProcessor::builder()
             .normalized_entry_producer(|content: String| NormalizedEntry {
@@ -91,17 +92,16 @@ fn normalize_claude_stderr_logs(
             })
             .time_gap(Duration::from_secs(2))
             .index_provider(entry_index_provider)
-            .transform_lines(Box::new(|lines: &mut Vec<String>| {
-                lines.retain(|line| {
-                    !SUPPRESSED_STDERR_PATTERNS
-                        .iter()
-                        .any(|pattern| line.contains(pattern))
-                });
-            }))
             .build();
 
-        while let Some(Ok(chunk)) = stderr.next().await {
-            for patch in processor.process(chunk) {
+        while let Some(Ok(line)) = stderr.next().await {
+            if SUPPRESSED_STDERR_PATTERNS
+                .iter()
+                .any(|pattern| line.contains(pattern))
+            {
+                continue;
+            }
+            for patch in processor.process(line + "\n") {
                 msg_store.push_patch(patch);
             }
         }
@@ -3369,8 +3369,10 @@ mod tests {
 
         let msg_store = Arc::new(MsgStore::new());
         msg_store.push(LogMsg::Stderr(
-            "Ignoring 51 permissions.allow entries from .claude/settings.json: this workspace has not been trusted\nError: Claude process failed\n"
-                .to_string(),
+            "Ignoring 51 permissions.allow entries from .claude/settings.".to_string(),
+        ));
+        msg_store.push(LogMsg::Stderr(
+            "json: this workspace has not been trusted\nError: Claude process failed\n".to_string(),
         ));
         msg_store.push_finished();
 
