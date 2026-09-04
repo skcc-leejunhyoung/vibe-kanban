@@ -9,15 +9,20 @@
 //! a while to `Blocked` (+ the `vibe-block` tag), so a human is signalled
 //! instead of the run stalling silently.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use db::models::{execution_process::ExecutionProcess, session::Session, vibe_run::VibeRun};
 use deployment::Deployment;
 use services::services::{
+    remote_client::RemoteClient,
     vibe_orchestrator::{TAG_BLOCK, VibePhase},
     vibe_tags,
 };
+use sqlx::SqlitePool;
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -46,6 +51,15 @@ pub fn spawn(deployment: DeploymentImpl) {
 
 async fn tick(deployment: &DeploymentImpl) -> anyhow::Result<()> {
     let pool = &deployment.db().pool;
+    let client = deployment.remote_client().ok();
+    block_orphaned_runs(pool, Utc::now(), client.as_ref()).await
+}
+
+async fn block_orphaned_runs(
+    pool: &SqlitePool,
+    now: DateTime<Utc>,
+    client: Option<&RemoteClient>,
+) -> anyhow::Result<()> {
     let runs = VibeRun::find_non_terminal(pool).await?;
     if runs.is_empty() {
         return Ok(());
@@ -62,18 +76,14 @@ async fn tick(deployment: &DeploymentImpl) -> anyhow::Result<()> {
     }
 
     // Completion is persisted before output draining and `vibe_on_finalize`.
-    // Keep that normal handoff window alive using the latest related execution
-    // (coding/setup/cleanup) even though it has already left `find_running`.
-    let latest_processes = ExecutionProcess::find_latest_for_workspaces(pool, false).await?;
-
-    let client = deployment.remote_client().ok();
-    let now = Utc::now();
+    // Use the newest activity across all related executions, not merely the
+    // most recently created row: setup and coding processes can overlap.
+    let latest_execution_activity = latest_execution_activity_by_workspace(pool).await?;
 
     for run in runs {
         let is_active = active_workspaces.contains(&run.workspace_id);
-        let latest_execution_activity_at = latest_processes
-            .get(&run.workspace_id)
-            .map(|process| process.completed_at.unwrap_or(process.started_at));
+        let latest_execution_activity_at =
+            latest_execution_activity.get(&run.workspace_id).cloned();
         if !should_escalate(is_active, run.updated_at, latest_execution_activity_at, now) {
             continue;
         }
@@ -107,6 +117,27 @@ async fn tick(deployment: &DeploymentImpl) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn latest_execution_activity_by_workspace(
+    pool: &SqlitePool,
+) -> Result<HashMap<Uuid, DateTime<Utc>>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+        r#"
+        SELECT
+            s.workspace_id,
+            MAX(COALESCE(ep.completed_at, ep.updated_at, ep.started_at))
+        FROM execution_processes ep
+        JOIN sessions s ON ep.session_id = s.id
+        WHERE ep.run_reason IN ('codingagent', 'setupscript', 'cleanupscript')
+          AND ep.dropped = FALSE
+        GROUP BY s.workspace_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().collect())
+}
+
 /// Pure escalation predicate: a run with no live execution and no recent run
 /// or execution activity is orphaned. Kept pure so the time-based boundary is
 /// unit-testable without a database.
@@ -127,10 +158,10 @@ fn should_escalate(
 
 #[cfg(test)]
 mod tests {
-    use db::models::execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus};
     use services::services::vibe_orchestrator::{
         FinalizeInput, VibeAction, VibeBounds, VibeResult, decide_finalize_action,
     };
+    use sqlx::sqlite::SqlitePoolOptions;
 
     use super::*;
 
@@ -196,34 +227,140 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn completion_finalize_race_preserves_approve_merge() {
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn seed_review_run(pool: &SqlitePool, updated_at: DateTime<Utc>) -> (Uuid, Uuid) {
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, ?)")
+            .bind(workspace_id)
+            .bind(format!("vk/{workspace_id}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO vibe_runs \
+             (workspace_id, task_id, phase, review_session_id, last_result, updated_at) \
+             VALUES (?, ?, 'review', ?, 'approve', ?)",
+        )
+        .bind(workspace_id)
+        .bind(Uuid::new_v4())
+        .bind(session_id)
+        .bind(updated_at)
+        .execute(pool)
+        .await
+        .unwrap();
+        (workspace_id, session_id)
+    }
+
+    async fn seed_completed_execution(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        created_at: DateTime<Utc>,
+        completed_at: DateTime<Utc>,
+    ) -> Uuid {
+        let process_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO execution_processes \
+             (id, session_id, run_reason, status, started_at, completed_at, created_at, updated_at) \
+             VALUES (?, ?, 'codingagent', 'completed', ?, ?, ?, ?)",
+        )
+        .bind(process_id)
+        .bind(session_id)
+        .bind(created_at)
+        .bind(completed_at)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .unwrap();
+        process_id
+    }
+
+    #[tokio::test]
+    async fn completion_finalize_race_preserves_approve_merge() {
+        let pool = test_pool().await;
         let now = ts("2026-06-19T12:00:00Z");
-        let watcher_blocks = should_escalate(
-            false,
+        let (workspace_id, session_id) = seed_review_run(&pool, ts("2026-06-19T10:00:00Z")).await;
+
+        // The older-created review finishes most recently. A lookup ordered by
+        // creation time would incorrectly select the stale, newer-created row.
+        let review_process_id = seed_completed_execution(
+            &pool,
+            session_id,
             ts("2026-06-19T10:00:00Z"),
-            Some(ts("2026-06-19T11:59:00Z")),
-            now,
-        );
-        let phase = if watcher_blocks {
-            VibePhase::Blocked
-        } else {
-            VibePhase::Review
-        };
+            ts("2026-06-19T11:59:00Z"),
+        )
+        .await;
+        seed_completed_execution(
+            &pool,
+            session_id,
+            ts("2026-06-19T10:01:00Z"),
+            ts("2026-06-19T11:30:00Z"),
+        )
+        .await;
+
+        block_orphaned_runs(&pool, now, None).await.unwrap();
+
+        let run = VibeRun::find_by_workspace_id(&pool, workspace_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let process = ExecutionProcess::find_by_id(&pool, review_process_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let phase = VibePhase::from_db_str(&run.phase).unwrap();
+        let result = run
+            .last_result
+            .as_deref()
+            .map(VibeResult::from_token)
+            .unwrap_or(VibeResult::None);
 
         assert_eq!(
             decide_finalize_action(&FinalizeInput {
-                run_reason: ExecutionProcessRunReason::CodingAgent,
-                status: ExecutionProcessStatus::Completed,
+                run_reason: process.run_reason,
+                status: process.status,
                 phase,
-                session_is_review: true,
-                result: VibeResult::Approve,
-                coding_turns: 0,
-                review_turns: 0,
-                merge_retries: 0,
+                session_is_review: run.review_session_id == Some(session_id),
+                result,
+                coding_turns: run.coding_turns as u32,
+                review_turns: run.review_turns as u32,
+                merge_retries: run.merge_retries as u32,
                 bounds: VibeBounds::default(),
             }),
             VibeAction::AttemptMerge { retry: 0 }
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_run_without_recent_execution_is_blocked() {
+        let pool = test_pool().await;
+        let now = ts("2026-06-19T12:00:00Z");
+        let (workspace_id, _) = seed_review_run(&pool, ts("2026-06-19T11:30:00Z")).await;
+
+        block_orphaned_runs(&pool, now, None).await.unwrap();
+        assert_eq!(
+            VibeRun::find_by_workspace_id(&pool, workspace_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            VibePhase::Blocked.as_str()
         );
     }
 }
