@@ -149,7 +149,7 @@ Supported relationship types: `blocking`, `related`, `has_duplicate`.
 | `run_session_prompt` | Run a coding-agent prompt inside an existing session | `session_id`<br/>`prompt` | None | Execution details |
 | `get_execution` | Inspect execution status and final message | `execution_id` | None | Execution details |
 | `search_sessions` | Search past session conversations by content across all workspaces | `query` (optional when `session_id` is given) | `repo_id`<br/>`session_id`<br/>`entry_types`<br/>`limit` | Newest-first hits with session/workspace context and a snippet |
-| `get_session_slice` | Read the conversation around a `search_sessions` hit | `session_id`<br/>`execution_id`<br/>`entry_index` | `radius` | Entries around the hit in session order, capped at ~64KB, with `truncated_before`/`truncated_after` |
+| `get_session_slice` | Read the conversation around a `search_sessions` hit | `session_id`<br/>`execution_id`<br/>`entry_index` | `radius` | Entries around the hit in session order, with truncation flags and continuation cursors |
 
 The `repositories` parameter is an array of objects with:
 - `repo_id`: The repository ID (UUID)
@@ -157,7 +157,7 @@ The `repositories` parameter is an array of objects with:
 
 When `issue_id` is provided, the workspace is automatically linked to the remote issue. If `prompt` is omitted, the linked issue's title and description are used as the workspace prompt.
 
-`search_sessions` matches substrings in indexed conversation entries (user prompts, assistant and thinking messages, tool-use summary lines, error messages; system/status entries and tool result payloads are not indexed). `entry_types` filters by entry kind, for example `["user_message", "tool_use"]`. Once you know the session, pass `session_id` to search within it; with no `query` and `entry_types: ["user_message"]` that lists the session's turn prompts as a table of contents. Pass a hit's `session_id`, `execution_id` and `entry_index` to `get_session_slice` to read the surrounding conversation without loading the whole transcript. Each slice carries at most ~64KB of content; when `truncated_after` (or `truncated_before`) is set, call again anchored on the last (or first) returned entry to continue, so a large `radius` anchored on a session's first entry walks the whole session in a few calls.
+`search_sessions` matches substrings in indexed conversation entries (user prompts, assistant and thinking messages, tool-use summary lines, error messages; system/status entries and tool result payloads are not indexed). `entry_types` filters by entry kind, for example `["user_message", "tool_use"]`. Once you know the session, pass `session_id` to search within it; with no `query` and `entry_types: ["user_message"]` that lists the session's turn prompts as a table of contents. Pass a hit's `session_id`, `execution_id` and `entry_index` to `get_session_slice` to read the surrounding conversation without loading the whole transcript. Each slice has a ~64KB content budget, except that an individual hit is returned whole when it alone exceeds the budget. When `truncated_after` or `truncated_before` is set, call again using the corresponding `after_cursor` or `before_cursor`; the cursor points to the first omitted entry, so each call advances.
 
 ### Supported Executors
 

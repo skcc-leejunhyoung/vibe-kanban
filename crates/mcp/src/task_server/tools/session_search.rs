@@ -63,7 +63,7 @@ struct GetSessionSliceRequest {
     #[schemars(description = "Entry index of the hit (from search_sessions)")]
     entry_index: i64,
     #[schemars(
-        description = "How many entries of context to include on each side of the hit (default 5, max 2000). The response is capped at ~64KB of content regardless; when truncated_before/truncated_after is set, re-anchor on the first/last returned entry to keep reading. A large radius anchored on a session's first entry reads the whole session in one or a few calls."
+        description = "How many entries of context to include on each side of the hit (default 5, max 2000). The response has a ~64KB content budget, except that an oversized hit is returned whole. When truncated_before/truncated_after is set, continue from before_cursor/after_cursor."
     )]
     radius: Option<u32>,
 }
@@ -79,11 +79,19 @@ struct SessionSliceEntry {
     created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+struct SessionSliceCursor {
+    execution_id: Uuid,
+    entry_index: i64,
+}
+
 #[derive(Debug, Deserialize)]
 struct SessionSliceApiResponse {
     entries: Vec<SessionSliceEntry>,
     truncated_before: bool,
     truncated_after: bool,
+    before_cursor: Option<SessionSliceCursor>,
+    after_cursor: Option<SessionSliceCursor>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -98,6 +106,10 @@ struct GetSessionSliceResponse {
         description = "More entries existed after the last returned one but were cut by the byte budget"
     )]
     truncated_after: bool,
+    #[schemars(description = "First omitted entry before this slice; use it to continue")]
+    before_cursor: Option<SessionSliceCursor>,
+    #[schemars(description = "First omitted entry after this slice; use it to continue")]
+    after_cursor: Option<SessionSliceCursor>,
     entries: Vec<SessionSliceEntry>,
 }
 
@@ -183,6 +195,8 @@ impl McpServer {
             total_count: slice.entries.len(),
             truncated_before: slice.truncated_before,
             truncated_after: slice.truncated_after,
+            before_cursor: slice.before_cursor,
+            after_cursor: slice.after_cursor,
             entries: slice.entries,
         })
     }

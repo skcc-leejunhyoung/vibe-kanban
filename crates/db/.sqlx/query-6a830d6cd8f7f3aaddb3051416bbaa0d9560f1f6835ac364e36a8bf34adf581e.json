@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "WITH ordered AS (\n                   SELECT execution_id, entry_index,\n                          ROW_NUMBER() OVER (ORDER BY created_at, execution_id, entry_index) AS rn\n                   FROM session_message_index\n                   WHERE session_id = $1\n               ),\n               target AS (\n                   SELECT rn FROM ordered WHERE execution_id = $2 AND entry_index = $3\n               )\n               SELECT o.execution_id AS \"execution_id!: Uuid\",\n                      o.entry_index AS \"entry_index!: i64\",\n                      length(CAST(m.content AS BLOB)) AS \"content_bytes!: i64\"\n               FROM ordered o\n               CROSS JOIN target t\n               JOIN session_message_index m\n                 ON m.session_id = $1\n                AND m.execution_id = o.execution_id\n                AND m.entry_index = o.entry_index\n               WHERE o.rn BETWEEN t.rn - $4 AND t.rn + $4\n               ORDER BY o.rn",
+  "describe": {
+    "columns": [
+      {
+        "name": "execution_id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "entry_index!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "content_bytes!: i64",
+        "ordinal": 2,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "6a830d6cd8f7f3aaddb3051416bbaa0d9560f1f6835ac364e36a8bf34adf581e"
+}

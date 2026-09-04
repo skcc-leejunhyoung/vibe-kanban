@@ -38,6 +38,15 @@ pub struct SessionMessageSliceRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// Lightweight row used to choose a byte-bounded slice before loading message
+/// bodies from SQLite.
+#[derive(Debug, Clone, FromRow)]
+pub struct SessionMessageSliceMetadata {
+    pub execution_id: Uuid,
+    pub entry_index: i64,
+    pub content_bytes: i64,
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct UnindexedExecution {
     pub execution_id: Uuid,
@@ -147,19 +156,19 @@ impl SessionMessageIndex {
         .await
     }
 
-    /// Entries around a hit, in session conversation order (executions ordered
-    /// by start time, entries by index), crossing execution boundaries.
-    pub async fn slice(
+    /// Entry positions and byte lengths around a hit, in session conversation
+    /// order. Message bodies stay in SQLite until the caller chooses a window.
+    pub async fn slice_metadata(
         pool: &SqlitePool,
         session_id: Uuid,
         execution_id: Uuid,
         entry_index: i64,
         radius: i64,
-    ) -> Result<Vec<SessionMessageSliceRow>, sqlx::Error> {
+    ) -> Result<Vec<SessionMessageSliceMetadata>, sqlx::Error> {
         sqlx::query_as!(
-            SessionMessageSliceRow,
+            SessionMessageSliceMetadata,
             r#"WITH ordered AS (
-                   SELECT execution_id, entry_index, entry_type, tool_name, content, created_at,
+                   SELECT execution_id, entry_index,
                           ROW_NUMBER() OVER (ORDER BY created_at, execution_id, entry_index) AS rn
                    FROM session_message_index
                    WHERE session_id = $1
@@ -169,17 +178,64 @@ impl SessionMessageIndex {
                )
                SELECT o.execution_id AS "execution_id!: Uuid",
                       o.entry_index AS "entry_index!: i64",
-                      o.entry_type AS "entry_type!",
-                      o.tool_name,
-                      o.content AS "content!",
-                      o.created_at AS "created_at!: DateTime<Utc>"
-               FROM ordered o, target t
+                      length(CAST(m.content AS BLOB)) AS "content_bytes!: i64"
+               FROM ordered o
+               CROSS JOIN target t
+               JOIN session_message_index m
+                 ON m.session_id = $1
+                AND m.execution_id = o.execution_id
+                AND m.entry_index = o.entry_index
                WHERE o.rn BETWEEN t.rn - $4 AND t.rn + $4
                ORDER BY o.rn"#,
             session_id,
             execution_id,
             entry_index,
             radius
+        )
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Load only the already-selected rows around a hit. `before` and `after`
+    /// may differ because the byte budget is shared by both sides.
+    pub async fn slice_range(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        execution_id: Uuid,
+        entry_index: i64,
+        before: i64,
+        after: i64,
+    ) -> Result<Vec<SessionMessageSliceRow>, sqlx::Error> {
+        sqlx::query_as!(
+            SessionMessageSliceRow,
+            r#"WITH ordered AS (
+                   SELECT execution_id, entry_index,
+                          ROW_NUMBER() OVER (ORDER BY created_at, execution_id, entry_index) AS rn
+                   FROM session_message_index
+                   WHERE session_id = $1
+               ),
+               target AS (
+                   SELECT rn FROM ordered WHERE execution_id = $2 AND entry_index = $3
+               )
+               SELECT m.execution_id AS "execution_id!: Uuid",
+                      m.entry_index AS "entry_index!: i64",
+                      m.entry_type AS "entry_type!",
+                      m.tool_name,
+                      m.content AS "content!",
+                      m.created_at AS "created_at!: DateTime<Utc>"
+               FROM ordered o
+               CROSS JOIN target t
+               JOIN session_message_index m
+                 ON m.session_id = $1
+                AND m.execution_id = o.execution_id
+                AND m.entry_index = o.entry_index
+               WHERE o.rn BETWEEN t.rn - $4 AND t.rn + $5
+               ORDER BY o.rn"#,
+            session_id,
+            execution_id,
+            entry_index,
+            before,
+            after
         )
         .fetch_all(pool)
         .await
@@ -403,8 +459,15 @@ mod tests {
         );
         assert!(hits.iter().all(|h| h.session_id == session_id));
 
-        // Slice around the last entry of exec1 crosses into exec2.
-        let slice = SessionMessageIndex::slice(&pool, session_id, exec1, 1, 1)
+        // Slice metadata measures UTF-8 bytes without loading message bodies.
+        let metadata = SessionMessageIndex::slice_metadata(&pool, session_id, exec1, 1, 1)
+            .await
+            .unwrap();
+        assert_eq!(metadata.len(), 3);
+        assert_eq!(metadata[0].content_bytes, 43);
+
+        // The selected range around the last entry of exec1 crosses into exec2.
+        let slice = SessionMessageIndex::slice_range(&pool, session_id, exec1, 1, 1, 1)
             .await
             .unwrap();
         let keys: Vec<(Uuid, i64)> = slice

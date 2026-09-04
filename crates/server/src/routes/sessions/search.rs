@@ -10,7 +10,9 @@ use axum::{
 use chrono::{DateTime, Utc};
 use db::models::{
     session::Session,
-    session_message_index::{SessionMessageIndex, SessionMessageSliceRow},
+    session_message_index::{
+        SessionMessageIndex, SessionMessageSliceMetadata, SessionMessageSliceRow,
+    },
 };
 use deployment::Deployment;
 use serde::{Deserialize, Serialize};
@@ -124,12 +126,20 @@ pub struct SessionSliceQuery {
 }
 
 #[derive(Debug, Serialize)]
+pub struct SessionSliceCursor {
+    pub execution_id: Uuid,
+    pub entry_index: i64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SessionSliceResponse {
     pub entries: Vec<SessionMessageSliceRow>,
     /// Entries within `radius` existed before/after `entries` but were cut by
-    /// the byte budget; re-anchor on the first/last returned entry to continue.
+    /// the byte budget. The cursors point to the first omitted entries.
     pub truncated_before: bool,
     pub truncated_after: bool,
+    pub before_cursor: Option<SessionSliceCursor>,
+    pub after_cursor: Option<SessionSliceCursor>,
 }
 
 pub async fn get_session_message_slice(
@@ -141,7 +151,7 @@ pub async fn get_session_message_slice(
         .radius
         .unwrap_or(DEFAULT_SLICE_RADIUS)
         .clamp(0, MAX_SLICE_RADIUS);
-    let rows = SessionMessageIndex::slice(
+    let metadata = SessionMessageIndex::slice_metadata(
         &deployment.db().pool,
         session.id,
         query.execution_id,
@@ -149,59 +159,93 @@ pub async fn get_session_message_slice(
         radius,
     )
     .await?;
-    let hit = rows
+    let Some(hit) = metadata
         .iter()
-        .position(|r| r.execution_id == query.execution_id && r.entry_index == query.entry_index);
-    Ok(ResponseJson(ApiResponse::success(apply_slice_budget(
-        rows,
-        hit,
-        SLICE_BUDGET_BYTES,
-    ))))
-}
-
-/// Keep `rows` (session order, hit at `hit`) within `budget` content bytes by
-/// growing outward from the hit one entry per side at a time, so the hit and
-/// its nearest context always survive and the far edges are cut first. The hit
-/// itself is kept even if it alone exceeds the budget.
-fn apply_slice_budget(
-    rows: Vec<SessionMessageSliceRow>,
-    hit: Option<usize>,
-    budget: usize,
-) -> SessionSliceResponse {
-    let Some(hit) = hit else {
-        return SessionSliceResponse {
+        .position(|r| r.execution_id == query.execution_id && r.entry_index == query.entry_index)
+    else {
+        return Ok(ResponseJson(ApiResponse::success(SessionSliceResponse {
             entries: Vec::new(),
             truncated_before: false,
             truncated_after: false,
-        };
+            before_cursor: None,
+            after_cursor: None,
+        })));
     };
+    let window = slice_window_within_budget(&metadata, Some(hit), SLICE_BUDGET_BYTES)
+        .expect("slice metadata contains the hit");
+    let before_cursor = window
+        .lo
+        .checked_sub(1)
+        .and_then(|index| metadata.get(index))
+        .map(SessionSliceCursor::from);
+    let after_cursor = metadata.get(window.hi + 1).map(SessionSliceCursor::from);
+    let entries = SessionMessageIndex::slice_range(
+        &deployment.db().pool,
+        session.id,
+        query.execution_id,
+        query.entry_index,
+        (hit - window.lo) as i64,
+        (window.hi - hit) as i64,
+    )
+    .await?;
+
+    Ok(ResponseJson(ApiResponse::success(SessionSliceResponse {
+        entries,
+        truncated_before: before_cursor.is_some(),
+        truncated_after: after_cursor.is_some(),
+        before_cursor,
+        after_cursor,
+    })))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SliceWindow {
+    lo: usize,
+    hi: usize,
+}
+
+impl From<&SessionMessageSliceMetadata> for SessionSliceCursor {
+    fn from(row: &SessionMessageSliceMetadata) -> Self {
+        Self {
+            execution_id: row.execution_id,
+            entry_index: row.entry_index,
+        }
+    }
+}
+
+/// Choose a contiguous range within `budget` before loading message bodies.
+/// The hit itself is kept even if it alone exceeds the budget.
+fn slice_window_within_budget(
+    rows: &[SessionMessageSliceMetadata],
+    hit: Option<usize>,
+    budget: usize,
+) -> Option<SliceWindow> {
+    let hit = hit?;
     let (mut lo, mut hi) = (hit, hit);
-    let mut used = rows[hit].content.len();
+    let mut used = usize::try_from(rows[hit].content_bytes).unwrap_or(usize::MAX);
     loop {
         let mut grew = false;
-        if lo > 0 && used + rows[lo - 1].content.len() <= budget {
+        if lo > 0
+            && usize::try_from(rows[lo - 1].content_bytes).unwrap_or(usize::MAX)
+                <= budget.saturating_sub(used)
+        {
             lo -= 1;
-            used += rows[lo].content.len();
+            used += usize::try_from(rows[lo].content_bytes).unwrap_or(usize::MAX);
             grew = true;
         }
-        if hi + 1 < rows.len() && used + rows[hi + 1].content.len() <= budget {
+        if hi + 1 < rows.len()
+            && usize::try_from(rows[hi + 1].content_bytes).unwrap_or(usize::MAX)
+                <= budget.saturating_sub(used)
+        {
             hi += 1;
-            used += rows[hi].content.len();
+            used += usize::try_from(rows[hi].content_bytes).unwrap_or(usize::MAX);
             grew = true;
         }
         if !grew {
             break;
         }
     }
-    let truncated_after = hi + 1 < rows.len();
-    let mut entries = rows;
-    entries.truncate(hi + 1);
-    entries.drain(..lo);
-    SessionSliceResponse {
-        entries,
-        truncated_before: lo > 0,
-        truncated_after,
-    }
+    Some(SliceWindow { lo, hi })
 }
 
 /// Trim `content` to a window around the first (case-insensitive) match of
@@ -242,50 +286,78 @@ fn snippet_around_match(content: &str, query: &str) -> String {
 mod tests {
     use super::*;
 
-    fn row(i: i64, bytes: usize) -> SessionMessageSliceRow {
-        SessionMessageSliceRow {
+    fn row(i: i64, bytes: i64) -> SessionMessageSliceMetadata {
+        SessionMessageSliceMetadata {
             execution_id: Uuid::nil(),
             entry_index: i,
-            entry_type: "assistant_message".to_string(),
-            tool_name: None,
-            content: "x".repeat(bytes),
-            created_at: Utc::now(),
+            content_bytes: bytes,
         }
     }
 
     #[test]
     fn slice_budget_grows_outward_from_hit_and_flags_cut_edges() {
         // 7 rows of 10 bytes, hit in the middle, budget for 5 rows.
-        let rows = (0..7).map(|i| row(i, 10)).collect();
-        let out = apply_slice_budget(rows, Some(3), 50);
-        let kept: Vec<i64> = out.entries.iter().map(|r| r.entry_index).collect();
-        assert_eq!(kept, vec![1, 2, 3, 4, 5]);
-        assert!(out.truncated_before && out.truncated_after);
+        let rows: Vec<_> = (0..7).map(|i| row(i, 10)).collect();
+        assert_eq!(
+            slice_window_within_budget(&rows, Some(3), 50),
+            Some(SliceWindow { lo: 1, hi: 5 })
+        );
 
         // Hit at the start: the whole budget goes forward, nothing to cut before.
-        let rows = (0..7).map(|i| row(i, 10)).collect();
-        let out = apply_slice_budget(rows, Some(0), 35);
-        let kept: Vec<i64> = out.entries.iter().map(|r| r.entry_index).collect();
-        assert_eq!(kept, vec![0, 1, 2]);
-        assert!(!out.truncated_before && out.truncated_after);
+        let rows: Vec<_> = (0..7).map(|i| row(i, 10)).collect();
+        assert_eq!(
+            slice_window_within_budget(&rows, Some(0), 35),
+            Some(SliceWindow { lo: 0, hi: 2 })
+        );
 
         // Everything fits: no flags.
-        let rows = (0..3).map(|i| row(i, 10)).collect();
-        let out = apply_slice_budget(rows, Some(1), 1000);
-        assert_eq!(out.entries.len(), 3);
-        assert!(!out.truncated_before && !out.truncated_after);
+        let rows: Vec<_> = (0..3).map(|i| row(i, 10)).collect();
+        assert_eq!(
+            slice_window_within_budget(&rows, Some(1), 1000),
+            Some(SliceWindow { lo: 0, hi: 2 })
+        );
 
         // A huge neighbour blocks one side only; the hit is always kept.
         let rows = vec![row(0, 500), row(1, 10), row(2, 10)];
-        let out = apply_slice_budget(rows, Some(1), 30);
-        let kept: Vec<i64> = out.entries.iter().map(|r| r.entry_index).collect();
-        assert_eq!(kept, vec![1, 2]);
-        assert!(out.truncated_before && !out.truncated_after);
-        let out = apply_slice_budget(vec![row(0, 500)], Some(0), 30);
-        assert_eq!(out.entries.len(), 1, "oversized hit is still returned");
+        assert_eq!(
+            slice_window_within_budget(&rows, Some(1), 30),
+            Some(SliceWindow { lo: 1, hi: 2 })
+        );
+        assert_eq!(
+            slice_window_within_budget(&[row(0, 500)], Some(0), 30),
+            Some(SliceWindow { lo: 0, hi: 0 }),
+            "oversized hit is still returned"
+        );
 
         // Unknown anchor yields nothing.
-        assert!(apply_slice_budget(Vec::new(), None, 30).entries.is_empty());
+        assert_eq!(slice_window_within_budget(&[], None, 30), None);
+    }
+
+    #[test]
+    fn slice_continuation_cursor_always_advances() {
+        let rows = vec![row(0, 4_000), row(1, 61_000), row(2, 4_000)];
+
+        let first = slice_window_within_budget(&rows, Some(0), SLICE_BUDGET_BYTES).unwrap();
+        assert_eq!(first, SliceWindow { lo: 0, hi: 1 });
+        let after = SessionSliceCursor::from(&rows[first.hi + 1]);
+        let next_hit = rows
+            .iter()
+            .position(|row| row.entry_index == after.entry_index);
+        assert_eq!(
+            slice_window_within_budget(&rows, next_hit, SLICE_BUDGET_BYTES),
+            Some(SliceWindow { lo: 1, hi: 2 })
+        );
+
+        let last = slice_window_within_budget(&rows, Some(2), SLICE_BUDGET_BYTES).unwrap();
+        assert_eq!(last, SliceWindow { lo: 1, hi: 2 });
+        let before = SessionSliceCursor::from(&rows[last.lo - 1]);
+        let previous_hit = rows
+            .iter()
+            .position(|row| row.entry_index == before.entry_index);
+        assert_eq!(
+            slice_window_within_budget(&rows, previous_hit, SLICE_BUDGET_BYTES),
+            Some(SliceWindow { lo: 0, hi: 1 })
+        );
     }
 
     #[test]
