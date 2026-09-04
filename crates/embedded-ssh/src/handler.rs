@@ -5,13 +5,12 @@
 
 use std::{collections::HashMap, process::Stdio};
 
-use async_trait::async_trait;
 use relay_control::signing::RelaySigningService;
 use russh::{
-    Channel, ChannelId, CryptoVec, Pty,
+    Channel, ChannelId, Pty,
+    keys::PublicKey,
     server::{Auth, Msg, Session},
 };
-use russh_keys::PublicKey;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
@@ -126,7 +125,7 @@ impl SshSessionHandler {
                 match stdout.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
-                        let data = CryptoVec::from_slice(&buf[..n]);
+                        let data = buf[..n].to_vec();
                         if handle.data(channel_id, data).await.is_err() {
                             break;
                         }
@@ -147,7 +146,7 @@ impl SshSessionHandler {
                 match stderr.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
-                        let data = CryptoVec::from_slice(&buf[..n]);
+                        let data = buf[..n].to_vec();
                         if handle.extended_data(channel_id, 1, data).await.is_err() {
                             break;
                         }
@@ -207,7 +206,6 @@ impl Drop for SshSessionHandler {
     }
 }
 
-#[async_trait]
 impl russh::server::Handler for SshSessionHandler {
     type Error = anyhow::Error;
 
@@ -220,9 +218,7 @@ impl russh::server::Handler for SshSessionHandler {
         let ed25519_key = match public_key.key_data().ed25519() {
             Some(key) => key,
             None => {
-                return Ok(Auth::Reject {
-                    proceed_with_methods: None,
-                });
+                return Ok(Auth::reject());
             }
         };
 
@@ -237,9 +233,7 @@ impl russh::server::Handler for SshSessionHandler {
             Ok(Auth::Accept)
         } else {
             tracing::debug!("SSH auth rejected: no matching signing session");
-            Ok(Auth::Reject {
-                proceed_with_methods: None,
-            })
+            Ok(Auth::reject())
         }
     }
 

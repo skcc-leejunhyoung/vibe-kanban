@@ -20,7 +20,7 @@ directories = "6.0.0"
 open = "5.3.2"
 regex = "1.11.1"
 json-patch = "2.0"
-jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.2.0", default-features = false }
 tokio = { workspace = true }
 futures = "0.3.31"
 tokio-stream = { version = "0.1.17", features = ["sync"] }

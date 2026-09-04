@@ -311,3 +311,32 @@ impl JwtService {
         Ok(hasher.finalize().into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hs256_round_trip_uses_configured_provider() {
+        let secret = STANDARD.encode([7; 32]);
+        let user_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let claims = AccessTokenClaims {
+            sub: user_id,
+            session_id,
+            iat: Utc::now().timestamp(),
+            exp: (Utc::now() + ChronoDuration::minutes(1)).timestamp(),
+            aud: "access".to_string(),
+        };
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_base64_secret(&secret).unwrap(),
+        )
+        .unwrap();
+        let jwt = JwtService::new(SecretString::new(secret.into()));
+
+        let decoded = jwt.decode_access_token(&token).unwrap();
+        assert_eq!((decoded.user_id, decoded.session_id), (user_id, session_id));
+    }
+}
