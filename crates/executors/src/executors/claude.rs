@@ -3598,13 +3598,20 @@ mod tests {
             "type": "user",
             "message": {
                 "role": "user",
-                "content": "Stop hook feedback: Finish the requested verification",
+                "content": [{
+                    "type": "text",
+                    "text": "Stop hook feedback: Finish the requested verification",
+                }],
             },
-            "isMeta": true,
+            "isSynthetic": true,
         }))
         .unwrap();
         let entries = normalize(&stop_hook_feedback, "");
         assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            entries[0].entry_type,
+            NormalizedEntryType::SystemMessage
+        ));
         assert_eq!(
             entries[0].content,
             "Stop hook feedback: Finish the requested verification"
