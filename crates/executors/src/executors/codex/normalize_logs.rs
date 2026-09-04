@@ -47,6 +47,7 @@ use workspace_utils::{
     diff::normalize_unified_diff,
     msg_store::MsgStore,
     path::make_path_relative,
+    stream_lines::LinesStreamExt,
 };
 
 use crate::{
@@ -902,6 +903,9 @@ fn dynamic_tool_markdown_from_app_items(
             AppDynamicToolCallOutputContentItem::InputImage { image_url } => {
                 dynamic_tool_image_markdown(image_url, worktree_path)
             }
+            AppDynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                format!("Audio: {audio_url}")
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -917,6 +921,9 @@ fn dynamic_tool_markdown_from_core_items(
             CoreDynamicToolCallOutputContentItem::InputText { text } => text.clone(),
             CoreDynamicToolCallOutputContentItem::InputImage { image_url } => {
                 dynamic_tool_image_markdown(image_url, worktree_path)
+            }
+            CoreDynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                format!("Audio: {audio_url}")
             }
         })
         .collect::<Vec<_>>()
@@ -1237,6 +1244,7 @@ fn handle_direct_item_started(
         | AppThreadItem::SubAgentActivity { .. }) => {
             handle_collab_thread_item(state, msg_store, entry_index, event_at_ms, item);
         }
+        AppThreadItem::FunctionCallOutput { .. } => {}
         _ => {}
     }
 }
@@ -1439,6 +1447,7 @@ fn handle_direct_item_completed(
         | AppThreadItem::SubAgentActivity { .. }) => {
             handle_collab_thread_item(state, msg_store, entry_index, event_at_ms, item);
         }
+        AppThreadItem::FunctionCallOutput { .. } => {}
         _ => {}
     }
 }
@@ -1609,7 +1618,10 @@ fn handle_collab_thread_item(
                         },
                     );
                 }
-                AppCollabAgentTool::SendInput | AppCollabAgentTool::ResumeAgent => {
+                AppCollabAgentTool::SendInput
+                | AppCollabAgentTool::ResumeAgent
+                | AppCollabAgentTool::SendMessage
+                | AppCollabAgentTool::FollowupTask => {
                     if !call_failed {
                         let activity = prompt.as_deref().and_then(collab_prompt_line);
                         for thread_id in &receiver_thread_ids {
@@ -1629,7 +1641,10 @@ fn handle_collab_thread_item(
                         }
                     }
                 }
-                AppCollabAgentTool::Wait | AppCollabAgentTool::CloseAgent => {}
+                AppCollabAgentTool::Wait
+                | AppCollabAgentTool::CloseAgent
+                | AppCollabAgentTool::InterruptAgent
+                | AppCollabAgentTool::ListAgents => {}
             }
             for (thread_id, agent_state) in &agents_states {
                 // A NotFound answer for a thread we never rendered must not
@@ -1683,6 +1698,10 @@ fn handle_collab_thread_item(
                         AppSubAgentActivityKind::Interrupted => {
                             task.status = ToolStatus::Failed;
                             task.last_activity = Some("Interrupted".to_string());
+                        }
+                        AppSubAgentActivityKind::Completed => {
+                            task.status = ToolStatus::Success;
+                            task.last_activity = Some("Completed".to_string());
                         }
                     }
                 },
@@ -1947,10 +1966,11 @@ const SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
     // exists on disk but isn't indexed in the state DB — even when the Sqlite feature flag is
     // disabled (which is the default). See: https://github.com/openai/codex/commit/c38a5958
     "state db missing rollout path for",
-    // A Codex upgrade can leave models_cache.json in the previous schema. The CLI logs this
-    // while discarding the stale cache and refreshing the model catalog, so it is not an agent
-    // response parsing failure and should not be surfaced as a failed turn.
-    "failed to load models cache: missing field `supports_reasoning_summaries`",
+    // Coexisting Codex versions can rewrite models_cache.json with incompatible schemas. Cache
+    // load and TTL renewal failures recover by refreshing the model catalog, so neither should be
+    // surfaced as a failed turn.
+    "failed to load models cache",
+    "failed to renew cache TTL",
 ];
 
 /// Codex-specific stderr normalizer that filters noisy internal messages.
@@ -1959,7 +1979,7 @@ fn normalize_codex_stderr_logs(
     entry_index_provider: EntryIndexProvider,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut stderr = msg_store.stderr_chunked_stream();
+        let mut stderr = msg_store.stderr_chunked_stream().lines();
         let mut processor = PlainTextLogProcessor::builder()
             .normalized_entry_producer(|content: String| NormalizedEntry {
                 timestamp: None,
@@ -1971,17 +1991,16 @@ fn normalize_codex_stderr_logs(
             })
             .time_gap(Duration::from_secs(2))
             .index_provider(entry_index_provider)
-            .transform_lines(Box::new(|lines: &mut Vec<String>| {
-                lines.retain(|line| {
-                    !SUPPRESSED_STDERR_PATTERNS
-                        .iter()
-                        .any(|pattern| line.contains(pattern))
-                });
-            }))
             .build();
 
-        while let Some(Ok(chunk)) = stderr.next().await {
-            for patch in processor.process(chunk) {
+        while let Some(Ok(line)) = stderr.next().await {
+            if SUPPRESSED_STDERR_PATTERNS
+                .iter()
+                .any(|pattern| line.contains(pattern))
+            {
+                continue;
+            }
+            for patch in processor.process(line + "\n") {
                 msg_store.push_patch(patch);
             }
         }
@@ -2669,6 +2688,7 @@ pub fn normalize_logs(
                 EventMsg::Error(ErrorEvent {
                     message,
                     codex_error_info,
+                    ..
                 }) => {
                     add_normalized_entry(
                         &msg_store,
@@ -2743,6 +2763,7 @@ pub fn normalize_logs(
                     turn_id: _,
                     questions: event_questions,
                     auto_resolution_ms: _,
+                    ..
                 }) => {
                     state.assistant = None;
                     state.thinking = None;
@@ -3225,6 +3246,34 @@ mod tests {
         }
 
         latest_normalized_entries(&msg_store)
+    }
+
+    #[tokio::test]
+    async fn suppresses_model_cache_warnings_but_keeps_capacity_errors() {
+        let msg_store = Arc::new(MsgStore::new());
+        msg_store.push(LogMsg::Stderr("failed to load models ca".to_string()));
+        msg_store.push(LogMsg::Stderr(
+            "che: missing field `base_instructions`\nfailed to renew cache T".to_string(),
+        ));
+        msg_store.push(LogMsg::Stderr(
+            "TL: missing field `supports_reasoning_summaries`\nError: Selected model is at capacity\n"
+                .to_string(),
+        ));
+        msg_store.push_finished();
+
+        for handle in normalize_logs(msg_store.clone(), Path::new("/tmp/test-worktree")) {
+            handle.await.unwrap();
+        }
+
+        let entries = latest_normalized_entries(&msg_store);
+        let patch_count = msg_store
+            .get_history()
+            .iter()
+            .filter(|msg| matches!(msg, LogMsg::JsonPatch(_)))
+            .count();
+        assert_eq!(patch_count, 1);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "Error: Selected model is at capacity\n");
     }
 
     #[test]

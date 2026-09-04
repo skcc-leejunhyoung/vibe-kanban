@@ -172,6 +172,7 @@ where
 pub(crate) fn fork_params_from(thread_id: String, params: ThreadStartParams) -> ThreadForkParams {
     ThreadForkParams {
         thread_id,
+        exclude_turns: true,
         model: params.model,
         model_provider: params.model_provider,
         cwd: params.cwd,
@@ -628,7 +629,7 @@ impl Codex {
         self.probe_app_server(THREAD_READ_TIMEOUT, "reading Codex thread", {
             |client| async move {
                 client
-                    .thread_read(thread_id, true)
+                    .thread_read_full(thread_id)
                     .await
                     .map(|resp| resp.thread)
             }
@@ -1048,6 +1049,17 @@ mod tests {
     };
 
     #[test]
+    fn fork_excludes_deprecated_full_history_hydration() {
+        let params = super::fork_params_from(
+            "thread-1".to_string(),
+            codex_app_server_protocol::ThreadStartParams::default(),
+        );
+
+        assert!(params.exclude_turns);
+        assert_eq!(serde_json::to_value(params).unwrap()["excludeTurns"], true);
+    }
+
+    #[test]
     fn applies_per_run_sandbox_override() {
         let mut codex: Codex = serde_json::from_value(json!({})).unwrap();
         let mut config = ExecutorConfig::new(BaseCodingAgent::Codex);
@@ -1269,6 +1281,24 @@ mod tests {
         assert!(matches!(
             item,
             codex_app_server_protocol::ThreadItem::SubAgentActivity { .. }
+        ));
+    }
+
+    #[test]
+    fn decodes_function_call_output_from_thread_history() {
+        let item =
+            serde_json::from_value::<codex_app_server_protocol::ThreadItem>(serde_json::json!({
+                "type": "functionCallOutput",
+                "id": "output-1",
+                "name": "send_message",
+                "namespace": "collaboration",
+                "output": "delivered"
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            item,
+            codex_app_server_protocol::ThreadItem::FunctionCallOutput { .. }
         ));
     }
 

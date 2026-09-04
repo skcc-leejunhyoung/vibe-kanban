@@ -1,0 +1,10 @@
+[package]
+name = "codex-rollout"
+version = "0.152.1"
+edition = "2024"
+publish = false
+
+[dependencies]
+codex-history = { git = "https://github.com/openai/codex.git", tag = "rust-v0.152.1" }
+
+[workspace]

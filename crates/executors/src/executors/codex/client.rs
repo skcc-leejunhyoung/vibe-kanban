@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io,
     sync::{
         Arc, OnceLock,
@@ -19,12 +19,14 @@ use codex_app_server_protocol::{
     InitializeResponse, ItemCompletedNotification, JSONRPCError, JSONRPCNotification,
     JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams, ListMcpServerStatusResponse,
     McpServerStatusDetail, ModelListParams, ModelListResponse, RateLimitSnapshot, RateLimitWindow,
-    RequestId, ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest,
+    RequestId, ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest, SortDirection,
     ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
-    ThreadItem, ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
-    ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse,
-    TurnCompletedNotification, TurnInterruptParams, TurnInterruptResponse, TurnStartParams,
-    TurnStartResponse, TurnStatus, UserInput,
+    ThreadHistoryMode, ThreadItem, ThreadItemEntry, ThreadItemsListParams, ThreadItemsListResponse,
+    ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
+    ThreadTurnsListParams, ThreadTurnsListResponse, ToolRequestUserInputAnswer,
+    ToolRequestUserInputQuestion, ToolRequestUserInputResponse, Turn, TurnCompletedNotification,
+    TurnInterruptParams, TurnInterruptResponse, TurnItemsView, TurnStartParams, TurnStartResponse,
+    TurnStatus, UserInput,
 };
 use codex_protocol::{
     config_types::{CollaborationMode, ModeKind, Settings},
@@ -53,6 +55,8 @@ use crate::{
 struct PendingPlan {
     item_id: String,
 }
+
+const THREAD_HISTORY_PAGE_LIMIT: u32 = 100;
 
 pub struct AppServerClient {
     rpc: OnceLock<JsonRpcPeer>,
@@ -273,7 +277,7 @@ impl AppServerClient {
         self.send_request(request, "thread/compact/start").await
     }
 
-    pub async fn thread_read(
+    async fn thread_read_with_turns(
         &self,
         thread_id: String,
         include_turns: bool,
@@ -286,6 +290,91 @@ impl AppServerClient {
             },
         };
         self.send_request(request, "thread/read").await
+    }
+
+    pub async fn thread_read(
+        &self,
+        thread_id: String,
+    ) -> Result<ThreadReadResponse, ExecutorError> {
+        self.thread_read_with_turns(thread_id, false).await
+    }
+
+    pub async fn thread_read_full(
+        &self,
+        thread_id: String,
+    ) -> Result<ThreadReadResponse, ExecutorError> {
+        let mut response = self.thread_read(thread_id.clone()).await?;
+        if response.thread.history_mode == ThreadHistoryMode::Legacy {
+            return self.thread_read_with_turns(thread_id, true).await;
+        }
+
+        let items = self.thread_items(thread_id.clone()).await?;
+        let mut turns = self.thread_turns(thread_id).await?;
+        hydrate_thread_items(&mut turns, items);
+        response.thread.turns = turns;
+        Ok(response)
+    }
+
+    async fn thread_turns(&self, thread_id: String) -> Result<Vec<Turn>, ExecutorError> {
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        let mut turns = Vec::new();
+        loop {
+            let request = ClientRequest::ThreadTurnsList {
+                request_id: self.next_request_id(),
+                params: ThreadTurnsListParams {
+                    thread_id: thread_id.clone(),
+                    cursor,
+                    limit: Some(THREAD_HISTORY_PAGE_LIMIT),
+                    sort_direction: Some(SortDirection::Asc),
+                    items_view: Some(TurnItemsView::NotLoaded),
+                },
+            };
+            let response: ThreadTurnsListResponse =
+                self.send_request(request, "thread/turns/list").await?;
+            turns.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                return Ok(turns);
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                return Err(ExecutorError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "thread/turns/list returned a repeated cursor",
+                )));
+            }
+            cursor = Some(next_cursor);
+        }
+    }
+
+    async fn thread_items(&self, thread_id: String) -> Result<Vec<ThreadItemEntry>, ExecutorError> {
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        let mut items = Vec::new();
+        loop {
+            let request = ClientRequest::ThreadItemsList {
+                request_id: self.next_request_id(),
+                params: ThreadItemsListParams {
+                    thread_id: thread_id.clone(),
+                    turn_id: None,
+                    cursor,
+                    limit: Some(THREAD_HISTORY_PAGE_LIMIT),
+                    sort_direction: Some(SortDirection::Asc),
+                },
+            };
+            let response: ThreadItemsListResponse =
+                self.send_request(request, "thread/items/list").await?;
+            items.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                return Ok(items);
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                return Err(ExecutorError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "thread/items/list returned a repeated cursor",
+                )));
+            }
+            cursor = Some(next_cursor);
+        }
     }
 
     /// Interrupt whatever the given thread is currently doing. An empty
@@ -535,7 +624,7 @@ impl AppServerClient {
             }
             ServerRequest::AttestationGenerate { request_id, .. } => {
                 let response = AttestationGenerateResponse {
-                    token: String::new(),
+                    token: String::new().into(),
                 };
                 send_server_response(peer, request_id, response).await?;
                 Ok(())
@@ -1159,6 +1248,8 @@ fn request_id(request: &ClientRequest) -> RequestId {
         | ClientRequest::McpServerStatusList { request_id, .. }
         | ClientRequest::ThreadCompactStart { request_id, .. }
         | ClientRequest::ThreadRead { request_id, .. }
+        | ClientRequest::ThreadTurnsList { request_id, .. }
+        | ClientRequest::ThreadItemsList { request_id, .. }
         | ClientRequest::ConfigRead { request_id, .. }
         | ClientRequest::ConfigBatchWrite { request_id, .. }
         | ClientRequest::GetAccountRateLimits { request_id, .. }
@@ -1167,11 +1258,76 @@ fn request_id(request: &ClientRequest) -> RequestId {
     }
 }
 
+fn hydrate_thread_items(turns: &mut [Turn], entries: Vec<ThreadItemEntry>) {
+    let mut items_by_turn: HashMap<String, Vec<ThreadItem>> = HashMap::new();
+    for entry in entries {
+        items_by_turn
+            .entry(entry.turn_id)
+            .or_default()
+            .push(entry.item);
+    }
+    for turn in turns {
+        turn.items = items_by_turn.remove(&turn.id).unwrap_or_default();
+        turn.items_view = TurnItemsView::Full;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use codex_app_server_protocol::RateLimitReachedType;
 
     use super::*;
+
+    #[test]
+    fn hydrates_paginated_items_into_their_turns() {
+        let mut turns: Vec<Turn> = ["turn-1", "turn-2"]
+            .into_iter()
+            .map(|id| {
+                serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "items": [],
+                    "itemsView": "notLoaded",
+                    "status": "completed",
+                    "error": null,
+                    "startedAt": null,
+                    "completedAt": null,
+                    "durationMs": null
+                }))
+                .unwrap()
+            })
+            .collect();
+        let entries = [
+            ("turn-1", "item-1"),
+            ("turn-1", "item-2"),
+            ("turn-2", "item-3"),
+        ]
+        .into_iter()
+        .map(|(turn_id, id)| ThreadItemEntry {
+            turn_id: turn_id.to_string(),
+            item: serde_json::from_value(serde_json::json!({
+                "type": "agentMessage",
+                "id": id,
+                "text": id
+            }))
+            .unwrap(),
+        })
+        .collect();
+
+        hydrate_thread_items(&mut turns, entries);
+
+        assert_eq!(
+            turns
+                .iter()
+                .map(|turn| { turn.items.iter().map(|item| item.id()).collect::<Vec<_>>() })
+                .collect::<Vec<_>>(),
+            vec![vec!["item-1", "item-2"], vec!["item-3"]]
+        );
+        assert!(
+            turns
+                .iter()
+                .all(|turn| turn.items_view == TurnItemsView::Full)
+        );
+    }
 
     #[test]
     fn collaboration_mode_preserves_every_reasoning_effort() {
@@ -1225,6 +1381,7 @@ mod tests {
             secondary,
             credits: None,
             individual_limit: None,
+            spend_control_reached: None,
             plan_type: None,
             rate_limit_reached_type,
         }

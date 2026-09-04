@@ -26,6 +26,7 @@ use workspace_utils::{
     log_msg::LogMsg,
     msg_store::MsgStore,
     path::make_path_relative,
+    stream_lines::LinesStreamExt,
 };
 
 use self::{
@@ -60,7 +61,10 @@ use crate::{
     stdout_dup::create_stdout_pipe_writer,
 };
 
-const SUPPRESSED_STDERR_PATTERNS: &[&str] = &["[WARN] Fast mode requires the native binary"];
+const SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
+    "[WARN] Fast mode requires the native binary",
+    "permissions.allow entries from .claude/settings.json: this workspace has not been trusted",
+];
 
 fn base_command(claude_code_router: bool) -> &'static str {
     if claude_code_router {
@@ -75,7 +79,7 @@ fn normalize_claude_stderr_logs(
     entry_index_provider: EntryIndexProvider,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut stderr = msg_store.stderr_chunked_stream();
+        let mut stderr = msg_store.stderr_chunked_stream().lines();
 
         let mut processor = PlainTextLogProcessor::builder()
             .normalized_entry_producer(|content: String| NormalizedEntry {
@@ -88,17 +92,16 @@ fn normalize_claude_stderr_logs(
             })
             .time_gap(Duration::from_secs(2))
             .index_provider(entry_index_provider)
-            .transform_lines(Box::new(|lines: &mut Vec<String>| {
-                lines.retain(|line| {
-                    !SUPPRESSED_STDERR_PATTERNS
-                        .iter()
-                        .any(|pattern| line.contains(pattern))
-                });
-            }))
             .build();
 
-        while let Some(Ok(chunk)) = stderr.next().await {
-            for patch in processor.process(chunk) {
+        while let Some(Ok(line)) = stderr.next().await {
+            if SUPPRESSED_STDERR_PATTERNS
+                .iter()
+                .any(|pattern| line.contains(pattern))
+            {
+                continue;
+            }
+            for patch in processor.process(line + "\n") {
                 msg_store.push_patch(patch);
             }
         }
@@ -1183,6 +1186,7 @@ impl ClaudeLogProcessor {
             ClaudeJson::ControlResponse { .. } => None,
             ClaudeJson::ControlCancelRequest { .. } => None,
             ClaudeJson::RateLimitEvent { session_id, .. } => session_id.clone(),
+            ClaudeJson::ToolProgress { .. } => None,
             ClaudeJson::Unknown { .. } => None,
         }
     }
@@ -1644,16 +1648,31 @@ impl ClaudeLogProcessor {
                         // We'll send system initialized message with first assistant message that has a model field.
                     }
                     Some("status") => {
-                        if let Some(status) = status {
+                        if let Some(status) = status
+                            && status != "requesting"
+                        {
                             patches.push(add_system_message(status.clone(), entry_index_provider));
                         }
                     }
-                    Some("compact_boundary") => {}
+                    Some("compact_boundary") => {
+                        patches.push(add_system_message(
+                            "Context compacted".to_string(),
+                            entry_index_provider,
+                        ));
+                    }
                     // Progress-only signal emitted during redacted/extended
                     // thinking. The estimate is already surfaced in the live
                     // thinking entry (via thinking deltas), so skip it here to
                     // avoid stacking a new "System: thinking_tokens" row per event.
                     Some("thinking_tokens") => {}
+                    Some(
+                        "hook_started"
+                        | "hook_progress"
+                        | "hook_response"
+                        | "background_tasks_changed"
+                        | "task_updated"
+                        | "notification",
+                    ) => {}
                     Some("task_started") => {
                         if let Some(tool_use_id) = tool_use_id {
                             // Only `task_started` (the background-task registry
@@ -2507,17 +2526,7 @@ impl ClaudeLogProcessor {
                 }
             }
             ClaudeJson::Unknown { data } => {
-                let entry = NormalizedEntry {
-                    timestamp: None,
-                    entry_type: NormalizedEntryType::SystemMessage,
-                    content: format!(
-                        "Unrecognized JSON message: {}",
-                        serde_json::to_value(data).unwrap_or_default()
-                    ),
-                    metadata: None,
-                };
-                let idx = entry_index_provider.next();
-                patches.push(ConversationPatch::add_normalized_entry(idx, entry));
+                tracing::debug!(?data, "Unrecognized Claude JSON message");
             }
             ClaudeJson::RateLimitEvent {
                 rate_limit_info, ..
@@ -2532,7 +2541,8 @@ impl ClaudeLogProcessor {
                     self.rate_limit_reported = true;
                 }
             }
-            ClaudeJson::ControlRequest { .. }
+            ClaudeJson::ToolProgress { .. }
+            | ClaudeJson::ControlRequest { .. }
             | ClaudeJson::ControlResponse { .. }
             | ClaudeJson::ControlCancelRequest { .. } => {}
         }
@@ -3016,6 +3026,7 @@ pub enum ClaudeJson {
         #[serde(default)]
         rate_limit_info: Option<serde_json::Value>,
     },
+    ToolProgress {},
     // Catch-all for unknown message types
     #[serde(untagged)]
     Unknown {
@@ -3440,6 +3451,37 @@ mod tests {
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
 
+    #[tokio::test]
+    async fn suppresses_untrusted_workspace_warning_but_keeps_real_stderr() {
+        use workspace_utils::log_msg::LogMsg;
+
+        let msg_store = Arc::new(MsgStore::new());
+        msg_store.push(LogMsg::Stderr(
+            "Ignoring 51 permissions.allow entries from .claude/settings.".to_string(),
+        ));
+        msg_store.push(LogMsg::Stderr(
+            "json: this workspace has not been trusted\nError: Claude process failed\n".to_string(),
+        ));
+        msg_store.push_finished();
+
+        normalize_claude_stderr_logs(msg_store.clone(), EntryIndexProvider::test_new())
+            .await
+            .unwrap();
+
+        let entries: Vec<_> = msg_store
+            .get_history()
+            .into_iter()
+            .filter_map(|msg| match msg {
+                LogMsg::JsonPatch(patch) => extract_normalized_entry_from_patch(&patch),
+                _ => None,
+            })
+            .map(|(_, entry)| entry)
+            .collect();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "Error: Claude process failed\n");
+    }
+
     #[test]
     fn unsupported_live_models_preserve_cached_selector() {
         let mut selector = default_discovered_options().model_selector;
@@ -3554,6 +3596,105 @@ mod tests {
         assert_eq!(
             entries[0].content,
             "System initialized with model: claude-sonnet-4-20250514"
+        );
+    }
+
+    #[test]
+    fn internal_cli_events_are_hidden_but_meaningful_statuses_remain() {
+        for subtype in [
+            "hook_started",
+            "hook_progress",
+            "hook_response",
+            "background_tasks_changed",
+            "task_updated",
+            "notification",
+        ] {
+            let parsed: ClaudeJson = serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": subtype,
+            }))
+            .unwrap();
+            assert!(
+                normalize(&parsed, "").is_empty(),
+                "{subtype} must be hidden"
+            );
+        }
+
+        let requesting: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "status",
+            "status": "requesting",
+        }))
+        .unwrap();
+        assert!(normalize(&requesting, "").is_empty());
+
+        let tool_progress: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "tool_progress",
+            "tool_use_id": "tool_1",
+            "tool_name": "Bash",
+            "parent_tool_use_id": null,
+            "elapsed_time_seconds": 30,
+            "uuid": "message_1",
+            "session_id": "session_1",
+        }))
+        .unwrap();
+        assert!(matches!(&tool_progress, ClaudeJson::ToolProgress { .. }));
+        assert!(normalize(&tool_progress, "").is_empty());
+
+        let unknown: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "future_event",
+            "payload": {"value": 1},
+        }))
+        .unwrap();
+        assert!(matches!(&unknown, ClaudeJson::Unknown { .. }));
+        assert!(normalize(&unknown, "").is_empty());
+
+        let compacting: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "status",
+            "status": "compacting",
+        }))
+        .unwrap();
+        let entries = normalize(&compacting, "");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "compacting");
+
+        let compact_boundary: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": "message_2",
+            "session_id": "session_1",
+            "compact_metadata": {
+                "trigger": "auto",
+                "pre_tokens": 120000,
+            },
+        }))
+        .unwrap();
+        let entries = normalize(&compact_boundary, "");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "Context compacted");
+
+        let stop_hook_feedback: ClaudeJson = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Stop hook feedback: Finish the requested verification",
+                }],
+            },
+            "isSynthetic": true,
+        }))
+        .unwrap();
+        let entries = normalize(&stop_hook_feedback, "");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            entries[0].entry_type,
+            NormalizedEntryType::SystemMessage
+        ));
+        assert_eq!(
+            entries[0].content,
+            "Stop hook feedback: Finish the requested verification"
         );
     }
 

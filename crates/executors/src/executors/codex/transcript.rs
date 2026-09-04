@@ -96,6 +96,7 @@ fn thread_item_markdown(item: &ThreadItem) -> Option<(&'static str, String)> {
             Some(("Agent", format!("_Tool:_ `{server}/{tool}`")))
         }
         ThreadItem::DynamicToolCall { tool, .. } => Some(("Agent", format!("_Tool:_ `{tool}`"))),
+        ThreadItem::FunctionCallOutput { .. } => None,
         _ => None,
     }
 }

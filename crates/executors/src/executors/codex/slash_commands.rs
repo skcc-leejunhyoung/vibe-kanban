@@ -271,10 +271,12 @@ impl Codex {
                     message,
                     phase: None,
                     memory_citation: None,
+                    delivery: None,
                 }),
                 Err(message) => EventMsg::Error(ErrorEvent {
                     message,
                     codex_error_info: None,
+                    misalignment: None,
                 }),
             }],
         )
@@ -335,6 +337,7 @@ pub async fn log_event_raw(log_writer: &LogWriter, message: String) -> Result<()
             message,
             phase: None,
             memory_citation: None,
+            delivery: None,
         }),
     )
     .await
@@ -413,7 +416,7 @@ async fn fetch_status_message(
     if let Some(thread_id) = thread_id {
         lines.push(String::new());
         lines.push("## Thread".to_string());
-        match client.thread_read(thread_id.to_string(), false).await {
+        match client.thread_read(thread_id.to_string()).await {
             Ok(resp) => {
                 let thread = &resp.thread;
                 lines.push(format!("- **ID**: `{}`", thread.id));
@@ -660,6 +663,7 @@ fn format_mcp_status(servers: &[codex_app_server_protocol::McpServerStatus]) -> 
 
 fn format_mcp_auth_status(status: &codex_app_server_protocol::McpAuthStatus) -> &'static str {
     match status {
+        codex_app_server_protocol::McpAuthStatus::Unknown => "unknown",
         codex_app_server_protocol::McpAuthStatus::Unsupported => "unsupported",
         codex_app_server_protocol::McpAuthStatus::NotLoggedIn => "not logged in",
         codex_app_server_protocol::McpAuthStatus::BearerToken => "bearer token",

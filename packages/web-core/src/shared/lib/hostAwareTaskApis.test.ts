@@ -419,7 +419,7 @@ describe('host-aware task APIs', () => {
       'PR description generation timed out.'
     );
 
-    await vi.advanceTimersByTimeAsync(150_000);
+    await vi.advanceTimersByTimeAsync(360_000);
 
     await rejection;
     expect(request).toHaveBeenLastCalledWith(

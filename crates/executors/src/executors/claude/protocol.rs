@@ -22,7 +22,7 @@ use crate::{
 /// Handles bidirectional control protocol communication
 #[derive(Clone)]
 pub struct ProtocolPeer {
-    stdin: Arc<Mutex<ChildStdin>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
 }
 
 impl ProtocolPeer {
@@ -33,7 +33,7 @@ impl ProtocolPeer {
         cancel: CancellationToken,
     ) -> Self {
         let peer = Self {
-            stdin: Arc::new(Mutex::new(stdin)),
+            stdin: Arc::new(Mutex::new(Some(stdin))),
         };
 
         let reader_peer = peer.clone();
@@ -70,7 +70,10 @@ impl ProtocolPeer {
                 }
                 line_result = reader.read_line(&mut buffer) => {
                     match line_result {
-                        Ok(0) => break, // EOF
+                        Ok(0) => {
+                            self.stdin.lock().await.take();
+                            break;
+                        }
                         Ok(_) => {
                             let line = buffer.trim();
                             if line.is_empty() {
@@ -88,6 +91,7 @@ impl ProtocolPeer {
                                         .await;
                                 }
                                 Ok(CLIMessage::Result(_)) => {
+                                    self.stdin.lock().await.take();
                                     break;
                                 }
                                 _ => {}
@@ -189,6 +193,12 @@ impl ProtocolPeer {
     async fn send_json<T: serde::Serialize>(&self, message: &T) -> Result<(), ExecutorError> {
         let json = serde_json::to_string(message)?;
         let mut stdin = self.stdin.lock().await;
+        let stdin = stdin.as_mut().ok_or_else(|| {
+            ExecutorError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Claude Code stdin is closed",
+            ))
+        })?;
         stdin.write_all(json.as_bytes()).await?;
         stdin.write_all(b"\n").await?;
         stdin.flush().await?;
@@ -226,5 +236,54 @@ impl ProtocolPeer {
             SDKControlRequestType::SetPermissionMode { mode },
         ))
         .await
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{process::Stdio, time::Duration};
+
+    use tokio::process::Command;
+
+    use super::*;
+    use crate::{env::RepoContext, executors::codex::client::LogWriter};
+
+    #[tokio::test]
+    async fn terminal_output_closes_stdin_while_live_handle_remains() {
+        for script in [
+            r#"printf '%s\n' '{"type":"result","subtype":"success","result":"done"}'; cat >/dev/null"#,
+            "exec 1>&-; cat >/dev/null",
+        ] {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(script)
+                .kill_on_drop(true)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped());
+            let mut child = command.spawn().unwrap();
+            let stdin = child.stdin.take().unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let cancel = CancellationToken::new();
+            let client = ClaudeAgentClient::new(
+                LogWriter::new(tokio::io::sink()),
+                None,
+                RepoContext::default(),
+                false,
+                String::new(),
+                cancel.clone(),
+            );
+            let peer = ProtocolPeer::spawn(stdin, stdout, client, cancel);
+
+            let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+                .await
+                .expect("Claude-style process should receive stdin EOF")
+                .unwrap();
+            assert!(status.success());
+            assert!(matches!(
+                peer.send_user_message("too late".to_string()).await,
+                Err(ExecutorError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe
+            ));
+        }
     }
 }
