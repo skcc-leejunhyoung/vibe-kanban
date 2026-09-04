@@ -879,11 +879,16 @@ pub fn task_output_to_entries(jsonl: &str, worktree_path: &str) -> Vec<Normalize
         let direct_user_text = if let ClaudeJson::User {
             message,
             is_synthetic,
+            is_replay,
             ..
         } = &event
             && !is_synthetic
+            && !is_replay
         {
-            message.content.as_text().cloned()
+            message
+                .content
+                .as_text()
+                .map(|text| text.trim().to_string())
         } else {
             None
         };
@@ -891,14 +896,15 @@ pub fn task_output_to_entries(jsonl: &str, worktree_path: &str) -> Vec<Normalize
         if let ClaudeJson::User {
             message,
             is_synthetic,
+            is_replay,
             ..
         } = &event
             && !is_synthetic
+            && !is_replay
         {
-            let mut parts = message
-                .content
-                .as_text()
-                .cloned()
+            let mut parts = direct_user_text
+                .clone()
+                .filter(|text| !text.is_empty())
                 .into_iter()
                 .collect::<Vec<_>>();
             parts.extend(message.content.items().filter_map(|item| match item {
@@ -5252,6 +5258,28 @@ mod tests {
         assert!(matches!(
             &entries[3].entry_type,
             NormalizedEntryType::AssistantMessage
+        ));
+    }
+
+    #[test]
+    fn task_output_entries_skip_replayed_and_empty_user_messages() {
+        let jsonl = concat!(
+            r#"{"type":"user","isReplay":true,"message":{"role":"user","content":"old prompt"}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"  "}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Current answer"}]}}"#,
+        );
+
+        let entries = task_output_to_entries(jsonl, "/tmp");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            &entries[0],
+            NormalizedEntry {
+                entry_type: NormalizedEntryType::AssistantMessage,
+                content,
+                ..
+            } if content == "Current answer"
         ));
     }
 

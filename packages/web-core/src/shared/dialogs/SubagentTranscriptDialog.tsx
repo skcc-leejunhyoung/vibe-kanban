@@ -22,6 +22,10 @@ import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import type { UseResetProcessResult } from '@/features/workspace-chat/model/hooks/useResetProcess';
 import DisplayConversationEntry from '@/features/workspace-chat/ui/DisplayConversationEntry';
+import {
+  ChangesViewActionsContext,
+  type ChangesViewActionsContextValue,
+} from '@/shared/hooks/useChangesView';
 
 export interface SubagentTranscriptDialogProps {
   processId: string;
@@ -32,6 +36,7 @@ export interface SubagentTranscriptDialogProps {
   workspaceWithSession: WorkspaceWithSession;
   resetAction: UseResetProcessResult;
   repos: RepoWithTargetBranch[];
+  changesViewActions: ChangesViewActionsContextValue;
 }
 
 export interface TranscriptMessage {
@@ -71,7 +76,10 @@ export function TranscriptMessageFrame({
   );
 }
 
-export const shouldPollTranscript = (isLive?: () => boolean) => isLive?.();
+export const shouldPollTranscript = (
+  visible: boolean,
+  isLive?: () => boolean
+) => visible && Boolean(isLive?.());
 
 export function parseTranscriptMessages(content: string): TranscriptMessage[] {
   const marker = /(?:^|\n\n)\*\*(User|Agent)\*\*\n\n/g;
@@ -95,12 +103,22 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
   (props) => {
     const modal = useModal();
     const { t } = useTranslation();
-    const [transcript, setTranscript] = useState<SubagentTranscript | null>(
-      null
-    );
-    const [error, setError] = useState<string | null>(null);
+    const requestKey = JSON.stringify([
+      props.hostId ?? null,
+      props.processId,
+      props.target,
+    ]);
+    const [loaded, setLoaded] = useState<{
+      requestKey: string;
+      transcript: SubagentTranscript | null;
+      error: string | null;
+    } | null>(null);
+    const transcript =
+      loaded?.requestKey === requestKey ? loaded.transcript : null;
+    const error = loaded?.requestKey === requestKey ? loaded.error : null;
 
     useEffect(() => {
+      if (!modal.visible) return;
       let cancelled = false;
       let timeout: number | undefined;
       const load = async () => {
@@ -108,15 +126,23 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
           .subagentTranscript(props.processId, props.target, props.hostId)
           .then((transcript) => {
             if (!cancelled) {
-              setTranscript(transcript);
-              setError(null);
+              setLoaded({ requestKey, transcript, error: null });
             }
           })
           .catch((err: unknown) => {
-            if (!cancelled)
-              setError(err instanceof Error ? err.message : String(err));
+            if (!cancelled) {
+              const error = err instanceof Error ? err.message : String(err);
+              setLoaded((current) => ({
+                requestKey,
+                transcript:
+                  current?.requestKey === requestKey
+                    ? current.transcript
+                    : null,
+                error,
+              }));
+            }
           });
-        if (!cancelled && shouldPollTranscript(props.isLive))
+        if (!cancelled && shouldPollTranscript(modal.visible, props.isLive))
           timeout = window.setTimeout(load, 2000);
       };
       void load();
@@ -124,7 +150,14 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
         cancelled = true;
         if (timeout !== undefined) window.clearTimeout(timeout);
       };
-    }, [props.processId, props.target, props.hostId, props.isLive]);
+    }, [
+      modal.visible,
+      props.processId,
+      props.target,
+      props.hostId,
+      props.isLive,
+      requestKey,
+    ]);
 
     const renderMarkdown = (value: string) => (
       <ChatMarkdown
@@ -175,48 +208,50 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
     };
 
     return (
-      <Dialog
-        open={modal.visible}
-        onOpenChange={(open) => {
-          if (!open) modal.hide();
-        }}
-        size="3xl"
-      >
-        <DialogContent className="w-full p-0 overflow-hidden">
-          <DialogHeader className="px-4 pt-4 pb-0">
-            <DialogTitle className="truncate">
-              {props.title || t('conversation.subagent.transcriptTitle')}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="max-h-[70vh] overflow-y-auto px-4 py-4">
-            {error && transcript == null ? (
-              <p className="text-sm text-error">
-                {t('conversation.subagent.transcriptError')}: {error}
-              </p>
-            ) : transcript == null ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {transcript.entries?.length
-                  ? transcript.entries.map(renderStructuredEntry)
-                  : parseTranscriptMessages(transcript.content).map(
-                      (message, index) => (
-                        <TranscriptMessageFrame
-                          key={index}
-                          role={message.role}
-                          label={messageLabel(message.role)}
-                        >
-                          {renderMarkdown(message.content)}
-                        </TranscriptMessageFrame>
-                      )
-                    )}
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ChangesViewActionsContext.Provider value={props.changesViewActions}>
+        <Dialog
+          open={modal.visible}
+          onOpenChange={(open) => {
+            if (!open) modal.hide();
+          }}
+          size="3xl"
+        >
+          <DialogContent className="w-full p-0 overflow-hidden">
+            <DialogHeader className="px-4 pt-4 pb-0">
+              <DialogTitle className="truncate">
+                {props.title || t('conversation.subagent.transcriptTitle')}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="max-h-[70vh] overflow-y-auto px-4 py-4">
+              {error && transcript == null ? (
+                <p className="text-sm text-error">
+                  {t('conversation.subagent.transcriptError')}: {error}
+                </p>
+              ) : transcript == null ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {transcript.entries?.length
+                    ? transcript.entries.map(renderStructuredEntry)
+                    : parseTranscriptMessages(transcript.content).map(
+                        (message, index) => (
+                          <TranscriptMessageFrame
+                            key={index}
+                            role={message.role}
+                            label={messageLabel(message.role)}
+                          >
+                            {renderMarkdown(message.content)}
+                          </TranscriptMessageFrame>
+                        )
+                      )}
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      </ChangesViewActionsContext.Provider>
     );
   }
 );

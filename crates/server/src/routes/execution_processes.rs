@@ -306,6 +306,17 @@ pub struct SubagentTranscript {
 /// log browser.
 const TRANSCRIPT_MAX_BYTES: usize = 512 * 1024;
 
+fn transcript_working_dir(
+    container_ref: &str,
+    agent_working_dir: Option<&str>,
+) -> std::path::PathBuf {
+    let workspace_root = std::path::Path::new(container_ref);
+    match agent_working_dir.filter(|dir| !dir.is_empty()) {
+        Some(dir) => workspace_root.join(dir),
+        None => workspace_root.to_path_buf(),
+    }
+}
+
 /// Whether a subagent control target may be routed to a process of the given
 /// base executor. Cross-executor calls (Claude task id → Codex APIs and vice
 /// versa) are rejected.
@@ -578,13 +589,24 @@ async fn subagent_transcript(
         ));
     }
 
-    let worktree_path = execution_process
+    let (workspace, session) = execution_process
         .parent_workspace_and_session(&deployment.db().pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|(workspace, _)| workspace.container_ref)
-        .unwrap_or_default();
+        .await?
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "execution process workspace and session are unavailable".to_string(),
+            )
+        })?;
+    let container_ref = workspace
+        .container_ref
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            ApiError::BadRequest("execution process workspace path is unavailable".to_string())
+        })?;
+    let worktree_path = transcript_working_dir(container_ref, session.agent_working_dir.as_deref())
+        .to_string_lossy()
+        .into_owned();
 
     let (content, entries) = match target {
         SubagentControlTarget::Codex { thread_id } => {
@@ -886,6 +908,22 @@ mod subagent_route_tests {
             Some(BaseCodingAgent::Gemini)
         ));
         assert!(!target_matches_base(&codex_target(), None));
+    }
+
+    #[test]
+    fn transcript_path_uses_session_working_directory() {
+        assert_eq!(
+            transcript_working_dir("/workspace", Some("repo")),
+            std::path::Path::new("/workspace").join("repo")
+        );
+        assert_eq!(
+            transcript_working_dir("/workspace", Some("")),
+            std::path::Path::new("/workspace")
+        );
+        assert_eq!(
+            transcript_working_dir("/workspace", None),
+            std::path::Path::new("/workspace")
+        );
     }
 
     #[test]

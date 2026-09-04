@@ -27,7 +27,7 @@ interface ChangesViewContextValue {
   registerFileRequest: (callback: ChangesFileRequestCallback | null) => void;
 }
 
-interface ChangesViewActionsContextValue {
+export interface ChangesViewActionsContextValue {
   viewFileInChanges: (filePath: string, repoId?: string | null) => void;
   findMatchingDiffTarget: (text: string) => ChangesFileTarget | null;
 }

@@ -1223,6 +1223,9 @@ function SubagentEntry({
     false
   );
   const hostId = useHostId();
+  const changesViewActions = useChangesViewActions();
+  const changesViewActionsRef = useRef(changesViewActions);
+  changesViewActionsRef.current = changesViewActions;
   // Tolerate missing provider (entries rendered outside the chat shell): no
   // process info means no stop button, never a crash.
   const processesCtx = useContext(ExecutionProcessesContext);
@@ -1247,6 +1250,12 @@ function SubagentEntry({
           workspaceWithSession,
           resetAction,
           repos,
+          changesViewActions: {
+            viewFileInChanges: (...args) =>
+              changesViewActionsRef.current.viewFileInChanges(...args),
+            findMatchingDiffTarget: (...args) =>
+              changesViewActionsRef.current.findMatchingDiffTarget(...args),
+          },
         })
     );
   }, [

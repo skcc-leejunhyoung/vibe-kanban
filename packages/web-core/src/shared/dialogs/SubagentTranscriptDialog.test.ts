@@ -19,12 +19,13 @@ describe('parseTranscriptMessages', () => {
     ]);
   });
 
-  it('stops polling when the live task finishes', () => {
+  it('stops polling when hidden or when the live task finishes', () => {
     let live = true;
     const isLive = () => live;
-    expect(shouldPollTranscript(isLive)).toBe(true);
+    expect(shouldPollTranscript(true, isLive)).toBe(true);
+    expect(shouldPollTranscript(false, isLive)).toBe(false);
     live = false;
-    expect(shouldPollTranscript(isLive)).toBe(false);
+    expect(shouldPollTranscript(true, isLive)).toBe(false);
   });
 
   it('visually and semantically separates input from output', () => {
