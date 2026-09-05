@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -66,7 +67,10 @@ import {
   isPaneGridDestination,
   useWorkspacePanesStore,
 } from "@/shared/stores/useWorkspacePanesStore";
-import { openWorkspacesForActivePane } from "@/shared/lib/openInSplitPane";
+import {
+  openUrlInSplitPane,
+  openWorkspacesForActivePane,
+} from "@/shared/lib/openInSplitPane";
 
 interface RemoteAppShellProps {
   children: ReactNode;
@@ -261,13 +265,21 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   }, [navigate, openRelaySettings, pullRequestsHostId]);
 
   const handleProjectClick = useCallback(
-    (projectId: string) => {
+    (projectId: string, event?: MouseEvent<HTMLButtonElement>) => {
+      if (event?.metaKey || event?.ctrlKey) {
+        openUrlInSplitPane(
+          `/projects/${encodeURIComponent(projectId)}`,
+          appNavigation,
+          appRuntime,
+        );
+        return;
+      }
       navigate({
         to: "/projects/$projectId",
         params: { projectId },
       });
     },
-    [navigate],
+    [appNavigation, appRuntime, navigate],
   );
 
   // Ctrl+Tab cycles between projects while on a project route, mirroring the
