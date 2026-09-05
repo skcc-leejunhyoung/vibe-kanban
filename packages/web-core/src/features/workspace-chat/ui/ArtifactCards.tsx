@@ -197,7 +197,9 @@ function ArtifactViewer({
       </>
     );
   if (artifact.mime === 'text/vnd.mermaid')
-    return <MermaidDiagram chart={text} theme={getResolvedTheme(theme)} />;
+    return (
+      <MermaidDiagram chart={text} theme={getResolvedTheme(theme)} isolated />
+    );
   if (artifact.mime === 'text/markdown')
     return (
       <MarkdownPreview

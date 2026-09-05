@@ -16,6 +16,7 @@ import type {
 } from 'shared/types';
 import { defineModal } from '@/shared/lib/modals';
 import { executionProcessesApi } from '@/shared/lib/api';
+import { HostIdContext } from '@/shared/providers/HostIdProvider';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import type { UseResetProcessResult } from '@/features/workspace-chat/model/hooks/useResetProcess';
 import DisplayConversationEntry from '@/features/workspace-chat/ui/DisplayConversationEntry';
@@ -28,7 +29,7 @@ export interface SubagentTranscriptDialogProps {
   processId: string;
   target: SubagentControlTarget;
   title?: string;
-  hostId?: string | null;
+  hostId: string | null;
   isLive?: () => boolean;
   workspaceWithSession: WorkspaceWithSession;
   resetAction: UseResetProcessResult;
@@ -161,36 +162,38 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
     };
 
     return (
-      <ChangesViewActionsContext.Provider value={props.changesViewActions}>
-        <Dialog
-          open={modal.visible}
-          onOpenChange={(open) => {
-            if (!open) modal.hide();
-          }}
-          size="3xl"
-        >
-          <DialogContent className="w-full p-0 overflow-hidden">
-            <DialogHeader className="px-4 pt-4 pb-0">
-              <DialogTitle className="truncate">
-                {props.title || t('conversation.subagent.transcriptTitle')}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="max-h-[70vh] overflow-y-auto py-2">
-              {error && transcript == null ? (
-                <p className="px-4 py-2 text-sm text-error">
-                  {t('conversation.subagent.transcriptError')}: {error}
-                </p>
-              ) : transcript == null ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
-                </div>
-              ) : (
-                getTranscriptEntries(transcript).map(renderStructuredEntry)
-              )}
-            </div>
-          </DialogContent>
-        </Dialog>
-      </ChangesViewActionsContext.Provider>
+      <HostIdContext.Provider value={props.hostId}>
+        <ChangesViewActionsContext.Provider value={props.changesViewActions}>
+          <Dialog
+            open={modal.visible}
+            onOpenChange={(open) => {
+              if (!open) modal.hide();
+            }}
+            size="3xl"
+          >
+            <DialogContent className="w-full p-0 overflow-hidden">
+              <DialogHeader className="px-4 pt-4 pb-0">
+                <DialogTitle className="truncate">
+                  {props.title || t('conversation.subagent.transcriptTitle')}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="max-h-[70vh] overflow-y-auto py-2">
+                {error && transcript == null ? (
+                  <p className="px-4 py-2 text-sm text-error">
+                    {t('conversation.subagent.transcriptError')}: {error}
+                  </p>
+                ) : transcript == null ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+                  </div>
+                ) : (
+                  getTranscriptEntries(transcript).map(renderStructuredEntry)
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+        </ChangesViewActionsContext.Provider>
+      </HostIdContext.Provider>
     );
   }
 );

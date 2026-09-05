@@ -275,7 +275,7 @@ pub fn spawn_stream_raw_logs_to_storage(
     db: DBService,
     execution_id: Uuid,
     session_id: Uuid,
-    mut artifacts: Option<super::artifacts::ArtifactObserver>,
+    artifacts: Option<super::artifacts::ArtifactObserver>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut log_writer =
@@ -298,26 +298,44 @@ pub fn spawn_stream_raw_logs_to_storage(
 
         if let Some(store) = store {
             let mut stream = store.history_plus_stream();
-
-            let mut artifact_interval = tokio::time::interval(std::time::Duration::from_secs(1));
-            artifact_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut artifact_entries = std::collections::BTreeMap::new();
-            loop {
-                let msg = tokio::select! {
-                    msg = stream.next() => match msg {
-                        Some(Ok(msg)) => msg,
-                        Some(Err(error)) => { tracing::warn!(%error, "Execution log stream error"); continue; }
-                        None => break,
-                    },
-                    _ = artifact_interval.tick(), if artifacts.is_some() => {
-                        if let Some(observer) = &mut artifacts {
-                            for (index, entry) in std::mem::take(&mut artifact_entries) {
-                                observer.observe_entry(index, &entry).await;
-                            }
-                            if let Err(error) = observer.tick(false).await {
-                                tracing::warn!(%execution_id, %error, "Artifact snapshot failed");
-                            }
+            // Coalesce streamed replacements while the observer is busy. Never
+            // await snapshot/CLI I/O in the sole raw-log persistence consumer.
+            let artifact_updates = Arc::new(std::sync::Mutex::new((
+                std::collections::BTreeMap::new(),
+                None::<String>,
+            )));
+            let (artifact_done, mut done) = tokio::sync::oneshot::channel::<()>();
+            let artifact_task = artifacts.map(|mut observer| {
+                let updates = artifact_updates.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        let complete = tokio::select! {
+                            _ = &mut done => true,
+                            _ = interval.tick() => false,
+                        };
+                        let (entries, session_id) = std::mem::take(&mut *updates.lock().unwrap());
+                        if let Some(session_id) = session_id {
+                            observer.set_agent_session_id(&session_id);
                         }
+                        for (index, entry) in entries {
+                            observer.observe_entry(index, &entry).await;
+                        }
+                        if let Err(error) = observer.tick(complete).await {
+                            tracing::warn!(%execution_id, %error, complete, "Artifact snapshot failed");
+                        }
+                        if complete {
+                            break;
+                        }
+                    }
+                })
+            });
+            while let Some(msg) = stream.next().await {
+                let msg = match msg {
+                    Ok(msg) => msg,
+                    Err(error) => {
+                        tracing::warn!(%error, "Execution log stream error");
                         continue;
                     }
                 };
@@ -347,8 +365,8 @@ pub fn spawn_stream_raw_logs_to_storage(
                         }
                     },
                     LogMsg::SessionId(agent_session_id) => {
-                        if let Some(observer) = &mut artifacts {
-                            observer.set_agent_session_id(agent_session_id);
+                        if artifact_task.is_some() {
+                            artifact_updates.lock().unwrap().1 = Some(agent_session_id.clone());
                         }
                         if let Err(e) = CodingAgentTurn::update_agent_session_id(
                             &db.pool,
@@ -388,25 +406,25 @@ pub fn spawn_stream_raw_logs_to_storage(
                         break;
                     }
                     LogMsg::JsonPatch(patch) => {
-                        if artifacts.is_some()
+                        if artifact_task.is_some()
                             && let Some((index, entry)) =
                                 executors::logs::utils::patch::extract_normalized_entry_from_patch(
                                     patch,
                                 )
                         {
-                            artifact_entries.insert(index, entry);
+                            artifact_updates.lock().unwrap().0.insert(index, entry);
                         }
                     }
                     LogMsg::Ready | LogMsg::Finished => continue,
                 }
             }
-            if let Some(observer) = &mut artifacts {
-                for (index, entry) in artifact_entries {
-                    observer.observe_entry(index, &entry).await;
-                }
-                if let Err(error) = observer.tick(true).await {
-                    tracing::error!(%execution_id, %error, "Final artifact snapshot failed");
-                }
+            // The execution's existing finalization barrier also waits for the
+            // last coalesced entries and filesystem snapshot to be preserved.
+            drop(artifact_done);
+            if let Some(task) = artifact_task
+                && let Err(error) = task.await
+            {
+                tracing::error!(%execution_id, %error, "Artifact observer failed");
             }
         }
     })

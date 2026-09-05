@@ -1174,15 +1174,15 @@ impl ArtifactObserver {
             self.dirty = true;
         }
         if !self.recovery && (complete || resources_changed) {
-            let inline = self
+            let artifacts = self
                 .manifest
                 .list
                 .artifacts
                 .iter()
-                .filter(|artifact| artifact.path.is_none() && artifact.content_hash.is_some())
+                .filter(|artifact| artifact.content_hash.is_some())
                 .cloned()
                 .collect::<Vec<_>>();
-            for artifact in inline {
+            for artifact in artifacts {
                 let bundle = self.bundle_resources(artifact).await;
                 self.manifest
                     .bundles

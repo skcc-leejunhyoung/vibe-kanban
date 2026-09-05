@@ -17,6 +17,93 @@ const compiled = await build({
   format: "iife",
   globalName: "ArtifactPreview",
 });
+const components = await build({
+  stdin: {
+    contents: `import React from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { flushSync } from 'react-dom';
+      import NiceModal from '@ebay/nice-modal-react';
+      import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+      import { MermaidDiagram } from './src/shared/components/MermaidDiagram';
+      import { MarkdownPreview } from './src/shared/components/MarkdownPreview';
+      import { SubagentTranscriptDialog } from './src/shared/dialogs/SubagentTranscriptDialog';
+      import { HostIdContext } from './src/shared/providers/HostIdProvider';
+      import { setLocalApiTransport } from './src/shared/lib/localApiTransport';
+      const element = document.createElement('div'); document.body.append(element);
+      const root = createRoot(element);
+      window.renderArtifactDiagram = chart => root.render(React.createElement(MermaidDiagram, {chart, theme: 'light', isolated: true}));
+      window.renderArtifactMarkdown = content => root.render(React.createElement(MarkdownPreview, {content, theme: 'light', allowRemoteImages: false}));
+      const client = new QueryClient();
+      window.hostRequests = [];
+      setLocalApiTransport({request: async path => {
+        window.hostRequests.push(path);
+        if (path.includes('/content?')) return new Response('saved report');
+        return new Response(JSON.stringify({success: true, data: {
+          content: 'Child report', entries: [], artifacts: [{
+            id: 'report', name: 'child.txt', mime: 'text/plain', status: 'ready',
+            execution_id: 'process', content_hash: 'hash', source_entry: 0,
+            source_scope: 'child', source: 'inline', size_bytes: 12,
+          }],
+        }}), {headers: {'Content-Type': 'application/json'}});
+      }});
+      window.setDocumentHost = host => flushSync(() => root.render(
+        React.createElement(HostIdContext.Provider, {value: host},
+          React.createElement(QueryClientProvider, {client}, React.createElement(NiceModal.Provider)))));
+      window.openTranscript = hostId => {
+        window.setDocumentHost('document-host');
+        void SubagentTranscriptDialog.show({hostId, processId: 'process',
+          target: {executor: 'codex', thread_id: 'child'}, title: 'Child transcript',
+          workspaceWithSession: {id: 'workspace', session: {id: 'session'}},
+          resetAction: {}, repos: [], changesViewActions: {},
+        });
+      };
+      window.removeTranscript = () => SubagentTranscriptDialog.remove();`,
+    resolveDir: `${process.cwd()}/packages/web-core`,
+    loader: "tsx",
+  },
+  bundle: true,
+  write: false,
+  format: "iife",
+  define: { "import.meta.env": "{}", "import.meta.hot": "undefined" },
+  plugins: [
+    {
+      // Keep the actual modal, card and API transport; unrelated conversation
+      // entry renderers have their own tests and need the full workspace shell.
+      name: "transcript-entry-boundary",
+      setup(build) {
+        build.onResolve({ filter: /\/DisplayConversationEntry$/ }, () => ({
+          path: "transcript-entry",
+          namespace: "transcript-entry",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "transcript-entry" }, () => ({
+          contents: `import React from 'react';
+            import { ArtifactCards } from './src/features/workspace-chat/ui/ArtifactCards';
+            export default function Entry(props) {
+              return React.createElement(ArtifactCards, {artifacts: props.artifactOverrides,
+                processId: props.executionProcessId, workspaceId: 'workspace', sessionId: 'session'});
+            }`,
+          resolveDir: `${process.cwd()}/packages/web-core`,
+          loader: "jsx",
+        }));
+      },
+    },
+    {
+      name: "vite-raw-import",
+      setup(build) {
+        build.onResolve({ filter: /\?raw$/ }, (args) => ({
+          path: require.resolve(args.path.slice(0, -4), {
+            paths: [args.resolveDir],
+          }),
+          namespace: "raw",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "raw" }, async (args) => ({
+          contents: await readFile(args.path, "utf8"),
+          loader: "text",
+        }));
+      },
+    },
+  ],
+});
 const requests = [];
 const server = createServer((request, response) => {
   if (request.url !== "/") requests.push(request.url);
@@ -165,6 +252,103 @@ try {
   assert.match(invalidSvg, /Invalid SVG/);
   console.log(
     `Artifact browser integration passed (Chromium ${browser.version()}): CSS/JS interaction, parent/storage/API/popup/form/top/self navigation, SVG isolation.`,
+  );
+  await page.evaluate(() => document.querySelector("iframe")?.remove());
+  await page.addScriptTag({ content: components.outputFiles[0].text });
+  await page.evaluate(() =>
+    window.renderArtifactDiagram("flowchart LR\n A-->B"),
+  );
+  const diagram = page
+    .frameLocator('iframe[title="Mermaid diagram"]')
+    .frameLocator("iframe");
+  await diagram.locator("#diagram svg").waitFor();
+  assert.match(await diagram.locator("#diagram").innerText(), /A/);
+  const diagramHeight = await diagram
+    .locator("#diagram")
+    .evaluate((node) =>
+      Math.max(80, Math.ceil(node.getBoundingClientRect().height)),
+    );
+  await page.waitForFunction(
+    (height) =>
+      document.querySelector('iframe[title="Mermaid diagram"]').clientHeight ===
+      height,
+    diagramHeight,
+  );
+  await page.evaluate(() => {
+    window.diagramEscapes = 0;
+    addEventListener("keydown", (event) => {
+      if (event.key === "Escape") window.diagramEscapes++;
+    });
+  });
+  await diagram.locator("#diagram svg").click();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => window.diagramEscapes === 1);
+  await page.evaluate(() =>
+    window.renderArtifactDiagram("deliberately invalid diagram"),
+  );
+  await page.getByText("Mermaid diagram error", { exact: true }).waitFor();
+  const remoteImageChart = `flowchart LR\n A@{ img: "${parentUrl}api/mermaid-image", label: "blocked image" }`;
+  await page.evaluate(() =>
+    window.renderArtifactDiagram("flowchart LR\n Ready-->Next"),
+  );
+  await diagram.locator("#diagram svg").waitFor();
+  await page.evaluate(
+    (chart) => window.renderArtifactDiagram(chart),
+    remoteImageChart,
+  );
+  await page.getByText("Mermaid diagram error", { exact: true }).waitFor();
+  assert.equal(await page.locator("pre code").textContent(), remoteImageChart);
+  await page.evaluate(
+    (chart) =>
+      window.renderArtifactMarkdown(
+        `# Artifact\n![blocked](/api/markdown-image)\n\n\`\`\`mermaid\n${chart}\n\`\`\``,
+      ),
+    remoteImageChart,
+  );
+  await page.locator(".markdown-preview h1").waitFor();
+  await page
+    .locator(".markdown-preview")
+    .getByText("Mermaid diagram error", { exact: true })
+    .waitFor();
+  assert(!requests.some((url) => url.startsWith("/api/")));
+  await page.evaluate(() =>
+    window.renderArtifactMarkdown(
+      "# Artifact\n\n```mermaid\nflowchart TD\n A-->B\n```",
+    ),
+  );
+  await diagram.locator("#diagram svg").waitFor();
+  console.log(
+    "Isolated Mermaid and Markdown passed: rendering, resize, Escape, parse errors, blocked image requests.",
+  );
+  for (const host of ["pane-host", null]) {
+    await page.evaluate((hostId) => window.openTranscript(hostId), host);
+    await page.getByText("child.txt", { exact: true }).waitFor();
+    await page.evaluate(() => window.setDocumentHost("another-document-host"));
+    await page
+      .getByRole("button", { name: "artifacts.source", exact: true })
+      .click();
+    await page.getByText("saved report", { exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    const download = page.waitForEvent("download");
+    await page
+      .getByRole("button", { name: "artifacts.download", exact: true })
+      .click();
+    assert.equal((await download).suggestedFilename(), "child.txt");
+    const hostRequests = await page.evaluate(() =>
+      window.hostRequests.splice(0),
+    );
+    const prefix = host ? `/api/host/${host}/` : "/api/";
+    assert.equal(hostRequests.length, 3);
+    assert(
+      hostRequests.every((path) =>
+        path.startsWith(`${prefix}execution-processes/process/`),
+      ),
+    );
+    await page.evaluate(() => window.removeTranscript());
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+  }
+  console.log(
+    "Subagent transcript host passed: global modal source/download retain pane host or explicit local host after document navigation.",
   );
   // Optional live check against an isolated Vibe instance, after ordinary CLI
   // quick-chat runs. The context file supplies each run's workspace_id only;

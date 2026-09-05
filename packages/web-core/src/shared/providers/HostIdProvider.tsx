@@ -18,7 +18,7 @@ export function getCurrentHostId(): string | null {
   return _hostId;
 }
 
-const HostIdContext = createContext<string | null>(null);
+export const HostIdContext = createContext<string | null>(null);
 
 export function useHostId(): string | null {
   return useContext(HostIdContext);

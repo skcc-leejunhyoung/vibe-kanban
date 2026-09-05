@@ -212,7 +212,13 @@ export function MarkdownPreview({
 
         // Mermaid diagrams
         if (language === 'mermaid') {
-          return <MermaidDiagram chart={codeString} theme={theme} />;
+          return (
+            <MermaidDiagram
+              chart={codeString}
+              theme={theme}
+              isolated={!allowRemoteImages}
+            />
+          );
         }
 
         // All code elements: fenced blocks get styling from the <pre> wrapper,
