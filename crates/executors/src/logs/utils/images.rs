@@ -2,7 +2,7 @@
 //! workspace's `.vibe-attachments/` dir so chat can reference them by a stable
 //! workspace-relative path instead of inline base64 or one-off blob URLs.
 
-use std::path::Path;
+use std::{fs::OpenOptions, io::Write, path::Path};
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
@@ -62,16 +62,41 @@ pub fn store_base64_image(worktree_path: &str, mime: &str, data: &str) -> Option
 
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let file_name = format!("agent-{}.{ext}", &digest[..16]);
-    let dir = Path::new(worktree_path).join(VIBE_ATTACHMENTS_DIR);
+    let root = std::fs::canonicalize(worktree_path).ok()?;
+    let dir = root.join(VIBE_ATTACHMENTS_DIR);
+    std::fs::create_dir_all(&dir).ok()?;
+    // The managed directory is never a link supplied by a workspace file.
+    if std::fs::canonicalize(&dir).ok()? != dir {
+        return None;
+    }
     let file_path = dir.join(&file_name);
-    if !file_path.exists() {
-        std::fs::create_dir_all(&dir).ok()?;
-        // Same convention as FileService::copy_files: keep attachments out of git.
-        let gitignore = dir.join(".gitignore");
-        if !gitignore.exists() {
-            let _ = std::fs::write(&gitignore, "*\n");
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file_path)
+    {
+        Ok(mut file) => file.write_all(&bytes).ok()?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if !std::fs::symlink_metadata(&file_path)
+                .ok()?
+                .file_type()
+                .is_file()
+            {
+                return None;
+            }
         }
-        std::fs::write(&file_path, &bytes).ok()?;
+        Err(_) => return None,
+    }
+    if std::fs::canonicalize(&file_path).ok()? != file_path {
+        return None;
+    }
+    // Never follow or overwrite a workspace-supplied .gitignore symlink.
+    if let Ok(mut file) = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(".gitignore"))
+    {
+        let _ = file.write_all(b"*\n");
     }
     Some(format!("{VIBE_ATTACHMENTS_DIR}/{file_name}"))
 }
@@ -157,6 +182,28 @@ mod tests {
         assert!(store_base64_image(worktree, "image/svg+xml", PNG_B64).is_none());
         assert!(store_base64_image(worktree, "image/png", "!!!notbase64!!!").is_none());
         assert!(store_base64_image("", "image/png", PNG_B64).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_workspace_symlinks_when_storing_tool_images() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let managed = root.path().join(VIBE_ATTACHMENTS_DIR);
+        symlink(outside.path(), &managed).unwrap();
+        assert!(store_base64_image(root.path().to_str().unwrap(), "image/png", PNG_B64).is_none());
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+        std::fs::remove_file(&managed).unwrap();
+        std::fs::create_dir(&managed).unwrap();
+        let target = outside.path().join("untouched");
+        std::fs::write(&target, "original").unwrap();
+        symlink(&target, managed.join(".gitignore")).unwrap();
+        let path = store_base64_image(root.path().to_str().unwrap(), "image/png", PNG_B64).unwrap();
+        std::fs::remove_file(root.path().join(&path)).unwrap();
+        symlink(&target, root.path().join(path)).unwrap();
+        assert!(store_base64_image(root.path().to_str().unwrap(), "image/png", PNG_B64).is_none());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "original");
     }
 
     #[test]

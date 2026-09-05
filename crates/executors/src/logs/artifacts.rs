@@ -5,7 +5,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus};
+use super::{ActionType, FileChange, NormalizedEntry, NormalizedEntryType, ToolStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +26,10 @@ pub struct ArtifactReference {
     pub url: Option<String>,
     /// Normalized entry index, scoped to this execution (never a client-supplied path).
     pub source_entry: Option<u32>,
+    /// Child transcript namespace. Absent on existing parent-only sidecars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_scope: Option<String>,
     pub source: String,
     pub content_hash: Option<String>,
     pub size_bytes: u32,
@@ -50,6 +54,10 @@ pub struct ArtifactResource {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct ArtifactBundle {
     pub artifact: ArtifactReference,
+    /// Workspace-relative base for inline static dependencies (never a file permission).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base_path: Option<String>,
     pub resources: Vec<ArtifactResource>,
     pub warnings: Vec<String>,
 }
@@ -67,6 +75,14 @@ static LINK: LazyLock<Regex> = LazyLock::new(|| {
 });
 static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s<>\"'`)\]]+"#).unwrap());
 static FILE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?::[0-9]+){1,2}$").unwrap());
+
+fn svg_root(source: &str) -> &str {
+    let source = source.trim_start_matches('\u{feff}').trim_start();
+    source
+        .strip_prefix("<?xml")
+        .and_then(|declaration| declaration.split_once("?>"))
+        .map_or(source, |(_, document)| document.trim_start())
+}
 
 /// Only complete top-level fences are candidates. Quoted examples and diff
 /// bodies stay source text; no shell-command parsing or recursive JSON search.
@@ -89,7 +105,13 @@ pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
                     {
                         Some("html")
                     }
-                    "svg" | "xml" if lower.starts_with("<svg") && lower.ends_with("</svg>") => {
+                    "svg" | "xml"
+                        if svg_root(&lower).starts_with("<svg")
+                            && (lower.ends_with("</svg>")
+                                || svg_root(&lower)
+                                    .strip_suffix("/>")
+                                    .is_some_and(|root| !root.contains('>'))) =>
+                    {
                         Some("svg")
                     }
                     _ => None,
@@ -158,7 +180,7 @@ pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
             {
                 Some("html")
             }
-            "svg" if content.trim_start().starts_with("<svg") => Some("svg"),
+            "svg" | "xml" if svg_root(content.trim_start()).starts_with("<svg") => Some("svg"),
             _ => None,
         };
         if let Some(extension) = extension {
@@ -187,7 +209,20 @@ fn result_candidates(value: &serde_json::Value) -> Vec<ArtifactCandidate> {
         match block.get("type").and_then(|v| v.as_str()) {
             Some("text") => {
                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                    candidates.extend(markdown_candidates(text));
+                    candidates.extend(markdown_candidates(text).into_iter().map(
+                        |mut candidate| {
+                            if index > 0 {
+                                match &mut candidate {
+                                    ArtifactCandidate::Inline { name, .. }
+                                    | ArtifactCandidate::PreparingInline { name } => {
+                                        *name = format!("content-{index}-{name}")
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            candidate
+                        },
+                    ));
                 }
             }
             Some("resource_link") => {
@@ -233,9 +268,16 @@ pub fn entry_candidates(entry: &NormalizedEntry) -> Vec<ArtifactCandidate> {
                 return Vec::new();
             }
             match action_type {
-                ActionType::FileRead { path }
-                | ActionType::FileEdit { path, .. }
-                | ActionType::ImageView { path } => vec![ArtifactCandidate::File(path.clone())],
+                ActionType::FileRead { path } | ActionType::ImageView { path } => {
+                    vec![ArtifactCandidate::File(path.clone())]
+                }
+                ActionType::FileEdit { path, changes } => std::iter::once(path)
+                    .chain(changes.iter().filter_map(|change| match change {
+                        FileChange::Rename { new_path } => Some(new_path),
+                        _ => None,
+                    }))
+                    .map(|path| ArtifactCandidate::File(path.clone()))
+                    .collect(),
                 ActionType::Tool {
                     result: Some(result),
                     ..
@@ -318,5 +360,32 @@ mod tests {
                 ArtifactCandidate::File("reports/a b.html".into())
             ]
         );
+    }
+
+    #[test]
+    fn tool_content_blocks_keep_distinct_inline_ids() {
+        let candidates = result_candidates(&serde_json::json!({"content": [
+            {"type": "text", "text": "```mermaid\ngraph TD\nA-->B\n```"},
+            {"type": "text", "text": "```mermaid\ngraph TD\nC-->D\n```"}
+        ]}));
+        assert!(
+            matches!(&candidates[0], ArtifactCandidate::Inline { name, .. } if name == "block-0.mmd")
+        );
+        assert!(
+            matches!(&candidates[1], ArtifactCandidate::Inline { name, .. } if name == "content-1-block-0.mmd")
+        );
+    }
+
+    #[test]
+    fn svg_declarations_and_empty_roots_are_complete_documents() {
+        for svg in [
+            "<svg/>",
+            "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+        ] {
+            assert!(
+                matches!(&markdown_candidates(&format!("```svg\n{svg}\n```"))[0], ArtifactCandidate::Inline { name, .. } if name.ends_with(".svg"))
+            );
+        }
+        assert!(markdown_candidates("```svg\n<svg><path/>\n```").is_empty());
     }
 }

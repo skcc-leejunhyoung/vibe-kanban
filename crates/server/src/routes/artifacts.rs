@@ -21,13 +21,13 @@ use crate::{DeploymentImpl, error::ApiError};
 
 #[derive(Deserialize)]
 pub struct ArtifactQuery {
-    workspace_id: Uuid,
-    session_id: Uuid,
-    id: Option<String>,
-    hash: Option<String>,
+    pub(super) workspace_id: Uuid,
+    pub(super) session_id: Uuid,
+    pub(super) id: Option<String>,
+    pub(super) hash: Option<String>,
 }
 
-async fn scoped_manifest(
+pub(super) async fn scoped_manifest(
     deployment: &DeploymentImpl,
     process: &ExecutionProcess,
     query: &ArtifactQuery,
@@ -45,10 +45,7 @@ async fn scoped_manifest(
         .await
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     if manifest.is_none() && !matches!(process.status, ExecutionProcessStatus::Running) {
-        // ponytail: serialize rare legacy recovery; use per-execution locks if
-        // concurrent history recovery becomes a measured bottleneck.
-        static RECOVERY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-        let _guard = RECOVERY.lock().await;
+        let _guard = artifacts::RECOVERY.lock().await;
         manifest = artifacts::load(session.id, process.id)
             .await
             .map_err(|error| ApiError::BadRequest(error.to_string()))?;
@@ -79,6 +76,7 @@ async fn scoped_manifest(
                 process.id,
                 deployment.file().clone(),
                 entries,
+                None,
             )
             .await
             .map_err(|error| ApiError::BadRequest(error.to_string()))?;
@@ -102,6 +100,17 @@ async fn scoped_manifest(
             .await
             .is_none()
     {
+        let _guard = artifacts::RECOVERY.lock().await;
+        // A concurrent history request may already have sealed/recovered it.
+        if let Some(saved) = artifacts::load(session.id, process.id)
+            .await
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?
+        {
+            *manifest = saved;
+        }
+        if manifest.list.complete {
+            return Ok(Some(manifest.clone()));
+        }
         artifacts::seal_interrupted(manifest)
             .await
             .map_err(|error| ApiError::BadRequest(error.to_string()))?;

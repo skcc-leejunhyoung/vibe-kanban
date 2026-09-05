@@ -1189,6 +1189,7 @@ function InlineImageEntry({
           onClick={() =>
             ImagePreviewDialog.show({
               imageUrl,
+              imageBlob: blob ?? undefined,
               altText: path,
               fileName,
               format: /\.([a-zA-Z0-9]+)$/.exec(fileName)?.[1],
@@ -1765,7 +1766,7 @@ const DisplayConversationEntrySpaced = (props: Props) => {
   const matching =
     props.artifactOverrides ??
     (artifacts.data?.artifacts ?? []).filter((artifact) =>
-      artifact.source_entry === null
+      artifact.source_entry === null || artifact.source_scope
         ? false
         : entryKeys.has(`${props.executionProcessId}:${artifact.source_entry}`)
     );

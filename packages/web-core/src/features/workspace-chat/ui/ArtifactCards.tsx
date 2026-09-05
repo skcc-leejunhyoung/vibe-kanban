@@ -16,9 +16,13 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { MermaidDiagram } from '@/shared/components/MermaidDiagram';
+import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
-import { buildArtifactPreview } from './artifact-preview';
+import {
+  buildArtifactPreview,
+  deduplicateManagedImages,
+} from './artifact-preview';
 
 type Scope = {
   processId: string;
@@ -72,7 +76,6 @@ function ArtifactViewer({
 }) {
   const { t } = useTranslation('common');
   const { theme } = useTheme();
-  const [objectUrl, setObjectUrl] = useState<string>();
   const [runtimeError, setRuntimeError] = useState<string>();
   const frameRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
@@ -155,7 +158,7 @@ function ArtifactViewer({
         );
         const preview = buildArtifactPreview(
           text,
-          artifact.path ?? artifact.name,
+          bundle.base_path ?? artifact.path ?? artifact.name,
           resources,
           artifact.mime === 'image/svg+xml'
         );
@@ -164,22 +167,6 @@ function ArtifactViewer({
       return { blob, text, preview: undefined, warnings: [] };
     },
   });
-  useEffect(() => {
-    if (
-      !query.data ||
-      !/^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(
-        artifact.mime
-      )
-    )
-      return;
-    const url = URL.createObjectURL(
-      new Blob([query.data.blob], { type: artifact.mime })
-    );
-    setObjectUrl(url);
-    return () => {
-      URL.revokeObjectURL(url);
-    };
-  }, [query.data, artifact.mime]);
   if (query.isPending) return <p role="status">{t('artifacts.loading')}</p>;
   if (query.error) return <p role="alert">{query.error.message}</p>;
   const { text, preview, warnings } = query.data;
@@ -217,14 +204,6 @@ function ArtifactViewer({
         content={text}
         theme={getResolvedTheme(theme)}
         allowRemoteImages={false}
-      />
-    );
-  if (objectUrl)
-    return (
-      <img
-        src={objectUrl}
-        alt={artifact.name}
-        className="max-h-[65vh] max-w-full object-contain"
       />
     );
   return (
@@ -284,6 +263,7 @@ function ArtifactCard({
   const { t } = useTranslation('common');
   const [error, setError] = useState<string>();
   const [downloading, setDownloading] = useState(false);
+  const [opening, setOpening] = useState(false);
   const setPanel = useUiPreferencesStore(
     (state) => state.setRightMainPanelMode
   );
@@ -292,6 +272,39 @@ function ArtifactCard({
   const previewable =
     !appSource &&
     /^(text\/(html|markdown|vnd.mermaid)|image\/)/.test(artifact.mime);
+  const preview = async () => {
+    if (
+      !/^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(
+        artifact.mime
+      )
+    ) {
+      void ArtifactPreviewDialog.show({ artifact, scope, mode: 'preview' });
+      return;
+    }
+    setOpening(true);
+    setError(undefined);
+    try {
+      const blob = await artifactsApi.content(
+        scope.processId,
+        scope.workspaceId,
+        scope.sessionId,
+        artifact.id,
+        scope.hostId,
+        artifact.content_hash ?? undefined
+      );
+      void ImagePreviewDialog.show({
+        imageBlob: new Blob([blob], { type: artifact.mime }),
+        altText: artifact.name,
+        fileName: artifact.name.split('/').pop(),
+        format: artifact.mime.split('/')[1],
+        sizeBytes: BigInt(blob.size),
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setOpening(false);
+    }
+  };
   const download = async () => {
     setDownloading(true);
     setError(undefined);
@@ -326,6 +339,9 @@ function ArtifactCard({
       {artifact.source === 'workspace_observation' && (
         <p className="text-low">{t('artifacts.observed')}</p>
       )}
+      {artifact.source_scope && (
+        <p className="text-low">{t('artifacts.subagent')}</p>
+      )}
       {artifact.error && (
         <p role="status" className="text-low">
           {artifact.error}
@@ -341,14 +357,8 @@ function ArtifactCard({
             {previewable && (
               <button
                 type="button"
-                disabled={!ready}
-                onClick={() =>
-                  void ArtifactPreviewDialog.show({
-                    artifact,
-                    scope,
-                    mode: 'preview',
-                  })
-                }
+                disabled={!ready || opening}
+                onClick={() => void preview()}
               >
                 {t('artifacts.preview')}
               </button>
@@ -404,7 +414,7 @@ export function ArtifactCards({
   const hostId = useHostId();
   return (
     <>
-      {artifacts.map((artifact) => (
+      {deduplicateManagedImages(artifacts).map((artifact) => (
         <ArtifactCard
           key={artifact.id}
           artifact={artifact}
@@ -423,7 +433,7 @@ export function ExecutionArtifactResults({
   const query = useExecutionArtifacts(processId, workspaceId, sessionId);
   const artifacts =
     query.data?.artifacts.filter(
-      (artifact) => artifact.source_entry === null
+      (artifact) => artifact.source_entry === null || artifact.source_scope
     ) ?? [];
   if (!artifacts.length && !query.data?.warnings.length) return null;
   return (

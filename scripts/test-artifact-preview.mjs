@@ -150,6 +150,19 @@ try {
   assert.equal(await inner.locator("svg script").count(), 0);
   assert.equal(await inner.locator("svg").getAttribute("onload"), null);
   assert(!requests.some((url) => url.startsWith("/api/")));
+  const invalidSvg = await page.evaluate(() => {
+    try {
+      window.ArtifactPreview.buildArtifactPreview(
+        "<svg><path></svg>",
+        "broken.svg",
+        [],
+        true,
+      );
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(invalidSvg, /Invalid SVG/);
   console.log(
     `Artifact browser integration passed (Chromium ${browser.version()}): CSS/JS interaction, parent/storage/API/popup/form/top/self navigation, SVG isolation.`,
   );
@@ -167,10 +180,35 @@ try {
       await chat.goto(
         `${process.env.ARTIFACT_WEB_URL}/workspaces/${scopes[executor].workspace_id}`,
       );
-      const card = chat.locator("div.my-half").filter({
-        has: chat.getByText(/(?:reports\/)?overview\.html/, { exact: true }),
-      });
-      await card.waitFor({ timeout: 30000 });
+      const findCard = async (name) => {
+        const card = chat.locator("div.my-half").filter({
+          has: chat.getByText(name, { exact: true }),
+        });
+        await chat
+          .locator("[data-row-index]")
+          .first()
+          .waitFor({ timeout: 30000 });
+        const scroll = chat.locator(
+          "div.h-full.overflow-y-auto.scrollbar-none",
+        );
+        // Prepending older turns preserves the viewport. Keep moving to the
+        // top while history loads before scanning through the virtual rows.
+        for (let n = 0; n < 20 && !(await card.isVisible()); n++) {
+          await scroll.evaluate((el) => el.scrollTo({ top: 0 }));
+          await chat.waitForTimeout(150);
+          await chat
+            .getByText("Loading earlier messages", { exact: true })
+            .waitFor({ state: "hidden" });
+        }
+        for (let n = 0; n < 80 && !(await card.isVisible()); n++) {
+          await chat.waitForTimeout(150);
+          if (n > 2)
+            await scroll.evaluate((el) => el.scrollBy(0, el.clientHeight / 2));
+        }
+        await card.waitFor();
+        return card;
+      };
+      const card = await findCard(/(?:reports\/)?overview\.html/);
       assert.equal(await card.count(), 1);
       await card.getByRole("button", { name: "Preview", exact: true }).click();
       const dialog = chat.getByRole("dialog");
@@ -189,17 +227,95 @@ try {
       await card.getByRole("button", { name: "Download", exact: true }).click();
       assert.equal((await download).suggestedFilename(), "overview.html");
       await chat.reload();
-      await card.waitFor();
+      await findCard(/(?:reports\/)?overview\.html/);
       console.log(
         `${executor}: real chat card, interaction, Escape, source, download and reload passed`,
       );
+      const imageName = scopes[executor].image_artifact_name;
+      if (imageName) {
+        const imageCard = await findCard(imageName);
+        const image = chat.getByRole("img", {
+          name: imageName.split("/").at(-1),
+          exact: true,
+        });
+        await image.waitFor();
+        assert.equal(await image.count(), 1);
+        await image.click();
+        await dialog.getByRole("img").waitFor();
+        const previewImage = dialog.getByRole("img");
+        await previewImage.evaluate((node) => node.decode());
+        const ownedUrl = await previewImage.getAttribute("src");
+        // An open modal must keep its bytes after the conversation row unmounts.
+        await chat
+          .locator("div.h-full.overflow-y-auto.scrollbar-none")
+          .evaluate((el) => el.scrollTo({ top: 0 }));
+        await image.waitFor({ state: "detached" });
+        assert(
+          await chat.evaluate(async (url) => (await fetch(url)).ok, ownedUrl),
+        );
+        assert(
+          await dialog
+            .getByRole("img")
+            .evaluate((node) => node.naturalWidth > 0),
+        );
+        await chat.keyboard.press("Escape");
+        await dialog.waitFor({ state: "hidden" });
+        assert(
+          await chat.evaluate(async (url) => {
+            try {
+              await fetch(url);
+              return false;
+            } catch {
+              return true;
+            }
+          }, ownedUrl),
+          "Closed image dialogs must revoke their own URL",
+        );
+        await findCard(imageName);
+        const download = chat.waitForEvent("download");
+        await imageCard
+          .getByRole("button", { name: "Download", exact: true })
+          .click();
+        assert.equal(
+          (await download).suggestedFilename(),
+          imageName.split("/").at(-1),
+        );
+        console.log(
+          "Native ImageGeneration: one inline image, existing image dialog and preserved download passed",
+        );
+      }
+      if (scopes[executor].mcp_image_name) {
+        const mcpCard = await findCard(scopes[executor].mcp_image_name);
+        assert.equal(
+          await chat
+            .getByText(scopes[executor].mcp_image_copy_name, { exact: true })
+            .count(),
+          0,
+        );
+        await mcpCard
+          .getByRole("button", { name: "Preview", exact: true })
+          .click();
+        const image = dialog.getByRole("img");
+        await image.waitFor();
+        await image.evaluate((node) => node.decode());
+        assert(await image.evaluate((node) => node.naturalWidth > 0));
+        const imageDownload = chat.waitForEvent("download");
+        await dialog
+          .getByRole("button", { name: "Download attachment", exact: true })
+          .click();
+        assert.equal(
+          (await imageDownload).suggestedFilename(),
+          scopes[executor].mcp_image_name.split("/").at(-1),
+        );
+        await chat.keyboard.press("Escape");
+        await dialog.waitFor({ state: "hidden" });
+        console.log(
+          "Real MCP image: named file card, preserved preview and managed-copy deduplication passed",
+        );
+      }
       if (executor === "claude" && scopes.claude.format_process_id) {
-        const namedCard = (name) =>
-          chat
-            .locator("div.my-half")
-            .filter({ has: chat.getByText(name, { exact: true }) });
-        const openFile = (name) =>
-          namedCard(name)
+        const openFile = async (name) =>
+          (await findCard(name))
             .getByRole("button", { name: "Preview", exact: true })
             .click();
         const close = async () => {
@@ -234,7 +350,7 @@ try {
         await dialog.locator(".markdown-preview h1").waitFor();
         await dialog.locator(".markdown-preview svg").waitFor();
         await close();
-        const app = namedCard("out/Example.tsx");
+        const app = await findCard("out/Example.tsx");
         assert.equal(
           await app
             .getByRole("button", { name: "Preview", exact: true })
@@ -257,7 +373,7 @@ try {
           /function Example/,
         );
         await close();
-        const pdf = namedCard("out/sample.pdf");
+        const pdf = await findCard("out/sample.pdf");
         assert.equal(
           await pdf
             .getByRole("button", { name: "Preview", exact: true })
@@ -274,6 +390,41 @@ try {
         );
       }
       await chat.close();
+    }
+  }
+  // Optional ordinary Claude Read / Codex ImageView executions over an existing
+  // out/existing-circle.png. Each scope supplies workspace_id and session_id.
+  if (process.env.ARTIFACT_READ_CONTEXT) {
+    const scopes = JSON.parse(
+      await readFile(process.env.ARTIFACT_READ_CONTEXT, "utf8"),
+    );
+    for (const [executor, scope] of Object.entries(scopes)) {
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 1000 },
+      });
+      await page.goto(
+        `${process.env.ARTIFACT_WEB_URL}/workspaces/${scope.workspace_id}`,
+      );
+      const image = page.getByRole("img", {
+        name: "existing-circle.png",
+        exact: true,
+      });
+      await image.waitFor();
+      assert.equal(await image.count(), 1);
+      await image.click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByRole("img").evaluate((node) => node.decode());
+      const download = page.waitForEvent("download");
+      await dialog
+        .getByRole("button", { name: "Download attachment", exact: true })
+        .click();
+      assert.equal((await download).suggestedFilename(), "existing-circle.png");
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+      console.log(
+        `${executor}: native existing image read, one inline image and existing dialog download passed`,
+      );
+      await page.close();
     }
   }
 } finally {

@@ -19,17 +19,17 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::{
-    executors::{
-        BaseCodingAgent, CodingAgent, StandardCodingAgentExecutor, SubagentLiveHandle,
-        claude::{task_output_to_entries, task_output_to_markdown},
-        codex::transcript::{thread_transcript_entries, thread_transcript_markdown},
-    },
+    executors::{BaseCodingAgent, SubagentLiveHandle},
     logs::{NormalizedEntry, NormalizedEntryType, SubagentControlTarget},
-    profile::ExecutorConfigs,
 };
 use futures_util::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use services::services::container::ContainerService;
+#[cfg(test)]
+use services::services::subagent_transcript::read_file_tail;
+use services::services::{
+    container::ContainerService,
+    subagent_transcript::{self, find_claude_session_id, find_claude_task_output_file},
+};
 use tokio::time::{Duration, MissedTickBehavior};
 use ts_rs::TS;
 use utils::{log_msg::LogMsg, response::ApiResponse};
@@ -300,15 +300,11 @@ pub struct SubagentTranscript {
     pub content: String,
     /// Structured entries rendered by the same components as the main chat.
     pub entries: Vec<NormalizedEntry>,
-    /// Existing execution snapshots, mapped onto this transcript's entries.
+    /// Preserved parent and child snapshots mapped onto transcript entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifacts: Option<Vec<executors::logs::artifacts::ArtifactReference>>,
 }
-
-/// Keep only the tail of oversized transcripts; the viewer is a dialog, not a
-/// log browser.
-const TRANSCRIPT_MAX_BYTES: usize = 512 * 1024;
 
 fn transcript_working_dir(
     container_ref: &str,
@@ -551,126 +547,6 @@ fn prepend_invocation_prompt(
     };
 }
 
-/// Derive the SDK transcript path and session from this process's notification.
-fn find_claude_task_output_file(stdout: &str, task_id: &str) -> Option<(String, String)> {
-    stdout.lines().find_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
-        if value.get("subtype").and_then(|value| value.as_str()) != Some("task_notification")
-            || value.get("task_id").and_then(|value| value.as_str()) != Some(task_id)
-        {
-            return None;
-        }
-        let path = value.get("output_file")?.as_str()?;
-        let session_id = value.get("session_id")?.as_str()?;
-        (!path.is_empty()).then(|| (path.to_string(), session_id.to_string()))
-    })
-}
-
-fn find_claude_session_id(stdout: &str) -> Option<String> {
-    stdout.lines().find_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
-        value
-            .get("session_id")
-            .and_then(|value| value.as_str())
-            .filter(|session_id| !session_id.is_empty())
-            .map(str::to_string)
-    })
-}
-
-async fn find_live_claude_task_output_file(
-    stdout: &str,
-    task_id: &str,
-) -> Option<(String, String)> {
-    let session_id = find_claude_session_id(stdout)?;
-    let projects = executors::executors::claude::claude_projects_dir()?;
-    let mut entries = tokio::fs::read_dir(projects).await.ok()?;
-    let file_name = format!("agent-{task_id}.jsonl");
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry
-            .path()
-            .join(&session_id)
-            .join("subagents")
-            .join(&file_name);
-        if tokio::fs::try_exists(&path).await.ok()? {
-            return Some((path.to_string_lossy().into_owned(), session_id));
-        }
-    }
-    None
-}
-
-/// Read at most the last `max_bytes` of a regular file. Refuses special files
-/// and never buffers more than the cap, so a hostile/huge path can't blow up
-/// memory. Returns the bytes and whether the head was cut off.
-fn task_transcript_path_matches(path: &std::path::Path, task_id: &str, session_id: &str) -> bool {
-    let expected_file = format!("{task_id}.output");
-    path.file_name().and_then(|name| name.to_str()) == Some(&expected_file)
-        && path
-            .parent()
-            .and_then(|dir| dir.file_name())
-            .and_then(|name| name.to_str())
-            == Some("tasks")
-        && path
-            .parent()
-            .and_then(std::path::Path::parent)
-            .and_then(|dir| dir.file_name())
-            .and_then(|name| name.to_str())
-            == Some(session_id)
-}
-
-fn canonical_task_transcript_path_matches(
-    path: &std::path::Path,
-    task_id: &str,
-    session_id: &str,
-) -> bool {
-    let expected_file = format!("agent-{task_id}.jsonl");
-    task_transcript_path_matches(path, task_id, session_id)
-        || (path.file_name().and_then(|name| name.to_str()) == Some(expected_file.as_str())
-            && path
-                .parent()
-                .and_then(|dir| dir.file_name())
-                .and_then(|name| name.to_str())
-                == Some("subagents")
-            && path
-                .parent()
-                .and_then(std::path::Path::parent)
-                .and_then(|dir| dir.file_name())
-                .and_then(|name| name.to_str())
-                == Some(session_id))
-}
-
-async fn read_file_tail(
-    path: &str,
-    task_id: &str,
-    session_id: &str,
-    max_bytes: usize,
-) -> std::io::Result<(Vec<u8>, bool)> {
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
-    let path = std::path::Path::new(path);
-    if !canonical_task_transcript_path_matches(path, task_id, session_id) {
-        return Err(std::io::Error::other("invalid task transcript path"));
-    }
-    let path = tokio::fs::canonicalize(path).await?;
-    if !canonical_task_transcript_path_matches(&path, task_id, session_id) {
-        return Err(std::io::Error::other(
-            "invalid canonical task transcript path",
-        ));
-    }
-    let metadata = tokio::fs::symlink_metadata(&path).await?;
-    if !metadata.file_type().is_file() {
-        return Err(std::io::Error::other("not a regular file"));
-    }
-    let len = metadata.len();
-    let start = len.saturating_sub(max_bytes as u64);
-    let mut file = tokio::fs::File::open(path).await?;
-    if start > 0 {
-        file.seek(std::io::SeekFrom::Start(start)).await?;
-    }
-    let mut bytes = Vec::new();
-    file.take(max_bytes as u64).read_to_end(&mut bytes).await?;
-    Ok((bytes, start > 0))
-}
-
 /// Raw log lines for a process: in-memory store while it runs (plus persisted
 /// storage, whose retention outlives the store's bounded history).
 async fn raw_log_messages(deployment: &DeploymentImpl, exec_id: Uuid) -> Vec<LogMsg> {
@@ -687,41 +563,26 @@ async fn raw_log_messages(deployment: &DeploymentImpl, exec_id: Uuid) -> Vec<Log
     messages
 }
 
-/// Resolve the Codex executor for an exited process so its thread rollouts can
-/// still be read via a short-lived app-server probe.
-#[allow(clippy::result_large_err)]
-fn codex_from_process(
-    execution_process: &ExecutionProcess,
-) -> Result<executors::executors::codex::Codex, ApiError> {
-    let action = execution_process
-        .executor_action()
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    let config = match action.typ() {
-        executors::actions::ExecutorActionType::CodingAgentInitialRequest(req) => {
-            &req.executor_config
-        }
-        executors::actions::ExecutorActionType::CodingAgentFollowUpRequest(req) => {
-            &req.executor_config
-        }
-        executors::actions::ExecutorActionType::ReviewRequest(req) => &req.executor_config,
-        executors::actions::ExecutorActionType::ScriptRequest(_) => {
-            return Err(ApiError::BadRequest(
-                "process has no coding-agent executor".to_string(),
-            ));
-        }
-    };
-    let mut agent = ExecutorConfigs::get_cached()
-        .get_coding_agent(&config.profile_id())
-        .ok_or_else(|| ApiError::BadRequest("unknown executor profile".to_string()))?;
-    if config.has_overrides() {
-        agent.apply_overrides(config);
+fn append_preserved_artifacts(
+    saved: Option<&services::services::artifacts::ArtifactManifest>,
+    scope: &str,
+    entries: &mut Vec<NormalizedEntry>,
+) -> Vec<executors::logs::artifacts::ArtifactReference> {
+    let mut artifacts = saved
+        .map(|manifest| {
+            services::services::artifacts::preserved_transcript_references(manifest, scope)
+        })
+        .unwrap_or_default();
+    for artifact in &mut artifacts {
+        artifact.source_entry = u32::try_from(entries.len()).ok();
+        entries.push(NormalizedEntry {
+            timestamp: None,
+            metadata: None,
+            entry_type: NormalizedEntryType::SystemMessage,
+            content: artifact.name.clone(),
+        });
     }
-    match agent {
-        CodingAgent::Codex(codex) => Ok(codex),
-        _ => Err(ApiError::BadRequest(
-            "subagent target does not match the process executor".to_string(),
-        )),
-    }
+    artifacts
 }
 
 async fn subagent_transcript(
@@ -758,109 +619,115 @@ async fn subagent_transcript(
         .to_string_lossy()
         .into_owned();
 
-    let (mut content, mut entries) = match target {
-        SubagentControlTarget::Codex { thread_id } => {
-            let thread = match deployment
-                .container()
-                .subagent_handle(&execution_process.id)
-                .await
+    let scope = subagent_transcript::scope(&target);
+    let agent_session_id = find_claude_session_id(&stdout);
+    let owned_target = match &target {
+        SubagentControlTarget::ClaudeCode { task_id, .. } => SubagentControlTarget::ClaudeCode {
+            task_id: task_id.clone(),
+            // Client-supplied output paths never grant access.
+            output_file: find_claude_task_output_file(&stdout, task_id).map(|(path, _)| path),
+        },
+        _ => target,
+    };
+    let handle = deployment
+        .container()
+        .subagent_handle(&execution_process.id)
+        .await;
+    let codex = subagent_transcript::codex_from_process(&execution_process).ok();
+    let saved = super::artifacts::scoped_manifest(
+        &deployment,
+        &execution_process,
+        &super::artifacts::ArtifactQuery {
+            workspace_id: workspace.id,
+            session_id: session.id,
+            id: None,
+            hash: None,
+        },
+    )
+    .await
+    .inspect_err(|error| tracing::warn!(%error, "Preserved subagent results are unavailable"))
+    .ok()
+    .flatten()
+    .filter(|manifest| manifest.workspace_id == workspace.id);
+    let read = subagent_transcript::read(
+        &owned_target,
+        agent_session_id.as_deref(),
+        &worktree_path,
+        handle.as_ref(),
+        codex.as_ref(),
+    )
+    .await;
+    let (mut content, mut entries, mut artifacts) = match read {
+        Ok((mut content, mut entries, truncated)) => {
+            let mut saved = saved;
+            if !truncated
+                && saved.as_ref().is_some_and(|manifest| {
+                    manifest.list.complete && !manifest.transcripts.contains_key(&scope)
+                })
+                && deployment
+                    .container()
+                    .get_msg_store_by_id(&execution_process.id)
+                    .await
+                    .is_none()
             {
-                Some(SubagentLiveHandle::Codex(client)) => {
-                    match client.thread_read_full(thread_id.clone()).await {
-                        Ok(response) => response.thread,
-                        Err(_) => {
-                            codex_from_process(&execution_process)?
-                                .read_thread_transcript(&thread_id)
-                                .await?
-                        }
+                let _guard = services::services::artifacts::RECOVERY.lock().await;
+                match services::services::artifacts::ArtifactObserver::recover(
+                    container_ref.into(),
+                    std::path::PathBuf::from(&worktree_path),
+                    workspace.id,
+                    session.id,
+                    execution_process.id,
+                    deployment.file().clone(),
+                    entries.iter().cloned().enumerate().collect(),
+                    Some(&scope),
+                )
+                .await
+                {
+                    Ok(manifest) => saved = Some(manifest),
+                    Err(error) => {
+                        tracing::warn!(%error, "Subagent artifact recovery failed");
+                        content.push_str("\nArtifact recovery failed; showing the available transcript and preserved snapshots.");
                     }
                 }
-                // Process exited (or a non-Codex handle, excluded by the guard
-                // above): read the persisted rollout via a one-shot app-server.
-                _ => {
-                    codex_from_process(&execution_process)?
-                        .read_thread_transcript(&thread_id)
-                        .await?
-                }
-            };
-            (
-                thread_transcript_markdown(&thread),
-                thread_transcript_entries(&thread, &worktree_path),
-            )
-        }
-        SubagentControlTarget::ClaudeCode { task_id, .. } => {
-            // Ignore any client-sent output_file; derive a completed path from
-            // the process logs or a live path from the same logged session.
-            let (path, session_id) = match find_claude_task_output_file(&stdout, &task_id) {
-                Some(transcript) => transcript,
-                None => find_live_claude_task_output_file(&stdout, &task_id)
-                    .await
-                    .ok_or_else(|| {
-                        ApiError::BadRequest("no transcript reported for this task".to_string())
-                    })?,
-            };
-            let (bytes, truncated) =
-                read_file_tail(&path, &task_id, &session_id, TRANSCRIPT_MAX_BYTES)
-                    .await
-                    .map_err(|e| {
-                        ApiError::BadRequest(format!("transcript file unavailable: {e}"))
-                    })?;
-            let text = String::from_utf8_lossy(&bytes);
-            let mut content = task_output_to_markdown(&text);
-            let mut entries = task_output_to_entries(&text, &worktree_path);
-            if truncated {
-                content = format!("_… transcript truncated …_\n\n{content}");
-                entries.insert(
-                    0,
-                    NormalizedEntry {
-                        timestamp: None,
-                        entry_type: NormalizedEntryType::SystemMessage,
-                        content: "… transcript truncated …".to_string(),
-                        metadata: None,
-                    },
-                );
             }
-            (content, entries)
+            let artifacts = if truncated {
+                append_preserved_artifacts(saved.as_ref(), &scope, &mut entries)
+            } else {
+                saved
+                    .as_ref()
+                    .map(|manifest| {
+                        services::services::artifacts::transcript_references(
+                            manifest,
+                            std::path::Path::new(container_ref),
+                            std::path::Path::new(&worktree_path),
+                            &scope,
+                            entries.iter().enumerate(),
+                        )
+                    })
+                    .unwrap_or_default()
+            };
+            (content, entries, artifacts)
+        }
+        Err(error) => {
+            let mut entries = Vec::new();
+            let artifacts = append_preserved_artifacts(saved.as_ref(), &scope, &mut entries);
+            if artifacts.is_empty() {
+                return Err(ApiError::BadRequest(format!(
+                    "Transcript unavailable: {error}"
+                )));
+            }
+            let content = "Original transcript unavailable; showing preserved artifact snapshots."
+                .to_string();
+            (content, entries, artifacts)
         }
     };
+    let original_len = entries.len();
     prepend_invocation_prompt(&mut content, &mut entries, invocation_prompt);
-
-    let mut artifacts = Vec::new();
-    if let Ok(Some(manifest)) =
-        services::services::artifacts::load(session.id, execution_process.id).await
-    {
-        let root = std::path::Path::new(container_ref);
-        let working = std::path::Path::new(&worktree_path);
-        let mut seen = std::collections::HashSet::new();
-        for (index, entry) in entries.iter().enumerate() {
-            for candidate in executors::logs::artifacts::entry_candidates(entry) {
-                if let executors::logs::artifacts::ArtifactCandidate::File(path) = candidate {
-                    let reference = utils::path::make_path_relative(
-                        &working.join(path).to_string_lossy(),
-                        container_ref,
-                    );
-                    let Ok(path) =
-                        services::services::artifacts::resolve_reference(root, root, &reference)
-                    else {
-                        continue;
-                    };
-                    let relative =
-                        utils::path::make_path_relative(&path.to_string_lossy(), container_ref)
-                            .replace('\\', "/");
-                    if let Some(artifact) = manifest
-                        .list
-                        .artifacts
-                        .iter()
-                        .find(|a| a.path.as_ref() == Some(&relative))
-                        && seen.insert(artifact.id.clone())
-                    {
-                        let mut artifact = artifact.clone();
-                        artifact.source_entry = u32::try_from(index).ok();
-                        artifacts.push(artifact);
-                    }
-                }
-            }
-        }
+    let offset = (entries.len() - original_len) as u32;
+    for artifact in &mut artifacts {
+        artifact.source_entry = artifact
+            .source_entry
+            .and_then(|index| index.checked_add(offset));
     }
 
     Ok(ResponseJson(ApiResponse::success(SubagentTranscript {

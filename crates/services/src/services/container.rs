@@ -1735,7 +1735,7 @@ pub trait ContainerService {
             }
             _ => None,
         };
-        let artifact_observer = if let Some(working_dir) = artifact_working_dir {
+        let mut artifact_observer = if let Some(working_dir) = artifact_working_dir {
             match super::file::FileService::new(self.db().pool.clone()) {
                 Ok(files) => super::artifacts::ArtifactObserver::start(
                     artifact_root,
@@ -1839,6 +1839,9 @@ pub trait ContainerService {
                     );
                 }
             };
+            if let Some(observer) = &mut artifact_observer {
+                let _ = observer.tick(true).await;
+            }
             return Err(start_error);
         }
 
@@ -1869,6 +1872,9 @@ pub trait ContainerService {
                         .write()
                         .await
                         .remove(&execution_process.id);
+                    if let Some(observer) = &mut artifact_observer {
+                        let _ = observer.tick(true).await;
+                    }
                     return Err(ContainerError::Other(anyhow!(
                         "MsgStore missing for execution {} during normalization setup",
                         execution_process.id
@@ -1900,6 +1906,12 @@ pub trait ContainerService {
         self.store_normalizer_handles(execution_process.id, normalizer_handles)
             .await;
 
+        if let Some(observer) = &mut artifact_observer {
+            observer.set_subagent_runtime(
+                self.subagent_handle(&execution_process.id).await,
+                super::subagent_transcript::codex_from_process(execution_process).ok(),
+            );
+        }
         let db_stream_handle = execution_process::spawn_stream_raw_logs_to_storage(
             self.msg_stores().clone(),
             self.db().clone(),

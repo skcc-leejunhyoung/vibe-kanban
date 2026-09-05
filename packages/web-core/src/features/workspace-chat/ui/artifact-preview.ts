@@ -1,3 +1,38 @@
+import type { ArtifactReference } from 'shared/types';
+
+// A tool can return both a file link and the same image as base64. Preserve
+// both references for replay, but show the named file instead of its Vibe copy.
+export function deduplicateManagedImages(artifacts: ArtifactReference[]) {
+  const isCopy = (artifact: ArtifactReference) => {
+    const parts = artifact.path?.split('/');
+    return (
+      !!artifact.content_hash &&
+      artifact.mime.startsWith('image/') &&
+      parts?.at(-2) === '.vibe-attachments' &&
+      !!parts.at(-1)?.startsWith(`agent-${artifact.content_hash.slice(0, 16)}.`)
+    );
+  };
+  const key = (artifact: ArtifactReference) =>
+    JSON.stringify([
+      artifact.execution_id,
+      artifact.source_scope,
+      artifact.source_entry,
+      artifact.mime,
+      artifact.content_hash,
+    ]);
+  const originals = new Set(
+    artifacts
+      .filter(
+        (artifact) =>
+          artifact.path && artifact.content_hash && !isCopy(artifact)
+      )
+      .map(key)
+  );
+  return artifacts.filter(
+    (artifact) => !isCopy(artifact) || !originals.has(key(artifact))
+  );
+}
+
 // A second frame matters: its containing document's frame-src policy blocks
 // self-navigation as well as nested frames. A single sandboxed srcdoc alone
 // still lets arbitrary scripts navigate themselves to authenticated app URLs.
@@ -22,6 +57,14 @@ export function buildArtifactPreview(
 ): { srcDoc: string; warnings: string[] } {
   if (source.length > 2 * 1024 * 1024)
     throw new Error('Preview exceeds 2 MiB; use Source or Download.');
+  if (svg) {
+    const document = new DOMParser().parseFromString(source, 'image/svg+xml');
+    if (
+      document.querySelector('parsererror') ||
+      document.documentElement.localName !== 'svg'
+    )
+      throw new Error('Invalid SVG document; use Source or Download.');
+  }
   const warnings = new Set<string>();
   const files = new Map(resources.map((resource) => [resource.path, resource]));
   const urls = new Map<string, string>();

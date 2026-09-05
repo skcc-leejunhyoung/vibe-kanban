@@ -395,7 +395,7 @@ content: string,
  */
 entries: Array<NormalizedEntry>,
 /**
- * Existing execution snapshots, mapped onto this transcript's entries.
+ * Preserved parent and child snapshots mapped onto transcript entries.
  */
 artifacts?: Array<ArtifactReference>, };
 
@@ -1366,13 +1366,21 @@ export type ArtifactReference = { id: string, execution_id: string, name: string
 /**
  * Normalized entry index, scoped to this execution (never a client-supplied path).
  */
-source_entry: number | null, source: string, content_hash: string | null, size_bytes: number, status: ArtifactStatus, error: string | null, };
+source_entry: number | null,
+/**
+ * Child transcript namespace. Absent on existing parent-only sidecars.
+ */
+source_scope?: string, source: string, content_hash: string | null, size_bytes: number, status: ArtifactStatus, error: string | null, };
 
 export type ArtifactList = { artifacts: Array<ArtifactReference>, complete: boolean, warnings: Array<string>, };
 
 export type ArtifactResource = { path: string, mime: string, content_hash: string, };
 
-export type ArtifactBundle = { artifact: ArtifactReference, resources: Array<ArtifactResource>, warnings: Array<string>, };
+export type ArtifactBundle = { artifact: ArtifactReference,
+/**
+ * Workspace-relative base for inline static dependencies (never a file permission).
+ */
+base_path?: string, resources: Array<ArtifactResource>, warnings: Array<string>, };
 
 export type NormalizedEntryType = { "type": "user_message" } | { "type": "user_feedback", denied_tool: string, } | { "type": "assistant_message" } | { "type": "tool_use", tool_name: string, action_type: ActionType, status: ToolStatus, } | { "type": "system_message" } | { "type": "error_message", error_type: NormalizedEntryError, } | { "type": "thinking" } | { "type": "loading" } | { "type": "next_action", failed: boolean, execution_processes: number, needs_setup: boolean, } | { "type": "token_usage_info" } & TokenUsageInfo | { "type": "rate_limit_info" } & RateLimitInfo | { "type": "user_answered_questions", answers: Array<AnsweredQuestion>, } | { "type": "background_tasks_waiting",
 /**

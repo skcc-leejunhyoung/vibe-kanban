@@ -747,6 +747,7 @@
     "answeredCount_other": "Answered {{count}} questions"
   },
   "artifacts": {
+    "subagent": "Preserved subagent result",
     "changed": "This file changed while loading. Close the preview and open the latest version.",
     "loading": "Loading artifact…",
     "binary": "Binary file. Use Download to open the original.",

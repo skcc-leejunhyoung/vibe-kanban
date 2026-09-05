@@ -347,6 +347,9 @@ pub fn spawn_stream_raw_logs_to_storage(
                         }
                     },
                     LogMsg::SessionId(agent_session_id) => {
+                        if let Some(observer) = &mut artifacts {
+                            observer.set_agent_session_id(agent_session_id);
+                        }
                         if let Err(e) = CodingAgentTurn::update_agent_session_id(
                             &db.pool,
                             execution_id,

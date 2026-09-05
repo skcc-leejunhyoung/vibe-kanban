@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Dialog,
@@ -13,7 +13,8 @@ import { defineModal } from '@/shared/lib/modals';
 import { formatFileSize } from '@/shared/lib/utils';
 
 export interface ImagePreviewDialogProps {
-  imageUrl: string;
+  imageUrl?: string;
+  imageBlob?: Blob;
   altText: string;
   fileName?: string;
   format?: string;
@@ -23,16 +24,33 @@ export interface ImagePreviewDialogProps {
 const ImagePreviewDialogImpl = create<ImagePreviewDialogProps>((props) => {
   const modal = useModal();
   const { t } = useTranslation();
-  const { imageUrl, altText, fileName, format, sizeBytes } = props;
+  const { imageUrl, imageBlob, altText, fileName, format, sizeBytes } = props;
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [ownedImage, setOwnedImage] = useState<{ blob: Blob; url: string }>();
+  useEffect(() => {
+    setImageLoaded(false);
+    if (!imageBlob || !modal.visible) return;
+    // The dialog outlives a virtualized chat row and must own its preview URL.
+    const url = URL.createObjectURL(imageBlob);
+    setOwnedImage({ blob: imageBlob, url });
+    return () => URL.revokeObjectURL(url);
+  }, [imageBlob, imageUrl, modal.visible]);
+  const previewUrl = imageBlob
+    ? ownedImage?.blob === imageBlob
+      ? ownedImage.url
+      : undefined
+    : imageUrl;
 
   const handleClose = () => {
-    modal.hide();
+    modal.resolve();
+    void modal.hide();
+    modal.remove();
   };
 
   const handleDownload = async () => {
+    if (!previewUrl) return;
     try {
-      const response = await fetch(imageUrl);
+      const response = await fetch(previewUrl);
       if (!response.ok) throw new Error('Failed to fetch image');
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -77,7 +95,7 @@ const ImagePreviewDialogImpl = create<ImagePreviewDialogProps>((props) => {
             </div>
           )}
           <img
-            src={imageUrl}
+            src={previewUrl}
             alt={altText}
             className={`max-w-full max-h-[70vh] object-contain ${
               imageLoaded ? 'opacity-100' : 'opacity-0'
