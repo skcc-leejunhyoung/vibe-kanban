@@ -16,6 +16,10 @@
 - [`docs/AGENTS.md`](docs/AGENTS.md) — Mintlify documentation writing guidelines and component reference.
 - [`packages/local-web/AGENTS.md`](packages/local-web/AGENTS.md) — Web app design system styling guidelines.
 
+## Local and Remote Web Parity
+- For every web UI or behavior change, inspect both the local and remote web surfaces. Check `packages/local-web`, `packages/remote-web`, and shared `packages/web-core` entry points; do not assume shared components have identical shell wiring or gates.
+- If only one surface needs a code change, verify and report why the other surface already behaves correctly or is out of scope.
+
 ## Managing Shared Types Between Rust and TypeScript
 
 ts-rs allows you to derive TypeScript types from Rust structs/enums. By annotating your Rust types with #[derive(TS)] and related macros, ts-rs will generate .ts declaration files for those types.
@@ -54,5 +58,4 @@ Do not manually edit shared/remote-types.ts, instead edit crates/remote/src/bin/
 ## Security & Config Tips
 - Use `.env` for local overrides; never commit secrets. Key envs: `FRONTEND_PORT`, `BACKEND_PORT`, `HOST` 
 - Dev ports and assets are managed by `scripts/setup-dev-environment.js`.
-
 

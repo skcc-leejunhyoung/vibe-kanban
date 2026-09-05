@@ -43,7 +43,6 @@ import { RemoteNavbarContainer } from "@remote/app/layout/RemoteNavbarContainer"
 import { RemoteDesktopNavbar } from "@remote/app/layout/RemoteDesktopNavbar";
 import { useRelayAppBarHosts } from "@remote/shared/hooks/useRelayAppBarHosts";
 import { resolveRemoteDestinationFromPath } from "@remote/app/navigation/AppNavigation";
-import { isWorkspacesDestination } from "@/shared/lib/routes/appNavigation";
 import {
   CreateRemoteProjectDialog,
   type CreateRemoteProjectResult,
@@ -201,18 +200,11 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
 
   const isWorkspacesActive = location.pathname.includes("/workspaces");
   const isPullRequestsActive = location.pathname.endsWith("/pull-requests");
-  // Gate the hover preview on the resolved workspaces *destination* rather than
-  // a loose pathname match: WorkspacesSidebarContainer reads WorkspaceContext,
-  // which the root only mounts on workspace/project destinations. A workspaces
-  // destination is always provider-backed, so the container never mounts
-  // without its provider.
+  // Match the pane-grid route gate used by the root provider and local shell.
   const isWorkspaceSidebarPreviewEnabled =
     !isMobile &&
-    isWorkspacesDestination(
-      resolveRemoteDestinationFromPath(location.pathname),
-    ) &&
-    resolveRemoteDestinationFromPath(location.pathname)?.kind !==
-      "workspaces" &&
+    isWorkspaceNavigationRoute &&
+    currentDestination?.kind !== "workspaces" &&
     !isLeftSidebarVisible;
   const activeProjectId = useMemo(() => {
     const segments = location.pathname.split("/").filter(Boolean);
