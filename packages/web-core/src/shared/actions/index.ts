@@ -1957,12 +1957,15 @@ export const Actions = {
         ctx.stopDevServer();
       } else {
         ctx.startDevServer();
-        // Auto-open preview mode when starting dev server
+        // Auto-open preview mode when starting dev server. Resolve the same
+        // workspace the dev server itself acts on (the active split pane's,
+        // via the chrome target) — using the routed workspace would open the
+        // preview in a different pane than the one that just started.
         useUiPreferencesStore
           .getState()
           .setRightMainPanelMode(
             RIGHT_MAIN_PANEL_MODES.PREVIEW,
-            ctx.currentWorkspaceId ?? undefined
+            chromePanelWorkspaceId(ctx)
           );
       }
     },
