@@ -720,13 +720,16 @@ export const Actions = {
         await workspacesApi.update(
           workspaceId,
           { archived: !wasArchived },
-          hostId
+          targetHostId
         );
       } catch (error) {
         ctx.queryClient.setQueryData(workspaceQueryKey, workspace);
         throw error;
       }
       invalidateWorkspaceQueries(ctx.queryClient, workspaceId, targetHostId);
+      ctx.queryClient.invalidateQueries({
+        queryKey: ['unified-workspaces', targetHostId],
+      });
     },
   },
 

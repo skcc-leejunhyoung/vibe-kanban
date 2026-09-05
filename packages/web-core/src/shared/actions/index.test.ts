@@ -965,6 +965,21 @@ describe('Actions.ArchiveWorkspace', () => {
     expect(selectWorkspace).not.toHaveBeenCalled();
   });
 
+  it('keeps the captured current host for the archive mutation', async () => {
+    const { ctx } = makeCtx(
+      { id: 'remote-ws', archived: false },
+      { currentHostId: 'host-2' }
+    );
+
+    await Actions.ArchiveWorkspace.execute(ctx, 'remote-ws');
+
+    expect(update).toHaveBeenCalledWith(
+      'remote-ws',
+      { archived: true },
+      'host-2'
+    );
+  });
+
   it('sends archive mutations to the workspace host from the unified list', async () => {
     const { ctx, invalidateQueries } = makeCtx({
       id: 'remote-ws',
@@ -980,6 +995,9 @@ describe('Actions.ArchiveWorkspace', () => {
     );
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['workspaceRecord', 'host-2', 'remote-ws'],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['unified-workspaces', 'host-2'],
     });
   });
 });
