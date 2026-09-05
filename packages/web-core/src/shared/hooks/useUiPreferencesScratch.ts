@@ -53,7 +53,6 @@ function storeToScratchData(state: {
   fileSearchRepoId: string | null;
   isLeftSidebarVisible: boolean;
   isRightSidebarVisible: boolean;
-  isTerminalVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
@@ -88,7 +87,8 @@ function storeToScratchData(state: {
     file_search_repo_id: state.fileSearchRepoId,
     is_left_sidebar_visible: state.isLeftSidebarVisible,
     is_right_sidebar_visible: state.isRightSidebarVisible,
-    is_terminal_visible: state.isTerminalVisible,
+    // Dropped from the store: nothing toggles or reads terminal visibility.
+    is_terminal_visible: null,
     right_sidebar_section_order: state.rightSidebarSectionOrder,
     workspace_panel_states: workspacePanelStates,
     workspace_filters: {
@@ -140,7 +140,6 @@ function scratchDataToStore(data: UiPreferencesData): {
   fileSearchRepoId: string | null;
   isLeftSidebarVisible: boolean;
   isRightSidebarVisible: boolean;
-  isTerminalVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
@@ -219,7 +218,6 @@ function scratchDataToStore(data: UiPreferencesData): {
     fileSearchRepoId: data.file_search_repo_id ?? legacyFileSearchRepoId,
     isLeftSidebarVisible: data.is_left_sidebar_visible ?? true,
     isRightSidebarVisible: data.is_right_sidebar_visible ?? true,
-    isTerminalVisible: data.is_terminal_visible ?? true,
     rightSidebarSectionOrder: normalizeRightSidebarSectionOrder(
       data.right_sidebar_section_order
     ),
@@ -288,7 +286,6 @@ export function useUiPreferencesScratch() {
     fileSearchRepoId: state.fileSearchRepoId,
     isLeftSidebarVisible: state.isLeftSidebarVisible,
     isRightSidebarVisible: state.isRightSidebarVisible,
-    isTerminalVisible: state.isTerminalVisible,
     rightSidebarSectionOrder: state.rightSidebarSectionOrder,
     workspacePanelStates: state.workspacePanelStates,
     workspaceFilters: state.workspaceFilters,
@@ -325,7 +322,6 @@ export function useUiPreferencesScratch() {
       fileSearchRepoId: currentState.fileSearchRepoId,
       isLeftSidebarVisible: currentState.isLeftSidebarVisible,
       isRightSidebarVisible: currentState.isRightSidebarVisible,
-      isTerminalVisible: currentState.isTerminalVisible,
       rightSidebarSectionOrder: currentState.rightSidebarSectionOrder,
       workspacePanelStates: currentState.workspacePanelStates,
       workspaceFilters: currentState.workspaceFilters,
@@ -378,7 +374,6 @@ export function useUiPreferencesScratch() {
         fileSearchRepoId: serverState.fileSearchRepoId,
         isLeftSidebarVisible: serverState.isLeftSidebarVisible,
         isRightSidebarVisible: serverState.isRightSidebarVisible,
-        isTerminalVisible: serverState.isTerminalVisible,
         rightSidebarSectionOrder: serverState.rightSidebarSectionOrder,
         workspacePanelStates: serverState.workspacePanelStates,
         workspaceFilters: serverState.workspaceFilters,

@@ -177,14 +177,29 @@ import { findRemoteWorkspaceByLocalIdentity } from '@/shared/lib/workspaceHostId
  * V-sequences) act on the active split pane's workspace when one is focused,
  * falling back to the routed workspace.
  */
+function chromePanelWorkspaceTarget(ctx: ActionExecutorContext): {
+  workspaceId: string | undefined;
+  /**
+   * The targeted pane's host, or `undefined` when falling back to the routed
+   * workspace — callers then keep using `ctx.currentHostId`, so the no-pane
+   * case behaves exactly as before.
+   */
+  hostId: string | null | undefined;
+} {
+  const target = getChromeTargetWorkspace(ctx.appNavigation, ctx.appRuntime);
+  if (target) {
+    return { workspaceId: target.workspaceId, hostId: target.hostId };
+  }
+  return {
+    workspaceId: ctx.currentWorkspaceId ?? undefined,
+    hostId: undefined,
+  };
+}
+
 function chromePanelWorkspaceId(
   ctx: ActionExecutorContext
 ): string | undefined {
-  return (
-    getChromeTargetWorkspace(ctx.appNavigation, ctx.appRuntime)?.workspaceId ??
-    ctx.currentWorkspaceId ??
-    undefined
-  );
+  return chromePanelWorkspaceTarget(ctx).workspaceId;
 }
 
 function workspaceNavigationHostId(
@@ -1857,24 +1872,32 @@ export const Actions = {
     isVisible: (ctx) => ctx.hasWorkspace,
     getTooltip: (ctx) => `Open in ${getIdeName(ctx.editorType)}`,
     execute: async (ctx) => {
-      if (!ctx.currentWorkspaceId) return;
+      // Invoked from document chrome (command bar) as well as the per-pane
+      // context bar, so resolve the active pane's workspace *and* its host
+      // together — taking the workspace from the pane but the host from the
+      // route would open the right id on the wrong machine.
+      const target = chromePanelWorkspaceTarget(ctx);
+      const workspaceId = target.workspaceId;
+      if (!workspaceId) return;
+      const hostId =
+        target.hostId === undefined ? ctx.currentHostId : target.hostId;
       try {
         const response =
-          ctx.appRuntime === 'local' && ctx.currentHostId
+          ctx.appRuntime === 'local' && hostId
             ? await relayApi.openRemoteWorkspaceInEditor({
-                host_id: ctx.currentHostId,
-                workspace_id: ctx.currentWorkspaceId,
+                host_id: hostId,
+                workspace_id: workspaceId,
                 editor_type: null,
                 file_path: null,
               })
             : await workspacesApi.openEditor(
-                ctx.currentWorkspaceId,
+                workspaceId,
                 {
                   editor_type: null,
                   file_path: null,
                   is_remote_web: ctx.appRuntime === 'remote',
                 },
-                ctx.currentHostId
+                hostId
               );
         if (response.url) {
           window.open(response.url, '_blank');
@@ -1882,7 +1905,7 @@ export const Actions = {
       } catch {
         // Show editor selection dialog on failure
         EditorSelectionDialog.show({
-          selectedAttemptId: ctx.currentWorkspaceId,
+          selectedAttemptId: workspaceId,
         });
       }
     },

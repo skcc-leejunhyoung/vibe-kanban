@@ -173,7 +173,6 @@ export function PreviewBrowserContainer({
   // Workspace context, preview proxy config, dev server state, log streams,
   // URL auto-detection, and preview settings (override URL, screen size).
 
-  const previewRefreshKey = useUiPreferencesStore((s) => s.previewRefreshKey);
   const isMobileViewport = useIsMobile();
   const isNarrowPane = usePaneNarrowerThan(768);
   const isMobile = isMobileViewport || isNarrowPane;
@@ -182,6 +181,12 @@ export function PreviewBrowserContainer({
     (s) => s.triggerPreviewRefresh
   );
   const { repos, workspaceId: activeWorkspaceId } = useWorkspaceContext();
+  // Reload counter scoped to this pane's workspace; a global one would reload
+  // every other open pane's preview iframe on each refresh.
+  const previewWorkspaceId = activeWorkspaceId ?? workspaceId;
+  const previewRefreshKey = useUiPreferencesStore(
+    (s) => s.previewRefreshKeys[previewWorkspaceId] ?? 0
+  );
   // Project the workspace belongs to — used to scope preview shortcuts per project.
   const previewProjectId = useWorkspaceProjectId(
     activeWorkspaceId ?? workspaceId
@@ -842,8 +847,8 @@ export function PreviewBrowserContainer({
       return;
     }
     setImmediateLoad(true);
-    triggerPreviewRefresh();
-  }, [triggerPreviewRefresh, showIframe, isReady]);
+    triggerPreviewRefresh(previewWorkspaceId);
+  }, [triggerPreviewRefresh, previewWorkspaceId, showIframe, isReady]);
 
   const handleClearOverride = useCallback(async () => {
     await clearOverride();

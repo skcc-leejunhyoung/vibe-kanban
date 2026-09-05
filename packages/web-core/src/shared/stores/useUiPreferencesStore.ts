@@ -501,9 +501,12 @@ type State = {
   layoutMode: LayoutMode;
   isLeftSidebarVisible: boolean;
   isRightSidebarVisible: boolean;
-  isTerminalVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
-  previewRefreshKey: number;
+  /**
+   * Preview reload counters keyed by workspace id. Keyed rather than global so
+   * refreshing one pane's preview doesn't reload every other open pane.
+   */
+  previewRefreshKeys: Record<string, number>;
   // Note: Kanban issue panel state (selectedKanbanIssueId, createMode, etc.)
   // is derived from URL via app navigation route state
 
@@ -577,8 +580,6 @@ type State = {
   toggleLeftSidebar: () => void;
   toggleLeftMainPanel: (workspaceId?: string) => void;
   toggleRightSidebar: (workspaceId?: string) => void;
-  toggleTerminal: () => void;
-  setTerminalVisible: (value: boolean) => void;
   setRightSidebarSectionOrder: (order: RightSidebarSectionId[]) => void;
   // Note: Kanban panel actions (openKanbanIssuePanel, closeKanbanIssuePanel, etc.)
   // are handled by app navigation
@@ -592,7 +593,7 @@ type State = {
   ) => void;
   setLeftSidebarVisible: (value: boolean) => void;
   setLeftMainPanelVisible: (value: boolean, workspaceId?: string) => void;
-  triggerPreviewRefresh: () => void;
+  triggerPreviewRefresh: (workspaceId?: string) => void;
 
   // Workspace-specific panel state actions
   getWorkspacePanelState: (workspaceId: string) => WorkspacePanelState;
@@ -673,9 +674,8 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   layoutMode: 'workspaces' as LayoutMode,
   isLeftSidebarVisible: true,
   isRightSidebarVisible: true,
-  isTerminalVisible: true,
   rightSidebarSectionOrder: DEFAULT_RIGHT_SIDEBAR_SECTION_ORDER,
-  previewRefreshKey: 0,
+  previewRefreshKeys: {},
 
   // Workspace-specific panel state
   workspacePanelStates: {},
@@ -782,10 +782,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       };
     }),
 
-  toggleTerminal: () =>
-    set((s) => ({ isTerminalVisible: !s.isTerminalVisible })),
-
-  setTerminalVisible: (value) => set({ isTerminalVisible: value }),
   setRightSidebarSectionOrder: (order) =>
     set({
       rightSidebarSectionOrder: normalizeRightSidebarSectionOrder(order),
@@ -847,8 +843,16 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     });
   },
 
-  triggerPreviewRefresh: () =>
-    set((s) => ({ previewRefreshKey: s.previewRefreshKey + 1 })),
+  triggerPreviewRefresh: (workspaceId) =>
+    set((s) => {
+      if (!workspaceId) return {};
+      return {
+        previewRefreshKeys: {
+          ...s.previewRefreshKeys,
+          [workspaceId]: (s.previewRefreshKeys[workspaceId] ?? 0) + 1,
+        },
+      };
+    }),
 
   // Workspace-specific panel state actions
   getWorkspacePanelState: (workspaceId) => {
@@ -1280,7 +1284,6 @@ export function useWorkspacePanelState(workspaceId: string | undefined) {
   const isRightSidebarVisible = useUiPreferencesStore(
     (s) => s.isRightSidebarVisible
   );
-  const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
 
   // Actions from store
   const toggleRightMainPanelMode = useUiPreferencesStore(
@@ -1329,7 +1332,6 @@ export function useWorkspacePanelState(workspaceId: string | undefined) {
     isLeftSidebarVisible,
     isRightSidebarVisible:
       wsState.isRightSidebarVisible ?? isRightSidebarVisible,
-    isTerminalVisible,
 
     // Workspace-specific actions
     toggleRightMainPanelMode: toggleRightMainPanelModeForWorkspace,

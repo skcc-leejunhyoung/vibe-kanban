@@ -62,7 +62,6 @@ export const RightSidebar = memo(function RightSidebar({
   const diffs = useDiffs();
   const { data: branchStatus } = useBranchStatus(selectedWorkspace?.id);
   const hasPrs = hasLinkedPr(branchStatus);
-  const isTerminalVisible = useUiPreferencesStore((s) => s.isTerminalVisible);
   const sectionOrder = useUiPreferencesStore((s) => s.rightSidebarSectionOrder);
   const { expandTerminal, isTerminalExpanded } = useLogsPanel();
   const { name: hostName, status: hostStatus } =
@@ -169,7 +168,7 @@ export const RightSidebar = memo(function RightSidebar({
         id: 'terminal',
         title: 'Terminal',
         persistKey: PERSIST_KEYS.terminalSection,
-        visible: isTerminalVisible && !isTerminalExpanded,
+        visible: !isTerminalExpanded,
         expanded: terminalExpanded,
         content: <TerminalPanelContainer />,
         actions: [{ icon: ArrowsOutSimpleIcon, onClick: expandTerminal }],
@@ -261,7 +260,6 @@ export const RightSidebar = memo(function RightSidebar({
     changesExpanded,
     processesExpanded,
     devServerExpanded,
-    isTerminalVisible,
     isTerminalExpanded,
     hasUpperContent,
     upperExpanded,

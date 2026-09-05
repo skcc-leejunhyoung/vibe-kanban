@@ -34,3 +34,24 @@ describe('right sidebar preference', () => {
     expect(state.workspacePanelStates).toEqual({});
   });
 });
+
+describe('preview refresh key', () => {
+  beforeEach(() => {
+    useUiPreferencesStore.setState({ previewRefreshKeys: {} });
+  });
+
+  it('bumps only the targeted workspace so sibling panes do not reload', () => {
+    useUiPreferencesStore.getState().triggerPreviewRefresh('workspace-1');
+    useUiPreferencesStore.getState().triggerPreviewRefresh('workspace-1');
+
+    const { previewRefreshKeys } = useUiPreferencesStore.getState();
+    expect(previewRefreshKeys['workspace-1']).toBe(2);
+    expect(previewRefreshKeys['workspace-2']).toBeUndefined();
+  });
+
+  it('is a no-op when no workspace resolves', () => {
+    useUiPreferencesStore.getState().triggerPreviewRefresh(undefined);
+
+    expect(useUiPreferencesStore.getState().previewRefreshKeys).toEqual({});
+  });
+});
