@@ -1,4 +1,5 @@
 import { type ClassValue, clsx } from 'clsx';
+import type { SoundFile } from 'shared/types';
 // import { twMerge } from 'tailwind-merge';
 
 export function cn(...inputs: ClassValue[]) {
@@ -14,7 +15,12 @@ export function cn(...inputs: ClassValue[]) {
  * MediaRemote, triggering an "access Apple Music" TCC prompt.  In the
  * browser the standard HTMLAudioElement works fine.
  */
-export async function playSound(url: string): Promise<void> {
+export async function playSound(soundFile: SoundFile): Promise<void> {
+  const url = new URL(
+    `../../../../../assets/sounds/${soundFile.toLowerCase().replaceAll('_', '-')}.wav`,
+    import.meta.url
+  ).href;
+
   if ('__TAURI_INTERNALS__' in window) {
     const ctx = new AudioContext();
     try {

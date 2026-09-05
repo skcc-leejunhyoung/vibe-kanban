@@ -200,7 +200,7 @@ export function LandingPage() {
 
   const previewSound = async (value: SoundFile) => {
     try {
-      await playSound(`/api/sounds/${value}`);
+      await playSound(value);
     } catch (err) {
       console.error('Failed to play sound:', err);
     }

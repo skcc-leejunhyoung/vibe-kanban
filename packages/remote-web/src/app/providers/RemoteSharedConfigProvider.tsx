@@ -1,8 +1,11 @@
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useEffect, useRef } from "react";
+import type { Notification } from "shared/remote-types";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
+import { useNotifications } from "@/shared/hooks/useNotifications";
 import { useUserSystemController } from "@/shared/hooks/useUserSystemController";
 import { useConfigPreferenceSync } from "@/shared/hooks/useConfigPreferenceSync";
 import { DEFAULT_CONFIG } from "@/shared/lib/defaultConfig";
+import { playSound } from "@/shared/lib/utils";
 import {
   REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
   loadRemoteSharedUserSystemInfo,
@@ -18,6 +21,23 @@ import { useTheme } from "@/shared/hooks/useTheme";
 
 interface RemoteSharedConfigProviderProps {
   children: ReactNode;
+}
+
+type NotificationVersion = Pick<Notification, "id" | "seen" | "created_at">;
+
+export function advanceNotificationSoundState(
+  previous: ReadonlyMap<string, string> | null,
+  notifications: readonly NotificationVersion[],
+) {
+  const next = new Map(
+    notifications.map(({ id, created_at }) => [id, created_at]),
+  );
+  const shouldPlay =
+    previous !== null &&
+    notifications.some(
+      ({ id, seen, created_at }) => !seen && previous.get(id) !== created_at,
+    );
+  return { next, shouldPlay };
 }
 
 /**
@@ -47,6 +67,11 @@ export function RemoteSharedConfigProvider({
 function RemoteSharedConfig({ children }: RemoteSharedConfigProviderProps) {
   const { isSignedIn, isLoaded } = useAuth();
   const { setTheme } = useTheme();
+  const { data: notifications, isLoading: notificationsLoading } =
+    useNotifications();
+  const notificationVersionsRef = useRef<ReadonlyMap<string, string> | null>(
+    null,
+  );
 
   const { value } = useUserSystemController({
     queryKey: REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
@@ -59,6 +84,24 @@ function RemoteSharedConfig({ children }: RemoteSharedConfigProviderProps) {
   const theme = config?.theme;
   const primaryColor = config?.primary_color;
   const language = config?.language;
+  const soundEnabled = config?.notifications.sound_enabled ?? false;
+  const soundFile = config?.notifications.sound_file;
+
+  useEffect(() => {
+    if (notificationsLoading) return;
+
+    const { next, shouldPlay } = advanceNotificationSoundState(
+      notificationVersionsRef.current,
+      notifications,
+    );
+    notificationVersionsRef.current = next;
+
+    if (shouldPlay && soundEnabled && soundFile) {
+      void playSound(soundFile).catch((error) => {
+        console.error("Failed to play notification sound:", error);
+      });
+    }
+  }, [notifications, notificationsLoading, soundEnabled, soundFile]);
 
   useEffect(() => {
     if (theme != null && theme !== DEFAULT_CONFIG.theme) {

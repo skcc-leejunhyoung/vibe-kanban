@@ -242,7 +242,7 @@ export function GeneralSettingsSection() {
 
   const previewSound = async (soundFile: SoundFile) => {
     try {
-      await playSound(`/api/sounds/${soundFile}`);
+      await playSound(soundFile);
     } catch (err) {
       console.error('Failed to play sound:', err);
     }

@@ -32,6 +32,7 @@ COPY packages/public/ packages/public/
 COPY packages/ui/ packages/ui/
 COPY packages/web-core/ packages/web-core/
 COPY shared/ shared/
+COPY assets/sounds/ assets/sounds/
 
 # Bust cache for the frontend build only (not pnpm install / cargo build) by
 # passing --build-arg CACHEBUST=$(date +%s) when iterating on UI code.
