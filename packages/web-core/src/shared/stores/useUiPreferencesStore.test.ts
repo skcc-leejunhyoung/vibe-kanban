@@ -22,4 +22,15 @@ describe('right sidebar preference', () => {
       state.workspacePanelStates['workspace-2']?.isRightSidebarVisible
     ).toBeUndefined();
   });
+
+  it('is a no-op when no workspace resolves', () => {
+    // Remote web routes some invocations through a provider that supplies a
+    // null currentWorkspaceId; that must not fall back to a global toggle,
+    // which would flip every pane still following the default.
+    useUiPreferencesStore.getState().toggleRightSidebar(undefined);
+
+    const state = useUiPreferencesStore.getState();
+    expect(state.isRightSidebarVisible).toBe(true);
+    expect(state.workspacePanelStates).toEqual({});
+  });
 });

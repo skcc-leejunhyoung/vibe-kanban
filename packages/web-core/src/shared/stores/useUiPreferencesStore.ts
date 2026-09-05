@@ -760,18 +760,20 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     });
   },
 
+  // Strictly panel-scoped. The global flag is only ever a default for panes
+  // that have no override yet, so toggling must never write it: sibling panes
+  // still following the default would flip along with the targeted one. When
+  // no workspace resolves there is no panel to act on, so this is a no-op
+  // rather than a global toggle (remote web hits that path often, since
+  // RemoteActionsProvider supplies a null currentWorkspaceId).
   toggleRightSidebar: (workspaceId) =>
     set((state) => {
-      if (!workspaceId) {
-        return { isRightSidebarVisible: !state.isRightSidebarVisible };
-      }
+      if (!workspaceId) return {};
       const wsState =
         state.workspacePanelStates[workspaceId] ??
         DEFAULT_WORKSPACE_PANEL_STATE;
       const current =
         wsState.isRightSidebarVisible ?? state.isRightSidebarVisible;
-      // Panel-scoped only: never touch the global flag here, or sibling panes
-      // without their own override would follow along and toggle too.
       return {
         workspacePanelStates: {
           ...state.workspacePanelStates,
