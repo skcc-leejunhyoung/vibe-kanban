@@ -33,7 +33,6 @@
     "browserDefault": "Par défaut du navigateur"
   },
   "conversation": {
-    "input": "Entrée",
     "plan": "Plan",
     "output": "Sortie",
     "deniedByUser": "{{toolName}} refusé par l'utilisateur",
