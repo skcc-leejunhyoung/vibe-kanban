@@ -693,12 +693,17 @@ export const Actions = {
     isVisible: (ctx) => ctx.hasWorkspace,
     isActive: (ctx) => ctx.workspaceArchived,
     execute: async (ctx, workspaceId, hostId) => {
+      const targetHostId = hostId === undefined ? ctx.currentHostId : hostId;
       const workspace = await getWorkspace(
         ctx.queryClient,
         workspaceId,
-        hostId
+        targetHostId
       );
       const wasArchived = workspace.archived;
+      const workspaceQueryKey = workspaceRecordKeys.byId(
+        workspaceId,
+        targetHostId
+      );
 
       // Toggle the archive state without navigating anywhere. Archiving — from
       // the workspace list, the sidebar three-dot menu, or while the workspace
@@ -706,12 +711,22 @@ export const Actions = {
       // moves between the active and Archived sections. (Previously this jumped
       // to a neighbouring workspace, which on mobile yanked the user into a
       // different workspace's screen.)
-      await workspacesApi.update(
-        workspaceId,
-        { archived: !wasArchived },
-        hostId
-      );
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId, hostId);
+      await ctx.queryClient.cancelQueries({ queryKey: workspaceQueryKey });
+      ctx.queryClient.setQueryData<Workspace>(workspaceQueryKey, {
+        ...workspace,
+        archived: !wasArchived,
+      });
+      try {
+        await workspacesApi.update(
+          workspaceId,
+          { archived: !wasArchived },
+          hostId
+        );
+      } catch (error) {
+        ctx.queryClient.setQueryData(workspaceQueryKey, workspace);
+        throw error;
+      }
+      invalidateWorkspaceQueries(ctx.queryClient, workspaceId, targetHostId);
     },
   },
 

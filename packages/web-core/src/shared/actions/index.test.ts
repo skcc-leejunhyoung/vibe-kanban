@@ -138,10 +138,14 @@ function makeCtx(
 ) {
   const selectWorkspace = vi.fn();
   const invalidateQueries = vi.fn();
+  const cancelQueries = vi.fn();
+  const setQueryData = vi.fn();
   const ctx = {
     queryClient: {
       getQueryData: vi.fn(() => cachedWorkspace),
       invalidateQueries,
+      cancelQueries,
+      setQueryData,
     },
     selectWorkspace,
     currentWorkspaceId: 'ws1',
@@ -152,7 +156,13 @@ function makeCtx(
     archivedWorkspaces: [],
     ...overrides,
   } as unknown as ActionExecutorContext;
-  return { ctx, selectWorkspace, invalidateQueries };
+  return {
+    ctx,
+    selectWorkspace,
+    invalidateQueries,
+    cancelQueries,
+    setQueryData,
+  };
 }
 
 beforeEach(() => {
@@ -895,6 +905,43 @@ describe('Actions.ArchiveWorkspace', () => {
     // Regression guard: archiving must never jump to a neighbouring workspace.
     // This previously yanked mobile users into a different workspace's screen.
     expect(selectWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('updates the archive icon state before starting the request', async () => {
+    const workspace = { id: 'ws1', archived: false };
+    const { ctx, cancelQueries, setQueryData } = makeCtx(workspace, {
+      currentHostId: null,
+    });
+    update.mockImplementationOnce(async () => {
+      expect(cancelQueries).toHaveBeenCalledWith({
+        queryKey: ['workspaceRecord', 'local', 'ws1'],
+      });
+      expect(setQueryData).toHaveBeenCalledWith(
+        ['workspaceRecord', 'local', 'ws1'],
+        { id: 'ws1', archived: true }
+      );
+      return workspace as Workspace;
+    });
+
+    await Actions.ArchiveWorkspace.execute(ctx, 'ws1');
+  });
+
+  it('restores the archive icon state when the request fails', async () => {
+    const workspace = { id: 'ws1', archived: false };
+    const { ctx, setQueryData } = makeCtx(workspace, {
+      currentHostId: null,
+    });
+    update.mockRejectedValueOnce(new Error('archive failed'));
+
+    await expect(Actions.ArchiveWorkspace.execute(ctx, 'ws1')).rejects.toThrow(
+      'archive failed'
+    );
+
+    expect(setQueryData).toHaveBeenNthCalledWith(
+      2,
+      ['workspaceRecord', 'local', 'ws1'],
+      workspace
+    );
   });
 
   it('does not navigate when archiving a workspace other than the current one', async () => {
