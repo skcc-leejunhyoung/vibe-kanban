@@ -2141,6 +2141,7 @@ export const Actions = {
           targetBranch,
           headBranch,
           workBranch: workspace.branch,
+          hostId: ctx.currentHostId,
         });
     },
   },

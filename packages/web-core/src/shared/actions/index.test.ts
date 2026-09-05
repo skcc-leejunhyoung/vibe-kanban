@@ -108,6 +108,7 @@ import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { publishChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
 import { useWorkspaceSessionSelectionStore } from '@/shared/hooks/useWorkspaceSessions';
+import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 
 const update = vi.mocked(workspacesApi.update);
 const updateScratch = vi.mocked(scratchApi.update);
@@ -1481,6 +1482,37 @@ describe('Actions.GitViewPRDetails', () => {
       prNumber: 42,
       hostId: 'host-1',
     });
+  });
+});
+
+describe('Actions.GitCreatePRFromAI', () => {
+  it('forwards the selected host to the background PR flow', async () => {
+    getRepos.mockResolvedValue([
+      { id: 'repo1', default_target_branch: 'main' },
+    ] as never);
+    getBranchStatus.mockResolvedValue([
+      {
+        repo_id: 'repo1',
+        merges: [{ type: 'direct', target_branch_name: 'feature' }],
+      },
+    ] as never);
+    const startCreateFromAi = vi
+      .spyOn(usePrFromAiBackgroundStore.getState(), 'startCreateFromAi')
+      .mockResolvedValue(true);
+    const { ctx } = makeCtx(
+      { id: 'ws1', branch: 'vk/work' },
+      { currentHostId: 'host-1' }
+    );
+
+    await Actions.GitCreatePRFromAI.execute(ctx, 'ws1', 'repo1');
+
+    expect(startCreateFromAi).toHaveBeenCalledWith('ws1', 'repo1', {
+      targetBranch: 'main',
+      headBranch: 'feature',
+      workBranch: 'vk/work',
+      hostId: 'host-1',
+    });
+    startCreateFromAi.mockRestore();
   });
 });
 
