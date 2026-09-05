@@ -145,7 +145,9 @@ export function WorkspacesSidebarContainer({
     [activeWorkspaces, archivedWorkspaces]
   );
   const hostPrimaryColors = useHostPrimaryColors(workspaceHostIds);
-  const { hostId: routeHostId } = useParams({ strict: false });
+  const { hostId: routeHostId, projectId: routeProjectId } = useParams({
+    strict: false,
+  });
   const queryClient = useQueryClient();
   // While the pane grid is on screen, the list mirrors and targets the
   // active pane's workspace instead of the routed one.
@@ -591,13 +593,13 @@ export function WorkspacesSidebarContainer({
   useReboundHotkey(
     resolveModifier(NEXT_WORKSPACE_BINDING_ID, shortcutOverrides),
     () => cycleWorkspace(1),
-    {},
+    { enabled: !routeProjectId },
     [cycleWorkspace, shortcutOverrides]
   );
   useReboundHotkey(
     resolveModifier(PREVIOUS_WORKSPACE_BINDING_ID, shortcutOverrides),
     () => cycleWorkspace(-1),
-    {},
+    { enabled: !routeProjectId },
     [cycleWorkspace, shortcutOverrides]
   );
 

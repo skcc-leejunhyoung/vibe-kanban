@@ -274,10 +274,8 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     [appNavigation, appRuntime, navigate],
   );
 
-  // Ctrl+Tab cycles between projects while on a project route, mirroring the
-  // workspace cycling in WorkspacesSidebarContainer. Both share the
-  // NEXT/PREVIOUS_WORKSPACE bindings, but only one context is mounted at a
-  // time (project routes don't mount the workspaces sidebar and vice versa).
+  // Project routes own the shared next/previous workspace bindings;
+  // WorkspacesSidebarContainer yields its workspace cycling on these routes.
   const cycleProject = useCallback(
     (direction: 1 | -1) => {
       if (!activeProjectId) return;
