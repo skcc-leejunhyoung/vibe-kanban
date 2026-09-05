@@ -539,6 +539,17 @@ html {
     border-width: 0 2px 2px 0;
     transform: rotate(45deg);
   }
+
+  @media (hover: hover) and (pointer: fine) {
+    .wysiwyg-readonly-actions {
+      opacity: 0;
+    }
+
+    .wysiwyg-readonly:hover > .wysiwyg-readonly-actions,
+    .wysiwyg-readonly:focus-within > .wysiwyg-readonly-actions {
+      opacity: 1;
+    }
+  }
 }
 
 /* Color emoji utility - uses system color emoji fonts for reactions */
