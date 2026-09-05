@@ -55,6 +55,7 @@ export interface ProjectMutations {
 interface SidebarWorkspace {
   id: string;
   name?: string | null;
+  containerRef?: string | null;
   hostId?: string | null;
   isRunning?: boolean;
   isArchived?: boolean;

@@ -62,6 +62,7 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
 }));
 vi.mock('@/shared/lib/openInSplitPane', () => ({
   openUrlInSplitPane: vi.fn(),
+  getChromeTargetWorkspace: vi.fn(),
 }));
 vi.mock('@/shared/lib/reviewAndCreatePr', () => ({
   runReviewAndCreatePr: vi.fn(),
@@ -89,7 +90,10 @@ import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
-import { openUrlInSplitPane } from '@/shared/lib/openInSplitPane';
+import {
+  getChromeTargetWorkspace,
+  openUrlInSplitPane,
+} from '@/shared/lib/openInSplitPane';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
 import { LinkPrByUrlDialog } from '@/shared/dialogs/command-bar/LinkPrByUrlDialog';
@@ -1928,5 +1932,67 @@ describe('workspace script host scope', () => {
     await action.execute(ctx, 'remote-ws', 'host-2');
 
     expect(apiCall).toHaveBeenCalledWith('remote-ws', 'host-2');
+  });
+});
+
+describe('copy workspace path', () => {
+  const writeText = vi.fn();
+  const ctx = {
+    appNavigation: {},
+    appRuntime: 'local',
+    containerRef: '/routed/path',
+    activeWorkspaces: [{ id: 'pane-ws', containerRef: '/pane/path' }],
+    archivedWorkspaces: [{ id: 'archived-ws', containerRef: '/archived/path' }],
+  } as unknown as ActionExecutorContext;
+
+  beforeEach(() => {
+    writeText.mockClear();
+    vi.mocked(getChromeTargetWorkspace).mockReset();
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('copies the routed workspace path when no pane is targeted', async () => {
+    vi.mocked(getChromeTargetWorkspace).mockReturnValue(null);
+
+    await Actions.CopyWorkspacePath.execute(ctx);
+
+    expect(writeText).toHaveBeenCalledWith('/routed/path');
+  });
+
+  it("copies the targeted pane's path, not the routed one", async () => {
+    vi.mocked(getChromeTargetWorkspace).mockReturnValue({
+      workspaceId: 'pane-ws',
+      hostId: null,
+    });
+
+    await Actions.CopyWorkspacePath.execute(ctx);
+
+    expect(writeText).toHaveBeenCalledWith('/pane/path');
+  });
+
+  it('resolves archived workspaces too', async () => {
+    vi.mocked(getChromeTargetWorkspace).mockReturnValue({
+      workspaceId: 'archived-ws',
+      hostId: null,
+    });
+
+    await Actions.CopyWorkspacePath.execute(ctx);
+
+    expect(writeText).toHaveBeenCalledWith('/archived/path');
+  });
+
+  it('copies nothing rather than the wrong path when the pane is unresolvable', async () => {
+    vi.mocked(getChromeTargetWorkspace).mockReturnValue({
+      workspaceId: 'not-in-any-list',
+      hostId: null,
+    });
+
+    await Actions.CopyWorkspacePath.execute(ctx);
+
+    expect(writeText).not.toHaveBeenCalled();
   });
 });

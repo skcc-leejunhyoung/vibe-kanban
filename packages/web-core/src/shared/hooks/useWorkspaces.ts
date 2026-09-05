@@ -29,6 +29,11 @@ export interface SidebarWorkspace {
   id: string;
   name: string;
   branch: string;
+  /**
+   * Checkout path. Carried on the list entry so actions fired from document
+   * chrome can read the *targeted* pane's path without refetching it.
+   */
+  containerRef?: string | null;
   createdAt: string;
   updatedAt: string;
   description: string;
@@ -116,6 +121,7 @@ function toSidebarWorkspace(
     id: ws.id,
     name: ws.name ?? ws.branch, // Use name if available, fallback to branch
     branch: ws.branch,
+    containerRef: ws.container_ref,
     createdAt: ws.created_at,
     updatedAt: ws.updated_at,
     description: '',

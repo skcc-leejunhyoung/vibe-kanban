@@ -1919,8 +1919,21 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) => ctx.hasWorkspace,
     execute: async (ctx) => {
-      if (!ctx.containerRef) return;
-      await navigator.clipboard.writeText(ctx.containerRef);
+      // Reachable from the command bar too, where the active split pane — not
+      // the routed workspace — is what the user means. When a pane is targeted
+      // its path must come from that pane; falling back to ctx.containerRef
+      // there would silently copy a different workspace's path.
+      const paneTarget = getChromeTargetWorkspace(
+        ctx.appNavigation,
+        ctx.appRuntime
+      );
+      const containerRef = paneTarget
+        ? [...ctx.activeWorkspaces, ...ctx.archivedWorkspaces].find(
+            (workspace) => workspace.id === paneTarget.workspaceId
+          )?.containerRef
+        : ctx.containerRef;
+      if (!containerRef) return;
+      await navigator.clipboard.writeText(containerRef);
     },
   },
 
