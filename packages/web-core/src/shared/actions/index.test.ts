@@ -437,6 +437,33 @@ describe('command palette navigation actions', () => {
     );
 
     Actions.OpenWorkspace.execute(ctx, 'ws1');
+    Actions.OpenWorkspaceInNewTab.execute(ctx, 'ws1');
+
+    expect(goToWorkspace).toHaveBeenCalledWith('ws1', { hostId: 'host-1' });
+    expect(openWorkspaceInSplitPane.mock.calls[0]?.[0]).toBe(
+      '/hosts/host-1/workspaces/ws1'
+    );
+  });
+
+  it('uses the mapped host when remote workspace navigation has no route host', () => {
+    const goToWorkspace = vi.fn();
+    const { ctx } = makeCtx(
+      { id: 'ws1' },
+      {
+        appRuntime: 'remote',
+        currentHostId: null,
+        appNavigation: { goToWorkspace } as never,
+        remoteWorkspaces: [
+          {
+            id: 'remote-ws1',
+            local_workspace_id: 'ws1',
+            host_id: 'host-1',
+          },
+        ] as never,
+      }
+    );
+
+    Actions.OpenWorkspace.execute(ctx, 'ws1');
 
     expect(goToWorkspace).toHaveBeenCalledWith('ws1', { hostId: 'host-1' });
   });

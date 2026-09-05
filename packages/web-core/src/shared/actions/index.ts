@@ -187,6 +187,20 @@ function chromePanelWorkspaceId(
   );
 }
 
+function workspaceNavigationHostId(
+  ctx: ActionExecutorContext,
+  workspaceId: string,
+  hostId?: string | null
+): string | null {
+  const targetHostId = hostId === undefined ? ctx.currentHostId : hostId;
+  if (targetHostId !== null || ctx.appRuntime !== 'remote') return targetHostId;
+
+  return (
+    findRemoteWorkspaceByLocalIdentity(ctx.remoteWorkspaces, workspaceId, null)
+      ?.host_id ?? null
+  );
+}
+
 async function resolveLinkedIssue(
   workspaceId: string,
   hostId: string | null,
@@ -1299,9 +1313,13 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.layoutMode === 'kanban' && ctx.hasWorkspace,
     execute: (ctx, workspaceId, hostId) => {
-      ctx.appNavigation.goToWorkspace(workspaceId, {
-        hostId: hostId === undefined ? ctx.currentHostId : hostId,
-      });
+      const targetHostId = workspaceNavigationHostId(ctx, workspaceId, hostId);
+      ctx.appNavigation.goToWorkspace(
+        workspaceId,
+        ctx.appRuntime === 'remote' && targetHostId === null
+          ? undefined
+          : { hostId: targetHostId }
+      );
     },
   } satisfies WorkspaceActionDefinition,
 
@@ -1317,7 +1335,7 @@ export const Actions = {
       openUrlInSplitPane(
         buildWorkspacePath(
           workspaceId,
-          hostId === undefined ? ctx.currentHostId : hostId
+          workspaceNavigationHostId(ctx, workspaceId, hostId)
         ),
         ctx.appNavigation,
         ctx.appRuntime
