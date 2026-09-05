@@ -402,6 +402,151 @@ fn process_owns_target(stdout: &str, target: &SubagentControlTarget) -> bool {
     })
 }
 
+fn codex_invocation_prompt(stdout: &str, thread_id: &str) -> Option<String> {
+    let (call_id, prompt) = stdout.lines().find_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+        if !json_has_codex_thread(&value, thread_id) {
+            return None;
+        }
+        let item = value.get("params")?.get("item")?;
+        if item.get("type")?.as_str()? != "collabAgentToolCall"
+            || item.get("tool")?.as_str()? != "spawnAgent"
+        {
+            return None;
+        }
+        Some((
+            item.get("id")?.as_str()?.to_string(),
+            item.get("prompt")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())
+                .map(str::to_string),
+        ))
+    })?;
+
+    prompt.or_else(|| {
+        stdout.lines().find_map(|line| {
+            let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+            if !matches!(
+                value.get("method").and_then(|value| value.as_str()),
+                Some("item/started" | "item/completed")
+            ) {
+                return None;
+            }
+            let item = value.get("params")?.get("item")?;
+            if item.get("type")?.as_str()? != "collabAgentToolCall"
+                || item.get("tool")?.as_str()? != "spawnAgent"
+                || item.get("id")?.as_str()? != call_id
+            {
+                return None;
+            }
+            item.get("prompt")?
+                .as_str()
+                .map(str::trim)
+                .filter(|prompt| !prompt.is_empty())
+                .map(str::to_string)
+        })
+    })
+}
+
+fn claude_invocation_prompt(stdout: &str, task_id: &str) -> Option<String> {
+    let mut tool_use_id = None;
+    for line in stdout.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if !matches!(
+            value.get("subtype").and_then(|value| value.as_str()),
+            Some("task_started" | "task_notification")
+        ) || value.get("task_id").and_then(|value| value.as_str()) != Some(task_id)
+        {
+            continue;
+        }
+        if let Some(prompt) = value
+            .get("prompt")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+        {
+            return Some(prompt.to_string());
+        }
+        tool_use_id = tool_use_id.or_else(|| {
+            value
+                .get("tool_use_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    }
+
+    let tool_use_id = tool_use_id?;
+    stdout.lines().find_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+        if value.get("type")?.as_str()? != "assistant" {
+            return None;
+        }
+        value
+            .get("message")?
+            .get("content")?
+            .as_array()?
+            .iter()
+            .find_map(|item| {
+                if item.get("type")?.as_str()? != "tool_use"
+                    || item.get("id")?.as_str()? != tool_use_id
+                    || !matches!(item.get("name")?.as_str()?, "Task" | "task" | "Agent")
+                {
+                    return None;
+                }
+                item.get("input")?
+                    .get("prompt")?
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|prompt| !prompt.is_empty())
+                    .map(str::to_string)
+            })
+    })
+}
+
+fn subagent_invocation_prompt(stdout: &str, target: &SubagentControlTarget) -> Option<String> {
+    match target {
+        SubagentControlTarget::Codex { thread_id } => codex_invocation_prompt(stdout, thread_id),
+        SubagentControlTarget::ClaudeCode { task_id, .. } => {
+            claude_invocation_prompt(stdout, task_id)
+        }
+    }
+}
+
+fn prepend_invocation_prompt(
+    content: &mut String,
+    entries: &mut Vec<NormalizedEntry>,
+    prompt: Option<String>,
+) {
+    let Some(prompt) = prompt else {
+        return;
+    };
+    if entries.iter().any(|entry| {
+        matches!(&entry.entry_type, NormalizedEntryType::UserMessage)
+            && entry.content.trim() == prompt
+    }) {
+        return;
+    }
+
+    entries.insert(
+        0,
+        NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::UserMessage,
+            content: prompt.clone(),
+            metadata: None,
+        },
+    );
+    let transcript = std::mem::take(content);
+    *content = if transcript == "_No transcript content._" || transcript.trim().is_empty() {
+        format!("**User**\n\n{prompt}")
+    } else {
+        format!("**User**\n\n{prompt}\n\n{transcript}")
+    };
+}
+
 /// Derive the SDK transcript path and session from this process's notification.
 fn find_claude_task_output_file(stdout: &str, task_id: &str) -> Option<(String, String)> {
     stdout.lines().find_map(|line| {
@@ -588,6 +733,7 @@ async fn subagent_transcript(
             "subagent target does not belong to this execution process".to_string(),
         ));
     }
+    let invocation_prompt = subagent_invocation_prompt(&stdout, &target);
 
     let (workspace, session) = execution_process
         .parent_workspace_and_session(&deployment.db().pool)
@@ -608,7 +754,7 @@ async fn subagent_transcript(
         .to_string_lossy()
         .into_owned();
 
-    let (content, entries) = match target {
+    let (mut content, mut entries) = match target {
         SubagentControlTarget::Codex { thread_id } => {
             let thread = match deployment
                 .container()
@@ -673,6 +819,7 @@ async fn subagent_transcript(
             (content, entries)
         }
     };
+    prepend_invocation_prompt(&mut content, &mut entries, invocation_prompt);
 
     Ok(ResponseJson(ApiResponse::success(SubagentTranscript {
         content,
@@ -1024,6 +1171,38 @@ mod subagent_route_tests {
             r#"{"method":"other/event","params":{"item":{"type":"subAgentActivity","agentThreadId":"thread-1"}}}"#,
         );
         assert!(!process_owns_target(stdout, &codex_target()));
+    }
+
+    #[test]
+    fn invocation_prompt_is_recovered_and_prepended_once() {
+        let codex_stdout = concat!(
+            r#"{"method":"item/started","params":{"item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","receiverThreadIds":[],"prompt":"Inspect auth\nrun its tests"}}}"#,
+            "\n",
+            r#"{"method":"item/completed","params":{"item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","receiverThreadIds":["thread-1"]}}}"#,
+        );
+        assert_eq!(
+            subagent_invocation_prompt(codex_stdout, &codex_target()).as_deref(),
+            Some("Inspect auth\nrun its tests")
+        );
+
+        let claude_stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool_1","name":"Task","input":{"prompt":"Inspect auth\nrun its tests"}}]}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"task_started","task_id":"a0da1c1e716284dc6","tool_use_id":"tool_1"}"#,
+        );
+        let prompt = subagent_invocation_prompt(claude_stdout, &claude_target());
+        assert_eq!(prompt.as_deref(), Some("Inspect auth\nrun its tests"));
+
+        let mut content = "_No transcript content._".to_string();
+        let mut entries = Vec::new();
+        prepend_invocation_prompt(&mut content, &mut entries, prompt.clone());
+        prepend_invocation_prompt(&mut content, &mut entries, prompt);
+        assert_eq!(content, "**User**\n\nInspect auth\nrun its tests");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            &entries[0].entry_type,
+            NormalizedEntryType::UserMessage
+        ));
     }
 
     #[tokio::test]
