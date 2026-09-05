@@ -100,6 +100,7 @@ type Props = {
   aggregatedGroup: AggregatedPatchGroup | null;
   aggregatedDiffGroup: AggregatedDiffGroup | null;
   aggregatedThinkingGroup: AggregatedThinkingGroup | null;
+  readOnly?: boolean;
 };
 
 type FileEditAction = Extract<ActionType, { action: 'file_edit' }>;
@@ -194,8 +195,13 @@ function renderToolUseEntry(
   props: Props,
   t: TFunction<'common'>
 ): React.ReactNode {
-  const { expansionKey, executionProcessId, workspaceWithSession, repos } =
-    props;
+  const {
+    expansionKey,
+    executionProcessId,
+    workspaceWithSession,
+    repos,
+    readOnly = false,
+  } = props;
   const sessionId = workspaceWithSession?.session?.id;
   const { action_type, status } = entryType;
 
@@ -263,6 +269,7 @@ function renderToolUseEntry(
         workspaceWithSession={workspaceWithSession}
         resetAction={props.resetAction}
         repos={repos}
+        readOnly={readOnly}
       />
     );
   }
@@ -293,6 +300,7 @@ function renderToolUseEntry(
         workspaceId={workspaceWithSession?.id}
         sessionId={sessionId}
         repos={repos}
+        readOnly={readOnly}
       />
     );
   }
@@ -357,6 +365,7 @@ function DisplayConversationEntry(props: Props) {
     executionProcessId,
     workspaceWithSession,
     resetAction,
+    readOnly = false,
   } = props;
   const sessionId = workspaceWithSession?.session?.id;
   const executorCanFork = !!(
@@ -408,6 +417,7 @@ function DisplayConversationEntry(props: Props) {
           executionProcessId={executionProcessId}
           executorCanFork={executorCanFork}
           resetAction={resetAction}
+          readOnly={readOnly}
         />
       );
 
@@ -776,6 +786,7 @@ function UserMessageEntry({
   executionProcessId,
   executorCanFork,
   resetAction,
+  readOnly,
 }: {
   content: string;
   expansionKey: string;
@@ -784,6 +795,7 @@ function UserMessageEntry({
   executionProcessId: string | undefined;
   executorCanFork: boolean;
   resetAction: UseResetProcessResult;
+  readOnly: boolean;
 }) {
   const [expanded, toggle] = usePersistedExpanded(`user:${expansionKey}`, true);
   const { startEdit, isEntryGreyed, isInEditMode } = useMessageEditContext();
@@ -805,7 +817,7 @@ function UserMessageEntry({
 
   // Only show actions when we have a process ID and not already in edit mode
   const canShowActions =
-    !!executionProcessId && !isInEditMode && !isResetPending;
+    !readOnly && !!executionProcessId && !isInEditMode && !isResetPending;
   // Edit/retry/reset is not supported when the executor doesn't have the fork capability
   const canEdit = canShowActions && executorCanFork;
   // Only show reset if we have a process ID, not in edit mode, and not pending
@@ -1200,6 +1212,7 @@ function SubagentEntry({
   workspaceWithSession,
   resetAction,
   repos,
+  readOnly,
 }: {
   description: string;
   subagentType: string | null | undefined;
@@ -1215,6 +1228,7 @@ function SubagentEntry({
   workspaceWithSession: WorkspaceWithSession;
   resetAction: UseResetProcessResult;
   repos: RepoWithTargetBranch[];
+  readOnly: boolean;
 }) {
   // Only auto-expand if there's a result to show
   const hasResult = Boolean(result?.value);
@@ -1288,7 +1302,8 @@ function SubagentEntry({
   // Stop only makes sense while this activity still runs inside a live
   // process; transcripts stay available after exit.
   const showStop = Boolean(
-    control?.can_stop &&
+    !readOnly &&
+      control?.can_stop &&
       status.status === 'created' &&
       processRunning &&
       !stopping
@@ -1358,6 +1373,7 @@ function ScriptEntryWithFix({
   workspaceId,
   sessionId,
   repos,
+  readOnly,
 }: {
   title: string;
   command?: string;
@@ -1367,6 +1383,7 @@ function ScriptEntryWithFix({
   workspaceId: string | undefined;
   sessionId: string | undefined;
   repos: RepoWithTargetBranch[];
+  readOnly: boolean;
 }) {
   const { viewProcessInPanel } = useLogsPanelActions();
 
@@ -1397,7 +1414,7 @@ function ScriptEntryWithFix({
   }, [title, workspaceId, sessionId]);
 
   // Only show fix button if we have the necessary context
-  const canFix = workspaceId && repos.length > 0;
+  const canFix = !readOnly && workspaceId && repos.length > 0;
 
   return (
     <ChatScriptEntry

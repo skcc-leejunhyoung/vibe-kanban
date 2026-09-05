@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  getTranscriptEntries,
   parseTranscriptMessages,
   shouldPollTranscript,
-  TranscriptMessageFrame,
 } from './SubagentTranscriptDialog';
 
 describe('parseTranscriptMessages', () => {
@@ -28,25 +26,23 @@ describe('parseTranscriptMessages', () => {
     expect(shouldPollTranscript(true, isLive)).toBe(false);
   });
 
-  it('visually and semantically separates input from output', () => {
-    const input = renderToStaticMarkup(
-      createElement(
-        TranscriptMessageFrame,
-        { role: 'user', label: 'Input' },
-        'question'
-      )
-    );
-    const output = renderToStaticMarkup(
-      createElement(
-        TranscriptMessageFrame,
-        { role: 'agent', label: 'Output' },
-        'answer'
-      )
-    );
-
-    expect(input).toContain('aria-label="Input"');
-    expect(input).toContain('justify-end');
-    expect(output).toContain('aria-label="Output"');
-    expect(output).toContain('justify-start');
+  it('normalizes legacy messages for the shared chat renderer', () => {
+    expect(
+      getTranscriptEntries({
+        entries: [],
+        content: '**User**\n\nquestion\n\n**Agent**\n\nanswer',
+      })
+    ).toEqual([
+      {
+        timestamp: null,
+        entry_type: { type: 'user_message' },
+        content: 'question',
+      },
+      {
+        timestamp: null,
+        entry_type: { type: 'assistant_message' },
+        content: 'answer',
+      },
+    ]);
   });
 });
