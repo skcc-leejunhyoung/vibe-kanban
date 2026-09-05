@@ -776,7 +776,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       return (
         <div className="relative group">
           <div className="absolute top-0 right-2 z-10 pointer-events-none">
-            <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+            <div className="flex justify-end gap-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity duration-150">
               {/* Copy button */}
               <Button
                 type="button"
