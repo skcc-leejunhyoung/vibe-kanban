@@ -892,6 +892,75 @@ fn dynamic_tool_image_markdown(image_url: &str, worktree_path: &str) -> String {
     format!("Image: {image_url}")
 }
 
+fn mcp_artifact_result(
+    content: Vec<Value>,
+    structured: Option<Value>,
+    metadata: Option<Value>,
+    worktree_path: &str,
+) -> ToolResult {
+    let ui = metadata
+        .as_ref()
+        .and_then(|meta| meta.get("ui"))
+        .and_then(|ui| ui.get("resourceUri"))
+        .and_then(Value::as_str)
+        .map(|uri| serde_json::json!({"ui": {"resourceUri": uri}}));
+    let content = content
+        .into_iter()
+        .map(|block| {
+            if let Some((mime, data)) = images::extract_base64_image_blocks(&block).first()
+                && let Some(path) = images::store_base64_image(worktree_path, mime, data)
+            {
+                serde_json::json!({"type": "text", "text": format!("![tool image]({path})")})
+            } else {
+                block
+            }
+        })
+        .collect::<Vec<_>>();
+    if structured.is_none()
+        && ui.is_none()
+        && content
+            .iter()
+            .all(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+    {
+        ToolResult::markdown(
+            content
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    } else {
+        ToolResult::json(
+            serde_json::json!({"content": content, "structuredContent": structured, "_meta": ui}),
+        )
+    }
+}
+
+fn generated_image_entry(
+    result: &str,
+    saved_path: Option<&str>,
+    worktree_path: &str,
+) -> Option<NormalizedEntry> {
+    let path =
+        if let Some(path) = saved_path.filter(|path| Path::new(path).starts_with(worktree_path)) {
+            Some(make_path_relative(path, worktree_path))
+        } else if let Some((mime, data)) = images::parse_image_data_url(result) {
+            images::store_base64_image(worktree_path, mime, data)
+        } else {
+            images::store_base64_image(worktree_path, "image/png", result)
+        }?;
+    Some(NormalizedEntry {
+        timestamp: None,
+        entry_type: NormalizedEntryType::ToolUse {
+            tool_name: "image_generation".into(),
+            action_type: ActionType::ImageView { path: path.clone() },
+            status: ToolStatus::Success,
+        },
+        content: path,
+        metadata: None,
+    })
+}
+
 fn dynamic_tool_markdown_from_app_items(
     items: &[AppDynamicToolCallOutputContentItem],
     worktree_path: &str,
@@ -1318,36 +1387,12 @@ fn handle_direct_item_completed(
             if let Some(mut mcp_tool_state) = state.mcp_tools.remove(&id) {
                 mcp_tool_state.status = app_mcp_status_to_tool_status(&status);
                 if let Some(result) = result {
-                    if result
-                        .content
-                        .iter()
-                        .all(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
-                    {
-                        mcp_tool_state.result = Some(ToolResult {
-                            r#type: ToolResultValueType::Markdown,
-                            value: Value::String(
-                                result
-                                    .content
-                                    .iter()
-                                    .filter_map(|block| {
-                                        block
-                                            .get("text")
-                                            .and_then(|t| t.as_str())
-                                            .map(|s| s.to_owned())
-                                    })
-                                    .collect::<Vec<String>>()
-                                    .join("\n"),
-                            ),
-                        });
-                    } else {
-                        let content = result.content;
-                        mcp_tool_state.result = Some(ToolResult {
-                            r#type: ToolResultValueType::Json,
-                            value: result.structured_content.unwrap_or_else(|| {
-                                serde_json::to_value(content).unwrap_or_default()
-                            }),
-                        });
-                    }
+                    mcp_tool_state.result = Some(mcp_artifact_result(
+                        result.content,
+                        result.structured_content,
+                        result.meta,
+                        worktree_path,
+                    ));
                 } else if let Some(error) = error {
                     mcp_tool_state.result = Some(ToolResult {
                         r#type: ToolResultValueType::Markdown,
@@ -1401,6 +1446,17 @@ fn handle_direct_item_completed(
                 if let Some(index) = entry.index {
                     replace_normalized_entry(msg_store, index, entry.to_normalized_entry());
                 }
+            }
+        }
+        AppThreadItem::ImageGeneration(item) => {
+            let saved = item
+                .saved_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned());
+            if let Some(entry) =
+                generated_image_entry(&item.result, saved.as_deref(), worktree_path)
+            {
+                add_normalized_entry(msg_store, entry_index, entry);
             }
         }
         AppThreadItem::ImageView { path, .. } => {
@@ -2410,33 +2466,12 @@ pub fn normalize_logs(
                                 } else {
                                     ToolStatus::Success
                                 };
-                                if value.content.iter().all(|block| {
-                                    block.get("type").and_then(|t| t.as_str()) == Some("text")
-                                }) {
-                                    mcp_tool_state.result = Some(ToolResult {
-                                        r#type: ToolResultValueType::Markdown,
-                                        value: Value::String(
-                                            value
-                                                .content
-                                                .iter()
-                                                .filter_map(|block| {
-                                                    block
-                                                        .get("text")
-                                                        .and_then(|t| t.as_str())
-                                                        .map(|s| s.to_owned())
-                                                })
-                                                .collect::<Vec<String>>()
-                                                .join("\n"),
-                                        ),
-                                    });
-                                } else {
-                                    mcp_tool_state.result = Some(ToolResult {
-                                        r#type: ToolResultValueType::Json,
-                                        value: value.structured_content.unwrap_or_else(|| {
-                                            serde_json::to_value(value.content).unwrap_or_default()
-                                        }),
-                                    });
-                                }
+                                mcp_tool_state.result = Some(mcp_artifact_result(
+                                    value.content,
+                                    value.structured_content,
+                                    value.meta,
+                                    &worktree_path_str,
+                                ));
                             }
                             Err(err) => {
                                 mcp_tool_state.status = ToolStatus::Failed;
@@ -2589,6 +2624,17 @@ pub fn normalize_logs(
                             continue;
                         };
                         replace_normalized_entry(&msg_store, index, normalized_entry);
+                    }
+                }
+                EventMsg::ImageGenerationEnd(event) => {
+                    let saved = event
+                        .saved_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned());
+                    if let Some(entry) =
+                        generated_image_entry(&event.result, saved.as_deref(), &worktree_path_str)
+                    {
+                        add_normalized_entry(&msg_store, &entry_index, entry);
                     }
                 }
                 EventMsg::ViewImageToolCall(ViewImageToolCallEvent { call_id: _, path }) => {
@@ -3296,6 +3342,74 @@ mod tests {
             dynamic_tool_image_markdown("https://example.com/a.png", worktree),
             "Image: https://example.com/a.png"
         );
+    }
+
+    #[tokio::test]
+    async fn image_generation_mcp_and_dynamic_protocol_items_keep_images_and_structured_content() {
+        use crate::logs::artifacts::{ArtifactCandidate, entry_candidates};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(MsgStore::new());
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        let items = [
+            (
+                "item/completed",
+                json!({"type":"imageGeneration", "id":"generated", "status":"completed", "result":png}),
+            ),
+            (
+                "item/started",
+                json!({"type":"mcpToolCall", "id":"mcp-image", "server":"test", "tool":"render", "status":"inProgress", "arguments":{}}),
+            ),
+            (
+                "item/completed",
+                json!({"type":"mcpToolCall", "id":"mcp-image", "server":"test", "tool":"render", "status":"completed", "arguments":{}, "result":{"content":[{"type":"image", "mimeType":"image/png", "data":png}], "structuredContent":{"caption":"preserved"}, "_meta":{"ui":{"resourceUri":"ui://view"},"private":"discard"}}}),
+            ),
+            (
+                "item/completed",
+                json!({"type":"dynamicToolCall", "id":"dynamic-image", "tool":"dynamic", "arguments":{}, "status":"completed", "success":true, "contentItems":[{"type":"inputImage", "imageUrl":format!("data:image/png;base64,{png}")}]}),
+            ),
+        ];
+        for (method, item) in items {
+            let notification = json!({"jsonrpc":"2.0", "method":method, "params":{"threadId":"thread", "turnId":"turn", "startedAtMs":1, "completedAtMs":2, "item":item}});
+            serde_json::from_value::<ServerNotification>(notification.clone()).unwrap();
+            store.push_stdout(format!("{notification}\n"));
+        }
+        store.push_finished();
+        for handle in normalize_logs(store.clone(), directory.path()) {
+            handle.await.unwrap();
+        }
+        let entries = latest_normalized_entries(&store);
+        let images: Vec<_> = entries
+            .iter()
+            .flat_map(entry_candidates)
+            .filter_map(|candidate| match candidate {
+                ArtifactCandidate::File(path) => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 3, "{entries:?}");
+        assert!(
+            images
+                .iter()
+                .all(|path| path == &images[0] && directory.path().join(path).is_file())
+        );
+        let mcp = entries
+            .iter()
+            .find(|entry| entry.content.contains("render"))
+            .unwrap();
+        let NormalizedEntryType::ToolUse {
+            action_type:
+                ActionType::Tool {
+                    result: Some(result),
+                    ..
+                },
+            ..
+        } = &mcp.entry_type
+        else {
+            panic!("{mcp:?}")
+        };
+        assert_eq!(result.value["structuredContent"]["caption"], "preserved");
+        assert_eq!(result.value["_meta"]["ui"]["resourceUri"], "ui://view");
+        assert!(result.value["_meta"].get("private").is_none());
     }
 
     #[test]

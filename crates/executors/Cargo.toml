@@ -21,6 +21,7 @@ xdg = "3.0"
 async-trait = { workspace = true } 
 command-group = { version = "5.0", features = ["with-tokio"] }
 regex = "1.11.1"
+percent-encoding = "2"
 json-patch = "2.0"
 thiserror = { workspace = true }
 enum_dispatch = "0.3.13"

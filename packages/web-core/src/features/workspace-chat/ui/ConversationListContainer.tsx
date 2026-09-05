@@ -27,6 +27,7 @@ import {
 import { isNearBottom } from '../model/conversation-scroll-commands';
 
 import DisplayConversationEntry from './DisplayConversationEntry';
+import { ExecutionArtifactResults } from './ArtifactCards';
 import { ApprovalFormProvider } from '@/shared/hooks/ApprovalForm';
 import { useEntriesActions } from '../model/contexts/EntriesContext';
 import {
@@ -452,6 +453,19 @@ export const ConversationList = forwardRef<
       hasRunningProcess ||
       conversationRows.some((row) => row.rowFamily === 'loading'),
     [conversationRows, hasRunningProcess]
+  );
+
+  const artifactResultRows = useMemo(
+    () =>
+      new Set(
+        new Map(
+          conversationRows.map((row) => [
+            row.entry.executionProcessId,
+            row.entry.patchKey,
+          ])
+        ).values()
+      ),
+    [conversationRows]
   );
 
   const candidateFirstUnvirtualizedRowIndex = useMemo(() => {
@@ -1057,6 +1071,14 @@ export const ConversationList = forwardRef<
                       }}
                     >
                       {renderRowContent(row.entry, attempt, resetAction, repos)}
+                      {attempt.session &&
+                        artifactResultRows.has(row.entry.patchKey) && (
+                          <ExecutionArtifactResults
+                            processId={row.entry.executionProcessId}
+                            workspaceId={attempt.id}
+                            sessionId={attempt.session.id}
+                          />
+                        )}
                     </div>
                   );
                 })}
@@ -1072,6 +1094,14 @@ export const ConversationList = forwardRef<
                   data-semantic-key={row.semanticKey}
                 >
                   {renderRowContent(row.entry, attempt, resetAction, repos)}
+                  {attempt.session &&
+                    artifactResultRows.has(row.entry.patchKey) && (
+                      <ExecutionArtifactResults
+                        processId={row.entry.executionProcessId}
+                        workspaceId={attempt.id}
+                        sessionId={attempt.session.id}
+                      />
+                    )}
                 </div>
               );
             })}

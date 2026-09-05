@@ -1,0 +1,444 @@
+import { useContext, useEffect, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { create, useModal } from '@ebay/nice-modal-react';
+import { useTranslation } from 'react-i18next';
+import type { ArtifactReference } from 'shared/types';
+import { ExecutionProcessStatus } from 'shared/types';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@vibe/ui/components/KeyboardDialog';
+import { artifactsApi } from '@/shared/lib/api';
+import { defineModal } from '@/shared/lib/modals';
+import { useHostId } from '@/shared/providers/HostIdProvider';
+import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
+import { MermaidDiagram } from '@/shared/components/MermaidDiagram';
+import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
+import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import { buildArtifactPreview } from './artifact-preview';
+
+type Scope = {
+  processId: string;
+  workspaceId: string;
+  sessionId: string;
+  hostId: string | null;
+};
+
+export function useExecutionArtifacts(
+  processId: string,
+  workspaceId: string,
+  sessionId?: string,
+  enabled = true
+) {
+  const hostId = useHostId();
+  const processes = useContext(ExecutionProcessesContext);
+  const running =
+    processes?.executionProcessesAll.find((process) => process.id === processId)
+      ?.status === ExecutionProcessStatus.running;
+  const query = useQuery({
+    queryKey: [
+      'execution-artifacts',
+      hostId,
+      workspaceId,
+      sessionId,
+      processId,
+    ],
+    queryFn: ({ signal }) =>
+      artifactsApi.list(processId, workspaceId, sessionId!, hostId, signal),
+    enabled: enabled && !!sessionId && !!processId,
+    staleTime: 1000,
+    refetchInterval: (state) => (state.state.data?.complete ? false : 2000),
+  });
+  const { refetch } = query;
+  useEffect(() => {
+    if (enabled && !running && sessionId) void refetch();
+  }, [enabled, running, sessionId, refetch]);
+  return query;
+}
+
+function ArtifactViewer({
+  artifact,
+  scope,
+  mode,
+  onClose,
+}: {
+  artifact: ArtifactReference;
+  scope: Scope;
+  mode: 'preview' | 'source';
+  onClose: () => void;
+}) {
+  const { t } = useTranslation('common');
+  const { theme } = useTheme();
+  const [objectUrl, setObjectUrl] = useState<string>();
+  const [runtimeError, setRuntimeError] = useState<string>();
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== frameRef.current?.contentWindow) return;
+      if (event.data === 'vibe:artifact:escape') onClose();
+      else if (
+        event.data?.type === 'vibe:artifact:error' &&
+        typeof event.data.message === 'string'
+      )
+        setRuntimeError(event.data.message.slice(0, 500));
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onClose]);
+  const { processId, workspaceId, sessionId, hostId } = scope;
+  const query = useQuery({
+    queryKey: [
+      'artifact-content',
+      hostId,
+      workspaceId,
+      sessionId,
+      processId,
+      artifact.id,
+      artifact.content_hash,
+      mode,
+    ],
+    gcTime: 0,
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const blob = await artifactsApi.content(
+        processId,
+        workspaceId,
+        sessionId,
+        artifact.id,
+        hostId,
+        artifact.content_hash ?? undefined,
+        signal
+      );
+      const textual =
+        artifact.mime.startsWith('text/') ||
+        artifact.mime === 'image/svg+xml' ||
+        /\.(json|[cm]?js|[jt]sx?|vue|svelte|rs|py|sh|toml|ya?ml|xml)$/i.test(
+          artifact.name
+        );
+      if (textual && blob.size > 2 * 1024 * 1024)
+        throw new Error(t('artifacts.largeSource'));
+      const text = textual ? await blob.text() : '';
+      if (
+        mode === 'preview' &&
+        ['text/html', 'image/svg+xml'].includes(artifact.mime)
+      ) {
+        const bundle = await artifactsApi.bundle(
+          processId,
+          workspaceId,
+          sessionId,
+          artifact.id,
+          hostId,
+          signal
+        );
+        if (bundle.artifact.content_hash !== artifact.content_hash)
+          throw new Error(t('artifacts.changed'));
+        const resources = await Promise.all(
+          bundle.resources.map(async (resource) => ({
+            ...resource,
+            bytes: new Uint8Array(
+              await (
+                await artifactsApi.content(
+                  processId,
+                  workspaceId,
+                  sessionId,
+                  artifact.id,
+                  hostId,
+                  resource.content_hash,
+                  signal
+                )
+              ).arrayBuffer()
+            ),
+          }))
+        );
+        const preview = buildArtifactPreview(
+          text,
+          artifact.path ?? artifact.name,
+          resources,
+          artifact.mime === 'image/svg+xml'
+        );
+        return { blob, text, preview, warnings: bundle.warnings };
+      }
+      return { blob, text, preview: undefined, warnings: [] };
+    },
+  });
+  useEffect(() => {
+    if (
+      !query.data ||
+      !/^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(
+        artifact.mime
+      )
+    )
+      return;
+    const url = URL.createObjectURL(
+      new Blob([query.data.blob], { type: artifact.mime })
+    );
+    setObjectUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [query.data, artifact.mime]);
+  if (query.isPending) return <p role="status">{t('artifacts.loading')}</p>;
+  if (query.error) return <p role="alert">{query.error.message}</p>;
+  const { text, preview, warnings } = query.data;
+  if (mode === 'source')
+    return (
+      <pre className="overflow-auto whitespace-pre-wrap p-base text-base font-ibm-plex-mono">
+        {text || t('artifacts.binary')}
+      </pre>
+    );
+  if (preview)
+    return (
+      <>
+        {runtimeError && <p role="alert">{runtimeError}</p>}
+        {[...warnings, ...preview.warnings].map((warning) => (
+          <p key={warning} className="text-low">
+            {warning}
+          </p>
+        ))}
+        <iframe
+          ref={frameRef}
+          className="h-[65vh] w-full border-0 bg-white"
+          title={artifact.name}
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          srcDoc={preview.srcDoc}
+        />
+        <p className="text-low">{t('artifacts.staticPreview')}</p>
+      </>
+    );
+  if (artifact.mime === 'text/vnd.mermaid')
+    return <MermaidDiagram chart={text} theme={getResolvedTheme(theme)} />;
+  if (artifact.mime === 'text/markdown')
+    return (
+      <MarkdownPreview
+        content={text}
+        theme={getResolvedTheme(theme)}
+        allowRemoteImages={false}
+      />
+    );
+  if (objectUrl)
+    return (
+      <img
+        src={objectUrl}
+        alt={artifact.name}
+        className="max-h-[65vh] max-w-full object-contain"
+      />
+    );
+  return (
+    <pre className="overflow-auto whitespace-pre-wrap p-base font-ibm-plex-mono">
+      {text || t('artifacts.binary')}
+    </pre>
+  );
+}
+
+type PreviewDialogProps = {
+  artifact: ArtifactReference;
+  scope: Scope;
+  mode: 'preview' | 'source';
+};
+// The existing global modal host keeps an open preview alive when its chat row
+// moves or unmounts during virtualization. All requests retain the opening scope.
+const ArtifactPreviewDialog = defineModal<PreviewDialogProps, void>(
+  create<PreviewDialogProps>(({ artifact, scope, mode }) => {
+    const modal = useModal();
+    const close = () => {
+      modal.resolve();
+      void modal.hide();
+    };
+    return (
+      <Dialog
+        open={modal.visible}
+        onOpenChange={(open) => {
+          if (!open) close();
+        }}
+        size="5xl"
+      >
+        <DialogContent className="max-h-[85vh] overflow-auto p-base">
+          <DialogHeader>
+            <DialogTitle>{artifact.name}</DialogTitle>
+          </DialogHeader>
+          {modal.visible && (
+            <ArtifactViewer
+              artifact={artifact}
+              scope={scope}
+              mode={mode}
+              onClose={close}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    );
+  })
+);
+
+function ArtifactCard({
+  artifact,
+  scope,
+}: {
+  artifact: ArtifactReference;
+  scope: Scope;
+}) {
+  const { t } = useTranslation('common');
+  const [error, setError] = useState<string>();
+  const [downloading, setDownloading] = useState(false);
+  const setPanel = useUiPreferencesStore(
+    (state) => state.setRightMainPanelMode
+  );
+  const ready = !!artifact.content_hash && artifact.status !== 'preparing';
+  const appSource = /\.(tsx|jsx|vue|svelte)$/i.test(artifact.name);
+  const previewable =
+    !appSource &&
+    /^(text\/(html|markdown|vnd.mermaid)|image\/)/.test(artifact.mime);
+  const download = async () => {
+    setDownloading(true);
+    setError(undefined);
+    try {
+      const blob = await artifactsApi.content(
+        scope.processId,
+        scope.workspaceId,
+        scope.sessionId,
+        artifact.id,
+        scope.hostId,
+        artifact.content_hash ?? undefined
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = artifact.name.split('/').pop() ?? 'artifact';
+      anchor.click();
+      // Let the browser consume the click before releasing the download URL.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setDownloading(false);
+    }
+  };
+  return (
+    <div className="my-half rounded-sm border border-border bg-panel p-base text-base">
+      <p className="break-all font-medium text-high">{artifact.name}</p>
+      <p className="text-low">
+        {artifact.mime} · {t(`artifacts.status.${artifact.status}`)}
+      </p>
+      {artifact.source === 'workspace_observation' && (
+        <p className="text-low">{t('artifacts.observed')}</p>
+      )}
+      {artifact.error && (
+        <p role="status" className="text-low">
+          {artifact.error}
+        </p>
+      )}
+      <div className="mt-half flex flex-wrap gap-base">
+        {artifact.url ? (
+          <a href={artifact.url} target="_blank" rel="noopener noreferrer">
+            {t('artifacts.openOriginal')}
+          </a>
+        ) : (
+          <>
+            {previewable && (
+              <button
+                type="button"
+                disabled={!ready}
+                onClick={() =>
+                  void ArtifactPreviewDialog.show({
+                    artifact,
+                    scope,
+                    mode: 'preview',
+                  })
+                }
+              >
+                {t('artifacts.preview')}
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={!ready}
+              onClick={() =>
+                void ArtifactPreviewDialog.show({
+                  artifact,
+                  scope,
+                  mode: 'source',
+                })
+              }
+            >
+              {t('artifacts.source')}
+            </button>
+            <button
+              type="button"
+              disabled={!ready || downloading}
+              onClick={() => void download()}
+            >
+              {t('artifacts.download')}
+            </button>
+            {(appSource || artifact.mime === 'text/html') && (
+              <button
+                type="button"
+                onClick={() => setPanel('preview', scope.workspaceId)}
+              >
+                {t('artifacts.devPreview')}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+      {appSource && <p className="text-low">{t('artifacts.appSource')}</p>}
+      {error && <p role="alert">{error}</p>}
+    </div>
+  );
+}
+
+export function ArtifactCards({
+  artifacts,
+  processId,
+  workspaceId,
+  sessionId,
+}: {
+  artifacts: ArtifactReference[];
+  processId: string;
+  workspaceId: string;
+  sessionId: string;
+}) {
+  const hostId = useHostId();
+  return (
+    <>
+      {artifacts.map((artifact) => (
+        <ArtifactCard
+          key={artifact.id}
+          artifact={artifact}
+          scope={{ processId, workspaceId, sessionId, hostId }}
+        />
+      ))}
+    </>
+  );
+}
+
+export function ExecutionArtifactResults({
+  processId,
+  workspaceId,
+  sessionId,
+}: Omit<Scope, 'hostId'>) {
+  const query = useExecutionArtifacts(processId, workspaceId, sessionId);
+  const artifacts =
+    query.data?.artifacts.filter(
+      (artifact) => artifact.source_entry === null
+    ) ?? [];
+  if (!artifacts.length && !query.data?.warnings.length) return null;
+  return (
+    <div className="px-double pb-base">
+      {query.data?.warnings.map((warning) => (
+        <p key={warning} role="status" className="text-low text-sm">
+          {warning}
+        </p>
+      ))}
+      <ArtifactCards
+        artifacts={artifacts}
+        processId={processId}
+        workspaceId={workspaceId}
+        sessionId={sessionId}
+      />
+    </div>
+  );
+}

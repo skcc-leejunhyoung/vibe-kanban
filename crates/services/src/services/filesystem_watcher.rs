@@ -294,14 +294,24 @@ fn has_ignored_descendants(
 /// Collect directories to watch, respecting gitignore and excluding .git.
 /// On macOS/Windows, use recursive mode for directories without ignored subdirectories.
 /// On Linux, use non-recursive mode for all directories.
-fn collect_watch_directories(root: &Path, gi: &Gitignore) -> Vec<WatchTarget> {
+fn collect_watch_directories(
+    root: &Path,
+    gi: &Gitignore,
+    respect_gitignore: bool,
+) -> Vec<WatchTarget> {
     let use_recursive = platform_supports_native_recursive();
+    let filter_root = root.to_path_buf();
+    let filter_ignore = gi.clone();
 
     let mut allowed_dirs: Vec<PathBuf> = WalkBuilder::new(root)
         .follow_links(false)
         .hidden(false)
-        .git_ignore(true) // Respect gitignore to skip node_modules, target, etc.
-        .filter_entry(|entry| {
+        .git_ignore(respect_gitignore)
+        .git_global(respect_gitignore)
+        .git_exclude(respect_gitignore)
+        .ignore(respect_gitignore)
+        .parents(respect_gitignore)
+        .filter_entry(move |entry| {
             let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
             if !is_dir {
                 return false;
@@ -313,9 +323,14 @@ fn collect_watch_directories(root: &Path, gi: &Gitignore) -> Vec<WatchTarget> {
                 return false;
             }
 
-            true
+            path_allowed(entry.path(), &filter_ignore, &filter_root)
         })
         .build()
+        .take(if respect_gitignore {
+            usize::MAX
+        } else {
+            50_000
+        })
         .filter_map(|result| result.ok())
         .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
         .map(|entry| entry.into_path())
@@ -454,7 +469,43 @@ fn remove_directory_watch(
 
 pub fn async_watcher(root: PathBuf) -> Result<WatcherComponents, FilesystemWatcherError> {
     let canonical_root = canonicalize_lossy(&root);
-    let gi_set = Arc::new(build_gitignore_set(&canonical_root)?);
+    let gi_set = build_gitignore_set(&canonical_root)?;
+    async_watcher_with_policy(canonical_root, gi_set, true)
+}
+
+/// Artifact discovery includes ignored output, but never installs watches in
+/// dependency/cache trees. The diff watcher continues to respect Git ignores.
+pub const ARTIFACT_SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".cache",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".pnpm-store",
+    ".mypy_cache",
+    ".pytest_cache",
+];
+
+pub fn artifact_watcher(root: PathBuf) -> Result<WatcherComponents, FilesystemWatcherError> {
+    let root = dunce::canonicalize(root)?;
+    let mut builder = GitignoreBuilder::new(&root);
+    for name in ARTIFACT_SKIP_DIRS {
+        builder.add_line(None, &format!("{name}/"))?;
+    }
+    async_watcher_with_policy(root, builder.build()?, false)
+}
+
+fn async_watcher_with_policy(
+    canonical_root: PathBuf,
+    gi_set: Gitignore,
+    respect_gitignore: bool,
+) -> Result<WatcherComponents, FilesystemWatcherError> {
+    let gi_set = Arc::new(gi_set);
     // NOTE: changes to .gitignore aren’t picked up until the watcher is rebuilt.
     // Recomputing on every change would require rebuilding the full watcher fleet.
 
@@ -468,9 +519,20 @@ pub fn async_watcher(root: PathBuf) -> Result<WatcherComponents, FilesystemWatch
         Duration::from_millis(200),
         None,
         move |res: DebounceEventResult| {
-            futures::executor::block_on(async {
-                raw_tx.send(res).await.ok();
-            });
+            if respect_gitignore {
+                futures::executor::block_on(async {
+                    raw_tx.send(res).await.ok();
+                });
+            } else if let Err(error) = raw_tx.try_send(res) {
+                // Artifact observers reconcile the baseline at exit. Never let
+                // a burst block the native watcher thread (and its Drop/join)
+                // while a cancelled execution is releasing its receiver.
+                if error.is_full() {
+                    tracing::warn!(
+                        "Artifact watcher burst exceeded the live event buffer; final scan will reconcile files"
+                    );
+                }
+            }
         },
     )?;
 
@@ -481,7 +543,7 @@ pub fn async_watcher(root: PathBuf) -> Result<WatcherComponents, FilesystemWatch
     let watched_dirs: Arc<Mutex<WatchedDirs>> = Arc::new(Mutex::new(WatchedDirs::default()));
     let watched_dirs_for_task = watched_dirs.clone();
 
-    let watch_targets = collect_watch_directories(&canonical_root, &gi_set);
+    let watch_targets = collect_watch_directories(&canonical_root, &gi_set, respect_gitignore);
     {
         let mut debouncer_guard = debouncer_for_init.lock().unwrap();
         let mut watched = watched_dirs.lock().unwrap();
@@ -587,6 +649,28 @@ pub fn async_watcher(root: PathBuf) -> Result<WatcherComponents, FilesystemWatch
                                                 &root_for_task,
                                             );
                                         }
+                                    }
+                                }
+                            }
+                        }
+                        // A moved/populated directory can arrive in one event.
+                        // inotify needs descriptors for its descendants as well.
+                        if !respect_gitignore
+                            && !platform_supports_native_recursive()
+                            && (event.kind.is_create()
+                                || matches!(event.kind, EventKind::Modify(ModifyKind::Name(_))))
+                        {
+                            for directory in event.paths.iter().filter(|path| path.is_dir()) {
+                                for target in collect_watch_directories(directory, &gi_clone, false)
+                                {
+                                    if !watched.contains(&target.path) {
+                                        add_directory_watch(
+                                            &mut debouncer_guard,
+                                            &mut watched,
+                                            &target.path,
+                                            &gi_clone,
+                                            &root_for_task,
+                                        );
                                     }
                                 }
                             }

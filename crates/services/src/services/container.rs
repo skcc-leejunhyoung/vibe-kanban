@@ -1722,6 +1722,41 @@ pub trait ContainerService {
                 .or_insert_with(|| Arc::new(MsgStore::new()));
         }
 
+        let artifact_root = self.workspace_to_current_dir(workspace);
+        let artifact_working_dir = match executor_action.typ() {
+            ExecutorActionType::CodingAgentInitialRequest(request) => {
+                Some(request.effective_dir(&artifact_root))
+            }
+            ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+                Some(request.effective_dir(&artifact_root))
+            }
+            ExecutorActionType::ReviewRequest(request) => {
+                Some(request.effective_dir(&artifact_root))
+            }
+            _ => None,
+        };
+        let artifact_observer = if let Some(working_dir) = artifact_working_dir {
+            match super::file::FileService::new(self.db().pool.clone()) {
+                Ok(files) => super::artifacts::ArtifactObserver::start(
+                    artifact_root,
+                    working_dir,
+                    workspace.id,
+                    session.id,
+                    execution_process.id,
+                    files,
+                )
+                .await
+                .inspect_err(|error| tracing::warn!(%error, "Artifact discovery could not start"))
+                .ok(),
+                Err(error) => {
+                    tracing::warn!(%error, "Artifact storage unavailable");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         if let Err(start_error) = self
             .start_execution_inner(workspace, execution_process, executor_action)
             .await
@@ -1870,6 +1905,7 @@ pub trait ContainerService {
             self.db().clone(),
             execution_process.id,
             session.id,
+            artifact_observer,
         );
         self.store_db_stream_handle(execution_process.id, db_stream_handle)
             .await;

@@ -21,6 +21,7 @@ import {
   type RepoWithTargetBranch,
   type SubagentControl,
   type SubagentControlTarget,
+  type ArtifactReference,
 } from 'shared/types';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import { parseDiffStats } from '@/shared/lib/diffStatsParser';
@@ -33,10 +34,15 @@ import { getFileIcon } from '@/shared/lib/fileTypeIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useTheme } from '@/shared/hooks/useTheme';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
-import { attachmentsApi, executionProcessesApi } from '@/shared/lib/api';
+import {
+  artifactsApi,
+  attachmentsApi,
+  executionProcessesApi,
+} from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
+import { ArtifactCards, useExecutionArtifacts } from './ArtifactCards';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -101,6 +107,7 @@ type Props = {
   aggregatedDiffGroup: AggregatedDiffGroup | null;
   aggregatedThinkingGroup: AggregatedThinkingGroup | null;
   readOnly?: boolean;
+  artifactOverrides?: ArtifactReference[];
 };
 
 type FileEditAction = Extract<ActionType, { action: 'file_edit' }>;
@@ -307,6 +314,16 @@ function renderToolUseEntry(
 
   // Inline image (Codex view_image, Claude image reads / tool-result images)
   if (action_type.action === 'image_view') {
+    const snapshots = props.artifactOverrides?.filter(
+      (artifact) =>
+        !!artifact.content_hash &&
+        artifact.mime.startsWith('image/') &&
+        artifact.mime !== 'image/svg+xml' &&
+        artifact.path &&
+        (artifact.path === action_type.path ||
+          artifact.path.endsWith(`/${action_type.path}`) ||
+          action_type.path.endsWith(`/${artifact.path}`))
+    );
     return (
       <InlineImageEntry
         path={action_type.path}
@@ -316,6 +333,8 @@ function renderToolUseEntry(
         toolName={entryType.tool_name}
         workspaceId={workspaceWithSession?.id}
         sessionId={sessionId}
+        artifact={snapshots?.length === 1 ? snapshots[0] : undefined}
+        executionProcessId={executionProcessId}
       />
     );
   }
@@ -1074,6 +1093,8 @@ function InlineImageEntry({
   toolName,
   workspaceId,
   sessionId,
+  artifact,
+  executionProcessId,
 }: {
   path: string;
   summary: string;
@@ -1082,13 +1103,15 @@ function InlineImageEntry({
   toolName: string;
   workspaceId: string | undefined;
   sessionId: string | undefined;
+  artifact?: ArtifactReference;
+  executionProcessId: string;
 }) {
   const hostId = useHostId();
   const servable =
     !!workspaceId &&
     !!sessionId &&
-    !path.startsWith('/') &&
-    !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path);
+    (!!artifact ||
+      (!path.startsWith('/') && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path)));
 
   const query = useQuery({
     queryKey: [
@@ -1097,14 +1120,31 @@ function InlineImageEntry({
       sessionId,
       path,
       hostId ?? null,
+      artifact?.content_hash,
+      artifact?.id,
     ],
-    queryFn: () =>
-      attachmentsApi.fetchWorkspaceImageBlob(
-        workspaceId!,
-        sessionId!,
-        path,
-        hostId
-      ),
+    queryFn: async ({ signal }) =>
+      artifact
+        ? new Blob(
+            [
+              await artifactsApi.content(
+                executionProcessId,
+                workspaceId!,
+                sessionId!,
+                artifact.id,
+                hostId,
+                artifact.content_hash ?? undefined,
+                signal
+              ),
+            ],
+            { type: artifact.mime }
+          )
+        : attachmentsApi.fetchWorkspaceImageBlob(
+            workspaceId!,
+            sessionId!,
+            path,
+            hostId
+          ),
     enabled: servable,
     staleTime: 4 * 60 * 1000,
   });
@@ -1707,6 +1747,28 @@ function AggregatedDiffGroupEntry({ group }: { group: AggregatedDiffGroup }) {
 const DisplayConversationEntrySpaced = (props: Props) => {
   const { isEntryGreyed } = useMessageEditContext();
   const isGreyed = isEntryGreyed(props.expansionKey);
+  const sessionId = props.workspaceWithSession.session?.id;
+  const artifacts = useExecutionArtifacts(
+    props.executionProcessId,
+    props.workspaceWithSession.id,
+    sessionId,
+    props.artifactOverrides === undefined
+  );
+  const entryKeys = new Set(
+    (
+      props.aggregatedGroup?.entries ??
+      props.aggregatedDiffGroup?.entries ??
+      []
+    ).map((entry) => entry.patchKey)
+  );
+  entryKeys.add(props.expansionKey);
+  const matching =
+    props.artifactOverrides ??
+    (artifacts.data?.artifacts ?? []).filter((artifact) =>
+      artifact.source_entry === null
+        ? false
+        : entryKeys.has(`${props.executionProcessId}:${artifact.source_entry}`)
+    );
 
   return (
     <div
@@ -1715,7 +1777,20 @@ const DisplayConversationEntrySpaced = (props: Props) => {
         isGreyed && 'opacity-50 pointer-events-none'
       )}
     >
-      <DisplayConversationEntry {...props} />
+      <DisplayConversationEntry
+        {...props}
+        artifactOverrides={
+          props.artifactOverrides ?? artifacts.data?.artifacts ?? []
+        }
+      />
+      {sessionId && (
+        <ArtifactCards
+          artifacts={matching}
+          processId={props.executionProcessId}
+          workspaceId={props.workspaceWithSession.id}
+          sessionId={sessionId}
+        />
+      )}
     </div>
   );
 };

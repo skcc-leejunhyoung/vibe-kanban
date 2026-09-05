@@ -393,7 +393,11 @@ content: string,
 /**
  * Structured entries rendered by the same components as the main chat.
  */
-entries: Array<NormalizedEntry>, };
+entries: Array<NormalizedEntry>,
+/**
+ * Existing execution snapshots, mapped onto this transcript's entries.
+ */
+artifacts?: Array<ArtifactReference>, };
 
 export type TokenResponse = { access_token: string, expires_at: string | null, };
 
@@ -1355,6 +1359,20 @@ export type CommandRunResult = { exit_status: CommandExitStatus | null, output: 
 export type CommandCategory = "read" | "search" | "edit" | "fetch" | "other";
 
 export type NormalizedEntry = { timestamp: string | null, entry_type: NormalizedEntryType, content: string, };
+
+export type ArtifactStatus = "preparing" | "ready" | "missing" | "error";
+
+export type ArtifactReference = { id: string, execution_id: string, name: string, mime: string, path: string | null, url: string | null,
+/**
+ * Normalized entry index, scoped to this execution (never a client-supplied path).
+ */
+source_entry: number | null, source: string, content_hash: string | null, size_bytes: number, status: ArtifactStatus, error: string | null, };
+
+export type ArtifactList = { artifacts: Array<ArtifactReference>, complete: boolean, warnings: Array<string>, };
+
+export type ArtifactResource = { path: string, mime: string, content_hash: string, };
+
+export type ArtifactBundle = { artifact: ArtifactReference, resources: Array<ArtifactResource>, warnings: Array<string>, };
 
 export type NormalizedEntryType = { "type": "user_message" } | { "type": "user_feedback", denied_tool: string, } | { "type": "assistant_message" } | { "type": "tool_use", tool_name: string, action_type: ActionType, status: ToolStatus, } | { "type": "system_message" } | { "type": "error_message", error_type: NormalizedEntryError, } | { "type": "thinking" } | { "type": "loading" } | { "type": "next_action", failed: boolean, execution_processes: number, needs_setup: boolean, } | { "type": "token_usage_info" } & TokenUsageInfo | { "type": "rate_limit_info" } & RateLimitInfo | { "type": "user_answered_questions", answers: Array<AnsweredQuestion>, } | { "type": "background_tasks_waiting",
 /**

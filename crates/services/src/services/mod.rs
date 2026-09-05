@@ -1,4 +1,5 @@
 pub mod approvals;
+pub mod artifacts;
 pub mod auth;
 pub mod automation;
 pub mod config;

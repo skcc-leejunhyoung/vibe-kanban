@@ -9,6 +9,7 @@ use crate::logs::utils::{
     patch::extract_normalized_entry_from_patch, shell_command_parsing::CommandCategory,
 };
 
+pub mod artifacts;
 pub mod plain_text_processor;
 pub mod stderr_processor;
 pub mod utils;

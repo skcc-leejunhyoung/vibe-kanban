@@ -48,7 +48,7 @@ fn sanitize_filename(name: &str) -> String {
     // Truncate to reasonable length to avoid filesystem limits
     let max_len = 50;
     if clean.len() > max_len {
-        clean[..max_len].to_string()
+        clean.chars().take(max_len).collect()
     } else if clean.is_empty() {
         "file".to_string()
     } else {

@@ -153,6 +153,9 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
           aggregatedDiffGroup={null}
           aggregatedThinkingGroup={null}
           readOnly
+          artifactOverrides={(transcript?.artifacts ?? []).filter(
+            (artifact) => artifact.source_entry === index
+          )}
         />
       );
     };

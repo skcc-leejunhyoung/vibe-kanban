@@ -300,6 +300,10 @@ pub struct SubagentTranscript {
     pub content: String,
     /// Structured entries rendered by the same components as the main chat.
     pub entries: Vec<NormalizedEntry>,
+    /// Existing execution snapshots, mapped onto this transcript's entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub artifacts: Option<Vec<executors::logs::artifacts::ArtifactReference>>,
 }
 
 /// Keep only the tail of oversized transcripts; the viewer is a dialog, not a
@@ -821,9 +825,48 @@ async fn subagent_transcript(
     };
     prepend_invocation_prompt(&mut content, &mut entries, invocation_prompt);
 
+    let mut artifacts = Vec::new();
+    if let Ok(Some(manifest)) =
+        services::services::artifacts::load(session.id, execution_process.id).await
+    {
+        let root = std::path::Path::new(container_ref);
+        let working = std::path::Path::new(&worktree_path);
+        let mut seen = std::collections::HashSet::new();
+        for (index, entry) in entries.iter().enumerate() {
+            for candidate in executors::logs::artifacts::entry_candidates(entry) {
+                if let executors::logs::artifacts::ArtifactCandidate::File(path) = candidate {
+                    let reference = utils::path::make_path_relative(
+                        &working.join(path).to_string_lossy(),
+                        container_ref,
+                    );
+                    let Ok(path) =
+                        services::services::artifacts::resolve_reference(root, root, &reference)
+                    else {
+                        continue;
+                    };
+                    let relative =
+                        utils::path::make_path_relative(&path.to_string_lossy(), container_ref)
+                            .replace('\\', "/");
+                    if let Some(artifact) = manifest
+                        .list
+                        .artifacts
+                        .iter()
+                        .find(|a| a.path.as_ref() == Some(&relative))
+                        && seen.insert(artifact.id.clone())
+                    {
+                        let mut artifact = artifact.clone();
+                        artifact.source_entry = u32::try_from(index).ok();
+                        artifacts.push(artifact);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(ResponseJson(ApiResponse::success(SubagentTranscript {
         content,
         entries,
+        artifacts: (!artifacts.is_empty()).then_some(artifacts),
     })))
 }
 
@@ -991,6 +1034,9 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/subagent/transcript", post(subagent_transcript))
         .route("/subagent/stop", post(subagent_stop))
         .route("/repo-states", get(get_execution_process_repo_states))
+        .route("/artifacts", get(super::artifacts::list))
+        .route("/artifacts/bundle", get(super::artifacts::bundle))
+        .route("/artifacts/content", get(super::artifacts::content))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
         .route("/raw-logs/sse", get(stream_raw_logs_sse))
         .route("/normalized-logs/ws", get(stream_normalized_logs_ws))

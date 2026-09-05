@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GenerateSpecRequest } from 'shared/types';
 import {
   approvalsApi,
+  artifactsApi,
   attachmentsApi,
   executionProcessesApi,
   issuePrsApi,
@@ -26,6 +27,41 @@ describe('host-aware task APIs', () => {
   afterEach(() => {
     vi.useRealTimers();
     setLocalApiTransport(null);
+  });
+
+  it('routes artifact metadata and snapshot bytes through the selected host transport', async () => {
+    const request = vi.fn(async (path: string) =>
+      path.includes('/content?')
+        ? new Response('saved bytes')
+        : apiResponse({ artifacts: [], complete: true, warnings: [] })
+    );
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+    await artifactsApi.list('process', 'workspace', 'session', 'remote-host');
+    await artifactsApi.bundle(
+      'process',
+      'workspace',
+      'session',
+      'artifact',
+      'remote-host'
+    );
+    const bytes = await artifactsApi.content(
+      'process',
+      'workspace',
+      'session',
+      'artifact',
+      'remote-host',
+      'hash'
+    );
+    expect(await bytes.text()).toBe('saved bytes');
+    for (const [path] of request.mock.calls) {
+      expect(path).toMatch(
+        /^\/api\/host\/remote-host\/execution-processes\/process\/artifacts/
+      );
+      const url = new URL(path, 'https://test.invalid');
+      expect(url.searchParams.get('workspace_id')).toBe('workspace');
+      expect(url.searchParams.get('session_id')).toBe('session');
+    }
+    expect(request.mock.calls[2][0]).toContain('hash=hash');
   });
 
   it('routes task tag CRUD to the explicitly selected host', async () => {

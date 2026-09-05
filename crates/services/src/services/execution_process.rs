@@ -275,18 +275,19 @@ pub fn spawn_stream_raw_logs_to_storage(
     db: DBService,
     execution_id: Uuid,
     session_id: Uuid,
+    mut artifacts: Option<super::artifacts::ArtifactObserver>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut log_writer =
             match ExecutionLogWriter::new_for_execution(session_id, execution_id).await {
-                Ok(w) => w,
+                Ok(w) => Some(w),
                 Err(e) => {
                     tracing::error!(
                         "Failed to create log file writer for execution {}: {}",
                         execution_id,
                         e
                     );
-                    return;
+                    None
                 }
             };
 
@@ -298,15 +299,37 @@ pub fn spawn_stream_raw_logs_to_storage(
         if let Some(store) = store {
             let mut stream = store.history_plus_stream();
 
-            while let Some(Ok(msg)) = stream.next().await {
+            let mut artifact_interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            artifact_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut artifact_entries = std::collections::BTreeMap::new();
+            loop {
+                let msg = tokio::select! {
+                    msg = stream.next() => match msg {
+                        Some(Ok(msg)) => msg,
+                        Some(Err(error)) => { tracing::warn!(%error, "Execution log stream error"); continue; }
+                        None => break,
+                    },
+                    _ = artifact_interval.tick(), if artifacts.is_some() => {
+                        if let Some(observer) = &mut artifacts {
+                            for (index, entry) in std::mem::take(&mut artifact_entries) {
+                                observer.observe_entry(index, &entry).await;
+                            }
+                            if let Err(error) = observer.tick(false).await {
+                                tracing::warn!(%execution_id, %error, "Artifact snapshot failed");
+                            }
+                        }
+                        continue;
+                    }
+                };
                 match &msg {
                     LogMsg::Stdout(_) | LogMsg::Stderr(_) => match serde_json::to_string(&msg) {
                         Ok(jsonl_line) => {
                             let mut jsonl_line_with_newline = jsonl_line;
                             jsonl_line_with_newline.push('\n');
 
-                            if let Err(e) =
-                                log_writer.append_jsonl_line(&jsonl_line_with_newline).await
+                            if let Some(writer) = &mut log_writer
+                                && let Err(e) =
+                                    writer.append_jsonl_line(&jsonl_line_with_newline).await
                             {
                                 tracing::error!(
                                     "Failed to append log line for execution {}: {}",
@@ -361,7 +384,25 @@ pub fn spawn_stream_raw_logs_to_storage(
                     LogMsg::StorageFinished => {
                         break;
                     }
-                    LogMsg::JsonPatch(_) | LogMsg::Ready | LogMsg::Finished => continue,
+                    LogMsg::JsonPatch(patch) => {
+                        if artifacts.is_some()
+                            && let Some((index, entry)) =
+                                executors::logs::utils::patch::extract_normalized_entry_from_patch(
+                                    patch,
+                                )
+                        {
+                            artifact_entries.insert(index, entry);
+                        }
+                    }
+                    LogMsg::Ready | LogMsg::Finished => continue,
+                }
+            }
+            if let Some(observer) = &mut artifacts {
+                for (index, entry) in artifact_entries {
+                    observer.observe_entry(index, &entry).await;
+                }
+                if let Err(error) = observer.tick(true).await {
+                    tracing::error!(%execution_id, %error, "Final artifact snapshot failed");
                 }
             }
         }

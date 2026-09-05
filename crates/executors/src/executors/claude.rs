@@ -2184,6 +2184,23 @@ impl ClaudeLogProcessor {
                                 info.content.clone(),
                             );
                             patches.push(ConversationPatch::replace(info.entry_index, entry));
+                        } else if matches!(
+                            Self::extract_action_type(&info.tool_data, worktree_path),
+                            ActionType::FileEdit { .. }
+                                | ActionType::FileRead { .. }
+                                | ActionType::ImageView { .. }
+                        ) {
+                            // Write/Edit/Read results also settle their entries.
+                            // Artifact discovery must not mistake the initial
+                            // tool request for a successfully written file.
+                            let status = if is_error.unwrap_or(false) {
+                                ToolStatus::Failed
+                            } else {
+                                ToolStatus::Success
+                            };
+                            let (entry, _, _) =
+                                Self::build_tool_use_entry(&info.tool_data, worktree_path, status);
+                            patches.push(ConversationPatch::replace(info.entry_index, entry));
                         }
                         // Note: With control protocol, denials are handled via protocol messages
                         // rather than error content parsing

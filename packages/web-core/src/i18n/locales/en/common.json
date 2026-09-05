@@ -745,5 +745,25 @@
     "submitting": "Submitting answers...",
     "answeredCount": "Answered {{count}} question",
     "answeredCount_other": "Answered {{count}} questions"
+  },
+  "artifacts": {
+    "changed": "This file changed while loading. Close the preview and open the latest version.",
+    "loading": "Loading artifact…",
+    "binary": "Binary file. Use Download to open the original.",
+    "staticPreview": "Static preview: network requests, dynamic imports and server code are unavailable.",
+    "observed": "Workspace file observed during this execution",
+    "preview": "Preview",
+    "source": "Source",
+    "download": "Download",
+    "devPreview": "Development server Preview",
+    "openOriginal": "Open original",
+    "appSource": "Application source. Open an existing development server in Preview.",
+    "status": {
+      "preparing": "Preparing",
+      "ready": "Ready",
+      "missing": "Source deleted or missing",
+      "error": "Snapshot unavailable"
+    },
+    "largeSource": "This file exceeds the 2 MiB preview limit. Download to view the complete source."
   }
 }

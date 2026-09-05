@@ -12,11 +12,13 @@ interface MarkdownPreviewProps {
   content: string;
   theme: 'light' | 'dark';
   className?: string;
+  allowRemoteImages?: boolean;
 }
 
 const remarkPlugins = [remarkGfm];
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const rehypePlugins: any[] = [
+const rehypePlugins: ComponentPropsWithoutRef<
+  typeof ReactMarkdown
+>['rehypePlugins'] = [
   rehypeRaw,
   [rehypeSanitize, defaultSchema],
   rehypeHighlight,
@@ -26,6 +28,7 @@ export function MarkdownPreview({
   content,
   theme,
   className,
+  allowRemoteImages = true,
 }: MarkdownPreviewProps) {
   const components = useMemo(
     () => ({
@@ -169,10 +172,12 @@ export function MarkdownPreview({
       hr: (props: ComponentPropsWithoutRef<'hr'>) => (
         <hr className="border-border my-4" {...props} />
       ),
-      img: (props: ComponentPropsWithoutRef<'img'>) => (
-        // eslint-disable-next-line jsx-a11y/alt-text
-        <img className="max-w-full rounded-sm" {...props} />
-      ),
+      img: (props: ComponentPropsWithoutRef<'img'>) =>
+        allowRemoteImages ? (
+          <img className="max-w-full rounded-sm" {...props} alt={props.alt} />
+        ) : (
+          <span>{props.alt}</span>
+        ),
       pre: ({ children, ...props }: ComponentPropsWithoutRef<'pre'>) => {
         // When a mermaid code block is rendered, the code component returns
         // <MermaidDiagram> but react-markdown still wraps it in <pre>.
@@ -237,7 +242,7 @@ export function MarkdownPreview({
         return <input type={type} checked={checked} {...props} />;
       },
     }),
-    [theme]
+    [theme, allowRemoteImages]
   );
 
   return (

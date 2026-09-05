@@ -52,6 +52,9 @@ pub fn store_base64_image(worktree_path: &str, mime: &str, data: &str) -> Option
         return None;
     }
     let ext = extension_for_image_mime(mime)?;
+    if data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 + 4 {
+        return None;
+    }
     let bytes = BASE64.decode(data.trim()).ok()?;
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
         return None;
@@ -79,6 +82,12 @@ pub fn extract_base64_image_blocks(content: &serde_json::Value) -> Vec<(String, 
     fn from_block(block: &serde_json::Value) -> Option<(String, String)> {
         if block.get("type")?.as_str()? != "image" {
             return None;
+        }
+        if let (Some(mime), Some(data)) = (
+            block.get("mimeType").and_then(|v| v.as_str()),
+            block.get("data").and_then(|v| v.as_str()),
+        ) {
+            return Some((mime.to_string(), data.to_string()));
         }
         let source = block.get("source")?;
         if source.get("type")?.as_str()? != "base64" {

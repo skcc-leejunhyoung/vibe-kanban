@@ -745,5 +745,25 @@
     "submitting": "답변 제출 중...",
     "answeredCount": "{{count}}개의 질문에 답변함",
     "answeredCount_other": "{{count}}개의 질문에 답변함"
+  },
+  "artifacts": {
+    "changed": "불러오는 동안 파일이 변경되었습니다. 미리보기를 닫고 최신 버전을 열어 주세요.",
+    "loading": "결과물을 불러오는 중…",
+    "binary": "바이너리 파일입니다. 다운로드하여 원본을 확인하세요.",
+    "staticPreview": "정적 미리보기에서는 네트워크 요청, 동적 import, 서버 코드를 실행하지 않습니다.",
+    "observed": "실행 중 감지된 워크스페이스 파일",
+    "preview": "미리보기",
+    "source": "원본",
+    "download": "다운로드",
+    "devPreview": "개발 서버 Preview",
+    "openOriginal": "원본 열기",
+    "appSource": "앱 소스 파일입니다. 실행 중인 개발 서버는 Preview에서 확인하세요.",
+    "status": {
+      "preparing": "준비 중",
+      "ready": "준비됨",
+      "missing": "원본 삭제 또는 누락",
+      "error": "보관본을 사용할 수 없음"
+    },
+    "largeSource": "2 MiB 미리보기 제한을 초과했습니다. 다운로드하여 전체 원본을 확인하세요."
   }
 }

@@ -167,6 +167,62 @@ export class ApiError<E = unknown> extends Error {
   }
 }
 
+export const artifactsApi = {
+  list: async (
+    processId: string,
+    workspaceId: string,
+    sessionId: string,
+    hostId: string | null,
+    signal?: AbortSignal
+  ): Promise<import('shared/types').ArtifactList> => {
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}/artifacts?${new URLSearchParams({ workspace_id: workspaceId, session_id: sessionId })}`,
+      hostId,
+      { signal }
+    );
+    return handleApiResponse(response);
+  },
+  bundle: async (
+    processId: string,
+    workspaceId: string,
+    sessionId: string,
+    id: string,
+    hostId: string | null,
+    signal?: AbortSignal
+  ): Promise<import('shared/types').ArtifactBundle> => {
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}/artifacts/bundle?${new URLSearchParams({ workspace_id: workspaceId, session_id: sessionId, id })}`,
+      hostId,
+      { signal }
+    );
+    return handleApiResponse(response);
+  },
+  content: async (
+    processId: string,
+    workspaceId: string,
+    sessionId: string,
+    id: string,
+    hostId: string | null,
+    hash?: string,
+    signal?: AbortSignal
+  ): Promise<Blob> => {
+    const params = new URLSearchParams({
+      workspace_id: workspaceId,
+      session_id: sessionId,
+      id,
+    });
+    if (hash) params.set('hash', hash);
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}/artifacts/content?${params}`,
+      hostId,
+      { signal }
+    );
+    if (!response.ok)
+      throw new ApiError('Artifact content unavailable', response.status);
+    return response.blob();
+  },
+};
+
 const makeRequest = async (url: string, options: RequestInit = {}) => {
   const headers = new Headers(options.headers ?? {});
   if (!headers.has('Content-Type')) {
