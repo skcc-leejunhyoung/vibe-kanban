@@ -30,8 +30,9 @@ vi.mock('@/shared/lib/api', () => ({
     push: vi.fn(),
     pushTargetBranch: vi.fn(),
     attachPr: vi.fn(),
+    openEditor: vi.fn(),
   },
-  relayApi: {},
+  relayApi: { openRemoteWorkspaceInEditor: vi.fn() },
   repoApi: {},
   sessionsApi: {
     getByWorkspace: vi.fn(),
@@ -83,7 +84,12 @@ import {
   getSessionCommandLabel,
 } from './index';
 import { formatDateShortWithTime } from '@/shared/lib/date';
-import { scratchApi, sessionsApi, workspacesApi } from '@/shared/lib/api';
+import {
+  relayApi,
+  scratchApi,
+  sessionsApi,
+  workspacesApi,
+} from '@/shared/lib/api';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
@@ -1994,5 +2000,62 @@ describe('copy workspace path', () => {
     await Actions.CopyWorkspacePath.execute(ctx);
 
     expect(writeText).not.toHaveBeenCalled();
+  });
+});
+
+describe('open in IDE host pairing', () => {
+  const openEditor = vi.mocked(workspacesApi.openEditor);
+  const openRemote = vi.mocked(relayApi.openRemoteWorkspaceInEditor);
+  const ctx = {
+    appNavigation: {},
+    appRuntime: 'local',
+    currentWorkspaceId: 'routed-ws',
+    currentHostId: 'route-host',
+  } as unknown as ActionExecutorContext;
+
+  beforeEach(() => {
+    vi.mocked(getChromeTargetWorkspace).mockReset();
+    // No `url` in the response, so the action never reaches `window.open`.
+    openEditor.mockResolvedValue({ url: null } as never);
+    openRemote.mockResolvedValue({ url: null } as never);
+  });
+
+  it('uses the routed workspace and host when no pane is targeted', async () => {
+    vi.mocked(getChromeTargetWorkspace).mockReturnValue(null);
+
+    await Actions.OpenInIDE.execute(ctx);
+
+    expect(openRemote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host_id: 'route-host',
+        workspace_id: 'routed-ws',
+      })
+    );
+    expect(openEditor).not.toHaveBeenCalled();
+  });
+
+  it("pairs the targeted pane's workspace with that pane's host", async () => {
+    vi.mocked(getChromeTargetWorkspace).mockReturnValue({
+      workspaceId: 'pane-ws',
+      hostId: 'pane-host',
+    });
+
+    await Actions.OpenInIDE.execute(ctx);
+
+    expect(openRemote).toHaveBeenCalledWith(
+      expect.objectContaining({ host_id: 'pane-host', workspace_id: 'pane-ws' })
+    );
+  });
+
+  it('opens a local pane locally instead of relaying to the route host', async () => {
+    vi.mocked(getChromeTargetWorkspace).mockReturnValue({
+      workspaceId: 'pane-ws',
+      hostId: null,
+    });
+
+    await Actions.OpenInIDE.execute(ctx);
+
+    expect(openRemote).not.toHaveBeenCalled();
+    expect(openEditor).toHaveBeenCalledWith('pane-ws', expect.anything(), null);
   });
 });
