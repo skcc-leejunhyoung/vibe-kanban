@@ -928,7 +928,7 @@ describe('Actions.ArchiveWorkspace', () => {
 
   it('restores the archive icon state when the request fails', async () => {
     const workspace = { id: 'ws1', archived: false };
-    const { ctx, setQueryData } = makeCtx(workspace, {
+    const { ctx, invalidateQueries, setQueryData } = makeCtx(workspace, {
       currentHostId: null,
     });
     update.mockRejectedValueOnce(new Error('archive failed'));
@@ -942,6 +942,12 @@ describe('Actions.ArchiveWorkspace', () => {
       ['workspaceRecord', 'local', 'ws1'],
       workspace
     );
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['workspaceRecord', 'local', 'ws1'],
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['unified-workspaces', null],
+    });
   });
 
   it('does not navigate when archiving a workspace other than the current one', async () => {

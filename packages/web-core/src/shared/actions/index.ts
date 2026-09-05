@@ -725,11 +725,12 @@ export const Actions = {
       } catch (error) {
         ctx.queryClient.setQueryData(workspaceQueryKey, workspace);
         throw error;
+      } finally {
+        invalidateWorkspaceQueries(ctx.queryClient, workspaceId, targetHostId);
+        ctx.queryClient.invalidateQueries({
+          queryKey: ['unified-workspaces', targetHostId],
+        });
       }
-      invalidateWorkspaceQueries(ctx.queryClient, workspaceId, targetHostId);
-      ctx.queryClient.invalidateQueries({
-        queryKey: ['unified-workspaces', targetHostId],
-      });
     },
   },
 
