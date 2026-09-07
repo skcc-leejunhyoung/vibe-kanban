@@ -6,8 +6,8 @@ use std::{collections::HashMap, path::Path, time::Duration};
 
 use async_trait::async_trait;
 use backon::{ExponentialBuilder, Retryable};
-pub use cli::GhCli;
-use cli::{GhCliError, GitHubRepoInfo};
+use cli::GitHubRepoInfo;
+pub use cli::{GhCli, GhCliError};
 use tokio::task;
 use tracing::info;
 

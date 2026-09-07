@@ -1,6 +1,6 @@
 use api_types::{
-    AuthMethodsResponse, HandoffInitRequest, HandoffInitResponse, HandoffRedeemRequest,
-    LocalLoginRequest, ProfileResponse, StatusResponse,
+    AuthMethodsResponse, GitHubCredentialStatus, HandoffInitRequest, HandoffInitResponse,
+    HandoffRedeemRequest, LocalLoginRequest, ProfileResponse, StatusResponse,
 };
 use axum::{
     Router,
@@ -11,11 +11,16 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use deployment::Deployment;
+use git_host::github::GhCliError;
 use local_deployment::PendingHandoff;
 use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use services::services::{
-    auth::AuthContext, oauth_credentials::Credentials, remote_client::RemoteClient, remote_sync,
+    auth::AuthContext,
+    github_host_credential::{self, GitHubHostCredentialError},
+    oauth_credentials::Credentials,
+    remote_client::RemoteClient,
+    remote_sync,
 };
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
@@ -90,6 +95,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/auth/methods", get(auth_methods))
         .route("/auth/handoff/init", post(handoff_init))
         .route("/auth/handoff/cancel", post(handoff_cancel))
+        .route("/auth/github-credential/sync", post(github_credential_sync))
         .route("/auth/handoff/complete", get(handoff_complete))
         .route("/auth/handoff/status", get(handoff_status))
         .route("/auth/local/login", post(local_login))
@@ -307,6 +313,26 @@ async fn handoff_cancel(
     StatusCode::NO_CONTENT
 }
 
+/// Upload this host's `gh` login as the account's central GitHub credential.
+async fn github_credential_sync(
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<GitHubCredentialStatus>>, ApiError> {
+    let client = deployment.remote_client()?;
+    let status = github_host_credential::sync(&client)
+        .await
+        .map_err(|error| match error {
+            GitHubHostCredentialError::Gh(GhCliError::NotAvailable) => {
+                ApiError::BadRequest("GitHub CLI (gh) is not installed on this host.".to_string())
+            }
+            GitHubHostCredentialError::Gh(GhCliError::AuthFailed(_)) => ApiError::BadRequest(
+                "GitHub CLI is not signed in on this host. Run `gh auth login` first.".to_string(),
+            ),
+            GitHubHostCredentialError::Gh(error) => ApiError::BadRequest(error.to_string()),
+            GitHubHostCredentialError::Remote(error) => ApiError::RemoteClient(error),
+        })?;
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
 async fn handoff_status(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<HandoffStatusQuery>,
@@ -483,6 +509,13 @@ async fn finalize_login(
     tokio::spawn(async move {
         relay_registration::spawn_relay(&relay_deployment).await;
     });
+
+    if let Ok(client) = deployment.remote_client() {
+        tokio::spawn(github_host_credential::sync_in_background(
+            client,
+            std::time::Duration::ZERO,
+        ));
+    }
 
     Ok(profile)
 }

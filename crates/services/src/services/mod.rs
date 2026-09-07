@@ -12,6 +12,7 @@ pub mod file_ranker;
 pub mod file_search;
 pub mod filesystem;
 pub mod filesystem_watcher;
+pub mod github_host_credential;
 pub mod issue_gating;
 pub mod machine_id;
 pub mod normalized_replay_cache;

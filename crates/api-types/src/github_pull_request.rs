@@ -135,3 +135,28 @@ pub struct SetGitHubReviewThreadResolvedRequest {
     pub thread_id: String,
     pub resolved: bool,
 }
+
+/// Which GitHub credential the server stack uses for a user.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubCredentialSource {
+    /// A GitHub CLI login uploaded from one of the user's hosts.
+    HostGh,
+    /// The GitHub sign-in of the Vibe OAuth app.
+    #[serde(rename = "oauth")]
+    OAuth,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct GitHubCredentialStatus {
+    pub source: GitHubCredentialSource,
+    pub login: Option<String>,
+    pub scopes: Vec<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct RegisterGitHubCredentialRequest {
+    pub token: String,
+}

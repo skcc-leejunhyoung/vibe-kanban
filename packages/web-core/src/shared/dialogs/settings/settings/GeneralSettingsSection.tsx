@@ -80,6 +80,7 @@ import {
 } from '@/shared/stores/useWorkspacePanesStore';
 import { RightSidebarSectionOrderEditor } from './RightSidebarSectionOrderEditor';
 import { PullRequestDefaultsSettings } from './PullRequestDefaultsSettings';
+import { GitHubCredentialSettings } from './GitHubCredentialSettings';
 import {
   type DiffViewMode,
   useDiffViewStore,
@@ -1250,6 +1251,7 @@ export function GeneralSettingsSection() {
         </div>
       </SettingsCard>
 
+      <GitHubCredentialSettings />
       <PullRequestDefaultsSettings />
 
       <SettingsSaveBar

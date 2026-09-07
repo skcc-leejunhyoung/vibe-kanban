@@ -440,6 +440,19 @@ impl GhCli {
         Self {}
     }
 
+    /// This host's GitHub CLI login token, for the server stack to reuse.
+    /// `gh auth token` fails with an auth error when nobody is signed in.
+    pub fn auth_token(&self) -> Result<String, GhCliError> {
+        let output = self.run(["auth", "token"], None)?;
+        let token = output.trim();
+        if token.is_empty() {
+            return Err(GhCliError::AuthFailed(
+                "gh auth token returned no token".to_string(),
+            ));
+        }
+        Ok(token.to_string())
+    }
+
     /// Ensure the GitHub CLI binary is discoverable.
     fn ensure_available(&self) -> Result<(), GhCliError> {
         resolve_executable_path_blocking("gh").ok_or(GhCliError::NotAvailable)?;

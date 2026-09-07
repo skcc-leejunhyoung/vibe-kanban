@@ -135,6 +135,7 @@ import {
   ProfileResponse,
 } from 'shared/types';
 import type {
+  GitHubCredentialStatus,
   Project as RemoteProject,
   UpdateUserNotificationPreferenceRequest,
   UserNotificationPreference,
@@ -2479,6 +2480,14 @@ export const oauthApi = {
       body: JSON.stringify({ handoff_id: handoffId }),
     });
     await handleApiResponse<void>(response);
+  },
+
+  /** Upload this host's `gh` login as the account's central GitHub credential. */
+  syncGitHubHostCredential: async (): Promise<GitHubCredentialStatus> => {
+    const response = await makeRequest('/api/auth/github-credential/sync', {
+      method: 'POST',
+    });
+    return handleApiResponse<GitHubCredentialStatus>(response);
   },
 
   localLogin: async (

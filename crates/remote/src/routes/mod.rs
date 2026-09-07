@@ -17,6 +17,7 @@ pub(crate) mod electric_proxy;
 pub(crate) mod error;
 mod export;
 mod github_credentials;
+mod github_host_credentials;
 mod github_images;
 pub mod github_issue_links;
 mod github_pull_requests;
@@ -109,6 +110,7 @@ pub fn router(state: AppState) -> Router {
         .merge(oauth::protected_router())
         .merge(github_images::router())
         .merge(github_pull_requests::router())
+        .merge(github_host_credentials::router())
         .merge(electric_proxy::router())
         .merge(project_statuses::router())
         .merge(tags::router())

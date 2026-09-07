@@ -1,6 +1,24 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
 import { OAuthDialog } from '@/shared/dialogs/global/OAuthDialog';
 import { isGitHubAuthenticationError } from '@/shared/lib/remoteApi';
+
+/** Drop every GitHub.com read so the next render fetches with the current credential. */
+export function invalidateGitHubReadCaches(queryClient: QueryClient) {
+  return queryClient.invalidateQueries({
+    predicate: ({ queryKey }) =>
+      queryKey[0] === 'github-repositories' ||
+      queryKey[0] === 'pull-request-summaries' ||
+      ((queryKey[0] === 'pr-detail' || queryKey[0] === 'pr-info') &&
+        queryKey[2] === 'github') ||
+      (queryKey[0] === 'prComments' &&
+        queryKey[1] === 'url' &&
+        queryKey[4] === 'github'),
+  });
+}
 
 /** Preserve the server's auth/permission/rate-limit errors at every PR entry point. */
 export function GitHubApiErrorAlert({
@@ -20,16 +38,7 @@ export function GitHubApiErrorAlert({
         reauthenticate: true,
       });
       if (!authenticated) return;
-      await queryClient.invalidateQueries({
-        predicate: ({ queryKey }) =>
-          queryKey[0] === 'github-repositories' ||
-          queryKey[0] === 'pull-request-summaries' ||
-          ((queryKey[0] === 'pr-detail' || queryKey[0] === 'pr-info') &&
-            queryKey[2] === 'github') ||
-          (queryKey[0] === 'prComments' &&
-            queryKey[1] === 'url' &&
-            queryKey[4] === 'github'),
-      });
+      await invalidateGitHubReadCaches(queryClient);
     },
   });
   if (!error) return null;

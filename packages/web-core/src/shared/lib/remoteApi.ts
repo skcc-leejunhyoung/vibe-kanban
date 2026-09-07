@@ -5,6 +5,7 @@ import type {
   CommitAttachmentsResponse,
   ConfirmUploadRequest,
   GithubIssueLink,
+  GitHubCredentialStatus,
   GitHubPullRequestCommentsResponse,
   GitHubPullRequestDetail,
   GitHubPullRequestSummary,
@@ -66,6 +67,29 @@ export async function listGitHubRepositories(): Promise<GitHubRepository[]> {
     );
   }
   return response.json();
+}
+
+export async function getGitHubCredentialStatus(): Promise<GitHubCredentialStatus> {
+  const response = await makeRequest('/v1/github/credentials');
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to load GitHub credential status'
+    );
+  }
+  return response.json();
+}
+
+export async function deleteGitHubCredential(): Promise<void> {
+  const response = await makeRequest('/v1/github/credentials', {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to remove GitHub credential'
+    );
+  }
 }
 
 export async function listGitHubPullRequests(

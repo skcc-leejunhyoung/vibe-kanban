@@ -115,6 +115,12 @@ export type GitHubPullRequestComment = { "comment_type": "general", id: string, 
 
 export type SetGitHubReviewThreadResolvedRequest = { url: string, thread_id: string, resolved: boolean, };
 
+export type GitHubCredentialSource = "host_gh" | "oauth" | "none";
+
+export type GitHubCredentialStatus = { source: GitHubCredentialSource, login: string | null, scopes: Array<string>, updated_at: string | null, };
+
+export type RegisterGitHubCredentialRequest = { token: string, };
+
 export type CreateGithubIssueLinkRequest = { id?: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, synced_milestone_id: string | null, synced_github_milestone_number: number | null, };
 
 export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id?: string | null | null, synced_milestone_id?: string | null | null, synced_github_milestone_number?: number | null | null, comments_synced_after: string | null, };

@@ -11,19 +11,20 @@ use api_types::{
     CreateIssueRelationshipRequest, CreateIssueRequest, CreateIssueTagRequest,
     CreateOrganizationRequest, CreateOrganizationResponse, CreateTagRequest,
     CreateWorkspaceRequest, DeleteResponse, DeleteWorkspaceRequest, GetInvitationResponse,
-    GetOrganizationResponse, HandoffInitRequest, HandoffInitResponse, HandoffRedeemRequest,
-    HandoffRedeemResponse, Issue, IssueAssignee, IssueRelationship, IssueTag,
+    GetOrganizationResponse, GitHubCredentialStatus, HandoffInitRequest, HandoffInitResponse,
+    HandoffRedeemRequest, HandoffRedeemResponse, Issue, IssueAssignee, IssueRelationship, IssueTag,
     ListAttachmentsResponse, ListInvitationsResponse, ListIssueAssigneesResponse,
     ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse, ListMembersResponse,
     ListOrganizationsResponse, ListProjectStatusesResponse, ListProjectsResponse,
     ListPullRequestsResponse, ListTagsResponse, LocalLoginRequest, LocalLoginResponse,
     MutationResponse, Organization, ProfileResponse, PullRequest,
     RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
-    RegisterAgentMemorySyncTargetRequest, ReportAgentMemorySyncJobRequest, RevokeInvitationRequest,
-    SearchIssuesRequest, Tag, TokenRefreshRequest, TokenRefreshResponse, UpdateIssueRequest,
-    UpdateMemberRoleRequest, UpdateMemberRoleResponse, UpdateOrganizationRequest,
-    UpdatePullRequestApiRequest, UpdateWorkspaceRequest, UpsertAgentMemorySnapshotRequest,
-    UpsertAgentMemorySnapshotResponse, UpsertPullRequestRequest, Workspace,
+    RegisterAgentMemorySyncTargetRequest, RegisterGitHubCredentialRequest,
+    ReportAgentMemorySyncJobRequest, RevokeInvitationRequest, SearchIssuesRequest, Tag,
+    TokenRefreshRequest, TokenRefreshResponse, UpdateIssueRequest, UpdateMemberRoleRequest,
+    UpdateMemberRoleResponse, UpdateOrganizationRequest, UpdatePullRequestApiRequest,
+    UpdateWorkspaceRequest, UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse,
+    UpsertPullRequestRequest, Workspace,
 };
 use backon::{ExponentialBuilder, Retryable};
 use chrono::Duration as ChronoDuration;
@@ -614,6 +615,29 @@ impl RemoteClient {
             return RemoteClientError::Api(map_error_code(Some(&api_err.error)));
         }
         err
+    }
+
+    /// Uploads this host's GitHub CLI login so `/v1/github/*` can act with it.
+    /// HTTP errors keep their body: the server explains missing scopes or an
+    /// account mismatch in it.
+    pub async fn register_github_host_credential(
+        &self,
+        token: &str,
+    ) -> Result<GitHubCredentialStatus, RemoteClientError> {
+        let request = RegisterGitHubCredentialRequest {
+            token: token.to_string(),
+        };
+        let res = self
+            .send(
+                reqwest::Method::PUT,
+                "/v1/github/credentials",
+                true,
+                Some(&request),
+            )
+            .await?;
+        res.json::<GitHubCredentialStatus>()
+            .await
+            .map_err(|e| RemoteClientError::Serde(e.to_string()))
     }
 
     /// Fetches user profile.

@@ -255,6 +255,14 @@ impl Deployment for LocalDeployment {
             let rc = remote_client.clone().ok();
             PrMonitorService::spawn(db, container, rc, pr_sync_notify.clone()).await;
         }
+        if let Ok(client) = remote_client.clone() {
+            tokio::spawn(
+                services::services::github_host_credential::sync_in_background(
+                    client,
+                    std::time::Duration::from_secs(20),
+                ),
+            );
+        }
 
         let deployment = Self {
             config,

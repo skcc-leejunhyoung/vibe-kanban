@@ -84,6 +84,8 @@ enum GitHubApiError {
     InvalidInput,
     #[error("GitHub authentication is required")]
     AuthenticationRequired,
+    #[error("GitHub token is missing required scopes; sync a host's GitHub CLI login in Settings")]
+    InsufficientScopes,
     #[error("GitHub denied access to this resource")]
     Forbidden,
     #[error("GitHub resource not found")]
@@ -103,6 +105,9 @@ impl GitHubApiError {
         match self {
             Self::InvalidInput => (StatusCode::BAD_REQUEST, "invalid_github_request"),
             Self::AuthenticationRequired => (StatusCode::FAILED_DEPENDENCY, "github_auth_required"),
+            Self::InsufficientScopes => {
+                (StatusCode::FAILED_DEPENDENCY, "github_insufficient_scopes")
+            }
             Self::Forbidden => (StatusCode::FORBIDDEN, "github_forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "github_not_found"),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "github_rate_limited"),
@@ -168,6 +173,11 @@ static TRACKED_PULL_REQUEST_SYNC_CACHE: LazyLock<Cache<Uuid, Result<(), GitHubAp
             .max_capacity(MAX_REPOSITORY_CACHE_ENTRIES as u64)
             .build()
     });
+
+/// A new credential must not keep serving lists fetched with the old one.
+pub(super) async fn invalidate_user_github_caches(user_id: Uuid) {
+    REPOSITORY_CACHE.invalidate(&user_id).await;
+}
 
 #[instrument(name = "github.repositories.list", skip(state, ctx), fields(user_id = %ctx.user.id))]
 async fn list_repositories(
@@ -572,7 +582,7 @@ async fn github_rest_get<T: DeserializeOwned>(
     .await
 }
 
-fn github_request(
+pub(super) fn github_request(
     client: &reqwest::Client,
     method: reqwest::Method,
     url: &str,
@@ -663,6 +673,7 @@ struct GraphQlEnvelope<T> {
 struct GraphQlError {
     #[serde(rename = "type")]
     kind: Option<String>,
+    message: Option<String>,
     extensions: Option<GraphQlErrorExtensions>,
 }
 
@@ -689,34 +700,45 @@ async fn github_graphql<T: DeserializeOwned>(
     )
     .await?;
     if !payload.errors.is_empty() {
-        let kinds = payload
-            .errors
-            .iter()
-            .filter_map(|error| {
-                error.kind.as_deref().or_else(|| {
-                    error
-                        .extensions
-                        .as_ref()
-                        .and_then(|extensions| extensions.kind.as_deref())
-                })
-            })
-            .collect::<Vec<_>>();
-        if kinds.contains(&"RATE_LIMITED") {
-            return Err(GitHubApiError::RateLimited);
-        }
-        if kinds.contains(&"FORBIDDEN") {
-            return Err(GitHubApiError::Forbidden);
-        }
-        if kinds.contains(&"NOT_FOUND") {
-            return Err(GitHubApiError::NotFound);
-        }
-        warn!(
-            error_count = payload.errors.len(),
-            "GitHub GraphQL returned errors"
-        );
-        return Err(GitHubApiError::Upstream);
+        return Err(classify_graphql_errors(&payload.errors));
     }
     payload.data.ok_or(GitHubApiError::Upstream)
+}
+
+fn classify_graphql_errors(errors: &[GraphQlError]) -> GitHubApiError {
+    let kinds = errors
+        .iter()
+        .filter_map(|error| {
+            error.kind.as_deref().or_else(|| {
+                error
+                    .extensions
+                    .as_ref()
+                    .and_then(|extensions| extensions.kind.as_deref())
+            })
+        })
+        .collect::<Vec<_>>();
+    if kinds.contains(&"RATE_LIMITED") {
+        return GitHubApiError::RateLimited;
+    }
+    if kinds.contains(&"INSUFFICIENT_SCOPES") {
+        return GitHubApiError::InsufficientScopes;
+    }
+    // Organization policies (OAuth App access restrictions, SAML SSO) arrive
+    // as an untyped message; they are denials, not upstream failures.
+    let policy_denied = errors
+        .iter()
+        .filter_map(|error| error.message.as_deref())
+        .any(|message| {
+            message.contains("OAuth App access restrictions") || message.contains("SAML")
+        });
+    if kinds.contains(&"FORBIDDEN") || policy_denied {
+        return GitHubApiError::Forbidden;
+    }
+    if kinds.contains(&"NOT_FOUND") {
+        return GitHubApiError::NotFound;
+    }
+    warn!(error_count = errors.len(), "GitHub GraphQL returned errors");
+    GitHubApiError::Upstream
 }
 
 const PULL_REQUEST_LIST_QUERY: &str = r#"
@@ -957,7 +979,6 @@ query($owner:String!,$name:String!,$number:Int!){
     pullRequest(number:$number){
       number url state mergedAt mergeCommit{oid} title body author{login}
       assignees(first:100){nodes{login}}
-      reviewRequests(first:100){nodes{requestedReviewer{... on User{login} ... on Team{slug}}}}
       reviews(first:100){pageInfo{hasNextPage endCursor} nodes{id author{login} state body submittedAt}}
       commits(first:100){pageInfo{hasNextPage endCursor} nodes{commit{oid messageHeadline committedDate authors(first:100){nodes{name user{login}}}}}}
       reviewDecision isDraft createdAt updatedAt baseRefName headRefName
@@ -1013,6 +1034,16 @@ async fn fetch_pull_request_detail(
             );
             Vec::new()
         });
+    let reviewers = fetch_requested_reviewers(state, token, pull_request)
+        .await
+        .unwrap_or_else(|error| {
+            warn!(
+                %error,
+                pr_number = pull_request.number,
+                "failed to load requested reviewers; continuing without them"
+            );
+            Vec::new()
+        });
 
     Ok(PullRequestDetail {
         number: node.number,
@@ -1029,12 +1060,7 @@ async fn fetch_pull_request_detail(
             .into_iter()
             .map(|user| user.login)
             .collect(),
-        reviewers: node
-            .review_requests
-            .nodes
-            .into_iter()
-            .filter_map(|request| request.requested_reviewer?.name())
-            .collect(),
+        reviewers,
         reviews: reviews
             .into_iter()
             .map(|review| PullRequestReview {
@@ -1140,7 +1166,6 @@ struct PullRequestDetailNode {
     body: String,
     author: Option<LoginNode>,
     assignees: Nodes<LoginNode>,
-    review_requests: Nodes<CurrentReviewRequestNode>,
     reviews: GitHubConnection<ReviewNode>,
     commits: GitHubConnection<PullRequestCommitNode>,
     review_decision: Option<String>,
@@ -1157,21 +1182,36 @@ struct MergeCommitNode {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CurrentReviewRequestNode {
-    requested_reviewer: Option<ReviewerNode>,
+struct RequestedReviewers {
+    #[serde(default)]
+    users: Vec<RestUser>,
+    #[serde(default)]
+    teams: Vec<RestTeam>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ReviewerNode {
-    login: Option<String>,
-    slug: Option<String>,
-}
-
-impl ReviewerNode {
-    fn name(self) -> Option<String> {
-        self.login.or(self.slug)
+impl RequestedReviewers {
+    fn names(self) -> Vec<String> {
+        self.users
+            .into_iter()
+            .map(|user| user.login)
+            .chain(self.teams.into_iter().map(|team| team.slug))
+            .collect()
     }
+}
+
+/// REST lists team reviewers with the `repo` scope alone; the GraphQL `Team`
+/// type needs `read:org`, which the Vibe OAuth app does not request.
+async fn fetch_requested_reviewers(
+    state: &AppState,
+    token: &str,
+    pull_request: &GitHubPullRequestRef,
+) -> Result<Vec<String>, GitHubApiError> {
+    let path = format!(
+        "/repos/{}/{}/pulls/{}/requested_reviewers",
+        pull_request.owner, pull_request.name, pull_request.number
+    );
+    let reviewers: RequestedReviewers = github_rest_get(state, token, &path).await?;
+    Ok(reviewers.names())
 }
 
 #[derive(Debug, Deserialize)]
@@ -2017,6 +2057,44 @@ mod tests {
         assert_eq!(threads.comment_count(), 0);
         threads.page_info.has_next_page = false;
         assert_eq!(threads.comment_count(), 3);
+    }
+
+    #[test]
+    fn graphql_scope_and_policy_errors_are_not_upstream_failures() {
+        fn classify(errors: Value) -> (StatusCode, &'static str) {
+            let payload: GraphQlEnvelope<Value> =
+                serde_json::from_value(json!({ "errors": errors })).unwrap();
+            classify_graphql_errors(&payload.errors).status_and_code()
+        }
+
+        assert_eq!(
+            classify(json!([{ "type": "INSUFFICIENT_SCOPES", "message": "scopes" }])),
+            (StatusCode::FAILED_DEPENDENCY, "github_insufficient_scopes")
+        );
+        assert_eq!(
+            classify(
+                json!([{ "message": "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions" }])
+            ),
+            (StatusCode::FORBIDDEN, "github_forbidden")
+        );
+        assert_eq!(
+            classify(json!([{ "type": "NOT_FOUND" }])),
+            (StatusCode::NOT_FOUND, "github_not_found")
+        );
+        assert_eq!(
+            classify(json!([{ "message": "Something else" }])),
+            (StatusCode::BAD_GATEWAY, "github_upstream_error")
+        );
+    }
+
+    #[test]
+    fn requested_reviewers_include_teams_from_rest() {
+        let reviewers: RequestedReviewers = serde_json::from_value(json!({
+            "users": [{ "login": "octocat" }],
+            "teams": [{ "slug": "platform" }]
+        }))
+        .unwrap();
+        assert_eq!(reviewers.names(), ["octocat", "platform"]);
     }
 
     #[test]
