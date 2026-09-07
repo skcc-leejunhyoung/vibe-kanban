@@ -174,9 +174,15 @@ static TRACKED_PULL_REQUEST_SYNC_CACHE: LazyLock<Cache<Uuid, Result<(), GitHubAp
             .build()
     });
 
-/// A new credential must not keep serving lists fetched with the old one.
+/// A new credential must not keep serving data fetched with the old one, which
+/// may have seen fewer organizations. Every cache here is keyed by user.
 pub(super) async fn invalidate_user_github_caches(user_id: Uuid) {
     REPOSITORY_CACHE.invalidate(&user_id).await;
+    TRACKED_PULL_REQUEST_SYNC_CACHE.invalidate(&user_id).await;
+    let _ = PULL_REQUEST_LIST_CACHE
+        .invalidate_entries_if(move |key, _| key.user_id == user_id);
+    let _ = PULL_REQUEST_DETAIL_CACHE
+        .invalidate_entries_if(move |(cached_user_id, _), _| *cached_user_id == user_id);
 }
 
 #[instrument(name = "github.repositories.list", skip(state, ctx), fields(user_id = %ctx.user.id))]

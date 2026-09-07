@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
+    audit::{self, AuditAction, AuditEvent},
     auth::{ProviderTokenDetails, RequestContext},
     db::{
         github_host_credentials::GitHubHostCredentialRepository,
@@ -182,7 +183,27 @@ async fn register(
     .await?;
     forget_host_token_check(ctx.user.id).await;
     invalidate_user_github_caches(ctx.user.id).await;
+    emit_credential_audit(
+        &ctx,
+        "PUT",
+        200,
+        format!("registered the GitHub CLI login {}", identity.login),
+    );
     Ok(Json(credential_status(&state, ctx.user.id).await?))
+}
+
+fn emit_credential_audit(
+    ctx: &RequestContext,
+    method: &'static str,
+    status: u16,
+    description: String,
+) {
+    audit::emit(
+        AuditEvent::from_request(ctx, AuditAction::GitHubCredentialUpdate)
+            .resource("github_credential", None)
+            .http(method, "/v1/github/credentials", status)
+            .description(description),
+    );
 }
 
 #[instrument(name = "github.credentials.remove", skip(state, ctx), fields(user_id = %ctx.user.id))]
@@ -193,6 +214,12 @@ async fn remove(
     GitHubHostCredentialRepository::delete(state.pool(), ctx.user.id).await?;
     forget_host_token_check(ctx.user.id).await;
     invalidate_user_github_caches(ctx.user.id).await;
+    emit_credential_audit(
+        &ctx,
+        "DELETE",
+        204,
+        "removed the stored GitHub CLI login".to_string(),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 

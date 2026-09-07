@@ -17,6 +17,7 @@ pub enum AuditAction {
     MemberRoleChange,
 
     GitHubReviewThreadUpdate,
+    GitHubCredentialUpdate,
 }
 
 impl AuditAction {
@@ -33,6 +34,7 @@ impl AuditAction {
             Self::MemberRemove => "member.remove",
             Self::MemberRoleChange => "member.role_change",
             Self::GitHubReviewThreadUpdate => "github.review_thread_update",
+            Self::GitHubCredentialUpdate => "github.credential_update",
         }
     }
 }
