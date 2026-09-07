@@ -146,15 +146,6 @@ export function WorkspacesLayout({
     setMobileTab('changes');
   }, [setMobileTab]);
 
-  const showMobileWorkspaceList = useCallback(() => {
-    setMobileTab('workspaces');
-  }, [setMobileTab]);
-
-  useEscapeToClose(showMobileWorkspaceList, {
-    enabled: isMobile && mobileTab === 'chat',
-    scope: Scope.WORKSPACE,
-  });
-
   const showMobileChat = useCallback(() => {
     setMobileTab('chat');
   }, [setMobileTab]);
