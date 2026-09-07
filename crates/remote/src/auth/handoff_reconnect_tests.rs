@@ -102,6 +102,12 @@ async fn test_pool() -> (PgPool, PgPool, String) {
         std::env::var("OAUTH_TEST_DATABASE_URL").expect("provide a disposable PostgreSQL database");
     let schema = format!("oauth_test_{}", Uuid::new_v4().simple());
     let admin = PgPool::connect(&url).await.unwrap();
+    // `CREATE EXTENSION IF NOT EXISTS` is not concurrency-safe: the extension is
+    // database-wide, so parallel tests race on it even with per-test schemas.
+    sqlx::raw_sql("SELECT pg_advisory_xact_lock(4242); CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        .execute(&admin)
+        .await
+        .unwrap();
     sqlx::query(&format!("CREATE SCHEMA {schema}"))
         .execute(&admin)
         .await
