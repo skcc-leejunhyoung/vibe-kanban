@@ -502,8 +502,9 @@ type State = {
   isLeftSidebarVisible: boolean;
   /**
    * Default right-sidebar visibility for panes with no per-workspace override.
-   * Not persisted — each app entry sets it for its runtime (remote web starts
-   * collapsed, see `setDefaultRightSidebarVisible`).
+   * Both local and remote web start collapsed so the chat gets the width.
+   * Not persisted: only the per-workspace override round-trips, so an explicit
+   * toggle sticks while untouched workspaces keep following this default.
    */
   isRightSidebarVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
@@ -678,7 +679,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Global layout state
   layoutMode: 'workspaces' as LayoutMode,
   isLeftSidebarVisible: true,
-  isRightSidebarVisible: true,
+  isRightSidebarVisible: false,
   rightSidebarSectionOrder: DEFAULT_RIGHT_SIDEBAR_SECTION_ORDER,
   previewRefreshKeys: {},
 
@@ -1117,15 +1118,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   setPullRequestDefaultFilters: (filters) =>
     set({ pullRequestDefaultFilters: { ...filters } }),
 }));
-
-/**
- * Set the right-sidebar default for this app's runtime. Call at entry-module
- * scope, before first render, so panes paint with the right default instead of
- * flashing the other one.
- */
-export function setDefaultRightSidebarVisible(visible: boolean): void {
-  useUiPreferencesStore.setState({ isRightSidebarVisible: visible });
-}
 
 // Hook for repo action preference
 export function useRepoAction(

@@ -1,8 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-  setDefaultRightSidebarVisible,
-  useUiPreferencesStore,
-} from './useUiPreferencesStore';
+import { useUiPreferencesStore } from './useUiPreferencesStore';
 
 describe('right sidebar preference', () => {
   beforeEach(() => {
@@ -37,11 +34,19 @@ describe('right sidebar preference', () => {
     expect(state.workspacePanelStates).toEqual({});
   });
 
-  it('toggles against the runtime default, not a hardcoded one', () => {
-    // Remote web starts collapsed. The first toggle must *open* the sidebar —
-    // if the reducer assumed "visible" it would write false and the press
-    // would look dead.
-    setDefaultRightSidebarVisible(false);
+  it('ships collapsed on every surface', () => {
+    // Read the pristine initial state: both local and remote web must open a
+    // workspace with the git sidebar closed so the chat gets the width.
+    expect(useUiPreferencesStore.getInitialState().isRightSidebarVisible).toBe(
+      false
+    );
+  });
+
+  it('toggles against the current default, not a hardcoded one', () => {
+    // Starting collapsed, the first toggle must *open* the sidebar — if the
+    // reducer assumed "visible" it would write false and the press would look
+    // dead.
+    useUiPreferencesStore.setState({ isRightSidebarVisible: false });
 
     useUiPreferencesStore.getState().toggleRightSidebar('workspace-1');
 
