@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import type { ArtifactReference } from 'shared/types';
-import { deduplicateManagedImages } from './artifact-preview';
+import {
+  deduplicateManagedImages,
+  hasRenderableMermaidArtifact,
+} from './artifact-preview';
+
+describe('selected Mermaid blocks', () => {
+  it('recognizes only complete artifact fences', () => {
+    expect(
+      hasRenderableMermaidArtifact(
+        '```mermaid vibe-artifact\nflowchart LR\n A-->B\n```'
+      )
+    ).toBe(true);
+    expect(
+      hasRenderableMermaidArtifact('```mermaid\nflowchart LR\n A-->B\n```')
+    ).toBe(false);
+    expect(
+      hasRenderableMermaidArtifact(
+        '```mermaid vibe-artifact\nflowchart LR\n A-->B'
+      )
+    ).toBe(false);
+  });
+});
 
 describe('managed tool image copies', () => {
   it('hides a base64 copy without merging different file or execution origins', () => {

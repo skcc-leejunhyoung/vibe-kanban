@@ -42,7 +42,9 @@ import {
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
+import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { ArtifactCards, useExecutionArtifacts } from './ArtifactCards';
+import { hasRenderableMermaidArtifact } from './artifact-preview';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -1003,19 +1005,30 @@ function AssistantMessageEntry({
   workspaceId: string | undefined;
   sessionId: string | undefined;
 }) {
+  const { theme } = useTheme();
+  const renderArtifact = hasRenderableMermaidArtifact(content);
+
   return (
     <ChatAssistantMessage
       content={content}
       workspaceId={workspaceId}
-      renderMarkdown={({ content, workspaceId }) => (
-        <AppChatMarkdown
-          content={content}
-          workspaceId={workspaceId}
-          sessionId={sessionId}
-          className={undefined}
-          maxWidth={undefined}
-        />
-      )}
+      renderMarkdown={({ content, workspaceId }) =>
+        renderArtifact ? (
+          <MarkdownPreview
+            content={content}
+            theme={getActualTheme(theme)}
+            allowRemoteImages={false}
+          />
+        ) : (
+          <AppChatMarkdown
+            content={content}
+            workspaceId={workspaceId}
+            sessionId={sessionId}
+            className={undefined}
+            maxWidth={undefined}
+          />
+        )
+      }
     />
   );
 }
