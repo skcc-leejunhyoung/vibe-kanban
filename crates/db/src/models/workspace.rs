@@ -387,6 +387,47 @@ impl Workspace {
         .await
     }
 
+    /// Find inactive workspaces whose Cargo debug outputs are stale.
+    /// Unlike worktree expiry, read-only workspace access does not make build
+    /// outputs fresh; only the latest completed execution does.
+    pub async fn find_expired_for_build_cache_cleanup(
+        pool: &SqlitePool,
+        workspace_id: Option<Uuid>,
+    ) -> Result<Vec<Workspace>, sqlx::Error> {
+        sqlx::query_as::<_, Workspace>(
+            r#"
+            SELECT w.*
+            FROM workspaces w
+            JOIN sessions s ON w.id = s.workspace_id
+            JOIN execution_processes ep ON s.id = ep.session_id
+                AND ep.completed_at IS NOT NULL
+            WHERE w.container_ref IS NOT NULL
+                AND ($1 IS NULL OR w.id = $1)
+                AND w.worktree_deleted = FALSE
+                AND w.pinned = FALSE
+                AND w.in_place = FALSE
+                AND w.id NOT IN (
+                    SELECT DISTINCT s2.workspace_id
+                    FROM sessions s2
+                    JOIN execution_processes ep2 ON s2.id = ep2.session_id
+                    WHERE ep2.completed_at IS NULL
+                )
+            GROUP BY w.id, w.container_ref
+            HAVING datetime('now',
+                CASE
+                    WHEN w.archived = 1
+                    THEN '-1 hours'
+                    ELSE '-72 hours'
+                END
+            ) > datetime(MAX(ep.completed_at))
+            ORDER BY MAX(ep.completed_at) ASC
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_all(pool)
+        .await
+    }
+
     pub async fn create(
         pool: &SqlitePool,
         data: &CreateWorkspace,
@@ -922,6 +963,8 @@ mod tests {
 
         let now = Utc::now();
         let mut expected = Vec::new();
+        let expected_build_cache =
+            ["archived", "expired", "recent archive", "recent workspace"].map(str::to_owned);
         // The same query must handle workspaces with no runs, all sessions'
         // completion times, UTC retention boundaries, and protected workspaces.
         for (name, hours, archived, pinned, in_place, deleted, run_ages, expired) in [
@@ -1066,9 +1109,23 @@ mod tests {
         expected.sort();
         assert_eq!(actual, expected);
 
+        let mut actual_build_cache: Vec<_> =
+            Workspace::find_expired_for_build_cache_cleanup(&pool, None)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|workspace| workspace.name.unwrap())
+                .collect();
+        actual_build_cache.sort();
+        assert_eq!(actual_build_cache, expected_build_cache);
+
         // A workspace whose uncommitted changes could not be verified is
         // quarantined instead of retried, so it drops out of the candidates.
-        let blocked = candidates[0].id;
+        let blocked = candidates
+            .iter()
+            .find(|workspace| workspace.name.as_deref() == Some("expired"))
+            .unwrap()
+            .id;
         assert!(
             Workspace::mark_cleanup_blocked(&pool, blocked, "not a readable git worktree")
                 .await
@@ -1089,13 +1146,24 @@ mod tests {
         assert!(!after.contains(&blocked));
         assert_eq!(after.len(), candidates.len() - 1);
         assert!(
+            Workspace::find_expired_for_build_cache_cleanup(&pool, Some(blocked))
+                .await
+                .unwrap()
+                .iter()
+                .any(|workspace| workspace.id == blocked)
+        );
+        assert!(
             Workspace::find_expired_for_cleanup(&pool, Some(blocked))
                 .await
                 .unwrap()
                 .is_empty()
         );
 
-        let id = candidates[1].id;
+        let id = candidates
+            .iter()
+            .find(|workspace| workspace.name.as_deref() == Some("archived"))
+            .unwrap()
+            .id;
         assert_eq!(
             Workspace::find_expired_for_cleanup(&pool, Some(id))
                 .await
@@ -1109,6 +1177,13 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+        assert_eq!(
+            Workspace::find_expired_for_build_cache_cleanup(&pool, Some(id))
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 

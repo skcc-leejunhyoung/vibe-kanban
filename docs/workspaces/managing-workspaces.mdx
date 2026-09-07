@@ -157,7 +157,9 @@ Vibe Kanban also checks for inactive worktrees every 30 minutes. Archived worksp
 
 Automatic cleanup skips pinned workspaces, running executions, in-place workspaces that use your original checkout, and repositories with uncommitted changes or untracked files. If repository state cannot be checked, the workspace is retained. Activity and pin/archive state are checked again before cleanup, and failed deletions are retried on a later pass.
 
-This removes eligible worktree directories, including their build outputs, but preserves database history and Git branches. It does not clean build caches in your original repository. Set `DISABLE_WORKTREE_CLEANUP` to disable inactive workspace cleanup; the development backend sets it by default.
+The same pass also removes stale Cargo `target/debug` outputs from inactive workspaces, including nested Cargo workspaces. This cache-only cleanup uses the latest completed execution rather than read-only UI activity, so uncommitted source files can remain while rebuildable debug outputs are reclaimed. Busy Cargo targets are skipped and retried later; release outputs are preserved.
+
+Full cleanup removes eligible worktree directories, including their remaining build outputs, but preserves database history and Git branches. It does not clean build caches in your original repository. Set `DISABLE_WORKTREE_CLEANUP` to disable inactive workspace cleanup; the development backend sets it by default.
 
 ## Renaming Workspaces
 

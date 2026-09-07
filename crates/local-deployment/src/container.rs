@@ -84,6 +84,84 @@ use crate::{command, copy};
 
 const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
 
+fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<bool> {
+    let debug_dir = target_dir.join("debug");
+    match std::fs::symlink_metadata(&debug_dir) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+
+    let lock_path = debug_dir.join(".cargo-lock");
+    match std::fs::symlink_metadata(&lock_path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+        Err(std::fs::TryLockError::Error(error)) => return Err(error),
+    }
+
+    let mut removed = false;
+    for entry in std::fs::read_dir(&debug_dir)? {
+        let entry = entry?;
+        if entry.file_name() == ".cargo-lock" {
+            continue;
+        }
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let result = if file_type.is_dir() && !file_type.is_symlink() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(error) = result
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            return Err(error);
+        }
+        removed = true;
+    }
+    Ok(removed)
+}
+
+fn prune_stale_cargo_debug_caches(workspace_dir: &Path) -> io::Result<usize> {
+    let mut pending = vec![workspace_dir.to_path_buf()];
+    let mut removed = 0;
+    while let Some(dir) = pending.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            match entry.file_name().to_str() {
+                Some("target") => {
+                    removed += usize::from(prune_cargo_debug_dir(&path)?);
+                }
+                Some(".git") | Some("node_modules") => {}
+                _ => pending.push(path),
+            }
+        }
+    }
+    Ok(removed)
+}
+
 // Safety net for draining the stdout/stderr forwarder: normally the pipes EOF
 // promptly once the child (and its process group) exit, but an orphaned child
 // that inherited the pipe (e.g. an MCP server) can hold it open. Since the
@@ -506,28 +584,66 @@ impl LocalContainerService {
         let expired_workspaces = Workspace::find_expired_for_cleanup(&self.db.pool, None).await?;
         if expired_workspaces.is_empty() {
             tracing::debug!("No expired workspaces found");
-            return Ok(());
+        } else {
+            tracing::info!(
+                "Found {} expired workspaces to clean up",
+                expired_workspaces.len()
+            );
+            for workspace in &expired_workspaces {
+                // Earlier deletions may take time. Recheck activity and archive/pin
+                // state immediately before touching this workspace's filesystem.
+                let Some(current) =
+                    Workspace::find_expired_for_cleanup(&self.db.pool, Some(workspace.id))
+                        .await?
+                        .pop()
+                else {
+                    continue;
+                };
+                if let Err(error) = self.cleanup_workspace(&current, true).await {
+                    tracing::warn!(
+                        workspace_id = %current.id,
+                        %error,
+                        "Workspace cleanup failed; will retry on the next cleanup pass"
+                    );
+                }
+            }
         }
-        tracing::info!(
-            "Found {} expired workspaces to clean up",
-            expired_workspaces.len()
-        );
-        for workspace in &expired_workspaces {
-            // Earlier deletions may take time. Recheck activity and archive/pin
-            // state immediately before touching this workspace's filesystem.
+
+        let stale_build_caches =
+            Workspace::find_expired_for_build_cache_cleanup(&self.db.pool, None).await?;
+        for workspace in &stale_build_caches {
             let Some(current) =
-                Workspace::find_expired_for_cleanup(&self.db.pool, Some(workspace.id))
+                Workspace::find_expired_for_build_cache_cleanup(&self.db.pool, Some(workspace.id))
                     .await?
                     .pop()
             else {
                 continue;
             };
-            if let Err(error) = self.cleanup_workspace(&current, true).await {
-                tracing::warn!(
-                    workspace_id = %current.id,
+            let workspace_id = current.id;
+            let Some(workspace_dir) = current.container_ref.map(PathBuf::from) else {
+                continue;
+            };
+            match tokio::task::spawn_blocking(move || {
+                prune_stale_cargo_debug_caches(&workspace_dir)
+            })
+            .await
+            {
+                Ok(Ok(removed)) if removed > 0 => tracing::info!(
+                    %workspace_id,
+                    removed_debug_directories = removed,
+                    "Removed stale Cargo debug outputs"
+                ),
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => tracing::warn!(
+                    %workspace_id,
                     %error,
-                    "Workspace cleanup failed; will retry on the next cleanup pass"
-                );
+                    "Failed to remove stale Cargo debug outputs; will retry"
+                ),
+                Err(error) => tracing::warn!(
+                    %workspace_id,
+                    %error,
+                    "Cargo debug cleanup task failed; will retry"
+                ),
             }
         }
         Ok(())
@@ -3401,6 +3517,47 @@ mod tests {
         assert!(!LocalContainerService::should_execute_queued_message(
             &ExecutionProcessStatus::Killed
         ));
+    }
+
+    #[test]
+    fn stale_cargo_cleanup_keeps_source_release_and_busy_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let root_debug = root.path().join("target/debug");
+        let nested_debug = root.path().join("crates/remote/target/debug");
+        let busy_debug = root.path().join("other/target/debug");
+        for debug in [&root_debug, &nested_debug, &busy_debug] {
+            std::fs::create_dir_all(debug.join("incremental")).unwrap();
+            std::fs::write(debug.join(".cargo-lock"), []).unwrap();
+            std::fs::write(debug.join("incremental/artifact"), b"cache").unwrap();
+        }
+        std::fs::create_dir_all(root.path().join("target/release")).unwrap();
+        std::fs::write(root.path().join("target/release/keep"), b"release").unwrap();
+        std::fs::write(root.path().join("source.rs"), b"source").unwrap();
+
+        let busy_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(busy_debug.join(".cargo-lock"))
+            .unwrap();
+        busy_lock.try_lock().unwrap();
+
+        assert_eq!(prune_stale_cargo_debug_caches(root.path()).unwrap(), 2);
+        assert!(!root_debug.join("incremental/artifact").exists());
+        assert!(!nested_debug.join("incremental/artifact").exists());
+        assert!(root_debug.join(".cargo-lock").exists());
+        assert!(nested_debug.join(".cargo-lock").exists());
+        assert!(busy_debug.join("incremental/artifact").exists());
+        drop(busy_lock);
+        assert_eq!(prune_stale_cargo_debug_caches(root.path()).unwrap(), 1);
+        assert!(!busy_debug.join("incremental/artifact").exists());
+        assert_eq!(
+            std::fs::read(root.path().join("target/release/keep")).unwrap(),
+            b"release"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("source.rs")).unwrap(),
+            b"source"
+        );
     }
 
     /// Decision table for [`LocalContainerService::plan_post_completion`].
