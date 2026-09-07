@@ -75,7 +75,15 @@ pub fn store_base64_image(worktree_path: &str, mime: &str, data: &str) -> Option
         .create_new(true)
         .open(&file_path)
     {
-        Ok(mut file) => file.write_all(&bytes).ok()?,
+        // A partial write would be served as a valid cache hit forever, so
+        // drop the stub and let the next call retry.
+        Ok(mut file) => match file.write_all(&bytes) {
+            Ok(()) => {}
+            Err(_) => {
+                let _ = std::fs::remove_file(&file_path);
+                return None;
+            }
+        },
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             if !std::fs::symlink_metadata(&file_path)
                 .ok()?
