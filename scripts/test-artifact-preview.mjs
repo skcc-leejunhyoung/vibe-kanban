@@ -24,27 +24,34 @@ const components = await build({
       import { flushSync } from 'react-dom';
       import NiceModal from '@ebay/nice-modal-react';
       import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+      import i18n from 'i18next';
+      import { initReactI18next } from 'react-i18next';
+      import korean from './src/i18n/locales/ko/common.json';
       import { MermaidDiagram } from './src/shared/components/MermaidDiagram';
       import { MarkdownPreview } from './src/shared/components/MarkdownPreview';
       import { SubagentTranscriptDialog } from './src/shared/dialogs/SubagentTranscriptDialog';
       import { HostIdContext } from './src/shared/providers/HostIdProvider';
       import { setLocalApiTransport } from './src/shared/lib/localApiTransport';
+      void i18n.use(initReactI18next).init({lng: 'cimode', defaultNS: 'common',
+        resources: {ko: {common: korean}}, initImmediate: false});
+      window.setArtifactLanguage = language => i18n.changeLanguage(language);
       const element = document.createElement('div'); document.body.append(element);
       const root = createRoot(element);
       window.renderArtifactDiagram = chart => root.render(React.createElement(MermaidDiagram, {chart, theme: 'light', isolated: true}));
       window.renderArtifactMarkdown = content => root.render(React.createElement(MarkdownPreview, {content, theme: 'light', allowRemoteImages: false}));
       const client = new QueryClient();
       window.hostRequests = [];
+      window.artifactSource = '<!doctype html><html><body><button onclick="this.textContent = &quot;clicked&quot;">saved report</button></body></html>';
+      window.artifact = {id: 'report', name: 'child.html', mime: 'text/html', status: 'ready',
+        execution_id: 'process', content_hash: 'hash', source_entry: 0,
+        source_scope: 'child', source: 'inline', size_bytes: 120};
       setLocalApiTransport({request: async path => {
         window.hostRequests.push(path);
-        if (path.includes('/content?')) return new Response('saved report');
-        return new Response(JSON.stringify({success: true, data: {
-          content: 'Child report', entries: [], artifacts: [{
-            id: 'report', name: 'child.txt', mime: 'text/plain', status: 'ready',
-            execution_id: 'process', content_hash: 'hash', source_entry: 0,
-            source_scope: 'child', source: 'inline', size_bytes: 12,
-          }],
-        }}), {headers: {'Content-Type': 'application/json'}});
+        if (path.includes('/content?')) return new Response(window.artifactSource);
+        const data = path.includes('/bundle?')
+          ? {artifact: window.artifact, resources: [], warnings: []}
+          : {content: 'Child report', entries: [], artifacts: [window.artifact]};
+        return new Response(JSON.stringify({success: true, data}), {headers: {'Content-Type': 'application/json'}});
       }});
       window.setDocumentHost = host => flushSync(() => root.render(
         React.createElement(HostIdContext.Provider, {value: host},
@@ -124,6 +131,12 @@ try {
   await page.evaluate(() => {
     localStorage.setItem("app-secret", "parent-only");
   });
+  if (process.env.ARTIFACT_PREVIEW_CSS) {
+    await page.addStyleTag({ path: process.env.ARTIFACT_PREVIEW_CSS });
+    await page.evaluate(() =>
+      document.documentElement.classList.add("new-design"),
+    );
+  }
   await page.addScriptTag({ content: compiled.outputFiles[0].text });
   const load = async (source, resources = [], svg = false) => {
     await page.evaluate(
@@ -322,23 +335,116 @@ try {
   );
   for (const host of ["pane-host", null]) {
     await page.evaluate((hostId) => window.openTranscript(hostId), host);
-    await page.getByText("child.txt", { exact: true }).waitFor();
+    const card = page
+      .locator("div.my-half")
+      .filter({ has: page.getByText("child.html", { exact: true }) });
+    await card.waitFor();
+    assert.equal(await card.getByRole("button").count(), 2);
+    assert.equal(
+      await card.getByRole("button", { name: "artifacts.download" }).count(),
+      0,
+    );
+    assert.equal(
+      await card.getByRole("button", { name: "artifacts.source" }).count(),
+      0,
+    );
+    assert.deepEqual(await card.getByRole("button").allTextContents(), [
+      "",
+      "",
+    ]);
+    if (process.env.ARTIFACT_PREVIEW_CSS) {
+      const title = await card
+        .getByText("child.html", { exact: true })
+        .boundingBox();
+      const action = await card
+        .getByRole("button", { name: "artifacts.preview", exact: true })
+        .boundingBox();
+      assert(
+        action.x >= title.x + title.width,
+        "card actions belong to the right of the description",
+      );
+    }
+    if (process.env.ARTIFACT_PREVIEW_SCREENSHOT && host) {
+      await page.evaluate(() => window.setArtifactLanguage("ko"));
+      await card
+        .getByRole("button", { name: "미리보기", exact: true })
+        .waitFor();
+      await page.screenshot({
+        path: process.env.ARTIFACT_PREVIEW_SCREENSHOT.replace(
+          ".png",
+          "-card.png",
+        ),
+      });
+      await page.evaluate(() => window.setArtifactLanguage("cimode"));
+    }
     await page.evaluate(() => window.setDocumentHost("another-document-host"));
-    await page
-      .getByRole("button", { name: "artifacts.source", exact: true })
+    await card
+      .getByRole("button", { name: "artifacts.preview", exact: true })
       .click();
-    await page.getByText("saved report", { exact: true }).waitFor();
-    await page.keyboard.press("Escape");
+    const preview = page.getByRole("dialog").filter({
+      has: page.getByRole("heading", { name: "child.html", exact: true }),
+    });
+    const document = preview.frameLocator("iframe").frameLocator("iframe");
+    await document.getByRole("button", { name: "saved report" }).click();
+    await document.getByRole("button", { name: "clicked" }).waitFor();
+    const sourceToggle = preview.getByRole("switch", {
+      name: "artifacts.source",
+    });
+    assert.equal(await sourceToggle.isChecked(), false);
+    await sourceToggle.check();
+    await preview.locator("pre").waitFor();
+    assert.match(await preview.locator("pre").innerText(), /<html>/);
+    assert.equal(await preview.locator("iframe").count(), 0);
+    await sourceToggle.uncheck();
+    await document.getByRole("button", { name: "saved report" }).waitFor();
     const download = page.waitForEvent("download");
-    await page
+    await preview
       .getByRole("button", { name: "artifacts.download", exact: true })
       .click();
-    assert.equal((await download).suggestedFilename(), "child.txt");
+    assert.equal((await download).suggestedFilename(), "child.html");
+    await sourceToggle.check();
+    await preview.locator("pre").waitFor();
+    if (process.env.ARTIFACT_PREVIEW_SCREENSHOT && host) {
+      await page.evaluate(() => window.setArtifactLanguage("ko"));
+      await preview
+        .getByRole("button", { name: "다운로드", exact: true })
+        .waitFor();
+      await page.screenshot({ path: process.env.ARTIFACT_PREVIEW_SCREENSHOT });
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        "mobile dialog must not overflow horizontally",
+      );
+      await page.screenshot({
+        path: process.env.ARTIFACT_PREVIEW_SCREENSHOT.replace(
+          ".png",
+          "-mobile.png",
+        ),
+      });
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await page.evaluate(() => window.setArtifactLanguage("cimode"));
+    }
+    await page.keyboard.press("Escape");
+    await preview.waitFor({ state: "hidden" });
+    await card
+      .getByRole("button", { name: "artifacts.preview", exact: true })
+      .click();
+    assert.equal(
+      await preview.getByRole("switch").isChecked(),
+      false,
+      "reopening starts in preview",
+    );
+    await document.getByRole("button", { name: "saved report" }).waitFor();
+    await page.keyboard.press("Escape");
+    await preview.waitFor({ state: "hidden" });
     const hostRequests = await page.evaluate(() =>
       window.hostRequests.splice(0),
     );
     const prefix = host ? `/api/host/${host}/` : "/api/";
-    assert.equal(hostRequests.length, 3);
+    assert(hostRequests.some((path) => path.includes("/bundle?")));
+    assert(hostRequests.some((path) => path.includes("/content?")));
     assert(
       hostRequests.every((path) =>
         path.startsWith(`${prefix}execution-processes/process/`),
@@ -348,7 +454,72 @@ try {
     await page.getByRole("dialog").waitFor({ state: "hidden" });
   }
   console.log(
-    "Subagent transcript host passed: global modal source/download retain pane host or explicit local host after document navigation.",
+    "Artifact controls passed: right-side icons, source toggle, preview reset and dialog download retain pane host or explicit local host after document navigation.",
+  );
+  await page.evaluate(() => {
+    window.artifact = {
+      ...window.artifact,
+      name: "sample.pdf",
+      mime: "application/pdf",
+    };
+    window.artifactSource = "%PDF-download-fixture";
+    window.openTranscript("pane-host");
+  });
+  await page
+    .getByRole("button", { name: "artifacts.preview", exact: true })
+    .click();
+  const binaryPreview = page.getByRole("dialog").filter({
+    has: page.getByRole("heading", { name: "sample.pdf", exact: true }),
+  });
+  await binaryPreview.getByText("artifacts.binary", { exact: true }).waitFor();
+  assert.equal(await binaryPreview.getByRole("switch").count(), 0);
+  const binaryDownload = page.waitForEvent("download");
+  await binaryPreview
+    .getByRole("button", { name: "artifacts.download", exact: true })
+    .click();
+  const binaryFile = await binaryDownload;
+  assert.equal(binaryFile.suggestedFilename(), "sample.pdf");
+  assert.equal(
+    await readFile(await binaryFile.path(), "utf8"),
+    "%PDF-download-fixture",
+  );
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.removeTranscript());
+  await page.evaluate(() => {
+    window.artifact = {
+      ...window.artifact,
+      name: "invalid.svg",
+      mime: "image/svg+xml",
+    };
+    window.artifactSource = "<svg><path></svg>";
+    window.openTranscript("pane-host");
+  });
+  await page
+    .getByRole("button", { name: "artifacts.preview", exact: true })
+    .click();
+  const invalidPreview = page
+    .getByRole("dialog")
+    .filter({
+      has: page.getByRole("heading", { name: "invalid.svg", exact: true }),
+    });
+  await invalidPreview.getByRole("alert").waitFor();
+  await invalidPreview
+    .getByRole("switch", { name: "artifacts.source" })
+    .check();
+  await invalidPreview.locator("pre").waitFor();
+  assert.equal(
+    await invalidPreview.locator("pre").innerText(),
+    "<svg><path></svg>",
+  );
+  assert(
+    await invalidPreview
+      .getByRole("button", { name: "artifacts.download", exact: true })
+      .isEnabled(),
+  );
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.removeTranscript());
+  console.log(
+    "Binary download and source access after preview failure passed.",
   );
   // Optional live check against an isolated Vibe instance, after ordinary CLI
   // quick-chat runs. The context file supplies each run's workspace_id only;
@@ -401,14 +572,18 @@ try {
       assert.match(await document.locator("body").innerText(), /\b1\b/);
       await chat.keyboard.press("Escape");
       await dialog.waitFor({ state: "hidden" });
-      await card.getByRole("button", { name: "Source", exact: true }).click();
+      await card.getByRole("button", { name: "Preview", exact: true }).click();
+      await dialog
+        .getByRole("switch", { name: "View source", exact: true })
+        .check();
       assert.match(
         await dialog.locator("pre").innerText(),
         /<(?:!doctype|html)/i,
       );
-      await chat.keyboard.press("Escape");
       const download = chat.waitForEvent("download");
-      await card.getByRole("button", { name: "Download", exact: true }).click();
+      await dialog
+        .getByRole("button", { name: "Download", exact: true })
+        .click();
       assert.equal((await download).suggestedFilename(), "overview.html");
       await chat.reload();
       await findCard(/(?:reports\/)?overview\.html/);
@@ -528,18 +703,27 @@ try {
         );
         await close();
         await openFile("block-2.mmd");
-        await dialog.locator("svg").waitFor();
+        await dialog
+          .frameLocator("iframe")
+          .frameLocator("iframe")
+          .locator("#diagram svg")
+          .waitFor();
         await close();
         await openFile("reports/README.md");
         await dialog.locator(".markdown-preview h1").waitFor();
-        await dialog.locator(".markdown-preview svg").waitFor();
+        await dialog
+          .locator(".markdown-preview")
+          .frameLocator("iframe")
+          .frameLocator("iframe")
+          .locator("#diagram svg")
+          .waitFor();
         await close();
         const app = await findCard("out/Example.tsx");
         assert.equal(
           await app
             .getByRole("button", { name: "Preview", exact: true })
             .count(),
-          0,
+          1,
         );
         assert.equal(
           await app
@@ -550,7 +734,7 @@ try {
             .count(),
           1,
         );
-        await app.getByRole("button", { name: "Source", exact: true }).click();
+        await app.getByRole("button", { name: "Preview", exact: true }).click();
         await dialog.locator("pre").waitFor();
         assert.match(
           await dialog.locator("pre").innerText(),
@@ -562,10 +746,11 @@ try {
           await pdf
             .getByRole("button", { name: "Preview", exact: true })
             .count(),
-          0,
+          1,
         );
+        await pdf.getByRole("button", { name: "Preview", exact: true }).click();
         const downloaded = chat.waitForEvent("download");
-        await pdf
+        await dialog
           .getByRole("button", { name: "Download", exact: true })
           .click();
         assert.equal((await downloaded).suggestedFilename(), "sample.pdf");

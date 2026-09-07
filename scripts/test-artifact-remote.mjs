@@ -236,14 +236,16 @@ try {
     assert.match(await doc.locator("body").innerText(), /\b1\b/);
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    await card.getByRole("button", { name: "Source", exact: true }).click();
+    await card.getByRole("button", { name: "Preview", exact: true }).click();
+    await dialog
+      .getByRole("switch", { name: "View source", exact: true })
+      .check();
     assert.match(
       await dialog.locator("pre").innerText(),
       /<(?:!doctype|html)/i,
     );
-    await page.keyboard.press("Escape");
     const d = page.waitForEvent("download");
-    await card.getByRole("button", { name: "Download", exact: true }).click();
+    await dialog.getByRole("button", { name: "Download", exact: true }).click();
     assert.equal((await d).suggestedFilename(), "overview.html");
     await page.reload();
     await findCard("reports/overview.html");

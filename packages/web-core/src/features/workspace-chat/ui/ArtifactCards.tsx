@@ -2,8 +2,17 @@ import { useContext, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useTranslation } from 'react-i18next';
+import {
+  ArrowSquareOutIcon,
+  BrowserIcon,
+  DownloadSimpleIcon,
+  EyeIcon,
+  SpinnerIcon,
+} from '@phosphor-icons/react';
 import type { ArtifactReference } from 'shared/types';
 import { ExecutionProcessStatus } from 'shared/types';
+import { IconButton } from '@vibe/ui/components/IconButton';
+import { Switch } from '@vibe/ui/components/Switch';
 import {
   Dialog,
   DialogContent,
@@ -66,17 +75,25 @@ export function useExecutionArtifacts(
 function ArtifactViewer({
   artifact,
   scope,
-  mode,
   onClose,
 }: {
   artifact: ArtifactReference;
   scope: Scope;
-  mode: 'preview' | 'source';
   onClose: () => void;
 }) {
   const { t } = useTranslation('common');
   const { theme } = useTheme();
+  const [showSource, setShowSource] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string>();
   const [runtimeError, setRuntimeError] = useState<string>();
+  const mode = showSource ? 'source' : 'preview';
+  const canToggleSource = [
+    'text/html',
+    'image/svg+xml',
+    'text/vnd.mermaid',
+    'text/markdown',
+  ].includes(artifact.mime);
   const frameRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -92,6 +109,31 @@ function ArtifactViewer({
     return () => window.removeEventListener('message', onMessage);
   }, [onClose]);
   const { processId, workspaceId, sessionId, hostId } = scope;
+  const download = async () => {
+    setDownloading(true);
+    setDownloadError(undefined);
+    try {
+      const blob = await artifactsApi.content(
+        processId,
+        workspaceId,
+        sessionId,
+        artifact.id,
+        hostId,
+        artifact.content_hash ?? undefined
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = artifact.name.split('/').pop() ?? 'artifact';
+      anchor.click();
+      // Let the browser consume the click before releasing the download URL.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setDownloadError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setDownloading(false);
+    }
+  };
   const query = useQuery({
     queryKey: [
       'artifact-content',
@@ -167,63 +209,100 @@ function ArtifactViewer({
       return { blob, text, preview: undefined, warnings: [] };
     },
   });
-  if (query.isPending) return <p role="status">{t('artifacts.loading')}</p>;
-  if (query.error) return <p role="alert">{query.error.message}</p>;
-  const { text, preview, warnings } = query.data;
-  if (mode === 'source')
+  const renderContent = () => {
+    if (query.isPending) return <p role="status">{t('artifacts.loading')}</p>;
+    if (query.error) return <p role="alert">{query.error.message}</p>;
+    const { text, preview, warnings } = query.data;
+    if (mode === 'source')
+      return (
+        <pre className="overflow-auto whitespace-pre-wrap p-base text-base font-ibm-plex-mono">
+          {text || t('artifacts.binary')}
+        </pre>
+      );
+    if (preview)
+      return (
+        <>
+          {runtimeError && <p role="alert">{runtimeError}</p>}
+          {[...warnings, ...preview.warnings].map((warning) => (
+            <p key={warning} className="text-low">
+              {warning}
+            </p>
+          ))}
+          <iframe
+            ref={frameRef}
+            className="h-[65vh] w-full border-0 bg-white"
+            title={artifact.name}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            srcDoc={preview.srcDoc}
+          />
+          <p className="text-low">{t('artifacts.staticPreview')}</p>
+        </>
+      );
+    if (artifact.mime === 'text/vnd.mermaid')
+      return (
+        <MermaidDiagram chart={text} theme={getResolvedTheme(theme)} isolated />
+      );
+    if (artifact.mime === 'text/markdown')
+      return (
+        <MarkdownPreview
+          content={text}
+          theme={getResolvedTheme(theme)}
+          allowRemoteImages={false}
+        />
+      );
     return (
-      <pre className="overflow-auto whitespace-pre-wrap p-base text-base font-ibm-plex-mono">
+      <pre className="overflow-auto whitespace-pre-wrap p-base font-ibm-plex-mono">
         {text || t('artifacts.binary')}
       </pre>
     );
-  if (preview)
-    return (
-      <>
-        {runtimeError && <p role="alert">{runtimeError}</p>}
-        {[...warnings, ...preview.warnings].map((warning) => (
-          <p key={warning} className="text-low">
-            {warning}
-          </p>
-        ))}
-        <iframe
-          ref={frameRef}
-          className="h-[65vh] w-full border-0 bg-white"
-          title={artifact.name}
-          sandbox="allow-scripts"
-          referrerPolicy="no-referrer"
-          srcDoc={preview.srcDoc}
-        />
-        <p className="text-low">{t('artifacts.staticPreview')}</p>
-      </>
-    );
-  if (artifact.mime === 'text/vnd.mermaid')
-    return (
-      <MermaidDiagram chart={text} theme={getResolvedTheme(theme)} isolated />
-    );
-  if (artifact.mime === 'text/markdown')
-    return (
-      <MarkdownPreview
-        content={text}
-        theme={getResolvedTheme(theme)}
-        allowRemoteImages={false}
-      />
-    );
+  };
   return (
-    <pre className="overflow-auto whitespace-pre-wrap p-base font-ibm-plex-mono">
-      {text || t('artifacts.binary')}
-    </pre>
+    <>
+      <DialogHeader className="pr-double">
+        <div className="flex min-w-0 items-center gap-base">
+          <DialogTitle
+            className="min-w-0 flex-1 truncate"
+            title={artifact.name}
+          >
+            {artifact.name}
+          </DialogTitle>
+          <div className="flex shrink-0 items-center gap-base">
+            {canToggleSource && (
+              <label className="flex items-center gap-half whitespace-nowrap text-base text-low">
+                {t('artifacts.source')}
+                <Switch
+                  checked={showSource}
+                  onCheckedChange={setShowSource}
+                  aria-label={t('artifacts.source')}
+                />
+              </label>
+            )}
+            <IconButton
+              icon={downloading ? SpinnerIcon : DownloadSimpleIcon}
+              iconClassName={downloading ? 'animate-spin' : undefined}
+              aria-label={t('artifacts.download')}
+              title={t('artifacts.download')}
+              disabled={downloading}
+              onClick={() => void download()}
+            />
+          </div>
+        </div>
+      </DialogHeader>
+      {downloadError && <p role="alert">{downloadError}</p>}
+      {renderContent()}
+    </>
   );
 }
 
 type PreviewDialogProps = {
   artifact: ArtifactReference;
   scope: Scope;
-  mode: 'preview' | 'source';
 };
 // The existing global modal host keeps an open preview alive when its chat row
 // moves or unmounts during virtualization. All requests retain the opening scope.
 const ArtifactPreviewDialog = defineModal<PreviewDialogProps, void>(
-  create<PreviewDialogProps>(({ artifact, scope, mode }) => {
+  create<PreviewDialogProps>(({ artifact, scope }) => {
     const modal = useModal();
     const close = () => {
       modal.resolve();
@@ -238,16 +317,8 @@ const ArtifactPreviewDialog = defineModal<PreviewDialogProps, void>(
         size="5xl"
       >
         <DialogContent className="max-h-[85vh] overflow-auto p-base">
-          <DialogHeader>
-            <DialogTitle>{artifact.name}</DialogTitle>
-          </DialogHeader>
           {modal.visible && (
-            <ArtifactViewer
-              artifact={artifact}
-              scope={scope}
-              mode={mode}
-              onClose={close}
-            />
+            <ArtifactViewer artifact={artifact} scope={scope} onClose={close} />
           )}
         </DialogContent>
       </Dialog>
@@ -264,23 +335,19 @@ function ArtifactCard({
 }) {
   const { t } = useTranslation('common');
   const [error, setError] = useState<string>();
-  const [downloading, setDownloading] = useState(false);
   const [opening, setOpening] = useState(false);
   const setPanel = useUiPreferencesStore(
     (state) => state.setRightMainPanelMode
   );
   const ready = !!artifact.content_hash && artifact.status !== 'preparing';
   const appSource = /\.(tsx|jsx|vue|svelte)$/i.test(artifact.name);
-  const previewable =
-    !appSource &&
-    /^(text\/(html|markdown|vnd.mermaid)|image\/)/.test(artifact.mime);
   const preview = async () => {
     if (
       !/^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(
         artifact.mime
       )
     ) {
-      void ArtifactPreviewDialog.show({ artifact, scope, mode: 'preview' });
+      void ArtifactPreviewDialog.show({ artifact, scope });
       return;
     }
     setOpening(true);
@@ -307,97 +374,60 @@ function ArtifactCard({
       setOpening(false);
     }
   };
-  const download = async () => {
-    setDownloading(true);
-    setError(undefined);
-    try {
-      const blob = await artifactsApi.content(
-        scope.processId,
-        scope.workspaceId,
-        scope.sessionId,
-        artifact.id,
-        scope.hostId,
-        artifact.content_hash ?? undefined
-      );
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = artifact.name.split('/').pop() ?? 'artifact';
-      anchor.click();
-      // Let the browser consume the click before releasing the download URL.
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setDownloading(false);
-    }
-  };
   return (
-    <div className="my-half rounded-sm border border-border bg-panel p-base text-base">
-      <p className="break-all font-medium text-high">{artifact.name}</p>
-      <p className="text-low">
-        {artifact.mime} · {t(`artifacts.status.${artifact.status}`)}
-      </p>
-      {artifact.source === 'workspace_observation' && (
-        <p className="text-low">{t('artifacts.observed')}</p>
-      )}
-      {artifact.source_scope && (
-        <p className="text-low">{t('artifacts.subagent')}</p>
-      )}
-      {artifact.error && (
-        <p role="status" className="text-low">
-          {artifact.error}
+    <div className="my-half flex items-start gap-base rounded-sm border border-border bg-panel p-base text-base">
+      <div className="min-w-0 flex-1">
+        <p className="break-all font-medium text-high">{artifact.name}</p>
+        <p className="text-low">
+          {artifact.mime} · {t(`artifacts.status.${artifact.status}`)}
         </p>
-      )}
-      <div className="mt-half flex flex-wrap gap-base">
+        {artifact.source === 'workspace_observation' && (
+          <p className="text-low">{t('artifacts.observed')}</p>
+        )}
+        {artifact.source_scope && (
+          <p className="text-low">{t('artifacts.subagent')}</p>
+        )}
+        {artifact.error && (
+          <p role="status" className="text-low">
+            {artifact.error}
+          </p>
+        )}
+        {appSource && <p className="text-low">{t('artifacts.appSource')}</p>}
+        {error && <p role="alert">{error}</p>}
+      </div>
+      <div className="flex shrink-0 items-center gap-half">
         {artifact.url ? (
-          <a href={artifact.url} target="_blank" rel="noopener noreferrer">
-            {t('artifacts.openOriginal')}
+          <a
+            href={artifact.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={t('artifacts.openOriginal')}
+            title={t('artifacts.openOriginal')}
+            className="flex items-center justify-center rounded-sm p-half text-low hover:bg-secondary/50 hover:text-normal"
+          >
+            <ArrowSquareOutIcon className="size-icon-sm" weight="bold" />
           </a>
         ) : (
           <>
-            {previewable && (
-              <button
-                type="button"
-                disabled={!ready || opening}
-                onClick={() => void preview()}
-              >
-                {t('artifacts.preview')}
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={!ready}
-              onClick={() =>
-                void ArtifactPreviewDialog.show({
-                  artifact,
-                  scope,
-                  mode: 'source',
-                })
-              }
-            >
-              {t('artifacts.source')}
-            </button>
-            <button
-              type="button"
-              disabled={!ready || downloading}
-              onClick={() => void download()}
-            >
-              {t('artifacts.download')}
-            </button>
+            <IconButton
+              icon={opening ? SpinnerIcon : EyeIcon}
+              iconClassName={opening ? 'animate-spin' : undefined}
+              aria-label={t('artifacts.preview')}
+              title={t('artifacts.preview')}
+              disabled={!ready || opening}
+              onClick={() => void preview()}
+            />
             {(appSource || artifact.mime === 'text/html') && (
-              <button
-                type="button"
+              <IconButton
+                icon={BrowserIcon}
+                aria-label={t('artifacts.devPreview')}
+                title={t('artifacts.devPreview')}
                 onClick={() => setPanel('preview', scope.workspaceId)}
-              >
-                {t('artifacts.devPreview')}
-              </button>
+              />
             )}
           </>
         )}
       </div>
-      {appSource && <p className="text-low">{t('artifacts.appSource')}</p>}
-      {error && <p role="alert">{error}</p>}
     </div>
   );
 }

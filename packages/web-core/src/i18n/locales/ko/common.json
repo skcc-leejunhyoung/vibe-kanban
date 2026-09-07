@@ -756,7 +756,7 @@
     "staticPreview": "정적 미리보기에서는 네트워크 요청, 동적 import, 서버 코드를 실행하지 않습니다.",
     "observed": "실행 중 감지된 워크스페이스 파일",
     "preview": "미리보기",
-    "source": "원본",
+    "source": "원본 보기",
     "download": "다운로드",
     "devPreview": "개발 서버 Preview",
     "openOriginal": "원본 열기",
