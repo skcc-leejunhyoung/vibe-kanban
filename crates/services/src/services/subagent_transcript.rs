@@ -219,12 +219,14 @@ pub async fn read_file_tail(
     }
     let mut bytes = Vec::new();
     file.take(max_bytes as u64).read_to_end(&mut bytes).await?;
+    // A running subagent appends while we read, so length/mtime drift is
+    // expected. Identity is what must hold: the path still resolves to the
+    // same inode we opened and read from.
     let current = tokio::fs::metadata(&path).await?;
-    if tokio::fs::canonicalize(&path).await? != path
-        || opened.len() != current.len()
-        || opened.modified().ok() != current.modified().ok()
-    {
-        return Err(std::io::Error::other("transcript is still changing"));
+    if tokio::fs::canonicalize(&path).await? != path {
+        return Err(std::io::Error::other(
+            "transcript path changed while reading",
+        ));
     }
     #[cfg(unix)]
     {
@@ -273,5 +275,43 @@ pub fn codex_from_process(
         _ => Err(anyhow::Error::msg(
             "subagent target does not match the process executor".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    /// A running subagent appends to its transcript while the dialog reads it.
+    /// Growth is normal, not an error — only a change of file identity is.
+    #[tokio::test]
+    async fn read_file_tail_tolerates_a_growing_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = "session-1";
+        let task = "task-1";
+        let subagents = dir.path().join(session).join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let path = subagents.join(format!("agent-{task}.jsonl"));
+        std::fs::write(&path, "x".repeat(1 << 20)).unwrap();
+
+        let appended = path.clone();
+        let writer = std::thread::spawn(move || {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(appended)
+                .unwrap();
+            for _ in 0..200 {
+                file.write_all(&[b'y'; 4096]).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+
+        let path = path.to_string_lossy().into_owned();
+        for _ in 0..50 {
+            super::read_file_tail(&path, task, session, 1 << 20)
+                .await
+                .expect("a growing transcript must stay readable");
+        }
+        writer.join().unwrap();
     }
 }
