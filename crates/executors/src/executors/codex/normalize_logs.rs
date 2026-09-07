@@ -2240,10 +2240,19 @@ pub fn normalize_logs(
                 continue;
             }
 
-            let Some(params) = notification
-                .params
-                .and_then(|p| serde_json::from_value::<CodexNotificationParams>(p).ok())
-            else {
+            let Some(params) = notification.params else {
+                continue;
+            };
+            // Legacy item/delta events carry their source thread on msg, not
+            // params.threadId. Do not inspect nested tool arguments/target IDs.
+            let thread_id = params
+                .get("msg")
+                .and_then(|msg| msg.get("thread_id"))
+                .and_then(Value::as_str);
+            if state.is_foreign_thread(thread_id) {
+                continue;
+            }
+            let Ok(params) = serde_json::from_value::<CodexNotificationParams>(params) else {
                 continue;
             };
 
@@ -3916,6 +3925,22 @@ mod tests {
         .to_string()
     }
 
+    fn thread_started_line(id: &str) -> String {
+        let line = json!({
+            "method": "thread/started",
+            "params": {"thread": {
+                "id": id, "sessionId": "session-1", "preview": "", "ephemeral": false,
+                "modelProvider": "openai", "createdAt": 0, "updatedAt": 0,
+                "status": {"type": "idle"}, "path": null,
+                "cwd": "/tmp/test-worktree", "cliVersion": "0.152.1",
+                "source": "cli", "turns": []
+            }}
+        })
+        .to_string();
+        serde_json::from_str::<ServerNotification>(&line).unwrap();
+        line
+    }
+
     #[tokio::test]
     async fn filters_subagent_notifications_from_parent_log() {
         let parent = "00000000-0000-0000-0000-000000000001";
@@ -3942,7 +3967,8 @@ mod tests {
             .to_string()
         };
         let lines = [
-            format!(r#"{{"method":"sessionConfigured","params":{{"sessionId":"{parent}""#),
+            thread_started_line(parent),
+            thread_started_line(child),
             json!({
                 "jsonrpc": "2.0",
                 "method": "item/agentMessage/delta",
@@ -3966,6 +3992,79 @@ mod tests {
             .map(|entry| entry.content.as_str())
             .collect::<Vec<_>>();
         assert_eq!(assistant_messages, ["parent output"]);
+
+        let mut child_thread: AppThread = serde_json::from_value(
+            serde_json::from_str::<Value>(&thread_started_line(child)).unwrap()["params"]["thread"]
+                .clone(),
+        )
+        .unwrap();
+        let child_item = serde_json::from_str::<Value>(&completed_message(
+            child,
+            "message-child",
+            "child final output",
+        ))
+        .unwrap()["params"]["item"]
+            .clone();
+        child_thread.turns.push(
+            serde_json::from_value(json!({
+                "id": "turn-child", "items": [child_item], "status": "completed", "error": null
+            }))
+            .unwrap(),
+        );
+        let transcript = normalize_thread_transcript(&child_thread, "/tmp/test-worktree");
+        assert!(transcript.iter().any(|entry| matches!(
+            entry.entry_type,
+            NormalizedEntryType::AssistantMessage
+        ) && entry.content == "child final output"));
+    }
+
+    #[tokio::test]
+    async fn filters_subagent_legacy_events_from_parent_log() {
+        let parent = "00000000-0000-0000-0000-000000000001";
+        let child = "00000000-0000-0000-0000-000000000002";
+        let mut lines = vec![thread_started_line(parent)];
+        for thread_id in [child, parent] {
+            for event_type in [
+                "agent_message_content_delta",
+                "reasoning_content_delta",
+                "reasoning_raw_content_delta",
+                "plan_delta",
+            ] {
+                let msg = json!({
+                    "type": event_type, "thread_id": thread_id,
+                    "turn_id": "turn-1", "item_id": event_type,
+                    "delta": if thread_id == child { "child output" } else { "parent output" }
+                });
+                serde_json::from_value::<EventMsg>(msg.clone()).unwrap();
+                lines.push(json!({"method": "codex/event", "params": {"msg": msg}}).to_string());
+            }
+        }
+        // Local slash-command events have no source thread and remain visible.
+        lines.push(
+            json!({"method": "codex/event", "params": {"msg": {
+                "type": "agent_message", "message": "slash command output"
+            }}})
+            .to_string(),
+        );
+        let entries = normalize_lines(&lines).await;
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.content.contains("child output"))
+        );
+        assert!(entries.iter().any(|entry| matches!(
+            entry.entry_type,
+            NormalizedEntryType::AssistantMessage
+        ) && entry.content.contains("parent output")));
+        assert!(entries.iter().any(|entry| matches!(
+            entry.entry_type,
+            NormalizedEntryType::Thinking
+        ) && entry.content.contains("parent output")));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.content == "slash command output")
+        );
     }
 
     #[allow(clippy::type_complexity)]

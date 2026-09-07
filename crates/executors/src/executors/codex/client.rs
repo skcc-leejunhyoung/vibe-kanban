@@ -1070,6 +1070,23 @@ impl JsonRpcCallbacks for AppServerClient {
     ) -> Result<bool, ExecutorError> {
         self.log_writer.log_raw(raw).await?;
 
+        // Keep the raw event for transcript/ownership lookup, but never let a
+        // child notification change the parent's plan or completion state.
+        if let Some(source_thread_id) = notification
+            .params
+            .as_ref()
+            .and_then(|params| params.get("threadId"))
+            .and_then(Value::as_str)
+            && self
+                .thread_id
+                .lock()
+                .await
+                .as_deref()
+                .is_some_and(|thread_id| thread_id != source_thread_id)
+        {
+            return Ok(false);
+        }
+
         let method = notification.method.as_str();
 
         // Detect completed plan items in the notification stream
@@ -1090,18 +1107,6 @@ impl JsonRpcCallbacks for AppServerClient {
             let completed = notification.params.clone().and_then(|params| {
                 serde_json::from_value::<TurnCompletedNotification>(params).ok()
             });
-
-            // App-server multiplexes subagent events onto the parent connection.
-            // A child completion must not finish the parent's reader loop.
-            if let Some(completed) = completed.as_ref() {
-                let thread_id = self.thread_id.lock().await;
-                if thread_id
-                    .as_deref()
-                    .is_some_and(|thread_id| thread_id != completed.thread_id)
-                {
-                    return Ok(false);
-                }
-            }
 
             if let Some(completed) = completed
                 && completed.turn.status == TurnStatus::Interrupted
@@ -1289,6 +1294,112 @@ mod tests {
     use codex_app_server_protocol::RateLimitReachedType;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subagent_notifications_preserve_parent_plan_and_completion() {
+        use std::process::Stdio;
+
+        use serde_json::json;
+
+        use super::super::jsonrpc::ExitSignalSender;
+
+        let cancel = CancellationToken::new();
+        let client = AppServerClient::new(
+            LogWriter::new(tokio::io::sink()),
+            None,
+            false,
+            true,
+            None,
+            RepoContext::default(),
+            false,
+            String::new(),
+            cancel.clone(),
+        );
+        client.register_session("parent").await.unwrap();
+        // The callback requires a peer but these events must not send any RPC.
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let peer = JsonRpcPeer::spawn(
+            child.stdin.take().unwrap(),
+            child.stdout.take().unwrap(),
+            client.clone(),
+            ExitSignalSender::new(tx),
+            cancel.clone(),
+        );
+        for (thread_id, expected_plan) in [
+            ("child", None),
+            ("parent", Some("parent")),
+            ("child", Some("parent")),
+        ] {
+            let notification = json!({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": "turn-1", "completedAtMs": 1,
+                "item": {"type": "plan", "id": thread_id, "text": "plan"}
+            }});
+            assert!(
+                !client
+                    .on_notification(
+                        &peer,
+                        &notification.to_string(),
+                        serde_json::from_value(notification.clone()).unwrap()
+                    )
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                client
+                    .pending_plan
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|plan| plan.item_id.as_str()),
+                expected_plan
+            );
+        }
+        for status in ["completed", "interrupted"] {
+            let notification = json!({"method": "turn/completed", "params": {
+                "threadId": "child", "turn": {"id": "child-turn", "items": [], "status": status, "error": null}
+            }});
+            serde_json::from_value::<TurnCompletedNotification>(notification["params"].clone())
+                .unwrap();
+            assert!(
+                !client
+                    .on_notification(
+                        &peer,
+                        &notification.to_string(),
+                        serde_json::from_value(notification.clone()).unwrap()
+                    )
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                client.pending_plan.lock().await.as_ref().unwrap().item_id,
+                "parent"
+            );
+        }
+        client.pending_plan.lock().await.take();
+        let notification = json!({"method": "turn/completed", "params": {
+            "threadId": "parent", "turn": {"id": "parent-turn", "items": [], "status": "completed", "error": null}
+        }});
+        assert!(
+            client
+                .on_notification(
+                    &peer,
+                    &notification.to_string(),
+                    serde_json::from_value(notification.clone()).unwrap()
+                )
+                .await
+                .unwrap()
+        );
+        cancel.cancel();
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+    }
 
     #[test]
     fn hydrates_paginated_items_into_their_turns() {

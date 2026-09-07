@@ -1123,7 +1123,19 @@ impl ClaudeLogProcessor {
                         continue;
                     }
 
-                    match serde_json::from_str::<ClaudeJson>(trimmed) {
+                    // The CLI multiplexes subagent output onto this stream. Filter
+                    // before tracking session/message IDs or mutating stream state;
+                    // task_output_to_entries still reads the child's own transcript.
+                    let json = serde_json::from_str::<serde_json::Value>(trimmed);
+                    if json
+                        .as_ref()
+                        .ok()
+                        .and_then(|json| json.get("parent_tool_use_id"))
+                        .is_some_and(serde_json::Value::is_string)
+                    {
+                        continue;
+                    }
+                    match json.and_then(serde_json::from_value::<ClaudeJson>) {
                         Ok(claude_json) => {
                             if !session_id_extracted
                                 && let Some(session_id) = Self::extract_session_id(&claude_json)
@@ -3863,6 +3875,104 @@ mod tests {
     const ASSISTANT_FULL: &str = r#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Hello world"}]}}"#;
     const RESULT_SUCCESS: &str =
         r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world"}"#;
+
+    #[tokio::test]
+    async fn subagent_output_isolated_from_parent_stream_and_resume_ids() {
+        use workspace_utils::log_msg::LogMsg;
+
+        let store = Arc::new(MsgStore::new_for_replay());
+        for line in [MSG_START, CB_START, CB_DELTA_1] {
+            store.push_stdout(format!("{line}\n"));
+        }
+        let mut child_lines = Vec::new();
+        for line in [
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_STOP,
+            MSG_STOP,
+            ASSISTANT_FULL,
+            RESULT_SUCCESS,
+        ] {
+            let mut json: serde_json::Value = serde_json::from_str(
+                &line
+                    .replace("msg_1", "child-message")
+                    .replace("Hello", "Child"),
+            )
+            .unwrap();
+            json["parent_tool_use_id"] = serde_json::json!("agent-tool");
+            json["session_id"] = serde_json::json!("child-session");
+            json["uuid"] = serde_json::json!("child-uuid");
+            child_lines.push(json.to_string());
+            store.push_stdout(format!("{json}\n"));
+        }
+        for line in [CB_DELTA_2, ASSISTANT_FULL, MSG_STOP] {
+            let mut json: serde_json::Value = serde_json::from_str(line).unwrap();
+            json["parent_tool_use_id"] = serde_json::Value::Null;
+            json["session_id"] = serde_json::json!("parent-session");
+            json["uuid"] = serde_json::json!("parent-uuid");
+            store.push_stdout(format!("{json}\n"));
+        }
+        // A late child final message must not replace the parent's resume UUID.
+        store.push_stdout(format!("{}\n", child_lines[5]));
+        // Child user events must not clear the pending parent resume UUID either.
+        store.push_stdout(format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "user", "parent_tool_use_id": "agent-tool", "uuid": "child-user",
+                "message": {"role": "user", "content": "Child prompt"}
+            })
+        ));
+        store.push_stdout(format!("{RESULT_SUCCESS}\n"));
+        store.push_finished();
+        ClaudeLogProcessor::process_logs(
+            store.clone(),
+            Path::new("/tmp"),
+            EntryIndexProvider::default(),
+            HistoryStrategy::Default,
+        )
+        .await
+        .unwrap();
+        let entries = store
+            .get_replay_patches()
+            .into_iter()
+            .flatten()
+            .filter_map(|patch| extract_normalized_entry_from_patch(&patch))
+            .collect::<BTreeMap<_, _>>();
+        let assistant_messages = entries
+            .values()
+            .filter(|entry| matches!(entry.entry_type, NormalizedEntryType::AssistantMessage))
+            .map(|entry| entry.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(assistant_messages, ["Hello world"]);
+        assert!(
+            !entries
+                .values()
+                .any(|entry| entry.content.contains("Child"))
+        );
+        // No intermediate patch may briefly expose child text before replacement.
+        assert!(store.get_history().iter().all(|msg| {
+            match msg {
+                LogMsg::JsonPatch(patch) => extract_normalized_entry_from_patch(patch)
+                    .is_none_or(|(_, entry)| !entry.content.contains("Child")),
+                _ => true,
+            }
+        }));
+        let ids = store
+            .get_history()
+            .into_iter()
+            .filter_map(|msg| match msg {
+                LogMsg::SessionId(id) | LogMsg::MessageId(id) => Some(id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["parent-session", "parent-uuid"]);
+        let transcript = task_output_to_entries(&child_lines.join("\n"), "/tmp");
+        assert!(transcript.iter().any(|entry| matches!(
+            entry.entry_type,
+            NormalizedEntryType::AssistantMessage
+        ) && entry.content == "Child world"));
+    }
 
     // Extended-thinking stream: a `thinking` block is streamed at content index 0,
     // then the visible `text` block at content index 1. Mirrors the real Opus 4.8
