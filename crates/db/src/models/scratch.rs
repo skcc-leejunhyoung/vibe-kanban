@@ -64,6 +64,11 @@ pub struct WorkspacePanelStateData {
     /// not fail the entire `UiPreferencesData` deserialization.
     #[serde(default = "default_left_main_panel_visible")]
     pub is_left_main_panel_visible: bool,
+    /// Per-workspace override of the right (git) sidebar. `None` means the
+    /// workspace was never toggled and follows the app's runtime default, so
+    /// this stays optional rather than defaulting to a concrete value.
+    #[serde(default)]
+    pub is_right_sidebar_visible: Option<bool>,
 }
 
 fn default_left_main_panel_visible() -> bool {
@@ -568,6 +573,9 @@ mod tests {
             serde_json::from_str(r#"{"right_main_panel_mode":"diff"}"#).unwrap();
         assert!(data.is_left_main_panel_visible);
         assert_eq!(data.right_main_panel_mode.as_deref(), Some("diff"));
+        // Never toggled, so the workspace keeps following the runtime default
+        // instead of being pinned open.
+        assert_eq!(data.is_right_sidebar_visible, None);
     }
 
     #[test]

@@ -42,9 +42,10 @@ import type { RepoAction } from '@vibe/ui/components/RepoCard';
 const UI_PREFERENCES_ID = '00000000-0000-0000-0000-000000000001';
 
 /**
- * Converts store state to scratch data format (camelCase to snake_case)
+ * Converts store state to scratch data format (camelCase to snake_case).
+ * Exported for round-trip tests; not used outside this module.
  */
-function storeToScratchData(state: {
+export function storeToScratchData(state: {
   repoActions: Record<string, RepoAction>;
   expanded: Record<string, boolean>;
   contextBarPosition: ContextBarPosition;
@@ -74,6 +75,10 @@ function storeToScratchData(state: {
     workspacePanelStates[key] = {
       right_main_panel_mode: value.rightMainPanelMode,
       is_left_main_panel_visible: value.isLeftMainPanelVisible,
+      // `undefined` (never toggled) must persist as null, not as a concrete
+      // boolean — that's what lets the workspace keep following the runtime
+      // default instead of being pinned to whatever it looked like once.
+      is_right_sidebar_visible: value.isRightSidebarVisible ?? null,
     };
   }
 
@@ -135,7 +140,7 @@ function storeToScratchData(state: {
 /**
  * Converts scratch data to store state format (snake_case to camelCase)
  */
-function scratchDataToStore(data: UiPreferencesData): {
+export function scratchDataToStore(data: UiPreferencesData): {
   repoActions: Record<string, RepoAction>;
   expanded: Record<string, boolean>;
   contextBarPosition: ContextBarPosition;
@@ -168,6 +173,7 @@ function scratchDataToStore(data: UiPreferencesData): {
           rightMainPanelMode:
             (value.right_main_panel_mode as RightMainPanelMode) ?? null,
           isLeftMainPanelVisible: value.is_left_main_panel_visible ?? true,
+          isRightSidebarVisible: value.is_right_sidebar_visible ?? undefined,
         };
       }
     }

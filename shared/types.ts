@@ -93,7 +93,13 @@ export type WorkspacePanelStateData = { right_main_panel_mode: string | null,
  * partial or legacy `workspace_panel_states` entry missing this key does
  * not fail the entire `UiPreferencesData` deserialization.
  */
-is_left_main_panel_visible: boolean, };
+is_left_main_panel_visible: boolean,
+/**
+ * Per-workspace override of the right (git) sidebar. `None` means the
+ * workspace was never toggled and follows the app's runtime default, so
+ * this stays optional rather than defaulting to a concrete value.
+ */
+is_right_sidebar_visible: boolean | null, };
 
 export type WorkspacePrFilterData = "all" | "has_pr" | "no_pr";
 
