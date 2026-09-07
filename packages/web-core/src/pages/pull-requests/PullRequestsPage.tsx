@@ -77,6 +77,7 @@ import {
   pullRequestSummariesQueryOptions,
   PR_QUERY_STALE_TIME_MS,
   refreshPullRequestSummaries,
+  storeRefreshedPullRequestSummaries,
   summarizePullRequestQueryErrors,
 } from './pullRequestSummariesQuery';
 import type { MergeStatus, PullRequestSummary } from 'shared/types';
@@ -222,7 +223,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const queryClient = useQueryClient();
-  const { isLoaded: isAuthLoaded, isSignedIn } = useAuth();
+  const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
   const { workspaces } = useUserContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
   const { hostId: selfHostId } = useSelfCloudHostId();
@@ -303,7 +304,11 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const pullRequestQueries = useQueries({
     queries: isSignedIn
       ? filters.repositories.map((repository) => ({
-          ...pullRequestSummariesQueryOptions(repository, filters.involvesMe),
+          ...pullRequestSummariesQueryOptions(
+            userId,
+            repository,
+            filters.involvesMe
+          ),
           staleTime: PR_QUERY_STALE_TIME_MS,
           gcTime: 60 * 60_000,
         }))
@@ -330,19 +335,18 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
     }: {
       repositories: string[];
       involvesMe: boolean;
+      userId: string | null;
     }) => refreshPullRequestSummaries(repositories, involvesMe),
     onSuccess: (results, variables) => {
+      // Attribute the lists to the account that requested them: this still
+      // runs after an account switch has cleared the cache.
+      storeRefreshedPullRequestSummaries(
+        queryClient,
+        variables.userId,
+        variables.involvesMe,
+        results
+      );
       const failures = results.filter((result) => !result.success);
-      for (const result of results) {
-        if (!result.success) continue;
-        queryClient.setQueryData(
-          pullRequestSummariesQueryOptions(
-            result.repository,
-            variables.involvesMe
-          ).queryKey,
-          result.result
-        );
-      }
       if (failures.length > 0) {
         const error = failures[0].error;
         void ErrorDialog.show({
@@ -691,13 +695,14 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
       refreshPullRequests.mutate({
         repositories: filters.repositories,
         involvesMe: filters.involvesMe,
+        userId,
       });
     };
     window.addEventListener(PULL_REQUESTS_REFRESH_EVENT, refresh);
     return () =>
       window.removeEventListener(PULL_REQUESTS_REFRESH_EVENT, refresh);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repositoriesKey, filters.involvesMe, isSignedIn]);
+  }, [repositoriesKey, filters.involvesMe, isSignedIn, userId]);
 
   const focusRow = useCallback(
     (index: number) => {
@@ -905,6 +910,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
                 refreshPullRequests.mutate({
                   repositories: filters.repositories,
                   involvesMe: filters.involvesMe,
+                  userId,
                 })
               }
               disabled={

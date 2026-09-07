@@ -1,14 +1,18 @@
+import { QueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GitHubPullRequestSummary } from 'shared/remote-types';
 
 vi.mock('@/shared/lib/remoteApi', () => ({
   listGitHubPullRequests: vi.fn(),
 }));
 
 import { listGitHubPullRequests } from '@/shared/lib/remoteApi';
+import { clearLocalUserQueryCache } from '@/shared/providers/auth/LocalAuthProvider';
 import {
   pullRequestSummariesQueryKey,
   pullRequestSummariesQueryOptions,
   refreshPullRequestSummaries,
+  storeRefreshedPullRequestSummaries,
   summarizePullRequestQueryErrors,
 } from './pullRequestSummariesQuery';
 
@@ -17,18 +21,20 @@ describe('pullRequestSummariesQueryOptions', () => {
     vi.mocked(listGitHubPullRequests).mockReset();
   });
 
-  it('uses the same cache key for page and background prefetches', () => {
-    expect(pullRequestSummariesQueryKey('acme/repo-1', true)).toEqual([
-      'pull-request-summaries',
-      'acme/repo-1',
-      true,
-    ]);
+  it('scopes the shared page and prefetch cache key to the signed-in user', () => {
+    expect(pullRequestSummariesQueryKey('user-a', 'acme/repo-1', true)).toEqual(
+      ['pull-request-summaries', 'user-a', 'acme/repo-1', true]
+    );
   });
 
   it('loads the configured repository without forcing a refresh', async () => {
     vi.mocked(listGitHubPullRequests).mockResolvedValue([]);
 
-    await pullRequestSummariesQueryOptions('acme/repo-1', false).queryFn();
+    await pullRequestSummariesQueryOptions(
+      'user-a',
+      'acme/repo-1',
+      false
+    ).queryFn();
 
     expect(listGitHubPullRequests).toHaveBeenCalledWith(
       'acme/repo-1',
@@ -64,6 +70,48 @@ describe('refreshPullRequestSummaries', () => {
       false,
       true
     );
+  });
+});
+
+describe('storeRefreshedPullRequestSummaries', () => {
+  it('keeps a refresh that finishes after an account switch away from the next account', () => {
+    const queryClient = new QueryClient();
+    const privatePr = {
+      number: 42n,
+      url: 'https://github.com/acme/private/pull/42',
+      title: 'Account A private PR',
+    } as GitHubPullRequestSummary;
+    const results = [
+      {
+        repository: 'acme/private',
+        success: true,
+        result: { summaries: [privatePr] },
+      },
+      { repository: 'acme/broken', success: false, error: new Error('x') },
+    ] as const;
+
+    // Account B signed in while A's refresh was still in flight, so the auth
+    // provider already dropped every account-scoped query.
+    clearLocalUserQueryCache(queryClient);
+    storeRefreshedPullRequestSummaries(queryClient, 'user-a', true, [
+      ...results,
+    ]);
+
+    expect(
+      queryClient.getQueryData(
+        pullRequestSummariesQueryKey('user-b', 'acme/private', true)
+      )
+    ).toBeUndefined();
+    expect(
+      queryClient.getQueryData(
+        pullRequestSummariesQueryKey('user-a', 'acme/private', true)
+      )
+    ).toEqual({ summaries: [privatePr] });
+    expect(
+      queryClient.getQueryData(
+        pullRequestSummariesQueryKey('user-a', 'acme/broken', true)
+      )
+    ).toBeUndefined();
   });
 });
 

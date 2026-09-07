@@ -10,7 +10,7 @@ const TRACKED_PULL_REQUEST_SYNC_INTERVAL_MS = 5 * 60_000;
 /** Keeps the configured Pull Requests view warm while the user works elsewhere. */
 export function PullRequestsBackgroundPrefetch() {
   const queryClient = useQueryClient();
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, userId } = useAuth();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );
@@ -46,6 +46,7 @@ export function PullRequestsBackgroundPrefetch() {
       for (const repository of defaultFilters.repositories) {
         void queryClient.prefetchQuery(
           pullRequestSummariesQueryOptions(
+            userId,
             repository,
             defaultFilters.involvesMe
           )
@@ -55,7 +56,13 @@ export function PullRequestsBackgroundPrefetch() {
 
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultFilters.involvesMe, isSignedIn, repositoriesKey, queryClient]);
+  }, [
+    defaultFilters.involvesMe,
+    isSignedIn,
+    repositoriesKey,
+    queryClient,
+    userId,
+  ]);
 
   return null;
 }

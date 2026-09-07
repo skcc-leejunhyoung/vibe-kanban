@@ -1,14 +1,19 @@
+import type { QueryClient } from '@tanstack/react-query';
 import { listGitHubPullRequests } from '@/shared/lib/remoteApi';
 
 // Client-side freshness window for PR list/detail queries, matched to the
 // backend PR cache TTL (see PULL_REQUEST_CACHE_TTL_SECS).
 export const PR_QUERY_STALE_TIME_MS = 60_000;
 
+// The lists are account-specific (private repositories, "involves me"), so the
+// key carries the requesting user. A refresh that completes after an account
+// switch then lands under the previous user's key, never the next user's.
 export function pullRequestSummariesQueryKey(
+  userId: string | null,
   repository: string,
   involvesMe: boolean
 ) {
-  return ['pull-request-summaries', repository, involvesMe] as const;
+  return ['pull-request-summaries', userId, repository, involvesMe] as const;
 }
 
 export async function fetchPullRequestSummaries(
@@ -52,15 +57,35 @@ export async function refreshPullRequestSummaries(
 }
 
 export function pullRequestSummariesQueryOptions(
+  userId: string | null,
   repository: string,
   involvesMe: boolean
 ) {
   return {
-    queryKey: pullRequestSummariesQueryKey(repository, involvesMe),
+    queryKey: pullRequestSummariesQueryKey(userId, repository, involvesMe),
     queryFn: () => fetchPullRequestSummaries(repository, involvesMe),
     staleTime: PR_QUERY_STALE_TIME_MS,
     gcTime: 60 * 60_000,
   };
+}
+
+/**
+ * Stores refreshed lists for the user who requested them. The mutation
+ * callback still runs after an account switch has cleared the cache.
+ */
+export function storeRefreshedPullRequestSummaries(
+  queryClient: QueryClient,
+  userId: string | null,
+  involvesMe: boolean,
+  results: PullRequestRefreshResult[]
+): void {
+  for (const result of results) {
+    if (!result.success) continue;
+    queryClient.setQueryData(
+      pullRequestSummariesQueryKey(userId, result.repository, involvesMe),
+      result.result
+    );
+  }
 }
 
 export function summarizePullRequestQueryErrors(

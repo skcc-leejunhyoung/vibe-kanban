@@ -36,6 +36,7 @@ import type { GitRemote, PullRequestDetail } from 'shared/types';
 import type { PullRequestStatus } from 'shared/remote-types';
 import { pullRequestSummariesQueryOptions } from '@/pages/pull-requests/pullRequestSummariesQuery';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { GitHubApiErrorAlert } from '@/shared/components/GitHubApiErrorAlert';
@@ -52,6 +53,7 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   const { t } = useTranslation('tasks');
   const runtime = useAppRuntime();
   const hostId = useHostId();
+  const { userId } = useAuth();
 
   const [activeTab, setActiveTab] = useState<TabMode>('url');
 
@@ -193,7 +195,7 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   }, [remotes, runtime, selectedRemote]);
 
   const githubPrsQuery = useQuery({
-    ...pullRequestSummariesQueryOptions(selectedRepoId ?? '', false),
+    ...pullRequestSummariesQueryOptions(userId, selectedRepoId ?? '', false),
     enabled:
       runtime === 'remote' &&
       modal.visible &&
