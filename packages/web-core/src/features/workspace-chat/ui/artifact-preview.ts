@@ -38,12 +38,6 @@ export { ARTIFACT_CSP } from '@/shared/lib/isolatedPreview';
 
 export type PreviewResource = { path: string; mime: string; bytes: Uint8Array };
 
-export function hasRenderableMermaidArtifact(content: string) {
-  return /^( {0,3})(`{3,}|~{3,})mermaid[ \t]+vibe-artifact[ \t]*\r?\n[\s\S]*?\r?\n\1\2[ \t]*$/im.test(
-    content
-  );
-}
-
 export function buildArtifactPreview(
   source: string,
   path: string,

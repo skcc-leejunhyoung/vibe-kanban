@@ -103,6 +103,10 @@ import {
 import { writeClipboardViaBridge } from '@/shared/lib/clipboard';
 import type { SendMessageShortcut } from 'shared/types';
 import type { BaseCodingAgent } from 'shared/types';
+import {
+  MERMAID_ARTIFACT_TRANSFORMERS,
+  MermaidArtifactNode,
+} from './mermaid-artifact-node';
 
 /** Markdown string representing the editor content */
 export type SerializedEditorState = string;
@@ -150,6 +154,8 @@ type WysiwygProps = {
   onCodeClick?: (target: { path: string; repoId: string | null }) => void;
   /** Hide the copy/edit/delete action buttons in read-only mode */
   hideActions?: boolean;
+  /** Render explicitly selected Mermaid artifact fences in read-only chat. */
+  renderMermaidArtifacts?: boolean;
   /** Show a static toolbar below the editor content */
   showStaticToolbar?: boolean;
   /** Save status indicator for static toolbar */
@@ -300,6 +306,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       findMatchingDiffTarget,
       onCodeClick,
       hideActions = false,
+      renderMermaidArtifacts = false,
       showStaticToolbar = false,
       saveStatus,
       staticToolbarActions,
@@ -559,6 +566,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
           AttachmentNode,
           PrCommentNode,
           ComponentInfoNode,
+          MermaidArtifactNode,
           TableNode,
           TableRowNode,
           TableCellNode,
@@ -571,6 +579,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     // Custom element transformers come first for matching precedence.
     const allTransformers: Transformer[] = useMemo(
       () => [
+        ...(renderMermaidArtifacts ? MERMAID_ARTIFACT_TRANSFORMERS : []),
         TABLE_TRANSFORMER,
         IMAGE_TRANSFORMER,
         ATTACHMENT_TRANSFORMER,
@@ -584,7 +593,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
         CHECK_LIST,
         ...TRANSFORMERS,
       ],
-      [ATTACHMENT_TRANSFORMER, IMAGE_TRANSFORMER]
+      [ATTACHMENT_TRANSFORMER, IMAGE_TRANSFORMER, renderMermaidArtifacts]
     );
 
     // Memoized handlers for ContentEditable to prevent re-renders
