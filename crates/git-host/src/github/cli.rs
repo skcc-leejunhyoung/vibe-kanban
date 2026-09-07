@@ -442,8 +442,11 @@ impl GhCli {
 
     /// This host's GitHub CLI login token, for the server stack to reuse.
     /// `gh auth token` fails with an auth error when nobody is signed in.
+    /// Pinned to github.com: the central server only calls api.github.com, so
+    /// an enterprise host's token must never be uploaded there — not even when
+    /// it is this host's default `gh` login or `GH_HOST` points at it.
     pub fn auth_token(&self) -> Result<String, GhCliError> {
-        let output = self.run(["auth", "token"], None)?;
+        let output = self.run(["auth", "token", "--hostname", "github.com"], None)?;
         let token = output.trim();
         if token.is_empty() {
             return Err(GhCliError::AuthFailed(
