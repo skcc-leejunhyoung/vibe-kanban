@@ -860,10 +860,33 @@ pub fn task_output_to_markdown(jsonl: &str) -> String {
         }
     }
     if sections.is_empty() {
-        "_No transcript content._".to_string()
+        plain_task_output(jsonl).unwrap_or_else(|| "_No transcript content._".to_string())
     } else {
         sections.join("\n\n")
     }
+}
+
+/// `local_bash` tasks spool raw shell output to their `output_file`, not SDK
+/// JSONL. Surface that text verbatim (ANSI stripped, fenced) instead of
+/// dropping every line as unparseable.
+// ponytail: format sniffed as "no line is a Claude event"; key off the task
+// type if the notification ever carries it.
+fn plain_task_output(text: &str) -> Option<String> {
+    let is_claude_event = |line: &str| {
+        serde_json::from_str::<ClaudeJson>(line.trim())
+            .is_ok_and(|event| !matches!(event, ClaudeJson::Unknown { .. }))
+    };
+    if text.lines().any(is_claude_event) {
+        return None;
+    }
+    let text = strip_ansi_escapes::strip_str(text);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let longest_run = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest_run.max(2) + 1);
+    Some(format!("{fence}\n{text}\n{fence}"))
 }
 
 /// Normalize a background task transcript with the same entry model used by
@@ -943,6 +966,16 @@ pub fn task_output_to_entries(jsonl: &str, worktree_path: &str) -> Vec<Normalize
         }
     }
 
+    if entries.is_empty()
+        && let Some(content) = plain_task_output(jsonl)
+    {
+        return vec![NormalizedEntry {
+            timestamp: None,
+            entry_type: NormalizedEntryType::AssistantMessage,
+            content,
+            metadata: None,
+        }];
+    }
     entries.into_values().collect()
 }
 
@@ -5336,7 +5369,7 @@ mod tests {
 
     #[test]
     fn bash_task_empty_output_file_has_no_transcript() {
-        // local_bash notifications report output_file:"" — no transcript.
+        // local_bash notifications without an output_file have nothing to open.
         let entries = normalize_sequence(&[
             r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"tool_1","description":"Run tests","task_type":"local_bash"}"#,
             r#"{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"tool_1","status":"completed","output_file":""}"#,
@@ -5377,6 +5410,32 @@ mod tests {
             task_output_to_markdown(""),
             "_No transcript content._".to_string()
         );
+    }
+
+    #[test]
+    fn plain_shell_output_is_shown_instead_of_an_empty_transcript() {
+        // Claude Code 2.1.258 reports an output_file for local_bash tasks too;
+        // it holds the command's raw (ANSI-coloured) output, not SDK JSONL.
+        let output =
+            "\x1b[32m\u{2713}\x1b[39m src/a.test.ts (3 tests)\n\n Test Files  1 passed (1)\n";
+        let markdown = task_output_to_markdown(output);
+        assert_eq!(
+            markdown,
+            "```\n\u{2713} src/a.test.ts (3 tests)\n\n Test Files  1 passed (1)\n```"
+        );
+        let entries = task_output_to_entries(output, "/tmp");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            &entries[0].entry_type,
+            NormalizedEntryType::AssistantMessage
+        ));
+        assert_eq!(entries[0].content, markdown);
+        // The fence outgrows any backtick run inside the output.
+        assert!(task_output_to_markdown("a ``` b").starts_with("````\n"));
+        // JSON lines that are not Claude events are still plain output.
+        assert!(task_output_to_markdown("{\"type\":\"log\",\"ok\":true}").starts_with("```\n"));
+        // Whitespace-only output still reads as an empty transcript.
+        assert_eq!(task_output_to_markdown(" \n"), "_No transcript content._");
     }
 
     #[test]
