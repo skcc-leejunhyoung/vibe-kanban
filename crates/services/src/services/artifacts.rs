@@ -1093,8 +1093,10 @@ impl ArtifactObserver {
                 .unwrap_or(&path)
                 .components()
                 .any(|part| ARTIFACT_SKIP_DIRS.contains(&part.as_os_str().to_str().unwrap_or("")))
-                && (self.baseline.get(&path) != stamp(&path).as_ref()
-                    || !self.baseline.contains_key(&path))
+                // Both sides `None` means the file never existed in the
+                // baseline and is gone now (a build temp created and deleted
+                // mid-run) — not an artifact.
+                && self.baseline.get(&path) != stamp(&path).as_ref()
             {
                 self.add_file(path, None, None);
             }
