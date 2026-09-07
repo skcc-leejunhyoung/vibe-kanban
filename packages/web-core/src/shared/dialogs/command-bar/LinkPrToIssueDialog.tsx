@@ -551,7 +551,7 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
 
               {runtime === 'local' && selectedRepoId && remotes.length > 1 && (
                 <div className="space-y-2">
-                  <Label>{t('linkPrToIssue.remoteLabel')}</Label>
+                  <Label>{t('createWorkspaceFromPr.remoteLabel')}</Label>
                   {remotesQuery.isLoading ? (
                     <div className="text-sm text-muted-foreground">
                       {t('createWorkspaceFromPr.loadingRemotes')}
