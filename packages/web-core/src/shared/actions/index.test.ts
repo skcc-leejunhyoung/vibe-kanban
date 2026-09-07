@@ -868,9 +868,21 @@ describe('remote workspace action scoping', () => {
     await Actions.RunCleanupScript.execute(ctx, 'remote-ws', 'host-2');
     await Actions.RunArchiveScript.execute(ctx, 'remote-ws', 'host-2');
 
-    expect(runSetupScript).toHaveBeenCalledWith('remote-ws', 'host-2');
-    expect(runCleanupScript).toHaveBeenCalledWith('remote-ws', 'host-2');
-    expect(runArchiveScript).toHaveBeenCalledWith('remote-ws', 'host-2');
+    expect(runSetupScript).toHaveBeenCalledWith(
+      'remote-ws',
+      'host-2',
+      undefined
+    );
+    expect(runCleanupScript).toHaveBeenCalledWith(
+      'remote-ws',
+      'host-2',
+      undefined
+    );
+    expect(runArchiveScript).toHaveBeenCalledWith(
+      'remote-ws',
+      'host-2',
+      undefined
+    );
   });
 });
 
@@ -1964,8 +1976,28 @@ describe('workspace script host scope', () => {
 
     await action.execute(ctx, 'remote-ws', 'host-2');
 
-    expect(apiCall).toHaveBeenCalledWith('remote-ws', 'host-2');
+    // Another workspace than the one on screen: no session to attribute to.
+    expect(apiCall).toHaveBeenCalledWith('remote-ws', 'host-2', undefined);
   });
+
+  it.each([
+    [Actions.RunSetupScript, runSetupScript],
+    [Actions.RunCleanupScript, runCleanupScript],
+    [Actions.RunArchiveScript, runArchiveScript],
+  ])(
+    'attributes $id to the session on screen, not the newest one',
+    async (action, apiCall) => {
+      apiCall.mockResolvedValue({ success: true, data: {} } as never);
+      const { ctx } = makeCtx(
+        { id: 'ws1' },
+        { currentHostId: 'host-2', currentSessionId: 'session-9' }
+      );
+
+      await action.execute(ctx, 'ws1', 'host-2');
+
+      expect(apiCall).toHaveBeenCalledWith('ws1', 'host-2', 'session-9');
+    }
+  );
 });
 
 describe('copy workspace path', () => {

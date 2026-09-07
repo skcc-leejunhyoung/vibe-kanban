@@ -11,18 +11,24 @@ import type { ExecutionProcess } from 'shared/types';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
-export function useWorkspaceExecution(workspaceId?: string) {
+// `sessionId` scopes the stop to one conversation. Without it the whole
+// workspace stops, which would also kill a sibling session running concurrently
+// in the same workspace.
+export function useWorkspaceExecution(
+  workspaceId?: string,
+  sessionId?: string
+) {
   const hostId = useHostId();
   const stopMutationKey = useMemo(
-    () => ['stopWorkspaceExecution', workspaceId] as const,
-    [workspaceId]
+    () => ['stopWorkspaceExecution', workspaceId, sessionId] as const,
+    [workspaceId, sessionId]
   );
 
   const stopMutation = useMutation({
     mutationKey: stopMutationKey,
     mutationFn: async () => {
       if (!workspaceId) return;
-      await workspacesApi.stop(workspaceId, hostId);
+      await workspacesApi.stop(workspaceId, hostId, sessionId);
     },
   });
 

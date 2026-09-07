@@ -411,6 +411,12 @@ export const handleApiResponse = async <T, E = T>(
   return result.data as T;
 };
 
+// Narrows a workspace-level execution route to one session, so acting in one
+// conversation never stops or blocks a sibling conversation in the same
+// workspace. Omitted => the route keeps its workspace-wide behaviour.
+const sessionScopeQuery = (sessionId?: string) =>
+  sessionId ? `?${new URLSearchParams({ session_id: sessionId })}` : '';
+
 // Sessions API
 export const sessionsApi = {
   getByWorkspace: async (
@@ -789,9 +795,14 @@ export const workspacesApi = {
     return createWorkspaceWithSession(workspace, sessions[0]);
   },
 
-  stop: async (workspaceId: string, hostId?: string | null): Promise<void> => {
+  /** Stops `sessionId` only; without it the whole workspace stops. */
+  stop: async (
+    workspaceId: string,
+    hostId?: string | null,
+    sessionId?: string
+  ): Promise<void> => {
     const response = await makeHostAwareRequest(
-      `/api/workspaces/${workspaceId}/execution/stop`,
+      `/api/workspaces/${workspaceId}/execution/stop${sessionScopeQuery(sessionId)}`,
       hostId,
       {
         method: 'POST',
@@ -1547,22 +1558,24 @@ export const workspacesApi = {
 
   runSetupScript: async (
     workspaceId: string,
-    hostId?: string | null
+    hostId?: string | null,
+    sessionId?: string
   ): Promise<Result<ExecutionProcess, RunScriptError>> => {
-    const sessions = await sessionsApi.getByWorkspace(workspaceId, hostId);
     const session =
-      sessions[0] ??
-      (await sessionsApi.create({ workspace_id: workspaceId }, hostId));
+      sessionId ??
+      (await sessionsApi.getByWorkspace(workspaceId, hostId))[0]?.id ??
+      (await sessionsApi.create({ workspace_id: workspaceId }, hostId)).id;
 
-    return sessionsApi.runSetupScript(session.id, hostId);
+    return sessionsApi.runSetupScript(session, hostId);
   },
 
   runCleanupScript: async (
     workspaceId: string,
-    hostId?: string | null
+    hostId?: string | null,
+    sessionId?: string
   ): Promise<Result<ExecutionProcess, RunScriptError>> => {
     const response = await makeHostAwareRequest(
-      `/api/workspaces/${workspaceId}/execution/cleanup`,
+      `/api/workspaces/${workspaceId}/execution/cleanup${sessionScopeQuery(sessionId)}`,
       hostId,
       {
         method: 'POST',
@@ -1575,10 +1588,11 @@ export const workspacesApi = {
 
   runArchiveScript: async (
     workspaceId: string,
-    hostId?: string | null
+    hostId?: string | null,
+    sessionId?: string
   ): Promise<Result<ExecutionProcess, RunScriptError>> => {
     const response = await makeHostAwareRequest(
-      `/api/workspaces/${workspaceId}/execution/archive`,
+      `/api/workspaces/${workspaceId}/execution/archive${sessionScopeQuery(sessionId)}`,
       hostId,
       {
         method: 'POST',

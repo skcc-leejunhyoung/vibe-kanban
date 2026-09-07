@@ -359,7 +359,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Execution state
   const { isAttemptRunning, stopExecution, isStopping, processes } =
-    useWorkspaceExecution(workspaceId);
+    useWorkspaceExecution(workspaceId, sessionId);
 
   // Inject the follow-up process (returned by the send POST) so its turn shows
   // immediately, without waiting for the WS stream to deliver it.

@@ -2790,7 +2790,7 @@ impl ContainerService for LocalContainerService {
     }
 
     async fn delete(&self, workspace: &Workspace) -> Result<(), ContainerError> {
-        self.try_stop(workspace, true).await;
+        self.try_stop(workspace, true, None).await;
         self.cleanup_workspace(workspace, false).await
     }
 

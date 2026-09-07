@@ -242,6 +242,21 @@ describe('host-aware task APIs', () => {
     ]);
   });
 
+  it('scopes stop and workspace scripts to one session when given', async () => {
+    const request = vi.fn(async () => apiResponse(null));
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+
+    await workspacesApi.stop('workspace-1', 'host-7', 'session-9');
+    await workspacesApi.runCleanupScript('workspace-1', 'host-7', 'session-9');
+    await workspacesApi.runArchiveScript('workspace-1', 'host-7', 'session-9');
+
+    expect(request.mock.calls.map(([path]) => path)).toEqual([
+      '/api/host/host-7/workspaces/workspace-1/execution/stop?session_id=session-9',
+      '/api/host/host-7/workspaces/workspace-1/execution/cleanup?session_id=session-9',
+      '/api/host/host-7/workspaces/workspace-1/execution/archive?session_id=session-9',
+    ]);
+  });
+
   it('routes session messages to the selected host', async () => {
     const request = vi.fn(async () => apiResponse({}));
     setLocalApiTransport({ request, openWebSocket: vi.fn() });

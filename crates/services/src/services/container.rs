@@ -801,13 +801,24 @@ pub trait ContainerService {
             }
         }
 
-        self.try_stop(&workspace, false).await;
+        // Only this session's processes: a restore/retry must not kill a sibling
+        // session running concurrently in the same workspace.
+        self.try_stop(&workspace, false, Some(session_id)).await;
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
 
         Ok(())
     }
 
-    async fn try_stop(&self, workspace: &Workspace, include_dev_server: bool) {
+    /// Stop the workspace's running processes. `only_session` narrows the kill to
+    /// a single session so that stopping one conversation never takes down a
+    /// sibling conversation running concurrently in the same workspace; `None`
+    /// keeps the workspace-wide behaviour (deletion, blocker cascade).
+    async fn try_stop(
+        &self,
+        workspace: &Workspace,
+        include_dev_server: bool,
+        only_session: Option<Uuid>,
+    ) {
         // stop execution processes for this workspace's sessions
         let sessions = match Session::find_by_workspace_id(&self.db().pool, workspace.id).await {
             Ok(s) => s,
@@ -815,6 +826,9 @@ pub trait ContainerService {
         };
 
         for session in sessions {
+            if only_session.is_some_and(|id| id != session.id) {
+                continue;
+            }
             if let Ok(processes) =
                 ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await
             {

@@ -3,14 +3,14 @@ use std::collections::{HashSet, VecDeque};
 use api_types::IssueRelationshipType;
 use axum::{
     Extension, Router,
-    extract::State,
+    extract::{Query, State},
     response::Json as ResponseJson,
     routing::{get, post},
 };
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     pending_execution_start::PendingExecutionStart,
-    session::{CreateSession, Session},
+    session::{CreateSession, Session, SessionError},
     workspace::Workspace,
     workspace_repo::WorkspaceRepo,
 };
@@ -156,16 +156,82 @@ pub async fn start_dev_server(
     Ok(ResponseJson(ApiResponse::success(execution_processes)))
 }
 
+/// Optional session scope for the workspace-level execution routes. The chat box
+/// sends the session the user acted in, so a sibling session running
+/// concurrently in the same workspace is neither killed nor treated as the
+/// owner of the spawned process. Omitting it keeps the workspace-wide behaviour.
+#[derive(Debug, Deserialize)]
+pub struct SessionScopeQuery {
+    pub session_id: Option<Uuid>,
+}
+
+/// Resolve which session a workspace-scoped script runs under: the caller's
+/// session when given (so the process lands in the conversation the user acted
+/// from), otherwise the newest session — creating one if the workspace has none.
+async fn resolve_script_session(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+    requested: Option<Uuid>,
+) -> Result<Session, ApiError> {
+    let pool = &deployment.db().pool;
+    if let Some(id) = requested {
+        return match Session::find_by_id(pool, id).await? {
+            Some(session) if session.workspace_id == workspace.id => Ok(session),
+            _ => Err(ApiError::Session(SessionError::NotFound)),
+        };
+    }
+    Ok(
+        match Session::find_latest_by_workspace_id(pool, workspace.id).await? {
+            Some(s) => s,
+            None => {
+                Session::create(
+                    pool,
+                    &CreateSession {
+                        executor: None,
+                        name: None,
+                    },
+                    Uuid::new_v4(),
+                    workspace.id,
+                )
+                .await?
+            }
+        },
+    )
+}
+
 pub async fn stop_workspace_execution(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
+    Query(query): Query<SessionScopeQuery>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
-    deployment.container().try_stop(&workspace, false).await;
+    let pool = &deployment.db().pool;
+
+    // Ignore a session id that isn't this workspace's — never let it widen or
+    // misdirect the kill.
+    let only_session = match query.session_id {
+        Some(id) => match Session::find_by_id(pool, id).await? {
+            Some(session) if session.workspace_id == workspace.id => Some(id),
+            _ => return Err(ApiError::Session(SessionError::NotFound)),
+        },
+        None => None,
+    };
+
+    deployment
+        .container()
+        .try_stop(&workspace, false, only_session)
+        .await;
 
     // Cascade: a workspace deferred behind this one (linked via a `blocking`
     // issue relationship) can never be unblocked by it once it is stopped, so
     // cancel those waiting starts too — transitively down the dependency graph.
-    if let Some(task_id) = workspace.task_id {
+    // Only once the workspace really has stopped: with a sibling session still
+    // running the work that would unblock them is still in flight.
+    let workspace_still_running =
+        ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
+            .await?;
+    if let Some(task_id) = workspace.task_id
+        && !workspace_still_running
+    {
         cascade_stop_blocked_dependents(&deployment, task_id).await;
     }
 
@@ -294,7 +360,10 @@ async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_
                         dependent_ws.id,
                         target
                     );
-                    deployment.container().try_stop(&dependent_ws, false).await;
+                    deployment
+                        .container()
+                        .try_stop(&dependent_ws, false, None)
+                        .await;
                 }
                 Ok(None) => {}
                 Err(e) => tracing::warn!(
@@ -311,22 +380,12 @@ async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_
 pub async fn run_cleanup_script(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
+    Query(query): Query<SessionScopeQuery>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess, RunScriptError>>, ApiError> {
     let pool = &deployment.db().pool;
 
-    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
-        .await?
-    {
-        return Ok(ResponseJson(ApiResponse::error_with_data(
-            RunScriptError::ProcessAlreadyRunning,
-        )));
-    }
-
-    deployment
-        .container()
-        .ensure_container_exists(&workspace)
-        .await?;
-
+    // Resolve the script before the session, so a workspace with no script and
+    // no session isn't left with an empty session as a side effect.
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let executor_action = match deployment.container().cleanup_actions_for_repos(&repos) {
         Some(action) => action,
@@ -337,21 +396,20 @@ pub async fn run_cleanup_script(
         }
     };
 
-    let session = match Session::find_latest_by_workspace_id(pool, workspace.id).await? {
-        Some(s) => s,
-        None => {
-            Session::create(
-                pool,
-                &CreateSession {
-                    executor: None,
-                    name: None,
-                },
-                Uuid::new_v4(),
-                workspace.id,
-            )
-            .await?
-        }
-    };
+    let session = resolve_script_session(&deployment, &workspace, query.session_id).await?;
+
+    // Scoped to the owning session: a sibling session busy in the same workspace
+    // is not this session's concern.
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            RunScriptError::ProcessAlreadyRunning,
+        )));
+    }
+
+    deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
 
     let execution_process = deployment
         .container()
@@ -369,20 +427,9 @@ pub async fn run_cleanup_script(
 pub async fn run_archive_script(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
+    Query(query): Query<SessionScopeQuery>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess, RunScriptError>>, ApiError> {
     let pool = &deployment.db().pool;
-    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
-        .await?
-    {
-        return Ok(ResponseJson(ApiResponse::error_with_data(
-            RunScriptError::ProcessAlreadyRunning,
-        )));
-    }
-
-    deployment
-        .container()
-        .ensure_container_exists(&workspace)
-        .await?;
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let executor_action = match deployment.container().archive_actions_for_repos(&repos) {
@@ -393,21 +440,19 @@ pub async fn run_archive_script(
             )));
         }
     };
-    let session = match Session::find_latest_by_workspace_id(pool, workspace.id).await? {
-        Some(s) => s,
-        None => {
-            Session::create(
-                pool,
-                &CreateSession {
-                    executor: None,
-                    name: None,
-                },
-                Uuid::new_v4(),
-                workspace.id,
-            )
-            .await?
-        }
-    };
+
+    let session = resolve_script_session(&deployment, &workspace, query.session_id).await?;
+
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            RunScriptError::ProcessAlreadyRunning,
+        )));
+    }
+
+    deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
 
     let execution_process = deployment
         .container()

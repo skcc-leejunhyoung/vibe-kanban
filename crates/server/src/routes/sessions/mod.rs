@@ -580,9 +580,7 @@ pub async fn handoff(
             "Workspace not found".to_string(),
         )))?;
 
-    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
-        .await?
-    {
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
         return Err(ApiError::BadRequest(
             "Stop the running process before handing off this workspace session".to_string(),
         ));
@@ -701,9 +699,7 @@ pub async fn run_setup_script(
             "Workspace not found".to_string(),
         )))?;
 
-    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
-        .await?
-    {
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
         return Ok(ResponseJson(ApiResponse::error_with_data(
             RunScriptError::ProcessAlreadyRunning,
         )));

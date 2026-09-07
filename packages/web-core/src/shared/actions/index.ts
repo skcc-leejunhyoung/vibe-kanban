@@ -202,6 +202,21 @@ function chromePanelWorkspaceId(
   return chromePanelWorkspaceTarget(ctx).workspaceId;
 }
 
+// The session a workspace-level script should be attributed to: the one the user
+// is actually looking at, so its process lands in that conversation instead of
+// whichever session happens to be newest. Undefined when the action targets some
+// other workspace — the backend then falls back to the latest session.
+function currentSessionForWorkspace(
+  ctx: ActionExecutorContext,
+  workspaceId: string,
+  hostId?: string | null
+): string | undefined {
+  const isCurrentWorkspace =
+    ctx.currentWorkspaceId === workspaceId &&
+    (hostId === undefined || hostId === ctx.currentHostId);
+  return isCurrentWorkspace ? (ctx.currentSessionId ?? undefined) : undefined;
+}
+
 function workspaceNavigationHostId(
   ctx: ActionExecutorContext,
   workspaceId: string,
@@ -3136,8 +3151,12 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     isEnabled: (ctx) => !ctx.isAttemptRunning,
-    execute: async (_ctx, workspaceId, hostId) => {
-      const result = await workspacesApi.runSetupScript(workspaceId, hostId);
+    execute: async (ctx, workspaceId, hostId) => {
+      const result = await workspacesApi.runSetupScript(
+        workspaceId,
+        hostId,
+        currentSessionForWorkspace(ctx, workspaceId, hostId)
+      );
       if (!result.success) {
         if (result.error?.type === 'no_script_configured') {
           throw new Error('No setup script configured for this project');
@@ -3158,8 +3177,12 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     isEnabled: (ctx) => !ctx.isAttemptRunning,
-    execute: async (_ctx, workspaceId, hostId) => {
-      const result = await workspacesApi.runCleanupScript(workspaceId, hostId);
+    execute: async (ctx, workspaceId, hostId) => {
+      const result = await workspacesApi.runCleanupScript(
+        workspaceId,
+        hostId,
+        currentSessionForWorkspace(ctx, workspaceId, hostId)
+      );
       if (!result.success) {
         if (result.error?.type === 'no_script_configured') {
           throw new Error('No cleanup script configured for this project');
@@ -3180,8 +3203,12 @@ export const Actions = {
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
     isEnabled: (ctx) => !ctx.isAttemptRunning,
-    execute: async (_ctx, workspaceId, hostId) => {
-      const result = await workspacesApi.runArchiveScript(workspaceId, hostId);
+    execute: async (ctx, workspaceId, hostId) => {
+      const result = await workspacesApi.runArchiveScript(
+        workspaceId,
+        hostId,
+        currentSessionForWorkspace(ctx, workspaceId, hostId)
+      );
       if (!result.success) {
         if (result.error?.type === 'no_script_configured') {
           throw new Error('No archive script configured for this project');
