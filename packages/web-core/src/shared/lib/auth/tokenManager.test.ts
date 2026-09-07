@@ -62,3 +62,64 @@ it('keeps the reconnect dialog and session on 503, then resumes shapes after suc
   await vi.advanceTimersByTimeAsync(60_000);
   expect(request).toHaveBeenCalledTimes(2);
 });
+
+it.each([
+  ['user-b', false],
+  ['user-b', true],
+  ['user-a', false],
+  ['user-a', true],
+] as const)(
+  'checks local retry account %s with pending refresh=%s',
+  async (nextUser, pendingRefresh) => {
+    const accessToken = (sub: string, nonce: string) =>
+      'e30.' +
+      Buffer.from(
+        JSON.stringify({
+          aud: 'access',
+          sub,
+          nonce,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        })
+      ).toString('base64url') +
+      '.signature';
+    const rejected = accessToken('user-a', 'rejected');
+    const current = accessToken(nextUser, 'renewed');
+    queryClient.setQueryData(['user-system'], {
+      login_status: { status: 'loggedin' },
+    });
+    let release!: (response: Response) => void;
+    const request = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        })
+    );
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+    const refreshing = pendingRefresh
+      ? tokenManager.triggerRefresh()
+      : undefined;
+    const retry = tokenManager
+      .triggerRefresh(rejected)
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    release(
+      new Response(
+        JSON.stringify({
+          success: true,
+          data: { access_token: current, expires_at: null },
+        })
+      )
+    );
+    if (refreshing) await expect(refreshing).resolves.toBe(current);
+    if (nextUser === 'user-a') {
+      expect(await retry).toBe(current);
+    } else {
+      expect(await retry).toBeInstanceOf(Error);
+      expect(String(await retry)).toContain('Session changed during refresh');
+    }
+    expect(queryClient.getQueryData(['auth', 'token'])).toMatchObject({
+      access_token: current,
+    });
+    expect(OAuthDialog.show).not.toHaveBeenCalled();
+  }
+);

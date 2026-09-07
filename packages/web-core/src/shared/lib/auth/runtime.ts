@@ -4,7 +4,8 @@ type CurrentUser = { user_id: string };
 
 export interface AuthRuntime {
   getToken: () => Promise<string | null>;
-  triggerRefresh: () => Promise<string | null>;
+  /** A 401 retry must keep the identity of the token the request used. */
+  triggerRefresh: (rejectedAccessToken?: string) => Promise<string | null>;
   registerShape: (shape: PauseableShape) => () => void;
   getCurrentUser: () => Promise<CurrentUser>;
   /** Browser deployments authenticate centrally instead of opening the local handoff dialog. */

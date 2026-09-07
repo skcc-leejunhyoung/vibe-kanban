@@ -1,4 +1,8 @@
-import { getAccessTokenSubject, getRefreshTokenSubject } from "shared/jwt";
+import {
+  accessTokensBelongToDifferentUsers,
+  getAccessTokenSubject,
+  getRefreshTokenSubject,
+} from "shared/jwt";
 import { clearPairedRelayHosts } from "@/shared/lib/relayPairingStorage";
 
 const DB_NAME = "rf-auth";
@@ -30,16 +34,6 @@ export class ReconnectPendingError extends Error {
       "GitHub reconnection is in progress. Please complete it or try again later.",
     );
   }
-}
-
-export function accessTokensBelongToDifferentUsers(
-  previousToken: string,
-  nextToken: string,
-): boolean {
-  const previousSubject = getAccessTokenSubject(previousToken);
-  const nextSubject = getAccessTokenSubject(nextToken);
-  if (!previousSubject || !nextSubject) return previousToken !== nextToken;
-  return previousSubject !== nextSubject;
 }
 
 function emitAuthChanged(): void {

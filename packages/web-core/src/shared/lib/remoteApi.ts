@@ -277,7 +277,7 @@ async function makeAuthenticatedRequest(
 
   // Handle 401 - token may have expired
   if (response.status === 401 && retryOn401) {
-    const newToken = await authRuntime.triggerRefresh();
+    const newToken = await authRuntime.triggerRefresh(token);
     if (newToken) {
       // Retry the request with the new token
       headers.set('Authorization', `Bearer ${newToken}`);

@@ -1,7 +1,10 @@
 import { ApiError, oauthApi } from '@/shared/lib/api';
 import { REMOTE_AUTH_UNAVAILABLE_SLUG } from '@/shared/lib/auth/remoteAuthDegraded';
 import { queryClient } from '@/shared/lib/queryClient';
-import { shouldRefreshAccessToken } from 'shared/jwt';
+import {
+  accessTokensBelongToDifferentUsers,
+  shouldRefreshAccessToken,
+} from 'shared/jwt';
 
 const TOKEN_QUERY_KEY = ['auth', 'token'] as const;
 const TOKEN_STALE_TIME = 125 * 1000;
@@ -131,10 +134,20 @@ class TokenManager {
    *
    * Returns the new token (or null if refresh failed).
    */
-  triggerRefresh(): Promise<string | null> {
+  async triggerRefresh(rejectedAccessToken?: string): Promise<string | null> {
     // CRITICAL: Assign promise SYNCHRONOUSLY so concurrent 401 handlers share one refresh.
     this.refreshPromise ??= this.doRefresh();
-    return this.refreshPromise;
+    const token = await this.refreshPromise;
+    // Each caller must validate the shared result, including late requests
+    // that joined another account's already-running refresh.
+    if (
+      rejectedAccessToken &&
+      token &&
+      accessTokensBelongToDifferentUsers(rejectedAccessToken, token)
+    ) {
+      throw new Error('Session changed during refresh. Please try again.');
+    }
+    return token;
   }
 
   /**

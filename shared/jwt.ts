@@ -42,3 +42,13 @@ export const getAccessTokenSubject = (token: string): string | null =>
 
 export const getRefreshTokenSubject = (token: string): string | null =>
   getTokenSubject(token, 'refresh');
+
+export function accessTokensBelongToDifferentUsers(
+  previousToken: string,
+  nextToken: string
+): boolean {
+  const previousSubject = getAccessTokenSubject(previousToken);
+  const nextSubject = getAccessTokenSubject(nextToken);
+  if (!previousSubject || !nextSubject) return previousToken !== nextToken;
+  return previousSubject !== nextSubject;
+}

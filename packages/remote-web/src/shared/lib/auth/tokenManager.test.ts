@@ -17,9 +17,11 @@ vi.mock("@remote/shared/lib/auth", () => ({
   getAccessToken,
   getRefreshCredentials,
   applyTokenRefresh,
+}));
+vi.mock("shared/jwt", () => ({
+  shouldRefreshAccessToken: shouldRefresh,
   accessTokensBelongToDifferentUsers: () => false,
 }));
-vi.mock("shared/jwt", () => ({ shouldRefreshAccessToken: shouldRefresh }));
 vi.mock("@remote/shared/lib/api", () => ({ refreshTokens }));
 import { getToken, triggerRefresh } from "./tokenManager";
 

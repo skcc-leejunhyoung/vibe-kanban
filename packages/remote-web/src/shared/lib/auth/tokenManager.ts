@@ -2,9 +2,11 @@ import {
   getAccessToken,
   getRefreshCredentials,
   applyTokenRefresh,
-  accessTokensBelongToDifferentUsers,
 } from "@remote/shared/lib/auth";
-import { shouldRefreshAccessToken } from "shared/jwt";
+import {
+  accessTokensBelongToDifferentUsers,
+  shouldRefreshAccessToken,
+} from "shared/jwt";
 import { refreshTokens } from "@remote/shared/lib/api";
 
 const TOKEN_REFRESH_TIMEOUT_MS = 80_000;
@@ -94,26 +96,33 @@ async function doTokenRefresh(
   throw new Error("Session changed during refresh. Please try again.");
 }
 
-function handleTokenRefresh(
+async function handleTokenRefresh(
   rejectedAccessToken?: string | null,
 ): Promise<string> {
-  if (refreshPromise) return refreshPromise;
+  if (!refreshPromise) {
+    const innerPromise =
+      typeof navigator.locks?.request === "function"
+        ? navigator.locks
+            .request("rf-token-refresh", () =>
+              doTokenRefresh(rejectedAccessToken),
+            )
+            .then((token) => token)
+        : doTokenRefresh(rejectedAccessToken);
 
-  const innerPromise =
-    typeof navigator.locks?.request === "function"
-      ? navigator.locks
-          .request("rf-token-refresh", () =>
-            doTokenRefresh(rejectedAccessToken),
-          )
-          .then((t) => t)
-      : doTokenRefresh(rejectedAccessToken);
-
-  const promise = innerPromise.finally(() => {
-    refreshPromise = null;
-  });
-
-  refreshPromise = promise;
-  return promise;
+    refreshPromise = innerPromise.finally(() => {
+      refreshPromise = null;
+    });
+  }
+  const token = await refreshPromise;
+  // A shared refresh may belong to a different account than this caller.
+  // Check every result, not only the caller that started doTokenRefresh.
+  if (
+    rejectedAccessToken &&
+    accessTokensBelongToDifferentUsers(rejectedAccessToken, token)
+  ) {
+    throw new Error("Session changed during refresh. Please try again.");
+  }
+  return token;
 }
 
 export async function getToken(): Promise<string> {
@@ -121,7 +130,8 @@ export async function getToken(): Promise<string> {
   if (!accessToken) {
     return handleTokenRefresh();
   }
-  if (shouldRefreshAccessToken(accessToken)) return handleTokenRefresh();
+  if (shouldRefreshAccessToken(accessToken))
+    return handleTokenRefresh(accessToken);
   return accessToken;
 }
 

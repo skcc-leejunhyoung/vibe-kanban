@@ -16,7 +16,7 @@ installAppZoom();
 
 configureAuthRuntime({
   getToken: () => tokenManager.getToken(),
-  triggerRefresh: () => tokenManager.triggerRefresh(),
+  triggerRefresh: (token) => tokenManager.triggerRefresh(token),
   registerShape: (shape) => tokenManager.registerShape(shape),
   getCurrentUser: () => oauthApi.getCurrentUser(),
 });

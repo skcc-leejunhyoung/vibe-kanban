@@ -148,7 +148,7 @@ async function makeAuthenticatedRequest(
   });
 
   if (response.status === 401 && retryOn401) {
-    const newToken = await authRuntime.triggerRefresh();
+    const newToken = await authRuntime.triggerRefresh(token);
     if (newToken) {
       headers.set('Authorization', `Bearer ${newToken}`);
       return fetch(`${baseUrl}${path}`, {

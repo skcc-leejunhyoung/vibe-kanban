@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  accessTokensBelongToDifferentUsers,
   storeTokens,
   beginOAuthReconnect,
   endOAuthReconnect,
@@ -17,6 +16,14 @@ import {
   cancelOAuthReconnect,
 } from "./oauth";
 import { clearPairedRelayHosts } from "@/shared/lib/relayPairingStorage";
+import { configureAuthRuntime } from "@/shared/lib/auth/runtime";
+import { setGitHubReviewThreadResolved } from "@/shared/lib/remoteApi";
+import { createRemoteSession } from "@/shared/lib/relayBackendApi";
+import { authenticatedFetch } from "./api";
+import {
+  accessTokensBelongToDifferentUsers,
+  getAccessTokenSubject,
+} from "shared/jwt";
 
 vi.mock("@/shared/lib/relayPairingStorage", () => ({
   clearPairedRelayHosts: vi.fn(),
@@ -128,6 +135,13 @@ beforeEach(() => {
     location: { origin: "https://vibe.example", assign },
   });
   vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("__APP_VERSION__", "test");
+  configureAuthRuntime({
+    getToken,
+    triggerRefresh,
+    registerShape: () => () => {},
+    getCurrentUser: async () => ({ user_id: "user-a" }),
+  });
   const storage = new Map<string, string>();
   vi.stubGlobal("sessionStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
@@ -394,6 +408,26 @@ describe("reconnect session replacement", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("keeps the expiring token's account while waiting for the browser refresh lock", async () => {
+    await seed();
+    let release!: () => void;
+    const request = vi.fn(
+      (_name: string, refresh: () => Promise<string>) =>
+        new Promise<string>((resolve) => {
+          release = () => resolve(refresh());
+        }),
+    );
+    vi.stubGlobal("navigator", { locks: { request } });
+    const result = getToken().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    const next = token("user-b", "login");
+    await storeTokens(next, token("user-b", "login", "refresh"));
+    release();
+    expect(String(await result)).toContain("Session changed during refresh");
+    expect(await getAccessToken()).toBe(next);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("still expires an unprotected revoked session", async () => {
     await seed();
     fetchMock.mockResolvedValue(json({ error: "revoked" }, 401));
@@ -402,4 +436,97 @@ describe("reconnect session replacement", () => {
     expect(await getRefreshToken()).toBeNull();
     expect(clearPairedRelayHosts).toHaveBeenCalledOnce();
   });
+});
+
+describe.each([
+  [
+    "central PR mutation",
+    () =>
+      setGitHubReviewThreadResolved(
+        "https://github.com/acme/widgets/pull/42",
+        "PRRT_thread",
+        true,
+      ),
+  ],
+  ["relay session", () => createRemoteSession("host-a")],
+  [
+    "direct remote API",
+    () => authenticatedFetch("/v1/test-mutation", { method: "POST" }),
+  ],
+] as const)("%s account-bound retry", (_name, mutate) => {
+  it.each([
+    ["user-b", false],
+    ["user-b", true],
+    ["user-a", false],
+    ["user-a", true],
+  ] as const)(
+    "handles a late 401 after login as %s with pending refresh=%s",
+    async (nextUser, pendingRefresh) => {
+      await storeTokens(token("user-a", "original"), oldRefresh());
+      const requests: { user: string | null; body: RequestInit["body"] }[] = [];
+      let releaseApi!: (response: Response) => void;
+      let releaseRefresh!: (response: Response) => void;
+      fetchMock.mockImplementation((path: string, init: RequestInit) => {
+        if (path.endsWith("/tokens/refresh")) {
+          return new Promise<Response>((resolve) => {
+            releaseRefresh = resolve;
+          });
+        }
+        requests.push({
+          user: getAccessTokenSubject(
+            new Headers(init.headers).get("Authorization")!.slice(7),
+          ),
+          body: init.body,
+        });
+        return requests.length === 1
+          ? new Promise<Response>((resolve) => {
+              releaseApi = resolve;
+            })
+          : Promise.resolve(json({}));
+      });
+      // Attach rejection handling before releasing either response.
+      const result = mutate().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      await clearTokens();
+      const next = {
+        access_token: token(nextUser, "renewed"),
+        refresh_token: token(nextUser, "renewed", "refresh"),
+      };
+      await storeTokens(
+        token(nextUser, "login", "access", pendingRefresh ? -120 : 3600),
+        token(nextUser, "login", "refresh"),
+      );
+      let refreshing: Promise<string> | undefined;
+      if (pendingRefresh) {
+        refreshing = getToken();
+        await vi.waitFor(() => expect(releaseRefresh).toBeTypeOf("function"));
+      }
+      releaseApi(new Response(null, { status: 401 }));
+      // Let the old 401 join the held refresh before completing it.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (releaseRefresh) releaseRefresh(json(next));
+      if (refreshing) await expect(refreshing).resolves.toBe(next.access_token);
+
+      if (nextUser === "user-a") {
+        expect(await result).toBeNull();
+        expect(requests.map(({ user }) => user)).toEqual(["user-a", "user-a"]);
+        expect(requests[1].body).toEqual(requests[0].body);
+      } else {
+        expect(await result).toBeInstanceOf(Error);
+        expect(String(await result)).toContain(
+          "Session changed during refresh",
+        );
+        expect(requests.map(({ user }) => user)).toEqual(["user-a"]);
+        expect(getAccessTokenSubject((await getAccessToken())!)).toBe("user-b");
+        expect(
+          fetchMock.mock.calls.filter(([path]) =>
+            path.endsWith("/tokens/refresh"),
+          ),
+        ).toHaveLength(pendingRefresh ? 1 : 0);
+      }
+    },
+  );
 });
