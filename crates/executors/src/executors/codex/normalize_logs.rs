@@ -539,6 +539,7 @@ impl ToNormalizedEntry for PatchEntry {
 
 struct LogState {
     entry_index: EntryIndexProvider,
+    root_thread_id: Option<String>,
     assistant: Option<StreamingText>,
     thinking: Option<StreamingText>,
     commands: HashMap<String, CommandState>,
@@ -568,6 +569,7 @@ impl LogState {
     fn new(entry_index: EntryIndexProvider) -> Self {
         Self {
             entry_index,
+            root_thread_id: None,
             assistant: None,
             thinking: None,
             commands: HashMap::new(),
@@ -585,6 +587,13 @@ impl LogState {
                 reasoning_effort: None,
             },
         }
+    }
+
+    fn is_foreign_thread(&self, thread_id: Option<&str>) -> bool {
+        matches!(
+            (self.root_thread_id.as_deref(), thread_id),
+            (Some(root), Some(current)) if root != current
+        )
     }
 
     fn streaming_text_update(
@@ -722,6 +731,16 @@ impl LogState {
                 ..Default::default()
             })
     }
+}
+
+fn accept_root_thread(state: &mut LogState, thread_id: &str) -> bool {
+    if state.is_foreign_thread(Some(thread_id)) {
+        return false;
+    }
+    state
+        .root_thread_id
+        .get_or_insert_with(|| thread_id.to_string());
+    true
 }
 
 enum UpdateMode {
@@ -1830,6 +1849,31 @@ fn handle_direct_request(
     }
 }
 
+fn direct_notification_thread_id(notification: &ServerNotification) -> Option<&str> {
+    match notification {
+        ServerNotification::Error(n) => Some(&n.thread_id),
+        ServerNotification::ThreadStarted(n) => Some(&n.thread.id),
+        ServerNotification::ThreadStatusChanged(n) => Some(&n.thread_id),
+        ServerNotification::ThreadTokenUsageUpdated(n) => Some(&n.thread_id),
+        ServerNotification::TurnStarted(n) => Some(&n.thread_id),
+        ServerNotification::TurnCompleted(n) => Some(&n.thread_id),
+        ServerNotification::ItemStarted(n) => Some(&n.thread_id),
+        ServerNotification::ItemCompleted(n) => Some(&n.thread_id),
+        ServerNotification::AgentMessageDelta(n) => Some(&n.thread_id),
+        ServerNotification::PlanDelta(n) => Some(&n.thread_id),
+        ServerNotification::CommandExecutionOutputDelta(n) => Some(&n.thread_id),
+        ServerNotification::FileChangeOutputDelta(n) => Some(&n.thread_id),
+        ServerNotification::FileChangePatchUpdated(n) => Some(&n.thread_id),
+        ServerNotification::McpToolCallProgress(n) => Some(&n.thread_id),
+        ServerNotification::ReasoningSummaryTextDelta(n) => Some(&n.thread_id),
+        ServerNotification::ReasoningSummaryPartAdded(n) => Some(&n.thread_id),
+        ServerNotification::ReasoningTextDelta(n) => Some(&n.thread_id),
+        ServerNotification::ContextCompacted(n) => Some(&n.thread_id),
+        ServerNotification::ModelRerouted(n) => Some(&n.thread_id),
+        _ => None,
+    }
+}
+
 fn handle_direct_notification(
     notification: ServerNotification,
     state: &mut LogState,
@@ -1839,7 +1883,9 @@ fn handle_direct_notification(
 ) -> bool {
     match notification {
         ServerNotification::ThreadStarted(n) => {
-            msg_store.push_session_id(n.thread.id);
+            if accept_root_thread(state, &n.thread.id) {
+                msg_store.push_session_id(n.thread.id);
+            }
             true
         }
         ServerNotification::ThreadTokenUsageUpdated(notification) => {
@@ -2140,16 +2186,14 @@ pub fn normalize_logs(
             }
 
             if let Ok(response) = serde_json::from_str::<JSONRPCResponse>(&line) {
-                handle_jsonrpc_response(
-                    response,
-                    &msg_store,
-                    &entry_index,
-                    &mut state.model_params,
-                );
+                handle_jsonrpc_response(response, &msg_store, &entry_index, &mut state);
                 continue;
             }
 
             if let Ok(server_notification) = serde_json::from_str::<ServerNotification>(&line) {
+                if state.is_foreign_thread(direct_notification_thread_id(&server_notification)) {
+                    continue;
+                }
                 if handle_direct_notification(
                     server_notification,
                     &mut state,
@@ -2165,15 +2209,26 @@ pub fn normalize_logs(
             {
                 // Best-effort extraction of session ID from logs in case the JSON parsing fails.
                 // This could happen if the line is truncated due to size limits because it includes the full session history.
-                msg_store.push_session_id(session_id.as_str().to_string());
+                if accept_root_thread(&mut state, session_id.as_str()) {
+                    msg_store.push_session_id(session_id.as_str().to_string());
+                }
                 continue;
             }
 
-            if let Ok(request) = serde_json::from_str::<JSONRPCRequest>(&line)
-                && let Ok(server_request) = ServerRequest::try_from(request)
-                && handle_direct_request(server_request, &mut state, &msg_store, &entry_index)
-            {
-                continue;
+            if let Ok(request) = serde_json::from_str::<JSONRPCRequest>(&line) {
+                let thread_id = request
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("threadId"))
+                    .and_then(Value::as_str);
+                if state.is_foreign_thread(thread_id) {
+                    continue;
+                }
+                if let Ok(server_request) = ServerRequest::try_from(request)
+                    && handle_direct_request(server_request, &mut state, &msg_store, &entry_index)
+                {
+                    continue;
+                }
             }
 
             let notification: JSONRPCNotification = match serde_json::from_str(&line) {
@@ -2195,14 +2250,16 @@ pub fn normalize_logs(
             let event = params.msg;
             match event {
                 EventMsg::SessionConfigured(payload) => {
-                    msg_store.push_session_id(payload.session_id.to_string());
-                    handle_model_params(
-                        Some(payload.model),
-                        payload.reasoning_effort,
-                        &msg_store,
-                        &entry_index,
-                        &mut state.model_params,
-                    );
+                    if accept_root_thread(&mut state, &payload.thread_id.to_string()) {
+                        msg_store.push_session_id(payload.session_id.to_string());
+                        handle_model_params(
+                            Some(payload.model),
+                            payload.reasoning_effort,
+                            &msg_store,
+                            &entry_index,
+                            &mut state.model_params,
+                        );
+                    }
                 }
                 EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
                     delta, ..
@@ -2902,28 +2959,32 @@ fn handle_jsonrpc_response(
     response: JSONRPCResponse,
     msg_store: &Arc<MsgStore>,
     entry_index: &EntryIndexProvider,
-    model_params: &mut ModelParamsState,
+    state: &mut LogState,
 ) {
     if let Ok(resp) = serde_json::from_value::<ThreadStartResponse>(response.result.clone()) {
-        msg_store.push_session_id(resp.thread.id);
-        handle_model_params(
-            Some(resp.model),
-            resp.reasoning_effort,
-            msg_store,
-            entry_index,
-            model_params,
-        );
+        if accept_root_thread(state, &resp.thread.id) {
+            msg_store.push_session_id(resp.thread.id);
+            handle_model_params(
+                Some(resp.model),
+                resp.reasoning_effort,
+                msg_store,
+                entry_index,
+                &mut state.model_params,
+            );
+        }
         return;
     }
 
-    if let Ok(resp) = serde_json::from_value::<ThreadForkResponse>(response.result.clone()) {
+    if let Ok(resp) = serde_json::from_value::<ThreadForkResponse>(response.result.clone())
+        && accept_root_thread(state, &resp.thread.id)
+    {
         msg_store.push_session_id(resp.thread.id);
         handle_model_params(
             Some(resp.model),
             resp.reasoning_effort,
             msg_store,
             entry_index,
-            model_params,
+            &mut state.model_params,
         );
     }
 }
@@ -3853,6 +3914,58 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn filters_subagent_notifications_from_parent_log() {
+        let parent = "00000000-0000-0000-0000-000000000001";
+        let child = "00000000-0000-0000-0000-000000000002";
+        let completed_message = |thread_id: &str, id: &str, text: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "item/completed",
+                "params": {
+                    "threadId": thread_id,
+                    "turnId": "turn-1",
+                    "completedAtMs": 1,
+                    "item": {
+                        "type": "agentMessage",
+                        "id": id,
+                        "text": text,
+                        "phase": "commentary",
+                        "memoryCitation": null,
+                        "delivery": null,
+                        "questions": null
+                    }
+                }
+            })
+            .to_string()
+        };
+        let lines = [
+            format!(r#"{{"method":"sessionConfigured","params":{{"sessionId":"{parent}""#),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": child,
+                    "turnId": "turn-child",
+                    "itemId": "message-child",
+                    "delta": "child streaming output"
+                }
+            })
+            .to_string(),
+            completed_message(child, "message-child", "child final output"),
+            completed_message(parent, "message-parent", "parent output"),
+        ];
+
+        let entries = normalize_lines(&lines).await;
+
+        let assistant_messages = entries
+            .iter()
+            .filter(|entry| matches!(entry.entry_type, NormalizedEntryType::AssistantMessage))
+            .map(|entry| entry.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(assistant_messages, ["parent output"]);
     }
 
     #[allow(clippy::type_complexity)]

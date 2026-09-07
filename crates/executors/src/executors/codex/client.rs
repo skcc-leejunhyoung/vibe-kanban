@@ -1091,6 +1091,18 @@ impl JsonRpcCallbacks for AppServerClient {
                 serde_json::from_value::<TurnCompletedNotification>(params).ok()
             });
 
+            // App-server multiplexes subagent events onto the parent connection.
+            // A child completion must not finish the parent's reader loop.
+            if let Some(completed) = completed.as_ref() {
+                let thread_id = self.thread_id.lock().await;
+                if thread_id
+                    .as_deref()
+                    .is_some_and(|thread_id| thread_id != completed.thread_id)
+                {
+                    return Ok(false);
+                }
+            }
+
             if let Some(completed) = completed
                 && completed.turn.status == TurnStatus::Interrupted
             {
