@@ -27,8 +27,6 @@ import {
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
-import { openWorkspacesForActivePane } from '@/shared/lib/openInSplitPane';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { Scope } from '@/shared/keyboard/registry';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
@@ -65,7 +63,6 @@ export const WorkspaceDetail = forwardRef<
   WorkspaceDetailProps
 >(function WorkspaceDetail({ isPaneActive = true }, ref) {
   const appNavigation = useAppNavigation();
-  const appRuntime = useAppRuntime();
   const {
     workspaceId,
     workspace: selectedWorkspace,
@@ -155,15 +152,7 @@ export const WorkspaceDetail = forwardRef<
     isPaneActive &&
       !isCreateMode &&
       !!selectedWorkspace &&
-      isLeftMainPanelVisible,
-    isNarrow
-      ? () =>
-          openWorkspacesForActivePane(appNavigation, appRuntime, () =>
-            document
-              .querySelector<HTMLElement>('[data-workspace-selector]')
-              ?.focus()
-          )
-      : undefined
+      isLeftMainPanelVisible
   );
 
   // Ensure the left main panel stays visible when the right main panel is

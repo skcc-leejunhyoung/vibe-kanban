@@ -55,9 +55,7 @@ describe('resolveUnfocusedChatKeyAction', () => {
         keyEvent('Enter', { defaultPrevented: true })
       )
     ).toBeNull();
-    expect(resolveUnfocusedChatKeyAction(keyEvent('Escape'))).toEqual({
-      type: 'focus-workspaces',
-    });
+    expect(resolveUnfocusedChatKeyAction(keyEvent('Escape'))).toBeNull();
   });
 });
 

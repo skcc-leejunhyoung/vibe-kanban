@@ -14,8 +14,7 @@ type WorkspaceChatKeyEvent = Pick<
 
 export type WorkspaceChatKeyAction =
   | { type: 'scroll'; delta: number }
-  | { type: 'focus-composer' }
-  | { type: 'focus-workspaces' };
+  | { type: 'focus-composer' };
 
 export function resolveUnfocusedChatKeyAction(
   event: WorkspaceChatKeyEvent
@@ -34,7 +33,6 @@ export function resolveUnfocusedChatKeyAction(
   if (event.key === 'ArrowUp') return { type: 'scroll', delta: -80 };
   if (event.key === 'ArrowDown') return { type: 'scroll', delta: 80 };
   if (event.key === 'Enter') return { type: 'focus-composer' };
-  if (event.key === 'Escape') return { type: 'focus-workspaces' };
   return null;
 }
 
@@ -46,8 +44,8 @@ interface UnfocusedChatKeyTarget {
 /**
  * The unfocused-chat keys act only while nothing interactive holds focus. The
  * pane shell (`data-workspace-pane`, focused by keyboard pane cycling) is not a
- * control, so it counts as "unfocused" — otherwise Enter/arrows/Esc are
- * swallowed the moment a pane is keyboard-selected.
+ * control, so it counts as "unfocused" — otherwise Enter/arrows are swallowed
+ * the moment a pane is keyboard-selected.
  */
 export function shouldHandleUnfocusedChatKey(
   activeElement: Element | null
@@ -65,8 +63,7 @@ export function shouldHandleUnfocusedChatKey(
  */
 export function useUnfocusedChatKeys(
   targetRef: RefObject<UnfocusedChatKeyTarget | null>,
-  enabled: boolean,
-  onEscape?: () => void
+  enabled: boolean
 ) {
   useEffect(() => {
     if (!enabled) return;
@@ -90,16 +87,11 @@ export function useUnfocusedChatKeys(
       ) {
         event.preventDefault();
       }
-
-      if (action?.type === 'focus-workspaces' && onEscape) {
-        event.preventDefault();
-        onEscape();
-      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [enabled, onEscape, targetRef]);
+  }, [enabled, targetRef]);
 }
