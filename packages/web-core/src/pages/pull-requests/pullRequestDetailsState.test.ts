@@ -1,13 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { shouldPreservePullRequestDetails } from './pullRequestDetailsState';
+import { getPullRequestTargetFromUrl } from './pullRequestDetailsState';
 
-describe('shouldPreservePullRequestDetails', () => {
-  it('keeps a notification deep-link open while repository filters sync', () => {
+describe('getPullRequestTargetFromUrl', () => {
+  const url = 'https://github.com/acme/repo/pull/42';
+
+  it('follows close, same-link reopen, PR change, and invalid-link navigation', () => {
     expect(
-      shouldPreservePullRequestDetails(
-        'https://github.com/acme/repo/pull/42',
-        false
+      [url, undefined, url, url.replace('/42', '/43'), 'invalid', url].map(
+        getPullRequestTargetFromUrl
       )
-    ).toBe(true);
+    ).toEqual([
+      { url, number: 42 },
+      null,
+      { url, number: 42 },
+      { url: url.replace('/42', '/43'), number: 43 },
+      null,
+      { url, number: 42 },
+    ]);
+  });
+
+  it('normalizes notification links without depending on repository filters', () => {
+    expect(
+      getPullRequestTargetFromUrl(`${url}?notification_referrer_id=1`)
+    ).toEqual({ url, number: 42 });
   });
 });

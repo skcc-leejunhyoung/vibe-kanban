@@ -26,13 +26,19 @@ export const shouldRefreshAccessToken = (token: string): boolean => {
   return expiresAt - Date.now() <= TOKEN_REFRESH_LEEWAY_MS;
 };
 
-export const getAccessTokenSubject = (token: string): string | null => {
+const getTokenSubject = (token: string, audience: string): string | null => {
   try {
     const { aud, sub } = jwtDecode<AccessTokenClaims>(token);
-    return aud === ACCESS_TOKEN_AUD && typeof sub === 'string' && sub.length > 0
+    return aud === audience && typeof sub === 'string' && sub.length > 0
       ? sub
       : null;
   } catch {
     return null;
   }
 };
+
+export const getAccessTokenSubject = (token: string): string | null =>
+  getTokenSubject(token, ACCESS_TOKEN_AUD);
+
+export const getRefreshTokenSubject = (token: string): string | null =>
+  getTokenSubject(token, 'refresh');

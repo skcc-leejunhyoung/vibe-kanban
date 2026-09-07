@@ -55,6 +55,22 @@ pub struct ListPullRequestIssuesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct PullRequestIssueMapping {
+    pub url: String,
+    pub pull_request_issues: Vec<PullRequestIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct ListPullRequestIssueMappingsRequest {
+    pub urls: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct ListPullRequestIssueMappingsResponse {
+    pub mappings: Vec<PullRequestIssueMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct CreatePullRequestIssueRequest {
     /// Optional client-generated ID. If not provided, server generates one.
     /// Using client-generated IDs enables stable optimistic updates.

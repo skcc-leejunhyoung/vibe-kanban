@@ -43,11 +43,11 @@ struct CreatePullRequestRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct UpdatePullRequestRequest {
-    pub url: String,
-    pub status: Option<PullRequestStatus>,
-    pub merged_at: Option<Option<DateTime<Utc>>>,
-    pub merge_commit_sha: Option<Option<String>>,
+pub(crate) struct UpdatePullRequestRequest {
+    pub(crate) url: String,
+    pub(crate) status: Option<PullRequestStatus>,
+    pub(crate) merged_at: Option<Option<DateTime<Utc>>>,
+    pub(crate) merge_commit_sha: Option<Option<String>>,
 }
 
 pub(super) fn router() -> Router<AppState> {
@@ -180,8 +180,19 @@ async fn update_pull_request(
     Extension(ctx): Extension<RequestContext>,
     Json(payload): Json<UpdatePullRequestRequest>,
 ) -> Result<Json<MutationResponse<PullRequest>>, ErrorResponse> {
+    let response = update_pull_request_for_user(&state, ctx.user.id, payload)
+        .await?
+        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "pull request not found"))?;
+    Ok(Json(response))
+}
+
+pub(crate) async fn update_pull_request_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    payload: UpdatePullRequestRequest,
+) -> Result<Option<MutationResponse<PullRequest>>, ErrorResponse> {
     let pull_requests =
-        PullRequestRepository::list_by_url_for_user(state.pool(), &payload.url, ctx.user.id)
+        PullRequestRepository::list_by_url_for_user(state.pool(), &payload.url, user_id)
             .await
             .map_err(|error| {
                 tracing::error!(?error, url = %payload.url, "failed to load pull requests");
@@ -192,10 +203,7 @@ async fn update_pull_request(
             })?;
 
     if pull_requests.is_empty() {
-        return Err(ErrorResponse::new(
-            StatusCode::NOT_FOUND,
-            "pull request not found",
-        ));
+        return Ok(None);
     }
 
     let mut tx = state.pool().begin().await.map_err(|error| {
@@ -254,7 +262,7 @@ async fn update_pull_request(
         ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
     })?;
 
-    Ok(Json(MutationResponse { data: pr, txid }))
+    Ok(Some(MutationResponse { data: pr, txid }))
 }
 
 #[instrument(

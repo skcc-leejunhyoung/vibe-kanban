@@ -1,6 +1,6 @@
 use api_types::{
-    AuthMethodsResponse, HandoffInitRequest, HandoffRedeemRequest, LocalLoginRequest,
-    ProfileResponse, StatusResponse,
+    AuthMethodsResponse, HandoffInitRequest, HandoffInitResponse, HandoffRedeemRequest,
+    LocalLoginRequest, ProfileResponse, StatusResponse,
 };
 use axum::{
     Router,
@@ -11,12 +11,18 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use deployment::Deployment;
+use local_deployment::PendingHandoff;
 use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
-use services::services::{oauth_credentials::Credentials, remote_sync};
+use services::services::{
+    auth::AuthContext, oauth_credentials::Credentials, remote_client::RemoteClient, remote_sync,
+};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
-use utils::{jwt::extract_expiration, response::ApiResponse};
+use utils::{
+    jwt::{extract_expiration, extract_subject},
+    response::ApiResponse,
+};
 use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError, runtime::relay_registration};
@@ -83,6 +89,7 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/auth/methods", get(auth_methods))
         .route("/auth/handoff/init", post(handoff_init))
+        .route("/auth/handoff/cancel", post(handoff_cancel))
         .route("/auth/handoff/complete", get(handoff_complete))
         .route("/auth/handoff/status", get(handoff_status))
         .route("/auth/local/login", post(local_login))
@@ -104,6 +111,8 @@ async fn auth_methods(
 struct HandoffInitPayload {
     provider: String,
     return_to: String,
+    #[serde(default)]
+    reauthenticate: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,7 +126,24 @@ async fn handoff_init(
     Json(payload): Json<HandoffInitPayload>,
 ) -> Result<ResponseJson<ApiResponse<HandoffInitResponseBody>>, ApiError> {
     let client = deployment.remote_client()?;
+    let (response, handoff) =
+        initiate_local_handoff(&client, deployment.auth_context(), payload).await?;
+    deployment
+        .store_oauth_handoff(response.handoff_id, handoff)
+        .await;
+    Ok(ResponseJson(ApiResponse::success(
+        HandoffInitResponseBody {
+            handoff_id: response.handoff_id,
+            authorize_url: response.authorize_url,
+        },
+    )))
+}
 
+async fn initiate_local_handoff(
+    client: &RemoteClient,
+    auth: &AuthContext,
+    payload: HandoffInitPayload,
+) -> Result<(HandoffInitResponse, PendingHandoff), ApiError> {
     let app_verifier = generate_secret();
     let app_challenge = hash_sha256_hex(&app_verifier);
 
@@ -127,18 +153,38 @@ async fn handoff_init(
         app_challenge,
     };
 
-    let response = client.handoff_init(&request).await?;
+    // Read the stored refresh credential directly: ordinary access-token refresh
+    // can fail precisely because the GitHub credential needs reconnecting.
+    let (reconnect_credentials, reconnect_guard) = if payload.reauthenticate {
+        // Protect atomically with reading the credential, BEFORE the init HTTP
+        // request: a background refresh may already be awaiting its response.
+        let (creds, guard) = auth.begin_reconnect().await.ok_or(ApiError::Unauthorized)?;
+        (Some(creds), Some(guard))
+    } else {
+        (None, None)
+    };
+    let reconnect_user_id = reconnect_credentials
+        .as_ref()
+        .map(|creds| extract_subject(&creds.refresh_token).map_err(|_| ApiError::Unauthorized))
+        .transpose()?;
+    let response = client
+        .handoff_init(
+            &request,
+            reconnect_credentials
+                .as_ref()
+                .map(|creds| creds.refresh_token.as_str()),
+        )
+        .await?;
 
-    deployment
-        .store_oauth_handoff(response.handoff_id, payload.provider, app_verifier)
-        .await;
-
-    Ok(ResponseJson(ApiResponse::success(
-        HandoffInitResponseBody {
-            handoff_id: response.handoff_id,
-            authorize_url: response.authorize_url,
+    Ok((
+        response,
+        PendingHandoff {
+            provider: payload.provider,
+            app_verifier,
+            reconnect_user_id,
+            reconnect_guard,
         },
-    )))
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,6 +216,9 @@ async fn handoff_complete(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<HandoffCompleteQuery>,
 ) -> Result<Response<String>, ApiError> {
+    // Taking the handoff here also releases reconnect protection on provider
+    // errors or malformed callbacks, not just successful redemptions.
+    let handoff = deployment.take_oauth_handoff(&query.handoff_id).await;
     if let Some(error) = query.error {
         return Ok(simple_html_response(
             StatusCode::BAD_REQUEST,
@@ -184,7 +233,7 @@ async fn handoff_complete(
         ));
     };
 
-    let (provider, app_verifier) = match deployment.take_oauth_handoff(&query.handoff_id).await {
+    let handoff = match handoff {
         Some(state) => state,
         None => {
             tracing::warn!(
@@ -198,12 +247,27 @@ async fn handoff_complete(
         }
     };
 
+    // Use server-side handoff state, never the callback's query flag, as the
+    // authority for reconnect. Reject account changes before redeeming too.
+    if let Some(user_id) = handoff.reconnect_user_id {
+        let current = deployment.auth_context().get_credentials().await;
+        if current
+            .as_ref()
+            .and_then(|creds| extract_subject(&creds.refresh_token).ok())
+            != Some(user_id)
+        {
+            return Err(ApiError::Conflict(
+                "Account changed during GitHub reconnect. Please start again.".into(),
+            ));
+        }
+    }
+
     let client = deployment.remote_client()?;
 
     let redeem_request = HandoffRedeemRequest {
         handoff_id: query.handoff_id,
         app_code,
-        app_verifier,
+        app_verifier: handoff.app_verifier,
     };
 
     let redeem = client.handoff_redeem(&redeem_request).await?;
@@ -215,10 +279,11 @@ async fn handoff_complete(
             refresh_token: redeem.refresh_token.clone(),
             expires_at: None,
         },
+        handoff.reconnect_user_id,
     )
     .await?;
 
-    if query.reauthenticate {
+    if handoff.reconnect_user_id.is_some() || query.reauthenticate {
         deployment
             .mark_oauth_handoff_completed(query.handoff_id)
             .await;
@@ -226,9 +291,20 @@ async fn handoff_complete(
 
     let is_desktop = query.source.as_deref() == Some("desktop");
     Ok(close_window_response(
-        format!("Signed in with {provider}. You can return to the app."),
+        format!(
+            "Signed in with {}. You can return to the app.",
+            handoff.provider
+        ),
         is_desktop,
     ))
+}
+
+async fn handoff_cancel(
+    State(deployment): State<DeploymentImpl>,
+    Json(query): Json<HandoffStatusQuery>,
+) -> StatusCode {
+    deployment.take_oauth_handoff(&query.handoff_id).await;
+    StatusCode::NO_CONTENT
 }
 
 async fn handoff_status(
@@ -254,6 +330,7 @@ async fn local_login(
             refresh_token: response.refresh_token,
             expires_at: None,
         },
+        None,
     )
     .await?;
 
@@ -357,6 +434,7 @@ fn generate_secret() -> String {
 async fn finalize_login(
     deployment: &DeploymentImpl,
     mut credentials: Credentials,
+    reconnect_user_id: Option<Uuid>,
 ) -> Result<ProfileResponse, ApiError> {
     let access_token = credentials
         .access_token
@@ -366,14 +444,21 @@ async fn finalize_login(
         .map_err(|err| ApiError::BadRequest(format!("Invalid access token: {err}")))?;
     credentials.expires_at = Some(expires_at);
 
-    deployment
-        .auth_context()
-        .save_credentials(&credentials)
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, "failed to save credentials");
-            ApiError::Io(e)
-        })?;
+    let auth = deployment.auth_context();
+    if let Some(user_id) = reconnect_user_id {
+        if !auth
+            .save_reconnected_credentials(&credentials, user_id)
+            .await?
+        {
+            return Err(ApiError::Conflict(
+                "Account changed during GitHub reconnect. Your current account has not changed."
+                    .into(),
+            ));
+        }
+    } else {
+        auth.save_credentials(&credentials).await?;
+    }
+    auth.clear_profile().await;
 
     let profile = match deployment.get_login_status().await {
         api_types::LoginStatus::LoggedIn {
@@ -479,3 +564,7 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
         .body(body)
         .unwrap()
 }
+
+#[cfg(test)]
+#[path = "oauth_tests.rs"]
+mod tests;

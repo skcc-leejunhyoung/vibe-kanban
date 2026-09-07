@@ -1,15 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { redeemOAuth } from "@remote/shared/lib/api";
-import { storeTokens } from "@remote/shared/lib/auth";
-import { retrieveVerifier, clearVerifier } from "@remote/shared/lib/pkce";
+import { finishOAuthLogin, startOAuthLogin } from "@remote/shared/lib/oauth";
 
 function getSafeNextPath(nextPath: string | undefined): string {
   if (!nextPath) {
     return "/";
   }
 
-  if (!nextPath.startsWith("/") || nextPath.startsWith("//")) {
+  if (
+    !nextPath.startsWith("/") ||
+    nextPath.startsWith("//") ||
+    /[\\\u0000-\u0020]/.test(nextPath)
+  ) {
     return "/";
   }
 
@@ -20,13 +22,19 @@ export default function LoginCompletePage() {
   const navigate = useNavigate();
   const search = useSearch({ from: "/account_/complete" });
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const completion = useRef<{ key: string; promise: Promise<void> } | null>(
+    null,
+  );
 
   const handoffId = search.handoff_id;
   const appCode = search.app_code;
   const oauthError = search.error;
   const nextPath = getSafeNextPath(search.next);
+  const reconnect = search.reconnect;
 
   useEffect(() => {
+    let cancelled = false;
     const complete = async () => {
       if (oauthError) {
         setError(`OAuth error: ${oauthError}`);
@@ -34,34 +42,50 @@ export default function LoginCompletePage() {
       }
 
       if (!handoffId || !appCode) {
+        setError("OAuth callback is incomplete. Please try again.");
         return;
       }
 
       try {
-        const verifier = retrieveVerifier();
-        if (!verifier) {
-          setError("OAuth session lost. Please try again.");
-          return;
+        const key = `${handoffId}:${appCode}:${reconnect ?? ""}`;
+        if (completion.current?.key !== key) {
+          completion.current = {
+            key,
+            promise: finishOAuthLogin(handoffId, appCode, reconnect),
+          };
         }
-
-        const { access_token, refresh_token } = await redeemOAuth(
-          handoffId,
-          appCode,
-          verifier,
-        );
-
-        await storeTokens(access_token, refresh_token);
-        clearVerifier();
-
-        window.location.replace(nextPath);
+        await completion.current.promise;
+        if (!cancelled) window.location.replace(nextPath);
       } catch (e) {
+        if (cancelled) return;
         setError(e instanceof Error ? e.message : "Failed to complete login");
-        clearVerifier();
       }
     };
 
     void complete();
-  }, [handoffId, appCode, oauthError, nextPath]);
+    return () => {
+      cancelled = true;
+    };
+  }, [handoffId, appCode, oauthError, nextPath, reconnect]);
+
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      if (reconnect) {
+        await startOAuthLogin(reconnect, nextPath, true);
+      } else {
+        await navigate({
+          to: "/account",
+          search: nextPath !== "/" ? { next: nextPath } : undefined,
+          replace: true,
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to restart OAuth");
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   if (error) {
     return (
@@ -70,13 +94,8 @@ export default function LoginCompletePage() {
         <button
           type="button"
           className="mt-double w-full rounded-sm bg-brand px-base py-half text-sm font-medium text-on-brand transition-colors hover:bg-brand-hover"
-          onClick={() =>
-            navigate({
-              to: "/account",
-              search: nextPath !== "/" ? { next: nextPath } : undefined,
-              replace: true,
-            })
-          }
+          disabled={retrying}
+          onClick={() => void retry()}
         >
           Try again
         </button>

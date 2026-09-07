@@ -1,54 +1,80 @@
-import { repoApi } from '@/shared/lib/api';
-import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+import { listGitHubPullRequests } from '@/shared/lib/remoteApi';
 
 // Client-side freshness window for PR list/detail queries, matched to the
 // backend PR cache TTL (see PULL_REQUEST_CACHE_TTL_SECS).
 export const PR_QUERY_STALE_TIME_MS = 60_000;
 
-// While the backend reports the list is warming (a background `gh` refresh is
-// running because the cache was cold/stale), poll at this cadence so the freshly
-// fetched list appears shortly after it lands, then polling stops.
-export const PR_WARMING_POLL_MS = 3_000;
-
 export function pullRequestSummariesQueryKey(
   repository: string,
-  involvesMe: boolean,
-  hostId: string | null = null
+  involvesMe: boolean
 ) {
-  return [
-    'pull-request-summaries',
-    repository,
-    involvesMe,
-    getHostRequestScopeQueryKey(hostId),
-  ] as const;
+  return ['pull-request-summaries', repository, involvesMe] as const;
 }
 
 export async function fetchPullRequestSummaries(
   repository: string,
   involvesMe: boolean,
-  hostId: string | null = null
+  refresh = false
 ) {
-  const result = await repoApi.listPullRequestSummaries(
+  const summaries = await listGitHubPullRequests(
     repository,
     involvesMe,
-    false,
-    hostId
+    refresh
   );
-  if (!result.success) {
-    throw new Error(result.message || 'Failed to load pull requests');
-  }
-  return result.data;
+  return { summaries };
+}
+
+export type PullRequestRefreshResult =
+  | {
+      repository: string;
+      success: true;
+      result: Awaited<ReturnType<typeof fetchPullRequestSummaries>>;
+    }
+  | { repository: string; success: false; error: unknown };
+
+export async function refreshPullRequestSummaries(
+  repositories: string[],
+  involvesMe: boolean
+): Promise<PullRequestRefreshResult[]> {
+  return Promise.all(
+    repositories.map(async (repository) => {
+      try {
+        return {
+          repository,
+          success: true,
+          result: await fetchPullRequestSummaries(repository, involvesMe, true),
+        } as const;
+      } catch (error) {
+        return { repository, success: false, error } as const;
+      }
+    })
+  );
 }
 
 export function pullRequestSummariesQueryOptions(
   repository: string,
-  involvesMe: boolean,
-  hostId: string | null = null
+  involvesMe: boolean
 ) {
   return {
-    queryKey: pullRequestSummariesQueryKey(repository, involvesMe, hostId),
-    queryFn: () => fetchPullRequestSummaries(repository, involvesMe, hostId),
+    queryKey: pullRequestSummariesQueryKey(repository, involvesMe),
+    queryFn: () => fetchPullRequestSummaries(repository, involvesMe),
     staleTime: PR_QUERY_STALE_TIME_MS,
     gcTime: 60 * 60_000,
+  };
+}
+
+export function summarizePullRequestQueryErrors(
+  queries: ReadonlyArray<{
+    isError: boolean;
+    isSuccess: boolean;
+    error: Error | null;
+  }>
+): { allFailed: boolean; partiallyFailed: boolean; message?: string } {
+  const errors = queries.filter((query) => query.isError);
+  return {
+    allFailed: queries.length > 0 && errors.length === queries.length,
+    partiallyFailed:
+      errors.length > 0 && queries.some((query) => query.isSuccess),
+    message: errors[0]?.error?.message,
   };
 }

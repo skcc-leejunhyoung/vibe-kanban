@@ -4,7 +4,7 @@ use anyhow::Error as AnyhowError;
 use chrono::{DateTime, Duration, Utc};
 use rand::{Rng, distr::Alphanumeric};
 use reqwest::StatusCode;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use thiserror::Error;
@@ -12,7 +12,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
-    ProviderRegistry,
+    OAuthTokenValidationError, OAuthTokenValidator, ProviderRegistry, is_local_provider,
     jwt::{JwtError, JwtService},
     provider::{AuthorizationGrant, AuthorizationProvider, ProviderUser},
 };
@@ -23,7 +23,9 @@ use crate::db::{
         AuthorizationStatus, CreateOAuthHandoff, OAuthHandoff, OAuthHandoffError,
         OAuthHandoffRepository,
     },
-    oauth_accounts::{OAuthAccountError, OAuthAccountInsert, OAuthAccountRepository},
+    oauth_accounts::{
+        OAuthAccountError, OAuthAccountInsert, OAuthAccountRepository, OAuthReconnectError,
+    },
     organizations::OrganizationRepository,
     users::{UpsertUser, UserRepository},
 };
@@ -48,6 +50,10 @@ pub enum HandoffError {
     Expired,
     #[error("oauth authorization denied")]
     Denied,
+    #[error("invalid or expired session for oauth reconnection")]
+    InvalidReconnectSession,
+    #[error(transparent)]
+    ReconnectAuthentication(#[from] OAuthTokenValidationError),
     #[error("oauth authorization failed: {0}")]
     Failed(String),
     #[error(transparent)]
@@ -58,6 +64,8 @@ pub enum HandoffError {
     Identity(#[from] IdentityError),
     #[error(transparent)]
     OAuthAccount(#[from] OAuthAccountError),
+    #[error(transparent)]
+    Reconnect(#[from] OAuthReconnectError),
     #[error(transparent)]
     Session(#[from] AuthSessionError),
     #[error(transparent)]
@@ -122,11 +130,69 @@ impl OAuthHandoffService {
         Arc::clone(&self.providers)
     }
 
+    /// Authorize recovery without refreshing or validating the broken provider
+    /// credential. This grants only a bound PKCE handoff, never new app tokens.
+    pub async fn initiate_reconnect(
+        &self,
+        provider: &str,
+        return_to: &str,
+        app_challenge: &str,
+        refresh_token: &str,
+    ) -> Result<HandoffInitResponse, HandoffError> {
+        let identity = self
+            .jwt
+            .decode_refresh_token(refresh_token)
+            .map_err(|_| HandoffError::InvalidReconnectSession)?;
+        let sessions = AuthSessionRepository::new(&self.pool);
+        let session = match sessions.get(identity.session_id).await {
+            Ok(session) => session,
+            Err(AuthSessionError::NotFound) => return Err(HandoffError::InvalidReconnectSession),
+            Err(error) => return Err(error.into()),
+        };
+        if session.user_id != identity.user_id
+            || session.revoked_at.is_some()
+            || session.inactivity_duration(Utc::now()) > MAX_SESSION_INACTIVITY_DURATION
+        {
+            return Err(HandoffError::InvalidReconnectSession);
+        }
+        let current = session.refresh_token_id == Some(identity.refresh_token_id);
+        let previous =
+            sessions.is_previous_refresh_token_within_grace(&session, identity.refresh_token_id);
+        let revoked = sessions
+            .is_refresh_token_revoked(identity.refresh_token_id)
+            .await?;
+        // Match ordinary rotation's overlap window, but never accept a revoked
+        // session or an older token outside that window.
+        if (revoked || !current) && !previous {
+            return Err(HandoffError::InvalidReconnectSession);
+        }
+        if identity.provider == provider {
+            // Recovery must renew an existing identity, not let a stale login
+            // credential link an arbitrary replacement provider account.
+            if OAuthAccountRepository::new(&self.pool)
+                .get_by_user_provider(session.user_id, provider)
+                .await?
+                .is_none()
+            {
+                return Err(HandoffError::InvalidReconnectSession);
+            }
+        } else if !is_local_provider(&identity.provider) {
+            // First-time GitHub linking from e.g. Google still requires valid
+            // Google authentication. Only the provider being repaired is exempt.
+            OAuthTokenValidator::new(self.pool.clone(), self.providers.clone(), self.jwt.clone())
+                .validate(&identity.provider, session.user_id, session.id)
+                .await?;
+        }
+        self.initiate(provider, return_to, app_challenge, Some(session.user_id))
+            .await
+    }
+
     pub async fn initiate(
         &self,
         provider: &str,
         return_to: &str,
         app_challenge: &str,
+        reconnect_user_id: Option<Uuid>,
     ) -> Result<HandoffInitResponse, HandoffError> {
         let provider = self
             .providers
@@ -155,6 +221,10 @@ impl OAuthHandoffService {
                 expires_at,
             })
             .await?;
+
+        if let Some(user_id) = reconnect_user_id {
+            repo.bind_reconnect_user(record.id, user_id).await?;
+        }
 
         let authorize_url = format!(
             "{}/v1/oauth/{}/start?handoff_id={}",
@@ -232,6 +302,10 @@ impl OAuthHandoffService {
         let repo = OAuthHandoffRepository::new(&self.pool);
         let record = repo.get_by_state(state_value).await?;
 
+        if record.status() != Some(AuthorizationStatus::Pending) {
+            return Err(HandoffError::Failed("invalid_state".into()));
+        }
+
         if record.provider != provider.name() {
             return Err(HandoffError::UnsupportedProvider(record.provider));
         }
@@ -280,11 +354,15 @@ impl OAuthHandoffService {
             .encrypt_provider_tokens(&provider_token_details)
             .map_err(|e| HandoffError::Failed(format!("Failed to encrypt provider token: {e}")))?;
 
-        let user_profile = self.fetch_user_with_retries(&provider, &grant).await?;
-
-        let user = self
-            .upsert_identity(&provider, &user_profile, Some(encrypted_tokens.as_str()))
-            .await?;
+        let user = if let Some(user_id) = repo.reconnect_user(record.id).await? {
+            // Do not change credentials or merge identities during the provider
+            // callback. The initiating browser must first prove PKCE possession.
+            UserRepository::new(&self.pool).fetch_user(user_id).await?
+        } else {
+            let user_profile = self.fetch_user_with_retries(&provider, &grant).await?;
+            self.upsert_identity(&provider, &user_profile, Some(encrypted_tokens.as_str()))
+                .await?
+        };
 
         let session_repo = AuthSessionRepository::new(&self.pool);
         let session_record = session_repo.create(user.id, None).await?;
@@ -360,19 +438,56 @@ impl OAuthHandoffService {
 
         let user_repo = UserRepository::new(&self.pool);
         let user = user_repo.fetch_user(user_id).await?;
-        let org_repo = OrganizationRepository::new(&self.pool);
-        let _organization = org_repo
-            .ensure_personal_org_and_admin_membership(user.id, user.username.as_deref())
-            .await?;
+        let reconnect_user_id = repo.reconnect_user(record.id).await?;
+        if reconnect_user_id.is_none() {
+            OrganizationRepository::new(&self.pool)
+                .ensure_personal_org_and_admin_membership(user.id, user.username.as_deref())
+                .await?;
+        }
 
         let tokens = self.jwt.generate_tokens(&session, &user, &provider)?;
 
-        session_repo
-            .set_current_refresh_token(session.id, tokens.refresh_token_id)
-            .await?;
-
-        session_repo.touch(session.id).await?;
-        repo.mark_redeemed(record.id).await?;
+        if let Some(reconnect_user_id) = reconnect_user_id {
+            if reconnect_user_id != user.id {
+                return Err(HandoffError::Denied);
+            }
+            let encrypted = record
+                .encrypted_provider_tokens
+                .ok_or_else(|| HandoffError::Failed("missing_provider_tokens".into()))?;
+            let details = self.jwt.decrypt_provider_tokens(&encrypted)?;
+            if details.provider != provider {
+                return Err(HandoffError::Denied);
+            }
+            let provider_impl = self
+                .providers
+                .get(&provider)
+                .ok_or_else(|| HandoffError::UnsupportedProvider(provider.clone()))?;
+            let profile = provider_impl
+                .fetch_user(&SecretString::new(details.access_token.into()))
+                .await?;
+            OAuthAccountRepository::new(&self.pool)
+                .reconnect_and_redeem(
+                    record.id,
+                    OAuthAccountInsert {
+                        user_id: user.id,
+                        provider: &provider,
+                        provider_user_id: &profile.id,
+                        email: profile.email.as_deref(),
+                        username: profile.login.as_deref(),
+                        display_name: profile.name.as_deref(),
+                        avatar_url: profile.avatar_url.as_deref(),
+                        encrypted_provider_tokens: Some(&encrypted),
+                    },
+                    tokens.refresh_token_id,
+                )
+                .await?;
+        } else {
+            session_repo
+                .set_current_refresh_token(session.id, tokens.refresh_token_id)
+                .await?;
+            session_repo.touch(session.id).await?;
+            repo.mark_redeemed(record.id).await?;
+        }
 
         Ok(RedeemResponse {
             access_token: tokens.access_token,
@@ -468,6 +583,10 @@ impl OAuthHandoffService {
         Ok(user)
     }
 }
+
+#[cfg(test)]
+#[path = "handoff_reconnect_tests.rs"]
+mod reconnect_tests;
 
 type IdentityUser = api_types::User;
 

@@ -26,7 +26,7 @@ use services::services::{
     file_search::FileSearchCache,
     filesystem::FilesystemService,
     machine_id::generate_user_id,
-    oauth_credentials::OAuthCredentials,
+    oauth_credentials::{OAuthCredentials, ReconnectGuard},
     pr_monitor::PrMonitorService,
     queued_message::QueuedMessageService,
     remote_client::{RemoteClient, RemoteClientError},
@@ -83,9 +83,11 @@ pub struct LocalDeployment {
 }
 
 #[derive(Debug, Clone)]
-struct PendingHandoff {
-    provider: String,
-    app_verifier: String,
+pub struct PendingHandoff {
+    pub provider: String,
+    pub app_verifier: String,
+    pub reconnect_user_id: Option<Uuid>,
+    pub reconnect_guard: Option<Arc<ReconnectGuard>>,
 }
 
 #[async_trait]
@@ -390,7 +392,7 @@ impl LocalDeployment {
     }
 
     pub async fn get_login_status(&self) -> LoginStatus {
-        if self.auth_context.get_credentials().await.is_none() {
+        let Some(credentials) = self.auth_context.get_credentials().await else {
             self.auth_context.clear_profile().await;
             self.auth_context.clear_remote_auth_degraded_slug().await;
             return LoginStatus::LoggedOut;
@@ -415,7 +417,19 @@ impl LocalDeployment {
                 }
             }
             Err(RemoteClientError::Auth) => {
-                let _ = self.auth_context.clear_credentials().await;
+                // A profile request started before reconnect must not sign out
+                // the newly saved session when its old token is rejected.
+                if !self
+                    .auth_context
+                    .replace_credentials(&credentials.refresh_token, None)
+                    .await
+                    .unwrap_or(false)
+                    && self.auth_context.get_credentials().await.is_some()
+                {
+                    return LoginStatus::LoggedIn {
+                        profile: self.auth_context.cached_profile().await,
+                    };
+                }
                 self.auth_context.clear_profile().await;
                 self.auth_context.clear_remote_auth_degraded_slug().await;
                 LoginStatus::LoggedOut
@@ -438,27 +452,15 @@ impl LocalDeployment {
         }
     }
 
-    pub async fn store_oauth_handoff(
-        &self,
-        handoff_id: Uuid,
-        provider: String,
-        app_verifier: String,
-    ) {
-        self.oauth_handoffs.write().await.insert(
-            handoff_id,
-            PendingHandoff {
-                provider,
-                app_verifier,
-            },
-        );
-    }
-
-    pub async fn take_oauth_handoff(&self, handoff_id: &Uuid) -> Option<(String, String)> {
+    pub async fn store_oauth_handoff(&self, handoff_id: Uuid, handoff: PendingHandoff) {
         self.oauth_handoffs
             .write()
             .await
-            .remove(handoff_id)
-            .map(|state| (state.provider, state.app_verifier))
+            .insert(handoff_id, handoff);
+    }
+
+    pub async fn take_oauth_handoff(&self, handoff_id: &Uuid) -> Option<PendingHandoff> {
+        self.oauth_handoffs.write().await.remove(handoff_id)
     }
 
     pub async fn mark_oauth_handoff_completed(&self, handoff_id: Uuid) {

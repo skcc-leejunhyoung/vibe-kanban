@@ -1,18 +1,18 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { requireAuthenticated } from "@remote/shared/lib/route-auth";
-import { PullRequestsPage } from "@/pages/pull-requests/PullRequestsPage";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+
+export function legacyPullRequestsRedirectOptions(prUrl?: string) {
+  return {
+    to: "/pull-requests",
+    search: { prUrl },
+    replace: true,
+  } as const;
+}
 
 export const Route = createFileRoute("/hosts/$hostId/pull-requests")({
   validateSearch: (search: Record<string, unknown>) => ({
     prUrl: typeof search.prUrl === "string" ? search.prUrl : undefined,
   }),
-  beforeLoad: async ({ location }) => {
-    await requireAuthenticated(location);
+  beforeLoad: ({ search }) => {
+    throw redirect(legacyPullRequestsRedirectOptions(search.prUrl));
   },
-  component: PullRequestsRoute,
 });
-
-function PullRequestsRoute() {
-  const { prUrl } = Route.useSearch();
-  return <PullRequestsPage initialPrUrl={prUrl} />;
-}

@@ -23,15 +23,22 @@ import {
 } from '@vibe/ui/components/Select';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
-import { repoApi, issuePrsApi } from '@/shared/lib/api';
+import { issuePrsApi, repoApi } from '@/shared/lib/api';
+import {
+  getGitHubPullRequest,
+  listGitHubRepositories,
+} from '@/shared/lib/remoteApi';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { SearchableDropdownContainer } from '@/shared/components/ui-new/containers/SearchableDropdownContainer';
 import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import type { GitRemote, PullRequestDetail } from 'shared/types';
 import type { PullRequestStatus } from 'shared/remote-types';
+import { pullRequestSummariesQueryOptions } from '@/pages/pull-requests/pullRequestSummariesQuery';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+import { GitHubApiErrorAlert } from '@/shared/components/GitHubApiErrorAlert';
 
 export interface LinkPrToIssueDialogProps {
   projectId: string;
@@ -42,8 +49,9 @@ type TabMode = 'url' | 'browse';
 
 function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   const modal = useModal();
-  const hostId = useHostId();
   const { t } = useTranslation('tasks');
+  const runtime = useAppRuntime();
+  const hostId = useHostId();
 
   const [activeTab, setActiveTab] = useState<TabMode>('url');
 
@@ -56,6 +64,20 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedRemote, setSelectedRemote] = useState<string | null>(null);
   const [selectedPrNumber, setSelectedPrNumber] = useState<number | null>(null);
+
+  const loadPrInfo = useCallback(
+    async (url: string): Promise<PullRequestDetail> => {
+      if (runtime === 'remote') return getGitHubPullRequest(url);
+      const result = await issuePrsApi.getPrInfo(url, hostId);
+      if (!result.success) {
+        throw new Error(
+          result.message || t('createWorkspaceFromPr.errors.failedToLoadPrs')
+        );
+      }
+      return result.data;
+    },
+    [hostId, runtime, t]
+  );
 
   // Debounce URL changes
   const handleUrlChange = useCallback((value: string) => {
@@ -94,35 +116,50 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
 
   // Fetch PR info from URL
   const {
-    data: prInfoResult,
+    data: prInfo,
     isLoading: isLoadingPrInfo,
     error: prInfoError,
   } = useQuery({
-    queryKey: ['pr-info', debouncedUrl, getHostRequestScopeQueryKey(hostId)],
-    queryFn: () => issuePrsApi.getPrInfo(debouncedUrl, hostId),
+    queryKey: [
+      'pr-info',
+      debouncedUrl,
+      runtime === 'remote' ? 'github' : getHostRequestScopeQueryKey(hostId),
+    ],
+    queryFn: () => loadPrInfo(debouncedUrl),
     enabled: modal.visible && activeTab === 'url' && debouncedUrl.length > 0,
   });
 
-  const prInfo = useMemo<PullRequestDetail | null>(() => {
-    if (!prInfoResult) return null;
-    if (prInfoResult.success) return prInfoResult.data;
-    return null;
-  }, [prInfoResult]);
-
-  const prInfoErrorMessage = useMemo<string | null>(() => {
-    if (prInfoError) return t('linkPrToIssue.invalidUrl');
-    if (prInfoResult && !prInfoResult.success) {
-      return t('linkPrToIssue.invalidUrl');
-    }
-    return null;
-  }, [prInfoError, prInfoResult, t]);
-
   // Browse mode queries
-  const { data: repos = [], isLoading: isLoadingRepos } = useQuery({
+  const githubReposQuery = useQuery({
+    queryKey: ['github-repositories'],
+    queryFn: listGitHubRepositories,
+    enabled: runtime === 'remote' && modal.visible && activeTab === 'browse',
+    staleTime: 5 * 60_000,
+  });
+  const localReposQuery = useQuery({
     queryKey: ['repos', getHostRequestScopeQueryKey(hostId)],
     queryFn: () => repoApi.list(hostId),
-    enabled: modal.visible && activeTab === 'browse',
+    enabled: runtime === 'local' && modal.visible && activeTab === 'browse',
   });
+  const repos = useMemo(
+    () =>
+      runtime === 'remote'
+        ? (githubReposQuery.data ?? []).map((repo) => ({
+            id: repo.full_name,
+            label: repo.full_name,
+          }))
+        : (localReposQuery.data ?? []).map((repo) => ({
+            id: repo.id,
+            label: repo.display_name || repo.name,
+          })),
+    [githubReposQuery.data, localReposQuery.data, runtime]
+  );
+  const isLoadingRepos =
+    runtime === 'remote'
+      ? githubReposQuery.isLoading
+      : localReposQuery.isLoading;
+  const reposError =
+    runtime === 'remote' ? githubReposQuery.error : localReposQuery.error;
 
   useEffect(() => {
     if (activeTab !== 'browse' || selectedRepoId) return;
@@ -131,7 +168,7 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
     }
   }, [repos, selectedRepoId, activeTab]);
 
-  const { data: remotes = [], isLoading: isLoadingRemotes } = useQuery({
+  const remotesQuery = useQuery({
     queryKey: [
       'repo-remotes',
       selectedRepoId,
@@ -141,20 +178,29 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
       if (!selectedRepoId) return [];
       return repoApi.listRemotes(selectedRepoId, hostId);
     },
-    enabled: modal.visible && activeTab === 'browse' && !!selectedRepoId,
+    enabled:
+      runtime === 'local' &&
+      modal.visible &&
+      activeTab === 'browse' &&
+      !!selectedRepoId,
   });
+  const remotes = remotesQuery.data ?? [];
 
   useEffect(() => {
-    if (remotes.length > 0 && !selectedRemote) {
+    if (runtime === 'local' && remotes.length > 0 && !selectedRemote) {
       setSelectedRemote(remotes[0].name);
     }
-  }, [remotes, selectedRemote]);
+  }, [remotes, runtime, selectedRemote]);
 
-  const {
-    data: prsResult,
-    isLoading: isLoadingPrs,
-    error: prsError,
-  } = useQuery({
+  const githubPrsQuery = useQuery({
+    ...pullRequestSummariesQueryOptions(selectedRepoId ?? '', false),
+    enabled:
+      runtime === 'remote' &&
+      modal.visible &&
+      activeTab === 'browse' &&
+      !!selectedRepoId,
+  });
+  const localPrsQuery = useQuery({
     queryKey: [
       'open-prs',
       selectedRepoId,
@@ -166,16 +212,31 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
       return repoApi.listOpenPrs(selectedRepoId, selectedRemote, hostId);
     },
     enabled:
+      runtime === 'local' &&
       modal.visible &&
       activeTab === 'browse' &&
       !!selectedRepoId &&
       !!selectedRemote,
   });
 
-  const openPrs = useMemo<PullRequestDetail[]>(
-    () => (prsResult?.success === true ? prsResult.data : []),
-    [prsResult]
-  );
+  const openPrs = useMemo<
+    Pick<PullRequestDetail, 'number' | 'url' | 'status' | 'title'>[]
+  >(() => {
+    const pullRequests =
+      runtime === 'remote'
+        ? (githubPrsQuery.data?.summaries ?? []).filter(
+            (pr) => pr.status === 'open'
+          )
+        : localPrsQuery.data?.success === true
+          ? localPrsQuery.data.data
+          : [];
+    return pullRequests.map(({ number, url, status, title }) => ({
+      number,
+      url,
+      status,
+      title,
+    }));
+  }, [githubPrsQuery.data, localPrsQuery.data, runtime]);
 
   const selectedPr = useMemo(
     () => openPrs.find((pr) => Number(pr.number) === selectedPrNumber) ?? null,
@@ -183,31 +244,42 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   );
 
   let prsErrorMessage: string | null = null;
-  if (prsResult?.success === false) {
-    switch (prsResult.error?.type) {
+  if (runtime === 'local' && localPrsQuery.data?.success === false) {
+    switch (localPrsQuery.data.error?.type) {
       case 'cli_not_installed':
         prsErrorMessage = t('createWorkspaceFromPr.errors.cliNotInstalled', {
-          provider: prsResult.error.provider,
+          provider: localPrsQuery.data.error.provider,
         });
         break;
       case 'auth_failed':
-        prsErrorMessage = prsResult.error.message;
+        prsErrorMessage = localPrsQuery.data.error.message;
         break;
       case 'unsupported_provider':
         prsErrorMessage = t('createWorkspaceFromPr.errors.unsupportedProvider');
         break;
       default:
         prsErrorMessage =
-          prsResult.message ||
+          localPrsQuery.data.message ||
           t('createWorkspaceFromPr.errors.failedToLoadPrs');
     }
-  } else if (prsError) {
-    prsErrorMessage = t('createWorkspaceFromPr.errors.failedToLoadPrs');
+  } else {
+    const prsError =
+      runtime === 'remote' ? githubPrsQuery.error : localPrsQuery.error;
+    if (prsError) {
+      prsErrorMessage =
+        prsError instanceof Error
+          ? prsError.message
+          : t('createWorkspaceFromPr.errors.failedToLoadPrs');
+    }
   }
+  const isLoadingPrs =
+    runtime === 'remote'
+      ? githubPrsQuery.isLoading
+      : localPrsQuery.isLoading || remotesQuery.isLoading;
 
   const { insertPullRequestIssue } = useProjectContext();
   const [isLinking, setIsLinking] = useState(false);
-  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<Error | null>(null);
 
   // Reset state when dialog closes
   useEffect(() => {
@@ -242,8 +314,6 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
 
   const handleLink = async () => {
     if (!canLink) return;
-    const pr = activeTab === 'url' ? prInfo : selectedPr;
-    if (!pr) return;
 
     const mergeStatusToApiStatus = (s: string): PullRequestStatus => {
       if (s === 'merged') return 'merged';
@@ -254,6 +324,22 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
     setIsLinking(true);
     setLinkError(null);
     try {
+      let pr: PullRequestDetail;
+      if (activeTab === 'url') {
+        if (!prInfo) return;
+        pr = prInfo;
+      } else if (runtime === 'local') {
+        if (localPrsQuery.data?.success !== true) return;
+        const localPr = localPrsQuery.data.data.find(
+          (candidate) => Number(candidate.number) === selectedPrNumber
+        );
+        if (!localPr) return;
+        pr = localPr;
+      } else {
+        if (!selectedPr) return;
+        pr = await loadPrInfo(selectedPr.url);
+      }
+
       const { persisted } = insertPullRequestIssue({
         issue_id: issueId,
         url: pr.url,
@@ -264,15 +350,17 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
         target_branch_name: pr.base_branch,
       });
       await persisted;
-      await issuePrsApi.linkToIssue({
-        pr_url: pr.url,
-        pr_number: Number(pr.number),
-        base_branch: pr.base_branch,
-      });
+      if (runtime === 'local') {
+        await issuePrsApi.linkToIssue({
+          pr_url: pr.url,
+          pr_number: Number(pr.number),
+          base_branch: pr.base_branch,
+        });
+      }
       modal.hide();
     } catch (err) {
       setLinkError(
-        err instanceof Error ? err.message : t('linkPrToIssue.errors.failed')
+        err instanceof Error ? err : new Error(t('linkPrToIssue.errors.failed'))
       );
     } finally {
       setIsLinking(false);
@@ -372,10 +460,11 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
                 </div>
               )}
 
-              {prInfoErrorMessage && debouncedUrl.length > 0 && (
-                <div className="text-sm text-destructive">
-                  {prInfoErrorMessage}
-                </div>
+              {prInfoError && debouncedUrl.length > 0 && (
+                <GitHubApiErrorAlert
+                  error={prInfoError}
+                  fallback={t('linkPrToIssue.invalidUrl')}
+                />
               )}
 
               {prInfo && (
@@ -422,6 +511,11 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
                   <div className="text-sm text-muted-foreground">
                     {t('createWorkspaceFromPr.loadingRepositories')}
                   </div>
+                ) : reposError ? (
+                  <GitHubApiErrorAlert
+                    error={reposError}
+                    fallback={t('createWorkspaceFromPr.noRepositoriesFound')}
+                  />
                 ) : repos.length === 0 ? (
                   <div className="text-sm text-muted-foreground">
                     {t('createWorkspaceFromPr.noRepositoriesFound')}
@@ -445,7 +539,7 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
                     <SelectContent>
                       {repos.map((repo) => (
                         <SelectItem key={repo.id} value={repo.id}>
-                          {repo.display_name || repo.name}
+                          {repo.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -453,11 +547,10 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
                 )}
               </div>
 
-              {/* Remote selector (only if multiple remotes) */}
-              {selectedRepoId && remotes.length > 1 && (
+              {runtime === 'local' && selectedRepoId && remotes.length > 1 && (
                 <div className="space-y-2">
                   <Label>{t('linkPrToIssue.remoteLabel')}</Label>
-                  {isLoadingRemotes ? (
+                  {remotesQuery.isLoading ? (
                     <div className="text-sm text-muted-foreground">
                       {t('createWorkspaceFromPr.loadingRemotes')}
                     </div>
@@ -491,14 +584,19 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
               {/* PR searchable dropdown */}
               <div className="space-y-2">
                 <Label>{t('linkPrToIssue.pullRequestLabel')}</Label>
-                {isLoadingPrs || isLoadingRemotes ? (
+                {isLoadingPrs ? (
                   <div className="text-sm text-muted-foreground">
                     {t('createWorkspaceFromPr.loadingPullRequests')}
                   </div>
                 ) : prsErrorMessage ? (
-                  <div className="text-sm text-destructive">
-                    {prsErrorMessage}
-                  </div>
+                  <GitHubApiErrorAlert
+                    error={
+                      runtime === 'remote'
+                        ? githubPrsQuery.error
+                        : prsErrorMessage
+                    }
+                    fallback={prsErrorMessage}
+                  />
                 ) : !selectedRepoId ? (
                   <div className="text-sm text-muted-foreground">
                     {t('createWorkspaceFromPr.selectRepositoryFirst')}
@@ -562,7 +660,10 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
 
           {/* Error message */}
           {linkError && (
-            <div className="text-sm text-destructive">{linkError}</div>
+            <GitHubApiErrorAlert
+              error={linkError}
+              fallback={t('linkPrToIssue.errors.failed')}
+            />
           )}
         </div>
 

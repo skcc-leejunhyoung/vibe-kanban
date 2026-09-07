@@ -14,6 +14,30 @@ pub struct PullRequestRepository;
 
 #[allow(deprecated)]
 impl PullRequestRepository {
+    pub async fn list_unresolved_github_urls_for_user(
+        pool: &sqlx::PgPool,
+        user_id: Uuid,
+    ) -> Result<Vec<String>, PullRequestError> {
+        let urls = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT DISTINCT p.url
+            FROM pull_requests p
+            INNER JOIN projects proj ON p.project_id = proj.id
+            INNER JOIN organization_member_metadata omm
+                ON omm.organization_id = proj.organization_id
+                AND omm.user_id = $1
+            WHERE p.status != 'merged'
+              AND p.url LIKE 'https://github.com/%'
+            ORDER BY p.url
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(urls)
+    }
+
     pub async fn list_by_issue<'e, E>(
         executor: E,
         issue_id: Uuid,

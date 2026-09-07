@@ -2244,10 +2244,7 @@ export const Actions = {
         ctx.currentHostId
       );
       if (selection.kind !== 'selected') return;
-      ctx.appNavigation.goToPullRequests(
-        selection.pullRequest.url,
-        ctx.currentHostId ? { hostId: ctx.currentHostId } : undefined
-      );
+      ctx.appNavigation.goToPullRequests(selection.pullRequest.url);
     },
   },
 
@@ -2305,6 +2302,7 @@ export const Actions = {
         prUrl: pullRequest.url,
         prNumber: pullRequest.number,
         hostId: ctx.currentHostId,
+        ...(ctx.appRuntime === 'remote' ? { dataSource: 'github' } : {}),
       });
     },
   } satisfies IssueActionDefinition,
@@ -2321,10 +2319,7 @@ export const Actions = {
       const pullRequest = await selectIssuePullRequest(ctx, issueIds);
       if (!pullRequest) return;
 
-      ctx.appNavigation.goToPullRequests(
-        pullRequest.url,
-        ctx.currentHostId ? { hostId: ctx.currentHostId } : undefined
-      );
+      ctx.appNavigation.goToPullRequests(pullRequest.url);
     },
   } satisfies IssueActionDefinition,
 

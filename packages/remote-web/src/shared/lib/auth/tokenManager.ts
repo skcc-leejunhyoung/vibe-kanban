@@ -1,9 +1,8 @@
 import {
   getAccessToken,
-  getRefreshToken,
-  storeTokens,
-  clearAccessToken,
-  clearTokens,
+  getRefreshCredentials,
+  applyTokenRefresh,
+  accessTokensBelongToDifferentUsers,
 } from "@remote/shared/lib/auth";
 import { shouldRefreshAccessToken } from "shared/jwt";
 import { refreshTokens } from "@remote/shared/lib/api";
@@ -47,51 +46,71 @@ async function refreshWithRetry(refreshToken: string) {
 
 let refreshPromise: Promise<string> | null = null;
 
-async function doTokenRefresh(): Promise<string> {
-  const current = await getAccessToken();
-  if (current && !shouldRefreshAccessToken(current)) return current;
-
-  const refreshToken = await getRefreshToken();
+async function doTokenRefresh(
+  rejectedAccessToken?: string | null,
+): Promise<string> {
+  const { accessToken: current, refreshToken } = await getRefreshCredentials();
+  if (
+    rejectedAccessToken &&
+    current &&
+    accessTokensBelongToDifferentUsers(rejectedAccessToken, current)
+  ) {
+    throw new Error("Session changed during refresh. Please try again.");
+  }
+  if (
+    current &&
+    current !== rejectedAccessToken &&
+    !shouldRefreshAccessToken(current)
+  )
+    return current;
   if (!refreshToken) {
-    await clearTokens();
     throw new Error("No refresh token available");
   }
 
-  const tokens = await refreshWithRetry(refreshToken);
-  // This is a credential rotation inside the existing signed-in session, not
-  // an auth-state transition. Emitting AUTH_CHANGED_EVENT here resets the
-  // identity query and briefly disables every isSignedIn-gated data source on
-  // each access-token refresh (~100 seconds with the current TTL/leeway).
-  await storeTokens(tokens.access_token, tokens.refresh_token, {
-    notifyAuthChange: false,
-  });
-  return tokens.access_token;
+  try {
+    const tokens = await refreshWithRetry(refreshToken);
+    if (await applyTokenRefresh(refreshToken, tokens))
+      return tokens.access_token;
+  } catch (error) {
+    // Network/5xx failures do not prove revocation. A late 401 may only clear
+    // the credential it used, and never one protected by an active reconnect.
+    if ((error as { status?: number }).status === 401) {
+      if (await applyTokenRefresh(refreshToken)) {
+        throw new Error("Session expired. Please sign in again.");
+      }
+    } else {
+      throw error;
+    }
+  }
+  const latest = await getRefreshCredentials();
+  if (
+    current &&
+    latest.accessToken &&
+    latest.refreshToken !== refreshToken &&
+    !accessTokensBelongToDifferentUsers(current, latest.accessToken) &&
+    !shouldRefreshAccessToken(latest.accessToken)
+  )
+    return latest.accessToken;
+  throw new Error("Session changed during refresh. Please try again.");
 }
 
-function handleTokenRefresh(): Promise<string> {
+function handleTokenRefresh(
+  rejectedAccessToken?: string | null,
+): Promise<string> {
   if (refreshPromise) return refreshPromise;
 
   const innerPromise =
     typeof navigator.locks?.request === "function"
       ? navigator.locks
-          .request("rf-token-refresh", doTokenRefresh)
+          .request("rf-token-refresh", () =>
+            doTokenRefresh(rejectedAccessToken),
+          )
           .then((t) => t)
-      : doTokenRefresh();
+      : doTokenRefresh(rejectedAccessToken);
 
-  const promise = innerPromise
-    .catch(async (error: unknown) => {
-      await clearTokens();
-
-      const status = (error as { status?: number }).status;
-      if (status === 401) {
-        throw new Error("Session expired. Please sign in again.");
-      }
-
-      throw new Error("Session refresh failed. Please sign in again.");
-    })
-    .finally(() => {
-      refreshPromise = null;
-    });
+  const promise = innerPromise.finally(() => {
+    refreshPromise = null;
+  });
 
   refreshPromise = promise;
   return promise;
@@ -100,14 +119,16 @@ function handleTokenRefresh(): Promise<string> {
 export async function getToken(): Promise<string> {
   const accessToken = await getAccessToken();
   if (!accessToken) {
-    if (!(await getRefreshToken())) throw new Error("Not authenticated");
     return handleTokenRefresh();
   }
   if (shouldRefreshAccessToken(accessToken)) return handleTokenRefresh();
   return accessToken;
 }
 
-export async function triggerRefresh(): Promise<string> {
-  await clearAccessToken();
-  return handleTokenRefresh();
+export async function triggerRefresh(
+  rejectedAccessToken?: string,
+): Promise<string> {
+  // Keep the initiating identity intact for reconnect and compare late 401s
+  // against the token actually rejected, instead of deleting current access.
+  return handleTokenRefresh(rejectedAccessToken ?? (await getAccessToken()));
 }

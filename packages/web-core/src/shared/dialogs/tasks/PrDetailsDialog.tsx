@@ -50,13 +50,19 @@ import {
 } from '@/shared/lib/prConversation';
 import { useMarkPullRequestNotificationsRead } from '@/shared/hooks/useMarkPullRequestNotificationsRead';
 import { cn } from '@/shared/lib/utils';
+import { GitHubApiErrorAlert } from '@/shared/components/GitHubApiErrorAlert';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+import {
+  getGitHubPullRequest,
+  setGitHubReviewThreadResolved,
+} from '@/shared/lib/remoteApi';
 
 export interface PrDetailsDialogProps {
   prUrl: string;
   prNumber: number;
   hostId?: string | null;
+  dataSource?: 'host' | 'github';
 }
 
 export interface PrDetailsContentProps extends PrDetailsDialogProps {
@@ -228,6 +234,7 @@ export function PrDetailsContent({
   prUrl,
   prNumber,
   hostId: hostIdOverride,
+  dataSource = 'host',
   active = true,
   variant = 'dialog',
   onClose,
@@ -237,13 +244,16 @@ export function PrDetailsContent({
   const queryClient = useQueryClient();
   const routeHostId = useHostId();
   const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
+  const requestScopeKey =
+    dataSource === 'github' ? 'github' : getHostRequestScopeQueryKey(hostId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const actualTheme = getActualTheme(theme);
   useMarkPullRequestNotificationsRead(prUrl, active);
   const detailQuery = useQuery({
-    queryKey: ['pr-detail', prUrl, getHostRequestScopeQueryKey(hostId)],
+    queryKey: ['pr-detail', prUrl, requestScopeKey],
     queryFn: async () => {
+      if (dataSource === 'github') return getGitHubPullRequest(prUrl);
       const result = await issuePrsApi.getPrInfo(prUrl, hostId);
       if (!result.success) {
         throw new Error(result.message || 'Failed to load pull request');
@@ -254,7 +264,11 @@ export function PrDetailsContent({
     staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,
   });
-  const commentsQuery = usePrCommentsByUrl(prUrl, prNumber, active);
+  const commentsQuery = usePrCommentsByUrl(prUrl, prNumber, {
+    enabled: active,
+    dataSource,
+    hostId,
+  });
   const comments = useMemo(
     () => commentsQuery.data?.comments ?? [],
     [commentsQuery.data?.comments]
@@ -272,16 +286,18 @@ export function PrDetailsContent({
       threadId: string;
       resolved: boolean;
     }) =>
-      issuePrsApi.setPrReviewThreadResolved(
-        prUrl,
-        prNumber,
-        threadId,
-        resolved,
-        hostId
-      ),
+      dataSource === 'github'
+        ? setGitHubReviewThreadResolved(prUrl, threadId, resolved)
+        : issuePrsApi.setPrReviewThreadResolved(
+            prUrl,
+            prNumber,
+            threadId,
+            resolved,
+            hostId
+          ),
     onSuccess: () =>
       queryClient.invalidateQueries({
-        queryKey: prCommentsKeys.byUrl(prUrl, prNumber, hostId),
+        queryKey: prCommentsKeys.byUrl(prUrl, prNumber, dataSource, hostId),
       }),
   });
   const handleDialogKeyDown = (event: KeyboardEvent) => {
@@ -371,11 +387,10 @@ export function PrDetailsContent({
             <SpinnerGapIcon className="size-icon-lg animate-spin" />
           </div>
         ) : detailQuery.isError ? (
-          <p className="text-error">
-            {detailQuery.error instanceof Error
-              ? detailQuery.error.message
-              : 'Failed to load pull request'}
-          </p>
+          <GitHubApiErrorAlert
+            error={detailQuery.error}
+            fallback="Failed to load pull request"
+          />
         ) : detail ? (
           <>
             <div className="flex flex-wrap items-center gap-base">
@@ -486,16 +501,18 @@ export function PrDetailsContent({
             <section className="min-w-0">
               <h3 className="mb-base text-sm font-semibold">Conversation</h3>
               {commentsQuery.isError && (
-                <p className="mb-base text-sm text-error">
-                  Some conversation comments could not be loaded.
-                </p>
+                <GitHubApiErrorAlert
+                  error={commentsQuery.error}
+                  fallback="Conversation comments could not be loaded."
+                  className="mb-base text-sm text-error"
+                />
               )}
               {resolveThreadMutation.isError && (
-                <p className="mb-base text-sm text-error">
-                  {resolveThreadMutation.error instanceof Error
-                    ? resolveThreadMutation.error.message
-                    : 'Failed to update conversation.'}
-                </p>
+                <GitHubApiErrorAlert
+                  error={resolveThreadMutation.error}
+                  fallback="Failed to update conversation."
+                  className="mb-base text-sm text-error"
+                />
               )}
               <div className="relative space-y-base before:absolute before:bottom-base before:left-[15px] before:top-base before:w-px before:bg-border">
                 {conversation.map((item) => {
@@ -648,7 +665,7 @@ export function PrDetailsContent({
 }
 
 const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
-  ({ prUrl, prNumber, hostId }) => {
+  ({ prUrl, prNumber, hostId, dataSource }) => {
     const modal = useModal();
     const close = () => {
       modal.resolve();
@@ -667,6 +684,7 @@ const PrDetailsDialogImpl = create<PrDetailsDialogProps>(
           prUrl={prUrl}
           prNumber={prNumber}
           hostId={hostId}
+          dataSource={dataSource}
           active={modal.visible}
           onClose={close}
         />

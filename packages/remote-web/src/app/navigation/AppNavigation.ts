@@ -21,7 +21,8 @@ function getPathParam(
 export function resolveRemoteDestinationFromPath(
   path: string,
 ): AppDestination | null {
-  const { pathname } = new URL(path, "http://localhost");
+  const url = new URL(path, "http://localhost");
+  const { pathname } = url;
   const { foundRoute, routeParams } = router.getMatchedRoutes(pathname);
 
   if (!foundRoute) {
@@ -35,10 +36,12 @@ export function resolveRemoteDestinationFromPath(
       return { kind: "export" };
     case "/notifications":
       return { kind: "notifications" };
-    case "/hosts/$hostId/pull-requests": {
-      const hostId = getPathParam(routeParams, "hostId");
-      return hostId ? { kind: "pull-requests", hostId } : null;
-    }
+    case "/pull-requests":
+    case "/hosts/$hostId/pull-requests":
+      return {
+        kind: "pull-requests",
+        prUrl: url.searchParams.get("prUrl") ?? undefined,
+      };
     case "/hosts/$hostId/workspaces": {
       const hostId = getPathParam(routeParams, "hostId");
       return hostId ? { kind: "workspaces", hostId } : null;
@@ -175,13 +178,10 @@ function destinationToRemoteTarget(
     case "notifications":
       return { to: "/notifications" } as const;
     case "pull-requests":
-      if (effectiveHostId) {
-        return {
-          to: "/hosts/$hostId/pull-requests",
-          params: { hostId: effectiveHostId },
-        } as const;
-      }
-      throw new Error("A host is required to open pull requests");
+      return {
+        to: "/pull-requests",
+        search: { prUrl: destination.prUrl },
+      } as const;
     case "project":
       return {
         to: "/projects/$projectId",
@@ -264,14 +264,7 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
     goToPullRequests: (prUrl, transition) =>
-      void router.navigate({
-        to: "/hosts/$hostId/pull-requests",
-        params: { hostId },
-        search: { prUrl },
-        ...(transition?.replace !== undefined
-          ? { replace: transition.replace }
-          : {}),
-      }),
+      navigateTo({ kind: "pull-requests", prUrl }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>
@@ -371,29 +364,8 @@ function createRemoteAppNavigation(): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
-    goToPullRequests: (prUrl, transition) => {
-      const open = (hostId: string) =>
-        router.navigate({
-          to: "/hosts/$hostId/pull-requests",
-          params: { hostId },
-          search: { prUrl },
-          ...(transition?.replace !== undefined
-            ? { replace: transition.replace }
-            : {}),
-        });
-
-      if (transition?.hostId) {
-        void open(transition.hostId);
-        return;
-      }
-
-      void import(
-        "@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog"
-      ).then(async ({ selectWorkspaceHost }) => {
-        const hostId = await selectWorkspaceHost();
-        if (hostId) await open(hostId);
-      });
-    },
+    goToPullRequests: (prUrl, transition) =>
+      navigateTo({ kind: "pull-requests", prUrl }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
     goToProjectIssue: (projectId, issueId, transition) =>

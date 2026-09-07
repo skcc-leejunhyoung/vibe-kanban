@@ -12,7 +12,11 @@ use serde::Deserialize;
 use tracing::{instrument, warn};
 use url::Url;
 
-use crate::{AppState, auth::RequestContext, db::oauth_accounts::OAuthAccountRepository};
+use crate::{
+    AppState,
+    auth::RequestContext,
+    routes::github_credentials::{GitHubCredentialsError, github_access_token},
+};
 
 const GITHUB_ATTACHMENT_PATH_PREFIX: &str = "/user-attachments/assets/";
 const MAX_REDIRECTS: usize = 3;
@@ -72,29 +76,14 @@ async fn get_github_image(
     Query(query): Query<GitHubImageQuery>,
 ) -> Result<Response, GitHubImageError> {
     let url = validate_initial_url(&query.url)?;
-    let account = OAuthAccountRepository::new(state.pool())
-        .get_by_user_provider(ctx.user.id, "github")
+    let access_token = github_access_token(&state, &ctx)
         .await
-        .map_err(|error| {
-            warn!(?error, "failed to load GitHub OAuth account");
-            GitHubImageError::Credentials
-        })?
-        .ok_or(GitHubImageError::AuthenticationRequired)?;
-    let encrypted_tokens = account
-        .encrypted_provider_tokens
-        .ok_or(GitHubImageError::AuthenticationRequired)?;
-    let token_details = state
-        .jwt()
-        .decrypt_provider_tokens(&encrypted_tokens)
-        .map_err(|error| {
-            warn!(?error, "failed to decrypt GitHub OAuth token");
-            GitHubImageError::Credentials
+        .map_err(|error| match error {
+            GitHubCredentialsError::Missing => GitHubImageError::AuthenticationRequired,
+            GitHubCredentialsError::Unavailable => GitHubImageError::Credentials,
         })?;
-    if token_details.provider != "github" {
-        return Err(GitHubImageError::AuthenticationRequired);
-    }
 
-    let response = fetch_image(&url, token_details.access_token.as_str()).await?;
+    let response = fetch_image(&url, &access_token).await?;
     let content_type = response
         .headers()
         .get(header::CONTENT_TYPE)

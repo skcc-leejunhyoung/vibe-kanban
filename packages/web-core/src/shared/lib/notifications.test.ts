@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildNotificationTabUrl,
-  getKnownPullRequestHostId,
   getPullRequestDetailsNavigationTarget,
   groupNotifications,
   selectUnseenPullRequestCommentNotificationIds,
@@ -244,7 +243,7 @@ describe('getPullRequestDetailsNavigationTarget', () => {
     ).toBeNull();
   });
 
-  it('includes the owning host when the notification resolved one', () => {
+  it('ignores the legacy host payload', () => {
     expect(
       getPullRequestDetailsNavigationTarget(
         createNotification({
@@ -257,38 +256,9 @@ describe('getPullRequestDetailsNavigationTarget', () => {
         })
       )
     ).toEqual({
-      hostId: 'host-1',
       prNumber: 42,
       prUrl: 'https://github.com/acme/repo/pull/42',
     });
-  });
-});
-
-describe('getKnownPullRequestHostId', () => {
-  const target = {
-    prNumber: 42,
-    prUrl: 'https://github.com/acme/repo/pull/42',
-  };
-
-  it('reuses the host from an existing pane showing the same PR', () => {
-    expect(
-      getKnownPullRequestHostId(target, [
-        { kind: 'notifications' },
-        { ...target, kind: 'pull-requests', hostId: 'host-1' },
-      ])
-    ).toBe('host-1');
-  });
-
-  it('does not borrow a host from a different PR', () => {
-    expect(
-      getKnownPullRequestHostId(target, [
-        {
-          kind: 'pull-requests',
-          prUrl: 'https://github.com/acme/repo/pull/7',
-          hostId: 'host-1',
-        },
-      ])
-    ).toBeNull();
   });
 });
 
@@ -315,7 +285,7 @@ describe('buildNotificationTabUrl', () => {
     expect(buildNotificationTabUrl(group)).toBe('/projects/p1/issues/i1');
   });
 
-  it('builds a host-scoped pull-requests URL from the payload host', () => {
+  it('builds an account-scoped pull-requests URL from a legacy host payload', () => {
     const group = createGroup(
       createNotification({
         notification_type: 'pull_request_comment_added',
@@ -327,22 +297,7 @@ describe('buildNotificationTabUrl', () => {
       })
     );
     expect(buildNotificationTabUrl(group)).toBe(
-      '/hosts/host-1/pull-requests?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F42'
-    );
-  });
-
-  it('uses the supplied host when the payload has none', () => {
-    const group = createGroup(
-      createNotification({
-        notification_type: 'pull_request_comment_added',
-        payload: {
-          pull_request_number: 42,
-          pull_request_url: 'https://github.com/acme/repo/pull/42',
-        },
-      })
-    );
-    expect(buildNotificationTabUrl(group, { hostId: 'host-2' })).toBe(
-      '/hosts/host-2/pull-requests?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F42'
+      '/pull-requests?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F42'
     );
   });
 

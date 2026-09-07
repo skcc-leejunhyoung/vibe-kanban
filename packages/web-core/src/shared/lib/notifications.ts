@@ -4,7 +4,6 @@ import type {
   NotificationPayload,
   NotificationType,
 } from 'shared/remote-types';
-import type { AppDestination } from '@/shared/lib/routes/appNavigation';
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
@@ -19,24 +18,6 @@ export function getDeeplinkPath(n: Notification): string | null {
 export interface PullRequestDetailsNavigationTarget {
   prUrl: string;
   prNumber: number;
-  hostId?: string;
-}
-
-export function getKnownPullRequestHostId(
-  target: PullRequestDetailsNavigationTarget,
-  destinations: readonly (AppDestination | null)[]
-): string | null {
-  if (target.hostId) return target.hostId;
-  for (const destination of destinations) {
-    if (
-      destination?.kind === 'pull-requests' &&
-      destination.prUrl === target.prUrl &&
-      destination.hostId
-    ) {
-      return destination.hostId;
-    }
-  }
-  return null;
 }
 
 /**
@@ -59,7 +40,6 @@ export function getPullRequestDetailsNavigationTarget(
   return {
     prUrl: payload.pull_request_url,
     prNumber: payload.pull_request_number,
-    ...(payload.host_id ? { hostId: payload.host_id } : {}),
   };
 }
 
@@ -68,22 +48,15 @@ export function getPullRequestDetailsNavigationTarget(
  * tab / split pane (cmd+click). Mirrors the in-place navigation performed by
  * `NotificationsPage`, but returns a plain path instead of navigating.
  *
- * PR-comment notifications route to the pull-requests page. In remote runtime
- * that route is host-scoped, so the caller must supply a `hostId` (from the
- * payload or an explicit host pick) — without one the URL cannot be built and
- * `null` is returned. In local runtime the plain `/pull-requests` route is used.
+ * PR-comment notifications route to the account-scoped pull-requests page.
  */
 export function buildNotificationTabUrl(
-  group: GroupedNotification,
-  options: { hostId?: string | null } = {}
+  group: GroupedNotification
 ): string | null {
   const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
   if (prDetails) {
-    const hostId = prDetails.hostId ?? options.hostId ?? null;
     const query = `?prUrl=${encodeURIComponent(prDetails.prUrl)}`;
-    return hostId
-      ? `/hosts/${encodeURIComponent(hostId)}/pull-requests${query}`
-      : `/pull-requests${query}`;
+    return `/pull-requests${query}`;
   }
   return group.deeplinkPath;
 }

@@ -502,7 +502,6 @@
     "urlLabel": "拉取请求 URL",
     "urlPlaceholder": "https://github.com/owner/repo/pull/123",
     "repositoryLabel": "仓库",
-    "remoteLabel": "远程",
     "pullRequestLabel": "拉取请求",
     "loadingPrInfo": "正在加载 PR 信息...",
     "invalidUrl": "无法从此 URL 加载 PR 信息",

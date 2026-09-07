@@ -44,6 +44,15 @@ describe('findLocalPullRequestWorkspaces', () => {
     ).toEqual(['quick-chat', 'remote-quick-chat']);
   });
 
+  it('matches canonical workspace links to query-bearing GitHub deep links', () => {
+    expect(
+      findLocalPullRequestWorkspaces(
+        'https://github.com/acme/repo/pull/42?notification_referrer_id=1',
+        [makeWorkspace('quick-chat', 'https://github.com/acme/repo/pull/42')]
+      ).map(({ id }) => id)
+    ).toEqual(['quick-chat']);
+  });
+
   it('detects local and issue-mapped workspaces', () => {
     expect(
       hasPullRequestWorkspace(

@@ -4,10 +4,28 @@ import {
   combineRemoteWorkspaceStreams,
   getHostWorkspaceKey,
   materializeHostWorkspaceStream,
+  resolveOnlineWorkspaceStreamHostIds,
   resolveSnapshotHostIds,
   type SidebarWorkspace,
   type UseWorkspacesResult,
 } from './useWorkspaces';
+
+describe('resolveOnlineWorkspaceStreamHostIds', () => {
+  const hosts = [
+    { id: 'host-a', status: 'online' },
+    { id: 'host-b', status: 'offline' },
+  ];
+
+  it('returns no host endpoints when PR-only mode disables streams', () => {
+    expect(resolveOnlineWorkspaceStreamHostIds(hosts, false)).toEqual([]);
+  });
+
+  it('returns only online hosts when a workspace pane needs streams', () => {
+    expect(resolveOnlineWorkspaceStreamHostIds(hosts, true)).toEqual([
+      'host-a',
+    ]);
+  });
+});
 
 function sidebarWorkspace(id: string, hostId: string): SidebarWorkspace {
   return {

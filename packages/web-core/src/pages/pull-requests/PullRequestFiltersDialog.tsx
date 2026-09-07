@@ -8,6 +8,7 @@ import {
 } from '@vibe/ui/components/Dialog';
 import { Switch } from '@vibe/ui/components/Switch';
 import { Button } from '@vibe/ui/components/Button';
+import { GitHubApiErrorAlert } from '@/shared/components/GitHubApiErrorAlert';
 
 const selectClassName =
   'h-9 w-full rounded border border-border bg-secondary px-base text-sm text-normal focus:outline-none focus:ring-1 focus:ring-brand';
@@ -17,6 +18,7 @@ interface PullRequestFiltersDialogProps {
   onOpenChange: (open: boolean) => void;
   filters: PullRequestFilterState;
   repositories: Array<{ value: string; label: string }>;
+  repositoryError?: Error | null;
   authors: string[];
   onChange: (filters: PullRequestFilterState) => void;
   onReset: () => void;
@@ -29,6 +31,7 @@ export function PullRequestFiltersDialog({
   onOpenChange,
   filters,
   repositories,
+  repositoryError,
   authors,
   onChange,
   onReset,
@@ -64,6 +67,10 @@ export function PullRequestFiltersDialog({
                 </button>
               )}
             </div>
+            <GitHubApiErrorAlert
+              error={repositoryError}
+              fallback="Could not load GitHub repositories"
+            />
             {repositories.length > 0 ? (
               <div className="max-h-48 space-y-half overflow-y-auto rounded border border-border bg-secondary p-base">
                 {repositories.map((repository) => {
@@ -94,9 +101,11 @@ export function PullRequestFiltersDialog({
                   );
                 })}
               </div>
-            ) : (
-              <p className="text-xs text-low">Register a repository first.</p>
-            )}
+            ) : !repositoryError ? (
+              <p className="text-xs text-low">
+                No GitHub repositories are available.
+              </p>
+            ) : null}
           </div>
           <label className="space-y-half text-sm text-low">
             <span>Status</span>

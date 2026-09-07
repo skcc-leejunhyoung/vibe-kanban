@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkspacesRouteImport } from './routes/workspaces'
+import { Route as PullRequestsRouteImport } from './routes/pull-requests'
 import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ExportRouteImport } from './routes/export'
@@ -35,6 +36,11 @@ import { Route as ProjectsProjectIdIssuesIssueIdHostsHostIdWorkspacesCreateDraft
 const WorkspacesRoute = WorkspacesRouteImport.update({
   id: '/workspaces',
   path: '/workspaces',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PullRequestsRoute = PullRequestsRouteImport.update({
+  id: '/pull-requests',
+  path: '/pull-requests',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NotificationsRoute = NotificationsRouteImport.update({
@@ -162,6 +168,7 @@ export interface FileRoutesByFullPath {
   '/export': typeof ExportRoute
   '/login': typeof LoginRoute
   '/notifications': typeof NotificationsRoute
+  '/pull-requests': typeof PullRequestsRoute
   '/workspaces': typeof WorkspacesRoute
   '/account/complete': typeof AccountCompleteRoute
   '/login/complete': typeof LoginCompleteRoute
@@ -186,6 +193,7 @@ export interface FileRoutesByTo {
   '/export': typeof ExportRoute
   '/login': typeof LoginRoute
   '/notifications': typeof NotificationsRoute
+  '/pull-requests': typeof PullRequestsRoute
   '/workspaces': typeof WorkspacesRoute
   '/account/complete': typeof AccountCompleteRoute
   '/login/complete': typeof LoginCompleteRoute
@@ -211,6 +219,7 @@ export interface FileRoutesById {
   '/export': typeof ExportRoute
   '/login': typeof LoginRoute
   '/notifications': typeof NotificationsRoute
+  '/pull-requests': typeof PullRequestsRoute
   '/workspaces': typeof WorkspacesRoute
   '/account_/complete': typeof AccountCompleteRoute
   '/login_/complete': typeof LoginCompleteRoute
@@ -237,6 +246,7 @@ export interface FileRouteTypes {
     | '/export'
     | '/login'
     | '/notifications'
+    | '/pull-requests'
     | '/workspaces'
     | '/account/complete'
     | '/login/complete'
@@ -261,6 +271,7 @@ export interface FileRouteTypes {
     | '/export'
     | '/login'
     | '/notifications'
+    | '/pull-requests'
     | '/workspaces'
     | '/account/complete'
     | '/login/complete'
@@ -285,6 +296,7 @@ export interface FileRouteTypes {
     | '/export'
     | '/login'
     | '/notifications'
+    | '/pull-requests'
     | '/workspaces'
     | '/account_/complete'
     | '/login_/complete'
@@ -310,6 +322,7 @@ export interface RootRouteChildren {
   ExportRoute: typeof ExportRoute
   LoginRoute: typeof LoginRoute
   NotificationsRoute: typeof NotificationsRoute
+  PullRequestsRoute: typeof PullRequestsRoute
   WorkspacesRoute: typeof WorkspacesRoute
   AccountCompleteRoute: typeof AccountCompleteRoute
   LoginCompleteRoute: typeof LoginCompleteRoute
@@ -335,6 +348,13 @@ declare module '@tanstack/react-router' {
       path: '/workspaces'
       fullPath: '/workspaces'
       preLoaderRoute: typeof WorkspacesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pull-requests': {
+      id: '/pull-requests'
+      path: '/pull-requests'
+      fullPath: '/pull-requests'
+      preLoaderRoute: typeof PullRequestsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/notifications': {
@@ -507,6 +527,7 @@ const rootRouteChildren: RootRouteChildren = {
   ExportRoute: ExportRoute,
   LoginRoute: LoginRoute,
   NotificationsRoute: NotificationsRoute,
+  PullRequestsRoute: PullRequestsRoute,
   WorkspacesRoute: WorkspacesRoute,
   AccountCompleteRoute: AccountCompleteRoute,
   LoginCompleteRoute: LoginCompleteRoute,

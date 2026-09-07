@@ -53,6 +53,25 @@ export function isPaneGridDestination(
   );
 }
 
+export function destinationNeedsWorkspaceStreams(
+  destination: AppDestination | null
+): boolean {
+  switch (destination?.kind) {
+    case 'workspaces':
+    case 'workspaces-create':
+    case 'workspace':
+    case 'workspace-vscode':
+    case 'project':
+    case 'project-issue':
+    case 'project-issue-workspace':
+    case 'project-issue-workspace-create':
+    case 'project-workspace-create':
+      return true;
+    default:
+      return false;
+  }
+}
+
 /** Identity key used to dedupe panes showing the same destination. */
 export function paneDestinationKey(
   destination: WorkspacePaneDestination

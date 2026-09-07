@@ -502,7 +502,6 @@
     "urlLabel": "拉取請求 URL",
     "urlPlaceholder": "https://github.com/owner/repo/pull/123",
     "repositoryLabel": "儲存庫",
-    "remoteLabel": "遠端",
     "pullRequestLabel": "拉取請求",
     "loadingPrInfo": "正在載入 PR 資訊...",
     "invalidUrl": "無法從此 URL 載入 PR 資訊",

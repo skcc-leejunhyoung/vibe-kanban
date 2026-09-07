@@ -593,7 +593,6 @@
     "urlLabel": "Pull Request URL",
     "urlPlaceholder": "https://github.com/owner/repo/pull/123",
     "repositoryLabel": "Repository",
-    "remoteLabel": "Remote",
     "pullRequestLabel": "Pull Request",
     "loadingPrInfo": "Loading PR info...",
     "invalidUrl": "Could not load PR info from this URL",

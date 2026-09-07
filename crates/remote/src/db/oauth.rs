@@ -97,6 +97,33 @@ impl<'a> OAuthHandoffRepository<'a> {
         Self { pool }
     }
 
+    pub async fn bind_reconnect_user(
+        &self,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(), OAuthHandoffError> {
+        let bound = sqlx::query(
+            "UPDATE oauth_handoffs SET reconnect_user_id = $2 WHERE id = $1 AND status = 'pending' AND reconnect_user_id IS NULL",
+        )
+        .bind(id)
+        .bind(user_id)
+        .execute(self.pool)
+        .await?;
+        if bound.rows_affected() != 1 {
+            return Err(OAuthHandoffError::NotAuthorized);
+        }
+        Ok(())
+    }
+
+    pub async fn reconnect_user(&self, id: Uuid) -> Result<Option<Uuid>, OAuthHandoffError> {
+        Ok(
+            sqlx::query_scalar("SELECT reconnect_user_id FROM oauth_handoffs WHERE id = $1")
+                .bind(id)
+                .fetch_one(self.pool)
+                .await?,
+        )
+    }
+
     pub async fn create(
         &self,
         data: CreateOAuthHandoff<'_>,

@@ -503,7 +503,6 @@
     "urlLabel": "URL de la solicitud de extracción",
     "urlPlaceholder": "https://github.com/owner/repo/pull/123",
     "repositoryLabel": "Repositorio",
-    "remoteLabel": "Remoto",
     "pullRequestLabel": "Solicitud de extracción",
     "loadingPrInfo": "Cargando información del PR...",
     "invalidUrl": "No se pudo cargar la información del PR desde esta URL",

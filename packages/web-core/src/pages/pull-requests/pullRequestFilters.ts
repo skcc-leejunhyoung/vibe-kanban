@@ -1,4 +1,5 @@
 import type { MergeStatus } from 'shared/types';
+import { isGitHubRepositoryFullName } from './pullRequestUrl';
 
 export type PullRequestStatusFilter = 'all' | MergeStatus;
 export type PullRequestDraftFilter = 'all' | 'draft' | 'ready';
@@ -33,15 +34,34 @@ export function migratePullRequestDefaultFilters(
     ...DEFAULT_PULL_REQUEST_FILTER_STATE,
     ...legacy,
   };
+  merged.repositories = Array.isArray(legacy.repositories)
+    ? legacy.repositories.filter(
+        (repository): repository is string =>
+          typeof repository === 'string' &&
+          isGitHubRepositoryFullName(repository)
+      )
+    : [];
   if (
     merged.repositories.length === 0 &&
-    legacy.repository &&
-    legacy.repository !== 'all'
+    typeof legacy.repository === 'string' &&
+    isGitHubRepositoryFullName(legacy.repository)
   ) {
     merged.repositories = [legacy.repository];
   }
   delete merged.repository;
   return merged;
+}
+
+export function prunePullRequestRepositories(
+  filters: PullRequestFilterState,
+  validRepositoryIds: ReadonlySet<string>
+): PullRequestFilterState {
+  const repositories = filters.repositories.filter((id) =>
+    validRepositoryIds.has(id)
+  );
+  return repositories.length === filters.repositories.length
+    ? filters
+    : { ...filters, repositories };
 }
 
 function filterValuesEqual(a: unknown, b: unknown): boolean {
@@ -65,21 +85,16 @@ export function resolvePullRequestFiltersAfterRepositoriesChange(
   defaults: PullRequestFilterState,
   validRepositoryIds: ReadonlySet<string>
 ): PullRequestFilterState {
-  const repositories = current.repositories.filter((id) =>
-    validRepositoryIds.has(id)
-  );
-  const filtered =
-    repositories.length === current.repositories.length
-      ? current
-      : { ...current, repositories };
-  const defaultRepositories = defaults.repositories.filter((id) =>
-    validRepositoryIds.has(id)
+  const filtered = prunePullRequestRepositories(current, validRepositoryIds);
+  const filteredDefaults = prunePullRequestRepositories(
+    defaults,
+    validRepositoryIds
   );
 
-  return repositories.length !== current.repositories.length &&
+  return filtered !== current &&
     filtersEqual(filtered, DEFAULT_PULL_REQUEST_FILTER_STATE) &&
-    defaultRepositories.length > 0
-    ? { ...defaults, repositories: defaultRepositories }
+    filteredDefaults.repositories.length > 0
+    ? filteredDefaults
     : filtered;
 }
 

@@ -222,11 +222,10 @@ impl<'a> AuthSessionRepository<'a> {
         Ok(update_result.rows_affected() as i64)
     }
 
-    pub async fn revoke_all_user_sessions(&self, user_id: Uuid) -> Result<i64, AuthSessionError> {
-        let mut tx = super::begin_tx(self.pool)
-            .await
-            .map_err(AuthSessionError::from)?;
-
+    pub(super) async fn revoke_issued_user_sessions(
+        connection: &mut sqlx::PgConnection,
+        user_id: Uuid,
+    ) -> Result<i64, sqlx::Error> {
         sqlx::query!(
             r#"
             INSERT INTO revoked_refresh_tokens (token_id, user_id, revoked_reason)
@@ -246,24 +245,21 @@ impl<'a> AuthSessionRepository<'a> {
             "#,
             user_id
         )
-        .execute(&mut *tx)
-        .await
-        .map_err(AuthSessionError::from)?;
+        .execute(&mut *connection)
+        .await?;
 
-        let update_result = sqlx::query!(
+        let update_result = sqlx::query(
             r#"
             UPDATE auth_sessions
             SET revoked_at = NOW()
             WHERE user_id = $1
               AND revoked_at IS NULL
+              AND refresh_token_id IS NOT NULL
             "#,
-            user_id
         )
-        .execute(&mut *tx)
-        .await
-        .map_err(AuthSessionError::from)?;
-
-        tx.commit().await.map_err(AuthSessionError::from)?;
+        .bind(user_id)
+        .execute(&mut *connection)
+        .await?;
 
         Ok(update_result.rows_affected() as i64)
     }

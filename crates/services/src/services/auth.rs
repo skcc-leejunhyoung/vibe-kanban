@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use api_types::ProfileResponse;
 use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard, RwLock};
+use uuid::Uuid;
 
-use super::oauth_credentials::{Credentials, OAuthCredentials};
+use super::oauth_credentials::{Credentials, OAuthCredentials, ReconnectGuard};
 
 #[derive(Clone)]
 pub struct AuthContext {
@@ -36,6 +37,32 @@ impl AuthContext {
 
     pub async fn clear_credentials(&self) -> std::io::Result<()> {
         self.oauth.clear().await
+    }
+
+    pub async fn begin_reconnect(&self) -> Option<(Credentials, Arc<ReconnectGuard>)> {
+        self.oauth.begin_reconnect().await
+    }
+
+    pub async fn is_reconnecting(&self) -> bool {
+        self.oauth.is_reconnecting().await
+    }
+
+    pub async fn replace_credentials(
+        &self,
+        expected_refresh_token: &str,
+        creds: Option<&Credentials>,
+    ) -> std::io::Result<bool> {
+        self.oauth
+            .replace_if_current(expected_refresh_token, creds)
+            .await
+    }
+
+    pub async fn save_reconnected_credentials(
+        &self,
+        creds: &Credentials,
+        user_id: Uuid,
+    ) -> std::io::Result<bool> {
+        self.oauth.save_for_user(creds, user_id).await
     }
 
     pub async fn remote_auth_degraded_slug(&self) -> Option<String> {

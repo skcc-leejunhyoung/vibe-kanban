@@ -2446,11 +2446,12 @@ export const oauthApi = {
 
   handoffInit: async (
     provider: string,
-    returnTo: string
+    returnTo: string,
+    reauthenticate = false
   ): Promise<{ handoff_id: string; authorize_url: string }> => {
     const response = await makeRequest('/api/auth/handoff/init', {
       method: 'POST',
-      body: JSON.stringify({ provider, return_to: returnTo }),
+      body: JSON.stringify({ provider, return_to: returnTo, reauthenticate }),
     });
     return handleApiResponse<{ handoff_id: string; authorize_url: string }>(
       response
@@ -2470,6 +2471,14 @@ export const oauthApi = {
       { cache: 'no-store' }
     );
     return handleApiResponse<{ completed: boolean }>(response);
+  },
+
+  handoffCancel: async (handoffId: string): Promise<void> => {
+    const response = await makeRequest('/api/auth/handoff/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ handoff_id: handoffId }),
+    });
+    await handleApiResponse<void>(response);
   },
 
   localLogin: async (

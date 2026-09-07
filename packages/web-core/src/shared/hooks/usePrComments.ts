@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { issuePrsApi, workspacesApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getGitHubPullRequestComments } from '@/shared/lib/remoteApi';
 import type { PrCommentsResponse } from 'shared/types';
 
 export const prCommentsKeys = {
@@ -20,13 +21,18 @@ export const prCommentsKeys = {
       prNumber,
       getHostRequestScopeQueryKey(hostId),
     ] as const,
-  byUrl: (prUrl: string, prNumber: number, hostId: string | null = null) =>
+  byUrl: (
+    prUrl: string,
+    prNumber: number,
+    dataSource: 'host' | 'github',
+    hostId: string | null
+  ) =>
     [
       'prComments',
       'url',
       prUrl,
       prNumber,
-      getHostRequestScopeQueryKey(hostId),
+      dataSource === 'github' ? 'github' : getHostRequestScopeQueryKey(hostId),
     ] as const,
 };
 
@@ -66,13 +72,22 @@ export function usePrComments(
 export function usePrCommentsByUrl(
   prUrl: string,
   prNumber: number,
-  enabled = true
+  options: {
+    enabled?: boolean;
+    dataSource?: 'host' | 'github';
+    hostId?: string | null;
+  } = {}
 ) {
-  const hostId = useHostId();
+  const routeHostId = useHostId();
+  const hostId = options.hostId === undefined ? routeHostId : options.hostId;
+  const dataSource = options.dataSource ?? 'host';
   return useQuery<PrCommentsResponse>({
-    queryKey: prCommentsKeys.byUrl(prUrl, prNumber, hostId),
-    queryFn: () => issuePrsApi.getPrComments(prUrl, prNumber, hostId),
-    enabled,
+    queryKey: prCommentsKeys.byUrl(prUrl, prNumber, dataSource, hostId),
+    queryFn: () =>
+      dataSource === 'github'
+        ? getGitHubPullRequestComments(prUrl)
+        : issuePrsApi.getPrComments(prUrl, prNumber, hostId),
+    enabled: options.enabled ?? true,
     staleTime: 30_000,
     retry: 2,
   });

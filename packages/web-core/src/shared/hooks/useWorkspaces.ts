@@ -105,6 +105,14 @@ export function getHostWorkspaceKey(
 // remote host streams — drives an onUpdate -> setStreams -> re-render loop
 // (Maximum update depth exceeded) on the unified multi-host list. Never mutate.
 const EMPTY_WORKSPACE_SUMMARIES = new Map<string, WorkspaceSummary>();
+const EMPTY_UNIFIED_WORKSPACES: UseWorkspacesResult = {
+  workspaces: [],
+  archivedWorkspaces: [],
+  workspaceRecordsById: {},
+  isLoading: false,
+  isConnected: false,
+  error: null,
+};
 
 // State shape from the WebSocket stream
 type WorkspacesState = {
@@ -507,17 +515,27 @@ function RemoteHostWorkspaceStreamSource({
   return null;
 }
 
+export function resolveOnlineWorkspaceStreamHostIds(
+  hosts: ReadonlyArray<{ id: string; status: string }>,
+  enabled: boolean
+): string[] {
+  return enabled
+    ? hosts.filter((host) => host.status === 'online').map((host) => host.id)
+    : [];
+}
+
 export function UnifiedWorkspaceStreamsProvider({
   children,
+  enabled = true,
 }: {
   children: ReactNode;
+  enabled?: boolean;
 }) {
   const runtime = useAppRuntime();
   const { hosts } = useWorkspaceHostOptions();
   const onlineHostIds = useMemo(
-    () =>
-      hosts.filter((host) => host.status === 'online').map((host) => host.id),
-    [hosts]
+    () => resolveOnlineWorkspaceStreamHostIds(hosts, enabled),
+    [enabled, hosts]
   );
   const [streams, setStreams] = useState<
     Map<string, RemoteHostWorkspaceStream>
@@ -611,19 +629,19 @@ async function fetchHostWorkspaceSnapshot(
  * snapshots. Both local and remote web consume this hook through the shared
  * WorkspaceProvider, including their mobile workspace lists.
  */
-export function useUnifiedWorkspaces(): UseWorkspacesResult {
+export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
   const runtime = useAppRuntime();
   const remoteStreams = useContext(RemoteWorkspaceStreamsContext);
-  const current = useWorkspaces(runtime !== 'remote');
+  const current = useWorkspaces(enabled && runtime !== 'remote');
   const currentHostId = useHostId();
   const { hosts } = useWorkspaceHostOptions();
   const snapshotHostIds = useMemo<(string | null)[]>(() => {
-    if (runtime !== 'local') return [];
+    if (!enabled || runtime !== 'local') return [];
     const onlineRemoteHostIds = hosts
       .filter((host) => host.status === 'online')
       .map((host) => host.id);
     return resolveSnapshotHostIds(onlineRemoteHostIds, currentHostId);
-  }, [hosts, currentHostId, runtime]);
+  }, [enabled, hosts, currentHostId, runtime]);
   const snapshots = useQueries({
     queries: snapshotHostIds.map((hostId) => ({
       queryKey: ['unified-workspaces', hostId],
@@ -634,10 +652,12 @@ export function useUnifiedWorkspaces(): UseWorkspacesResult {
   });
 
   return useMemo(() => {
+    if (!enabled) return EMPTY_UNIFIED_WORKSPACES;
+
     if (runtime === 'remote') {
       return combineRemoteWorkspaceStreams(
         remoteStreams ?? new Map(),
-        hosts.filter((host) => host.status === 'online').map((host) => host.id)
+        resolveOnlineWorkspaceStreamHostIds(hosts, true)
       );
     }
 
@@ -650,5 +670,5 @@ export function useUnifiedWorkspaces(): UseWorkspacesResult {
       workspaces: [...current.workspaces, ...remoteActive],
       archivedWorkspaces: [...current.archivedWorkspaces, ...remoteArchived],
     };
-  }, [current, snapshots, runtime, remoteStreams, hosts]);
+  }, [current, enabled, snapshots, runtime, remoteStreams, hosts]);
 }

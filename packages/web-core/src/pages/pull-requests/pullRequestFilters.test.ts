@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PULL_REQUEST_FILTER_STATE,
   migratePullRequestDefaultFilters,
+  prunePullRequestRepositories,
   resolvePullRequestFiltersAfterDefaultsChange,
   resolvePullRequestFiltersAfterRepositoriesChange,
 } from './pullRequestFilters';
@@ -13,11 +14,33 @@ describe('DEFAULT_PULL_REQUEST_FILTER_STATE', () => {
 });
 
 describe('migratePullRequestDefaultFilters', () => {
-  it('preserves legacy single-repository defaults during config promotion', () => {
-    expect(migratePullRequestDefaultFilters({ repository: 'repo-1' })).toEqual({
+  it('preserves canonical legacy single-repository defaults', () => {
+    expect(
+      migratePullRequestDefaultFilters({ repository: 'acme/repo-1' })
+    ).toEqual({
       ...DEFAULT_PULL_REQUEST_FILTER_STATE,
-      repositories: ['repo-1'],
+      repositories: ['acme/repo-1'],
     });
+  });
+
+  it('drops legacy host repository UUIDs before background prefetching', () => {
+    expect(
+      migratePullRequestDefaultFilters({
+        repositories: ['acme/repo-1', 'acb1d80f-9fe8-4415-a4b1-2d94134b2b10'],
+      }).repositories
+    ).toEqual(['acme/repo-1']);
+  });
+});
+
+describe('prunePullRequestRepositories', () => {
+  it('returns the same object when all configured repositories still exist', () => {
+    const filters = {
+      ...DEFAULT_PULL_REQUEST_FILTER_STATE,
+      repositories: ['acme/repo-1'],
+    };
+    expect(
+      prunePullRequestRepositories(filters, new Set(['acme/repo-1']))
+    ).toBe(filters);
   });
 });
 

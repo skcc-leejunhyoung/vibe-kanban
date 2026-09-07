@@ -1,5 +1,5 @@
 use api_types::PullRequestIssue;
-use sqlx::{Executor, PgPool, Postgres};
+use sqlx::{Executor, FromRow, PgPool, Postgres};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -15,7 +15,64 @@ pub enum PullRequestIssueError {
 
 pub struct PullRequestIssueRepository;
 
+#[derive(Debug, FromRow)]
+pub struct PullRequestIssueWithUrl {
+    pub url: String,
+    pub id: Uuid,
+    pub pull_request_id: Uuid,
+    pub issue_id: Uuid,
+    pub project_id: Uuid,
+}
+
+impl PullRequestIssueWithUrl {
+    pub fn into_parts(self) -> (String, PullRequestIssue) {
+        (
+            self.url,
+            PullRequestIssue {
+                id: self.id,
+                pull_request_id: self.pull_request_id,
+                issue_id: self.issue_id,
+                project_id: self.project_id,
+            },
+        )
+    }
+}
+
 impl PullRequestIssueRepository {
+    pub async fn list_by_urls_for_user(
+        pool: &PgPool,
+        urls: &[String],
+        user_id: Uuid,
+    ) -> Result<Vec<PullRequestIssueWithUrl>, PullRequestIssueError> {
+        if urls.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let records = sqlx::query_as::<_, PullRequestIssueWithUrl>(
+            r#"
+            SELECT
+                p.url,
+                pri.id,
+                pri.pull_request_id,
+                pri.issue_id,
+                pri.project_id
+            FROM pull_request_issues pri
+            INNER JOIN pull_requests p ON p.id = pri.pull_request_id
+            INNER JOIN projects proj ON proj.id = pri.project_id
+            INNER JOIN organization_member_metadata omm
+                ON omm.organization_id = proj.organization_id
+                AND omm.user_id = $2
+            WHERE p.url = ANY($1)
+            "#,
+        )
+        .bind(urls)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(records)
+    }
+
     pub async fn find_by_id(
         pool: &PgPool,
         id: Uuid,

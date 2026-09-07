@@ -5,6 +5,7 @@ import { AppRouter } from "@remote/app/entry/App";
 import { RemoteAuthProvider } from "@remote/app/providers/RemoteAuthProvider";
 import { getIdentity } from "@remote/shared/lib/api";
 import { getToken, triggerRefresh } from "@remote/shared/lib/auth/tokenManager";
+import { redirectToOAuth } from "@remote/shared/lib/oauth";
 import "@remote/app/styles/index.css";
 import "@/i18n";
 import { configureAuthRuntime } from "@/shared/lib/auth/runtime";
@@ -52,6 +53,7 @@ installAppZoom();
 configureAuthRuntime({
   getToken,
   triggerRefresh,
+  redirectToOAuth,
   registerShape: () => () => {},
   getCurrentUser: async () => {
     const identity = await getIdentity();

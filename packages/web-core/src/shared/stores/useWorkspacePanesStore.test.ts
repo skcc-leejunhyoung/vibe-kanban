@@ -16,6 +16,7 @@ vi.stubGlobal('localStorage', {
 const {
   getAdjacentWorkspacePaneId,
   getActivePaneWorkspace,
+  destinationNeedsWorkspaceStreams,
   isPaneSeparatorActive,
   layoutForPanes,
   paneDestinationKey,
@@ -49,6 +50,24 @@ function reset() {
 }
 
 beforeEach(reset);
+
+describe('destinationNeedsWorkspaceStreams', () => {
+  it('keeps server-only notification panes host independent', () => {
+    expect(destinationNeedsWorkspaceStreams({ kind: 'notifications' })).toBe(
+      false
+    );
+  });
+
+  it('keeps pull requests host independent while workspace panes use streams', () => {
+    expect(destinationNeedsWorkspaceStreams(ws('ws-a'))).toBe(true);
+    expect(
+      destinationNeedsWorkspaceStreams({ kind: 'project', projectId: 'p1' })
+    ).toBe(true);
+    expect(destinationNeedsWorkspaceStreams({ kind: 'pull-requests' })).toBe(
+      false
+    );
+  });
+});
 
 describe('ensurePane / appendPane / focusPaneAt', () => {
   it('creates a single empty pane on boot', () => {

@@ -1571,8 +1571,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
 
     expect(showSelection).not.toHaveBeenCalled();
     expect(goToPullRequests).toHaveBeenCalledWith(
-      'https://example.com/pull/42',
-      undefined
+      'https://example.com/pull/42'
     );
   });
 
@@ -1616,8 +1615,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
 
     expect(showSelection).toHaveBeenCalledOnce();
     expect(goToPullRequests).toHaveBeenCalledWith(
-      'https://example.com/pull/42',
-      undefined
+      'https://example.com/pull/42'
     );
   });
 
@@ -1661,7 +1659,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
     expect(goToPullRequests).not.toHaveBeenCalled();
   });
 
-  it('forwards the selected host when opening on remote', async () => {
+  it('opens globally even when the remote app has a selected host', async () => {
     getBranchStatus.mockResolvedValue([
       {
         repo_id: 'repo1',
@@ -1689,10 +1687,7 @@ describe('Actions.GitOpenPRInPullRequests', () => {
 
     await Actions.GitOpenPRInPullRequests.execute(ctx, 'ws1', 'repo1');
 
-    expect(goToPullRequests).toHaveBeenCalledWith(
-      'https://example.com/pull/7',
-      { hostId: 'host-1' }
-    );
+    expect(goToPullRequests).toHaveBeenCalledWith('https://example.com/pull/7');
   });
 });
 
@@ -1749,6 +1744,8 @@ describe('issue pull request actions', () => {
     const { ctx } = makeCtx(
       { id: 'ws1' },
       {
+        appRuntime: 'remote',
+        currentHostId: null,
         projectMutations: {
           removeIssue: vi.fn(),
           duplicateIssue: vi.fn(),
@@ -1764,7 +1761,8 @@ describe('issue pull request actions', () => {
     expect(showPrDetails).toHaveBeenCalledWith({
       prUrl: linkedPullRequest.url,
       prNumber: linkedPullRequest.number,
-      hostId: ctx.currentHostId,
+      hostId: null,
+      dataSource: 'github',
     });
   });
 
@@ -1803,10 +1801,7 @@ describe('issue pull request actions', () => {
       'issue-1',
     ]);
 
-    expect(goToPullRequests).toHaveBeenCalledWith(
-      linkedPullRequest.url,
-      undefined
-    );
+    expect(goToPullRequests).toHaveBeenCalledWith(linkedPullRequest.url);
   });
 });
 

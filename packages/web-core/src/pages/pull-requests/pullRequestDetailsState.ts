@@ -1,6 +1,10 @@
-export function shouldPreservePullRequestDetails(
-  initialPrUrl: string | undefined,
-  skipNextRepositoryReset: boolean
-) {
-  return Boolean(initialPrUrl) || skipNextRepositoryReset;
+import {
+  getPullRequestNumberFromUrl,
+  normalizeGitHubPullRequestUrl,
+} from './pullRequestUrl';
+
+export function getPullRequestTargetFromUrl(prUrl: string | undefined) {
+  const url = prUrl ? normalizeGitHubPullRequestUrl(prUrl) : null;
+  const number = url ? getPullRequestNumberFromUrl(url) : null;
+  return url && number !== null ? { url, number } : null;
 }

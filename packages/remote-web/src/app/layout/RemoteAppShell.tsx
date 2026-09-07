@@ -230,31 +230,12 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     );
   }, [appNavigation, appRuntime, navigate, selectWorkspaceHost]);
 
-  const selectedWorkspaceHostId = useWorkspaceHostSelectionStore(
-    (state) => state.selectedHostId,
-  );
-  const pullRequestsHostId = useMemo(() => {
-    const routeMatch = location.pathname.match(/^\/hosts\/([^/]+)/);
-    if (routeMatch?.[1]) {
-      return decodeURIComponent(routeMatch[1]);
-    }
-    if (selectedWorkspaceHostId !== ALL_WORKSPACE_HOSTS_ID) {
-      return selectedWorkspaceHostId;
-    }
-    return relayHosts.find((host) => host.status === "online")?.id ?? null;
-  }, [location.pathname, relayHosts, selectedWorkspaceHostId]);
-
   const handlePullRequestsClick = useCallback(() => {
-    if (!pullRequestsHostId) {
-      openRelaySettings();
-      return;
-    }
     navigate({
-      to: "/hosts/$hostId/pull-requests",
-      params: { hostId: pullRequestsHostId },
+      to: "/pull-requests",
       search: { prUrl: undefined },
     });
-  }, [navigate, openRelaySettings, pullRequestsHostId]);
+  }, [navigate]);
 
   const handleProjectClick = useCallback(
     (projectId: string, event?: MouseEvent<HTMLButtonElement>) => {

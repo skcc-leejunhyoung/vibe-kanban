@@ -80,12 +80,40 @@ export type PullRequest = { id: string, url: string, number: number, status: Pul
 
 export type PullRequestIssue = { id: string, pull_request_id: string, issue_id: string, project_id: string, };
 
+export type PullRequestIssueMapping = { url: string, pull_request_issues: Array<PullRequestIssue>, };
+
+export type ListPullRequestIssueMappingsRequest = { urls: Array<string>, };
+
+export type ListPullRequestIssueMappingsResponse = { mappings: Array<PullRequestIssueMapping>, };
+
 export type CreatePullRequestIssueRequest = {
 /**
  * Optional client-generated ID. If not provided, server generates one.
  * Using client-generated IDs enables stable optimistic updates.
  */
 id?: string, issue_id: string, url: string, number: number, status: PullRequestStatus, merged_at: string | null, merge_commit_sha: string | null, target_branch_name: string, };
+
+export type GitHubRepository = { name: string, full_name: string, };
+
+export type GitHubPullRequestStatus = "open" | "merged" | "closed" | "unknown";
+
+export type GitHubPullRequestSummary = { number: bigint, url: string, status: GitHubPullRequestStatus, title: string, body: string, author: string | null, assignees: Array<string>, labels: Array<string>, repository: string, is_draft: boolean, review_decision: string | null, is_review_requested: boolean, comments_count: bigint, created_at: string | null, updated_at: string | null, closed_at: string | null, };
+
+export type GitHubPullRequestDetail = { number: bigint, url: string, status: GitHubPullRequestStatus, merged_at: string | null, merge_commit_sha: string | null, title: string, body: string, author: string | null, assignees: Array<string>, reviewers: Array<string>, reviews: Array<GitHubPullRequestReview>, review_requests: Array<GitHubPullRequestReviewRequest>, commits: Array<GitHubPullRequestCommit>, review_decision: string | null, is_draft: boolean, created_at: string | null, updated_at: string | null, base_branch: string, head_branch: string, };
+
+export type GitHubPullRequestReview = { id: string, author: string, state: string, body: string, submitted_at: string | null, };
+
+export type GitHubPullRequestCommit = { oid: string, message: string, authors: Array<string>, committed_at: string | null, };
+
+export type GitHubPullRequestReviewRequestAction = "requested" | "rerequested";
+
+export type GitHubPullRequestReviewRequest = { id: string, actor: string, requested_reviewer: string, action: GitHubPullRequestReviewRequestAction, created_at: string, };
+
+export type GitHubPullRequestCommentsResponse = { comments: Array<GitHubPullRequestComment>, };
+
+export type GitHubPullRequestComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, parent_id: string | null, } | { "comment_type": "review", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, parent_id: string | null, review_id: string | null, thread_id: string | null, is_resolved: boolean | null, is_outdated: boolean | null, };
+
+export type SetGitHubReviewThreadResolvedRequest = { url: string, thread_id: string, resolved: boolean, };
 
 export type CreateGithubIssueLinkRequest = { id?: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, synced_milestone_id: string | null, synced_github_milestone_number: number | null, };
 

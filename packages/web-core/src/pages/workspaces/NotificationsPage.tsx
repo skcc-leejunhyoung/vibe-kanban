@@ -14,19 +14,16 @@ import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
-import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
 import {
   buildNotificationTabUrl,
-  getKnownPullRequestHostId,
   getPayload,
   getPullRequestDetailsNavigationTarget,
 } from '@/shared/lib/notifications';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
-import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import {
   getGroupedNotificationSegments,
   type MessageSegment,
@@ -174,7 +171,6 @@ export function NotificationsPage() {
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const openInSplitPane = useOpenInSplitPane();
-  const runtime = useAppRuntime();
   const notificationListRef = useRef<HTMLDivElement>(null);
   const {
     data,
@@ -204,20 +200,6 @@ export function NotificationsPage() {
   );
   const selectedCount = selectedGroups.length;
   const { membersByUserId } = useNotificationMembers(data);
-
-  const knownPullRequestHostId = useCallback(
-    (group: GroupedNotification) => {
-      const target = getPullRequestDetailsNavigationTarget(group.latest);
-      if (!target) return null;
-      return getKnownPullRequestHostId(target, [
-        appNavigation.resolveFromPath(window.location.href),
-        ...useWorkspacePanesStore
-          .getState()
-          .panes.map((pane) => pane.destination),
-      ]);
-    },
-    [appNavigation]
-  );
 
   const markGroupSeen = useCallback(
     (group: GroupedNotification) => {
@@ -331,20 +313,10 @@ export function NotificationsPage() {
   const openGroupInNewTab = useCallback(
     (group: GroupedNotification) => {
       markGroupSeen(group);
-      const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
-      const knownHostId = knownPullRequestHostId(group);
-      if (prDetails && runtime === 'remote' && !knownHostId) {
-        void selectWorkspaceHost().then((hostId) => {
-          if (!hostId) return;
-          const url = buildNotificationTabUrl(group, { hostId });
-          if (url) openInSplitPane(url);
-        });
-        return;
-      }
-      const url = buildNotificationTabUrl(group, { hostId: knownHostId });
+      const url = buildNotificationTabUrl(group);
       if (url) openInSplitPane(url);
     },
-    [knownPullRequestHostId, markGroupSeen, openInSplitPane, runtime]
+    [markGroupSeen, openInSplitPane]
   );
 
   // Keep the cursor store in sync so the "Open Notification in New Tab" command
@@ -375,22 +347,7 @@ export function NotificationsPage() {
       const path = group.deeplinkPath;
       const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
       if (prDetails) {
-        if (runtime === 'remote') {
-          const hostId = knownPullRequestHostId(group);
-          if (hostId) {
-            appNavigation.goToPullRequests(prDetails.prUrl, {
-              hostId,
-            });
-            return;
-          }
-          void selectWorkspaceHost().then((hostId) => {
-            if (hostId) {
-              appNavigation.goToPullRequests(prDetails.prUrl, { hostId });
-            }
-          });
-        } else {
-          appNavigation.goToPullRequests(prDetails.prUrl);
-        }
+        appNavigation.goToPullRequests(prDetails.prUrl);
         return;
       }
       if (path) {
@@ -405,7 +362,7 @@ export function NotificationsPage() {
         });
       }
     },
-    [appNavigation, knownPullRequestHostId, markGroupSeen, router, runtime]
+    [appNavigation, markGroupSeen, router]
   );
 
   const handleMarkAllSeen = useCallback(() => {

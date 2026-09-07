@@ -125,13 +125,17 @@ export function PrPanelContainer({
     });
   }, []);
 
-  const handleViewDetails = useCallback((pr: PrInfo) => {
-    if (!pr.prUrl) return;
-    void PrDetailsDialog.show({
-      prUrl: pr.prUrl,
-      prNumber: pr.prNumber,
-    });
-  }, []);
+  const handleViewDetails = useCallback(
+    (pr: PrInfo) => {
+      if (!pr.prUrl) return;
+      void PrDetailsDialog.show({
+        prUrl: pr.prUrl,
+        prNumber: pr.prNumber,
+        hostId,
+      });
+    },
+    [hostId]
+  );
 
   // Unlink the PR from the workspace. Removes only the local link (the PR on the
   // host is untouched), then refreshes branch status so the panel updates.

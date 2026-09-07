@@ -51,6 +51,8 @@ interface WorkspaceProviderProps {
    * one source per document is the point of in-document panes.
    */
   inheritStreams?: boolean;
+  /** Keep the context mounted while suppressing host workspace streams. */
+  enableStreams?: boolean;
 }
 
 // Stable reference so an empty commit-diff result doesn't churn downstream memos.
@@ -368,10 +370,12 @@ function WorkspaceProviderContent({
 
 function WorkspaceProviderWithOwnStreams({
   children,
+  enableStreams,
 }: {
   children: ReactNode;
+  enableStreams: boolean;
 }) {
-  const lists = useUnifiedWorkspaces();
+  const lists = useUnifiedWorkspaces(enableStreams);
   return (
     <WorkspaceProviderContent lists={lists}>
       {children}
@@ -408,6 +412,7 @@ function WorkspaceProviderWithInheritedStreams({
 export function WorkspaceProvider({
   children,
   inheritStreams = false,
+  enableStreams = true,
 }: WorkspaceProviderProps) {
   if (inheritStreams) {
     return (
@@ -417,8 +422,8 @@ export function WorkspaceProvider({
     );
   }
   return (
-    <UnifiedWorkspaceStreamsProvider>
-      <WorkspaceProviderWithOwnStreams>
+    <UnifiedWorkspaceStreamsProvider enabled={enableStreams}>
+      <WorkspaceProviderWithOwnStreams enableStreams={enableStreams}>
         {children}
       </WorkspaceProviderWithOwnStreams>
     </UnifiedWorkspaceStreamsProvider>

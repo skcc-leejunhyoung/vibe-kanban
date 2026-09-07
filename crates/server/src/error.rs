@@ -225,6 +225,11 @@ fn remote_client_error(err: &RemoteClientError) -> ErrorInfo {
             "RemoteClientError",
             "Unauthorized. Please sign in again.",
         ),
+        RemoteClientError::ReconnectPending => ErrorInfo::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RemoteClientError",
+            err.to_string(),
+        ),
         RemoteClientError::Timeout => ErrorInfo::with_status(
             StatusCode::GATEWAY_TIMEOUT,
             "RemoteClientError",

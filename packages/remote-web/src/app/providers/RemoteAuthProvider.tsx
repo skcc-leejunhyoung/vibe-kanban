@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-query";
 import { AUTH_CHANGED_EVENT, isLoggedIn } from "@remote/shared/lib/auth";
 import { getIdentity } from "@remote/shared/lib/api";
+import { cancelOAuthReconnect } from "@remote/shared/lib/oauth";
 import {
   AuthContext,
   type AuthContextValue,
@@ -38,6 +39,20 @@ export function RemoteAuthProvider({ children }: RemoteAuthProviderProps) {
 
   useEffect(() => {
     clearLegacyLocalStorageScratch();
+    const cancelAbandonedReconnect = () => {
+      if (window.location.pathname !== "/account/complete") {
+        void cancelOAuthReconnect().catch(() => {
+          // The persisted guard also expires if browser storage is unavailable.
+          console.warn("Could not release the abandoned OAuth reconnect");
+        });
+      }
+    };
+    cancelAbandonedReconnect();
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) cancelAbandonedReconnect();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
   }, []);
 
   const tokensQuery = useQuery({
@@ -52,7 +67,9 @@ export function RemoteAuthProvider({ children }: RemoteAuthProviderProps) {
   const identityQuery = useQuery({
     queryKey: IDENTITY_QUERY_KEY,
     queryFn: () => getIdentity(),
-    enabled: hasTokens,
+    // OAuth completion owns credential recovery. Refreshing the old revoked
+    // provider token here can log the user out before redemption finishes.
+    enabled: hasTokens && window.location.pathname !== "/account/complete",
     retry: false,
     staleTime: 30_000,
     refetchOnWindowFocus: true,

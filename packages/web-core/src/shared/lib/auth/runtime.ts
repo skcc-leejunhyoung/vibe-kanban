@@ -7,6 +7,11 @@ export interface AuthRuntime {
   triggerRefresh: () => Promise<string | null>;
   registerShape: (shape: PauseableShape) => () => void;
   getCurrentUser: () => Promise<CurrentUser>;
+  /** Browser deployments authenticate centrally instead of opening the local handoff dialog. */
+  redirectToOAuth?: (
+    provider?: 'github' | 'google',
+    reauthenticate?: boolean
+  ) => Promise<void>;
 }
 
 let authRuntime: AuthRuntime | null = null;

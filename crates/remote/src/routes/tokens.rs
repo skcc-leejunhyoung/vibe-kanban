@@ -166,7 +166,7 @@ async fn refresh_token(
         let encrypted_provider_tokens =
             jwt_service.encrypt_provider_tokens(legacy_provider_token_details)?;
         oauth_account_repo
-            .update_encrypted_provider_tokens(
+            .backfill_encrypted_provider_tokens(
                 token_details.user_id,
                 &token_details.provider,
                 &encrypted_provider_tokens,

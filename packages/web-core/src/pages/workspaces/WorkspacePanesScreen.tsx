@@ -5,6 +5,7 @@ import { usePageTitle } from '@/shared/hooks/usePageTitle';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { navigateDocumentTo } from '@/shared/lib/routes/paneNavigation';
 import {
+  destinationNeedsWorkspaceStreams,
   isPaneRenderableDestination,
   sameDestination,
   useActivePaneWorkspace,
@@ -42,6 +43,14 @@ export function WorkspacePanesScreen() {
   const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
   const activeDestination =
     panes.find((pane) => pane.id === activePaneId)?.destination ?? null;
+  const showWorkspaceSidebar =
+    isLeftSidebarVisible &&
+    (documentDestination?.kind !== 'pull-requests' ||
+      panes.some(
+        (pane) =>
+          pane.destination?.kind !== 'pull-requests' &&
+          destinationNeedsWorkspaceStreams(pane.destination)
+      ));
   const previousActiveDestinationRef = useRef<
     WorkspacePaneDestination | null | undefined
   >(undefined);
@@ -104,7 +113,7 @@ export function WorkspacePanesScreen() {
 
   return (
     <div className="flex flex-1 min-h-0 h-full">
-      {isLeftSidebarVisible && (
+      {showWorkspaceSidebar && (
         <div className="w-[300px] shrink-0 h-full overflow-hidden">
           <WorkspacesSidebarContainer />
         </div>

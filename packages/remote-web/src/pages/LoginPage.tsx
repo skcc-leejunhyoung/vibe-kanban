@@ -3,17 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
 import {
   getAuthMethods,
-  initOAuth,
   localLogin,
   type OAuthProvider,
 } from "@remote/shared/lib/api";
 import { storeTokens } from "@remote/shared/lib/auth";
 import { BrandLogo } from "@remote/shared/components/BrandLogo";
-import {
-  generateVerifier,
-  generateChallenge,
-  storeVerifier,
-} from "@remote/shared/lib/pkce";
+import { startOAuthLogin } from "@remote/shared/lib/oauth";
 import { Input } from "@vibe/ui/components/Input";
 import { Label } from "@vibe/ui/components/Label";
 import { openExternalUrl } from "@vibe/ui/lib/open-url";
@@ -43,20 +38,7 @@ export default function LoginPage() {
     setError(null);
 
     try {
-      const verifier = generateVerifier();
-      const challenge = await generateChallenge(verifier);
-      storeVerifier(verifier);
-
-      const appBase =
-        import.meta.env.VITE_APP_BASE_URL || window.location.origin;
-      const callbackUrl = new URL("/account/complete", appBase);
-      if (next) {
-        callbackUrl.searchParams.set("next", next);
-      }
-      const returnTo = callbackUrl.toString();
-
-      const { authorize_url } = await initOAuth(provider, returnTo, challenge);
-      window.location.assign(authorize_url);
+      await startOAuthLogin(provider, next);
     } catch (e) {
       setError(e instanceof Error ? e.message : "OAuth init failed");
       setPending(null);

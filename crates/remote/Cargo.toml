@@ -49,6 +49,7 @@ azure_core = "0.31"
 azure_storage_blob = "0.8"
 time = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+moka = { version = "0.12", features = ["future"] }
 tempfile = "3"
 flate2 = "1.0"
 csv = "1.3"

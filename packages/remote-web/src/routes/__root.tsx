@@ -44,7 +44,11 @@ import {
 } from "@/shared/lib/routes/appNavigation";
 import NotFoundPage from "../pages/NotFoundPage";
 import { RemoteReleaseNotesHandler } from "@remote/app/entry/RemoteReleaseNotesHandler";
-import { isPaneGridDestination } from "@/shared/stores/useWorkspacePanesStore";
+import {
+  destinationNeedsWorkspaceStreams,
+  isPaneGridDestination,
+  useWorkspacePanesStore,
+} from "@/shared/stores/useWorkspacePanesStore";
 import { useChromeTargetWorkspace } from "@/shared/lib/openInSplitPane";
 import { useWorkspacePaneShortcuts } from "@/shared/keyboard/useWorkspacePaneShortcuts";
 
@@ -94,9 +98,15 @@ function WorkspaceKeyboardShortcuts() {
   return null;
 }
 
-function WorkspaceRouteProviders({ children }: { children: ReactNode }) {
+function WorkspaceRouteProviders({
+  children,
+  enableStreams,
+}: {
+  children: ReactNode;
+  enableStreams: boolean;
+}) {
   return (
-    <WorkspaceProvider>
+    <WorkspaceProvider enableStreams={enableStreams}>
       <ExecutionProcessesProviderWrapper>
         <TerminalProvider>
           <LogsPanelProvider>
@@ -137,6 +147,13 @@ function RootLayout() {
     location.pathname.startsWith("/login") ||
     location.pathname.startsWith("/invitations");
   const destination = resolveRemoteDestinationFromPath(location.pathname);
+  const hasWorkspaceStreamPane = useWorkspacePanesStore((state) =>
+    state.panes.some((pane) =>
+      destinationNeedsWorkspaceStreams(pane.destination),
+    ),
+  );
+  const enableWorkspaceStreams =
+    destination?.kind !== "pull-requests" || hasWorkspaceStreamPane;
   const isWorkspaceProviderRoute =
     isProjectDestination(destination) ||
     isWorkspacesDestination(destination) ||
@@ -159,7 +176,7 @@ function RootLayout() {
   );
 
   const content = isWorkspaceProviderRoute ? (
-    <WorkspaceRouteProviders>
+    <WorkspaceRouteProviders enableStreams={enableWorkspaceStreams}>
       <NiceModalProvider>{pageContent}</NiceModalProvider>
     </WorkspaceRouteProviders>
   ) : (

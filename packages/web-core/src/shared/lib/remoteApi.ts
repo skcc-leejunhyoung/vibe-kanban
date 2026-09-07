@@ -5,13 +5,20 @@ import type {
   CommitAttachmentsResponse,
   ConfirmUploadRequest,
   GithubIssueLink,
+  GitHubPullRequestCommentsResponse,
+  GitHubPullRequestDetail,
+  GitHubPullRequestSummary,
+  GitHubRepository,
   InitUploadRequest,
   InitUploadResponse,
   ListRelayHostsResponse,
+  ListPullRequestIssueMappingsRequest,
+  ListPullRequestIssueMappingsResponse,
   RelayHost,
   Issue,
   ProjectStatus,
   PullRequestIssue,
+  SetGitHubReviewThreadResolvedRequest,
   UpdateIssueRequest,
   UpdateProjectRequest,
   UpdateProjectStatusRequest,
@@ -50,6 +57,97 @@ export function getRemoteApiUrl(): string {
 // Backward-compatible export — consumers should migrate to getRemoteApiUrl()
 export const REMOTE_API_URL = BUILD_TIME_API_BASE;
 
+export async function listGitHubRepositories(): Promise<GitHubRepository[]> {
+  const response = await makeRequest('/v1/github/repositories');
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to load GitHub repositories'
+    );
+  }
+  return response.json();
+}
+
+export async function listGitHubPullRequests(
+  repository: string,
+  involvesMe: boolean,
+  refresh = false
+): Promise<GitHubPullRequestSummary[]> {
+  const params = new URLSearchParams({
+    repository,
+    involves_me: String(involvesMe),
+    refresh: String(refresh),
+  });
+  const response = await makeRequest(
+    `/v1/github/pull-requests?${params.toString()}`
+  );
+  if (!response.ok) {
+    throw await parseErrorResponse(response, 'Failed to load pull requests');
+  }
+  return response.json();
+}
+
+export async function getGitHubPullRequest(
+  url: string
+): Promise<GitHubPullRequestDetail> {
+  const response = await makeRequest(
+    `/v1/github/pull-requests/detail?url=${encodeURIComponent(url)}`
+  );
+  if (!response.ok) {
+    throw await parseErrorResponse(response, 'Failed to load pull request');
+  }
+  return response.json();
+}
+
+export async function getGitHubPullRequestComments(
+  url: string
+): Promise<GitHubPullRequestCommentsResponse> {
+  const response = await makeRequest(
+    `/v1/github/pull-requests/comments?url=${encodeURIComponent(url)}`
+  );
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to load pull request comments'
+    );
+  }
+  return response.json();
+}
+
+export async function setGitHubReviewThreadResolved(
+  url: string,
+  threadId: string,
+  resolved: boolean
+): Promise<void> {
+  const payload: SetGitHubReviewThreadResolvedRequest = {
+    url,
+    thread_id: threadId,
+    resolved,
+  };
+  const response = await makeRequest('/v1/github/pull-requests/review-thread', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to update pull request review thread'
+    );
+  }
+}
+
+export async function syncTrackedGitHubPullRequests(): Promise<void> {
+  const response = await makeRequest('/v1/github/pull-requests/tracked/sync', {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw await parseErrorResponse(
+      response,
+      'Failed to synchronize tracked pull requests'
+    );
+  }
+}
+
 export async function listPullRequestIssueMappings(
   url: string
 ): Promise<PullRequestIssue[]> {
@@ -66,6 +164,50 @@ export async function listPullRequestIssueMappings(
     pull_request_issues: PullRequestIssue[];
   };
   return body.pull_request_issues;
+}
+
+const PULL_REQUEST_MAPPING_BATCH_SIZE = 250;
+
+export async function listPullRequestIssueMappingsBatch(
+  urls: string[]
+): Promise<Record<string, PullRequestIssue[]>> {
+  const uniqueUrls = [...new Set(urls)];
+  const mappings = Object.fromEntries(
+    uniqueUrls.map((url) => [url, [] as PullRequestIssue[]])
+  );
+  const batches: string[][] = [];
+  for (
+    let index = 0;
+    index < uniqueUrls.length;
+    index += PULL_REQUEST_MAPPING_BATCH_SIZE
+  ) {
+    batches.push(
+      uniqueUrls.slice(index, index + PULL_REQUEST_MAPPING_BATCH_SIZE)
+    );
+  }
+
+  const responses = await Promise.all(
+    batches.map(async (batch) => {
+      const payload: ListPullRequestIssueMappingsRequest = { urls: batch };
+      const response = await makeRequest('/v1/pull_request_issues/mappings', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        throw await parseErrorResponse(
+          response,
+          'Failed to load pull request mappings'
+        );
+      }
+      return (await response.json()) as ListPullRequestIssueMappingsResponse;
+    })
+  );
+  for (const response of responses) {
+    for (const mapping of response.mappings) {
+      mappings[mapping.url] = mapping.pull_request_issues;
+    }
+  }
+  return mappings;
 }
 
 // An issue maps to at most one GitHub issue link, but the endpoint returns a
@@ -368,17 +510,43 @@ export function uploadToAzure(
 // Utility: safe error response parsing (handles non-JSON error bodies)
 // ---------------------------------------------------------------------------
 
+export class RemoteApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message);
+    this.name = 'RemoteApiError';
+  }
+}
+
+export function isGitHubAuthenticationError(error: unknown): boolean {
+  return (
+    error instanceof RemoteApiError && error.code === 'github_auth_required'
+  );
+}
+
 async function parseErrorResponse(
   response: Response,
   fallbackMessage: string
 ): Promise<Error> {
   try {
-    const body = await response.json();
+    const body = (await response.json()) as {
+      error?: string;
+      message?: string;
+      code?: string;
+    };
     const message = body.error || body.message || fallbackMessage;
-    return new Error(`${message} (${response.status} ${response.statusText})`);
+    return new RemoteApiError(
+      `${message} (${response.status} ${response.statusText})`,
+      response.status,
+      body.code
+    );
   } catch {
-    return new Error(
-      `${fallbackMessage} (${response.status} ${response.statusText})`
+    return new RemoteApiError(
+      `${fallbackMessage} (${response.status} ${response.statusText})`,
+      response.status
     );
   }
 }

@@ -19,6 +19,7 @@ import { useAuthStatus } from '@/shared/hooks/auth/useAuthStatus';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { organizationKeys } from '@/shared/hooks/organizationKeys';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';
+import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import { oauthApi, type AuthMethodsResponse } from '@/shared/lib/api';
 import { REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
 import { useTranslation } from 'react-i18next';
@@ -66,7 +67,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   const hasOAuthProviders = oauthProviders.length > 0;
 
   // Auth mutations hook
-  const { initHandoff } = useAuthMutations({
+  const { initHandoff, cancelHandoff } = useAuthMutations({
     onInitSuccess: (data) => {
       // Open popup window with authorize URL
       const width = 600;
@@ -114,13 +115,14 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   // Handle status check errors
   useEffect(() => {
     if (isStatusError && isPolling) {
+      cancelHandoff();
       setIsPolling(false);
       setState({
         type: 'error',
         message: 'Failed to check OAuth status',
       });
     }
-  }, [isStatusError, isPolling]);
+  }, [isStatusError, isPolling, cancelHandoff]);
 
   // Monitor status changes
   useEffect(() => {
@@ -136,6 +138,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
           3_000 - (Date.now() - closedAt)
         );
         const timeout = window.setTimeout(() => {
+          cancelHandoff();
           setState({
             type: 'error',
             message: 'OAuth window was closed before completing authentication',
@@ -145,6 +148,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
         return () => window.clearTimeout(timeout);
       }
       if (!statusData.logged_in) {
+        cancelHandoff();
         setState({
           type: 'error',
           message: 'OAuth window was closed before completing authentication',
@@ -156,6 +160,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
     // During reauthentication the local session is already logged in. Confirm
     // the callback completed instead of treating a closed popup as success.
     if (statusData.logged_in && isReauthenticationComplete) {
+      cancelHandoff();
       setIsPolling(false);
       if (popupRef.current && !popupRef.current.closed) {
         popupRef.current.close();
@@ -192,6 +197,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
     isReauthenticationComplete,
     reloadSystem,
     queryClient,
+    cancelHandoff,
   ]);
 
   const handleProviderSelect = useCallback(
@@ -211,12 +217,13 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
       }`;
 
       // Initialize handoff flow
-      initHandoff.mutate({ provider, returnTo });
+      initHandoff.mutate({ provider, returnTo, reauthenticate });
     },
     [initHandoff, reauthenticate]
   );
 
   const handleClose = () => {
+    cancelHandoff();
     setIsPolling(false);
     if (popupRef.current && !popupRef.current.closed) {
       popupRef.current.close();
@@ -227,6 +234,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   };
 
   const handleBack = () => {
+    cancelHandoff();
     setIsPolling(false);
     if (popupRef.current && !popupRef.current.closed) {
       popupRef.current.close();
@@ -524,3 +532,14 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
 export const OAuthDialog = defineModal<OAuthDialogProps, boolean | null>(
   OAuthDialogImpl
 );
+
+const showLocalOAuthDialog = OAuthDialog.show;
+OAuthDialog.show = async (props) => {
+  const redirectToOAuth = getAuthRuntime().redirectToOAuth;
+  if (!redirectToOAuth) return showLocalOAuthDialog(props);
+
+  await redirectToOAuth(props.initialProvider, props.reauthenticate);
+  // Redirecting is not authentication success. The callback saves the session
+  // and reloads the original page, which fetches fresh data without replaying writes.
+  return null;
+};

@@ -8,7 +8,7 @@ export type AppDestination =
   | { kind: 'workspace-vscode'; workspaceId: string; hostId?: string | null }
   | { kind: 'export' }
   | { kind: 'notifications' }
-  | { kind: 'pull-requests'; prUrl?: string; hostId?: string | null }
+  | { kind: 'pull-requests'; prUrl?: string }
   | { kind: 'project'; projectId: string }
   | {
       kind: 'project-issue';
@@ -65,7 +65,6 @@ export function applyNavigationTransition(
     case 'workspaces-create':
     case 'workspace':
     case 'workspace-vscode':
-    case 'pull-requests':
     case 'project-issue-workspace':
     case 'project-issue-workspace-create':
     case 'project-workspace-create':

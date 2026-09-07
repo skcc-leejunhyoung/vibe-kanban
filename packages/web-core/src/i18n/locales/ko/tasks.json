@@ -592,7 +592,6 @@
     "urlLabel": "풀 리퀘스트 URL",
     "urlPlaceholder": "https://github.com/owner/repo/pull/123",
     "repositoryLabel": "저장소",
-    "remoteLabel": "리모트",
     "pullRequestLabel": "풀 리퀘스트",
     "loadingPrInfo": "PR 정보 불러오는 중...",
     "invalidUrl": "이 URL에서 PR 정보를 불러올 수 없습니다",

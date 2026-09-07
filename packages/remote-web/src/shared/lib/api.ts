@@ -51,17 +51,31 @@ export async function initOAuth(
   provider: OAuthProvider,
   returnTo: string,
   appChallenge: string,
+  reconnectRefreshToken?: string,
 ): Promise<HandoffInitResponse> {
-  const res = await fetch(`${API_BASE}/v1/oauth/web/init`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      provider,
-      return_to: returnTo,
-      app_challenge: appChallenge,
-    }),
-  });
+  const res = await fetch(
+    `${API_BASE}/v1/oauth/web/${reconnectRefreshToken ? "reconnect" : "init"}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(reconnectRefreshToken
+          ? { Authorization: `Bearer ${reconnectRefreshToken}` }
+          : {}),
+      },
+      body: JSON.stringify({
+        provider,
+        return_to: returnTo,
+        app_challenge: appChallenge,
+      }),
+    },
+  );
   if (!res.ok) {
+    if (reconnectRefreshToken && res.status === 401) {
+      throw new Error(
+        "Session expired. Please sign in again before reconnecting GitHub.",
+      );
+    }
     throw new Error(`OAuth init failed (${res.status})`);
   }
   return res.json();
@@ -92,6 +106,12 @@ export async function redeemOAuth(
     }),
   });
   if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    if (body?.error === "account_mismatch") {
+      throw new Error(
+        "This GitHub account is linked to a different user, or differs from your existing connection. Your current account has not changed.",
+      );
+    }
     throw new Error(`OAuth redeem failed (${res.status})`);
   }
   return res.json();
@@ -170,7 +190,7 @@ export async function authenticatedFetch(
   });
 
   if (res.status === 401) {
-    const newAccessToken = await triggerRefresh();
+    const newAccessToken = await triggerRefresh(accessToken);
     return fetch(url, {
       ...options,
       headers: {

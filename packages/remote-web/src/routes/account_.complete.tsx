@@ -8,6 +8,7 @@ const searchSchema = z.object({
   app_code: z.string().optional(),
   error: z.string().optional(),
   next: z.string().optional(),
+  reconnect: z.enum(["github", "google"]).optional(),
 });
 
 export const Route = createFileRoute("/account_/complete")({

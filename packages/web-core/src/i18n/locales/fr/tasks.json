@@ -503,7 +503,6 @@
     "urlLabel": "URL de la pull request",
     "urlPlaceholder": "https://github.com/owner/repo/pull/123",
     "repositoryLabel": "Dépôt",
-    "remoteLabel": "Remote",
     "pullRequestLabel": "Pull request",
     "loadingPrInfo": "Chargement des informations du PR...",
     "invalidUrl": "Impossible de charger les informations du PR depuis cette URL",

@@ -10,10 +10,7 @@ use crate::{
         JwtService, ProviderTokenDetails,
         provider::{ProviderRegistry, TokenValidationError, VALIDATE_TOKEN_MAX_RETRIES},
     },
-    db::{
-        auth::AuthSessionRepository,
-        oauth_accounts::{OAuthAccountError, OAuthAccountRepository},
-    },
+    db::oauth_accounts::{OAuthAccount, OAuthAccountError, OAuthAccountRepository},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -55,29 +52,50 @@ impl OAuthTokenValidator {
         user_id: Uuid,
         session_id: Uuid,
     ) -> Result<(), OAuthTokenValidationError> {
-        match self.verify_inner(provider, user_id, session_id).await {
+        let accounts = OAuthAccountRepository::new(&self.pool);
+        // Keep the exact credential that was validated across the provider await.
+        // A DB read failure is not evidence that the provider revoked anything.
+        let account = accounts
+            .get_by_user_provider(user_id, provider)
+            .await
+            .map_err(OAuthTokenValidationError::FetchAccountsFailed)?;
+        match self
+            .verify_inner(provider, user_id, session_id, account.as_ref())
+            .await
+        {
             Ok(()) => Ok(()),
             Err(err) => {
                 match &err {
                     OAuthTokenValidationError::ProviderAccountNotLinked
-                    | OAuthTokenValidationError::ProviderTokenValidationFailed
-                    | OAuthTokenValidationError::FetchAccountsFailed(_) => {
-                        let session_repo = AuthSessionRepository::new(&self.pool);
-                        if let Err(e) = session_repo.revoke_all_user_sessions(user_id).await {
-                            error!(
-                                user_id = %user_id,
-                                error = %e,
-                                "Failed to revoke all user sessions after OAuth token validation failure"
-                            );
+                    | OAuthTokenValidationError::ProviderTokenValidationFailed => {
+                        let applied = accounts
+                            .revoke_sessions_if_credentials_current(
+                                user_id,
+                                provider,
+                                account.as_ref(),
+                            )
+                            .await
+                            .map_err(|_| {
+                                OAuthTokenValidationError::ValidationUnavailable(
+                                    "failed to reconcile provider validation".into(),
+                                )
+                            })?;
+                        if !applied {
+                            return Err(OAuthTokenValidationError::ValidationUnavailable(
+                                "provider credentials changed during validation; retry".into(),
+                            ));
                         }
                         audit::emit(
                             AuditEvent::system(AuditAction::AuthSessionRevoked)
                                 .user(user_id, Some(session_id))
                                 .resource("auth_session", None)
-                                .description("All sessions revoked: OAuth provider token invalid"),
+                                .description(
+                                    "Issued sessions revoked: OAuth provider token invalid",
+                                ),
                         );
                     }
-                    OAuthTokenValidationError::ValidationUnavailable(_) => (),
+                    OAuthTokenValidationError::ValidationUnavailable(_)
+                    | OAuthTokenValidationError::FetchAccountsFailed(_) => (),
                 };
                 Err(err)
             }
@@ -89,23 +107,9 @@ impl OAuthTokenValidator {
         provider_name: &str,
         user_id: Uuid,
         session_id: Uuid,
+        account: Option<&OAuthAccount>,
     ) -> Result<(), OAuthTokenValidationError> {
         let oauth_account_repo = OAuthAccountRepository::new(&self.pool);
-        let account = match oauth_account_repo
-            .get_by_user_provider(user_id, provider_name)
-            .await
-        {
-            Ok(account) => account,
-            Err(err) => {
-                error!(
-                    user_id = %user_id,
-                    error = %err,
-                    provider = %provider_name,
-                    "Failed to fetch OAuth account for user"
-                );
-                return Err(OAuthTokenValidationError::FetchAccountsFailed(err));
-            }
-        };
 
         let Some(account) = account else {
             warn!(
@@ -169,6 +173,7 @@ impl OAuthTokenValidator {
                     &oauth_account_repo,
                     user_id,
                     provider_name,
+                    account,
                     &provider_token_details,
                 )
                 .await?;
@@ -203,6 +208,7 @@ impl OAuthTokenValidator {
         oauth_account_repo: &OAuthAccountRepository<'_>,
         user_id: Uuid,
         provider: &str,
+        account: &OAuthAccount,
         provider_token_details: &ProviderTokenDetails,
     ) -> Result<(), OAuthTokenValidationError> {
         let encrypted_provider_tokens = self
@@ -220,8 +226,8 @@ impl OAuthTokenValidator {
                 )
             })?;
 
-        oauth_account_repo
-            .update_encrypted_provider_tokens(user_id, provider, &encrypted_provider_tokens)
+        let applied = oauth_account_repo
+            .update_encrypted_provider_tokens_if_current(account, &encrypted_provider_tokens)
             .await
             .map_err(|err| {
                 error!(
@@ -234,6 +240,12 @@ impl OAuthTokenValidator {
                     "failed to persist provider token".to_string(),
                 )
             })?;
+
+        if !applied {
+            return Err(OAuthTokenValidationError::ValidationUnavailable(
+                "provider credentials changed during validation; retry".into(),
+            ));
+        }
 
         Ok(())
     }

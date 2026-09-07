@@ -1,9 +1,13 @@
 import type { LinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import type { SidebarWorkspace } from '@/shared/hooks/useWorkspaces';
 import { collapseSelfHostId } from '@/shared/lib/routes/appNavigation';
+import { normalizeGitHubPullRequestUrl } from './pullRequestUrl';
 
 function normalizePullRequestUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '').toLowerCase();
+  return (
+    normalizeGitHubPullRequestUrl(url)?.toLowerCase() ??
+    url.trim().replace(/\/+$/, '').toLowerCase()
+  );
 }
 
 export function findLocalPullRequestWorkspaces(

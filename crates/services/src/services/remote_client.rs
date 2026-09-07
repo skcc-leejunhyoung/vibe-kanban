@@ -50,6 +50,8 @@ pub enum RemoteClientError {
     Api(HandoffErrorCode),
     #[error("unauthorized")]
     Auth,
+    #[error("OAuth reconnect is in progress. Please try again after completing it.")]
+    ReconnectPending,
     #[error("json error: {0}")]
     Serde(String),
     #[error("url error: {0}")]
@@ -84,9 +86,11 @@ impl RemoteClientError {
 
     pub fn degraded_slug(&self) -> Option<&'static str> {
         match self {
-            Self::Timeout | Self::Transport(_) | Self::Storage(_) | Self::Serde(_) => {
-                Some(Self::generic_degraded_slug())
-            }
+            Self::Timeout
+            | Self::Transport(_)
+            | Self::Storage(_)
+            | Self::Serde(_)
+            | Self::ReconnectPending => Some(Self::generic_degraded_slug()),
             Self::Http { status, .. } if (500..=599).contains(status) => {
                 Some(Self::generic_degraded_slug())
             }
@@ -240,7 +244,7 @@ impl RemoteClient {
                 return Ok(token.clone());
             }
 
-            let refreshed = {
+            let (refresh_token, refreshed) = {
                 let _refresh_guard = self.auth_context.refresh_guard().await;
                 let latest = self
                     .auth_context
@@ -254,16 +258,34 @@ impl RemoteClient {
                     return Ok(token.clone());
                 }
 
-                self.refresh_credentials(&latest).await
+                // Do not refresh a revoked provider credential while the user
+                // is replacing it. This is temporary unavailability, not logout.
+                if self.auth_context.is_reconnecting().await {
+                    self.auth_context
+                        .set_remote_auth_degraded_slug(RemoteClientError::generic_degraded_slug())
+                        .await;
+                    return Err(RemoteClientError::ReconnectPending);
+                }
+
+                let result = self.refresh_credentials(&latest).await;
+                (latest.refresh_token, result)
             };
 
             match refreshed {
-                Ok(updated) => {
+                Ok(Some(updated)) => {
                     self.auth_context.clear_remote_auth_degraded_slug().await;
                     updated.access_token.ok_or(RemoteClientError::Auth)
                 }
+                Ok(None) => self.require_token().await,
                 Err(err) if err.is_definitive_auth_failure() => {
-                    let _ = self.auth_context.clear_credentials().await;
+                    let cleared = self
+                        .auth_context
+                        .replace_credentials(&refresh_token, None)
+                        .await
+                        .map_err(|e| RemoteClientError::Storage(e.to_string()))?;
+                    if !cleared {
+                        return self.require_token().await;
+                    }
                     self.auth_context.clear_remote_auth_degraded_slug().await;
                     Err(err)
                 }
@@ -280,7 +302,7 @@ impl RemoteClient {
     async fn refresh_credentials(
         &self,
         creds: &Credentials,
-    ) -> Result<Credentials, RemoteClientError> {
+    ) -> Result<Option<Credentials>, RemoteClientError> {
         let response = self.refresh_token_request(&creds.refresh_token).await?;
         let access_token = response.access_token;
         let refresh_token = response.refresh_token;
@@ -291,12 +313,13 @@ impl RemoteClient {
             refresh_token,
             expires_at: Some(expires_at),
         };
-        self.auth_context
-            .save_credentials(&new_creds)
+        let saved = self
+            .auth_context
+            .replace_credentials(&creds.refresh_token, Some(&new_creds))
             .await
             .map_err(|e| RemoteClientError::Storage(e.to_string()))?;
         self.auth_context.clear_remote_auth_degraded_slug().await;
-        Ok(new_creds)
+        Ok(saved.then_some(new_creds))
     }
 
     async fn refresh_token_request(
@@ -351,7 +374,24 @@ impl RemoteClient {
     pub async fn handoff_init(
         &self,
         request: &HandoffInitRequest,
+        reconnect_refresh_token: Option<&str>,
     ) -> Result<HandoffInitResponse, RemoteClientError> {
+        if let Some(refresh_token) = reconnect_refresh_token {
+            // Recovery must not refresh/validate the broken GitHub credential.
+            let response = self
+                .send_internal_with_request(
+                    reqwest::Method::POST,
+                    "/v1/oauth/web/reconnect",
+                    false,
+                    |builder| builder.bearer_auth(refresh_token).json(request),
+                )
+                .await
+                .map_err(|e| self.map_api_error(e))?;
+            return response
+                .json()
+                .await
+                .map_err(|e| RemoteClientError::Serde(e.to_string()));
+        }
         self.post_public("/v1/oauth/web/init", Some(request))
             .await
             .map_err(|e| self.map_api_error(e))

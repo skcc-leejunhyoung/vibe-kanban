@@ -1,78 +1,79 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const getAccessTokenMock = vi.fn<() => Promise<string | null>>();
-const getRefreshTokenMock = vi.fn<() => Promise<string | null>>();
-const storeTokensMock =
-  vi.fn<
-    (
-      accessToken: string,
-      refreshToken: string,
-      options?: { notifyAuthChange?: boolean },
-    ) => Promise<void>
-  >();
-const clearAccessTokenMock = vi.fn<() => Promise<void>>();
-const clearTokensMock = vi.fn<() => Promise<void>>();
-const shouldRefreshAccessTokenMock = vi.fn<(token: string) => boolean>();
-const refreshTokensMock = vi.fn<
-  (refreshToken: string) => Promise<{
-    access_token: string;
-    refresh_token: string;
-  }>
->();
-
+const {
+  getAccessToken,
+  getRefreshCredentials,
+  applyTokenRefresh,
+  refreshTokens,
+  shouldRefresh,
+} = vi.hoisted(() => ({
+  getAccessToken: vi.fn(),
+  getRefreshCredentials: vi.fn(),
+  applyTokenRefresh: vi.fn(),
+  refreshTokens: vi.fn(),
+  shouldRefresh: vi.fn(),
+}));
 vi.mock("@remote/shared/lib/auth", () => ({
-  getAccessToken: () => getAccessTokenMock(),
-  getRefreshToken: () => getRefreshTokenMock(),
-  storeTokens: (
-    accessToken: string,
-    refreshToken: string,
-    options?: { notifyAuthChange?: boolean },
-  ) => storeTokensMock(accessToken, refreshToken, options),
-  clearAccessToken: () => clearAccessTokenMock(),
-  clearTokens: () => clearTokensMock(),
+  getAccessToken,
+  getRefreshCredentials,
+  applyTokenRefresh,
+  accessTokensBelongToDifferentUsers: () => false,
 }));
-
-vi.mock("shared/jwt", () => ({
-  shouldRefreshAccessToken: (token: string) =>
-    shouldRefreshAccessTokenMock(token),
-}));
-
-vi.mock("@remote/shared/lib/api", () => ({
-  refreshTokens: (refreshToken: string) => refreshTokensMock(refreshToken),
-}));
-
-import { getToken } from "./tokenManager";
+vi.mock("shared/jwt", () => ({ shouldRefreshAccessToken: shouldRefresh }));
+vi.mock("@remote/shared/lib/api", () => ({ refreshTokens }));
+import { getToken, triggerRefresh } from "./tokenManager";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getAccessTokenMock.mockResolvedValue("expiring-access-token");
-  getRefreshTokenMock.mockResolvedValue("current-refresh-token");
-  shouldRefreshAccessTokenMock.mockReturnValue(true);
-  refreshTokensMock.mockResolvedValue({
-    access_token: "rotated-access-token",
-    refresh_token: "rotated-refresh-token",
+  vi.stubGlobal("navigator", {});
+  getAccessToken.mockResolvedValue("expiring-access");
+  getRefreshCredentials.mockResolvedValue({
+    accessToken: "expiring-access",
+    refreshToken: "current-refresh",
+  });
+  shouldRefresh.mockReturnValue(true);
+  applyTokenRefresh.mockResolvedValue(true);
+  refreshTokens.mockResolvedValue({
+    access_token: "rotated-access",
+    refresh_token: "rotated-refresh",
   });
 });
+afterEach(() => vi.unstubAllGlobals());
 
 describe("remote token refresh", () => {
-  it("stores a routine token rotation without broadcasting an auth-state change", async () => {
-    await expect(getToken()).resolves.toBe("rotated-access-token");
-
-    expect(refreshTokensMock).toHaveBeenCalledWith("current-refresh-token");
-    expect(storeTokensMock).toHaveBeenCalledWith(
-      "rotated-access-token",
-      "rotated-refresh-token",
-      { notifyAuthChange: false },
-    );
-    expect(clearTokensMock).not.toHaveBeenCalled();
+  it("uses the conditional rotation path without changing signed-in state", async () => {
+    await expect(getToken()).resolves.toBe("rotated-access");
+    expect(refreshTokens).toHaveBeenCalledWith("current-refresh");
+    expect(applyTokenRefresh).toHaveBeenCalledWith("current-refresh", {
+      access_token: "rotated-access",
+      refresh_token: "rotated-refresh",
+    });
   });
-
-  it("returns a fresh access token without rotating auth state", async () => {
-    shouldRefreshAccessTokenMock.mockReturnValue(false);
-
-    await expect(getToken()).resolves.toBe("expiring-access-token");
-
-    expect(refreshTokensMock).not.toHaveBeenCalled();
-    expect(storeTokensMock).not.toHaveBeenCalled();
+  it("returns fresh access without rotation", async () => {
+    shouldRefresh.mockReturnValue(false);
+    await expect(getToken()).resolves.toBe("expiring-access");
+    expect(refreshTokens).not.toHaveBeenCalled();
+    expect(applyTokenRefresh).not.toHaveBeenCalled();
+  });
+  it("forces a rejected fresh token to rotate without deleting its identity", async () => {
+    shouldRefresh.mockReturnValue(false);
+    await expect(triggerRefresh("expiring-access")).resolves.toBe(
+      "rotated-access",
+    );
+    expect(refreshTokens).toHaveBeenCalledOnce();
+  });
+  it("does not rotate a renewed token for a late 401 of an older request", async () => {
+    shouldRefresh.mockReturnValue(false);
+    await expect(triggerRefresh("previous-access")).resolves.toBe(
+      "expiring-access",
+    );
+    expect(refreshTokens).not.toHaveBeenCalled();
+  });
+  it("does not clear credentials on non-revocation errors", async () => {
+    refreshTokens.mockRejectedValue(
+      Object.assign(new Error("Forbidden"), { status: 403 }),
+    );
+    await expect(getToken()).rejects.toThrow("Forbidden");
+    expect(applyTokenRefresh).not.toHaveBeenCalled();
   });
 });

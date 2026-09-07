@@ -7,10 +7,11 @@ use api_types::{
 use axum::{
     Json, Router,
     extract::{Extension, Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
+use axum_extra::headers::{Authorization, HeaderMapExt, authorization::Bearer};
 use serde::Deserialize;
 use tracing::warn;
 use url::Url;
@@ -20,10 +21,13 @@ use crate::{
     AppState,
     audit::{self, AuditAction, AuditEvent},
     auth::{
-        CallbackResult, HandoffError, LocalAuthError, RequestContext, auth_methods_response,
-        login as local_login_flow,
+        CallbackResult, HandoffError, LocalAuthError, OAuthTokenValidationError, RequestContext,
+        auth_methods_response, login as local_login_flow,
     },
-    db::{oauth::OAuthHandoffError, oauth_accounts::OAuthAccountRepository},
+    db::{
+        oauth::OAuthHandoffError,
+        oauth_accounts::{OAuthAccountRepository, OAuthReconnectError},
+    },
 };
 
 pub(super) fn public_router() -> Router<AppState> {
@@ -31,6 +35,9 @@ pub(super) fn public_router() -> Router<AppState> {
         .route("/auth/methods", get(auth_methods))
         .route("/auth/local/login", post(local_login))
         .route("/oauth/web/init", post(web_init))
+        // Like token refresh, this authenticates its refresh credential inside
+        // the handler; ordinary access-token middleware must not run first.
+        .route("/oauth/web/reconnect", post(web_reconnect))
         .route("/oauth/web/redeem", post(web_redeem))
         .route("/oauth/{provider}/start", get(authorize_start))
         .route("/oauth/{provider}/callback", get(authorize_callback))
@@ -46,20 +53,50 @@ pub(super) fn protected_router() -> Router<AppState> {
         .route("/oauth/logout", post(logout))
 }
 
+async fn web_reconnect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<HandoffInitRequest>,
+) -> Response {
+    let Some(Authorization(token)) = headers.typed_get::<Authorization<Bearer>>() else {
+        return init_error_response(HandoffError::InvalidReconnectSession);
+    };
+    initiate_handoff(&state, payload, Some(token.token())).await
+}
+
 async fn web_init(
     State(state): State<AppState>,
     Json(payload): Json<HandoffInitRequest>,
 ) -> Response {
-    let handoff = state.handoff();
+    initiate_handoff(&state, payload, None).await
+}
 
-    match handoff
-        .initiate(
-            &payload.provider,
-            &payload.return_to,
-            &payload.app_challenge,
-        )
-        .await
-    {
+async fn initiate_handoff(
+    state: &AppState,
+    payload: HandoffInitRequest,
+    reconnect_refresh_token: Option<&str>,
+) -> Response {
+    let handoff = state.handoff();
+    let result = if let Some(refresh_token) = reconnect_refresh_token {
+        handoff
+            .initiate_reconnect(
+                &payload.provider,
+                &payload.return_to,
+                &payload.app_challenge,
+                refresh_token,
+            )
+            .await
+    } else {
+        handoff
+            .initiate(
+                &payload.provider,
+                &payload.return_to,
+                &payload.app_challenge,
+                None,
+            )
+            .await
+    };
+    match result {
         Ok(result) => (
             StatusCode::OK,
             Json(HandoffInitResponse {
@@ -309,9 +346,34 @@ fn classify_handoff_error(error: &HandoffError) -> (StatusCode, Cow<'_, str>) {
         HandoffError::NotFound => (StatusCode::NOT_FOUND, Cow::Borrowed("not_found")),
         HandoffError::Expired => (StatusCode::GONE, Cow::Borrowed("expired")),
         HandoffError::Denied => (StatusCode::FORBIDDEN, Cow::Borrowed("access_denied")),
+        HandoffError::InvalidReconnectSession => (
+            StatusCode::UNAUTHORIZED,
+            Cow::Borrowed("invalid_reconnect_session"),
+        ),
+        HandoffError::ReconnectAuthentication(error) => match error {
+            OAuthTokenValidationError::ValidationUnavailable(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Cow::Borrowed("provider_unavailable"),
+            ),
+            OAuthTokenValidationError::FetchAccountsFailed(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::Borrowed("internal_error"),
+            ),
+            _ => (
+                StatusCode::UNAUTHORIZED,
+                Cow::Borrowed("invalid_reconnect_session"),
+            ),
+        },
         HandoffError::Failed(reason) => (StatusCode::BAD_REQUEST, Cow::Owned(reason.clone())),
         HandoffError::Provider(_) => (StatusCode::BAD_GATEWAY, Cow::Borrowed("provider_error")),
+        HandoffError::Reconnect(OAuthReconnectError::AccountMismatch) => {
+            (StatusCode::CONFLICT, Cow::Borrowed("account_mismatch"))
+        }
+        HandoffError::Reconnect(OAuthReconnectError::InvalidHandoff) => {
+            (StatusCode::GONE, Cow::Borrowed("already_redeemed"))
+        }
         HandoffError::Database(_)
+        | HandoffError::Reconnect(OAuthReconnectError::Database(_))
         | HandoffError::Identity(_)
         | HandoffError::OAuthAccount(_)
         | HandoffError::Session(_)
@@ -353,4 +415,17 @@ fn append_query_params(
         }
     }
     Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_reconnect_session_requires_authentication() {
+        assert_eq!(
+            init_error_response(HandoffError::InvalidReconnectSession).status(),
+            StatusCode::UNAUTHORIZED,
+        );
+    }
 }

@@ -1,11 +1,15 @@
+use std::collections::{HashMap, HashSet};
+
 use api_types::{
-    CreatePullRequestIssueRequest, DeleteResponse, ListPullRequestIssuesResponse, MutationResponse,
-    PullRequestIssue,
+    CreatePullRequestIssueRequest, DeleteResponse, ListPullRequestIssueMappingsRequest,
+    ListPullRequestIssueMappingsResponse, ListPullRequestIssuesResponse, MutationResponse,
+    PullRequestIssue, PullRequestIssueMapping,
 };
 use axum::{
     Json,
     extract::{Extension, Path, Query, State},
     http::StatusCode,
+    routing::post,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -30,6 +34,9 @@ pub struct ListPullRequestIssuesQuery {
     pub url: Option<String>,
 }
 
+const MAX_MAPPING_URLS: usize = 250;
+const MAX_PULL_REQUEST_URL_LEN: usize = 2_048;
+
 pub fn mutation() -> MutationBuilder<PullRequestIssue, CreatePullRequestIssueRequest, NoUpdate> {
     MutationBuilder::new("pull_request_issues")
         .list(list_pull_request_issues)
@@ -39,7 +46,73 @@ pub fn mutation() -> MutationBuilder<PullRequestIssue, CreatePullRequestIssueReq
 }
 
 pub fn router() -> axum::Router<AppState> {
-    mutation().router()
+    mutation().router().route(
+        "/pull_request_issues/mappings",
+        post(list_pull_request_issue_mappings),
+    )
+}
+
+fn validated_mapping_urls(urls: Vec<String>) -> Result<Vec<String>, &'static str> {
+    if urls.len() > MAX_MAPPING_URLS {
+        return Err("too many pull request URLs");
+    }
+    let mut seen = HashSet::with_capacity(urls.len());
+    let mut unique = Vec::with_capacity(urls.len());
+    for url in urls {
+        let url = url.trim();
+        if url.is_empty() || url.len() > MAX_PULL_REQUEST_URL_LEN {
+            return Err("invalid pull request URL");
+        }
+        if seen.insert(url.to_string()) {
+            unique.push(url.to_string());
+        }
+    }
+    Ok(unique)
+}
+
+#[instrument(
+    name = "pull_request_issues.list_mappings",
+    skip(state, ctx, payload),
+    fields(url_count = payload.urls.len(), user_id = %ctx.user.id)
+)]
+async fn list_pull_request_issue_mappings(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Json(payload): Json<ListPullRequestIssueMappingsRequest>,
+) -> Result<Json<ListPullRequestIssueMappingsResponse>, ErrorResponse> {
+    let urls = validated_mapping_urls(payload.urls)
+        .map_err(|message| ErrorResponse::new(StatusCode::BAD_REQUEST, message))?;
+    let mut by_url = urls
+        .iter()
+        .cloned()
+        .map(|url| (url, Vec::new()))
+        .collect::<HashMap<_, _>>();
+    let records =
+        PullRequestIssueRepository::list_by_urls_for_user(state.pool(), &urls, ctx.user.id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to list pull request issue mappings");
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to list pull request mappings",
+                )
+            })?;
+    for record in records {
+        let (url, link) = record.into_parts();
+        if let Some(links) = by_url.get_mut(&url) {
+            links.push(link);
+        }
+    }
+
+    Ok(Json(ListPullRequestIssueMappingsResponse {
+        mappings: urls
+            .into_iter()
+            .map(|url| PullRequestIssueMapping {
+                pull_request_issues: by_url.remove(&url).unwrap_or_default(),
+                url,
+            })
+            .collect(),
+    }))
 }
 
 #[instrument(
@@ -58,35 +131,22 @@ async fn list_pull_request_issues(
             PullRequestIssueRepository::list_by_issue(state.pool(), issue_id).await
         }
         (None, Some(url)) => {
-            let pull_requests =
-                PullRequestRepository::list_by_url_for_user(state.pool(), url, ctx.user.id)
-                    .await
-                    .map_err(|error| {
-                        tracing::error!(?error, "failed to find pull requests by URL");
-                        ErrorResponse::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "failed to list pull request issues",
-                        )
-                    })?;
-            let mut links = Vec::new();
-            for pull_request in pull_requests {
-                links.extend(
-                    PullRequestIssueRepository::list_by_project(
-                        state.pool(),
-                        pull_request.project_id,
-                    )
-                    .await
-                    .map_err(|error| {
-                        tracing::error!(?error, "failed to list pull request issues");
-                        ErrorResponse::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "failed to list pull request issues",
-                        )
-                    })?
-                    .into_iter()
-                    .filter(|link| link.pull_request_id == pull_request.id),
-                );
-            }
+            let links = PullRequestIssueRepository::list_by_urls_for_user(
+                state.pool(),
+                &[url.to_string()],
+                ctx.user.id,
+            )
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, "failed to list pull request issues by URL");
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to list pull request issues",
+                )
+            })?
+            .into_iter()
+            .map(|record| record.into_parts().1)
+            .collect();
             return Ok(Json(ListPullRequestIssuesResponse {
                 pull_request_issues: links,
             }));
@@ -279,4 +339,24 @@ async fn delete_pull_request_issue(
     })?;
 
     Ok(Json(DeleteResponse { txid }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mapping_urls_are_bounded_and_deduplicated() {
+        assert_eq!(
+            validated_mapping_urls(vec![
+                "https://github.com/acme/widgets/pull/1".to_string(),
+                " https://github.com/acme/widgets/pull/1 ".to_string(),
+            ])
+            .unwrap(),
+            vec!["https://github.com/acme/widgets/pull/1"]
+        );
+        assert!(validated_mapping_urls(vec![String::new()]).is_err());
+        assert!(validated_mapping_urls(vec!["x".repeat(MAX_PULL_REQUEST_URL_LEN + 1)]).is_err());
+        assert!(validated_mapping_urls(vec!["x".to_string(); MAX_MAPPING_URLS + 1]).is_err());
+    }
 }

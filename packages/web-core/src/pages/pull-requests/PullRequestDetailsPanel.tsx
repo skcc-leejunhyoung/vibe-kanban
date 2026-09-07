@@ -40,6 +40,7 @@ export function PullRequestDetailsPanel({
       <PrDetailsContent
         prUrl={prUrl}
         prNumber={prNumber}
+        dataSource="github"
         variant="panel"
         onClose={onClose}
         headerActions={
