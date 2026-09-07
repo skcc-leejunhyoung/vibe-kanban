@@ -10,10 +10,8 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
- * Play a sound file.  In the Tauri desktop app we use AudioContext (Web
- * Audio API) because `new Audio()` registers with macOS NowPlaying /
- * MediaRemote, triggering an "access Apple Music" TCC prompt.  In the
- * browser the standard HTMLAudioElement works fine.
+ * Play a sound without registering as media playback, which can interrupt
+ * music through the browser or macOS NowPlaying / MediaRemote.
  */
 export async function playSound(soundFile: SoundFile): Promise<void> {
   const url = new URL(
@@ -21,25 +19,20 @@ export async function playSound(soundFile: SoundFile): Promise<void> {
     import.meta.url
   ).href;
 
-  if ('__TAURI_INTERNALS__' in window) {
-    const ctx = new AudioContext();
-    try {
-      const res = await fetch(url);
-      const buf = await res.arrayBuffer();
-      const audio = await ctx.decodeAudioData(buf);
-      const src = ctx.createBufferSource();
-      src.buffer = audio;
-      src.connect(ctx.destination);
-      src.start();
-      await new Promise<void>((resolve) => {
-        src.onended = () => resolve();
-      });
-    } finally {
-      await ctx.close();
-    }
-  } else {
-    const audio = new Audio(url);
-    await audio.play();
+  const ctx = new AudioContext();
+  try {
+    const res = await fetch(url);
+    const buf = await res.arrayBuffer();
+    const audio = await ctx.decodeAudioData(buf);
+    const src = ctx.createBufferSource();
+    src.buffer = audio;
+    src.connect(ctx.destination);
+    src.start();
+    await new Promise<void>((resolve) => {
+      src.onended = () => resolve();
+    });
+  } finally {
+    await ctx.close();
   }
 }
 
