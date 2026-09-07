@@ -304,29 +304,18 @@ impl Workspace {
     /// Uses standard cleanup (72 hours) for non-archived workspaces.
     pub async fn find_expired_for_cleanup(
         pool: &SqlitePool,
+        workspace_id: Option<Uuid>,
     ) -> Result<Vec<Workspace>, sqlx::Error> {
-        sqlx::query_as!(
-            Workspace,
+        sqlx::query_as::<_, Workspace>(
             r#"
-            SELECT
-                w.id as "id!: Uuid",
-                w.task_id as "task_id: Uuid",
-                w.container_ref,
-                w.branch as "branch!",
-                w.setup_completed_at as "setup_completed_at: DateTime<Utc>",
-                w.created_at as "created_at!: DateTime<Utc>",
-                w.updated_at as "updated_at!: DateTime<Utc>",
-                w.archived as "archived!: bool",
-                w.pinned as "pinned!: bool",
-                w.name,
-                w.worktree_deleted as "worktree_deleted!: bool",
-                w.ephemeral as "ephemeral!: bool",
-                w.in_place as "in_place!: bool"
+            SELECT w.*
             FROM workspaces w
             LEFT JOIN sessions s ON w.id = s.workspace_id
             LEFT JOIN execution_processes ep ON s.id = ep.session_id AND ep.completed_at IS NOT NULL
             WHERE w.container_ref IS NOT NULL
+                AND ($1 IS NULL OR w.id = $1)
                 AND w.worktree_deleted = FALSE
+                AND w.pinned = FALSE
                 -- In-place ("quick chat") workspaces point container_ref at the
                 -- user's real checkout; never select them for destructive cleanup.
                 AND w.in_place = FALSE
@@ -337,7 +326,7 @@ impl Workspace {
                     WHERE ep2.completed_at IS NULL
                 )
             GROUP BY w.id, w.container_ref, w.updated_at
-            HAVING datetime('now', 'localtime',
+            HAVING datetime('now',
                 CASE
                     WHEN w.archived = 1
                     THEN '-1 hours'
@@ -347,7 +336,7 @@ impl Workspace {
                 MAX(
                     max(
                         datetime(w.updated_at),
-                        datetime(ep.completed_at)
+                        COALESCE(datetime(ep.completed_at), datetime(w.updated_at))
                     )
                 )
             )
@@ -357,8 +346,9 @@ impl Workspace {
                     ELSE w.updated_at
                 END
             ) ASC
-            "#
+            "#,
         )
+        .bind(workspace_id)
         .fetch_all(pool)
         .await
     }
@@ -860,9 +850,197 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{Duration, Utc};
+    use sqlx::sqlite::SqlitePoolOptions;
     use uuid::Uuid;
 
     use super::Workspace;
+
+    #[tokio::test]
+    async fn cleanup_selects_expired_workspaces_and_keeps_recent_or_protected_ones() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE workspaces (
+                id BLOB PRIMARY KEY, task_id BLOB, container_ref TEXT,
+                branch TEXT NOT NULL, setup_completed_at TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                archived INTEGER NOT NULL, pinned INTEGER NOT NULL,
+                name TEXT, worktree_deleted INTEGER NOT NULL,
+                ephemeral INTEGER NOT NULL, in_place INTEGER NOT NULL
+            );
+            CREATE TABLE sessions (id BLOB PRIMARY KEY, workspace_id BLOB);
+            CREATE TABLE execution_processes (id BLOB PRIMARY KEY, session_id BLOB, completed_at TEXT);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let now = Utc::now();
+        let mut expected = Vec::new();
+        // The same query must handle workspaces with no runs, all sessions'
+        // completion times, UTC retention boundaries, and protected workspaces.
+        for (name, hours, archived, pinned, in_place, deleted, run_ages, expired) in [
+            ("never run", 100, false, false, false, false, vec![], true),
+            (
+                "expired",
+                100,
+                false,
+                false,
+                false,
+                false,
+                vec![Some(80)],
+                true,
+            ),
+            (
+                "recent run",
+                100,
+                false,
+                false,
+                false,
+                false,
+                vec![Some(90), Some(1)],
+                false,
+            ),
+            (
+                "running",
+                100,
+                false,
+                false,
+                false,
+                false,
+                vec![Some(90), None],
+                false,
+            ),
+            (
+                "recent workspace",
+                70,
+                false,
+                false,
+                false,
+                false,
+                vec![Some(80)],
+                false,
+            ),
+            (
+                "archived",
+                2,
+                true,
+                false,
+                false,
+                false,
+                vec![Some(2)],
+                true,
+            ),
+            (
+                "recent archive",
+                0,
+                true,
+                false,
+                false,
+                false,
+                vec![Some(2)],
+                false,
+            ),
+            (
+                "pinned",
+                100,
+                false,
+                true,
+                false,
+                false,
+                vec![Some(80)],
+                false,
+            ),
+            (
+                "in place",
+                100,
+                true,
+                false,
+                true,
+                false,
+                vec![Some(80)],
+                false,
+            ),
+            (
+                "already deleted",
+                100,
+                true,
+                false,
+                false,
+                true,
+                vec![Some(80)],
+                false,
+            ),
+        ] {
+            let id = Uuid::new_v4();
+            let updated_at = now - Duration::hours(hours);
+            sqlx::query(
+                "INSERT INTO workspaces (id, container_ref, branch, created_at, updated_at,
+                    archived, pinned, name, worktree_deleted, ephemeral, in_place)
+                 VALUES (?, '/test/workspace', 'test', ?, ?, ?, ?, ?, ?, 0, ?)",
+            )
+            .bind(id)
+            .bind(updated_at)
+            .bind(updated_at)
+            .bind(archived)
+            .bind(pinned)
+            .bind(name)
+            .bind(deleted)
+            .bind(in_place)
+            .execute(&pool)
+            .await
+            .unwrap();
+            for age in run_ages {
+                let session_id = Uuid::new_v4();
+                sqlx::query("INSERT INTO sessions VALUES (?, ?)")
+                    .bind(session_id)
+                    .bind(id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query("INSERT INTO execution_processes VALUES (?, ?, ?)")
+                    .bind(Uuid::new_v4())
+                    .bind(session_id)
+                    .bind(age.map(|hours| now - Duration::hours(hours)))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            if expired {
+                expected.push(name.to_owned());
+            }
+        }
+        let candidates = Workspace::find_expired_for_cleanup(&pool, None)
+            .await
+            .unwrap();
+        let mut actual: Vec<_> = candidates
+            .iter()
+            .map(|workspace| workspace.name.clone().unwrap())
+            .collect();
+        actual.sort();
+        expected.sort();
+        assert_eq!(actual, expected);
+
+        let id = candidates[0].id;
+        assert_eq!(
+            Workspace::find_expired_for_cleanup(&pool, Some(id))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        Workspace::touch(&pool, id).await.unwrap();
+        assert!(
+            Workspace::find_expired_for_cleanup(&pool, Some(id))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn best_matching_container_ref_prefers_deepest_match() {

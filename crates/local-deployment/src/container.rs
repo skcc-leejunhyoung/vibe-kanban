@@ -395,7 +395,11 @@ impl LocalContainerService {
         map.remove(id)
     }
 
-    async fn cleanup_workspace(&self, workspace: &Workspace) {
+    async fn cleanup_workspace(
+        &self,
+        workspace: &Workspace,
+        preserve_uncommitted: bool,
+    ) -> Result<(), ContainerError> {
         // SAFETY: in-place ("quick chat") workspaces point `container_ref` at the
         // user's REAL checkout. Removing that directory or its branch here would
         // delete the user's repository, so cleanup is a strict no-op for them.
@@ -406,41 +410,54 @@ impl LocalContainerService {
                 workspace.id,
                 workspace.container_ref
             );
-            return;
+            return Ok(());
         }
 
         let Some(container_ref) = &workspace.container_ref else {
-            return;
+            return Ok(());
         };
         let workspace_dir = PathBuf::from(container_ref);
 
-        let repositories = WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id)
-            .await
-            .unwrap_or_default();
+        let repositories =
+            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id).await?;
+
+        if preserve_uncommitted {
+            if repositories.is_empty() && workspace_dir.try_exists()? {
+                return Err(ContainerError::Other(anyhow!(
+                    "Cannot verify changes in workspace {} without repository metadata",
+                    workspace.id
+                )));
+            }
+            for repo in &repositories {
+                let path = workspace_dir.join(&repo.name);
+                // A previous partial cleanup may already have removed this repo.
+                // Git status includes both tracked changes and untracked files.
+                if path.try_exists()? && !self.git().get_worktree_status(&path)?.entries.is_empty()
+                {
+                    tracing::info!(workspace_id = %workspace.id, "Preserving workspace with uncommitted changes");
+                    return Ok(());
+                }
+            }
+        }
 
         if repositories.is_empty() {
             tracing::warn!(
                 "No repositories found for workspace {}, cleaning up workspace directory only",
                 workspace.id
             );
-            if workspace_dir.exists()
-                && let Err(e) = tokio::fs::remove_dir_all(&workspace_dir).await
-            {
-                tracing::warn!("Failed to remove workspace directory: {}", e);
+            if let Err(e) = tokio::fs::remove_dir_all(&workspace_dir).await {
+                if e.kind() != io::ErrorKind::NotFound {
+                    return Err(e.into());
+                }
             }
         } else {
             WorkspaceManager::cleanup_workspace(&workspace_dir, &repositories)
                 .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        "Failed to clean up workspace for workspace {}: {}",
-                        workspace.id,
-                        e
-                    );
-                });
+                .map_err(Self::map_workspace_manager_error)?;
         }
 
-        let _ = Workspace::mark_worktree_deleted(&self.db.pool, workspace.id).await;
+        Workspace::mark_worktree_deleted(&self.db.pool, workspace.id).await?;
+        Ok(())
     }
 
     async fn cleanup_expired_workspaces(&self) -> Result<(), DeploymentError> {
@@ -451,7 +468,7 @@ impl LocalContainerService {
             return Ok(());
         }
 
-        let expired_workspaces = Workspace::find_expired_for_cleanup(&self.db.pool).await?;
+        let expired_workspaces = Workspace::find_expired_for_cleanup(&self.db.pool, None).await?;
         if expired_workspaces.is_empty() {
             tracing::debug!("No expired workspaces found");
             return Ok(());
@@ -461,7 +478,22 @@ impl LocalContainerService {
             expired_workspaces.len()
         );
         for workspace in &expired_workspaces {
-            self.cleanup_workspace(workspace).await;
+            // Earlier deletions may take time. Recheck activity and archive/pin
+            // state immediately before touching this workspace's filesystem.
+            let Some(current) =
+                Workspace::find_expired_for_cleanup(&self.db.pool, Some(workspace.id))
+                    .await?
+                    .pop()
+            else {
+                continue;
+            };
+            if let Err(error) = self.cleanup_workspace(&current, true).await {
+                tracing::warn!(
+                    workspace_id = %current.id,
+                    %error,
+                    "Workspace cleanup failed; will retry on the next cleanup pass"
+                );
+            }
         }
         Ok(())
     }
@@ -2608,8 +2640,7 @@ impl ContainerService for LocalContainerService {
 
     async fn delete(&self, workspace: &Workspace) -> Result<(), ContainerError> {
         self.try_stop(workspace, true).await;
-        self.cleanup_workspace(workspace).await;
-        Ok(())
+        self.cleanup_workspace(workspace, false).await
     }
 
     async fn ensure_container_exists(

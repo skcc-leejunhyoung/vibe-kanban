@@ -403,14 +403,16 @@ impl WorktreeManager {
 
     /// Clean up multiple worktrees
     pub async fn batch_cleanup_worktrees(data: &[WorktreeCleanup]) -> Result<(), WorktreeError> {
+        let mut first_error = None;
         for cleanup_data in data {
             tracing::debug!("Cleaning up worktree: {:?}", cleanup_data.worktree_path);
 
             if let Err(e) = Self::cleanup_worktree(cleanup_data).await {
                 tracing::error!("Failed to cleanup worktree: {}", e);
+                first_error.get_or_insert(e);
             }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Clean up a worktree path and its git metadata (non-blocking)
@@ -576,6 +578,25 @@ impl WorktreeManager {
         Self::cleanup_worktree(&cleanup).await?;
         Ok(true)
     }
+}
+
+#[tokio::test]
+async fn batch_cleanup_reports_failure_and_still_cleans_other_worktrees() {
+    let directory = tempfile::tempdir().unwrap();
+    let blocked = directory.path().join("blocked");
+    let removable = directory.path().join("removable");
+    let missing_repo = directory.path().join("missing-repo");
+    // remove_dir_all must fail on a regular file, including when tests run as root.
+    std::fs::write(&blocked, "not a directory").unwrap();
+    std::fs::create_dir(&removable).unwrap();
+    let result = WorktreeManager::batch_cleanup_worktrees(&[
+        WorktreeCleanup::new(blocked.clone(), Some(missing_repo.clone())),
+        WorktreeCleanup::new(removable.clone(), Some(missing_repo)),
+    ])
+    .await;
+    assert!(result.is_err());
+    assert!(blocked.is_file());
+    assert!(!removable.exists());
 }
 
 #[tokio::test]

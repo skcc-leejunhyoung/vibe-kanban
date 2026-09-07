@@ -45,7 +45,7 @@ Select **Archive** from the workspace actions, or click the **Archive** button (
 Archived workspaces can be viewed by clicking **View Archive** at the bottom of the sidebar.
 
 <Info>
-**Archiving preserves everything.** Your conversation history, sessions, notes, and worktree files all remain intact. You can unarchive at any time to continue working.
+**Archiving preserves workspace history.** Your conversation history, sessions, and notes remain intact. Worktree files are eligible for automatic cleanup after one hour of inactivity; committed code remains on the branch. You can unarchive at any time to continue working.
 </Info>
 
 ## Deleting Workspaces
@@ -76,7 +76,7 @@ When you delete a workspace:
 
 | Action | Worktree | Conversation | Can Restore? |
 |--------|----------|--------------|--------------|
-| **Archive** | Kept on disk | Preserved | Yes - unarchive anytime |
+| **Archive** | Eligible for automatic cleanup | Preserved | Yes - unarchive anytime |
 | **Delete** | Removed | Deleted | No - permanent |
 
 **Use Archive when:**
@@ -150,6 +150,14 @@ If you manually delete a worktree directory (e.g., using `rm -rf` in terminal), 
 Vibe Kanban automatically cleans up "orphaned" worktrees on startup - these are worktree directories that no longer have a matching workspace in the database (e.g., if the app crashed during deletion).
 
 This cleanup runs automatically, so you don't need to manually manage stale worktree directories.
+
+### Inactive Workspace Cleanup
+
+Vibe Kanban also checks for inactive worktrees every 30 minutes. Archived workspaces become eligible after one hour; other workspaces become eligible after 72 hours. Retention uses UTC and the most recent workspace activity or execution completion, including workspaces that have never run an agent.
+
+Automatic cleanup skips pinned workspaces, running executions, in-place workspaces that use your original checkout, and repositories with uncommitted changes or untracked files. If repository state cannot be checked, the workspace is retained. Activity and pin/archive state are checked again before cleanup, and failed deletions are retried on a later pass.
+
+This removes eligible worktree directories, including their build outputs, but preserves database history and Git branches. It does not clean build caches in your original repository. Set `DISABLE_WORKTREE_CLEANUP` to disable inactive workspace cleanup; the development backend sets it by default.
 
 ## Renaming Workspaces
 
