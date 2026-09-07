@@ -2,9 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@vibe/ui/components/Button';
 import type { GitHubCredentialStatus } from 'shared/remote-types';
 import { SettingsCard } from './SettingsComponents';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useSettingsMachineClient } from './SettingsHostContext';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { oauthApi } from '@/shared/lib/api';
 import {
   deleteGitHubCredential,
   getGitHubCredentialStatus,
@@ -21,18 +20,23 @@ export function describeGitHubCredential(
 ): string {
   switch (status.source) {
     case 'host_gh':
-      return `Using the GitHub CLI login ${status.login ?? ''} synced from a host. Scopes: ${status.scopes.join(', ')}.`;
+      return `Using the GitHub CLI login ${status.login ?? ''} synced from a machine. Scopes: ${status.scopes.join(', ')}.`;
     case 'oauth':
-      return `Using the GitHub sign-in${status.login ? ` ${status.login}` : ''}. Organizations that restrict OAuth apps stay hidden until a host's gh login is synced.`;
+      return `Using the GitHub sign-in${status.login ? ` ${status.login}` : ''}. Organizations that restrict OAuth apps stay hidden until a machine's gh login is synced.`;
     default:
-      return "No GitHub credential yet. Sign in with GitHub or sync a host's gh login.";
+      return "No GitHub credential yet. Sign in with GitHub or sync a machine's gh login.";
   }
 }
 
-/** Lets the server stack act with a host's `gh` login instead of the OAuth app token. */
+/**
+ * Lets the server stack act with a machine's `gh` login instead of the OAuth
+ * app token. The credential itself is account-wide; only reading `gh auth
+ * token` needs a machine, so the sync targets the selected settings host and
+ * works from remote web through the relay.
+ */
 export function GitHubCredentialSettings() {
-  const runtime = useAppRuntime();
   const { isSignedIn } = useAuth();
+  const machineClient = useSettingsMachineClient();
   const queryClient = useQueryClient();
   const statusQuery = useQuery({
     queryKey: GITHUB_CREDENTIAL_QUERY_KEY,
@@ -47,7 +51,10 @@ export function GitHubCredentialSettings() {
     await invalidateGitHubReadCaches(queryClient);
   };
   const sync = useMutation({
-    mutationFn: () => oauthApi.syncGitHubHostCredential(),
+    mutationFn: async () => {
+      if (!machineClient) throw new Error('Select a machine first.');
+      return machineClient.syncGitHubHostCredential();
+    },
     onSuccess: refresh,
   });
   const remove = useMutation({
@@ -72,19 +79,15 @@ export function GitHubCredentialSettings() {
         fallback="Could not update the GitHub credential"
       />
       <div className="flex flex-wrap items-center gap-base">
-        {runtime === 'local' ? (
-          <Button
-            variant="outline"
-            disabled={!isSignedIn || busy}
-            onClick={() => sync.mutate()}
-          >
-            Use this host's gh login
-          </Button>
-        ) : (
-          <p className="text-sm text-low">
-            Sync from the local app on a host where gh is signed in.
-          </p>
-        )}
+        <Button
+          variant="outline"
+          disabled={!isSignedIn || !machineClient || busy}
+          onClick={() => sync.mutate()}
+        >
+          {machineClient
+            ? `Use ${machineClient.target.label}'s gh login`
+            : "Use this machine's gh login"}
+        </Button>
         {status?.source === 'host_gh' && (
           <Button
             variant="outline"
@@ -95,6 +98,11 @@ export function GitHubCredentialSettings() {
           </Button>
         )}
       </div>
+      {!machineClient && (
+        <p className="text-sm text-low">
+          Select a machine above to sync its gh login.
+        </p>
+      )}
     </SettingsCard>
   );
 }

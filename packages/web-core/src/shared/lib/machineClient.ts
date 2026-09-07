@@ -14,6 +14,7 @@ import type {
   AgentMemoryMutation,
   CreateAgentMemoryMutationRequest,
 } from 'shared/types';
+import type { GitHubCredentialStatus } from 'shared/remote-types';
 import type { AppRuntime } from '@/shared/hooks/useAppRuntime';
 import {
   handleApiResponse,
@@ -122,6 +123,8 @@ export interface MachineClient {
   createAgentMemoryMutation: (
     request: CreateAgentMemoryMutationRequest
   ) => Promise<AgentMemoryMutation>;
+  /** Upload this machine's `gh` login as the account's central GitHub credential. */
+  syncGitHubHostCredential: () => Promise<GitHubCredentialStatus>;
 }
 
 function getMachineRequestOptions(
@@ -353,6 +356,15 @@ export function createMachineClient(
           target,
           `/api/agent-memory-sync/logs?limit=${limit}`,
           { cache: 'no-store' }
+        )
+      ),
+    syncGitHubHostCredential: async () =>
+      handleApiResponse<GitHubCredentialStatus>(
+        await makeMachineRequest(
+          runtime,
+          target,
+          '/api/auth/github-credential/sync',
+          { method: 'POST' }
         )
       ),
     runAgentMemorySync: async () =>
