@@ -88,14 +88,27 @@ describe('ChatSubagentEntry activity panel', () => {
     expect(html).not.toContain('conversation.subagent.stop');
   });
 
-  it('keeps detailed output in the transcript when one is available', () => {
+  it('hides successful duplicate output but preserves failures', () => {
     const result = { value: 'Detailed child report' };
 
     expect(
-      render({ result, expanded: true, onOpenTranscript: () => {} })
+      render({
+        result,
+        expanded: true,
+        status: { status: 'success' },
+        onOpenTranscript: () => {},
+      })
     ).not.toContain('Detailed child report');
-    expect(render({ result, expanded: true })).toContain(
-      'Detailed child report'
-    );
+    expect(
+      render({ result, expanded: true, status: { status: 'success' } })
+    ).toContain('Detailed child report');
+    expect(
+      render({
+        result: { value: 'Child failed to compile' },
+        expanded: true,
+        status: { status: 'failed' },
+        onOpenTranscript: () => {},
+      })
+    ).toContain('Child failed to compile');
   });
 });

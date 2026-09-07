@@ -55,7 +55,7 @@ function formatElapsed(ms: number): string {
 /**
  * Renders a collapsible subagent (Task tool) entry showing:
  * - Header with subagent type and description
- * - Expandable output only when no dedicated transcript is available
+ * - Expandable output unless a successful transcript already contains it
  */
 export function ChatSubagentEntry({
   description,
@@ -121,7 +121,8 @@ export function ChatSubagentEntry({
 
   // Extract the result content for display
   const resultContent = useMemo(() => {
-    if (onOpenTranscript || !result?.value) return null;
+    if ((onOpenTranscript && status?.status === 'success') || !result?.value)
+      return null;
 
     // Handle both string and object values
     if (typeof result.value === 'string') {
@@ -130,7 +131,7 @@ export function ChatSubagentEntry({
 
     // For JSON results, stringify with formatting
     return JSON.stringify(result.value, null, 2);
-  }, [onOpenTranscript, result]);
+  }, [onOpenTranscript, result, status]);
 
   // Determine if we have content to show
   const hasContent = Boolean(resultContent);
