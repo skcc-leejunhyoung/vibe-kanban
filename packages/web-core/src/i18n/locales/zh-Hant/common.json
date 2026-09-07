@@ -131,6 +131,8 @@
     "noWorkspaces": "沒有工作區",
     "newWorkspace": "新工作區",
     "needsAttention": "需要關注",
+    "cleanupBlocked": "已從自動清理中排除：{{reason}}。請手動刪除此工作區以回收其目錄。",
+    "cleanupBlockedLabel": "已排除於自動清理",
     "idle": "閒置",
     "running": "執行中",
     "pin": "釘選",

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE workspaces SET cleanup_blocked_reason = ? WHERE id = ? AND cleanup_blocked_reason IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4d5dd9e1990dadfc15e2efcea502ef8897f79b2dc6b3d0b5aea68e8a9088afd5"
+}

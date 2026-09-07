@@ -50,6 +50,12 @@ export interface SidebarWorkspace {
   isArchived?: boolean;
   /** Quick-chat ("in-place") workspace: runs in an existing checkout, no worktree. */
   isInPlace?: boolean;
+  /**
+   * Set when automatic expiry cleanup could not verify this workspace's
+   * uncommitted changes and quarantined it. Only an explicit delete reclaims
+   * the directory.
+   */
+  cleanupBlockedReason?: string | null;
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
   hasUnseenActivity?: boolean;
@@ -142,6 +148,7 @@ function toSidebarWorkspace(
     isPinned: ws.pinned,
     isArchived: ws.archived,
     isInPlace: ws.in_place,
+    cleanupBlockedReason: ws.cleanup_blocked_reason,
     // Additional data from summary
     isWaiting: summary?.is_waiting_on_blockers ?? undefined,
     hasPendingApproval: summary?.has_pending_approval,

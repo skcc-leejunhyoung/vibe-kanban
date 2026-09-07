@@ -61,6 +61,12 @@ pub struct Workspace {
     /// edits stay uncommitted in the user's working tree, and the destructive
     /// expiry/delete cleanup is skipped so it can never remove the real repo.
     pub in_place: bool,
+    /// Why automatic expiry cleanup refuses to touch this workspace. `None`
+    /// means eligible. Set when the uncommitted-change check cannot run at all
+    /// (directory present but not a usable git worktree), which would otherwise
+    /// retry and fail on every cleanup pass forever. Explicit user deletion is
+    /// unaffected.
+    pub cleanup_blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -86,6 +92,7 @@ struct WorkspaceStatusRow {
     worktree_deleted: bool,
     ephemeral: bool,
     in_place: bool,
+    cleanup_blocked_reason: Option<String>,
     is_running: i64,
     is_errored: i64,
 }
@@ -132,7 +139,8 @@ impl Workspace {
                           name,
                           worktree_deleted AS "worktree_deleted!: bool",
                           ephemeral AS "ephemeral!: bool",
-                          in_place AS "in_place!: bool"
+                          in_place AS "in_place!: bool",
+                          cleanup_blocked_reason
                    FROM workspaces
                    ORDER BY created_at DESC"#
         )
@@ -196,6 +204,27 @@ impl Workspace {
         Ok(())
     }
 
+    /// Quarantine a workspace whose uncommitted changes cannot be verified, so
+    /// automatic expiry cleanup stops retrying it. Records once: a workspace
+    /// already blocked keeps its original reason. `updated_at` is deliberately
+    /// left alone — it drives both the expiry clock and the list ordering, and
+    /// a background quarantine should not resurface the workspace as recent.
+    /// Returns true when this call is the one that blocked it.
+    pub async fn mark_cleanup_blocked(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        reason: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query!(
+            "UPDATE workspaces SET cleanup_blocked_reason = ? WHERE id = ? AND cleanup_blocked_reason IS NULL",
+            reason,
+            workspace_id
+        )
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn clear_worktree_deleted(
         pool: &SqlitePool,
         workspace_id: Uuid,
@@ -252,7 +281,8 @@ impl Workspace {
                        name,
                        worktree_deleted  AS "worktree_deleted!: bool",
                        ephemeral         AS "ephemeral!: bool",
-                       in_place          AS "in_place!: bool"
+                       in_place          AS "in_place!: bool",
+                       cleanup_blocked_reason
                FROM    workspaces
                WHERE   id = $1"#,
             id
@@ -276,7 +306,8 @@ impl Workspace {
                        name,
                        worktree_deleted  AS "worktree_deleted!: bool",
                        ephemeral         AS "ephemeral!: bool",
-                       in_place          AS "in_place!: bool"
+                       in_place          AS "in_place!: bool",
+                       cleanup_blocked_reason
                FROM    workspaces
                WHERE   rowid = $1"#,
             rowid
@@ -319,6 +350,9 @@ impl Workspace {
                 -- In-place ("quick chat") workspaces point container_ref at the
                 -- user's real checkout; never select them for destructive cleanup.
                 AND w.in_place = FALSE
+                -- Quarantined: the uncommitted-change check could not run, so
+                -- only an explicit user deletion may remove this one.
+                AND w.cleanup_blocked_reason IS NULL
                 AND w.id NOT IN (
                     SELECT DISTINCT s2.workspace_id
                     FROM sessions s2
@@ -362,7 +396,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name)
                VALUES ($1, $2, $3, $4, $5, $6)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool""#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason"#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
@@ -386,7 +420,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, ephemeral)
                VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool""#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason"#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
@@ -412,7 +446,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, in_place)
                VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool""#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason"#,
             id,
             Option::<Uuid>::None,
             container_ref,
@@ -440,7 +474,8 @@ impl Workspace {
                       name,
                       worktree_deleted AS "worktree_deleted!: bool",
                       ephemeral AS "ephemeral!: bool",
-                      in_place AS "in_place!: bool"
+                      in_place AS "in_place!: bool",
+                      cleanup_blocked_reason
                FROM workspaces
                WHERE ephemeral = TRUE"#
         )
@@ -639,6 +674,7 @@ impl Workspace {
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
+                w.cleanup_blocked_reason,
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -685,6 +721,7 @@ impl Workspace {
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
+                w.cleanup_blocked_reason,
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -731,6 +768,7 @@ impl Workspace {
                     worktree_deleted: rec.worktree_deleted,
                     ephemeral: rec.ephemeral,
                     in_place: rec.in_place,
+                    cleanup_blocked_reason: rec.cleanup_blocked_reason,
                 },
                 is_running: rec.is_running != 0,
                 is_errored: rec.is_errored != 0,
@@ -784,6 +822,7 @@ impl Workspace {
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
+                w.cleanup_blocked_reason,
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -831,6 +870,7 @@ impl Workspace {
                 worktree_deleted: rec.worktree_deleted,
                 ephemeral: rec.ephemeral,
                 in_place: rec.in_place,
+                cleanup_blocked_reason: rec.cleanup_blocked_reason,
             },
             is_running: rec.is_running != 0,
             is_errored: rec.is_errored != 0,
@@ -870,7 +910,8 @@ mod tests {
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 archived INTEGER NOT NULL, pinned INTEGER NOT NULL,
                 name TEXT, worktree_deleted INTEGER NOT NULL,
-                ephemeral INTEGER NOT NULL, in_place INTEGER NOT NULL
+                ephemeral INTEGER NOT NULL, in_place INTEGER NOT NULL,
+                cleanup_blocked_reason TEXT
             );
             CREATE TABLE sessions (id BLOB PRIMARY KEY, workspace_id BLOB);
             CREATE TABLE execution_processes (id BLOB PRIMARY KEY, session_id BLOB, completed_at TEXT);",
@@ -1025,7 +1066,36 @@ mod tests {
         expected.sort();
         assert_eq!(actual, expected);
 
-        let id = candidates[0].id;
+        // A workspace whose uncommitted changes could not be verified is
+        // quarantined instead of retried, so it drops out of the candidates.
+        let blocked = candidates[0].id;
+        assert!(
+            Workspace::mark_cleanup_blocked(&pool, blocked, "not a readable git worktree")
+                .await
+                .unwrap()
+        );
+        // Recorded once: a second pass must not overwrite the original reason.
+        assert!(
+            !Workspace::mark_cleanup_blocked(&pool, blocked, "some other reason")
+                .await
+                .unwrap()
+        );
+        let after: Vec<_> = Workspace::find_expired_for_cleanup(&pool, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        assert!(!after.contains(&blocked));
+        assert_eq!(after.len(), candidates.len() - 1);
+        assert!(
+            Workspace::find_expired_for_cleanup(&pool, Some(blocked))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let id = candidates[1].id;
         assert_eq!(
             Workspace::find_expired_for_cleanup(&pool, Some(id))
                 .await

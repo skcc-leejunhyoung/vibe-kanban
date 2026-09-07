@@ -69,6 +69,8 @@ export interface WorkspacesSidebarWorkspace {
   latestPrompt?: string;
   /** Quick-chat ("in-place") workspace — runs in an existing checkout. */
   isInPlace?: boolean;
+  /** Non-null when automatic cleanup quarantined this workspace. */
+  cleanupBlockedReason?: string | null;
   /**
    * Blocker-gated deferred start: the agent hasn't spawned because the linked
    * issue has unresolved blockers. Rendered as a "waiting" state.
@@ -270,6 +272,7 @@ function WorkspaceList({
           pullRequests={workspace.pullRequests}
           githubIssues={workspace.githubIssues}
           isInPlace={workspace.isInPlace}
+          cleanupBlockedReason={workspace.cleanupBlockedReason}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>
             onSelectWorkspace(workspace.id, workspace.hostId, event)
@@ -540,6 +543,7 @@ export function WorkspacesSidebar({
                   pullRequests={workspace.pullRequests}
                   githubIssues={workspace.githubIssues}
                   isInPlace={workspace.isInPlace}
+                cleanupBlockedReason={workspace.cleanupBlockedReason}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
                   onClick={(event) =>
                     onSelectWorkspace(workspace.id, workspace.hostId, event)
@@ -708,6 +712,7 @@ export function WorkspacesSidebar({
                 pullRequests={workspace.pullRequests}
                 githubIssues={workspace.githubIssues}
                 isInPlace={workspace.isInPlace}
+                cleanupBlockedReason={workspace.cleanupBlockedReason}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
                 onClick={(event) =>
                   onSelectWorkspace(workspace.id, workspace.hostId, event)

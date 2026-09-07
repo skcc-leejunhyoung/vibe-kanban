@@ -131,6 +131,8 @@
     "noWorkspaces": "没有工作区",
     "newWorkspace": "新工作区",
     "needsAttention": "需要注意",
+    "cleanupBlocked": "已从自动清理中排除：{{reason}}。请手动删除此工作区以回收其目录。",
+    "cleanupBlockedLabel": "已排除于自动清理",
     "idle": "空闲",
     "running": "运行中",
     "pin": "置顶",

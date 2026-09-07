@@ -151,6 +151,8 @@
       "unpaired": "Unpaired"
     },
     "needsAttention": "Needs Attention",
+    "cleanupBlocked": "Skipped by automatic cleanup: {{reason}}. Delete this workspace explicitly to reclaim its directory.",
+    "cleanupBlockedLabel": "Excluded from automatic cleanup",
     "idle": "Idle",
     "running": "Running",
     "unknownStatus": "Unknown status",

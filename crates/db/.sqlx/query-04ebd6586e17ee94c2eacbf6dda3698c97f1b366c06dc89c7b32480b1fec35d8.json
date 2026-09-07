@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT  id                AS \"id!: Uuid\",\n                       task_id           AS \"task_id: Uuid\",\n                       container_ref,\n                       branch,\n                       setup_completed_at AS \"setup_completed_at: DateTime<Utc>\",\n                       created_at        AS \"created_at!: DateTime<Utc>\",\n                       updated_at        AS \"updated_at!: DateTime<Utc>\",\n                       archived          AS \"archived!: bool\",\n                       pinned            AS \"pinned!: bool\",\n                       name,\n                       worktree_deleted  AS \"worktree_deleted!: bool\",\n                       ephemeral         AS \"ephemeral!: bool\",\n                       in_place          AS \"in_place!: bool\"\n               FROM    workspaces\n               WHERE   rowid = $1",
+  "query": "SELECT  id                AS \"id!: Uuid\",\n                       task_id           AS \"task_id: Uuid\",\n                       container_ref,\n                       branch,\n                       setup_completed_at AS \"setup_completed_at: DateTime<Utc>\",\n                       created_at        AS \"created_at!: DateTime<Utc>\",\n                       updated_at        AS \"updated_at!: DateTime<Utc>\",\n                       archived          AS \"archived!: bool\",\n                       pinned            AS \"pinned!: bool\",\n                       name,\n                       worktree_deleted  AS \"worktree_deleted!: bool\",\n                       ephemeral         AS \"ephemeral!: bool\",\n                       in_place          AS \"in_place!: bool\",\n                       cleanup_blocked_reason\n               FROM    workspaces\n               WHERE   id = $1",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,11 @@
         "name": "in_place!: bool",
         "ordinal": 12,
         "type_info": "Bool"
+      },
+      {
+        "name": "cleanup_blocked_reason",
+        "ordinal": 13,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -85,8 +90,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "77f745800ff443393f271b7121653cad7882a0815f44f7f9b25bf86d3d1492da"
+  "hash": "04ebd6586e17ee94c2eacbf6dda3698c97f1b366c06dc89c7b32480b1fec35d8"
 }

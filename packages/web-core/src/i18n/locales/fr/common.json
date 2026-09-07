@@ -131,6 +131,8 @@
     "noWorkspaces": "Aucun espace de travail",
     "newWorkspace": "Nouvel espace de travail",
     "needsAttention": "Nécessite Attention",
+    "cleanupBlocked": "Exclu du nettoyage automatique : {{reason}}. Supprimez explicitement cet espace de travail pour récupérer son répertoire.",
+    "cleanupBlockedLabel": "Exclu du nettoyage automatique",
     "idle": "Inactif",
     "running": "En Cours",
     "pin": "Épingler",

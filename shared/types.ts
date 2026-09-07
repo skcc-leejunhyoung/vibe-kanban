@@ -236,7 +236,15 @@ ephemeral: boolean,
  * edits stay uncommitted in the user's working tree, and the destructive
  * expiry/delete cleanup is skipped so it can never remove the real repo.
  */
-in_place: boolean, };
+in_place: boolean,
+/**
+ * Why automatic expiry cleanup refuses to touch this workspace. `None`
+ * means eligible. Set when the uncommitted-change check cannot run at all
+ * (directory present but not a usable git worktree), which would otherwise
+ * retry and fail on every cleanup pass forever. Explicit user deletion is
+ * unaffected.
+ */
+cleanup_blocked_reason: string | null, };
 
 export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean,
 /**
@@ -252,7 +260,15 @@ ephemeral: boolean,
  * edits stay uncommitted in the user's working tree, and the destructive
  * expiry/delete cleanup is skipped so it can never remove the real repo.
  */
-in_place: boolean, };
+in_place: boolean,
+/**
+ * Why automatic expiry cleanup refuses to touch this workspace. `None`
+ * means eligible. Set when the uncommitted-change check cannot run at all
+ * (directory present but not a usable git worktree), which would otherwise
+ * retry and fail on every cleanup pass forever. Explicit user deletion is
+ * unaffected.
+ */
+cleanup_blocked_reason: string | null, };
 
 export type Session = { id: string, workspace_id: string, name: string | null, executor: string | null, agent_working_dir: string | null, created_at: string, updated_at: string,
 /**

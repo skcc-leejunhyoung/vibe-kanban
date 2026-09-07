@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, ephemeral)\n               VALUES ($1, $2, $3, $4, $5, $6, TRUE)\n               RETURNING id as \"id!: Uuid\", task_id as \"task_id: Uuid\", container_ref, branch, setup_completed_at as \"setup_completed_at: DateTime<Utc>\", created_at as \"created_at!: DateTime<Utc>\", updated_at as \"updated_at!: DateTime<Utc>\", archived as \"archived!: bool\", pinned as \"pinned!: bool\", name, worktree_deleted as \"worktree_deleted!: bool\", ephemeral as \"ephemeral!: bool\", in_place as \"in_place!: bool\"",
+  "query": "INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, in_place)\n               VALUES ($1, $2, $3, $4, $5, $6, TRUE)\n               RETURNING id as \"id!: Uuid\", task_id as \"task_id: Uuid\", container_ref, branch, setup_completed_at as \"setup_completed_at: DateTime<Utc>\", created_at as \"created_at!: DateTime<Utc>\", updated_at as \"updated_at!: DateTime<Utc>\", archived as \"archived!: bool\", pinned as \"pinned!: bool\", name, worktree_deleted as \"worktree_deleted!: bool\", ephemeral as \"ephemeral!: bool\", in_place as \"in_place!: bool\", cleanup_blocked_reason",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,11 @@
         "name": "in_place!: bool",
         "ordinal": 12,
         "type_info": "Bool"
+      },
+      {
+        "name": "cleanup_blocked_reason",
+        "ordinal": 13,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -85,8 +90,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "e3cc7d3937a64a76a96bc164825e72408cce58fc6ed66d36dcfdec44079a106a"
+  "hash": "bf2daf480e21ce508bf4bd0c03bb89f45a363d4a75d6eb237ac507daa08e171a"
 }

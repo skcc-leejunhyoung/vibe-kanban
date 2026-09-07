@@ -9,6 +9,7 @@ import {
   LightningIcon,
   ListChecksIcon,
   HourglassIcon,
+  WarningIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import type { MouseEvent, Ref } from 'react';
@@ -77,6 +78,12 @@ export interface WorkspaceSummaryProps {
   isDraft?: boolean;
   /** Quick-chat ("in-place") workspace — shows a lightning tag before the name. */
   isInPlace?: boolean;
+  /**
+   * Why automatic cleanup skipped this workspace (its uncommitted changes could
+   * not be verified). Null when eligible. Shown as a warning tag so the user
+   * knows the directory is only reclaimed by deleting it explicitly.
+   */
+  cleanupBlockedReason?: string | null;
   onOpenWorkspaceActions?: (workspaceId: string) => void;
   /** Keyboard navigation cursor is on this row (arrow/vim key focus) */
   isFocused?: boolean;
@@ -118,6 +125,7 @@ export function WorkspaceSummary({
   summary = false,
   isDraft = false,
   isInPlace = false,
+  cleanupBlockedReason = null,
   onOpenWorkspaceActions,
   isFocused = false,
   forwardedRef,
@@ -194,6 +202,17 @@ export function WorkspaceSummary({
               aria-label="Quick chat"
             >
               <LightningIcon className="size-icon-xs" weight="fill" />
+            </span>
+          )}
+          {cleanupBlockedReason && (
+            <span
+              className="inline-flex h-4 shrink-0 items-center rounded-sm bg-warning/10 px-1 text-warning"
+              title={t('workspaces.cleanupBlocked', {
+                reason: cleanupBlockedReason,
+              })}
+              aria-label={t('workspaces.cleanupBlockedLabel')}
+            >
+              <WarningIcon className="size-icon-xs" weight="fill" />
             </span>
           )}
           <div

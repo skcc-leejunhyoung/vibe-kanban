@@ -131,6 +131,8 @@
     "noWorkspaces": "ワークスペースがありません",
     "newWorkspace": "新しいワークスペース",
     "needsAttention": "対応が必要",
+    "cleanupBlocked": "自動クリーンアップから除外されました: {{reason}}。ディレクトリを回収するにはこのワークスペースを手動で削除してください。",
+    "cleanupBlockedLabel": "自動クリーンアップ対象外",
     "idle": "待機中",
     "running": "実行中",
     "pin": "ピン留め",
