@@ -179,8 +179,7 @@ static TRACKED_PULL_REQUEST_SYNC_CACHE: LazyLock<Cache<Uuid, Result<(), GitHubAp
 pub(super) async fn invalidate_user_github_caches(user_id: Uuid) {
     REPOSITORY_CACHE.invalidate(&user_id).await;
     TRACKED_PULL_REQUEST_SYNC_CACHE.invalidate(&user_id).await;
-    let _ = PULL_REQUEST_LIST_CACHE
-        .invalidate_entries_if(move |key, _| key.user_id == user_id);
+    let _ = PULL_REQUEST_LIST_CACHE.invalidate_entries_if(move |key, _| key.user_id == user_id);
     let _ = PULL_REQUEST_DETAIL_CACHE
         .invalidate_entries_if(move |(cached_user_id, _), _| *cached_user_id == user_id);
 }

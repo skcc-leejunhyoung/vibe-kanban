@@ -543,7 +543,7 @@ export function WorkspacesSidebar({
                   pullRequests={workspace.pullRequests}
                   githubIssues={workspace.githubIssues}
                   isInPlace={workspace.isInPlace}
-                cleanupBlockedReason={workspace.cleanupBlockedReason}
+                  cleanupBlockedReason={workspace.cleanupBlockedReason}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
                   onClick={(event) =>
                     onSelectWorkspace(workspace.id, workspace.hostId, event)
