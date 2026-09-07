@@ -135,7 +135,7 @@ export function IssueListRow({
             }
           }}
           className={cn(
-            'group/row flex flex-col',
+            'group/row flex flex-col @container',
             'transition-colors cursor-pointer outline-none',
             isCursor && KEYBOARD_CURSOR_RING,
             snapshot.isDragging && 'bg-secondary shadow-lg cursor-grabbing',
@@ -150,7 +150,9 @@ export function IssueListRow({
               (isSelected || isChecked) && 'bg-secondary'
             )}
           >
-            {/* Left side: Checkbox, Priority, ID, Status, Title */}
+            {/* Left side: Checkbox, Priority, ID, Status, Title. The row is a
+                container query root: the id hides under 32rem and the badges on
+                the right under 48rem so the title keeps its room. */}
             <div className="flex items-center gap-double flex-1 min-w-0">
               {/* Multi-select checkbox — shown on hover or when selection is
                 active. Pointer/touch starts are swallowed so grabbing the
@@ -175,7 +177,7 @@ export function IssueListRow({
                 </div>
               </div>
               <PriorityIcon priority={issue.priority} />
-              <span className="font-ibm-plex-mono text-sm text-normal shrink-0">
+              <span className="hidden @lg:inline font-ibm-plex-mono text-sm text-normal shrink-0">
                 {issue.simple_id}
               </span>
               <StatusDot color={statusColor} />
@@ -187,12 +189,12 @@ export function IssueListRow({
             {/* Right side: Tags, Assignee, Age */}
             <div className="flex items-center gap-base shrink-0">
               {milestone && (
-                <div className="flex items-center gap-half">
+                <div className="hidden @3xl:flex items-center gap-half">
                   <KanbanBadge name={milestone.name} color="215 70% 55%" />
                 </div>
               )}
               {visibleTags.length > 0 && (
-                <div className="flex items-center gap-half">
+                <div className="hidden @3xl:flex items-center gap-half">
                   {visibleTags.map((tag) => (
                     <KanbanBadge
                       key={tag.id}
@@ -203,7 +205,7 @@ export function IssueListRow({
                 </div>
               )}
               {relationships.length > 0 && (
-                <div className="flex items-center gap-half">
+                <div className="hidden @3xl:flex items-center gap-half">
                   {relationships.slice(0, 2).map((rel) => (
                     <RelationshipBadge
                       key={rel.relationshipId}
