@@ -775,7 +775,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     if (disabled && !hideActions) {
       return (
         <div className="wysiwyg-readonly flow-root">
-          <div className="wysiwyg-readonly-actions float-right ml-1 mb-1">
+          <div className="wysiwyg-readonly-actions relative z-10 float-right ml-1 mb-1">
             <div className="flex justify-end gap-1 transition-opacity duration-150">
               {/* Copy button */}
               <Button
