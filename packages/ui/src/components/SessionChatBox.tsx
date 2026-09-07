@@ -354,16 +354,16 @@ export function SessionChatBox<TExecutor extends string = string>({
   const isInApprovalMode = approvalMode?.isActive ?? false;
   const isInAskQuestionMode = askQuestionMode?.isActive ?? false;
 
-  // Key to force editor remount when entering feedback/edit/approval/question mode (triggers auto-focus)
+  // Key to force editor remount when the user enters feedback/edit mode
+  // (triggers auto-focus). Agent-initiated modes (approval / ask-question) are
+  // excluded on purpose: they arrive whenever the agent decides to, and
+  // remounting there autofocuses the editor and yanks focus out of whatever the
+  // user was doing — in a split pane that also switches the active pane.
   const focusKey = isInFeedbackMode
     ? 'feedback'
     : isInEditMode
       ? 'edit'
-      : isInApprovalMode
-        ? 'approval'
-        : isInAskQuestionMode
-          ? 'question'
-          : 'normal';
+      : 'normal';
 
   // Derived state from status
   const isDisabled = Boolean(

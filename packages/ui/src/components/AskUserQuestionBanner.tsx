@@ -146,9 +146,10 @@ export const AskUserQuestionBanner = forwardRef<
   );
 
   // Focus the selected (or first) option when a question arrives or the user
-  // navigates between questions. Deferred a frame so it wins over the chat
-  // editor's own mount autofocus (Lexical AutoFocusPlugin) when question mode
-  // remounts the editor in the same commit.
+  // navigates between questions — but only while this chat box already owns
+  // focus. A question can land in a background split pane at any time, and
+  // focusing there would pull the user out of the pane they are working in
+  // (pane activation follows DOM focus).
   useEffect(() => {
     if (!currentQuestion || disabled) return;
     const sel = selections[currentQuestion.question] ?? [];
@@ -157,6 +158,10 @@ export const AskUserQuestionBanner = forwardRef<
       currentQuestion.options.findIndex((o) => sel.includes(o.label))
     );
     setFocusedIndex(idx);
+    const scope = optionRefs.current[idx]?.closest(
+      '[data-chatbox-container="true"]'
+    );
+    if (!scope?.contains(document.activeElement)) return;
     const raf = requestAnimationFrame(() => optionRefs.current[idx]?.focus());
     return () => cancelAnimationFrame(raf);
     // Refocus only on question changes — not while toggling selections.
