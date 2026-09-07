@@ -471,10 +471,10 @@ impl WorkspaceManager {
         WorktreeManager::batch_cleanup_worktrees(&cleanup_data).await?;
 
         // Remove the workspace directory itself
-        if let Err(e) = tokio::fs::remove_dir_all(workspace_dir).await {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(e.into());
-            }
+        if let Err(e) = tokio::fs::remove_dir_all(workspace_dir).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e.into());
         }
 
         Ok(())

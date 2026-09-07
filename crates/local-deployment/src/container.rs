@@ -395,6 +395,25 @@ impl LocalContainerService {
         map.remove(id)
     }
 
+    /// Quarantine a workspace the automatic cleanup cannot safely evaluate.
+    /// Returning `Ok` (rather than `Err`) is the point: the expiry query skips
+    /// blocked workspaces, so this replaces a warning that repeated on every
+    /// 30-minute pass with a single recorded reason the user can act on.
+    async fn block_cleanup(
+        &self,
+        workspace: &Workspace,
+        reason: &str,
+    ) -> Result<(), ContainerError> {
+        if Workspace::mark_cleanup_blocked(&self.db.pool, workspace.id, reason).await? {
+            tracing::warn!(
+                workspace_id = %workspace.id,
+                reason,
+                "Cannot verify uncommitted changes; excluding workspace from automatic cleanup. Delete it explicitly to reclaim the directory."
+            );
+        }
+        Ok(())
+    }
+
     async fn cleanup_workspace(
         &self,
         workspace: &Workspace,
@@ -423,17 +442,33 @@ impl LocalContainerService {
 
         if preserve_uncommitted {
             if repositories.is_empty() && workspace_dir.try_exists()? {
-                return Err(ContainerError::Other(anyhow!(
-                    "Cannot verify changes in workspace {} without repository metadata",
-                    workspace.id
-                )));
+                return self
+                    .block_cleanup(workspace, "repository metadata is missing")
+                    .await;
             }
             for repo in &repositories {
                 let path = workspace_dir.join(&repo.name);
                 // A previous partial cleanup may already have removed this repo.
+                if !path.try_exists()? {
+                    continue;
+                }
                 // Git status includes both tracked changes and untracked files.
-                if path.try_exists()? && !self.git().get_worktree_status(&path)?.entries.is_empty()
-                {
+                // A failure here means the directory survived but is no longer a
+                // usable worktree (pruned admin dir, moved main repo, partial
+                // cleanup). We cannot tell whether work would be lost, so we
+                // neither delete nor retry forever — we quarantine it.
+                let status = match self.git().get_worktree_status(&path) {
+                    Ok(status) => status,
+                    Err(error) => {
+                        return self
+                            .block_cleanup(
+                                workspace,
+                                &format!("{} is not a readable git worktree: {error}", repo.name),
+                            )
+                            .await;
+                    }
+                };
+                if !status.entries.is_empty() {
                     tracing::info!(workspace_id = %workspace.id, "Preserving workspace with uncommitted changes");
                     return Ok(());
                 }
@@ -445,10 +480,10 @@ impl LocalContainerService {
                 "No repositories found for workspace {}, cleaning up workspace directory only",
                 workspace.id
             );
-            if let Err(e) = tokio::fs::remove_dir_all(&workspace_dir).await {
-                if e.kind() != io::ErrorKind::NotFound {
-                    return Err(e.into());
-                }
+            if let Err(e) = tokio::fs::remove_dir_all(&workspace_dir).await
+                && e.kind() != io::ErrorKind::NotFound
+            {
+                return Err(e.into());
             }
         } else {
             WorkspaceManager::cleanup_workspace(&workspace_dir, &repositories)
