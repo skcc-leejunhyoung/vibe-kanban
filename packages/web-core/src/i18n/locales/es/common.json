@@ -409,6 +409,7 @@
     "unknownError": "Error desconocido",
     "failedToUploadFile": "No se pudo subir {{filename}}: {{message}}",
     "downloadAttachment": "Descargar archivo adjunto",
+    "shareAttachment": "Compartir",
     "subIssues": "Subtareas",
     "noSubIssues": "Sin subtareas",
     "markIndependentIssue": "Marcar como problema independiente",

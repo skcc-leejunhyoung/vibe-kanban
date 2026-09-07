@@ -1,5 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
+import { create, useModal } from '@ebay/nice-modal-react';
+import { Dialog } from '@vibe/ui/components/KeyboardDialog';
+import { ZoomPane } from '@/shared/components/ZoomPane';
 import { dataUrl, isolatePreviewDocument } from '@/shared/lib/isolatedPreview';
+import { defineModal } from '@/shared/lib/modals';
 
 interface MermaidDiagramProps {
   chart: string;
@@ -10,16 +14,65 @@ interface MermaidDiagramProps {
 let mermaidQueue: Promise<void> = Promise.resolve();
 let initializedTheme: string | null = null;
 
+// Tap or click opens the diagram edge-to-edge with pinch/wheel zoom. The inline
+// iframe ignores pointers so the tap reaches this wrapper.
 export function MermaidDiagram({
   isolated = false,
   ...props
 }: MermaidDiagramProps & { isolated?: boolean }) {
-  return isolated ? (
-    <IsolatedMermaidDiagram {...props} />
-  ) : (
-    <InlineMermaidDiagram {...props} />
+  const Diagram = isolated ? IsolatedMermaidDiagram : InlineMermaidDiagram;
+  const open = () => void MermaidPreviewDialog.show({ ...props, isolated });
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label="Expand Mermaid diagram"
+      className="cursor-zoom-in [&_iframe]:pointer-events-none"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        open();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        open();
+      }}
+    >
+      <Diagram {...props} />
+    </div>
   );
 }
+
+type PreviewProps = MermaidDiagramProps & { isolated: boolean };
+
+// The global modal host keeps the viewer open when its chat row unmounts
+// under virtualization.
+const MermaidPreviewDialog = defineModal<PreviewProps, void>(
+  create<PreviewProps>(({ isolated, ...props }) => {
+    const modal = useModal();
+    const close = () => {
+      modal.resolve();
+      void modal.hide();
+      modal.remove();
+    };
+    const Diagram = isolated ? IsolatedMermaidDiagram : InlineMermaidDiagram;
+    return (
+      <Dialog
+        open={modal.visible}
+        onOpenChange={(open) => !open && close()}
+        fullscreen
+        aria-label="Mermaid diagram"
+      >
+        <ZoomPane>
+          <div className="w-screen bg-primary [&_iframe]:pointer-events-none">
+            <Diagram {...props} />
+          </div>
+        </ZoomPane>
+      </Dialog>
+    );
+  })
+);
 
 // Mermaid loads image nodes while rendering, before its SVG is sanitized.
 // Artifact diagrams must run the renderer itself behind the preview CSP.
@@ -51,7 +104,7 @@ function IsolatedMermaidDiagram({ chart, theme }: MermaidDiagramProps) {
       .then(({ default: code }) => {
         if (cancelled) return;
         const doc = new DOMParser().parseFromString(
-          '<!doctype html><html><head><style>body{margin:0}svg{display:block}</style></head><body><div id="diagram"></div></body></html>',
+          '<!doctype html><html><head><style>body{margin:0}svg{display:block;margin:0 auto}</style></head><body><div id="diagram"></div></body></html>',
           'text/html'
         );
         const library = doc.createElement('script');

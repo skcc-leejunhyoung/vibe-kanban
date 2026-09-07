@@ -409,6 +409,7 @@
     "unknownError": "不明なエラー",
     "failedToUploadFile": "{{filename}} のアップロードに失敗しました: {{message}}",
     "downloadAttachment": "添付ファイルをダウンロード",
+    "shareAttachment": "共有",
     "subIssues": "サブ課題",
     "noSubIssues": "サブ課題なし",
     "markIndependentIssue": "独立した課題としてマーク",

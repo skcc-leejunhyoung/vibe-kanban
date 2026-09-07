@@ -40,6 +40,8 @@ const Dialog = React.forwardRef<
     uncloseable?: boolean;
     size?: KeyboardDialogSize;
     scrollMode?: 'viewport' | 'content';
+    /** Edge-to-edge media viewer: no panel chrome, black backdrop. */
+    fullscreen?: boolean;
   }
 >(
   (
@@ -51,6 +53,7 @@ const Dialog = React.forwardRef<
       uncloseable,
       size = 'xl',
       scrollMode = 'viewport',
+      fullscreen = false,
       style,
       ...props
     },
@@ -183,16 +186,27 @@ const Dialog = React.forwardRef<
           role="dialog"
           aria-modal="true"
           className={cn(
-            'relative z-[10000] flex flex-col w-full gap-4 bg-primary p-6 shadow-lg duration-200 sm:rounded-lg my-8 outline-none',
+            'z-[10000] flex w-full flex-col outline-none duration-200',
+            fullscreen
+              ? 'fixed inset-0 bg-black text-white'
+              : 'relative my-8 gap-4 bg-primary p-6 shadow-lg sm:rounded-lg',
             className
           )}
-          style={{ ...style, maxWidth: getKeyboardDialogMaxWidth(size) }}
+          style={{
+            ...style,
+            maxWidth: fullscreen ? 'none' : getKeyboardDialogMaxWidth(size),
+          }}
           {...props}
         >
           {!uncloseable && (
             <button
               type="button"
-              className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 z-10"
+              className={cn(
+                'absolute right-4 z-10 opacity-70 transition-opacity hover:opacity-100',
+                fullscreen
+                  ? 'top-[max(1rem,env(safe-area-inset-top))] rounded-full bg-black/50 p-2'
+                  : 'top-4 rounded-sm'
+              )}
               onClick={() => onOpenChange?.(false)}
             >
               <X className="h-4 w-4" />

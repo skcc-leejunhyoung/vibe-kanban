@@ -409,6 +409,7 @@
     "unknownError": "未知錯誤",
     "failedToUploadFile": "上傳 {{filename}} 失敗：{{message}}",
     "downloadAttachment": "下載附件",
+    "shareAttachment": "分享",
     "subIssues": "子任務",
     "noSubIssues": "無子任務",
     "markIndependentIssue": "標記為獨立問題",

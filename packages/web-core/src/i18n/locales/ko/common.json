@@ -428,6 +428,7 @@
     "unknownError": "알 수 없는 오류",
     "failedToUploadFile": "{{filename}} 업로드 실패: {{message}}",
     "downloadAttachment": "첨부파일 다운로드",
+    "shareAttachment": "공유",
     "subIssues": "하위 이슈",
     "noSubIssues": "하위 이슈 없음",
     "markIndependentIssue": "독립 이슈로 표시",

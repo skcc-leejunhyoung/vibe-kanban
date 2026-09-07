@@ -442,6 +442,7 @@
     "unknownError": "Unknown error",
     "failedToUploadFile": "Failed to upload {{filename}}: {{message}}",
     "downloadAttachment": "Download attachment",
+    "shareAttachment": "Share",
     "subIssues": "Sub-issues",
     "noSubIssues": "No sub-issues",
     "markIndependentIssue": "Mark as independent issue",

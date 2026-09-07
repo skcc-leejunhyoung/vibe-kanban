@@ -409,6 +409,7 @@
     "unknownError": "Erreur inconnue",
     "failedToUploadFile": "Échec de l'envoi de {{filename}} : {{message}}",
     "downloadAttachment": "Télécharger la pièce jointe",
+    "shareAttachment": "Partager",
     "subIssues": "Sous-tâches",
     "noSubIssues": "Aucune sous-tâche",
     "markIndependentIssue": "Marquer comme problème indépendant",
