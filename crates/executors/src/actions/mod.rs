@@ -143,8 +143,8 @@ fn append_artifact_instructions(prompt: &mut String) {
              For inline HTML, SVG or Mermaid, add vibe-artifact after the code fence language \
              (for example: ```mermaid vibe-artifact). \
              Vibe renders attached HTML directly in an interactive, sandboxed chat preview, \
-             including its CSS and JavaScript. When asked to create or render an HTML deliverable, \
-             attach the HTML itself as the primary result. Screenshots can help verify your work; \
+             including its CSS and JavaScript. When asked to create or render HTML, SVG or Mermaid, \
+             attach that deliverable as the primary result. Screenshots can help verify your work; \
              use them as the deliverable when the user requests an image. \
              Save the final HTML inside the workspace, or attach a complete inline HTML document. \
              Prefer self-contained HTML; preview blocks external network requests and cannot run server code. \
@@ -171,6 +171,7 @@ mod tests {
         assert!(prompt.starts_with("Create a report\n\n[Artifacts]"));
         assert!(prompt.contains("[Title](relative/path \"vibe-artifact\")"));
         assert!(prompt.contains("```mermaid vibe-artifact"));
+        assert!(prompt.contains("create or render HTML, SVG or Mermaid"));
     }
 
     fn script_action(next_action: Option<Box<ExecutorAction>>) -> ExecutorAction {
