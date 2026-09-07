@@ -103,8 +103,8 @@ export type WorkspacePanelState = {
   isLeftMainPanelVisible: boolean;
   /**
    * Per-workspace override of the right (git) sidebar. Undefined → follow the
-   * global preference, so untouched workspaces keep the legacy behaviour
-   * while each pane toggles independently once used.
+   * collapsed default, so untouched workspaces stay closed while each pane
+   * toggles independently once used.
    */
   isRightSidebarVisible?: boolean;
 };

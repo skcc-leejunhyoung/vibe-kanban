@@ -90,11 +90,10 @@ export function storeToScratchData(state: {
     collapsed_paths: state.collapsedPaths,
     file_search_repo_id: state.fileSearchRepoId,
     is_left_sidebar_visible: state.isLeftSidebarVisible,
-    // Not persisted: the global right-sidebar flag is only the default for
-    // panes without an override, and that default is per-runtime (remote web
-    // starts collapsed). Restoring a stored value would pin every surface to
-    // whichever one wrote last. Per-workspace overrides still round-trip via
-    // `workspace_panel_states`.
+    // Not persisted: the global right-sidebar flag is only the collapsed
+    // default for panes without an override. Restoring a stored value would
+    // resurrect the pre-per-pane global toggle. Per-workspace overrides still
+    // round-trip via `workspace_panel_states`.
     is_right_sidebar_visible: null,
     // Dropped from the store: nothing toggles or reads terminal visibility.
     is_terminal_visible: null,
