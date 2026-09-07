@@ -69,7 +69,6 @@ import {
 } from '@/shared/types/actions';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
-import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { sessionsApi, ApiError } from '@/shared/lib/api';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
@@ -336,8 +335,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     handleSetAutoResume(false);
   }, [handleSetAutoResume]);
 
-  const appNavigation = useAppNavigation();
-
   const { executeAction } = useActions();
   const actionCtx = useActionVisibilityContext();
   const { rightMainPanelMode, setRightMainPanelMode } =
@@ -353,8 +350,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const handleOpenWorkspace = useCallback(() => {
     if (!workspaceId) return;
-    appNavigation.goToWorkspace(workspaceId);
-  }, [appNavigation, workspaceId]);
+    void executeAction(Actions.OpenWorkspace, workspaceId);
+  }, [executeAction, workspaceId]);
 
   // Get entries early to extract pending approval for scratch key
   const { entries } = useEntries();
