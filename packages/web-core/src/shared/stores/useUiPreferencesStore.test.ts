@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { useUiPreferencesStore } from './useUiPreferencesStore';
+import {
+  setDefaultRightSidebarVisible,
+  useUiPreferencesStore,
+} from './useUiPreferencesStore';
 
 describe('right sidebar preference', () => {
   beforeEach(() => {
@@ -32,6 +35,20 @@ describe('right sidebar preference', () => {
     const state = useUiPreferencesStore.getState();
     expect(state.isRightSidebarVisible).toBe(true);
     expect(state.workspacePanelStates).toEqual({});
+  });
+
+  it('toggles against the runtime default, not a hardcoded one', () => {
+    // Remote web starts collapsed. The first toggle must *open* the sidebar —
+    // if the reducer assumed "visible" it would write false and the press
+    // would look dead.
+    setDefaultRightSidebarVisible(false);
+
+    useUiPreferencesStore.getState().toggleRightSidebar('workspace-1');
+
+    expect(
+      useUiPreferencesStore.getState().workspacePanelStates['workspace-1']
+        .isRightSidebarVisible
+    ).toBe(true);
   });
 });
 

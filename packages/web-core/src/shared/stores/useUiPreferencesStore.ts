@@ -500,6 +500,11 @@ type State = {
   // Global layout state (applies across all workspaces)
   layoutMode: LayoutMode;
   isLeftSidebarVisible: boolean;
+  /**
+   * Default right-sidebar visibility for panes with no per-workspace override.
+   * Not persisted — each app entry sets it for its runtime (remote web starts
+   * collapsed, see `setDefaultRightSidebarVisible`).
+   */
   isRightSidebarVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
   /**
@@ -1112,6 +1117,15 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   setPullRequestDefaultFilters: (filters) =>
     set({ pullRequestDefaultFilters: { ...filters } }),
 }));
+
+/**
+ * Set the right-sidebar default for this app's runtime. Call at entry-module
+ * scope, before first render, so panes paint with the right default instead of
+ * flashing the other one.
+ */
+export function setDefaultRightSidebarVisible(visible: boolean): void {
+  useUiPreferencesStore.setState({ isRightSidebarVisible: visible });
+}
 
 // Hook for repo action preference
 export function useRepoAction(

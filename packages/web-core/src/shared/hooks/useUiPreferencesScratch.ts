@@ -52,7 +52,6 @@ function storeToScratchData(state: {
   collapsedPaths: Record<string, string[]>;
   fileSearchRepoId: string | null;
   isLeftSidebarVisible: boolean;
-  isRightSidebarVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
@@ -86,7 +85,12 @@ function storeToScratchData(state: {
     collapsed_paths: state.collapsedPaths,
     file_search_repo_id: state.fileSearchRepoId,
     is_left_sidebar_visible: state.isLeftSidebarVisible,
-    is_right_sidebar_visible: state.isRightSidebarVisible,
+    // Not persisted: the global right-sidebar flag is only the default for
+    // panes without an override, and that default is per-runtime (remote web
+    // starts collapsed). Restoring a stored value would pin every surface to
+    // whichever one wrote last. Per-workspace overrides still round-trip via
+    // `workspace_panel_states`.
+    is_right_sidebar_visible: null,
     // Dropped from the store: nothing toggles or reads terminal visibility.
     is_terminal_visible: null,
     right_sidebar_section_order: state.rightSidebarSectionOrder,
@@ -139,7 +143,6 @@ function scratchDataToStore(data: UiPreferencesData): {
   collapsedPaths: Record<string, string[]>;
   fileSearchRepoId: string | null;
   isLeftSidebarVisible: boolean;
-  isRightSidebarVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
@@ -217,7 +220,6 @@ function scratchDataToStore(data: UiPreferencesData): {
     collapsedPaths: (data.collapsed_paths ?? {}) as Record<string, string[]>,
     fileSearchRepoId: data.file_search_repo_id ?? legacyFileSearchRepoId,
     isLeftSidebarVisible: data.is_left_sidebar_visible ?? true,
-    isRightSidebarVisible: data.is_right_sidebar_visible ?? true,
     rightSidebarSectionOrder: normalizeRightSidebarSectionOrder(
       data.right_sidebar_section_order
     ),
@@ -285,7 +287,6 @@ export function useUiPreferencesScratch() {
     collapsedPaths: state.collapsedPaths,
     fileSearchRepoId: state.fileSearchRepoId,
     isLeftSidebarVisible: state.isLeftSidebarVisible,
-    isRightSidebarVisible: state.isRightSidebarVisible,
     rightSidebarSectionOrder: state.rightSidebarSectionOrder,
     workspacePanelStates: state.workspacePanelStates,
     workspaceFilters: state.workspaceFilters,
@@ -321,7 +322,6 @@ export function useUiPreferencesScratch() {
       collapsedPaths: currentState.collapsedPaths,
       fileSearchRepoId: currentState.fileSearchRepoId,
       isLeftSidebarVisible: currentState.isLeftSidebarVisible,
-      isRightSidebarVisible: currentState.isRightSidebarVisible,
       rightSidebarSectionOrder: currentState.rightSidebarSectionOrder,
       workspacePanelStates: currentState.workspacePanelStates,
       workspaceFilters: currentState.workspaceFilters,
@@ -373,7 +373,6 @@ export function useUiPreferencesScratch() {
         collapsedPaths: serverState.collapsedPaths,
         fileSearchRepoId: serverState.fileSearchRepoId,
         isLeftSidebarVisible: serverState.isLeftSidebarVisible,
-        isRightSidebarVisible: serverState.isRightSidebarVisible,
         rightSidebarSectionOrder: serverState.rightSidebarSectionOrder,
         workspacePanelStates: serverState.workspacePanelStates,
         workspaceFilters: serverState.workspaceFilters,
