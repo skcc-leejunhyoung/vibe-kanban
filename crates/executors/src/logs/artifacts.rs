@@ -5,7 +5,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{ActionType, FileChange, NormalizedEntry, NormalizedEntryType, ToolStatus};
+use super::{NormalizedEntry, NormalizedEntryType};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -70,10 +70,10 @@ pub enum ArtifactCandidate {
     Url(String),
 }
 
+// A standalone attachment line avoids treating inline-code examples as output.
 static LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+\"[^\"\n]*\")?\s*\)"#).unwrap()
+    Regex::new(r#"^(?:[-+*] |[0-9]+[.)] )?!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))\s+"vibe-artifact"\s*\)$"#).unwrap()
 });
-static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s<>\"'`)\]]+"#).unwrap());
 static FILE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?::[0-9]+){1,2}$").unwrap());
 
 fn svg_root(source: &str) -> &str {
@@ -84,16 +84,22 @@ fn svg_root(source: &str) -> &str {
         .map_or(source, |(_, document)| document.trim_start())
 }
 
-/// Only complete top-level fences are candidates. Quoted examples and diff
-/// bodies stay source text; no shell-command parsing or recursive JSON search.
+/// Only explicitly attached output is registered. Ordinary links, code blocks,
+/// quoted examples and tool output never imply an attachment.
 pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
     let mut candidates = Vec::new();
     let mut fence: Option<(char, usize, String, String)> = None;
     let mut ordinal = 0;
     for line in text.lines() {
+        // Markdown allows up to three leading spaces on fence delimiters.
+        let delimiter = if line.starts_with("    ") {
+            line
+        } else {
+            line.trim_start_matches(' ')
+        };
         if let Some((marker, count, language, content)) = fence.as_mut() {
-            if line.chars().take_while(|ch| ch == marker).count() >= *count
-                && line.trim_end_matches(*marker).trim().is_empty()
+            if delimiter.chars().take_while(|ch| ch == marker).count() >= *count
+                && delimiter.trim_end_matches(*marker).trim().is_empty()
             {
                 let source = content.trim();
                 let lower = source.to_ascii_lowercase();
@@ -130,22 +136,27 @@ pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
             }
             continue;
         }
-        if let Some(marker @ ('`' | '~')) = line.chars().next() {
-            let count = line.chars().take_while(|ch| *ch == marker).count();
+        if let Some(marker @ ('`' | '~')) = delimiter.chars().next() {
+            let count = delimiter.chars().take_while(|ch| *ch == marker).count();
             if count >= 3 {
                 fence = Some((
                     marker,
                     count,
-                    line[count..].trim().to_ascii_lowercase(),
+                    delimiter[count..]
+                        .trim()
+                        .strip_suffix(" vibe-artifact")
+                        .unwrap_or_default()
+                        .to_ascii_lowercase(),
                     String::new(),
                 ));
                 continue;
             }
         }
-        if line.starts_with('>') || line.starts_with("    ") {
+        if line.trim_start().starts_with('>') || line.starts_with("    ") || line.starts_with('\t')
+        {
             continue;
         }
-        for cap in LINK.captures_iter(line) {
+        for cap in LINK.captures_iter(line.trim()) {
             let target = cap.get(1).or_else(|| cap.get(2)).unwrap().as_str();
             if target.starts_with("https://") || target.starts_with("http://") {
                 candidates.push(ArtifactCandidate::Url(target.to_string()));
@@ -158,11 +169,6 @@ pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
                     candidates.push(ArtifactCandidate::File(path));
                 }
             }
-        }
-        for url in URL.find_iter(line) {
-            candidates.push(ArtifactCandidate::Url(
-                url.as_str().trim_end_matches(['.', ',', ';']).to_string(),
-            ));
         }
     }
     if let Some((_, _, language, content)) = fence {
@@ -192,107 +198,9 @@ pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
     candidates
 }
 
-fn result_candidates(value: &serde_json::Value) -> Vec<ArtifactCandidate> {
-    if let Some(text) = value.as_str() {
-        return markdown_candidates(text);
-    }
-    let blocks = value
-        .as_array()
-        .or_else(|| value.get("content").and_then(|v| v.as_array()));
-    let mut candidates = Vec::new();
-    if let Some(url) = value.get("url").and_then(|value| value.as_str())
-        && (url.starts_with("https://") || url.starts_with("http://"))
-    {
-        candidates.push(ArtifactCandidate::Url(url.to_string()));
-    }
-    for (index, block) in blocks.into_iter().flatten().enumerate() {
-        match block.get("type").and_then(|v| v.as_str()) {
-            Some("text") => {
-                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                    candidates.extend(markdown_candidates(text).into_iter().map(
-                        |mut candidate| {
-                            if index > 0 {
-                                match &mut candidate {
-                                    ArtifactCandidate::Inline { name, .. }
-                                    | ArtifactCandidate::PreparingInline { name } => {
-                                        *name = format!("content-{index}-{name}")
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            candidate
-                        },
-                    ));
-                }
-            }
-            Some("resource_link") => {
-                if let Some(uri) = block.get("uri").and_then(|v| v.as_str())
-                    && (uri.starts_with("https://") || uri.starts_with("http://"))
-                {
-                    candidates.push(ArtifactCandidate::Url(uri.to_string()));
-                }
-            }
-            Some("resource") => {
-                let resource = &block["resource"];
-                let extension = match resource.get("mimeType").and_then(|value| value.as_str()) {
-                    Some("text/html") => Some("html"),
-                    Some("image/svg+xml") => Some("svg"),
-                    Some("text/vnd.mermaid") => Some("mmd"),
-                    Some("text/markdown") => Some("md"),
-                    _ => None,
-                };
-                if let Some(extension) = extension
-                    && let Some(content) = resource.get("text").and_then(|value| value.as_str())
-                {
-                    candidates.push(ArtifactCandidate::Inline {
-                        name: format!("resource-{index}.{extension}"),
-                        content: content.to_string(),
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    candidates
-}
-
 pub fn entry_candidates(entry: &NormalizedEntry) -> Vec<ArtifactCandidate> {
     match &entry.entry_type {
         NormalizedEntryType::AssistantMessage => markdown_candidates(&entry.content),
-        NormalizedEntryType::ToolUse {
-            action_type,
-            status,
-            ..
-        } => {
-            if !matches!(status, ToolStatus::Success) {
-                return Vec::new();
-            }
-            match action_type {
-                ActionType::FileRead { path } | ActionType::ImageView { path } => {
-                    vec![ArtifactCandidate::File(path.clone())]
-                }
-                ActionType::FileEdit { path, changes } => std::iter::once(path)
-                    .chain(changes.iter().filter_map(|change| match change {
-                        FileChange::Rename { new_path } => Some(new_path),
-                        _ => None,
-                    }))
-                    .map(|path| ArtifactCandidate::File(path.clone()))
-                    .collect(),
-                ActionType::Tool {
-                    result: Some(result),
-                    ..
-                } => result_candidates(&result.value),
-                ActionType::CommandRun {
-                    result: Some(result),
-                    ..
-                } => result
-                    .output
-                    .as_deref()
-                    .map(markdown_candidates)
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            }
-        }
         _ => Vec::new(),
     }
 }
@@ -337,55 +245,87 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_complete_output_without_executing_examples_or_partial_fences() {
-        let output = "[report](reports/a.html)\n```mermaid\ngraph TD\nA-->B\n```\n> [quote](secret.txt)\n```diff\n+ [example](secret.txt)\n```\n```html\n<html>unfinished";
+    fn only_explicit_attachment_lines_are_registered() {
+        let text = r#"[source](src/main.rs)
+https://example.com/reference
+`[example](secret.txt "vibe-artifact")`
+> [quote](secret.txt "vibe-artifact")
+    [indented](secret.txt "vibe-artifact")
+```markdown
+[example](secret.txt "vibe-artifact")
+```
+  ```markdown
+[example](secret.txt "vibe-artifact")
+  ```
+[report](<reports/a b.html> "vibe-artifact")
+- [diagram](reports/diagram.mmd "vibe-artifact")
+[site](https://example.com/report "vibe-artifact")
+"#;
         assert_eq!(
-            markdown_candidates(output),
+            markdown_candidates(text),
             vec![
-                ArtifactCandidate::File("reports/a.html".into()),
+                ArtifactCandidate::File("reports/a b.html".into()),
+                ArtifactCandidate::File("reports/diagram.mmd".into()),
+                ArtifactCandidate::Url("https://example.com/report".into()),
+            ]
+        );
+        assert!(markdown_candidates(r#"[bad](file:///etc/passwd "vibe-artifact")"#).is_empty());
+        assert!(markdown_candidates(r#"[partial](report.html "vibe-artifact""#).is_empty());
+        assert_eq!(
+            markdown_candidates(
+                "[report](reports/a%20b.html#L4 \"vibe-artifact\")\n[source](reports/a%20b.html:4:2 \"vibe-artifact\")"
+            ),
+            vec![ArtifactCandidate::File("reports/a b.html".into()); 2],
+        );
+    }
+
+    #[test]
+    fn inline_outputs_require_an_explicit_fence_marker() {
+        let text = "```mermaid\ngraph TD\nX-->Y\n```\n```mermaid vibe-artifact\ngraph TD\nA-->B\n```\n```html vibe-artifact\n<html>unfinished";
+        assert_eq!(
+            markdown_candidates(text),
+            vec![
                 ArtifactCandidate::Inline {
-                    name: "block-0.mmd".into(),
-                    content: "graph TD\nA-->B".into()
+                    name: "block-1.mmd".into(),
+                    content: "graph TD\nA-->B".into(),
                 },
                 ArtifactCandidate::PreparingInline {
                     name: "block-2.html".into()
                 },
             ]
         );
-        assert!(markdown_candidates("[bad](file:///etc/passwd)").is_empty());
-        assert_eq!(
-            markdown_candidates("[report](reports/a%20b.html#L4) [source](reports/a%20b.html:4:2)"),
-            vec![
-                ArtifactCandidate::File("reports/a b.html".into()),
-                ArtifactCandidate::File("reports/a b.html".into())
-            ]
-        );
-    }
-
-    #[test]
-    fn tool_content_blocks_keep_distinct_inline_ids() {
-        let candidates = result_candidates(&serde_json::json!({"content": [
-            {"type": "text", "text": "```mermaid\ngraph TD\nA-->B\n```"},
-            {"type": "text", "text": "```mermaid\ngraph TD\nC-->D\n```"}
-        ]}));
-        assert!(
-            matches!(&candidates[0], ArtifactCandidate::Inline { name, .. } if name == "block-0.mmd")
-        );
-        assert!(
-            matches!(&candidates[1], ArtifactCandidate::Inline { name, .. } if name == "content-1-block-0.mmd")
-        );
-    }
-
-    #[test]
-    fn svg_declarations_and_empty_roots_are_complete_documents() {
         for svg in [
             "<svg/>",
             "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
         ] {
+            assert!(markdown_candidates(&format!("```svg\n{svg}\n```")).is_empty());
             assert!(
-                matches!(&markdown_candidates(&format!("```svg\n{svg}\n```"))[0], ArtifactCandidate::Inline { name, .. } if name.ends_with(".svg"))
+                matches!(&markdown_candidates(&format!("```svg vibe-artifact\n{svg}\n```"))[0], ArtifactCandidate::Inline { name, .. } if name.ends_with(".svg"))
             );
         }
-        assert!(markdown_candidates("```svg\n<svg><path/>\n```").is_empty());
+        assert!(markdown_candidates("```svg vibe-artifact\n<svg><path/>\n```").is_empty());
+    }
+
+    #[test]
+    fn tools_cannot_publish_even_when_their_output_contains_attachment_markers() {
+        use crate::logs::{ActionType, ToolStatus};
+        let mut entry = NormalizedEntry {
+            timestamp: None,
+            metadata: None,
+            content: "[report](report.html \"vibe-artifact\")".into(),
+            entry_type: NormalizedEntryType::ToolUse {
+                tool_name: "Read".into(),
+                status: ToolStatus::Success,
+                action_type: ActionType::FileRead {
+                    path: "report.html".into(),
+                },
+            },
+        };
+        assert!(entry_candidates(&entry).is_empty());
+        entry.entry_type = NormalizedEntryType::AssistantMessage;
+        assert_eq!(
+            entry_candidates(&entry),
+            vec![ArtifactCandidate::File("report.html".into())]
+        );
     }
 }

@@ -12,6 +12,7 @@ import {
 import type { ArtifactReference } from 'shared/types';
 import { ExecutionProcessStatus } from 'shared/types';
 import { IconButton } from '@vibe/ui/components/IconButton';
+import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { Switch } from '@vibe/ui/components/Switch';
 import {
   Dialog,
@@ -399,8 +400,10 @@ function ArtifactCard({
         {artifact.url ? (
           <a
             href={artifact.url}
-            target="_blank"
-            rel="noopener noreferrer"
+            onClick={(event) => {
+              event.preventDefault();
+              openExternalUrl(event.currentTarget.href);
+            }}
             aria-label={t('artifacts.openOriginal')}
             title={t('artifacts.openOriginal')}
             className="flex items-center justify-center rounded-sm p-half text-low hover:bg-secondary/50 hover:text-normal"

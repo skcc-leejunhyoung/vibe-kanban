@@ -3347,7 +3347,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_generation_mcp_and_dynamic_protocol_items_keep_images_and_structured_content() {
-        use crate::logs::artifacts::{ArtifactCandidate, entry_candidates};
+        use crate::logs::artifacts::entry_candidates;
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(MsgStore::new());
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -3379,19 +3379,25 @@ mod tests {
             handle.await.unwrap();
         }
         let entries = latest_normalized_entries(&store);
-        let images: Vec<_> = entries
-            .iter()
-            .flat_map(entry_candidates)
-            .filter_map(|candidate| match candidate {
-                ArtifactCandidate::File(path) => Some(path),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(images.len(), 3, "{entries:?}");
-        assert!(
-            images
+        assert!(entries.iter().flat_map(entry_candidates).next().is_none());
+        let images = std::fs::read_dir(directory.path().join(".vibe-attachments"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.file_name().is_some_and(|name| name != ".gitignore"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            images.len(),
+            1,
+            "identical tool images should share their original bytes"
+        );
+        let name = images[0].file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            entries
                 .iter()
-                .all(|path| path == &images[0] && directory.path().join(path).is_file())
+                .filter(|entry| serde_json::to_string(entry).unwrap().contains(name))
+                .count(),
+            3,
+            "all three native tool entries must still reference the preserved image"
         );
         let mcp = entries
             .iter()

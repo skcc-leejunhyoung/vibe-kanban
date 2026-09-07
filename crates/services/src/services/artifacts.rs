@@ -20,21 +20,19 @@ use executors::{
         },
     },
 };
-use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
     file::FileService,
-    filesystem_watcher::{ARTIFACT_SKIP_DIRS, WatcherComponents, artifact_watcher},
+    filesystem_watcher::{WatcherComponents, artifact_watcher},
     subagent_transcript,
 };
 
 pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_EXECUTION_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 256;
-const MAX_SCAN_ENTRIES: usize = 50_000;
 // ponytail: serialize rare legacy recovery; use per-execution locks if
 // concurrent history recovery becomes a measured bottleneck.
 pub static RECOVERY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -115,34 +113,6 @@ pub async fn seal_interrupted(manifest: &mut ArtifactManifest) -> Result<()> {
         &serde_json::to_vec(manifest)?,
     )
     .await
-}
-
-fn scan(root: &Path) -> (BTreeMap<PathBuf, Stamp>, bool) {
-    let mut files = BTreeMap::new();
-    let entries = WalkBuilder::new(root)
-        .hidden(false)
-        .follow_links(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .ignore(false)
-        .parents(false)
-        .filter_entry(|entry| {
-            !entry.file_type().is_some_and(|ty| ty.is_dir())
-                || !ARTIFACT_SKIP_DIRS.contains(&entry.file_name().to_str().unwrap_or(""))
-        })
-        .build();
-    for (count, entry) in entries.enumerate() {
-        if count >= MAX_SCAN_ENTRIES {
-            return (files, true);
-        }
-        if let Ok(entry) = entry
-            && let Some(value) = stamp(entry.path())
-        {
-            files.insert(entry.into_path(), value);
-        }
-    }
-    (files, false)
 }
 
 /// Absolute paths are accepted only under this workspace. Every reference is
@@ -297,6 +267,26 @@ pub fn transcript_references<'a>(
     let mut references = Vec::new();
     let mut seen = HashSet::new();
     for (index, entry) in entries {
+        // Already saved bindings also cover artifacts created before explicit
+        // attachment markers existed. This maps preserved bytes only.
+        if let Ok(source_entry) = u32::try_from(index) {
+            for artifact in &manifest.list.artifacts {
+                let recorded = manifest
+                    .transcripts
+                    .get(scope)
+                    .and_then(|ids| ids.get(&artifact.id));
+                if (recorded == Some(&source_entry)
+                    || artifact.source_scope.as_deref() == Some(scope)
+                        && artifact.source_entry == Some(source_entry))
+                    && seen.insert(artifact.id.clone())
+                {
+                    let mut artifact = artifact.clone();
+                    artifact.source_entry = Some(source_entry);
+                    references.push(artifact);
+                }
+            }
+        }
+
         for candidate in entry_candidates(entry) {
             let id = match candidate {
                 ArtifactCandidate::File(path) => {
@@ -362,7 +352,6 @@ pub struct ArtifactObserver {
     root: PathBuf,
     working_dir: PathBuf,
     destination: PathBuf,
-    baseline: BTreeMap<PathBuf, Stamp>,
     pending: HashSet<PathBuf>,
     watcher: Option<WatcherComponents>,
     manifest: ArtifactManifest,
@@ -391,22 +380,16 @@ impl ArtifactObserver {
         if !working_dir.starts_with(&root) {
             bail!("Working directory is outside workspace");
         }
-        // Install first, then capture the baseline before spawning the agent.
+        // Watch for updates to selected outputs and their static dependencies.
         let watch_root = root.clone();
         let watcher = tokio::task::spawn_blocking(move || artifact_watcher(watch_root)).await?;
-        let scan_root = root.clone();
-        let (baseline, limited) = tokio::task::spawn_blocking(move || scan(&scan_root)).await?;
         let mut warnings = Vec::new();
         if let Err(error) = &watcher {
-            warnings.push(format!("Live discovery unavailable: {error}"));
-        }
-        if limited {
-            warnings.push("Workspace scan reached the 50000 entry limit".into());
+            warnings.push(format!("Live artifact updates unavailable: {error}"));
         }
         let mut observer = Self {
             root,
             working_dir,
-            baseline,
             watcher: watcher.ok(),
             pending: HashSet::new(),
             destination: directory(session_id, execution_id),
@@ -462,7 +445,6 @@ impl ArtifactObserver {
         let mut observer = Self {
             root,
             working_dir,
-            baseline: BTreeMap::new(),
             watcher: None,
             pending: HashSet::new(),
             destination: directory(session_id, execution_id),
@@ -592,7 +574,7 @@ impl ArtifactObserver {
             {
                 existing.source_entry = source_entry;
                 existing.source_scope = scope.map(str::to_string);
-                existing.source = "tool_or_message".into();
+                existing.source = "assistant_attachment".into();
                 self.dirty = true;
             }
         } else if self.manifest.list.artifacts.len() < MAX_ARTIFACTS {
@@ -605,12 +587,7 @@ impl ArtifactObserver {
                 url: None,
                 source_entry,
                 source_scope: scope.map(str::to_string),
-                source: if source_entry.is_some() {
-                    "tool_or_message"
-                } else {
-                    "workspace_observation"
-                }
-                .into(),
+                source: "assistant_attachment".into(),
                 content_hash: None,
                 size_bytes: 0,
                 status: ArtifactStatus::Preparing,
@@ -753,35 +730,39 @@ impl ArtifactObserver {
         entry: &NormalizedEntry,
         scope: Option<&str>,
     ) {
-        for candidate in entry_candidates(entry).into_iter().take(MAX_ARTIFACTS) {
+        for candidate in entry_candidates(entry) {
             match candidate {
                 ArtifactCandidate::PreparingInline { name } => {
                     let id = inline_id(self.manifest.execution_id, scope, index, &name);
-                    if !self
+                    if self
                         .manifest
                         .list
                         .artifacts
                         .iter()
                         .any(|artifact| artifact.id == id)
-                        && self.manifest.list.artifacts.len() < MAX_ARTIFACTS
                     {
-                        self.manifest.list.artifacts.push(ArtifactReference {
-                            id,
-                            execution_id: self.manifest.execution_id.to_string(),
-                            mime: mime(&name),
-                            name,
-                            path: None,
-                            url: None,
-                            source_entry: u32::try_from(index).ok(),
-                            source_scope: scope.map(str::to_string),
-                            source: "inline".into(),
-                            content_hash: None,
-                            size_bytes: 0,
-                            status: ArtifactStatus::Preparing,
-                            error: None,
-                        });
-                        self.dirty = true;
+                        continue;
                     }
+                    if self.manifest.list.artifacts.len() >= MAX_ARTIFACTS {
+                        self.warn("Execution reached the 256 artifact limit");
+                        continue;
+                    }
+                    self.manifest.list.artifacts.push(ArtifactReference {
+                        id,
+                        execution_id: self.manifest.execution_id.to_string(),
+                        mime: mime(&name),
+                        name,
+                        path: None,
+                        url: None,
+                        source_entry: u32::try_from(index).ok(),
+                        source_scope: scope.map(str::to_string),
+                        source: "inline".into(),
+                        content_hash: None,
+                        size_bytes: 0,
+                        status: ArtifactStatus::Preparing,
+                        error: None,
+                    });
+                    self.dirty = true;
                 }
                 ArtifactCandidate::File(path) => {
                     if let Ok(path) = resolve_reference(&self.root, &self.working_dir, &path) {
@@ -802,6 +783,7 @@ impl ArtifactObserver {
                     if !self.manifest.list.artifacts.iter().any(|a| a.id == id)
                         && self.manifest.list.artifacts.len() >= MAX_ARTIFACTS
                     {
+                        self.warn("Execution reached the 256 artifact limit");
                         continue;
                     }
                     let stored = self.store(content.as_bytes(), &name).await;
@@ -841,9 +823,11 @@ impl ArtifactObserver {
                         "{:x}",
                         Sha256::digest(format!("{}:url:{url}", self.manifest.execution_id))
                     );
-                    if self.manifest.list.artifacts.iter().any(|a| a.id == id)
-                        || self.manifest.list.artifacts.len() >= MAX_ARTIFACTS
-                    {
+                    if self.manifest.list.artifacts.iter().any(|a| a.id == id) {
+                        continue;
+                    }
+                    if self.manifest.list.artifacts.len() >= MAX_ARTIFACTS {
+                        self.warn("Execution reached the 256 artifact limit");
                         continue;
                     }
                     self.manifest.list.artifacts.push(ArtifactReference {
@@ -1060,61 +1044,15 @@ impl ArtifactObserver {
             }
         }
         let resources_changed = !changed.is_empty();
-        for path in changed {
-            if !path.exists() {
-                let deleted: Vec<_> = self
-                    .manifest
-                    .list
-                    .artifacts
-                    .iter()
-                    .filter_map(|artifact| artifact.path.as_ref())
-                    .map(|relative| self.root.join(relative))
-                    .filter(|file| file.starts_with(&path))
-                    .collect();
-                if !deleted.is_empty() {
-                    self.pending.extend(deleted);
-                    continue;
-                }
-            }
-            if path.is_dir() {
-                let scan_path = path.clone();
-                let (files, limited) =
-                    tokio::task::spawn_blocking(move || scan(&scan_path)).await?;
-                if limited {
-                    self.warn("Directory scan reached the 50000 entry limit");
-                }
-                for (path, value) in files {
-                    if self.baseline.get(&path) != Some(&value) {
-                        self.add_file(path, None, None);
-                    }
-                }
-            } else if !path
-                .strip_prefix(&self.root)
-                .unwrap_or(&path)
-                .components()
-                .any(|part| ARTIFACT_SKIP_DIRS.contains(&part.as_os_str().to_str().unwrap_or("")))
-                // Both sides `None` means the file never existed in the
-                // baseline and is gone now (a build temp created and deleted
-                // mid-run) — not an artifact.
-                && self.baseline.get(&path) != stamp(&path).as_ref()
-            {
-                self.add_file(path, None, None);
-            }
-        }
-        if complete && !self.recovery {
-            let root = self.root.clone();
-            let (end, limited) = tokio::task::spawn_blocking(move || scan(&root)).await?;
-            if limited {
-                self.warn("Workspace scan reached the 50000 entry limit");
-            }
-            for (path, value) in &end {
-                if self.baseline.get(path) != Some(value) {
-                    self.add_file(path.clone(), None, None);
-                }
-            }
+        // Filesystem events only refresh registered outputs. Never scan for or
+        // register new files here: builds must not consume the attachment budget.
+        if !self.recovery {
             for artifact in &self.manifest.list.artifacts {
-                if let Some(path) = &artifact.path {
-                    self.pending.insert(self.root.join(path));
+                if let Some(relative) = &artifact.path {
+                    let file = self.root.join(relative);
+                    if complete || changed.iter().any(|path| file.starts_with(path)) {
+                        self.pending.insert(file);
+                    }
                 }
             }
         }
@@ -1248,7 +1186,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scan_includes_ignored_files_and_rejects_escape() {
+    fn explicit_paths_include_ignored_files_and_reject_escape() {
         let dir = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(dir.path()).unwrap();
         std::fs::create_dir_all(root.join("reports")).unwrap();
@@ -1256,10 +1194,6 @@ mod tests {
         std::fs::write(root.join(".gitignore"), "reports/\n").unwrap();
         std::fs::write(root.join("reports/a.html"), "<html></html>").unwrap();
         std::fs::write(root.join("target/b.html"), "ignored").unwrap();
-        let (files, limited) = scan(&root);
-        assert!(!limited);
-        assert!(files.contains_key(&root.join("reports/a.html")));
-        assert!(!files.contains_key(&root.join("target/b.html")));
         assert!(resolve_path(&root, &root.join("reports"), "a.html").is_ok());
         assert!(resolve_path(&root, &root, "../secret").is_err());
         assert!(resolve_path(&root, &root, "file:///etc/passwd").is_err());
@@ -1280,7 +1214,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execution_discovers_ignored_shell_output_and_keeps_completed_bytes() {
+    async fn only_selected_outputs_consume_the_budget_and_keep_completed_bytes() {
         use executors::logs::{ActionType, NormalizedEntryType, ToolStatus};
         let dir = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(dir.path()).unwrap();
@@ -1308,16 +1242,16 @@ mod tests {
         let html = b"<html><head><link rel=\"stylesheet\" href=\"style.css\"></head><body>saved</body></html>";
         std::fs::write(root.join("out/report.html"), html).unwrap();
         std::fs::write(root.join("out/style.css"), "body{color:blue}").unwrap();
-        // No tool entry and no Changes/chat subscriber exists during discovery.
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        for index in 0..300 {
+            std::fs::write(root.join(format!("dist/chunk-{index}.js")), "build output").unwrap();
+        }
+        // Neither filesystem activity nor successful tool reads publish output.
         tokio::time::sleep(Duration::from_millis(900)).await;
         observer.tick(false).await.unwrap();
         let live = load(session, execution).await.unwrap().unwrap();
-        assert!(
-            live.list
-                .artifacts
-                .iter()
-                .any(|a| a.name == "out/report.html" && a.source == "workspace_observation")
-        );
+        assert!(live.list.artifacts.is_empty());
+        assert!(live.list.warnings.is_empty());
         let entry = NormalizedEntry {
             timestamp: None,
             entry_type: NormalizedEntryType::ToolUse {
@@ -1330,11 +1264,29 @@ mod tests {
             content: String::new(),
             metadata: None,
         };
-        observer.observe_entry(7, &entry).await;
+        observer.observe_entry(6, &entry).await;
+        observer.tick(false).await.unwrap();
+        assert!(
+            load(session, execution)
+                .await
+                .unwrap()
+                .unwrap()
+                .list
+                .artifacts
+                .is_empty()
+        );
+        std::fs::write(root.join("out/diagram.svg"), "<svg/>").unwrap();
+        observer.observe_entry(7, &NormalizedEntry {
+            entry_type: NormalizedEntryType::AssistantMessage,
+            content: "[report](out/report.html \"vibe-artifact\")\n[diagram](out/diagram.svg \"vibe-artifact\")".into(),
+            ..entry
+        }).await;
         observer.tick(true).await.unwrap();
         drop(observer);
         let completed = load(session, execution).await.unwrap().unwrap();
         assert!(completed.list.complete);
+        assert_eq!(completed.list.artifacts.len(), 2);
+        assert!(completed.list.warnings.is_empty());
         let outputs = completed
             .list
             .artifacts
@@ -1351,6 +1303,52 @@ mod tests {
         files.delete_orphaned_files().await.unwrap();
         let snapshot = directory(session, execution).join(artifact.content_hash.as_ref().unwrap());
         assert_eq!(std::fs::read(snapshot).unwrap(), html);
+        tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_attachment_limit_counts_unique_outputs_and_reports_overflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let session = Uuid::new_v4();
+        let execution = Uuid::new_v4();
+        let mut observer = ArtifactObserver::start(
+            root.clone(),
+            root,
+            Uuid::new_v4(),
+            session,
+            execution,
+            FileService::new(pool).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut entry = NormalizedEntry {
+            timestamp: None,
+            metadata: None,
+            entry_type: NormalizedEntryType::AssistantMessage,
+            content: "[same](https://example.com/same \"vibe-artifact\")\n".repeat(300)
+                + "[last](https://example.com/last \"vibe-artifact\")",
+        };
+        observer.observe_entry(0, &entry).await;
+        assert_eq!(
+            observer.manifest.list.artifacts.len(),
+            2,
+            "duplicate links must not hide a later selected result"
+        );
+        entry.content = (0..257)
+            .map(|index| format!("[report](https://example.com/{index} \"vibe-artifact\")\n"))
+            .collect();
+        observer.observe_entry(1, &entry).await;
+        observer.tick(true).await.unwrap();
+        let saved = load(session, execution).await.unwrap().unwrap();
+        assert_eq!(saved.list.artifacts.len(), MAX_ARTIFACTS);
+        assert_eq!(
+            saved.list.warnings,
+            ["Execution reached the 256 artifact limit"]
+        );
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();
@@ -1385,7 +1383,7 @@ mod tests {
                 },
             },
         };
-        let markdown = NormalizedEntry { timestamp: None, metadata: None, content: "[missing](reports/missing.pdf)\n```mermaid\ngraph TD\nA-->B\n```\n```html\n<html>unfinished".into(), entry_type: NormalizedEntryType::AssistantMessage };
+        let markdown = NormalizedEntry { timestamp: None, metadata: None, content: "[logged](reports/deleted.html \"vibe-artifact\")\n[missing](reports/missing.pdf \"vibe-artifact\")\n```mermaid vibe-artifact\ngraph TD\nA-->B\n```\n```html vibe-artifact\n<html>unfinished".into(), entry_type: NormalizedEntryType::AssistantMessage };
         let workspace = Uuid::new_v4();
         let files = FileService::new(pool).unwrap();
         ArtifactObserver::recover(
@@ -1443,7 +1441,7 @@ mod tests {
         std::fs::write(root.join("repo/reports/deleted.html"), "changed today").unwrap();
         std::fs::write(root.join("repo/reports/missing.pdf"), "new file today").unwrap();
         let child = NormalizedEntry { timestamp: None, metadata: None, entry_type: NormalizedEntryType::AssistantMessage,
-            content: "[existing](reports/deleted.html) [missing](reports/missing.pdf)\n```html\n<html><script src=\"today.js\"></script>child</html>\n```".into() };
+            content: "[existing](reports/deleted.html \"vibe-artifact\")\n[missing](reports/missing.pdf \"vibe-artifact\")\n```html vibe-artifact\n<html><script src=\"today.js\"></script>child</html>\n```".into() };
         let recovered = ArtifactObserver::recover(
             root.clone(),
             root.join("repo"),
@@ -1498,7 +1496,7 @@ mod tests {
             BTreeMap::from([(
                 1,
                 NormalizedEntry {
-                    content: "```mermaid\ngraph TD\nA-->new\n```".into(),
+                    content: "```mermaid vibe-artifact\ngraph TD\nA-->new\n```".into(),
                     ..child
                 },
             )]),
@@ -1557,7 +1555,7 @@ mod tests {
         .await
         .unwrap();
         let inline = NormalizedEntry { timestamp: None, metadata: None, entry_type: NormalizedEntryType::AssistantMessage,
-            content: "```html\n<html><head><link rel=\"stylesheet\" href=\"style.css\"></head><body><script src=\"app.js\"></script>inline</body></html>\n```".into() };
+            content: "```html vibe-artifact\n<html><head><link rel=\"stylesheet\" href=\"style.css\"></head><body><script src=\"app.js\"></script>inline</body></html>\n```".into() };
         observer.observe_entry(3, &inline).await;
         observer
             .observe_scoped_entry(3, &inline, Some("codex:child-a"))
@@ -1575,7 +1573,7 @@ mod tests {
         std::fs::write(working.join("app.js"), "document.body.dataset.ready='true'").unwrap();
         std::fs::write(root.join("repo-b/out/old.html"), "<html>version one</html>").unwrap();
         observer.tick(false).await.unwrap();
-        // A successful tool explicitly names a rename into an otherwise excluded directory.
+        // A rename does not publish either path until the agent selects them.
         std::fs::rename(
             root.join("repo-b/out/old.html"),
             root.join("target/new.html"),
@@ -1584,23 +1582,24 @@ mod tests {
         let rename = NormalizedEntry {
             timestamp: None,
             metadata: None,
-            content: String::new(),
-            entry_type: NormalizedEntryType::ToolUse {
-                tool_name: "apply_patch".into(),
-                status: ToolStatus::Success,
-                action_type: ActionType::FileEdit {
-                    path: root
-                        .join("repo-b/out/old.html")
-                        .to_string_lossy()
-                        .into_owned(),
-                    changes: vec![FileChange::Rename {
-                        new_path: root.join("target/new.html").to_string_lossy().into_owned(),
-                    }],
-                },
-            },
+            content: format!(
+                "[old](<{}> \"vibe-artifact\")\n[new](<{}> \"vibe-artifact\")",
+                root.join("repo-b/out/old.html").display(),
+                root.join("target/new.html").display()
+            ),
+            entry_type: NormalizedEntryType::AssistantMessage,
         };
         observer.observe_entry(9, &rename).await;
         std::fs::write(root.join("repo-b/out/shared.svg"), "<svg></svg>").unwrap();
+        let shared = NormalizedEntry {
+            content: format!(
+                "[shared](<{}> \"vibe-artifact\")",
+                root.join("repo-b/out/shared.svg").display()
+            ),
+            ..rename
+        };
+        observer.observe_entry(10, &shared).await;
+        concurrent.observe_entry(10, &shared).await;
         // Cancellation uses the same finalizer without needing any mounted UI.
         observer.tick(true).await.unwrap();
         concurrent.tick(true).await.unwrap();
@@ -1640,6 +1639,16 @@ mod tests {
         assert_eq!(mapped.len(), 1);
         assert_eq!(mapped[0].source_entry, Some(3));
         assert_eq!(mapped[0].source_scope.as_deref(), Some("codex:child-a"));
+        let old_entry = NormalizedEntry {
+            content: inline.content.replace(" vibe-artifact", ""),
+            ..inline.clone()
+        };
+        assert_eq!(
+            transcript_references(&saved, &root, &working, "codex:child-a", [(3, &old_entry)])
+                .len(),
+            1,
+            "preserved legacy bindings must survive the new discovery policy"
+        );
         assert!(
             saved
                 .list
@@ -1668,8 +1677,8 @@ mod tests {
             .iter()
             .find(|artifact| artifact.name == "repo-b/out/shared.svg")
             .unwrap();
-        assert_eq!(observed.source, "workspace_observation");
-        assert!(observed.source_entry.is_none());
+        assert_eq!(observed.source, "assistant_attachment");
+        assert_eq!(observed.source_entry, Some(10));
         assert!(
             !other
                 .list
@@ -1720,7 +1729,9 @@ mod tests {
             &task_file,
             include_str!(
                 "../../../executors/tests/fixtures/artifacts/claude-2.1.258-subagent.jsonl"
-            ),
+            )
+            .replace("```html", "```html vibe-artifact")
+            .replace("```mermaid", "```mermaid vibe-artifact"),
         )
         .unwrap();
         let pool = sqlx::sqlite::SqlitePoolOptions::new()

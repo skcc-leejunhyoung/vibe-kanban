@@ -497,11 +497,9 @@ try {
   await page
     .getByRole("button", { name: "artifacts.preview", exact: true })
     .click();
-  const invalidPreview = page
-    .getByRole("dialog")
-    .filter({
-      has: page.getByRole("heading", { name: "invalid.svg", exact: true }),
-    });
+  const invalidPreview = page.getByRole("dialog").filter({
+    has: page.getByRole("heading", { name: "invalid.svg", exact: true }),
+  });
   await invalidPreview.getByRole("alert").waitFor();
   await invalidPreview
     .getByRole("switch", { name: "artifacts.source" })
@@ -521,9 +519,46 @@ try {
   console.log(
     "Binary download and source access after preview failure passed.",
   );
+  // Use the same window.open contract as the installed PWA link helper.
+  await page.evaluate((url) => {
+    window.artifact = {
+      ...window.artifact,
+      name: "Published report",
+      mime: "text/uri-list",
+      url,
+      content_hash: null,
+    };
+    window.artifactOpenCalls = [];
+    window.originalArtifactOpen = window.open;
+    window.open = (...args) => {
+      window.artifactOpenCalls.push(args);
+      return window.originalArtifactOpen(...args);
+    };
+    window.openTranscript("pane-host");
+  }, `${parentUrl}published-report`);
+  const popupPromise = page.waitForEvent("popup");
+  await page
+    .getByRole("link", { name: "artifacts.openOriginal", exact: true })
+    .click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState();
+  assert.equal(popup.url(), `${parentUrl}published-report`);
+  assert.equal(await popup.evaluate(() => window.opener), null);
+  assert.deepEqual(await page.evaluate(() => window.artifactOpenCalls), [
+    [`${parentUrl}published-report`, "_blank"],
+  ]);
+  await popup.close();
+  await page.evaluate(() => {
+    window.open = window.originalArtifactOpen;
+    window.removeTranscript();
+  });
+  console.log(
+    "Artifact links use the shared PWA window helper without a feature string and with opener cleared.",
+  );
   // Optional live check against an isolated Vibe instance, after ordinary CLI
-  // quick-chat runs. The context file supplies each run's workspace_id only;
-  // no mocked routes, artifact protocol, browser credentials or agent changes.
+  // quick-chat runs with explicit vibe-artifact attachments. The context file
+  // supplies each run's workspace_id; the application provides the attachment
+  // instructions without modifying the CLI binaries.
   if (process.env.ARTIFACT_SMOKE_CONTEXT) {
     const scopes = JSON.parse(
       await readFile(process.env.ARTIFACT_SMOKE_CONTEXT, "utf8"),

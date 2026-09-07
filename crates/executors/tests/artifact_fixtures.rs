@@ -48,7 +48,7 @@ async fn normalize(
 }
 
 #[tokio::test]
-async fn discovers_files_in_real_unmodified_cli_logs_without_assistant_links() {
+async fn file_operations_in_real_cli_logs_do_not_publish_artifacts() {
     let dir = tempfile::tempdir().unwrap();
     for (claude, fixture) in [
         (
@@ -65,12 +65,37 @@ async fn discovers_files_in_real_unmodified_cli_logs_without_assistant_links() {
             .values()
             .flat_map(entry_candidates)
             .collect::<Vec<_>>();
-        assert!(candidates.iter().any(|candidate| matches!(candidate, ArtifactCandidate::File(path) if path.ends_with("index.html"))), "missing CLI file candidate (claude={claude}): {candidates:?}; entries: {entries:?}");
+        assert!(
+            candidates.is_empty(),
+            "file operations are not attachments (claude={claude}): {candidates:?}"
+        );
+        // Add an assistant publication to the same native log format; tools
+        // still produce no cards and the CLI transport preserves the marker.
+        let text = "[report](index.html \"vibe-artifact\")";
+        let publication = if claude {
+            serde_json::json!({"type":"assistant", "message":{"role":"assistant", "content":[{"type":"text", "text":text}]}})
+        } else {
+            serde_json::json!({"method":"item/completed", "params":{"threadId":"thread", "turnId":"turn", "completedAtMs":1, "item":{"type":"agentMessage", "id":"published-report", "text":text}}})
+        };
+        let published = normalize(
+            &format!("{}\n{}\n", fixture.trim_end(), publication),
+            dir.path(),
+            claude,
+        )
+        .await;
+        assert_eq!(
+            published
+                .values()
+                .flat_map(entry_candidates)
+                .collect::<Vec<_>>(),
+            vec![ArtifactCandidate::File("index.html".into())],
+            "claude={claude}"
+        );
     }
 }
 
 #[test]
-fn actual_child_transcripts_discover_inline_html_and_mermaid() {
+fn child_transcripts_require_explicit_inline_attachment_markers() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
     let thread = serde_json::from_str(
@@ -85,7 +110,14 @@ fn actual_child_transcripts_discover_inline_html_and_mermaid() {
             .replace("__WORKTREE__", root),
         root,
     );
-    for entries in [codex, claude] {
+    for mut entries in [codex, claude] {
+        assert!(entries.iter().flat_map(entry_candidates).next().is_none());
+        for entry in &mut entries {
+            entry.content = entry
+                .content
+                .replace("```html", "```html vibe-artifact")
+                .replace("```mermaid", "```mermaid vibe-artifact");
+        }
         let outputs = entries
             .iter()
             .flat_map(entry_candidates)
@@ -181,25 +213,22 @@ async fn native_mcp_and_dynamic_tool_images_replay_as_preserved_files() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let entries = normalize(fixture, dir.path(), false).await;
-        let paths = entries
-            .values()
-            .flat_map(entry_candidates)
-            .filter_map(|candidate| match candidate {
-                ArtifactCandidate::File(path) if path.starts_with(".vibe-attachments/") => {
-                    Some(path)
-                }
-                _ => None,
-            })
+        assert!(entries.values().flat_map(entry_candidates).next().is_none());
+        let paths = std::fs::read_dir(dir.path().join(".vibe-attachments"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.file_name().is_some_and(|name| name != ".gitignore"))
             .collect::<Vec<_>>();
         assert_eq!(
             paths.len(),
             1,
-            "expected image reference; entry types: {:?}",
-            entries
-                .values()
-                .map(|entry| &entry.entry_type)
-                .collect::<Vec<_>>()
+            "native tool image bytes remain available without publishing a card"
         );
-        assert_eq!(std::fs::read(dir.path().join(&paths[0])).unwrap(), expected);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), expected);
+        assert!(
+            serde_json::to_string(&entries)
+                .unwrap()
+                .contains(paths[0].file_name().unwrap().to_str().unwrap())
+        );
     }
 }

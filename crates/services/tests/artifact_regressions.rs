@@ -1,4 +1,4 @@
-use executors::logs::{ActionType, NormalizedEntry, NormalizedEntryType, ToolStatus};
+use executors::logs::{NormalizedEntry, NormalizedEntryType};
 use services::services::{
     artifacts::{self, ArtifactObserver},
     file::FileService,
@@ -41,14 +41,8 @@ async fn live_file_bundle_must_refresh_when_only_css_changes() {
             &NormalizedEntry {
                 timestamp: None,
                 metadata: None,
-                content: "read report".into(),
-                entry_type: NormalizedEntryType::ToolUse {
-                    tool_name: "Read".into(),
-                    status: ToolStatus::Success,
-                    action_type: ActionType::FileRead {
-                        path: "report.html".into(),
-                    },
-                },
+                content: "[report](report.html \"vibe-artifact\")".into(),
+                entry_type: NormalizedEntryType::AssistantMessage,
             },
         )
         .await;
@@ -68,15 +62,18 @@ async fn live_file_bundle_must_refresh_when_only_css_changes() {
     observer.tick(false).await.unwrap();
     let live = artifacts::load(session, execution).await.unwrap().unwrap();
     let live_css = live.bundles[&report.id].resources[0].content_hash.clone();
-    let observed_css = live
-        .list
-        .artifacts
-        .iter()
-        .find(|a| a.name == "style.css")
-        .unwrap()
-        .content_hash
-        .clone()
-        .unwrap();
+    assert_eq!(
+        live.list.artifacts.len(),
+        1,
+        "dependencies are not separate cards"
+    );
+    assert_ne!(initial_css, live_css, "the live bundle must refresh CSS");
+    assert_eq!(
+        tokio::fs::read_to_string(artifacts::directory(session, execution).join(&live_css))
+            .await
+            .unwrap(),
+        "body{color:blue}",
+    );
     observer.tick(true).await.unwrap();
     let final_manifest = artifacts::load(session, execution).await.unwrap().unwrap();
     let final_css = final_manifest.bundles[&report.id].resources[0]
@@ -86,16 +83,9 @@ async fn live_file_bundle_must_refresh_when_only_css_changes() {
     tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
         .await
         .unwrap();
-    println!(
-        "initial={initial_css}\nlive_bundle={live_css}\nlive_css_artifact={observed_css}\nfinal_bundle={final_css}"
-    );
     assert_eq!(
-        final_css, observed_css,
-        "finalization does refresh the dependency"
-    );
-    assert_eq!(
-        live_css, observed_css,
-        "the live HTML bundle must use the updated CSS bytes"
+        final_css, live_css,
+        "finalization keeps the updated dependency"
     );
 }
 
@@ -167,7 +157,7 @@ async fn slow_artifact_storage_must_not_drop_raw_logs() {
                 timestamp: None,
                 metadata: None,
                 entry_type: NormalizedEntryType::AssistantMessage,
-                content: "```html\n<html><body>report</body></html>\n```".into(),
+                content: "```html vibe-artifact\n<html><body>report</body></html>\n```".into(),
             },
         ),
     );
@@ -183,7 +173,9 @@ async fn slow_artifact_storage_must_not_drop_raw_logs() {
                 timestamp: None,
                 metadata: None,
                 entry_type: NormalizedEntryType::AssistantMessage,
-                content: format!("```html\n<html><body>version {version}</body></html>\n```"),
+                content: format!(
+                    "```html vibe-artifact\n<html><body>version {version}</body></html>\n```"
+                ),
             },
         ));
     }

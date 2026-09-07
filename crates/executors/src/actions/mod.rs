@@ -13,7 +13,10 @@ use crate::{
     },
     approvals::ExecutorApprovalService,
     env::ExecutionEnv,
-    executors::{BaseCodingAgent, ExecutorError, SpawnedChild},
+    executors::{
+        BaseCodingAgent, ExecutorError, SpawnedChild,
+        utils::{SlashCommandCall, parse_slash_command},
+    },
 };
 pub mod coding_agent_follow_up;
 pub mod coding_agent_initial;
@@ -111,14 +114,58 @@ impl Executable for ExecutorAction {
         approvals: Arc<dyn ExecutorApprovalService>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        self.typ.spawn(current_dir, approvals, env).await
+        // Keep transport instructions out of the persisted user prompt. Apply
+        // them to initial, resumed and review requests through the same path.
+        let mut action = self.typ.clone();
+        let prompt = match &mut action {
+            ExecutorActionType::CodingAgentInitialRequest(request) => &mut request.prompt,
+            ExecutorActionType::CodingAgentFollowUpRequest(request) => &mut request.prompt,
+            ExecutorActionType::ReviewRequest(request) => &mut request.prompt,
+            ExecutorActionType::ScriptRequest(_) => {
+                return action.spawn(current_dir, approvals, env).await;
+            }
+        };
+        append_artifact_instructions(prompt);
+        action.spawn(current_dir, approvals, env).await
     }
+}
+
+fn append_artifact_instructions(prompt: &mut String) {
+    // Native slash commands must keep their exact arguments (for example /fast off).
+    if parse_slash_command::<SlashCommandCall<'_>>(prompt).is_some() {
+        return;
+    }
+    prompt.push_str(
+            "\n\n[Artifacts]\n\
+             Only attach deliverables you intentionally want the user to preview or download. \
+             On its own line, use [Title](relative/path \"vibe-artifact\"). \
+             Paths are relative to your working directory and must remain inside the workspace. \
+             For inline HTML, SVG or Mermaid, add vibe-artifact after the code fence language \
+             (for example: ```mermaid vibe-artifact). \
+             Ordinary file reads, edits, build outputs, links and unmarked code blocks are not attachments. \
+             Do not attach source citations or intermediate files unless requested. \
+             When delegating deliverables, pass this attachment convention to the subagent.",
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+    #[test]
+    fn artifact_instructions_preserve_native_commands_and_explain_explicit_attachments() {
+        for command in ["/fast off", "/compact", "/custom argument"] {
+            let mut prompt = command.to_string();
+            append_artifact_instructions(&mut prompt);
+            assert_eq!(prompt, command);
+        }
+        let mut prompt = "Create a report".to_string();
+        append_artifact_instructions(&mut prompt);
+        assert!(prompt.starts_with("Create a report\n\n[Artifacts]"));
+        assert!(prompt.contains("[Title](relative/path \"vibe-artifact\")"));
+        assert!(prompt.contains("```mermaid vibe-artifact"));
+    }
 
     fn script_action(next_action: Option<Box<ExecutorAction>>) -> ExecutorAction {
         ExecutorAction::new(
