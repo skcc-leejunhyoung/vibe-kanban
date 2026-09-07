@@ -916,8 +916,9 @@ fn mcp_artifact_result(
             }
         })
         .collect::<Vec<_>>();
-    if structured.is_none()
-        && ui.is_none()
+    // `structuredContent` alongside all-text content is the common MCP shape;
+    // only the artifact envelope (`ui.resourceUri`) needs the JSON form.
+    if ui.is_none()
         && content
             .iter()
             .all(|block| block.get("type").and_then(Value::as_str) == Some("text"))
