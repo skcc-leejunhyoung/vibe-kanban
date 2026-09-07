@@ -142,6 +142,12 @@ fn append_artifact_instructions(prompt: &mut String) {
              Paths are relative to your working directory and must remain inside the workspace. \
              For inline HTML, SVG or Mermaid, add vibe-artifact after the code fence language \
              (for example: ```mermaid vibe-artifact). \
+             Vibe renders attached HTML directly in an interactive, sandboxed chat preview, \
+             including its CSS and JavaScript. When asked to create or render an HTML deliverable, \
+             attach the HTML itself as the primary result. Screenshots can help verify your work; \
+             use them as the deliverable when the user requests an image. \
+             Save the final HTML inside the workspace, or attach a complete inline HTML document. \
+             Prefer self-contained HTML; preview blocks external network requests and cannot run server code. \
              Ordinary file reads, edits, build outputs, links and unmarked code blocks are not attachments. \
              Do not attach source citations or intermediate files unless requested. \
              When delegating deliverables, pass this attachment convention to the subagent.",
