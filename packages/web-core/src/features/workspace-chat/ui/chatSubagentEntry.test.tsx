@@ -87,4 +87,15 @@ describe('ChatSubagentEntry activity panel', () => {
     expect(html).toContain('conversation.subagent.openTranscript');
     expect(html).not.toContain('conversation.subagent.stop');
   });
+
+  it('keeps detailed output in the transcript when one is available', () => {
+    const result = { value: 'Detailed child report' };
+
+    expect(
+      render({ result, expanded: true, onOpenTranscript: () => {} })
+    ).not.toContain('Detailed child report');
+    expect(render({ result, expanded: true })).toContain(
+      'Detailed child report'
+    );
+  });
 });
