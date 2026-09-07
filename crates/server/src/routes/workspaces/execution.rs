@@ -226,11 +226,9 @@ pub async fn stop_workspace_execution(
     // cancel those waiting starts too — transitively down the dependency graph.
     // Only once the workspace really has stopped: with a sibling session still
     // running the work that would unblock them is still in flight.
-    let workspace_still_running =
-        ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
-            .await?;
     if let Some(task_id) = workspace.task_id
-        && !workspace_still_running
+        && !ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
+            .await?
     {
         cascade_stop_blocked_dependents(&deployment, task_id).await;
     }
@@ -293,7 +291,10 @@ async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_
     //    run as pure, unit-tested logic (`cascade_order`).
     let mut blocks: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
     let mut waiting: HashSet<Uuid> = HashSet::new();
-    let mut waiting_workspaces: std::collections::HashMap<Uuid, Vec<Uuid>> =
+    // (workspace, session) of each waiting start — the session so the cascade
+    // cancels only the deferred conversation, not a sibling one that happens to
+    // be running in the same dependent workspace.
+    let mut waiting_workspaces: std::collections::HashMap<Uuid, Vec<(Uuid, Uuid)>> =
         std::collections::HashMap::new();
     let mut to_load: VecDeque<Uuid> = VecDeque::from([root_task_id]);
     let mut loaded: HashSet<Uuid> = HashSet::from([root_task_id]);
@@ -327,7 +328,12 @@ async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_
                 match PendingExecutionStart::find_by_task_id(pool, dependent).await {
                     Ok(pendings) if !pendings.is_empty() => {
                         waiting.insert(dependent);
-                        slot.insert(pendings.into_iter().map(|p| p.workspace_id).collect());
+                        slot.insert(
+                            pendings
+                                .into_iter()
+                                .map(|p| (p.workspace_id, p.session_id))
+                                .collect(),
+                        );
                     }
                     Ok(_) => {
                         slot.insert(Vec::new());
@@ -351,18 +357,19 @@ async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_
 
     // 3. Cancel each target's waiting workspace(s).
     for target in targets {
-        for workspace_id in waiting_workspaces.get(&target).into_iter().flatten() {
+        for (workspace_id, session_id) in waiting_workspaces.get(&target).into_iter().flatten() {
             match Workspace::find_by_id(pool, *workspace_id).await {
                 Ok(Some(dependent_ws)) => {
                     tracing::info!(
-                        "cascade stop: cancelling workspace {} waiting on stopped \
-                         blocker (issue {})",
+                        "cascade stop: cancelling session {} of workspace {} waiting on \
+                         stopped blocker (issue {})",
+                        session_id,
                         dependent_ws.id,
                         target
                     );
                     deployment
                         .container()
-                        .try_stop(&dependent_ws, false, None)
+                        .try_stop(&dependent_ws, false, Some(*session_id))
                         .await;
                 }
                 Ok(None) => {}
@@ -558,6 +565,38 @@ mod cascade_tests {
             cancelled.iter().filter(|&&t| t == d).count(),
             1,
             "join node cancelled exactly once"
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_scope_query_tests {
+    use axum::{extract::Query, http::Uri};
+
+    use super::{SessionScopeQuery, Uuid};
+
+    fn parse(uri: &str) -> SessionScopeQuery {
+        let uri: Uri = uri.parse().unwrap();
+        Query::<SessionScopeQuery>::try_from_uri(&uri).unwrap().0
+    }
+
+    // Every pre-existing caller (MCP, kanban, older web builds) POSTs these
+    // routes with no query string at all; that must stay workspace-wide, not 400.
+    #[test]
+    fn absent_session_id_is_none() {
+        assert!(
+            parse("/api/workspaces/x/execution/stop")
+                .session_id
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn present_session_id_parses() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(
+            parse(&format!("/api/workspaces/x/execution/stop?session_id={id}")).session_id,
+            Some(id)
         );
     }
 }
