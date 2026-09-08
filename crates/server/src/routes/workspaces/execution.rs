@@ -165,6 +165,27 @@ pub struct SessionScopeQuery {
     pub session_id: Option<Uuid>,
 }
 
+impl SessionScopeQuery {
+    async fn has_running_processes(
+        &self,
+        pool: &sqlx::SqlitePool,
+        workspace_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        match self.session_id {
+            Some(id) => {
+                ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, id).await
+            }
+            None => {
+                ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
+                    pool,
+                    workspace_id,
+                )
+                .await
+            }
+        }
+    }
+}
+
 /// Resolve which session a workspace-scoped script runs under: the caller's
 /// session when given (so the process lands in the conversation the user acted
 /// from), otherwise the newest session — creating one if the workspace has none.
@@ -405,9 +426,8 @@ pub async fn run_cleanup_script(
 
     let session = resolve_script_session(&deployment, &workspace, query.session_id).await?;
 
-    // Scoped to the owning session: a sibling session busy in the same workspace
-    // is not this session's concern.
-    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+    // Only an explicitly requested session narrows the workspace-wide guard.
+    if query.has_running_processes(pool, workspace.id).await? {
         return Ok(ResponseJson(ApiResponse::error_with_data(
             RunScriptError::ProcessAlreadyRunning,
         )));
@@ -450,7 +470,7 @@ pub async fn run_archive_script(
 
     let session = resolve_script_session(&deployment, &workspace, query.session_id).await?;
 
-    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+    if query.has_running_processes(pool, workspace.id).await? {
         return Ok(ResponseJson(ApiResponse::error_with_data(
             RunScriptError::ProcessAlreadyRunning,
         )));
@@ -597,6 +617,64 @@ mod session_scope_query_tests {
         assert_eq!(
             parse(&format!("/api/workspaces/x/execution/stop?session_id={id}")).session_id,
             Some(id)
+        );
+    }
+
+    #[tokio::test]
+    async fn only_an_explicit_session_scope_ignores_running_siblings() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE sessions (id BLOB PRIMARY KEY, workspace_id BLOB); \
+             CREATE TABLE execution_processes (session_id BLOB, status TEXT, run_reason TEXT);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let workspace_id = Uuid::from_u128(1);
+        let running = Uuid::from_u128(2);
+        let idle = Uuid::from_u128(3);
+        for id in [running, idle] {
+            sqlx::query("INSERT INTO sessions VALUES (?, ?)")
+                .bind(id)
+                .bind(workspace_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO execution_processes VALUES (?, 'running', 'codingagent')")
+            .bind(running)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (session_id, expected) in [(None, true), (Some(running), true), (Some(idle), false)] {
+            assert_eq!(
+                SessionScopeQuery { session_id }
+                    .has_running_processes(&pool, workspace_id)
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+        let unscoped = SessionScopeQuery { session_id: None };
+        assert!(
+            !unscoped
+                .has_running_processes(&pool, Uuid::from_u128(4))
+                .await
+                .unwrap()
+        );
+        sqlx::query("UPDATE execution_processes SET run_reason = 'devserver'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            !unscoped
+                .has_running_processes(&pool, workspace_id)
+                .await
+                .unwrap()
         );
     }
 }

@@ -579,7 +579,6 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     // Custom element transformers come first for matching precedence.
     const allTransformers: Transformer[] = useMemo(
       () => [
-        ...(renderMermaidArtifacts ? MERMAID_ARTIFACT_TRANSFORMERS : []),
         TABLE_TRANSFORMER,
         IMAGE_TRANSFORMER,
         ATTACHMENT_TRANSFORMER,
@@ -587,6 +586,9 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
         PR_COMMENT_TRANSFORMER,
         COMPONENT_INFO_EXPORT_TRANSFORMER,
         COMPONENT_INFO_TRANSFORMER,
+        // The Mermaid fallback consumes any fence, so existing card formats
+        // must get their own importers first.
+        ...(renderMermaidArtifacts ? MERMAID_ARTIFACT_TRANSFORMERS : []),
         // CHECK_LIST must precede TRANSFORMERS: its regex ("- [ ] " and the
         // Notion-style "[] "/"[x] " shorthand) overlaps with UNORDERED_LIST's
         // ("- "), and the first matching transformer wins.

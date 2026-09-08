@@ -29,6 +29,7 @@ const components = await build({
       import korean from './src/i18n/locales/ko/common.json';
       import { MermaidDiagram } from './src/shared/components/MermaidDiagram';
       import { MarkdownPreview } from './src/shared/components/MarkdownPreview';
+      import WYSIWYGEditor from './src/shared/components/WYSIWYGEditor';
       import { SubagentTranscriptDialog } from './src/shared/dialogs/SubagentTranscriptDialog';
       import { HostIdContext } from './src/shared/providers/HostIdProvider';
       import { setLocalApiTransport } from './src/shared/lib/localApiTransport';
@@ -40,6 +41,13 @@ const components = await build({
       window.renderArtifactDiagram = chart => root.render(React.createElement(MermaidDiagram, {chart, theme: 'light', isolated: true}));
       window.renderArtifactMarkdown = content => root.render(React.createElement(MarkdownPreview, {content, theme: 'light', allowRemoteImages: false}));
       const client = new QueryClient();
+      window.renderChatMarkdown = value => root.render(
+        React.createElement(QueryClientProvider, {client},
+          React.createElement(NiceModal.Provider, null,
+            React.createElement(WYSIWYGEditor, {value, disabled: true, hideActions: true,
+              renderMermaidArtifacts: true,
+              onEditorStateChange: state => { window.chatEditorState = state.toJSON(); }
+            }))));
       window.hostRequests = [];
       window.artifactSource = '<!doctype html><html><body><button onclick="this.textContent = &quot;clicked&quot;">saved report</button></body></html>';
       window.artifact = {id: 'report', name: 'child.html', mime: 'text/html', status: 'ready',
@@ -268,6 +276,58 @@ try {
   );
   await page.evaluate(() => document.querySelector("iframe")?.remove());
   await page.addScriptTag({ content: components.outputFiles[0].text });
+  const fence = "```";
+  await page.evaluate(
+    (value) => window.renderChatMarkdown(value),
+    [
+      fence + "gh-comment",
+      JSON.stringify({
+        id: "review-1",
+        comment_type: "review",
+        author: "reviewer",
+        body: "Review comment",
+        created_at: "2026-09-08T00:00:00Z",
+      }),
+      fence,
+      fence + "vk-component",
+      JSON.stringify({
+        framework: "react",
+        component: "Button",
+        htmlPreview: "<button>Click</button>",
+      }),
+      fence,
+      fence + "mermaid vibe-artifact",
+      "flowchart LR\n A-->B",
+      fence,
+      "~~~~text",
+      fence + "mermaid vibe-artifact",
+      "flowchart LR\n Example-->Only",
+      fence,
+      "~~~~",
+    ].join("\n"),
+  );
+  await page.waitForFunction(() => {
+    const types = JSON.stringify(window.chatEditorState ?? null);
+    return (
+      types.includes('"type":"github-comment"') &&
+      types.includes('"type":"component-info"') &&
+      types.includes('"type":"mermaid-artifact"')
+    );
+  });
+  assert.equal(await page.getByText("@reviewer", { exact: true }).count(), 1);
+  assert.equal(await page.getByText("Button", { exact: true }).count(), 1);
+  assert.equal(
+    await page.locator('iframe[title="Mermaid diagram"]').count(),
+    1,
+  );
+  await page
+    .frameLocator('iframe[title="Mermaid diagram"]')
+    .frameLocator("iframe")
+    .locator("svg")
+    .waitFor();
+  console.log(
+    "Chat Markdown preserves PR/component cards, renders selected Mermaid, and keeps nested examples as code.",
+  );
   await page.evaluate(() =>
     window.renderArtifactDiagram("flowchart LR\n A-->B"),
   );

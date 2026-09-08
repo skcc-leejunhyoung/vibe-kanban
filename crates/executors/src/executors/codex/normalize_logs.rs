@@ -695,6 +695,13 @@ impl LogState {
                 if clear_awaiting {
                     entry.awaiting_approval = false;
                 }
+                if entry.index.is_none() && matches!(status, ToolStatus::PendingApproval { .. }) {
+                    entry.index = Some(add_normalized_entry(
+                        msg_store,
+                        &self.entry_index,
+                        entry.to_normalized_entry(),
+                    ));
+                }
                 if let Some(index) = entry.index {
                     replace_normalized_entry(msg_store, index, entry.to_normalized_entry());
                 }
@@ -819,7 +826,7 @@ fn normalize_app_file_changes(
 fn sync_patch_entries(
     state: &mut LogState,
     msg_store: &Arc<MsgStore>,
-    entry_index: &EntryIndexProvider,
+    entry_index: Option<&EntryIndexProvider>,
     call_id: String,
     normalized: Vec<(String, Vec<FileChange>)>,
     status: ToolStatus,
@@ -835,11 +842,14 @@ fn sync_patch_entries(
             entry.changes = file_changes;
             entry.status = status.clone();
             entry.awaiting_approval = awaiting_approval;
-            let index = entry.index.unwrap_or_else(|| {
-                add_normalized_entry(msg_store, entry_index, entry.to_normalized_entry())
+            entry.index = entry.index.or_else(|| {
+                entry_index.map(|index| {
+                    add_normalized_entry(msg_store, index, entry.to_normalized_entry())
+                })
             });
-            entry.index = Some(index);
-            replace_normalized_entry(msg_store, index, entry.to_normalized_entry());
+            if let Some(index) = entry.index {
+                replace_normalized_entry(msg_store, index, entry.to_normalized_entry());
+            }
         }
     }
 
@@ -860,8 +870,8 @@ fn sync_patch_entries(
             awaiting_approval,
             call_id: call_id.clone(),
         };
-        let index = add_normalized_entry(msg_store, entry_index, entry.to_normalized_entry());
-        entry.index = Some(index);
+        entry.index = entry_index
+            .map(|index| add_normalized_entry(msg_store, index, entry.to_normalized_entry()));
         patch_state.entries.push(entry);
     }
 }
@@ -1259,7 +1269,7 @@ fn handle_direct_item_started(
             sync_patch_entries(
                 state,
                 msg_store,
-                entry_index,
+                Some(entry_index),
                 id,
                 normalized,
                 ToolStatus::Created,
@@ -1950,7 +1960,7 @@ fn handle_direct_notification(
             sync_patch_entries(
                 state,
                 msg_store,
-                entry_index,
+                Some(entry_index),
                 item_id,
                 normalized,
                 ToolStatus::Created,
@@ -2192,6 +2202,48 @@ pub fn normalize_logs(
 
             if let Ok(server_notification) = serde_json::from_str::<ServerNotification>(&line) {
                 if state.is_foreign_thread(direct_notification_thread_id(&server_notification)) {
+                    match server_notification {
+                        ServerNotification::ItemStarted(AppItemStartedNotification {
+                            item: AppThreadItem::FileChange { id, changes, .. },
+                            ..
+                        })
+                        | ServerNotification::FileChangePatchUpdated(
+                            FileChangePatchUpdatedNotification {
+                                item_id: id,
+                                changes,
+                                ..
+                            },
+                        ) => {
+                            // Keep the diff for a possible approval, but do not
+                            // render ordinary child edits in the parent log.
+                            sync_patch_entries(
+                                &mut state,
+                                &msg_store,
+                                None,
+                                id,
+                                normalize_app_file_changes(&worktree_path_str, &changes),
+                                ToolStatus::Created,
+                                false,
+                            );
+                        }
+                        ServerNotification::ItemCompleted(notification)
+                            if matches!(
+                                notification.item,
+                                AppThreadItem::FileChange { .. }
+                                    | AppThreadItem::CommandExecution { .. }
+                            ) =>
+                        {
+                            // Finish only tool entries retained for approvals.
+                            handle_direct_item_completed(
+                                notification,
+                                &mut state,
+                                &msg_store,
+                                &entry_index,
+                                &worktree_path_str,
+                            );
+                        }
+                        _ => {}
+                    }
                     continue;
                 }
                 if handle_direct_notification(
@@ -2221,13 +2273,23 @@ pub fn normalize_logs(
                     .as_ref()
                     .and_then(|params| params.get("threadId"))
                     .and_then(Value::as_str);
-                if state.is_foreign_thread(thread_id) {
-                    continue;
-                }
-                if let Ok(server_request) = ServerRequest::try_from(request)
-                    && handle_direct_request(server_request, &mut state, &msg_store, &entry_index)
-                {
-                    continue;
+                let is_foreign = state.is_foreign_thread(thread_id);
+                if let Ok(server_request) = ServerRequest::try_from(request) {
+                    // The client still waits for these replies even when the
+                    // request belongs to a child. Keep its question/command
+                    // visible without replaying the child's conversation.
+                    if is_foreign
+                        && !matches!(
+                            server_request,
+                            ServerRequest::CommandExecutionRequestApproval { .. }
+                                | ServerRequest::ToolRequestUserInput { .. }
+                        )
+                    {
+                        continue;
+                    }
+                    if handle_direct_request(server_request, &mut state, &msg_store, &entry_index) {
+                        continue;
+                    }
                 }
             }
 
@@ -2372,7 +2434,7 @@ pub fn normalize_logs(
                     sync_patch_entries(
                         &mut state,
                         &msg_store,
-                        &entry_index,
+                        Some(&entry_index),
                         call_id,
                         normalized,
                         ToolStatus::Created,
@@ -2618,7 +2680,7 @@ pub fn normalize_logs(
                     sync_patch_entries(
                         &mut state,
                         &msg_store,
-                        &entry_index,
+                        Some(&entry_index),
                         call_id,
                         normalized,
                         ToolStatus::Created,
@@ -2634,7 +2696,7 @@ pub fn normalize_logs(
                     sync_patch_entries(
                         &mut state,
                         &msg_store,
-                        &entry_index,
+                        Some(&entry_index),
                         call_id,
                         normalized,
                         ToolStatus::Created,
@@ -3939,6 +4001,170 @@ mod tests {
         .to_string();
         serde_json::from_str::<ServerNotification>(&line).unwrap();
         line
+    }
+
+    #[tokio::test]
+    async fn preserves_subagent_questions_and_command_approvals() {
+        let mut lines = vec![
+            thread_started_line("parent"),
+            thread_started_line("thread-1"),
+            request_user_input_line("question-request", "child-question"),
+            Approval::approval_requested(
+                "child-question".into(),
+                "codex.question".into(),
+                "question-approval".into(),
+            )
+            .raw(),
+            json!({
+                "jsonrpc": "2.0", "id": "command-request",
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thread-1", "turnId": "turn-child",
+                    "itemId": "child-command", "command": "git status",
+                    "startedAtMs": 1
+                }
+            })
+            .to_string(),
+            Approval::approval_requested(
+                "child-command".into(),
+                "codex.exec_command".into(),
+                "command-approval".into(),
+            )
+            .raw(),
+        ];
+        let entries = normalize_lines(&lines).await;
+        assert!(matches!(
+            &tool_use(&entries, "question").entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::AskUserQuestion { questions },
+                status: ToolStatus::PendingApproval { approval_id }, ..
+            } if questions[0].question == "Which language?" && approval_id == "question-approval"
+        ));
+        assert!(matches!(
+            &tool_use(&entries, "bash").entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::CommandRun { command, .. },
+                status: ToolStatus::PendingApproval { approval_id }, ..
+            } if command == "git status" && approval_id == "command-approval"
+        ));
+        lines.push(
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-1", "turnId": "turn-child", "completedAtMs": 2,
+                    "item": {
+                        "type": "commandExecution", "id": "child-command", "command": "git status",
+                        "cwd": "/tmp/test-worktree", "commandActions": [], "status": "completed",
+                        "aggregatedOutput": "clean", "exitCode": 0, "durationMs": 1
+                    }
+                }
+            })
+            .to_string(),
+        );
+        let entries = normalize_lines(&lines).await;
+        assert!(matches!(
+            &tool_use(&entries, "bash").entry_type,
+            NormalizedEntryType::ToolUse {
+                status: ToolStatus::Success,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn shows_subagent_file_changes_only_when_approval_is_requested() {
+        let changes = json!([{
+            "path": "/tmp/test-worktree/src/lib.rs",
+            "kind": {"type": "update", "movePath": null},
+            "diff": "@@ -1 +1 @@\n-old\n+new\n"
+        }]);
+        let mut lines = vec![
+            thread_started_line("parent"),
+            json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "child", "turnId": "turn-child", "startedAtMs": 1,
+                    "item": {
+                        "type": "fileChange", "id": "patch", "changes": changes,
+                        "status": "inProgress"
+                    }
+                }
+            })
+            .to_string(),
+            json!({
+                "method": "item/fileChange/patchUpdated",
+                "params": {
+                    "threadId": "child", "turnId": "turn-child", "itemId": "patch",
+                    "changes": changes
+                }
+            })
+            .to_string(),
+        ];
+        let entries = normalize_lines(&lines).await;
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(&entry.entry_type, NormalizedEntryType::ToolUse { .. }))
+        );
+
+        lines.push(
+            json!({
+                "id": "patch-request", "method": "item/fileChange/requestApproval",
+                "params": {
+                    "threadId": "child", "turnId": "turn-child", "itemId": "patch",
+                    "startedAtMs": 1
+                }
+            })
+            .to_string(),
+        );
+        lines.push(
+            Approval::approval_requested(
+                "patch".into(),
+                "codex.apply_patch".into(),
+                "patch-approval".into(),
+            )
+            .raw(),
+        );
+        let entries = normalize_lines(&lines).await;
+        assert!(matches!(
+            &tool_use(&entries, "edit").entry_type,
+            NormalizedEntryType::ToolUse {
+                action_type: ActionType::FileEdit { path, changes },
+                status: ToolStatus::PendingApproval { approval_id }, ..
+            } if path == "src/lib.rs" && approval_id == "patch-approval"
+                && matches!(&changes[..], [FileChange::Edit { unified_diff, .. }]
+                    if unified_diff.contains("+new"))
+        ));
+
+        lines.push(
+            Approval::approval_response(
+                "patch".into(),
+                "codex.apply_patch".into(),
+                ApprovalStatus::Approved,
+            )
+            .raw(),
+        );
+        lines.push(
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "child", "turnId": "turn-child", "completedAtMs": 2,
+                    "item": {
+                        "type": "fileChange", "id": "patch", "changes": changes,
+                        "status": "completed"
+                    }
+                }
+            })
+            .to_string(),
+        );
+        let entries = normalize_lines(&lines).await;
+        assert!(matches!(
+            &tool_use(&entries, "edit").entry_type,
+            NormalizedEntryType::ToolUse {
+                status: ToolStatus::Success,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
