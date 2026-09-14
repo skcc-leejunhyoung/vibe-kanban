@@ -3958,9 +3958,10 @@ mod tests {
         ));
         store.push_stdout(format!("{RESULT_SUCCESS}\n"));
         store.push_finished();
-        // Watch the live stream rather than the buffered history: the store
-        // coalesces patches per path, so an intermediate leak that is later
-        // replaced would never show up in `get_history()`.
+        // Assert over the broadcast, which is exactly what a subscriber can
+        // observe: a held replace that `ThrottledMsgStore` supersedes before
+        // sending never reaches anyone, so only what is actually broadcast
+        // can leak.
         let mut live = store.get_receiver();
         ClaudeLogProcessor::process_logs(
             store.clone(),
@@ -5322,14 +5323,15 @@ mod tests {
     }
 
     /// Amp's resume turn clears the replayed history before adding the new
-    /// prompt. A coalescing store keeps one op per path, so the removals must
-    /// name every index — otherwise the cleared entries survive in the
-    /// buffered history a reconnecting client replays.
+    /// prompt. `get_replay_patches` keeps one op per path, so the removals
+    /// must name every index — repeating `/entries/0` only ever clears the
+    /// first, leaving stale rows in the replay a viewer of the finished
+    /// process rebuilds from.
     #[tokio::test]
-    async fn amp_resume_reset_clears_every_entry_from_a_coalescing_store() {
+    async fn amp_resume_reset_clears_every_entry_from_the_replay_snapshot() {
         use std::sync::Arc;
 
-        let msg_store = Arc::new(MsgStore::new_coalescing());
+        let msg_store = Arc::new(MsgStore::new_for_replay());
         for line in [
             r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"old one"}]}}"#,
             r#"{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"old two"}]}}"#,
@@ -5348,14 +5350,10 @@ mod tests {
         .unwrap();
 
         let entries = msg_store
-            .get_history()
-            .iter()
-            .filter_map(|msg| match msg {
-                workspace_utils::log_msg::LogMsg::JsonPatch(patch) => {
-                    extract_normalized_entry_from_patch(patch)
-                }
-                _ => None,
-            })
+            .get_replay_patches()
+            .into_iter()
+            .flatten()
+            .filter_map(|patch| extract_normalized_entry_from_patch(&patch))
             .map(|(_, entry)| entry.content)
             .collect::<Vec<_>>();
         assert_eq!(entries, ["new prompt"]);
