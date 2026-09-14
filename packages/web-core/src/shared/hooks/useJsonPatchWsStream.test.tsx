@@ -551,3 +551,358 @@ describe('frame batching', () => {
     }
   );
 });
+
+describe('batched stream lifecycle', () => {
+  it.each(['visible', 'hidden'])(
+    'preserves short execution completion reconciliation while %s',
+    async (visibilityState) => {
+      const hook = await renderHook(() => useExecutionProcesses('session-a'));
+      const ws = FakeWebSocket.instances[0];
+      await act(() => {
+        ws.open();
+        ws.message({
+          JsonPatch: [
+            { op: 'replace', path: '/execution_processes', value: {} },
+          ],
+        });
+        ws.message({ Ready: true });
+      });
+      Object.assign(document, { visibilityState });
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/short',
+              value: {
+                ...process('short'),
+                run_reason: 'setupscript',
+                status: 'running',
+              },
+            },
+          ],
+        })
+      );
+      await act(() => vi.advanceTimersByTime(1));
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/short/status',
+              value: 'completed',
+            },
+          ],
+        })
+      );
+      if (visibilityState === 'visible') await flushFrame();
+      else await act(() => vi.advanceTimersByTime(100));
+      expect(hook.result.executionProcesses[0].status).toBe('completed');
+      expect(hook.result.isAttemptRunning).toBe(false);
+      // Unrelated metadata updates must not cancel or postpone the handoff.
+      await act(() => vi.advanceTimersByTime(500));
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/short/dropped',
+              value: true,
+            },
+          ],
+        })
+      );
+      if (visibilityState === 'visible') await flushFrame();
+      else await act(() => vi.advanceTimersByTime(100));
+      await act(() =>
+        vi.advanceTimersByTime(visibilityState === 'visible' ? 499 : 399)
+      );
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      await act(() => vi.advanceTimersByTime(1));
+      expect(FakeWebSocket.instances.length).toBe(2);
+      const fresh = FakeWebSocket.instances[1];
+      await act(() => {
+        fresh.open();
+        fresh.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes',
+              value: {
+                short: { ...process('short'), run_reason: 'setupscript' },
+              },
+            },
+          ],
+        });
+        fresh.message({ Ready: true });
+      });
+      await act(() => vi.advanceTimersByTime(2000));
+      expect(FakeWebSocket.instances).toHaveLength(2);
+    }
+  );
+
+  it.each(['heartbeat', 'empty patch', 'Ready', 'finished', 'unknown'])(
+    'preserves error clearing when a %s follows a bad operation before flush',
+    async (kind) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const hook = await renderHook(() =>
+        useJsonPatchWsStream('/stream', true, initialData)
+      );
+      const ws = FakeWebSocket.instances[0];
+      await act(() => ws.open());
+      await act(() =>
+        ws.message({
+          JsonPatch: [{ op: 'add', path: 'invalid-pointer', value: 'bad' }],
+        })
+      );
+      const next =
+        kind === 'empty patch' ? { JsonPatch: [] } : { [kind]: true };
+      await act(() => ws.message(next));
+      await flushFrame();
+      expect(hook.result.error).toBeNull();
+    }
+  );
+
+  it('retains the latest failure after an empty or deduplicated patch clears an older error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const deduplicatePatches = (ops: Operation[]) =>
+      ops.filter((op) => op.path !== '/duplicate');
+    const hook = await renderHook(() =>
+      useJsonPatchWsStream('/stream', true, initialData, {
+        deduplicatePatches,
+      })
+    );
+    const ws = FakeWebSocket.instances[0];
+    await act(() => ws.open());
+    const malformed = {
+      JsonPatch: [{ op: 'add', path: 'invalid-pointer', value: 'bad' }],
+    };
+    await act(() => ws.message(malformed));
+    await act(() =>
+      ws.message({ JsonPatch: [{ op: 'add', path: '/duplicate', value: 0 }] })
+    );
+    await flushFrame();
+    expect(hook.result.error).toBeNull();
+    await act(() => ws.message({ JsonPatch: [] }));
+    await act(() => ws.message(malformed));
+    await flushFrame();
+    expect(hook.result.error).toBe('Failed to process stream update');
+    await act(() => {
+      ws.message({
+        JsonPatch: [{ op: 'add', path: '/entries/-', value: 'valid' }],
+      });
+      ws.onmessage?.({ data: '{invalid json' });
+    });
+    expect(hook.result.data).toEqual({ entries: ['valid'] });
+    expect(hook.result.error).toBe('Failed to process stream update');
+  });
+
+  it('does not reconcile terminal history, scope switches, or live devserver completion', async () => {
+    let sessionId = 'session-a';
+    const hook = await renderHook(() => useExecutionProcesses(sessionId));
+    for (const scope of ['initial', 'session', 'host', 'replay']) {
+      if (scope === 'session') sessionId = 'session-b';
+      if (scope === 'host') host.id = 'other-host';
+      if (scope === 'replay') await act(() => hook.result.reconcile());
+      else await hook.rerender();
+      const ws = FakeWebSocket.instances.at(-1)!;
+      await act(() => ws.open());
+      // Initial history may itself span more than one frame before Ready.
+      for (const id of ['first', 'second']) {
+        await act(() =>
+          ws.message({
+            JsonPatch: [
+              {
+                op: 'add',
+                path: `/execution_processes/${scope}-${id}`,
+                value: process(`${scope}-${id}`, sessionId),
+              },
+            ],
+          })
+        );
+        await flushFrame();
+      }
+      await act(() => ws.message({ Ready: true }));
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/dev',
+              value: {
+                ...process('dev', sessionId),
+                run_reason: 'devserver',
+                status: 'running',
+              },
+            },
+          ],
+        })
+      );
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/dev/status',
+              value: 'completed',
+            },
+          ],
+        })
+      );
+      await flushFrame();
+      const sockets = FakeWebSocket.instances.length;
+      await act(() => vi.advanceTimersByTime(2000));
+      expect(FakeWebSocket.instances).toHaveLength(sockets);
+      expect(ws.close).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['new execution', 'session', 'host', 'unmount'])(
+    'cancels terminal reconciliation after %s',
+    async (action) => {
+      let sessionId = 'session-a';
+      const hook = await renderHook(() => useExecutionProcesses(sessionId));
+      const ws = FakeWebSocket.instances[0];
+      await act(() => {
+        ws.open();
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/a',
+              value: { ...process('a'), status: 'running' },
+            },
+          ],
+        });
+        ws.message({ Ready: true });
+      });
+      expect(hook.result.isAttemptRunning).toBe(true);
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/a/status',
+              value: 'failed',
+            },
+          ],
+        })
+      );
+      await flushFrame();
+      await act(() => vi.advanceTimersByTime(500));
+      if (action === 'new execution') {
+        await act(() =>
+          ws.message({
+            JsonPatch: [
+              {
+                op: 'add',
+                path: '/execution_processes/b',
+                value: { ...process('b'), status: 'running' },
+              },
+            ],
+          })
+        );
+        await flushFrame();
+      } else if (action === 'unmount') {
+        await render(null);
+      } else {
+        if (action === 'session') sessionId = 'session-b';
+        else host.id = 'other-host';
+        await hook.rerender();
+      }
+      const sockets = FakeWebSocket.instances.length;
+      await act(() => vi.advanceTimersByTime(1500));
+      expect(FakeWebSocket.instances).toHaveLength(sockets);
+      if (action === 'new execution') expect(ws.close).not.toHaveBeenCalled();
+      if (action === 'unmount') expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it('closes a socket whose asynchronous open resolves after unmount', async () => {
+    let resolveOpen!: (ws: WebSocket) => void;
+    setLocalApiTransport({
+      request: vi.fn(),
+      openWebSocket: () =>
+        new Promise<WebSocket>((resolve) => {
+          resolveOpen = resolve;
+        }),
+    });
+    await renderHook(() => useJsonPatchWsStream('/stream', true, initialData));
+    await render(null);
+    const ws = new FakeWebSocket('/stream');
+    await act(async () => resolveOpen(ws as unknown as WebSocket));
+    expect(ws.close.mock.calls.length).toBe(1);
+    expect(ws.onmessage).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not publish old pending operations after an explicit reconcile', async () => {
+    const hook = await renderHook(() =>
+      useJsonPatchWsStream('/stream', true, initialData, {
+        keepSnapshotForEndpoint: true,
+      })
+    );
+    const ws = FakeWebSocket.instances[0];
+    await act(() => {
+      ws.open();
+      ws.message({
+        JsonPatch: [{ op: 'replace', path: '/entries', value: [] }],
+      });
+      ws.message({ Ready: true });
+    });
+    await act(() =>
+      ws.message({
+        JsonPatch: [{ op: 'add', path: '/entries/-', value: 'old' }],
+      })
+    );
+    await act(() => hook.result.reconcile());
+    const fresh = FakeWebSocket.instances[1];
+    await act(() => {
+      fresh.open();
+      fresh.message({
+        JsonPatch: [{ op: 'replace', path: '/entries', value: ['fresh'] }],
+      });
+      fresh.message({ Ready: true });
+    });
+    await flushFrame();
+    await act(() => vi.advanceTimersByTime(100));
+    expect(hook.result.data).toEqual({ entries: ['fresh'] });
+    expect(ws.close.mock.calls.length).toBe(1);
+    expect(FakeWebSocket.instances.length).toBe(2);
+  });
+
+  it.each([1000, 9000])(
+    'preserves visibility resume policy after %i ms',
+    async (duration) => {
+      const hook = await renderHook(() =>
+        useJsonPatchWsStream('/stream', true, initialData, {
+          keepSnapshotForEndpoint: true,
+        })
+      );
+      const ws = FakeWebSocket.instances[0];
+      await act(() => {
+        ws.open();
+        ws.message({
+          JsonPatch: [{ op: 'replace', path: '/entries', value: ['initial'] }],
+        });
+        ws.message({ Ready: true });
+      });
+      await act(() => {
+        Object.assign(document, { visibilityState: 'hidden' });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await act(() =>
+        ws.message({
+          JsonPatch: [{ op: 'add', path: '/entries/-', value: 'hidden' }],
+        })
+      );
+      await act(() => vi.advanceTimersByTime(duration));
+      await act(() => {
+        Object.assign(document, { visibilityState: 'visible' });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(FakeWebSocket.instances.length).toBe(duration >= 8000 ? 2 : 1);
+      expect(hook.result.data).toEqual({ entries: ['initial', 'hidden'] });
+    }
+  );
+});

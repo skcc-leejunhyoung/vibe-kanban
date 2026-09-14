@@ -13,6 +13,12 @@ type ExecutionProcessState = {
   execution_processes: Record<string, ExecutionProcess>;
 };
 
+const isAttemptProcess = (process: ExecutionProcess) =>
+  process.run_reason === 'codingagent' ||
+  process.run_reason === 'setupscript' ||
+  process.run_reason === 'cleanupscript' ||
+  process.run_reason === 'archivescript';
+
 interface UseExecutionProcessesResult {
   executionProcesses: ExecutionProcess[];
   executionProcessesById: Record<string, ExecutionProcess>;
@@ -96,39 +102,83 @@ export const useExecutionProcesses = (
       }, {});
 
       const isAttemptRunning = executionProcesses.some(
-        (process) =>
-          (process.run_reason === 'codingagent' ||
-            process.run_reason === 'setupscript' ||
-            process.run_reason === 'cleanupscript' ||
-            process.run_reason === 'archivescript') &&
-          process.status === 'running'
+        (process) => isAttemptProcess(process) && process.status === 'running'
       );
       return { executionProcesses, executionProcessesById, isAttemptRunning };
     }, [data, sessionId]);
-  const executionActivityRef = useRef<ExecutionActivityState>({
+  const executionActivityRef = useRef<
+    ExecutionActivityState & {
+      processes?: Record<string, ExecutionProcess>;
+    }
+  >({
     sessionId,
     wasRunning: false,
   });
+  const terminalReconcileTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
+    executionActivityRef.current = { sessionId, wasRunning: false };
+    return () => {
+      if (terminalReconcileTimerRef.current !== null) {
+        window.clearTimeout(terminalReconcileTimerRef.current);
+        terminalReconcileTimerRef.current = null;
+      }
+    };
+  }, [reconcile, sessionId]);
+
+  useEffect(() => {
+    if (!data) return;
+    const previous = executionActivityRef.current;
     const transition = advanceExecutionActivity(
-      executionActivityRef.current,
+      previous,
       sessionId,
       isAttemptRunning
     );
-    executionActivityRef.current = transition.state;
+    executionActivityRef.current = {
+      ...transition.state,
+      processes: isInitialized ? executionProcessesById : undefined,
+    };
 
-    if (!transition.shouldReconcile) return;
+    // A short execution can start and finish inside one frame. Compare live
+    // snapshots too, without counting initial history/replay as a new finish.
+    const previousProcesses = previous.processes;
+    const hasBatchedCompletion =
+      isInitialized &&
+      previousProcesses &&
+      executionProcesses.some(
+        (process) =>
+          isAttemptProcess(process) &&
+          process.status !== 'running' &&
+          (!previousProcesses[process.id] ||
+            previousProcesses[process.id].status === 'running')
+      );
+    const shouldReconcile = transition.shouldReconcile || hasBatchedCompletion;
+
+    if (
+      (isAttemptRunning || shouldReconcile) &&
+      terminalReconcileTimerRef.current !== null
+    ) {
+      window.clearTimeout(terminalReconcileTimerRef.current);
+      terminalReconcileTimerRef.current = null;
+    }
+    if (isAttemptRunning || !shouldReconcile) return;
 
     // Vibe and other server-driven continuations are created after the
     // completed-process patch. Reconnect once after that handoff window so a
     // missed child-process add cannot leave the conversation stale forever.
-    const timeoutId = window.setTimeout(
-      reconcile,
-      TERMINAL_EXECUTION_RECONCILE_DELAY_MS
-    );
-    return () => window.clearTimeout(timeoutId);
-  }, [isAttemptRunning, reconcile, sessionId]);
+    terminalReconcileTimerRef.current = window.setTimeout(() => {
+      terminalReconcileTimerRef.current = null;
+      reconcile();
+    }, TERMINAL_EXECUTION_RECONCILE_DELAY_MS);
+  }, [
+    data,
+    executionProcesses,
+    executionProcessesById,
+    isAttemptRunning,
+    isInitialized,
+    reconcile,
+    sessionId,
+  ]);
 
   // Loading until the first snapshot — unless a cached snapshot is already
   // being served (data defined pre-Ready), which renders immediately.

@@ -313,6 +313,8 @@ export const useJsonPatchWsStream = <T extends object>(
           };
 
           let pendingMessages: Operation[][] = [];
+          let messageSequence = 0;
+          let pendingSequence = 0;
           let rafId: number | null = null;
           let flushTimer: number | null = null;
           flushPending = (publish = true) => {
@@ -351,7 +353,9 @@ export const useJsonPatchWsStream = <T extends object>(
                 setData(next);
                 resetSilenceWatchdog(false);
               }
-              setError(updateError);
+              // Later messages (even empty patches or heartbeats) clear an
+              // earlier error. A delayed batch must preserve that ordering.
+              if (pendingSequence === messageSequence) setError(updateError);
             }
             return applied;
           };
@@ -374,6 +378,7 @@ export const useJsonPatchWsStream = <T extends object>(
           ws.onmessage = (event) => {
             try {
               const msg: WsMsg = JSON.parse(event.data);
+              messageSequence++;
               connectionHealthRef.current.markLive(connectionGeneration);
               setError(null);
 
@@ -395,6 +400,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
                 if (!filtered.length || !dataRef.current) return;
                 pendingMessages.push(filtered);
+                pendingSequence = messageSequence;
                 if (flushTimer === null) {
                   if (document.visibilityState !== 'hidden') {
                     rafId = requestAnimationFrame(() => flushPending?.());
