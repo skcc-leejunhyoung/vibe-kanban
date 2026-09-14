@@ -130,7 +130,16 @@ async fn handle_raw_logs_ws(
                     }
                     Some(Err(e)) => {
                         tracing::error!("stream error: {}", e);
-                        break;
+                        // Close as an error, not code 1000: a clean closure
+                        // tells the client the stream ended normally and it
+                        // stops reconnecting, freezing an incomplete log.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: close_code::ERROR,
+                                reason: "log stream error".into(),
+                            })))
+                            .await;
+                        return Ok(());
                     }
                     None => break,
                 }
@@ -239,7 +248,16 @@ async fn handle_normalized_logs_ws(
                     }
                     Some(Err(e)) => {
                         tracing::error!("stream error: {}", e);
-                        break;
+                        // Close as an error, not code 1000: a clean closure
+                        // tells the client the stream ended normally and it
+                        // stops reconnecting, freezing an incomplete log.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: close_code::ERROR,
+                                reason: "log stream error".into(),
+                            })))
+                            .await;
+                        return Ok(());
                     }
                     None => break,
                 }
