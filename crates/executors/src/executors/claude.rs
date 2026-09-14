@@ -2057,13 +2057,12 @@ impl ClaudeLogProcessor {
 
                     for item in message.content.items() {
                         if let ClaudeContentItem::Text { text } = item {
+                            // No metadata: it only ever mirrored `content`.
                             let entry = NormalizedEntry {
                                 timestamp: None,
                                 entry_type: NormalizedEntryType::UserMessage,
                                 content: text.clone(),
-                                metadata: Some(
-                                    serde_json::to_value(item).unwrap_or(serde_json::Value::Null),
-                                ),
+                                metadata: None,
                             };
                             let id = entry_index_provider.next();
                             patches.push(ConversationPatch::add_normalized_entry(id, entry));
@@ -2487,11 +2486,10 @@ impl ClaudeLogProcessor {
                         entry_type: NormalizedEntryType::ErrorMessage {
                             error_type: NormalizedEntryError::Other,
                         },
+                        // No metadata: `content` is already the whole event.
                         content: serde_json::to_string(claude_json)
                             .unwrap_or_else(|_| "error".to_string()),
-                        metadata: Some(
-                            serde_json::to_value(claude_json).unwrap_or(serde_json::Value::Null),
-                        ),
+                        metadata: None,
                     };
                     let idx = entry_index_provider.next();
                     patches.push(ConversationPatch::add_normalized_entry(idx, entry));
@@ -5300,6 +5298,51 @@ mod tests {
             }
         }
         entries.into_values().collect()
+    }
+
+    /// A process killed mid-stream never sees `content_block_stop` or a final
+    /// `assistant` message, so the held replace can only be delivered by the
+    /// normalizer shutting down. The last streamed text must still be there.
+    #[tokio::test]
+    async fn process_end_flushes_the_held_replace_of_an_unfinished_entry() {
+        use std::sync::Arc;
+
+        let mut lines = vec![MSG_START.to_string(), CB_START.to_string()];
+        for i in 0..10 {
+            lines.push(format!(
+                r#"{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"tok{i} "}}}}}}"#
+            ));
+        }
+
+        let msg_store = Arc::new(MsgStore::new());
+        for line in &lines {
+            msg_store.push_stdout(format!("{line}\n"));
+        }
+        // No block stop, no assistant message, no result: the agent was killed.
+        msg_store.push_finished();
+        ClaudeLogProcessor::process_logs(
+            msg_store.clone(),
+            Path::new("/tmp"),
+            EntryIndexProvider::test_new(),
+            HistoryStrategy::Default,
+        )
+        .await
+        .unwrap();
+
+        let entries = msg_store
+            .get_history()
+            .iter()
+            .filter_map(|msg| match msg {
+                workspace_utils::log_msg::LogMsg::JsonPatch(patch) => {
+                    extract_normalized_entry_from_patch(patch)
+                }
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            entries.values().next().map(|entry| entry.content.as_str()),
+            Some("tok0 tok1 tok2 tok3 tok4 tok5 tok6 tok7 tok8 tok9 ")
+        );
     }
 
     /// The live path throttles streamed replaces (`ThrottledMsgStore`): the

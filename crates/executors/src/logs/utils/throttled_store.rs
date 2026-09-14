@@ -25,6 +25,12 @@ use crate::logs::{
 
 /// Minimum spacing between two cumulative `replace` patches of the same
 /// streaming entry (~12 updates/s, more than a reader can follow).
+///
+/// ponytail: no wakeup timer — a held replace waits for the next message on
+/// the normalizer's stream, so a mid-stream stall leaves the UI one delta
+/// behind until streaming resumes (entry completion and process end always
+/// flush). Add a `tokio::time::timeout` around the stream poll if that
+/// staleness ever becomes visible.
 pub const STREAM_REPLACE_INTERVAL: Duration = Duration::from_millis(80);
 
 #[derive(Default)]
