@@ -920,6 +920,121 @@ describe('batched stream lifecycle', () => {
 });
 
 describe('execution control across batch boundaries', () => {
+  it.each([
+    ['reconcile', 'running'],
+    ['resume', 'running'],
+    ['reconcile', 'removed'],
+    ['resume', 'removed'],
+  ])(
+    'preserves the queued child state across %s when the child is %s',
+    async (kind, childState) => {
+      const hook = await renderHook(() => useExecutionProcesses('session-a'));
+      const first = FakeWebSocket.instances[0];
+      await act(() => {
+        first.open();
+        first.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/a',
+              value: { ...process('a'), status: 'running' },
+            },
+          ],
+        });
+        first.message({ Ready: true });
+      });
+      await act(() =>
+        first.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/a/status',
+              value: 'completed',
+            },
+          ],
+        })
+      );
+      await flushFrame();
+      await act(() => vi.advanceTimersByTime(999));
+      await act(() =>
+        first.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/child',
+              value: { ...process('child'), status: 'running' },
+            },
+          ],
+        })
+      );
+      if (childState === 'removed') {
+        await act(() =>
+          first.message({
+            JsonPatch: [{ op: 'remove', path: '/execution_processes/child' }],
+          })
+        );
+      }
+      await act(() => {
+        if (kind === 'reconcile') hook.result.reconcile();
+        else
+          window.dispatchEvent(
+            Object.assign(new Event('pageshow'), { persisted: true })
+          );
+      });
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      const second = FakeWebSocket.instances[1];
+      await act(() => second.open());
+      expect(hook.result.isAttemptRunning).toBe(childState === 'running');
+      await act(() => vi.advanceTimersByTime(1));
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      expect(second.close).not.toHaveBeenCalled();
+      if (childState === 'removed') {
+        // A completed child gets its own full handoff window, even if its
+        // running and removed messages only materialized during cleanup.
+        await act(() => vi.advanceTimersByTime(998));
+        expect(FakeWebSocket.instances).toHaveLength(2);
+        await act(() => vi.advanceTimersByTime(1));
+        expect(FakeWebSocket.instances).toHaveLength(3);
+      }
+    }
+  );
+
+  it.each(['session', 'host', 'unmount'])(
+    'disposes control timers created by a cleanup batch on %s exit',
+    async (kind) => {
+      let sessionId = 'session-a';
+      const hook = await renderHook(() => useExecutionProcesses(sessionId));
+      const ws = FakeWebSocket.instances[0];
+      await act(() => {
+        ws.open();
+        ws.message({ Ready: true });
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/short',
+              value: { ...process('short'), status: 'running' },
+            },
+          ],
+        });
+        ws.message({
+          JsonPatch: [{ op: 'remove', path: '/execution_processes/short' }],
+        });
+      });
+      if (kind === 'unmount') await render(null);
+      else {
+        if (kind === 'session') sessionId = 'session-b';
+        else host.id = 'other-host';
+        await hook.rerender();
+      }
+      const sockets = FakeWebSocket.instances.length;
+      await act(() => vi.advanceTimersByTime(2000));
+      expect(FakeWebSocket.instances).toHaveLength(sockets);
+      expect(frames.size).toBe(0);
+      if (kind === 'unmount') expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
   it('keeps the committed observer while a later render is suspended', async () => {
     const onApplied = vi.fn();
     const uncommitted = vi.fn();

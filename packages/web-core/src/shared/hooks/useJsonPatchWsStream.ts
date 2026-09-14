@@ -58,7 +58,7 @@ interface UseJsonPatchStreamOptions<T> {
   silenceTimeoutMs?: number;
   /** Whether the current snapshot still needs terminal-state reconciliation. */
   shouldReconcileAfterSilence?: (data: T) => boolean;
-  /** Preserve control state between messages while rendering only once per batch. */
+  /** Track control state in every applied batch, including cleanup cache flushes. */
   patchObserver?: {
     /** Pure scalar selection; the draft must not escape this call. */
     selectState: (data: T) => boolean;
@@ -350,7 +350,7 @@ export const useJsonPatchWsStream = <T extends object>(
             let next = current;
             let updateError: string | null = null;
             let applied = false;
-            const observer = publish ? patchObserverRef.current : undefined;
+            const observer = patchObserverRef.current;
             let states: boolean[] = [];
             try {
               const batch = applyUpsertPatchBatch(
@@ -382,12 +382,14 @@ export const useJsonPatchWsStream = <T extends object>(
               if (applied) {
                 setData(next);
                 resetSilenceWatchdog(false);
-                observer?.onApplied(states, current, next, isReady);
               }
               // Later messages (even empty patches or heartbeats) clear an
               // earlier error. A delayed batch must preserve that ordering.
               if (pendingSequence === messageSequence) setError(updateError);
             }
+            // Cleanup batches also advance control state (e.g. terminal timers)
+            // without publishing React state. The owner cleans up on scope exit.
+            if (applied) observer?.onApplied(states, current, next, isReady);
             return applied;
           };
           flushRef.current = () => {
