@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import type { WorkspaceWithStatus } from 'shared/types';
+import { describe, expect, it, vi } from 'vitest';
+import type { WorkspaceSummary, WorkspaceWithStatus } from 'shared/types';
+import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
+import { workspaceSummaryKeys } from './workspaceSummaryKeys';
 import {
   combineRemoteWorkspaceStreams,
+  fetchWorkspaceSummaries,
   getHostWorkspaceKey,
   materializeHostWorkspaceStream,
   resolveOnlineWorkspaceStreamHostIds,
@@ -9,6 +12,60 @@ import {
   type SidebarWorkspace,
   type UseWorkspacesResult,
 } from './useWorkspaces';
+
+vi.mock('@/shared/lib/localApiTransport', () => ({
+  makeLocalApiRequest: vi.fn(),
+}));
+
+describe('combined workspace summaries', () => {
+  it.each([null, 'remote-host'])(
+    'fetches both lists in one request for host %s',
+    async (hostId) => {
+      const request = vi.mocked(makeLocalApiRequest);
+      request.mockReset();
+      const summaries = [
+        { workspace_id: 'active', todo_total: 3, todo_completed: 1 },
+        { workspace_id: 'archived', has_unseen_turns: true },
+      ] as WorkspaceSummary[];
+      request.mockResolvedValue(
+        new Response(JSON.stringify({ success: true, data: { summaries } }))
+      );
+
+      const map = await fetchWorkspaceSummaries(hostId, false);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith(
+        '/api/workspaces/summaries',
+        expect.objectContaining({
+          body: JSON.stringify({
+            archived: null,
+            include_latest_prompt: false,
+          }),
+          hostScope: 'explicit',
+          hostId,
+          relayHostId: hostId,
+        })
+      );
+      const result = materializeHostWorkspaceStream(
+        {
+          active: { id: 'active', archived: false } as WorkspaceWithStatus,
+          archived: { id: 'archived', archived: true } as WorkspaceWithStatus,
+        },
+        map,
+        map,
+        hostId ?? 'local'
+      );
+      expect(result.workspaces).toMatchObject([
+        { id: 'active', todoTotal: 3, todoCompleted: 1 },
+      ]);
+      expect(result.archivedWorkspaces).toMatchObject([
+        { id: 'archived', hasUnseenActivity: true },
+      ]);
+      expect(workspaceSummaryKeys.byHost('host-a')).not.toEqual(
+        workspaceSummaryKeys.byHost('host-b')
+      );
+    }
+  );
+});
 
 describe('resolveOnlineWorkspaceStreamHostIds', () => {
   const hosts = [

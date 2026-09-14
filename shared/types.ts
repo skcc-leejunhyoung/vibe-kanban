@@ -892,7 +892,11 @@ export type UpdateWorkspace = { archived: boolean | null, pinned: boolean | null
 
 export type UpdateSession = { name: string | null, };
 
-export type WorkspaceSummaryRequest = { archived: boolean,
+export type WorkspaceSummaryRequest = {
+/**
+ * `None` returns both active and archived workspaces in one request.
+ */
+archived: boolean | null,
 /**
  * Include the latest user prompt in each summary. Unified cross-host lists
  * disable this because they only need workspace metadata and status.

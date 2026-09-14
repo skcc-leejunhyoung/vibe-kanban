@@ -248,9 +248,8 @@ export const workspaceKeys = {
 
 // workspaceSummaryKeys is imported from @/shared/hooks/workspaceSummaryKeys
 
-// Fetch workspace summaries from the API by archived status
-export async function fetchWorkspaceSummariesByArchived(
-  archived: boolean,
+// Fetch active and archived summaries together; consumers still look up by id.
+export async function fetchWorkspaceSummaries(
   hostId: string | null,
   includeLatestPrompt = true
 ): Promise<Map<string, WorkspaceSummary>> {
@@ -259,7 +258,7 @@ export async function fetchWorkspaceSummariesByArchived(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        archived,
+        archived: null,
         include_latest_prompt: includeLatestPrompt,
       }),
       hostScope: 'explicit',
@@ -328,12 +327,11 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
     { keepSnapshotForEndpoint: true }
   );
 
-  // Wait for both streams to be initialized before fetching summaries
-  // Fetch summaries for active workspaces
+  // Either stream can start the shared summary poll.
   const { data: activeSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
-    queryKey: workspaceSummaryKeys.byArchived(false, hostId),
-    queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
-    enabled: enabled && activeIsInitialized,
+    queryKey: workspaceSummaryKeys.byHost(hostId),
+    queryFn: () => fetchWorkspaceSummaries(hostId),
+    enabled: enabled && (activeIsInitialized || archivedIsInitialized),
     staleTime: 1000,
     refetchInterval: 15000,
     refetchOnWindowFocus: false,
@@ -341,17 +339,7 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
     placeholderData: keepPreviousData,
   });
 
-  // Fetch summaries for archived workspaces
-  const { data: archivedSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
-    queryKey: workspaceSummaryKeys.byArchived(true, hostId),
-    queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
-    enabled: enabled && archivedIsInitialized,
-    staleTime: 1000,
-    refetchInterval: 15000,
-    refetchOnWindowFocus: false,
-    refetchOnMount: 'always',
-    placeholderData: keepPreviousData,
-  });
+  const archivedSummaries = activeSummaries;
 
   const [selectActive] = useState(createSidebarWorkspaceList);
   const [selectArchived] = useState(createSidebarWorkspaceList);
@@ -487,23 +475,15 @@ function useRemoteHostWorkspaceStream(
     });
 
   const { data: activeSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
-    queryKey: workspaceSummaryKeys.byArchived(false, hostId),
-    queryFn: () => fetchWorkspaceSummariesByArchived(false, hostId),
+    queryKey: workspaceSummaryKeys.byHost(hostId),
+    queryFn: () => fetchWorkspaceSummaries(hostId),
     enabled: isInitialized,
     staleTime: 1000,
     refetchInterval: 15_000,
     refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
   });
-  const { data: archivedSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
-    queryKey: workspaceSummaryKeys.byArchived(true, hostId),
-    queryFn: () => fetchWorkspaceSummariesByArchived(true, hostId),
-    enabled: isInitialized,
-    staleTime: 1000,
-    refetchInterval: 15_000,
-    refetchOnWindowFocus: false,
-    placeholderData: keepPreviousData,
-  });
+  const archivedSummaries = activeSummaries;
 
   return useMemo(() => {
     const materialized = materializeHostWorkspaceStream(
@@ -645,16 +625,14 @@ export function resolveSnapshotHostIds(
 async function fetchHostWorkspaceSnapshot(
   hostId: string | null
 ): Promise<HostWorkspaceSnapshot> {
-  const [records, activeSummaries, archivedSummaries] = await Promise.all([
+  const [records, summaries] = await Promise.all([
     workspacesApi.getAllWorkspaces(hostId),
-    fetchWorkspaceSummariesByArchived(false, hostId, false),
-    fetchWorkspaceSummariesByArchived(true, hostId, false),
+    fetchWorkspaceSummaries(hostId, false),
   ]);
 
   const active: SidebarWorkspace[] = [];
   const archived: SidebarWorkspace[] = [];
   for (const workspace of records) {
-    const summaries = workspace.archived ? archivedSummaries : activeSummaries;
     const item = toSnapshotSidebarWorkspace(
       workspace,
       summaries.get(workspace.id),

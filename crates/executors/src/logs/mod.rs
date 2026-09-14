@@ -6,7 +6,8 @@ use workspace_utils::{
 };
 
 use crate::logs::utils::{
-    patch::extract_normalized_entry_from_patch, shell_command_parsing::CommandCategory,
+    patch::{extract_normalized_entry_from_patch, patch_value},
+    shell_command_parsing::CommandCategory,
 };
 
 pub mod artifacts;
@@ -210,20 +211,27 @@ pub struct TodoProgress {
 /// the agent wrote (`ActionType::TodoManagement`) and report how many of its
 /// items are completed. Returns `None` when the process never produced a TODO
 /// list, so callers can hide the indicator entirely.
-pub fn todo_progress_from_logs(messages: &[LogMsg]) -> Option<TodoProgress> {
-    let mut latest_todos: Option<Vec<TodoItem>> = None;
-    for msg in messages {
+pub fn todo_progress_from_logs<'a>(
+    messages: impl IntoIterator<Item = &'a LogMsg, IntoIter: DoubleEndedIterator>,
+) -> Option<TodoProgress> {
+    messages.into_iter().rev().find_map(|msg| {
         let LogMsg::JsonPatch(patch) = msg else {
-            continue;
+            return None;
         };
-        // Normalized entries are stored wrapped as `PatchType::NormalizedEntry`
-        // (`{"type":"NORMALIZED_ENTRY","content":{…}}`), so reuse the canonical
-        // unwrapping reader instead of parsing the raw op value. A TodoWrite may
-        // first `add` an entry then `replace` it as items complete; both ops
-        // carry the full list, so keeping the last non-empty list stays correct.
-        let Some((_, entry)) = extract_normalized_entry_from_patch(patch) else {
-            continue;
-        };
+        // Skip ordinary output without allocating a NormalizedEntry. Retain the
+        // canonical reader's last-valid-entry semantics for multi-op patches.
+        if !patch.0.iter().filter_map(patch_value).any(|value| {
+            value
+                .get("content")
+                .and_then(|entry| entry.get("entry_type"))
+                .and_then(|entry_type| entry_type.get("action_type"))
+                .and_then(|action| action.get("action"))
+                .and_then(serde_json::Value::as_str)
+                == Some("todo_management")
+        }) {
+            return None;
+        }
+        let (_, entry) = extract_normalized_entry_from_patch(patch)?;
         if let NormalizedEntry {
             entry_type:
                 NormalizedEntryType::ToolUse {
@@ -234,18 +242,15 @@ pub fn todo_progress_from_logs(messages: &[LogMsg]) -> Option<TodoProgress> {
         } = entry
             && !todos.is_empty()
         {
-            latest_todos = Some(todos);
+            return Some(TodoProgress {
+                total: todos.len(),
+                completed: todos
+                    .iter()
+                    .filter(|t| t.status.eq_ignore_ascii_case("completed"))
+                    .count(),
+            });
         }
-    }
-
-    let todos = latest_todos?;
-    let completed = todos
-        .iter()
-        .filter(|t| t.status.eq_ignore_ascii_case("completed"))
-        .count();
-    Some(TodoProgress {
-        total: todos.len(),
-        completed,
+        None
     })
 }
 
@@ -468,5 +473,181 @@ mod todo_progress_tests {
         let progress = todo_progress_from_logs(&msgs).unwrap();
         assert_eq!(progress.total, 3);
         assert_eq!(progress.completed, 3);
+    }
+
+    #[test]
+    fn borrowed_history_stops_at_latest_replacement_and_preserves_patch_semantics() {
+        use workspace_utils::msg_store::MsgStore;
+
+        let store = MsgStore::new();
+        for index in 0..100 {
+            store.push(patch_msg(index, todo_entry(&[("old", "pending")])));
+        }
+        store.push_patch(ConversationPatch::replace(
+            99,
+            todo_entry(&[("new", "COMPLETED")]),
+        ));
+        store.push(patch_msg(100, todo_entry(&[])));
+        store.push_stdout("irrelevant output");
+        let mut visited = 0;
+        let progress = store
+            .with_history(|messages| todo_progress_from_logs(messages.inspect(|_| visited += 1)))
+            .unwrap();
+        assert_eq!((progress.total, progress.completed, visited), (1, 1, 3));
+
+        // A later ordinary entry in the same patch still wins over an earlier TODO.
+        let mut patch =
+            ConversationPatch::add_normalized_entry(101, todo_entry(&[("hidden", "pending")]));
+        patch.0.extend(
+            ConversationPatch::add_normalized_entry(
+                102,
+                NormalizedEntry {
+                    timestamp: None,
+                    metadata: None,
+                    content: "later".into(),
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                },
+            )
+            .0,
+        );
+        // Malformed normalized values and unrelated paths must be ignored.
+        patch.0.extend(
+            serde_json::from_value::<json_patch::Patch>(serde_json::json!([
+                {"op":"add","path":"/entries/103","value":{"type":"NORMALIZED_ENTRY","content":{}}},
+                {"op":"remove","path":"/entries/99"}
+            ]))
+            .unwrap()
+            .0,
+        );
+        store.push_patch(patch);
+        let progress = store
+            .with_history(|messages| todo_progress_from_logs(messages))
+            .unwrap();
+        assert_eq!((progress.total, progress.completed), (1, 1));
+    }
+
+    /// Reproduces the pre-SKC-4774 clone + forward scan, including patch serialization.
+    fn legacy_progress(store: &workspace_utils::msg_store::MsgStore) -> Option<TodoProgress> {
+        let mut latest = None;
+        for message in store.get_history() {
+            let LogMsg::JsonPatch(patch) = message else {
+                continue;
+            };
+            let value = serde_json::to_value(patch).unwrap();
+            let entry = value.as_array().unwrap().iter().rev().find_map(|op| {
+                op.get("path")?
+                    .as_str()?
+                    .strip_prefix("/entries/")?
+                    .parse::<usize>()
+                    .ok()?;
+                let value = op.get("value")?;
+                if value.get("type")?.as_str()? != "NORMALIZED_ENTRY" {
+                    return None;
+                }
+                serde_json::from_value::<NormalizedEntry>(value.get("content")?.clone()).ok()
+            });
+            if let Some(NormalizedEntry {
+                entry_type:
+                    NormalizedEntryType::ToolUse {
+                        action_type: ActionType::TodoManagement { todos, .. },
+                        ..
+                    },
+                ..
+            }) = entry
+                && !todos.is_empty()
+            {
+                latest = Some(TodoProgress {
+                    total: todos.len(),
+                    completed: todos
+                        .iter()
+                        .filter(|todo| todo.status.eq_ignore_ascii_case("completed"))
+                        .count(),
+                });
+            }
+        }
+        latest
+    }
+
+    #[test]
+    #[ignore = "synthetic five-running-process p95 measurement; run with --ignored --nocapture"]
+    fn summaries_todo_p95() {
+        use std::{hint::black_box, time::Instant};
+
+        use workspace_utils::msg_store::MsgStore;
+
+        const PROCESSES: usize = 5;
+        const ENTRIES: usize = 10_000;
+        const SAMPLES: usize = 30;
+        let stores: Vec<_> = (0..PROCESSES)
+            .map(|_| {
+                let store = MsgStore::new();
+                for index in 0..ENTRIES {
+                    store.push_stdout("x".repeat(256));
+                    store.push(patch_msg(
+                        index,
+                        NormalizedEntry {
+                            timestamp: None,
+                            metadata: None,
+                            content: "x".repeat(1024),
+                            entry_type: NormalizedEntryType::AssistantMessage,
+                        },
+                    ));
+                }
+                store
+            })
+            .collect();
+
+        for scenario in ["no_todo", "recent_todo"] {
+            if scenario == "recent_todo" {
+                for store in &stores {
+                    store.push(patch_msg(
+                        ENTRIES,
+                        todo_entry(&[("done", "completed"), ("next", "pending")]),
+                    ));
+                    for _ in 0..100 {
+                        store.push_stdout("tail");
+                    }
+                }
+            }
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for sample in 0..SAMPLES + 3 {
+                let start = Instant::now();
+                let old: Vec<_> = stores
+                    .iter()
+                    .map(|store| black_box(legacy_progress(store)))
+                    .collect();
+                let old_elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                let start = Instant::now();
+                let new: Vec<_> = stores
+                    .iter()
+                    .map(|store| {
+                        black_box(store.with_history(|messages| todo_progress_from_logs(messages)))
+                    })
+                    .collect();
+                let new_elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                for (old, new) in old.iter().zip(&new) {
+                    assert_eq!(
+                        old.map(|p| (p.total, p.completed)),
+                        new.map(|p| (p.total, p.completed))
+                    );
+                }
+                if sample >= 3 {
+                    before.push(old_elapsed);
+                    after.push(new_elapsed);
+                }
+            }
+            before.sort_by(f64::total_cmp);
+            after.sort_by(f64::total_cmp);
+            let p95 = (SAMPLES * 95).div_ceil(100) - 1;
+            println!(
+                "SKC-4774 scenario={scenario} processes={PROCESSES} normalized_entries_per_process={ENTRIES} raw_entries_per_process={ENTRIES} samples={SAMPLES} before_p95_ms={:.3} after_p95_ms={:.3}",
+                before[p95], after[p95]
+            );
+            assert!(
+                after[p95] < 50.0,
+                "TODO extraction p95 must remain below 50 ms"
+            );
+        }
     }
 }

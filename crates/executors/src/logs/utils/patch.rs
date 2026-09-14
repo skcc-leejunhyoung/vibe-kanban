@@ -4,8 +4,8 @@ use std::{
 };
 
 use json_patch::{AddOperation, Patch, PatchOperation, RemoveOperation, ReplaceOperation};
-use serde::Serialize;
-use serde_json::{from_value, json, to_value};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, to_value};
 use ts_rs::TS;
 use workspace_utils::{diff::Diff, msg_store::MsgStore};
 
@@ -128,18 +128,33 @@ impl ConversationPatch {
 
 /// Extract the entry index and `NormalizedEntry` from a JsonPatch if it contains one
 pub fn extract_normalized_entry_from_patch(patch: &Patch) -> Option<(usize, NormalizedEntry)> {
-    patch.0.iter().rev().find_map(|op| {
-        let entry_index = op.path().strip_prefix("/entries/")?.parse::<usize>().ok()?;
-        let value = match op {
-            PatchOperation::Add(add) => &add.value,
-            PatchOperation::Replace(replace) => &replace.value,
-            _ => return None,
-        };
+    normalized_entry_values(patch)
+        .rev()
+        .find_map(|(index, value)| {
+            NormalizedEntry::deserialize(value)
+                .ok()
+                .map(|entry| (index, entry))
+        })
+}
+
+/// Inspect an existing operation value without serializing or cloning it.
+pub fn patch_value(op: &json_patch::PatchOperation) -> Option<&serde_json::Value> {
+    match op {
+        json_patch::PatchOperation::Add(op) => Some(&op.value),
+        json_patch::PatchOperation::Replace(op) => Some(&op.value),
+        json_patch::PatchOperation::Test(op) => Some(&op.value),
+        _ => None,
+    }
+}
+
+fn normalized_entry_values(
+    patch: &Patch,
+) -> impl DoubleEndedIterator<Item = (usize, &serde_json::Value)> {
+    patch.0.iter().filter_map(|op| {
+        let index = op.path().as_str().strip_prefix("/entries/")?.parse().ok()?;
+        let value = patch_value(op)?;
         (value.get("type")?.as_str()? == "NORMALIZED_ENTRY")
-            .then(|| value.get("content"))
-            .flatten()
-            .and_then(|c| from_value::<NormalizedEntry>(c.clone()).ok())
-            .map(|entry| (entry_index, entry))
+            .then(|| value.get("content").map(|content| (index, content)))?
     })
 }
 

@@ -22,7 +22,8 @@ use crate::{DeploymentImpl, error::ApiError};
 /// Request for fetching workspace summaries
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct WorkspaceSummaryRequest {
-    pub archived: bool,
+    /// `None` returns both active and archived workspaces in one request.
+    pub archived: Option<bool>,
     /// Include the latest user prompt in each summary. Unified cross-host lists
     /// disable this because they only need workspace metadata and status.
     #[serde(default = "default_include_latest_prompt")]
@@ -113,8 +114,27 @@ pub async fn get_workspace_summaries(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<WorkspaceSummaryRequest>,
 ) -> Result<ResponseJson<ApiResponse<WorkspaceSummaryResponse>>, ApiError> {
+    let summaries = if let Some(archived) = request.archived {
+        summaries_by_archived(&deployment, archived, request.include_latest_prompt).await?
+    } else {
+        let (mut active, archived) = tokio::try_join!(
+            summaries_by_archived(&deployment, false, request.include_latest_prompt),
+            summaries_by_archived(&deployment, true, request.include_latest_prompt),
+        )?;
+        active.extend(archived);
+        active
+    };
+    Ok(ResponseJson(ApiResponse::success(
+        WorkspaceSummaryResponse { summaries },
+    )))
+}
+
+async fn summaries_by_archived(
+    deployment: &DeploymentImpl,
+    archived: bool,
+    include_latest_prompt: bool,
+) -> Result<Vec<WorkspaceSummary>, ApiError> {
     let pool = &deployment.db().pool;
-    let archived = request.archived;
 
     // 1. Fetch all workspaces with the given archived status
     let workspaces: Vec<Workspace> = Workspace::find_all_with_status(pool, Some(archived), None)
@@ -124,9 +144,7 @@ pub async fn get_workspace_summaries(
         .collect();
 
     if workspaces.is_empty() {
-        return Ok(ResponseJson(ApiResponse::success(
-            WorkspaceSummaryResponse { summaries: vec![] },
-        )));
+        return Ok(vec![]);
     }
 
     // 2. Fetch latest process info for workspaces with this archived status
@@ -171,8 +189,9 @@ pub async fn get_workspace_summaries(
             let ep_id = info.execution_process_id;
             async move {
                 let msg_store = deployment.container().get_msg_store_by_id(&ep_id).await?;
-                let messages = msg_store.get_history();
-                todo_progress_from_logs(&messages).map(|progress| (ws_id, progress))
+                msg_store
+                    .with_history(|messages| todo_progress_from_logs(messages))
+                    .map(|progress| (ws_id, progress))
             }
         })
         .collect();
@@ -186,7 +205,7 @@ pub async fn get_workspace_summaries(
     let unseen_workspaces = CodingAgentTurn::find_workspaces_with_unseen(pool, archived).await?;
 
     // 5b. Fetch the latest prompt for each workspace (what it's working on)
-    let latest_prompts = if request.include_latest_prompt {
+    let latest_prompts = if include_latest_prompt {
         CodingAgentTurn::find_latest_prompts_for_workspaces(pool, archived).await?
     } else {
         HashMap::new()
@@ -272,9 +291,7 @@ pub async fn get_workspace_summaries(
         })
         .collect();
 
-    Ok(ResponseJson(ApiResponse::success(
-        WorkspaceSummaryResponse { summaries },
-    )))
+    Ok(summaries)
 }
 
 /// Compute diff stats for a workspace.
@@ -314,5 +331,18 @@ mod tests {
             serde_json::from_str(r#"{"archived":false,"include_latest_prompt":false}"#).unwrap();
 
         assert!(!request.include_latest_prompt);
+    }
+
+    #[test]
+    fn archived_filter_remains_optional_and_backwards_compatible() {
+        for (json, expected) in [
+            (r#"{"archived":false}"#, Some(false)),
+            (r#"{"archived":true}"#, Some(true)),
+            (r#"{"archived":null}"#, None),
+            (r#"{}"#, None),
+        ] {
+            let request: WorkspaceSummaryRequest = serde_json::from_str(json).unwrap();
+            assert_eq!(request.archived, expected);
+        }
     }
 }

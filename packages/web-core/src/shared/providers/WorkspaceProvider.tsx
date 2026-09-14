@@ -253,7 +253,7 @@ function WorkspaceProviderContent({
       .markSeen(workspaceId, hostId)
       .then(async () => {
         // Patch the summary caches in place instead of invalidating them:
-        // invalidation refetched BOTH summary lists on every navigation, and
+        // invalidation refetched summaries on every navigation, and
         // the 15s refetchInterval already reconciles everything else. Cancel
         // any in-flight summaries fetch first — its response predates
         // markSeen and would clobber the patch, resurrecting the unseen
@@ -261,20 +261,16 @@ function WorkspaceProviderContent({
         await queryClient
           .cancelQueries({ queryKey: workspaceSummaryKeys.all })
           .catch(() => {});
-        const clearUnseen = (archived: boolean) => {
-          queryClient.setQueryData<Map<string, WorkspaceSummary>>(
-            workspaceSummaryKeys.byArchived(archived, hostId),
-            (old) => {
-              const current = old?.get(workspaceId);
-              if (!old || !current?.has_unseen_turns) return old;
-              const next = new Map(old);
-              next.set(workspaceId, { ...current, has_unseen_turns: false });
-              return next;
-            }
-          );
-        };
-        clearUnseen(false);
-        clearUnseen(true);
+        queryClient.setQueryData<Map<string, WorkspaceSummary>>(
+          workspaceSummaryKeys.byHost(hostId),
+          (old) => {
+            const current = old?.get(workspaceId);
+            if (!old || !current?.has_unseen_turns) return old;
+            const next = new Map(old);
+            next.set(workspaceId, { ...current, has_unseen_turns: false });
+            return next;
+          }
+        );
       })
       .catch((error) => {
         console.warn('Failed to mark workspace as seen:', error);

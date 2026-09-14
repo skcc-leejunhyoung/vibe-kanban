@@ -25,11 +25,8 @@ use executors::{
 use futures_util::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
-use services::services::subagent_transcript::read_file_tail;
-use services::services::{
-    container::ContainerService,
-    subagent_transcript::{self, find_claude_session_id, find_claude_task_output_file},
-};
+use services::services::subagent_transcript::{find_claude_task_output_file, read_file_tail};
+use services::services::{container::ContainerService, subagent_transcript};
 use tokio::time::{Duration, MissedTickBehavior};
 use ts_rs::TS;
 use utils::{
@@ -371,6 +368,7 @@ fn ensure_target_matches_executor(
     }
 }
 
+#[cfg(test)]
 fn stdout_text(messages: &[LogMsg]) -> String {
     messages
         .iter()
@@ -403,27 +401,21 @@ fn json_has_codex_thread(value: &serde_json::Value, thread_id: &str) -> bool {
     }
 }
 
-fn process_owns_target(stdout: &str, target: &SubagentControlTarget) -> bool {
-    stdout.lines().any(|line| {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-            return false;
-        };
-        match target {
-            SubagentControlTarget::Codex { thread_id } => json_has_codex_thread(&value, thread_id),
-            SubagentControlTarget::ClaudeCode { task_id, .. } => {
-                matches!(
-                    value.get("subtype").and_then(|value| value.as_str()),
-                    Some("task_started" | "task_notification")
-                ) && value.get("task_id").and_then(|value| value.as_str()) == Some(task_id)
-            }
+fn process_owns_target(events: &[serde_json::Value], target: &SubagentControlTarget) -> bool {
+    events.iter().any(|value| match target {
+        SubagentControlTarget::Codex { thread_id } => json_has_codex_thread(value, thread_id),
+        SubagentControlTarget::ClaudeCode { task_id, .. } => {
+            matches!(
+                value.get("subtype").and_then(|value| value.as_str()),
+                Some("task_started" | "task_notification")
+            ) && value.get("task_id").and_then(|value| value.as_str()) == Some(task_id)
         }
     })
 }
 
-fn codex_invocation_prompt(stdout: &str, thread_id: &str) -> Option<String> {
-    let (call_id, prompt) = stdout.lines().find_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
-        if !json_has_codex_thread(&value, thread_id) {
+fn codex_invocation_prompt(events: &[serde_json::Value], thread_id: &str) -> Option<String> {
+    let (call_id, prompt) = events.iter().find_map(|value| {
+        if !json_has_codex_thread(value, thread_id) {
             return None;
         }
         let item = value.get("params")?.get("item")?;
@@ -443,8 +435,7 @@ fn codex_invocation_prompt(stdout: &str, thread_id: &str) -> Option<String> {
     })?;
 
     prompt.or_else(|| {
-        stdout.lines().find_map(|line| {
-            let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+        events.iter().find_map(|value| {
             if !matches!(
                 value.get("method").and_then(|value| value.as_str()),
                 Some("item/started" | "item/completed")
@@ -467,12 +458,9 @@ fn codex_invocation_prompt(stdout: &str, thread_id: &str) -> Option<String> {
     })
 }
 
-fn claude_invocation_prompt(stdout: &str, task_id: &str) -> Option<String> {
+fn claude_invocation_prompt(events: &[serde_json::Value], task_id: &str) -> Option<String> {
     let mut tool_use_id = None;
-    for line in stdout.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-            continue;
-        };
+    for value in events {
         if !matches!(
             value.get("subtype").and_then(|value| value.as_str()),
             Some("task_started" | "task_notification")
@@ -497,8 +485,7 @@ fn claude_invocation_prompt(stdout: &str, task_id: &str) -> Option<String> {
     }
 
     let tool_use_id = tool_use_id?;
-    stdout.lines().find_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line.trim()).ok()?;
+    events.iter().find_map(|value| {
         if value.get("type")?.as_str()? != "assistant" {
             return None;
         }
@@ -524,11 +511,14 @@ fn claude_invocation_prompt(stdout: &str, task_id: &str) -> Option<String> {
     })
 }
 
-fn subagent_invocation_prompt(stdout: &str, target: &SubagentControlTarget) -> Option<String> {
+fn subagent_invocation_prompt(
+    events: &[serde_json::Value],
+    target: &SubagentControlTarget,
+) -> Option<String> {
     match target {
-        SubagentControlTarget::Codex { thread_id } => codex_invocation_prompt(stdout, thread_id),
+        SubagentControlTarget::Codex { thread_id } => codex_invocation_prompt(events, thread_id),
         SubagentControlTarget::ClaudeCode { task_id, .. } => {
-            claude_invocation_prompt(stdout, task_id)
+            claude_invocation_prompt(events, task_id)
         }
     }
 }
@@ -565,21 +555,7 @@ fn prepend_invocation_prompt(
     };
 }
 
-/// Raw log lines for a process: in-memory store while it runs (plus persisted
-/// storage, whose retention outlives the store's bounded history).
-async fn raw_log_messages(deployment: &DeploymentImpl, exec_id: Uuid) -> Vec<LogMsg> {
-    let mut messages = Vec::new();
-    if let Some(store) = deployment.container().get_msg_store_by_id(&exec_id).await {
-        messages.extend(store.get_history());
-    }
-    if let Some(stored) =
-        services::services::execution_process::load_raw_log_messages(&deployment.db().pool, exec_id)
-            .await
-    {
-        messages.extend(stored);
-    }
-    messages
-}
+mod subagent_log_cache;
 
 fn append_preserved_artifacts(
     saved: Option<&services::services::artifacts::ArtifactManifest>,
@@ -609,14 +585,13 @@ async fn subagent_transcript(
     Json(target): Json<SubagentControlTarget>,
 ) -> Result<ResponseJson<ApiResponse<SubagentTranscript>>, ApiError> {
     ensure_target_matches_executor(&execution_process, &target)?;
-    let messages = raw_log_messages(&deployment, execution_process.id).await;
-    let stdout = stdout_text(&messages);
-    if !process_owns_target(&stdout, &target) {
+    let logs = subagent_log_cache::read(&deployment, &execution_process, &target).await;
+    if !process_owns_target(&logs.events, &target) {
         return Err(ApiError::BadRequest(
             "subagent target does not belong to this execution process".to_string(),
         ));
     }
-    let invocation_prompt = subagent_invocation_prompt(&stdout, &target);
+    let invocation_prompt = subagent_invocation_prompt(&logs.events, &target);
 
     let (workspace, session) = execution_process
         .parent_workspace_and_session(&deployment.db().pool)
@@ -638,12 +613,12 @@ async fn subagent_transcript(
         .into_owned();
 
     let scope = subagent_transcript::scope(&target);
-    let agent_session_id = find_claude_session_id(&stdout);
+    let agent_session_id = logs.session_id.as_deref();
     let owned_target = match &target {
         SubagentControlTarget::ClaudeCode { task_id, .. } => SubagentControlTarget::ClaudeCode {
             task_id: task_id.clone(),
             // Client-supplied output paths never grant access.
-            output_file: find_claude_task_output_file(&stdout, task_id).map(|(path, _)| path),
+            output_file: logs.claude_output_file(task_id),
         },
         _ => target,
     };
@@ -669,7 +644,7 @@ async fn subagent_transcript(
     .filter(|manifest| manifest.workspace_id == workspace.id);
     let read = subagent_transcript::read(
         &owned_target,
-        agent_session_id.as_deref(),
+        agent_session_id,
         &worktree_path,
         handle.as_ref(),
         codex.as_ref(),
@@ -761,8 +736,8 @@ async fn subagent_stop(
     Json(target): Json<SubagentControlTarget>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     ensure_target_matches_executor(&execution_process, &target)?;
-    let messages = raw_log_messages(&deployment, execution_process.id).await;
-    if !process_owns_target(&stdout_text(&messages), &target) {
+    let logs = subagent_log_cache::read(&deployment, &execution_process, &target).await;
+    if !process_owns_target(&logs.events, &target) {
         return Err(ApiError::BadRequest(
             "subagent target does not belong to this execution process".to_string(),
         ));
@@ -949,6 +924,18 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 #[cfg(test)]
 mod subagent_route_tests {
     use super::*;
+
+    fn process_owns_target(stdout: &str, target: &SubagentControlTarget) -> bool {
+        let mut logs = subagent_log_cache::ParsedLogs::default();
+        logs.push_stdout(stdout, &mut String::new());
+        super::process_owns_target(&logs.events, target)
+    }
+
+    fn subagent_invocation_prompt(stdout: &str, target: &SubagentControlTarget) -> Option<String> {
+        let mut logs = subagent_log_cache::ParsedLogs::default();
+        logs.push_stdout(stdout, &mut String::new());
+        super::subagent_invocation_prompt(&logs.events, target)
+    }
 
     fn codex_target() -> SubagentControlTarget {
         SubagentControlTarget::Codex {

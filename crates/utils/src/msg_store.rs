@@ -307,6 +307,16 @@ impl MsgStore {
             .collect()
     }
 
+    /// Read borrowed messages while holding the history read lock. Keep the
+    /// callback short; it must not block or call back into this store.
+    pub fn with_history<T>(
+        &self,
+        read: impl FnOnce(&mut dyn DoubleEndedIterator<Item = &LogMsg>) -> T,
+    ) -> T {
+        let inner = self.inner.read().unwrap();
+        read(&mut inner.history.iter().map(|entry| &entry.msg))
+    }
+
     /// Return the losslessly coalesced final patch for every path produced by
     /// a historical replay. Intermediate replacements are discarded at push
     /// time, so memory is bounded by final conversation size rather than log
