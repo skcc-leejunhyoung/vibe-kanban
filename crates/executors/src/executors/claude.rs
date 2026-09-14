@@ -1056,7 +1056,22 @@ impl ClaudeLogProcessor {
             // Track pending assistant UUID - only committed when we see a Result message
             let mut pending_assistant_uuid: Option<String> = None;
 
-            while let Some(Ok(msg)) = stream.next().await {
+            while let Some(item) = stream.next().await {
+                let msg = match item {
+                    Ok(msg) => msg,
+                    // A span the store could not replay from history: the
+                    // buffer now holds the head of a line whose tail is gone.
+                    // Drop it and keep normalizing — ending the loop would
+                    // freeze the conversation for the rest of the turn.
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            "Claude log stream lost messages; resuming normalization"
+                        );
+                        buffer.clear();
+                        continue;
+                    }
+                };
                 let chunk = match msg {
                     LogMsg::Stdout(x) => x,
                     LogMsg::JsonPatch(_)

@@ -11,7 +11,7 @@ use deployment::Deployment;
 use futures_util::TryStreamExt;
 use serde::Deserialize;
 use services::services::container::ContainerService;
-use utils::ws_batch::coalesce_ws_stream;
+use utils::ws_batch::{coalesce_log_stream, coalesce_ws_stream};
 
 use crate::{
     DeploymentImpl,
@@ -71,7 +71,7 @@ pub async fn stream_workspaces_sse(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Sse::new(
-        stream
+        coalesce_log_stream(stream)
             .map_ok(|msg| msg.to_sse_event())
             .map_err(|e| -> BoxError { Box::new(e) }),
     )
@@ -91,7 +91,7 @@ pub async fn stream_workspace_diff_sse(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Sse::new(
-        stream
+        coalesce_log_stream(stream)
             .map_ok(|msg| msg.to_sse_event())
             .map_err(|e| -> BoxError { Box::new(e) }),
     )

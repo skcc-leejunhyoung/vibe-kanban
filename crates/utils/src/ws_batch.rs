@@ -1,4 +1,4 @@
-//! Batches a `LogMsg` stream into WebSocket frames.
+//! Batches a `LogMsg` stream into WebSocket/SSE frames.
 //!
 //! Streaming normalizers emit a `replace` per token for the entry being
 //! written, so a browser receives thousands of frames per burst and re-renders
@@ -7,11 +7,15 @@
 //! dropped when only unrelated replaces sit between them. Any other message
 //! (`Ready`, `Finished`, session ids) or an error is a barrier: the pending
 //! batch is flushed first, then the barrier is forwarded unchanged.
+//!
+//! Batching happens on `LogMsg`, before the wire encoding, so the WebSocket and
+//! SSE siblings of each stream route behave identically. On `https:` the client
+//! picks SSE, so coalescing only the WebSocket half would be inert there.
 
 use std::{collections::HashMap, time::Duration};
 
 use axum::extract::ws::Message;
-use futures::{Stream, StreamExt, stream::BoxStream};
+use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use json_patch::{Patch, PatchOperation};
 
 use crate::log_msg::LogMsg;
@@ -21,7 +25,8 @@ pub const MAX_BATCH: usize = 64;
 /// How long a partial batch waits for more messages before being sent.
 pub const BATCH_WINDOW: Duration = Duration::from_millis(30);
 
-pub fn coalesce_ws_stream<S, E>(stream: S) -> BoxStream<'static, Result<Message, E>>
+/// Batch a `LogMsg` stream; encode it for the wire at the call site.
+pub fn coalesce_log_stream<S, E>(stream: S) -> BoxStream<'static, Result<LogMsg, E>>
 where
     S: Stream<Item = Result<LogMsg, E>> + Send + 'static,
     E: Send + 'static,
@@ -31,7 +36,17 @@ where
         .boxed()
 }
 
-pub fn coalesce_chunk<E>(chunk: Vec<Result<LogMsg, E>>) -> Vec<Result<Message, E>> {
+pub fn coalesce_ws_stream<S, E>(stream: S) -> BoxStream<'static, Result<Message, E>>
+where
+    S: Stream<Item = Result<LogMsg, E>> + Send + 'static,
+    E: Send + 'static,
+{
+    coalesce_log_stream(stream)
+        .map_ok(|msg| msg.to_ws_message_unchecked())
+        .boxed()
+}
+
+pub fn coalesce_chunk<E>(chunk: Vec<Result<LogMsg, E>>) -> Vec<Result<LogMsg, E>> {
     let mut out = Vec::with_capacity(chunk.len());
     let mut ops: Vec<PatchOperation> = Vec::new();
     for item in chunk {
@@ -39,7 +54,7 @@ pub fn coalesce_chunk<E>(chunk: Vec<Result<LogMsg, E>>) -> Vec<Result<Message, E
             Ok(LogMsg::JsonPatch(patch)) => ops.extend(patch.0),
             barrier => {
                 flush_ops(&mut ops, &mut out);
-                out.push(barrier.map(|msg| msg.to_ws_message_unchecked()));
+                out.push(barrier);
             }
         }
     }
@@ -47,12 +62,12 @@ pub fn coalesce_chunk<E>(chunk: Vec<Result<LogMsg, E>>) -> Vec<Result<Message, E
     out
 }
 
-fn flush_ops<E>(ops: &mut Vec<PatchOperation>, out: &mut Vec<Result<Message, E>>) {
+fn flush_ops<E>(ops: &mut Vec<PatchOperation>, out: &mut Vec<Result<LogMsg, E>>) {
     if ops.is_empty() {
         return;
     }
     let patch = Patch(squash_replaces(std::mem::take(ops)));
-    out.push(Ok(LogMsg::JsonPatch(patch).to_ws_message_unchecked()));
+    out.push(Ok(LogMsg::JsonPatch(patch)));
 }
 
 /// Drop a `replace` that a later `replace` on the same path supersedes, when

@@ -32,7 +32,11 @@ use services::services::{
 };
 use tokio::time::{Duration, MissedTickBehavior};
 use ts_rs::TS;
-use utils::{log_msg::LogMsg, response::ApiResponse, ws_batch::coalesce_ws_stream};
+use utils::{
+    log_msg::LogMsg,
+    response::ApiResponse,
+    ws_batch::{coalesce_log_stream, coalesce_ws_stream},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -177,23 +181,21 @@ async fn stream_raw_logs_sse(
         match deployment.container().stream_raw_logs(&exec_id).await {
             Some(raw_stream) => {
                 let counter = Arc::new(AtomicUsize::new(0));
-                raw_stream
-                    .map_ok(move |m| match m {
-                        LogMsg::Stdout(content) => {
-                            let index = counter.fetch_add(1, Ordering::SeqCst);
-                            LogMsg::JsonPatch(ConversationPatch::add_stdout(index, content))
-                                .to_sse_event()
-                        }
-                        LogMsg::Stderr(content) => {
-                            let index = counter.fetch_add(1, Ordering::SeqCst);
-                            LogMsg::JsonPatch(ConversationPatch::add_stderr(index, content))
-                                .to_sse_event()
-                        }
-                        LogMsg::Finished => LogMsg::Finished.to_sse_event(),
-                        _ => unreachable!("Raw stream should only have Stdout/Stderr/Finished"),
-                    })
-                    .map_err(|e| -> BoxError { Box::new(e) })
-                    .boxed()
+                coalesce_log_stream(raw_stream.map_ok(move |m| match m {
+                    LogMsg::Stdout(content) => {
+                        let index = counter.fetch_add(1, Ordering::SeqCst);
+                        LogMsg::JsonPatch(ConversationPatch::add_stdout(index, content))
+                    }
+                    LogMsg::Stderr(content) => {
+                        let index = counter.fetch_add(1, Ordering::SeqCst);
+                        LogMsg::JsonPatch(ConversationPatch::add_stderr(index, content))
+                    }
+                    LogMsg::Finished => LogMsg::Finished,
+                    _ => unreachable!("Raw stream should only have Stdout/Stderr/Finished"),
+                }))
+                .map_ok(|m| m.to_sse_event())
+                .map_err(|e| -> BoxError { Box::new(e) })
+                .boxed()
             }
             None => {
                 futures_util::stream::once(async { Ok(LogMsg::Finished.to_sse_event()) }).boxed()
@@ -287,7 +289,7 @@ async fn stream_normalized_logs_sse(
             .stream_normalized_logs(&exec_id)
             .await
         {
-            Some(stream) => stream
+            Some(stream) => coalesce_log_stream(stream)
                 .map_ok(|m| m.to_sse_event())
                 .map_err(|e| -> BoxError { Box::new(e) })
                 .boxed(),
@@ -831,7 +833,7 @@ async fn stream_execution_processes_by_session_sse(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Sse::new(
-        stream
+        coalesce_log_stream(stream)
             .map_ok(|msg| msg.to_sse_event())
             .map_err(|e| -> BoxError { Box::new(e) }),
     )
