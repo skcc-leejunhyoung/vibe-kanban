@@ -59,7 +59,7 @@ use crate::{
         ToolResultValueType, ToolStatus,
         plain_text_processor::PlainTextLogProcessor,
         utils::{
-            ConversationPatch, EntryIndexProvider, images,
+            ConversationPatch, EntryIndexProvider, ThrottledMsgStore, images,
             patch::{
                 add_normalized_entry, extract_normalized_entry_from_patch,
                 replace_normalized_entry, upsert_normalized_entry,
@@ -83,7 +83,8 @@ pub fn normalize_thread_transcript(
     thread: &AppThread,
     worktree_path: &str,
 ) -> Vec<NormalizedEntry> {
-    let msg_store = Arc::new(MsgStore::new_for_replay());
+    let replay_store = Arc::new(MsgStore::new_for_replay());
+    let msg_store = ThrottledMsgStore::new(replay_store.clone());
     let entry_index = EntryIndexProvider::default();
     let mut state = LogState::new(entry_index.clone());
 
@@ -142,7 +143,9 @@ pub fn normalize_thread_transcript(
         }
     }
 
-    msg_store
+    // Dropping the wrapper flushes anything it still holds.
+    drop(msg_store);
+    replay_store
         .get_replay_patches()
         .into_iter()
         .flatten()
@@ -669,7 +672,7 @@ impl LogState {
         call_id: &str,
         status: ToolStatus,
         clear_awaiting: bool,
-        msg_store: &Arc<MsgStore>,
+        msg_store: &ThrottledMsgStore,
     ) {
         if let Some(cmd) = self.commands.get_mut(call_id) {
             cmd.status = status.clone();
@@ -825,7 +828,7 @@ fn normalize_app_file_changes(
 
 fn sync_patch_entries(
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: Option<&EntryIndexProvider>,
     call_id: String,
     normalized: Vec<(String, Vec<FileChange>)>,
@@ -1039,7 +1042,7 @@ struct DynamicToolUpdate {
 
 fn upsert_dynamic_tool_state(
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     update: DynamicToolUpdate,
 ) {
@@ -1081,7 +1084,7 @@ fn upsert_dynamic_tool_state(
 
 fn add_thread_token_usage(
     notification: ThreadTokenUsageUpdatedNotification,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
 ) {
     add_normalized_entry(
@@ -1203,7 +1206,7 @@ fn question_state_from_questions<T: QuestionLike>(questions: &[T]) -> UserInputR
 
 fn upsert_question_request_state(
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     call_id: String,
     questions: &[impl QuestionLike],
@@ -1231,7 +1234,7 @@ fn upsert_question_request_state(
 fn handle_direct_item_started(
     notification: AppItemStartedNotification,
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     worktree_path: &str,
 ) {
@@ -1351,7 +1354,7 @@ fn handle_direct_item_started(
 fn handle_direct_item_completed(
     notification: AppItemCompletedNotification,
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     worktree_path: &str,
 ) {
@@ -1548,7 +1551,7 @@ fn collab_prompt_line(prompt: &str) -> Option<String> {
 
 fn upsert_collab_agent(
     agents: &mut HashMap<String, CollabAgentTaskState>,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     key: &str,
     event_at_ms: i64,
@@ -1615,7 +1618,7 @@ fn apply_collab_agent_state(task: &mut CollabAgentTaskState, agent_state: &AppCo
 
 fn interrupt_running_collab_agents(
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     event_at_ms: Option<i64>,
 ) {
     for task in state.collab_agents.values_mut() {
@@ -1639,7 +1642,7 @@ fn interrupt_running_collab_agents(
 /// their own entries; they fold into the per-agent rows via `agents_states`.
 fn handle_collab_thread_item(
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     event_at_ms: i64,
     item: AppThreadItem,
@@ -1800,7 +1803,7 @@ fn handle_collab_thread_item(
 fn handle_direct_request(
     request: ServerRequest,
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
 ) -> bool {
     match request {
@@ -1887,7 +1890,7 @@ fn direct_notification_thread_id(notification: &ServerNotification) -> Option<&s
 fn handle_direct_notification(
     notification: ServerNotification,
     state: &mut LogState,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     worktree_path: &str,
 ) -> bool {
@@ -1905,19 +1908,19 @@ fn handle_direct_notification(
         ServerNotification::AgentMessageDelta(notification) => {
             state.thinking = None;
             let (entry, index, is_new) = state.assistant_message_append(notification.delta);
-            upsert_normalized_entry(msg_store, index, entry, is_new);
+            msg_store.upsert_deferred(index, entry, is_new);
             true
         }
         ServerNotification::ReasoningSummaryTextDelta(notification) => {
             state.assistant = None;
             let (entry, index, is_new) = state.thinking_append(notification.delta);
-            upsert_normalized_entry(msg_store, index, entry, is_new);
+            msg_store.upsert_deferred(index, entry, is_new);
             true
         }
         ServerNotification::ReasoningTextDelta(notification) => {
             state.assistant = None;
             let (entry, index, is_new) = state.thinking_append(notification.delta);
-            upsert_normalized_entry(msg_store, index, entry, is_new);
+            msg_store.upsert_deferred(index, entry, is_new);
             true
         }
         ServerNotification::ReasoningSummaryPartAdded(..) => {
@@ -1930,7 +1933,7 @@ fn handle_direct_notification(
             if let Some(plan_state) = state.plans.get_mut(&notification.item_id) {
                 plan_state.text.push_str(&notification.delta);
                 if let Some(index) = plan_state.index {
-                    replace_normalized_entry(msg_store, index, plan_state.to_normalized_entry());
+                    msg_store.replace_deferred(index, plan_state.to_normalized_entry());
                 }
             } else {
                 let (entry, index, is_new) = state.assistant_message_append(notification.delta);
@@ -1944,7 +1947,7 @@ fn handle_direct_notification(
             if let Some(command_state) = state.commands.get_mut(&item_id) {
                 command_state.stdout.push_str(&delta);
                 if let Some(index) = command_state.index {
-                    replace_normalized_entry(msg_store, index, command_state.to_normalized_entry());
+                    msg_store.replace_deferred(index, command_state.to_normalized_entry());
                 }
             }
             true
@@ -2131,6 +2134,9 @@ pub fn normalize_logs(
     let h2 = tokio::spawn(async move {
         let mut state = LogState::new(entry_index.clone());
         let mut stdout_lines = msg_store.stdout_lines_stream();
+        // Output/token deltas re-send the whole entry; hold those per entry
+        // (`*_deferred`) while every other patch flushes what is pending.
+        let msg_store = ThrottledMsgStore::new(msg_store);
 
         // When replaying a completed process, the store hands back buffered
         // lines that are immediately `Ready`, so this loop never awaits and
@@ -2337,19 +2343,19 @@ pub fn normalize_logs(
                 }) => {
                     state.thinking = None;
                     let (entry, index, is_new) = state.assistant_message_append(delta);
-                    upsert_normalized_entry(&msg_store, index, entry, is_new);
+                    msg_store.upsert_deferred(index, entry, is_new);
                 }
                 EventMsg::ReasoningContentDelta(ReasoningContentDeltaEvent { delta, .. }) => {
                     state.assistant = None;
                     let (entry, index, is_new) = state.thinking_append(delta);
-                    upsert_normalized_entry(&msg_store, index, entry, is_new);
+                    msg_store.upsert_deferred(index, entry, is_new);
                 }
                 EventMsg::ReasoningRawContentDelta(ReasoningRawContentDeltaEvent {
                     delta, ..
                 }) => {
                     state.assistant = None;
                     let (entry, index, is_new) = state.thinking_append(delta);
-                    upsert_normalized_entry(&msg_store, index, entry, is_new);
+                    msg_store.upsert_deferred(index, entry, is_new);
                 }
                 EventMsg::AgentMessage(AgentMessageEvent { message, .. }) => {
                     state.thinking = None;
@@ -2498,11 +2504,7 @@ pub fn normalize_logs(
                             tracing::error!("missing entry index for existing command state");
                             continue;
                         };
-                        replace_normalized_entry(
-                            &msg_store,
-                            index,
-                            command_state.to_normalized_entry(),
-                        );
+                        msg_store.replace_deferred(index, command_state.to_normalized_entry());
                     }
                 }
                 EventMsg::ExecCommandEnd(ExecCommandEndEvent {
@@ -2960,16 +2962,12 @@ pub fn normalize_logs(
                     if let Some(plan_state) = state.plans.get_mut(&item_id) {
                         plan_state.text.push_str(&delta);
                         if let Some(index) = plan_state.index {
-                            replace_normalized_entry(
-                                &msg_store,
-                                index,
-                                plan_state.to_normalized_entry(),
-                            );
+                            msg_store.replace_deferred(index, plan_state.to_normalized_entry());
                         }
                     } else {
                         // Backward compat: if no plan state, treat as assistant text
                         let (entry, index, is_new) = state.assistant_message_append(delta);
-                        upsert_normalized_entry(&msg_store, index, entry, is_new);
+                        msg_store.upsert_deferred(index, entry, is_new);
                     }
                 }
                 EventMsg::ContextCompacted(..) => {
@@ -3028,7 +3026,7 @@ pub fn normalize_logs(
 
 fn handle_jsonrpc_response(
     response: JSONRPCResponse,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     state: &mut LogState,
 ) {
@@ -3063,7 +3061,7 @@ fn handle_jsonrpc_response(
 fn handle_model_params(
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
-    msg_store: &Arc<MsgStore>,
+    msg_store: &ThrottledMsgStore,
     entry_index: &EntryIndexProvider,
     state: &mut ModelParamsState,
 ) {
@@ -3425,6 +3423,120 @@ mod tests {
         }
 
         latest_normalized_entries(&msg_store)
+    }
+
+    /// The live path throttles streamed replaces (`ThrottledMsgStore`): the
+    /// final entries must carry every delta, and the patch count must be
+    /// bounded by elapsed time rather than by the number of deltas.
+    #[tokio::test]
+    async fn throttled_streaming_keeps_final_entries_and_bounds_patch_volume() {
+        let thread = "00000000-0000-0000-0000-000000000001";
+        let deltas = 2_000usize;
+        let mut lines = vec![thread_started_line(thread)];
+        let started = json!({
+            "method": "item/started",
+            "params": {"threadId": thread, "turnId": "turn-1", "startedAtMs": 1, "item": {
+                "type": "commandExecution", "id": "cmd-1", "command": "cat big.log",
+                "cwd": "/tmp/test-worktree", "commandActions": [], "status": "inProgress"
+            }}
+        });
+        serde_json::from_value::<ServerNotification>(started.clone()).unwrap();
+        lines.push(started.to_string());
+        for i in 0..deltas {
+            let output_delta = json!({
+                "method": "item/commandExecution/outputDelta",
+                "params": {"threadId": thread, "turnId": "turn-1", "itemId": "cmd-1", "delta": format!("line {i}\n")}
+            });
+            let text_delta = json!({
+                "method": "item/agentMessage/delta",
+                "params": {"threadId": thread, "turnId": "turn-1", "itemId": "msg-1", "delta": format!("tok{i} ")}
+            });
+            if i == 0 {
+                serde_json::from_value::<ServerNotification>(output_delta.clone()).unwrap();
+                serde_json::from_value::<ServerNotification>(text_delta.clone()).unwrap();
+            }
+            lines.push(output_delta.to_string());
+            lines.push(text_delta.to_string());
+        }
+        let output = (0..deltas)
+            .map(|i| format!("line {i}\n"))
+            .collect::<String>();
+        let text = (0..deltas).map(|i| format!("tok{i} ")).collect::<String>();
+        lines.push(
+            json!({
+                "method": "item/completed",
+                "params": {"threadId": thread, "turnId": "turn-1", "completedAtMs": 2, "item": {
+                    "type": "commandExecution", "id": "cmd-1", "command": "cat big.log",
+                    "cwd": "/tmp/test-worktree", "commandActions": [], "status": "completed",
+                    "aggregatedOutput": output, "exitCode": 0, "durationMs": 1
+                }}
+            })
+            .to_string(),
+        );
+        lines.push(
+            json!({
+                "method": "item/completed",
+                "params": {"threadId": thread, "turnId": "turn-1", "completedAtMs": 3, "item": {
+                    "type": "agentMessage", "id": "msg-1", "text": text, "phase": "commentary",
+                    "memoryCitation": null, "delivery": null, "questions": null
+                }}
+            })
+            .to_string(),
+        );
+
+        let msg_store = Arc::new(MsgStore::new());
+        for line in &lines {
+            msg_store.push_stdout(format!("{line}\n"));
+        }
+        msg_store.push_finished();
+        let started_at = std::time::Instant::now();
+        for handle in normalize_logs(msg_store.clone(), Path::new("/tmp/test-worktree")) {
+            handle.await.unwrap();
+        }
+        let elapsed = started_at.elapsed();
+
+        let entries = latest_normalized_entries(&msg_store);
+        let assistant = entries
+            .iter()
+            .find(|entry| matches!(entry.entry_type, NormalizedEntryType::AssistantMessage))
+            .expect("assistant message");
+        assert_eq!(assistant.content, text);
+        let command = tool_use(&entries, "bash");
+        let NormalizedEntryType::ToolUse {
+            action_type:
+                ActionType::CommandRun {
+                    result: Some(result),
+                    ..
+                },
+            status: ToolStatus::Success,
+            ..
+        } = &command.entry_type
+        else {
+            panic!("expected a completed command, got {:?}", command.entry_type);
+        };
+        let command_output = result.output.as_deref().unwrap_or_default();
+        assert!(command_output.starts_with("line 0\n"), "{command_output:?}");
+        assert!(command_output.contains("line 1999\n"), "{command_output:?}");
+
+        let replaces = msg_store
+            .get_history()
+            .iter()
+            .filter(|msg| {
+                matches!(
+                    msg,
+                    LogMsg::JsonPatch(patch)
+                        if matches!(patch.0.as_slice(), [json_patch::PatchOperation::Replace(_)])
+                )
+            })
+            .count();
+        // Two interleaved streamed entries, each: one replace per elapsed
+        // interval, its completion, and the flushes forced by the other
+        // entry's add/completion — never one per delta (~4000 unthrottled).
+        let max_replaces = 2 * (4 + elapsed.as_millis() as usize / 80);
+        assert!(
+            replaces <= max_replaces,
+            "{replaces} replaces for {deltas} deltas in {elapsed:?} (allowed {max_replaces})"
+        );
     }
 
     #[tokio::test]

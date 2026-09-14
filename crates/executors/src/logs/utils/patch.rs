@@ -3,8 +3,8 @@ use std::{
     sync::Arc,
 };
 
-use json_patch::Patch;
-use serde::{Deserialize, Serialize};
+use json_patch::{AddOperation, Patch, PatchOperation, RemoveOperation, ReplaceOperation};
+use serde::Serialize;
 use serde_json::{from_value, json, to_value};
 use ts_rs::TS;
 use workspace_utils::{diff::Diff, msg_store::MsgStore};
@@ -14,14 +14,6 @@ use crate::{
     executors::SlashCommandDescription,
     logs::{NormalizedEntry, utils::EntryIndexProvider},
 };
-
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, TS)]
-#[serde(rename_all = "lowercase")]
-enum PatchOperation {
-    Add,
-    Replace,
-    Remove,
-}
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Serialize, TS)]
@@ -33,15 +25,30 @@ pub enum PatchType {
     Diff(Diff),
 }
 
-#[derive(Serialize)]
-struct PatchEntry {
-    op: PatchOperation,
-    path: String,
-    value: PatchType,
-}
-
 pub fn escape_json_pointer_segment(s: &str) -> String {
     s.replace('~', "~0").replace('/', "~1")
+}
+
+// Build operations directly instead of round-tripping through `json!` +
+// `from_value`, which serialized and re-parsed every streamed entry.
+fn add_op(path: &str, value: PatchType) -> Patch {
+    Patch(vec![PatchOperation::Add(AddOperation {
+        path: path.parse().expect("valid JSON pointer"),
+        value: to_value(value).expect("patch value serializes"),
+    })])
+}
+
+fn replace_op(path: &str, value: PatchType) -> Patch {
+    Patch(vec![PatchOperation::Replace(ReplaceOperation {
+        path: path.parse().expect("valid JSON pointer"),
+        value: to_value(value).expect("patch value serializes"),
+    })])
+}
+
+fn remove_op(path: &str) -> Patch {
+    Patch(vec![PatchOperation::Remove(RemoveOperation {
+        path: path.parse().expect("valid JSON pointer"),
+    })])
 }
 
 /// Helper functions to create JSON patches for conversation entries
@@ -50,71 +57,46 @@ pub struct ConversationPatch;
 impl ConversationPatch {
     /// Create an ADD patch for a new conversation entry at the given index
     pub fn add_normalized_entry(entry_index: usize, entry: NormalizedEntry) -> Patch {
-        let patch_entry = PatchEntry {
-            op: PatchOperation::Add,
-            path: format!("/entries/{entry_index}"),
-            value: PatchType::NormalizedEntry(entry),
-        };
-
-        from_value(json!([patch_entry])).unwrap()
+        add_op(
+            &format!("/entries/{entry_index}"),
+            PatchType::NormalizedEntry(entry),
+        )
     }
 
     /// Create an ADD patch for a new string at the given index
     pub fn add_stdout(entry_index: usize, entry: String) -> Patch {
-        let patch_entry = PatchEntry {
-            op: PatchOperation::Add,
-            path: format!("/entries/{entry_index}"),
-            value: PatchType::Stdout(entry),
-        };
-
-        from_value(json!([patch_entry])).unwrap()
+        add_op(&format!("/entries/{entry_index}"), PatchType::Stdout(entry))
     }
 
     /// Create an ADD patch for a new string at the given index
     pub fn add_stderr(entry_index: usize, entry: String) -> Patch {
-        let patch_entry = PatchEntry {
-            op: PatchOperation::Add,
-            path: format!("/entries/{entry_index}"),
-            value: PatchType::Stderr(entry),
-        };
-
-        from_value(json!([patch_entry])).unwrap()
+        add_op(&format!("/entries/{entry_index}"), PatchType::Stderr(entry))
     }
 
     /// Create a REMOVE patch for removing a diff.
     pub fn remove_diff(entry_index: String) -> Patch {
-        from_value(json!([{
-            "op": PatchOperation::Remove,
-            "path": format!("/entries/{entry_index}"),
-        }]))
-        .unwrap()
+        remove_op(&format!("/entries/{entry_index}"))
     }
 
     /// Add a diff entry under a repo namespace: `/entries/<repo>/<file>`
     pub fn add_repo_diff(repo_key: &str, file_path: &str, diff: Diff) -> Patch {
-        let patch_entry = PatchEntry {
-            op: PatchOperation::Add,
-            path: format!(
+        add_op(
+            &format!(
                 "/entries/{}/{}",
                 escape_json_pointer_segment(repo_key),
                 escape_json_pointer_segment(file_path)
             ),
-            value: PatchType::Diff(diff),
-        };
-        from_value(json!([patch_entry])).unwrap()
+            PatchType::Diff(diff),
+        )
     }
 
     /// Remove a diff entry under a repo namespace: `/entries/<repo>/<file>`
     pub fn remove_repo_diff(repo_key: &str, file_path: &str) -> Patch {
-        from_value(json!([{
-            "op": PatchOperation::Remove,
-            "path": format!(
-                "/entries/{}/{}",
-                escape_json_pointer_segment(repo_key),
-                escape_json_pointer_segment(file_path)
-            ),
-        }]))
-        .unwrap()
+        remove_op(&format!(
+            "/entries/{}/{}",
+            escape_json_pointer_segment(repo_key),
+            escape_json_pointer_segment(file_path)
+        ))
     }
 
     /// Atomically replace all diffs for a repo. Single op, no intermediate empty state.
@@ -123,43 +105,36 @@ impl ConversationPatch {
             .into_iter()
             .map(|(path, diff)| (path, PatchType::Diff(diff)))
             .collect();
-        from_value(json!([{
-            "op": "replace",
-            "path": format!("/entries/{}", escape_json_pointer_segment(repo_key)),
-            "value": entries,
-        }]))
-        .unwrap()
+        Patch(vec![PatchOperation::Replace(ReplaceOperation {
+            path: format!("/entries/{}", escape_json_pointer_segment(repo_key))
+                .parse()
+                .expect("valid JSON pointer"),
+            value: to_value(entries).expect("patch value serializes"),
+        })])
     }
 
     /// Create a REPLACE patch for updating an existing conversation entry at the given index
     pub fn replace(entry_index: usize, entry: NormalizedEntry) -> Patch {
-        let patch_entry = PatchEntry {
-            op: PatchOperation::Replace,
-            path: format!("/entries/{entry_index}"),
-            value: PatchType::NormalizedEntry(entry),
-        };
-
-        from_value(json!([patch_entry])).unwrap()
+        replace_op(
+            &format!("/entries/{entry_index}"),
+            PatchType::NormalizedEntry(entry),
+        )
     }
 
     pub fn remove(entry_index: usize) -> Patch {
-        from_value(json!([{
-            "op": PatchOperation::Remove,
-            "path": format!("/entries/{entry_index}"),
-        }]))
-        .unwrap()
+        remove_op(&format!("/entries/{entry_index}"))
     }
 }
 
 /// Extract the entry index and `NormalizedEntry` from a JsonPatch if it contains one
 pub fn extract_normalized_entry_from_patch(patch: &Patch) -> Option<(usize, NormalizedEntry)> {
-    let value = to_value(patch).ok()?;
-    let ops = value.as_array()?;
-    ops.iter().rev().find_map(|op| {
-        let path = op.get("path")?.as_str()?;
-        let entry_index = path.strip_prefix("/entries/")?.parse::<usize>().ok()?;
-
-        let value = op.get("value")?;
+    patch.0.iter().rev().find_map(|op| {
+        let entry_index = op.path().strip_prefix("/entries/")?.parse::<usize>().ok()?;
+        let value = match op {
+            PatchOperation::Add(add) => &add.value,
+            PatchOperation::Replace(replace) => &replace.value,
+            _ => return None,
+        };
         (value.get("type")?.as_str()? == "NORMALIZED_ENTRY")
             .then(|| value.get("content"))
             .flatten()
@@ -168,8 +143,32 @@ pub fn extract_normalized_entry_from_patch(patch: &Patch) -> Option<(usize, Norm
     })
 }
 
+/// Where normalizers push conversation patches: the raw [`MsgStore`] or the
+/// streaming-throttled wrapper around it.
+pub trait PatchSink {
+    fn push_patch(&self, patch: Patch);
+}
+
+impl PatchSink for MsgStore {
+    fn push_patch(&self, patch: Patch) {
+        MsgStore::push_patch(self, patch);
+    }
+}
+
+impl<T: PatchSink + ?Sized> PatchSink for Arc<T> {
+    fn push_patch(&self, patch: Patch) {
+        (**self).push_patch(patch);
+    }
+}
+
+impl<T: PatchSink + ?Sized> PatchSink for &T {
+    fn push_patch(&self, patch: Patch) {
+        (**self).push_patch(patch);
+    }
+}
+
 pub fn upsert_normalized_entry(
-    msg_store: &Arc<MsgStore>,
+    msg_store: &impl PatchSink,
     index: usize,
     normalized_entry: NormalizedEntry,
     is_new: bool,
@@ -185,7 +184,7 @@ pub fn upsert_normalized_entry(
 }
 
 pub fn add_normalized_entry(
-    msg_store: &Arc<MsgStore>,
+    msg_store: &impl PatchSink,
     index_provider: &EntryIndexProvider,
     normalized_entry: NormalizedEntry,
 ) -> usize {
@@ -195,7 +194,7 @@ pub fn add_normalized_entry(
 }
 
 pub fn replace_normalized_entry(
-    msg_store: &Arc<MsgStore>,
+    msg_store: &impl PatchSink,
     index: usize,
     normalized_entry: NormalizedEntry,
 ) {

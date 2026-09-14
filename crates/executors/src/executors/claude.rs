@@ -51,7 +51,7 @@ use crate::{
         SubagentControlTarget, TodoItem, ToolStatus,
         plain_text_processor::PlainTextLogProcessor,
         utils::{
-            EntryIndexProvider, images,
+            EntryIndexProvider, ThrottledMsgStore, images,
             patch::{self, ConversationPatch, extract_normalized_entry_from_patch},
             shell_command_parsing::CommandCategory,
         },
@@ -1049,6 +1049,9 @@ impl ClaudeLogProcessor {
         let current_dir_clone = current_dir.to_owned();
         tokio::spawn(async move {
             let mut stream = msg_store.history_plus_stream();
+            // Token deltas re-send the whole streamed entry; hold those per
+            // entry and let every other message flush what is pending.
+            let msg_store = ThrottledMsgStore::new(msg_store);
             let mut buffer = String::new();
             let worktree_path = current_dir_clone.to_string_lossy().to_string();
             let mut session_id_extracted = false;
@@ -1186,8 +1189,22 @@ impl ClaudeLogProcessor {
                                 &worktree_path,
                                 &entry_index_provider,
                             );
+                            let streaming_delta = matches!(
+                                claude_json,
+                                ClaudeJson::StreamEvent {
+                                    event: ClaudeStreamEvent::ContentBlockDelta { .. },
+                                    ..
+                                }
+                            );
+                            if !streaming_delta {
+                                msg_store.flush();
+                            }
                             for patch in patches {
-                                msg_store.push_patch(patch);
+                                if streaming_delta {
+                                    msg_store.push_patch_deferred(patch);
+                                } else {
+                                    msg_store.push_patch(patch);
+                                }
                             }
                         }
                         Err(_) => {
@@ -1387,22 +1404,20 @@ impl ClaudeLogProcessor {
                     _ => return None,
                 };
                 *last_assistant_message = Some(text.clone());
+                // No metadata: it only ever mirrored `content`, doubling every
+                // streamed replace of the entry.
                 Some(NormalizedEntry {
                     timestamp: None,
                     entry_type,
                     content: text.clone(),
-                    metadata: Some(
-                        serde_json::to_value(content_item).unwrap_or(serde_json::Value::Null),
-                    ),
+                    metadata: None,
                 })
             }
             ClaudeContentItem::Thinking { thinking } => Some(NormalizedEntry {
                 timestamp: None,
                 entry_type: NormalizedEntryType::Thinking,
                 content: thinking.clone(),
-                metadata: Some(
-                    serde_json::to_value(content_item).unwrap_or(serde_json::Value::Null),
-                ),
+                metadata: None,
             }),
             ClaudeContentItem::ToolUse { tool_data, id: _ } => {
                 let (entry, _, _) =
@@ -5285,6 +5300,83 @@ mod tests {
             }
         }
         entries.into_values().collect()
+    }
+
+    /// The live path throttles streamed replaces (`ThrottledMsgStore`): the
+    /// final conversation must equal the unthrottled processor's, and the
+    /// patch count must be bounded by elapsed time rather than by the number
+    /// of deltas (bytes then grow linearly with the streamed text).
+    #[tokio::test]
+    async fn throttled_streaming_keeps_final_entries_and_bounds_patch_volume() {
+        use std::sync::Arc;
+
+        use workspace_utils::log_msg::LogMsg;
+
+        let deltas = 2_000;
+        let mut lines = vec![MSG_START.to_string(), CB_START.to_string()];
+        for i in 0..deltas {
+            lines.push(format!(
+                r#"{{"type":"stream_event","event":{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"tok{i} "}}}}}}"#
+            ));
+        }
+        lines.extend(
+            [CB_STOP, MSG_STOP, RESULT_SUCCESS]
+                .iter()
+                .map(ToString::to_string),
+        );
+        let expected_text = (0..deltas).map(|i| format!("tok{i} ")).collect::<String>();
+
+        let line_refs = lines.iter().map(String::as_str).collect::<Vec<_>>();
+        let unthrottled = normalize_sequence(&line_refs);
+
+        let msg_store = Arc::new(MsgStore::new());
+        for line in &lines {
+            msg_store.push_stdout(format!("{line}\n"));
+        }
+        msg_store.push_finished();
+        let started = std::time::Instant::now();
+        ClaudeLogProcessor::process_logs(
+            msg_store.clone(),
+            Path::new("/tmp"),
+            EntryIndexProvider::test_new(),
+            HistoryStrategy::Default,
+        )
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        let patches = msg_store
+            .get_history()
+            .into_iter()
+            .filter_map(|msg| match msg {
+                LogMsg::JsonPatch(patch) => Some(patch),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let throttled = patches
+            .iter()
+            .filter_map(extract_normalized_entry_from_patch)
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            serde_json::to_value(&throttled).unwrap(),
+            serde_json::to_value(&unthrottled).unwrap()
+        );
+        assert_eq!(throttled.len(), 1);
+        assert_eq!(throttled[0].content, expected_text);
+        assert!(throttled[0].metadata.is_none());
+
+        let replaces = patches
+            .iter()
+            .filter(|patch| matches!(patch.0.as_slice(), [json_patch::PatchOperation::Replace(_)]))
+            .count();
+        let max_replaces = 2 + elapsed.as_millis() as usize / 80;
+        assert!(
+            replaces <= max_replaces,
+            "{replaces} replaces for {deltas} deltas in {elapsed:?} (allowed {max_replaces})"
+        );
     }
 
     fn task_create_fields(
