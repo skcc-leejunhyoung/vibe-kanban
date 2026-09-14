@@ -161,12 +161,6 @@ impl<T: PatchSink + ?Sized> PatchSink for Arc<T> {
     }
 }
 
-impl<T: PatchSink + ?Sized> PatchSink for &T {
-    fn push_patch(&self, patch: Patch) {
-        (**self).push_patch(patch);
-    }
-}
-
 pub fn upsert_normalized_entry(
     msg_store: &impl PatchSink,
     index: usize,

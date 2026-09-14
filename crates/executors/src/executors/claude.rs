@@ -2047,8 +2047,13 @@ impl ClaudeLogProcessor {
                 {
                     let cur = entry_index_provider.current();
                     if cur > 0 {
-                        for _ in 0..cur {
-                            patches.push(ConversationPatch::remove_diff(0.to_string()));
+                        // Remove each index once, highest first. Repeating
+                        // `/entries/0` also empties the client's array, but a
+                        // coalescing store keys patches by path: the repeats
+                        // are no-ops there and every other entry survives the
+                        // reset, so a reconnecting client sees stale rows.
+                        for index in (0..cur).rev() {
+                            patches.push(ConversationPatch::remove_diff(index.to_string()));
                         }
                         entry_index_provider.reset();
                         self.tool_map.clear();
@@ -3953,6 +3958,10 @@ mod tests {
         ));
         store.push_stdout(format!("{RESULT_SUCCESS}\n"));
         store.push_finished();
+        // Watch the live stream rather than the buffered history: the store
+        // coalesces patches per path, so an intermediate leak that is later
+        // replaced would never show up in `get_history()`.
+        let mut live = store.get_receiver();
         ClaudeLogProcessor::process_logs(
             store.clone(),
             Path::new("/tmp"),
@@ -3979,13 +3988,25 @@ mod tests {
                 .any(|entry| entry.content.contains("Child"))
         );
         // No intermediate patch may briefly expose child text before replacement.
-        assert!(store.get_history().iter().all(|msg| {
-            match msg {
-                LogMsg::JsonPatch(patch) => extract_normalized_entry_from_patch(patch)
-                    .is_none_or(|(_, entry)| !entry.content.contains("Child")),
-                _ => true,
+        loop {
+            match live.try_recv() {
+                Ok(LogMsg::JsonPatch(patch)) => {
+                    if let Some((_, entry)) = extract_normalized_entry_from_patch(&patch) {
+                        assert!(
+                            !entry.content.contains("Child"),
+                            "intermediate patch leaked child text: {}",
+                            entry.content
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    panic!("dropped {n} patches before they could be checked")
+                }
             }
-        }));
+        }
         let ids = store
             .get_history()
             .into_iter()
@@ -5298,6 +5319,46 @@ mod tests {
             }
         }
         entries.into_values().collect()
+    }
+
+    /// Amp's resume turn clears the replayed history before adding the new
+    /// prompt. A coalescing store keeps one op per path, so the removals must
+    /// name every index — otherwise the cleared entries survive in the
+    /// buffered history a reconnecting client replays.
+    #[tokio::test]
+    async fn amp_resume_reset_clears_every_entry_from_a_coalescing_store() {
+        use std::sync::Arc;
+
+        let msg_store = Arc::new(MsgStore::new_coalescing());
+        for line in [
+            r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"old one"}]}}"#,
+            r#"{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"old two"}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"new prompt"}]}}"#,
+        ] {
+            msg_store.push_stdout(format!("{line}\n"));
+        }
+        msg_store.push_finished();
+        ClaudeLogProcessor::process_logs(
+            msg_store.clone(),
+            Path::new("/tmp"),
+            EntryIndexProvider::test_new(),
+            HistoryStrategy::AmpResume,
+        )
+        .await
+        .unwrap();
+
+        let entries = msg_store
+            .get_history()
+            .iter()
+            .filter_map(|msg| match msg {
+                workspace_utils::log_msg::LogMsg::JsonPatch(patch) => {
+                    extract_normalized_entry_from_patch(patch)
+                }
+                _ => None,
+            })
+            .map(|(_, entry)| entry.content)
+            .collect::<Vec<_>>();
+        assert_eq!(entries, ["new prompt"]);
     }
 
     /// A process killed mid-stream never sees `content_block_stop` or a final
