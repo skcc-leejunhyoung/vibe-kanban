@@ -1,12 +1,15 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::{self, Write},
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, Weak},
+    time::{Duration, Instant},
 };
 
 use futures::{StreamExt, future};
-use tokio::{sync::broadcast, task::JoinHandle};
-use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
+use tokio::{
+    sync::broadcast::{self, error::RecvError},
+    task::JoinHandle,
+};
 
 use crate::{log_msg::LogMsg, stream_lines::LinesStreamExt};
 
@@ -14,6 +17,8 @@ use crate::{log_msg::LogMsg, stream_lines::LinesStreamExt};
 const HISTORY_BYTES: usize = 100000 * 1024;
 const BROADCAST_CAPACITY: usize = 1024;
 const REPLAY_BROADCAST_CAPACITY: usize = 256;
+/// A lagging subscriber logs at most once per this interval.
+const LAG_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) struct ByteCounter {
     bytes: usize,
@@ -49,7 +54,25 @@ struct StoredMsg {
 struct Inner {
     history: VecDeque<StoredMsg>,
     total_bytes: usize,
+    /// Messages evicted from the front of `history`; `evicted + index` is a
+    /// message's absolute position, stable for the store's lifetime.
+    evicted: u64,
     replay_patches: Option<ReplayPatches>,
+}
+
+impl Inner {
+    /// Clone `count` messages starting at absolute position `start`, or `None`
+    /// when any of them has already been evicted (or was never pushed).
+    fn range(&self, start: u64, count: u64) -> Option<Vec<LogMsg>> {
+        let offset = usize::try_from(start.checked_sub(self.evicted)?).ok()?;
+        let end = offset.checked_add(usize::try_from(count).ok()?)?;
+        (end <= self.history.len()).then(|| {
+            self.history
+                .range(offset..end)
+                .map(|s| s.msg.clone())
+                .collect()
+        })
+    }
 }
 
 #[derive(Default)]
@@ -84,8 +107,84 @@ impl ReplayPatches {
     }
 }
 
+/// Live half of `history_plus_stream`: tracks the absolute position of the next
+/// expected message so a broadcast lag can be healed from history.
+struct LiveSubscriber {
+    rx: broadcast::Receiver<LogMsg>,
+    next: u64,
+    inner: Weak<RwLock<Inner>>,
+    recovered: VecDeque<LogMsg>,
+    last_log: Option<Instant>,
+    suppressed_logs: u64,
+}
+
+impl LiveSubscriber {
+    async fn next(&mut self) -> Option<Result<LogMsg, io::Error>> {
+        loop {
+            if let Some(msg) = self.recovered.pop_front() {
+                return Some(Ok(msg));
+            }
+            match self.rx.recv().await {
+                Ok(msg) => {
+                    self.next += 1;
+                    return Some(Ok(msg));
+                }
+                Err(RecvError::Closed) => return None,
+                Err(RecvError::Lagged(skipped)) => {
+                    // The receiver now sits at the oldest retained message, so
+                    // the gap is exactly [next, next + skipped).
+                    let recovered = self
+                        .inner
+                        .upgrade()
+                        .and_then(|inner| inner.read().unwrap().range(self.next, skipped));
+                    self.next += skipped;
+                    let log = self.should_log();
+                    match recovered {
+                        Some(msgs) => {
+                            if log {
+                                tracing::warn!(
+                                    skipped,
+                                    suppressed = self.suppressed_logs,
+                                    "MsgStore broadcast lagged; re-read {skipped} messages from history"
+                                );
+                                self.suppressed_logs = 0;
+                            }
+                            self.recovered.extend(msgs);
+                        }
+                        None => {
+                            if log {
+                                tracing::error!(
+                                    skipped,
+                                    suppressed = self.suppressed_logs,
+                                    "MsgStore broadcast lagged beyond retained history; {skipped} messages lost for this subscriber"
+                                );
+                                self.suppressed_logs = 0;
+                            }
+                            return Some(Err(io::Error::other(format!(
+                                "MsgStore broadcast lagged by {skipped} messages beyond retained history"
+                            ))));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn should_log(&mut self) -> bool {
+        if self
+            .last_log
+            .is_some_and(|last| last.elapsed() < LAG_LOG_INTERVAL)
+        {
+            self.suppressed_logs += 1;
+            return false;
+        }
+        self.last_log = Some(Instant::now());
+        true
+    }
+}
+
 pub struct MsgStore {
-    inner: RwLock<Inner>,
+    inner: Arc<RwLock<Inner>>,
     sender: broadcast::Sender<LogMsg>,
 }
 
@@ -110,20 +209,23 @@ impl MsgStore {
     fn with_broadcast_capacity(capacity: usize, collect_replay_patches: bool) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         Self {
-            inner: RwLock::new(Inner {
+            inner: Arc::new(RwLock::new(Inner {
                 history: VecDeque::with_capacity(32),
                 total_bytes: 0,
+                evicted: 0,
                 replay_patches: collect_replay_patches.then(ReplayPatches::default),
-            }),
+            })),
             sender,
         }
     }
 
     pub fn push(&self, msg: LogMsg) {
-        let _ = self.sender.send(msg.clone()); // live listeners
         let bytes = msg.approx_bytes();
 
         let mut inner = self.inner.write().unwrap();
+        // Broadcast under the lock so history order equals broadcast order and
+        // a subscriber snapshotting history sees each message exactly once.
+        let _ = self.sender.send(msg.clone()); // live listeners
         if let (Some(replay_patches), LogMsg::JsonPatch(patch)) = (&mut inner.replay_patches, &msg)
         {
             replay_patches.apply(patch);
@@ -131,6 +233,7 @@ impl MsgStore {
         while inner.total_bytes.saturating_add(bytes) > HISTORY_BYTES {
             if let Some(front) = inner.history.pop_front() {
                 inner.total_bytes = inner.total_bytes.saturating_sub(front.bytes);
+                inner.evicted += 1;
             } else {
                 break;
             }
@@ -191,11 +294,29 @@ impl MsgStore {
             .map(ReplayPatches::snapshot)
     }
 
-    /// History then live, as `LogMsg`.
+    /// History then live, as `LogMsg`. Lossless: a subscriber that falls more
+    /// than the broadcast capacity behind gets the skipped span re-read from
+    /// history instead of a silent gap; only a span already evicted from
+    /// history surfaces as an `Err`, so consumers can resynchronize.
     pub fn history_plus_stream(
         &self,
     ) -> futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>> {
-        let (history, rx) = (self.get_history(), self.get_receiver());
+        // Subscribe and snapshot under one read lock: `push` broadcasts while
+        // holding the write lock, so no message lands in both or neither.
+        let (history, live) = {
+            let inner = self.inner.read().unwrap();
+            let rx = self.sender.subscribe();
+            let history: Vec<LogMsg> = inner.history.iter().map(|s| s.msg.clone()).collect();
+            let live = LiveSubscriber {
+                rx,
+                next: inner.evicted + history.len() as u64,
+                inner: Arc::downgrade(&self.inner),
+                recovered: VecDeque::new(),
+                last_log: None,
+                suppressed_logs: 0,
+            };
+            (history, live)
+        };
 
         // Replaying buffered history is `Ready`-immediate: a plain
         // `stream::iter` never returns `Pending`, so a consumer that does
@@ -216,17 +337,8 @@ impl MsgStore {
                 Some((Ok::<_, std::io::Error>(msg), (iter, count + 1)))
             },
         );
-        let live = BroadcastStream::new(rx).filter_map(|res| async move {
-            match res {
-                Ok(msg) => Some(Ok(msg)),
-                Err(BroadcastStreamRecvError::Lagged(n)) => {
-                    tracing::error!(
-                        skipped = n,
-                        "MsgStore broadcast lagged. {n} messages dropped for this subscriber"
-                    );
-                    None
-                }
-            }
+        let live = futures::stream::unfold(live, |mut sub| async move {
+            sub.next().await.map(|item| (item, sub))
         });
 
         Box::pin(hist.chain(live))
@@ -287,10 +399,11 @@ impl MsgStore {
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
     use json_patch::{AddOperation, Patch, PatchOperation, ReplaceOperation};
     use serde_json::json;
 
-    use super::MsgStore;
+    use super::{HISTORY_BYTES, MsgStore};
     use crate::log_msg::LogMsg;
 
     fn add(path: &str, value: usize) -> Patch {
@@ -334,5 +447,88 @@ mod tests {
             store.get_replay_patches().unwrap(),
             vec![replace("/entries/7", 999)]
         );
+    }
+
+    /// A subscriber parked while the producer bursts far past the broadcast
+    /// capacity must still observe every message, in order, without errors.
+    #[tokio::test]
+    async fn parked_subscriber_recovers_lagged_span_from_history() {
+        let store = MsgStore::new();
+        let mut stream = store.history_plus_stream();
+        const BURST: usize = 5_000;
+        for index in 0..BURST {
+            store.push_stdout(index.to_string());
+        }
+
+        for expected in 0..BURST {
+            match stream.next().await {
+                Some(Ok(LogMsg::Stdout(content))) => assert_eq!(content, expected.to_string()),
+                other => panic!("message {expected}: unexpected {other:?}"),
+            }
+        }
+        // Nothing else is pending; the live half must not have duplicated.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), stream.next())
+                .await
+                .is_err()
+        );
+    }
+
+    /// Once the skipped span has been evicted from history the gap is
+    /// unrecoverable and must surface as an error, then the stream continues
+    /// with the messages the channel still retains.
+    #[tokio::test]
+    async fn lag_beyond_evicted_history_surfaces_an_error() {
+        let store = MsgStore::with_broadcast_capacity(8, false);
+        let mut stream = store.history_plus_stream();
+        let chunk = "x".repeat(1024 * 1024);
+        let pushed = HISTORY_BYTES / chunk.len() + 10;
+        for _ in 0..pushed {
+            store.push_stdout(chunk.clone());
+        }
+        assert!(store.inner.read().unwrap().evicted > 0);
+
+        assert!(matches!(stream.next().await, Some(Err(_))));
+        for _ in 0..8 {
+            assert!(matches!(stream.next().await, Some(Ok(LogMsg::Stdout(_)))));
+        }
+    }
+
+    /// The subscription snapshot and the live receiver must not overlap or
+    /// leave a hole around messages pushed concurrently with subscribing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_subscribe_sees_each_message_exactly_once() {
+        let store = std::sync::Arc::new(MsgStore::new());
+        const TOTAL: usize = 20_000;
+        let producer = {
+            let store = store.clone();
+            tokio::task::spawn_blocking(move || {
+                for index in 0..TOTAL {
+                    store.push_stdout(index.to_string());
+                }
+                store.push_finished();
+            })
+        };
+        let mut streams = Vec::new();
+        for _ in 0..16 {
+            streams.push(store.history_plus_stream());
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        producer.await.unwrap();
+
+        for mut stream in streams {
+            let mut expected = 0usize;
+            while let Some(item) = stream.next().await {
+                match item.unwrap() {
+                    LogMsg::Stdout(content) => {
+                        assert_eq!(content, expected.to_string());
+                        expected += 1;
+                    }
+                    LogMsg::Finished => break,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+            assert_eq!(expected, TOTAL);
+        }
     }
 }
