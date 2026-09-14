@@ -67,6 +67,22 @@ describe('ChatSubagentEntry activity panel', () => {
 
     expect(html).toContain('conversation.subagent.openTranscript');
     expect(html).toContain('conversation.subagent.stop');
+    expect(html).not.toContain('role="alert"');
+  });
+
+  it('shows stop errors even when collapsed and retains retry and transcript controls', () => {
+    const html = render({
+      status: { status: 'created' },
+      expanded: false,
+      stopError: 'Failed to stop <child-thread>',
+      onOpenTranscript: () => {},
+      onStop: () => {},
+    });
+
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Failed to stop &lt;child-thread&gt;');
+    expect(html).toContain('conversation.subagent.openTranscript');
+    expect(html).toContain('conversation.subagent.stop');
   });
 
   it('renders no control buttons without capabilities', () => {

@@ -1260,6 +1260,7 @@ fn request_id(request: &ClientRequest) -> RequestId {
         | ClientRequest::ThreadStart { request_id, .. }
         | ClientRequest::ThreadFork { request_id, .. }
         | ClientRequest::TurnStart { request_id, .. }
+        | ClientRequest::TurnInterrupt { request_id, .. }
         | ClientRequest::GetAccount { request_id, .. }
         | ClientRequest::ReviewStart { request_id, .. }
         | ClientRequest::McpServerStatusList { request_id, .. }
@@ -1294,6 +1295,94 @@ mod tests {
     use codex_app_server_protocol::RateLimitReachedType;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subagent_turn_interrupt_sends_target_and_propagates_response() {
+        use std::process::Stdio;
+
+        use serde_json::json;
+
+        use super::super::jsonrpc::ExitSignalSender;
+
+        for response in [
+            json!({"id": 1, "result": {}}),
+            json!({"id": 1, "error": {"code": -32602, "message": "no active turn to interrupt"}}),
+        ] {
+            let cancel = CancellationToken::new();
+            let client = AppServerClient::new(
+                LogWriter::new(tokio::io::sink()),
+                None,
+                false,
+                false,
+                None,
+                RepoContext::default(),
+                false,
+                String::new(),
+                cancel.clone(),
+            );
+            client.register_session("parent-thread").await.unwrap();
+            // Exercise the real sender and JSON-RPC reader without a live model:
+            // capture exactly one request on stderr and reply on stdout.
+            let mut server = tokio::process::Command::new("sh")
+                .args([
+                    "-c",
+                    r#"IFS= read -r request; printf '%s\n' "$request" >&2; printf '%s\n' "$1""#,
+                    "mock-app-server",
+                    &response.to_string(),
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let peer = JsonRpcPeer::spawn(
+                server.stdin.take().unwrap(),
+                server.stdout.take().unwrap(),
+                client.clone(),
+                ExitSignalSender::new(tx),
+                cancel.clone(),
+            );
+            client.connect(peer);
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.turn_interrupt("child-thread".to_string()),
+            )
+            .await
+            .expect("interrupt response timed out");
+            if response.get("error").is_some() {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("no active turn to interrupt")
+                );
+            } else {
+                result.unwrap();
+            }
+            let output = tokio::time::timeout(Duration::from_secs(5), server.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(output.status.success());
+            let request: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(request["method"], "turn/interrupt");
+            assert_eq!(request["id"], response["id"]);
+            assert_eq!(
+                request["params"],
+                json!({"threadId": "child-thread", "turnId": ""})
+            );
+            assert_eq!(
+                client.thread_id.lock().await.as_deref(),
+                Some("parent-thread")
+            );
+            assert!(!cancel.is_cancelled());
+            cancel.cancel();
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]

@@ -242,6 +242,32 @@ describe('host-aware task APIs', () => {
     ]);
   });
 
+  it.each([null, 'host-7'])(
+    'sends individual subagent stops to host %s without stopping the parent process',
+    async (hostId) => {
+      const request = vi.fn().mockResolvedValue(apiResponse(null));
+      setLocalApiTransport({ request, openWebSocket: vi.fn() });
+      const target = { executor: 'codex' as const, thread_id: 'child-thread' };
+
+      await executionProcessesApi.stopSubagent(
+        'parent-process',
+        target,
+        hostId
+      );
+
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        `${hostId ? `/api/host/${hostId}` : '/api'}/execution-processes/parent-process/subagent/stop`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify(target),
+          hostScope: 'explicit',
+          hostId,
+          relayHostId: hostId,
+        })
+      );
+    }
+  );
+
   it('scopes stop and workspace scripts to one session when given', async () => {
     const request = vi.fn(async () => apiResponse(null));
     setLocalApiTransport({ request, openWebSocket: vi.fn() });

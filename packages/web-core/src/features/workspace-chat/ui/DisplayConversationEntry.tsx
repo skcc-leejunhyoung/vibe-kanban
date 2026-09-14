@@ -1295,6 +1295,7 @@ function SubagentEntry({
   liveRef.current = processRunning && status.status === 'created';
   useEffect(() => () => void (liveRef.current = false), []);
   const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string>();
 
   const handleOpenTranscript = useCallback(() => {
     if (!control) return;
@@ -1330,6 +1331,7 @@ function SubagentEntry({
   const handleStop = useCallback(async () => {
     if (!control || stopping) return;
     setStopping(true);
+    setStopError(undefined);
     try {
       await executionProcessesApi.stopSubagent(
         executionProcessId,
@@ -1340,6 +1342,7 @@ function SubagentEntry({
       // button disabled meanwhile.
     } catch (err) {
       console.error('Failed to stop subagent:', err);
+      setStopError(err instanceof Error ? err.message : String(err));
       setStopping(false);
     }
   }, [control, stopping, executionProcessId, hostId]);
@@ -1367,6 +1370,7 @@ function SubagentEntry({
         control?.can_open_transcript ? handleOpenTranscript : undefined
       }
       onStop={showStop ? handleStop : undefined}
+      stopError={stopError}
       status={status}
       workspaceId={workspaceId}
       renderMarkdown={({ content, workspaceId }) => (

@@ -36,6 +36,7 @@ interface ChatSubagentEntryProps {
   onOpenTranscript?: () => void;
   /** Shows the individual stop button when provided. */
   onStop?: () => void;
+  stopError?: string;
   className?: string;
   status?: ToolStatusLike;
   workspaceId?: string;
@@ -67,6 +68,7 @@ export function ChatSubagentEntry({
   onToggle,
   onOpenTranscript,
   onStop,
+  stopError,
   className,
   status,
   workspaceId,
@@ -229,6 +231,15 @@ export function ChatSubagentEntry({
           />
         )}
       </div>
+
+      {stopError && (
+        <p
+          role="alert"
+          className="px-double pb-base text-sm text-error break-words"
+        >
+          {stopError}
+        </p>
+      )}
 
       {/* Expanded content - shows subagent output */}
       {expanded && hasContent && (
