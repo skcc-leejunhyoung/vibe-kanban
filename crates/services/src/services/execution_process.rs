@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     io::{IsTerminal, Write},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -16,7 +17,11 @@ use db::{
 use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use sqlx::SqlitePool;
-use tokio::{io::AsyncWriteExt, sync::RwLock, task::JoinHandle};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{RwLock, mpsc},
+    task::JoinHandle,
+};
 use utils::{
     assets::prod_asset_dir_path,
     execution_logs::{
@@ -267,7 +272,85 @@ pub async fn append_log_message(session_id: Uuid, execution_id: Uuid, msg: &LogM
         .append_jsonl_line(&json_line_with_newline)
         .await
         .with_context(|| format!("append log message for execution {}", execution_id))?;
+    log_writer
+        .flush()
+        .await
+        .with_context(|| format!("flush log message for execution {}", execution_id))?;
     Ok(())
+}
+
+/// Idle gap after which buffered raw-log lines are written out to disk.
+const LOG_FLUSH_IDLE: Duration = Duration::from_secs(1);
+
+enum TurnUpdate {
+    SessionId(String),
+    MessageId(String),
+    ScheduledResume(String),
+}
+
+/// Apply turn metadata updates in arrival order on a task of their own: a
+/// contended sqlite pool then stalls this task, never the raw-log consumer,
+/// which would otherwise fall behind the broadcast and lose lines.
+fn spawn_turn_updates(
+    pool: SqlitePool,
+    execution_id: Uuid,
+    session_id: Uuid,
+) -> (mpsc::UnboundedSender<TurnUpdate>, JoinHandle<()>) {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        while let Some(update) = rx.recv().await {
+            match update {
+                TurnUpdate::SessionId(agent_session_id) => {
+                    if let Err(e) = CodingAgentTurn::update_agent_session_id(
+                        &pool,
+                        execution_id,
+                        &agent_session_id,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            "Failed to update agent_session_id {} for execution process {}: {}",
+                            agent_session_id,
+                            execution_id,
+                            e
+                        );
+                    }
+                }
+                TurnUpdate::MessageId(agent_message_id) => {
+                    if let Err(e) = CodingAgentTurn::update_agent_message_id(
+                        &pool,
+                        execution_id,
+                        &agent_message_id,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            "Failed to update agent_message_id {} for execution process {}: {}",
+                            agent_message_id,
+                            execution_id,
+                            e
+                        );
+                    }
+                }
+                TurnUpdate::ScheduledResume(crons_json) => {
+                    persist_scheduled_resumes(&pool, session_id, &crons_json).await;
+                }
+            }
+        }
+    });
+    (tx, task)
+}
+
+async fn flush_log_writer(writer: &mut Option<ExecutionLogWriter>, execution_id: Uuid) {
+    if let Some(writer) = writer
+        && let Err(e) = writer.flush().await
+    {
+        tracing::error!(
+            "Failed to flush log file for execution {}: {}",
+            execution_id,
+            e
+        );
+    }
 }
 
 pub fn spawn_stream_raw_logs_to_storage(
@@ -331,11 +414,24 @@ pub fn spawn_stream_raw_logs_to_storage(
                     }
                 })
             });
-            while let Some(msg) = stream.next().await {
-                let msg = match msg {
-                    Ok(msg) => msg,
-                    Err(error) => {
-                        tracing::warn!(%error, "Execution log stream error");
+            let (updates, update_task) =
+                spawn_turn_updates(db.pool.clone(), execution_id, session_id);
+            loop {
+                let msg = match tokio::time::timeout(LOG_FLUSH_IDLE, stream.next()).await {
+                    Ok(Some(Ok(msg))) => msg,
+                    Ok(Some(Err(error))) => {
+                        // Only an unrecoverable broadcast lag (span evicted from
+                        // history) reaches here; the file is missing that span.
+                        tracing::error!(
+                            %execution_id,
+                            %error,
+                            "Execution log stream lost messages; raw log is incomplete"
+                        );
+                        continue;
+                    }
+                    Ok(None) => break,
+                    Err(_idle) => {
+                        flush_log_writer(&mut log_writer, execution_id).await;
                         continue;
                     }
                 };
@@ -368,39 +464,13 @@ pub fn spawn_stream_raw_logs_to_storage(
                         if artifact_task.is_some() {
                             artifact_updates.lock().unwrap().1 = Some(agent_session_id.clone());
                         }
-                        if let Err(e) = CodingAgentTurn::update_agent_session_id(
-                            &db.pool,
-                            execution_id,
-                            agent_session_id,
-                        )
-                        .await
-                        {
-                            tracing::error!(
-                                "Failed to update agent_session_id {} for execution process {}: {}",
-                                agent_session_id,
-                                execution_id,
-                                e
-                            );
-                        }
+                        let _ = updates.send(TurnUpdate::SessionId(agent_session_id.clone()));
                     }
                     LogMsg::MessageId(agent_message_id) => {
-                        if let Err(e) = CodingAgentTurn::update_agent_message_id(
-                            &db.pool,
-                            execution_id,
-                            agent_message_id,
-                        )
-                        .await
-                        {
-                            tracing::error!(
-                                "Failed to update agent_message_id {} for execution process {}: {}",
-                                agent_message_id,
-                                execution_id,
-                                e
-                            );
-                        }
+                        let _ = updates.send(TurnUpdate::MessageId(agent_message_id.clone()));
                     }
                     LogMsg::ScheduledResume(crons_json) => {
-                        persist_scheduled_resumes(&db.pool, session_id, crons_json).await;
+                        let _ = updates.send(TurnUpdate::ScheduledResume(crons_json.clone()));
                     }
                     LogMsg::StorageFinished => {
                         break;
@@ -415,8 +485,18 @@ pub fn spawn_stream_raw_logs_to_storage(
                             artifact_updates.lock().unwrap().0.insert(index, entry);
                         }
                     }
-                    LogMsg::Ready | LogMsg::Finished => continue,
+                    // The process exited: make its complete raw log visible
+                    // to readers before the storage marker arrives.
+                    LogMsg::Finished => flush_log_writer(&mut log_writer, execution_id).await,
+                    LogMsg::Ready => continue,
                 }
+            }
+            flush_log_writer(&mut log_writer, execution_id).await;
+            // The finalization barrier awaits this task, so the follow-up sees
+            // the turn's session/message ids once every queued update landed.
+            drop(updates);
+            if let Err(error) = update_task.await {
+                tracing::error!(%execution_id, %error, "Turn metadata updater failed");
             }
             // The execution's existing finalization barrier also waits for the
             // last coalesced entries and filesystem snapshot to be preserved.

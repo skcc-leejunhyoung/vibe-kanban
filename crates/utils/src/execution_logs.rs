@@ -23,7 +23,9 @@ pub fn process_log_file_path_in_root(root: &Path, session_id: Uuid, process_id: 
 
 pub struct ExecutionLogWriter {
     path: PathBuf,
-    file: tokio::fs::File,
+    /// Buffered: a burst of small chunks costs one write per buffer instead of
+    /// a blocking-pool hop per chunk. Callers flush at idle and completion.
+    file: tokio::io::BufWriter<tokio::fs::File>,
 }
 
 impl ExecutionLogWriter {
@@ -36,7 +38,10 @@ impl ExecutionLogWriter {
             .append(true)
             .open(&path)
             .await?;
-        Ok(Self { path, file })
+        Ok(Self {
+            path,
+            file: tokio::io::BufWriter::new(file),
+        })
     }
 
     pub async fn new_for_execution(session_id: Uuid, execution_id: Uuid) -> std::io::Result<Self> {
@@ -49,6 +54,10 @@ impl ExecutionLogWriter {
 
     pub async fn append_jsonl_line(&mut self, jsonl_line: &str) -> std::io::Result<()> {
         self.file.write_all(jsonl_line.as_bytes()).await
+    }
+
+    pub async fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush().await
     }
 }
 
