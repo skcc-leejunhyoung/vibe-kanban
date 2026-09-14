@@ -19,6 +19,10 @@ const BROADCAST_CAPACITY: usize = 1024;
 const REPLAY_BROADCAST_CAPACITY: usize = 256;
 /// A lagging subscriber logs at most once per this interval.
 const LAG_LOG_INTERVAL: Duration = Duration::from_secs(1);
+/// Messages re-read from history per step while healing a lagged span. History
+/// holds up to `HISTORY_BYTES`, so recovering a whole span at once would clone
+/// that much per lagging subscriber; stepping keeps the copy bounded.
+const RECOVERY_CHUNK: u64 = 256;
 
 pub(crate) struct ByteCounter {
     bytes: usize,
@@ -111,9 +115,13 @@ impl ReplayPatches {
 /// expected message so a broadcast lag can be healed from history.
 struct LiveSubscriber {
     rx: broadcast::Receiver<LogMsg>,
+    /// Absolute position the broadcast receiver will yield next.
     next: u64,
+    /// Not-yet-replayed remainder of a lagged span, `[gap, gap_end)`.
+    gap: u64,
+    gap_end: u64,
     inner: Weak<RwLock<Inner>>,
-    recovered: VecDeque<LogMsg>,
+    buffered: VecDeque<LogMsg>,
     last_log: Option<Instant>,
     suppressed_logs: u64,
 }
@@ -121,8 +129,11 @@ struct LiveSubscriber {
 impl LiveSubscriber {
     async fn next(&mut self) -> Option<Result<LogMsg, io::Error>> {
         loop {
-            if let Some(msg) = self.recovered.pop_front() {
+            if let Some(msg) = self.buffered.pop_front() {
                 return Some(Ok(msg));
+            }
+            if self.gap < self.gap_end {
+                return Some(self.replay_gap_chunk());
             }
             match self.rx.recv().await {
                 Ok(msg) => {
@@ -132,40 +143,55 @@ impl LiveSubscriber {
                 Err(RecvError::Closed) => return None,
                 Err(RecvError::Lagged(skipped)) => {
                     // The receiver now sits at the oldest retained message, so
-                    // the gap is exactly [next, next + skipped).
-                    let recovered = self
-                        .inner
-                        .upgrade()
-                        .and_then(|inner| inner.read().unwrap().range(self.next, skipped));
+                    // the gap is exactly [next, next + skipped). Replaying it
+                    // may lag again; the next gap starts where this one ends.
+                    self.gap = self.next;
+                    self.gap_end = self.next + skipped;
                     self.next += skipped;
-                    let log = self.should_log();
-                    match recovered {
-                        Some(msgs) => {
-                            if log {
-                                tracing::warn!(
-                                    skipped,
-                                    suppressed = self.suppressed_logs,
-                                    "MsgStore broadcast lagged; re-read {skipped} messages from history"
-                                );
-                                self.suppressed_logs = 0;
-                            }
-                            self.recovered.extend(msgs);
-                        }
-                        None => {
-                            if log {
-                                tracing::error!(
-                                    skipped,
-                                    suppressed = self.suppressed_logs,
-                                    "MsgStore broadcast lagged beyond retained history; {skipped} messages lost for this subscriber"
-                                );
-                                self.suppressed_logs = 0;
-                            }
-                            return Some(Err(io::Error::other(format!(
-                                "MsgStore broadcast lagged by {skipped} messages beyond retained history"
-                            ))));
-                        }
+                    if self.should_log() {
+                        tracing::warn!(
+                            skipped,
+                            suppressed = self.suppressed_logs,
+                            "MsgStore broadcast lagged; replaying {skipped} messages from history"
+                        );
+                        self.suppressed_logs = 0;
                     }
                 }
+            }
+        }
+    }
+
+    /// Buffer the next slice of the pending gap, returning its first message.
+    /// A slice the history no longer holds ends the replay with an error, so
+    /// the consumer can resynchronize instead of applying a patch stream with
+    /// a hole in it.
+    fn replay_gap_chunk(&mut self) -> Result<LogMsg, io::Error> {
+        let count = RECOVERY_CHUNK.min(self.gap_end - self.gap);
+        let replayed = self
+            .inner
+            .upgrade()
+            .and_then(|inner| inner.read().unwrap().range(self.gap, count));
+        match replayed {
+            Some(msgs) => {
+                self.gap += count;
+                self.buffered.extend(msgs);
+                // `range` yielded `count >= 1` messages, so this cannot be empty.
+                Ok(self.buffered.pop_front().expect("replayed chunk is empty"))
+            }
+            None => {
+                let lost = self.gap_end - self.gap;
+                self.gap = self.gap_end;
+                if self.should_log() {
+                    tracing::error!(
+                        lost,
+                        suppressed = self.suppressed_logs,
+                        "MsgStore broadcast lagged beyond retained history; {lost} messages lost for this subscriber"
+                    );
+                    self.suppressed_logs = 0;
+                }
+                Err(io::Error::other(format!(
+                    "MsgStore broadcast lagged by {lost} messages beyond retained history"
+                )))
             }
         }
     }
@@ -307,11 +333,14 @@ impl MsgStore {
             let inner = self.inner.read().unwrap();
             let rx = self.sender.subscribe();
             let history: Vec<LogMsg> = inner.history.iter().map(|s| s.msg.clone()).collect();
+            let next = inner.evicted + history.len() as u64;
             let live = LiveSubscriber {
                 rx,
-                next: inner.evicted + history.len() as u64,
+                next,
+                gap: next,
+                gap_end: next,
                 inner: Arc::downgrade(&self.inner),
-                recovered: VecDeque::new(),
+                buffered: VecDeque::new(),
                 last_log: None,
                 suppressed_logs: 0,
             };
