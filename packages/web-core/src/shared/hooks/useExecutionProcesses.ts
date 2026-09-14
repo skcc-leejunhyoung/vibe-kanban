@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import {
   advanceExecutionActivity,
@@ -71,36 +71,40 @@ export const useExecutionProcesses = (
       }
     );
 
-  const streamedExecutionProcesses = Object.values(
-    data?.execution_processes ?? {}
-  ).sort(
-    (a, b) =>
-      new Date(a.created_at as unknown as string).getTime() -
-      new Date(b.created_at as unknown as string).getTime()
-  );
+  const { executionProcesses, executionProcessesById, isAttemptRunning } =
+    useMemo(() => {
+      const streamedExecutionProcesses = Object.values(
+        data?.execution_processes ?? {}
+      ).sort(
+        (a, b) =>
+          new Date(a.created_at as unknown as string).getTime() -
+          new Date(b.created_at as unknown as string).getTime()
+      );
 
-  // Guard against stale buffered stream data when switching sessions quickly.
-  const executionProcesses = sessionId
-    ? streamedExecutionProcesses.filter(
-        (executionProcess) => executionProcess.session_id === sessionId
-      )
-    : streamedExecutionProcesses;
+      // Guard against stale buffered stream data when switching sessions quickly.
+      const executionProcesses = sessionId
+        ? streamedExecutionProcesses.filter(
+            (executionProcess) => executionProcess.session_id === sessionId
+          )
+        : streamedExecutionProcesses;
 
-  const executionProcessesById = executionProcesses.reduce<
-    Record<string, ExecutionProcess>
-  >((processesById, executionProcess) => {
-    processesById[executionProcess.id] = executionProcess;
-    return processesById;
-  }, {});
+      const executionProcessesById = executionProcesses.reduce<
+        Record<string, ExecutionProcess>
+      >((processesById, executionProcess) => {
+        processesById[executionProcess.id] = executionProcess;
+        return processesById;
+      }, {});
 
-  const isAttemptRunning = executionProcesses.some(
-    (process) =>
-      (process.run_reason === 'codingagent' ||
-        process.run_reason === 'setupscript' ||
-        process.run_reason === 'cleanupscript' ||
-        process.run_reason === 'archivescript') &&
-      process.status === 'running'
-  );
+      const isAttemptRunning = executionProcesses.some(
+        (process) =>
+          (process.run_reason === 'codingagent' ||
+            process.run_reason === 'setupscript' ||
+            process.run_reason === 'cleanupscript' ||
+            process.run_reason === 'archivescript') &&
+          process.status === 'running'
+      );
+      return { executionProcesses, executionProcessesById, isAttemptRunning };
+    }, [data, sessionId]);
   const executionActivityRef = useRef<ExecutionActivityState>({
     sessionId,
     wasRunning: false,

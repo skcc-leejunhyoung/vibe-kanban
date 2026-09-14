@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
-import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
+import {
+  applyUpsertPatch,
+  applyUpsertPatchBatch,
+} from '@/shared/lib/jsonPatch';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import {
@@ -30,6 +33,8 @@ type WsMsg = WsJsonPatchMsg | WsReadyMsg | WsFinishedMsg | WsHeartbeatMsg;
 // standalone PWAs that are suspended/resumed can leave a WebSocket that never
 // fires open/error/close; without this the loading spinner is indefinite.
 const CONNECT_TIMEOUT_MS = 10_000;
+// rAF may stop after a tab becomes hidden, including an already queued frame.
+const PATCH_FLUSH_TIMEOUT_MS = 100;
 
 interface UseJsonPatchStreamOptions<T> {
   /**
@@ -80,6 +85,10 @@ export const useJsonPatchWsStream = <T extends object>(
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const dataRef = useRef<T | undefined>(undefined);
+  const initialDataRef = useRef(initialData);
+  // Initializers describe the next subscription; their identity isn't a
+  // subscription key. Endpoint, enabled and host changes still reconnect.
+  initialDataRef.current = initialData;
   // Which endpoint the current `data` state belongs to. On an endpoint switch
   // there is one paint before the effect resets state; this lets the render
   // below serve the new endpoint's cached snapshot instead of the stale data.
@@ -197,7 +206,7 @@ export const useJsonPatchWsStream = <T extends object>(
         dataPatchedRef.current = true;
         setData(cached);
       } else {
-        dataRef.current = initialData();
+        dataRef.current = initialDataRef.current();
         dataPatchedRef.current = false;
 
         // Inject initial entry if provided
@@ -209,6 +218,7 @@ export const useJsonPatchWsStream = <T extends object>(
     }
 
     let cancelled = false;
+    let flushPending: ((publish?: boolean) => boolean) | undefined;
     if (healthEndpointRef.current !== streamKey) {
       healthEndpointRef.current = streamKey;
       setError(null);
@@ -268,6 +278,10 @@ export const useJsonPatchWsStream = <T extends object>(
             clearSilenceWatchdog();
             silenceWatchdogRef.current = window.setTimeout(() => {
               silenceWatchdogRef.current = null;
+              // A patch received just before the deadline may still be queued.
+              // Applying it resets/clears this watchdog just as immediate
+              // per-message application did before frame batching.
+              if (flushPending?.()) return;
               if (
                 !shouldReconnectForStreamSilence({
                   enabled,
@@ -298,6 +312,50 @@ export const useJsonPatchWsStream = <T extends object>(
             }, silenceTimeoutMs);
           };
 
+          let pendingMessages: Operation[][] = [];
+          let rafId: number | null = null;
+          let flushTimer: number | null = null;
+          flushPending = (publish = true) => {
+            if (rafId !== null) cancelAnimationFrame(rafId);
+            if (flushTimer !== null) window.clearTimeout(flushTimer);
+            rafId = flushTimer = null;
+            const messages = pendingMessages;
+            pendingMessages = [];
+            const current = dataRef.current;
+            if (!messages.length || !current) return false;
+
+            let next = current;
+            let updateError: string | null = null;
+            let applied = false;
+            try {
+              next = applyUpsertPatchBatch(current, messages.flat());
+              applied = true;
+            } catch {
+              // Preserve the old per-message rollback boundary if malformed
+              // operations throw: valid neighboring messages must survive.
+              for (const ops of messages) {
+                try {
+                  next = produce(next, (draft) => applyUpsertPatch(draft, ops));
+                  applied = true;
+                  updateError = null;
+                } catch (err) {
+                  console.error('Failed to process WebSocket message:', err);
+                  updateError = 'Failed to process stream update';
+                }
+              }
+            }
+            dataRef.current = next;
+            if (applied) dataPatchedRef.current = true;
+            if (publish) {
+              if (applied) {
+                setData(next);
+                resetSilenceWatchdog(false);
+              }
+              setError(updateError);
+            }
+            return applied;
+          };
+
           ws.onopen = () => {
             clearConnectWatchdog();
             // Back to a normal connection: subsequent reconnects (if any) use
@@ -320,6 +378,7 @@ export const useJsonPatchWsStream = <T extends object>(
               setError(null);
 
               if ('heartbeat' in msg) {
+                flushPending?.();
                 // Keep the transport health record live, but do not extend the
                 // reconciliation deadline: a terminal JsonPatch can be lost
                 // while heartbeats still arrive.
@@ -334,22 +393,22 @@ export const useJsonPatchWsStream = <T extends object>(
                   ? deduplicatePatches(patches)
                   : patches;
 
-                const current = dataRef.current;
-                if (!filtered.length || !current) return;
-
-                // Use Immer for structural sharing - only modified parts get new references
-                const next = produce(current, (draft) => {
-                  applyUpsertPatch(draft, filtered);
-                });
-
-                dataRef.current = next;
-                dataPatchedRef.current = true;
-                setData(next);
-                resetSilenceWatchdog(false);
+                if (!filtered.length || !dataRef.current) return;
+                pendingMessages.push(filtered);
+                if (flushTimer === null) {
+                  if (document.visibilityState !== 'hidden') {
+                    rafId = requestAnimationFrame(() => flushPending?.());
+                  }
+                  flushTimer = window.setTimeout(
+                    () => flushPending?.(),
+                    PATCH_FLUSH_TIMEOUT_MS
+                  );
+                }
               }
 
               // Handle Ready messages (initial data has been sent)
               if ('Ready' in msg) {
+                flushPending?.();
                 initializedForEndpointRef.current = streamKey;
                 setIsInitialized(true);
                 setError(null);
@@ -359,6 +418,7 @@ export const useJsonPatchWsStream = <T extends object>(
               // Handle finished messages ({finished: true})
               // Treat finished as terminal - do NOT reconnect
               if ('finished' in msg) {
+                flushPending?.();
                 finishedRef.current = true;
                 clearConnectWatchdog();
                 clearSilenceWatchdog();
@@ -367,6 +427,7 @@ export const useJsonPatchWsStream = <T extends object>(
                 setIsConnected(false);
               }
             } catch (err) {
+              flushPending?.();
               console.error('Failed to process WebSocket message:', err);
               setError('Failed to process stream update');
             }
@@ -379,6 +440,7 @@ export const useJsonPatchWsStream = <T extends object>(
           };
 
           ws.onclose = (evt) => {
+            flushPending?.();
             clearConnectWatchdog();
             clearSilenceWatchdog();
             setIsConnected(false);
@@ -442,6 +504,9 @@ export const useJsonPatchWsStream = <T extends object>(
 
     return () => {
       cancelled = true;
+      // Materialize the old endpoint's final batch for its cache without
+      // publishing into an unmounted or newly scoped consumer.
+      flushPending?.(false);
       clearConnectWatchdog();
       clearSilenceWatchdog();
       // Preserve the materialized state for this endpoint (closure-captured,
@@ -479,7 +544,6 @@ export const useJsonPatchWsStream = <T extends object>(
   }, [
     endpoint,
     enabled,
-    initialData,
     injectInitialEntry,
     deduplicatePatches,
     keepSnapshotForEndpoint,
