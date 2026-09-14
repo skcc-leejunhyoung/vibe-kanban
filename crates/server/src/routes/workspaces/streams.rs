@@ -11,6 +11,7 @@ use deployment::Deployment;
 use futures_util::TryStreamExt;
 use serde::Deserialize;
 use services::services::container::ContainerService;
+use utils::ws_batch::coalesce_ws_stream;
 
 use crate::{
     DeploymentImpl,
@@ -103,15 +104,14 @@ async fn handle_workspace_diff_ws(
     workspace: db::models::workspace::Workspace,
     stats_only: bool,
 ) -> anyhow::Result<()> {
-    use futures_util::{StreamExt, TryStreamExt};
-    use utils::log_msg::LogMsg;
+    use futures_util::StreamExt;
 
     let stream = deployment
         .container()
         .stream_diff(&workspace, stats_only)
         .await?;
 
-    let mut stream = stream.map_ok(|msg: LogMsg| msg.to_ws_message_unchecked());
+    let mut stream = coalesce_ws_stream(stream);
 
     loop {
         tokio::select! {
@@ -148,13 +148,14 @@ async fn handle_workspaces_ws(
     archived: Option<bool>,
     limit: Option<i64>,
 ) -> anyhow::Result<()> {
-    use futures_util::{StreamExt, TryStreamExt};
+    use futures_util::StreamExt;
 
-    let mut stream = deployment
-        .events()
-        .stream_workspaces_raw(archived, limit)
-        .await?
-        .map_ok(|msg| msg.to_ws_message_unchecked());
+    let mut stream = coalesce_ws_stream(
+        deployment
+            .events()
+            .stream_workspaces_raw(archived, limit)
+            .await?,
+    );
 
     loop {
         tokio::select! {

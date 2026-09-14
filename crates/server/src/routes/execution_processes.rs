@@ -32,7 +32,7 @@ use services::services::{
 };
 use tokio::time::{Duration, MissedTickBehavior};
 use ts_rs::TS;
-use utils::{log_msg::LogMsg, response::ApiResponse};
+use utils::{log_msg::LogMsg, response::ApiResponse, ws_batch::coalesce_ws_stream};
 use uuid::Uuid;
 
 use crate::{
@@ -103,23 +103,21 @@ async fn handle_raw_logs_ws(
     };
 
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut stream = raw_stream.map_ok({
+    let mut stream = coalesce_ws_stream(raw_stream.map_ok({
         let counter = counter.clone();
         move |m| match m {
             LogMsg::Stdout(content) => {
                 let index = counter.fetch_add(1, Ordering::SeqCst);
-                let patch = ConversationPatch::add_stdout(index, content);
-                LogMsg::JsonPatch(patch).to_ws_message_unchecked()
+                LogMsg::JsonPatch(ConversationPatch::add_stdout(index, content))
             }
             LogMsg::Stderr(content) => {
                 let index = counter.fetch_add(1, Ordering::SeqCst);
-                let patch = ConversationPatch::add_stderr(index, content);
-                LogMsg::JsonPatch(patch).to_ws_message_unchecked()
+                LogMsg::JsonPatch(ConversationPatch::add_stderr(index, content))
             }
-            LogMsg::Finished => LogMsg::Finished.to_ws_message_unchecked(),
+            LogMsg::Finished => LogMsg::Finished,
             _ => unreachable!("Raw stream should only have Stdout/Stderr/Finished"),
         }
-    });
+    }));
 
     loop {
         tokio::select! {
@@ -229,7 +227,7 @@ async fn handle_normalized_logs_ws(
     mut socket: MaybeSignedWebSocket,
     stream: impl futures_util::Stream<Item = anyhow::Result<LogMsg>> + Unpin + Send + 'static,
 ) -> anyhow::Result<()> {
-    let mut stream = stream.map_ok(|msg| msg.to_ws_message_unchecked());
+    let mut stream = coalesce_ws_stream(stream);
     loop {
         tokio::select! {
             item = stream.next() => {
@@ -829,11 +827,12 @@ async fn handle_execution_processes_by_session_ws(
     show_soft_deleted: bool,
 ) -> anyhow::Result<()> {
     // Get the raw stream and convert LogMsg to WebSocket messages
-    let mut stream = deployment
-        .events()
-        .stream_execution_processes_for_session_raw(session_id, show_soft_deleted)
-        .await?
-        .map_ok(|msg| msg.to_ws_message_unchecked());
+    let mut stream = coalesce_ws_stream(
+        deployment
+            .events()
+            .stream_execution_processes_for_session_raw(session_id, show_soft_deleted)
+            .await?,
+    );
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // `interval` ticks immediately by default; the initial snapshot already
