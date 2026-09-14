@@ -352,7 +352,8 @@ export function WorkspacesSidebarContainer({
   const sortedArchivedWorkspaces = useMemo(() => {
     const filtered = filterAndSort(
       archivedWorkspaces.map(toSidebarRow),
-      searchQuery
+      searchQuery,
+      'archived'
     );
     if (selectedHostView === 'all') return filtered;
     return filtered.filter(

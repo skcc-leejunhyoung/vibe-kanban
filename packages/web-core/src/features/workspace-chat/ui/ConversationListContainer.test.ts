@@ -380,9 +380,11 @@ it('matches full derivation when groups grow, split, shrink or change inside a c
 
 // Repeatable CPU profile of one frame, including rekeying and latest-entry
 // lookup; transport/Immer application and React/DOM rendering are excluded.
-// Run alone: pnpm --filter @vibe/web-core test ConversationListContainer.test.ts
+// Run alone: SKC_4776_PROFILE=1 pnpm --filter @vibe/web-core test ConversationListContainer.test.ts
+// Profile at frame cadence, with baseline and optimized runs separated. Strict
+// mode checks every measured frame; ordinary suite runs only check correctness.
 for (const processCount of [1, 20]) {
-  it(`profiles 2,000 entries (${processCount} processes), preserving output and row identity`, () => {
+  it(`profiles 2,000 entries (${processCount} processes), preserving output and row identity`, async () => {
     const perProcess = 2000 / processCount;
     const records: Array<[ExecutionProcess, PatchType[]]> = Array.from(
       { length: processCount },
@@ -404,91 +406,86 @@ for (const processCount of [1, 20]) {
         ];
       }
     );
-    const oldSource = sourceOf(records);
-    const newSource = sourceOf(records);
-    const oldDerive = baseline();
-    const newDerive = createConversationDerivation();
-    let oldResult = oldDerive(oldSource);
-    let newResult = newDerive(newSource);
     const [active, initialRaw] = records.at(-1)!;
-    const beforeMs: number[] = [];
-    const afterMs: number[] = [];
-    let beforeReuse = 0;
-    let afterReuse = 0;
-    for (let i = 0; i < 240; i++) {
-      const raw = [...initialRaw.slice(0, -1), entry(undefined, `chunk ${i}`)];
-      const oldPrevious = oldResult;
-      const newPrevious = newResult;
-      const startOld = performance.now();
-      oldSource.executionProcessState[active.id] = {
-        executionProcess: active,
-        entries: raw.map((e, index) => ({
-          ...e,
-          patchKey: `${active.id}:${index}`,
-          executionProcessId: active.id,
-        })),
-      };
-      Object.values(oldSource.executionProcessState)
-        .sort(
-          (a, b) =>
-            Date.parse(a.executionProcess.created_at) -
-            Date.parse(b.executionProcess.created_at)
-        )
-        .flatMap((p) => p.entries)
-        .at(-1);
-      oldResult = oldDerive(oldSource);
-      const oldMs = performance.now() - startOld;
-      const startNew = performance.now();
-      replaceRaw(newSource, active.id, raw);
-      latestConversationEntry(newSource.executionProcessState);
-      newResult = newDerive(newSource);
-      const newMs = performance.now() - startNew;
-      if (i >= 40) {
-        beforeMs.push(oldMs);
-        afterMs.push(newMs);
+    const profile = Boolean(globalThis.process.env.SKC_4776_PROFILE);
+    const measure = async (incremental: boolean) => {
+      const source = sourceOf(records);
+      const derive = incremental ? createConversationDerivation() : baseline();
+      let result = derive(source);
+      let previous = result;
+      const samples: number[] = [];
+      for (let i = 0; i < 240; i++) {
+        if (profile) await new Promise((resolve) => setTimeout(resolve, 16));
+        const raw = [
+          ...initialRaw.slice(0, -1),
+          entry(undefined, `chunk ${i}`),
+        ];
+        previous = result;
+        const start = performance.now();
+        if (incremental) {
+          replaceRaw(source, active.id, raw);
+          latestConversationEntry(source.executionProcessState);
+        } else {
+          source.executionProcessState[active.id] = {
+            executionProcess: active,
+            entries: raw.map((e, index) => ({
+              ...e,
+              patchKey: `${active.id}:${index}`,
+              executionProcessId: active.id,
+            })),
+          };
+          Object.values(source.executionProcessState)
+            .sort(
+              (a, b) =>
+                Date.parse(a.executionProcess.created_at) -
+                Date.parse(b.executionProcess.created_at)
+            )
+            .flatMap((p) => p.entries)
+            .at(-1);
+        }
+        result = derive(source);
+        const elapsed = performance.now() - start;
+        if (i >= 40) samples.push(elapsed);
       }
-      if (i === 239) {
-        const unchanged = newResult.rows.filter(
-          (r) => r.entry.patchKey !== `${active.id}:${perProcess - 1}`
-        );
-        beforeReuse =
-          unchanged.filter(
-            (r) =>
-              oldPrevious.rows.find((p) => p.semanticKey === r.semanticKey) ===
-              oldResult.rows.find((p) => p.semanticKey === r.semanticKey)
-          ).length / unchanged.length;
-        afterReuse =
-          unchanged.filter(
-            (r) =>
-              newPrevious.rows.find((p) => p.semanticKey === r.semanticKey) ===
-              r
-          ).length / unchanged.length;
-      }
-    }
-    expect(newResult).toEqual(oldResult);
-    expect(afterReuse).toBe(1);
-    const stats = (samples: number[]) => {
+      const previousRows = new Map(
+        previous.rows.map((row) => [row.semanticKey, row])
+      );
+      const unchanged = result.rows.filter(
+        (row) => row.entry.patchKey !== `${active.id}:${perProcess - 1}`
+      );
+      const reuse =
+        unchanged.filter((row) => previousRows.get(row.semanticKey) === row)
+          .length / unchanged.length;
       samples.sort((a, b) => a - b);
       return {
-        medianMs: +samples[100].toFixed(3),
-        p95Ms: +samples[190].toFixed(3),
-        maxMs: +samples.at(-1)!.toFixed(3),
+        result,
+        reuse,
+        maxMs: samples.at(-1)!,
+        stats: {
+          medianMs: +samples[100].toFixed(3),
+          p95Ms: +samples[190].toFixed(3),
+          maxMs: +samples.at(-1)!.toFixed(3),
+          overBudgetFrames: samples.filter((ms) => ms >= 2).length,
+        },
       };
     };
+    const before = await measure(false);
+    const after = await measure(true);
+    expect(after.result).toEqual(before.result);
+    expect(after.reuse).toBe(1);
     console.info(
       'SKC-4776',
       JSON.stringify({
         entries: 2000,
         processes: processCount,
         samples: 200,
-        before: stats(beforeMs),
-        after: stats(afterMs),
-        beforeReuse,
-        afterReuse,
+        cadenceMs: profile ? 16 : 0,
+        before: before.stats,
+        after: after.stats,
+        beforeReuse: before.reuse,
+        afterReuse: after.reuse,
       })
     );
-    // An opt-in budget avoids machine-load-sensitive failures in the full suite.
-    if (globalThis.process.env.SKC_4776_PROFILE)
-      expect(stats(afterMs).p95Ms).toBeLessThan(2);
-  });
+    if (profile) expect(after.maxMs).toBeLessThan(2);
+  }, 20_000);
 }

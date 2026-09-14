@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Project } from 'shared/remote-types';
 import type { MultiSelectDropdownOption } from '@vibe/ui/components/MultiSelectDropdown';
@@ -34,14 +34,22 @@ function toTimestamp(value: string | undefined): number | null {
     return null;
   }
 
-  const timestamp = new Date(value).getTime();
+  const timestamp = Date.parse(value);
   return Number.isNaN(timestamp) ? null : timestamp;
 }
+
+const sortTimestamps = new WeakMap<
+  Workspace,
+  Partial<Record<WorkspaceSortBy, number | null>>
+>();
 
 function getWorkspaceSortTimestamp(
   workspace: Workspace,
   sortBy: WorkspaceSortBy
 ): number | null {
+  const cached = sortTimestamps.get(workspace);
+  if (cached && sortBy in cached) return cached[sortBy]!;
+  let timestamp: number | null;
   if (sortBy === 'updated_at') {
     // "Last activity" = the most recent of when the latest agent turn was
     // *sent* (its process started) and when it *completed* (the response was
@@ -51,12 +59,74 @@ function getWorkspaceSortTimestamp(
     // completion time (which is always >= its start time).
     const started = toTimestamp(workspace.latestProcessStartedAt);
     const completed = toTimestamp(workspace.latestProcessCompletedAt);
-    if (started === null) return completed;
-    if (completed === null) return started;
-    return Math.max(started, completed);
+    timestamp =
+      started === null
+        ? completed
+        : completed === null
+          ? started
+          : Math.max(started, completed);
+  } else {
+    timestamp = toTimestamp(workspace.createdAt);
   }
+  sortTimestamps.set(workspace, { ...cached, [sortBy]: timestamp });
+  return timestamp;
+}
 
-  return toTimestamp(workspace.createdAt);
+// Keep one instance per list: active and archived lists update independently.
+export function createWorkspaceSorter() {
+  let previous: Workspace[] = [];
+  let previousSortBy: WorkspaceSortBy | undefined;
+  let previousSortOrder: WorkspaceSortOrder | undefined;
+  let order: number[] = [];
+  return (
+    workspaces: Workspace[],
+    sortBy: WorkspaceSortBy,
+    sortOrder: WorkspaceSortOrder
+  ): Workspace[] => {
+    if (
+      sortBy !== previousSortBy ||
+      sortOrder !== previousSortOrder ||
+      workspaces.length !== previous.length ||
+      workspaces.some((workspace, i) => {
+        const old = previous[i];
+        return (
+          workspace !== old &&
+          (workspace.isPinned !== old.isPinned ||
+            workspace.name !== old.name ||
+            (sortBy === 'created_at'
+              ? workspace.createdAt !== old.createdAt
+              : workspace.latestProcessStartedAt !==
+                  old.latestProcessStartedAt ||
+                workspace.latestProcessCompletedAt !==
+                  old.latestProcessCompletedAt))
+        );
+      })
+    ) {
+      // Parse once per changed row, before entering the sort comparator.
+      const timestamps = workspaces.map((workspace) =>
+        getWorkspaceSortTimestamp(workspace, sortBy)
+      );
+      order = workspaces
+        .map((_, i) => i)
+        .sort((a, b) => {
+          if (workspaces[a].isPinned !== workspaces[b].isPinned)
+            return workspaces[a].isPinned ? -1 : 1;
+          const aTimestamp = timestamps[a];
+          const bTimestamp = timestamps[b];
+          if (aTimestamp === bTimestamp)
+            return workspaces[a].name.localeCompare(workspaces[b].name);
+          if (aTimestamp === null) return -1;
+          if (bTimestamp === null) return 1;
+          return sortOrder === 'asc'
+            ? aTimestamp - bTimestamp
+            : bTimestamp - aTimestamp;
+        });
+    }
+    previous = workspaces;
+    previousSortBy = sortBy;
+    previousSortOrder = sortOrder;
+    return order.map((i) => workspaces[i]);
+  };
 }
 
 export interface WorkspaceSortFilterModel {
@@ -68,7 +138,11 @@ export interface WorkspaceSortFilterModel {
   /** True when sort differs from the default (updated_at desc). */
   hasNonDefaultSort: boolean;
   /** Apply project + PR + search filters, then sort (pinned first). */
-  filterAndSort: (workspaces: Workspace[], searchQuery: string) => Workspace[];
+  filterAndSort: (
+    workspaces: Workspace[],
+    searchQuery: string,
+    list?: 'active' | 'archived'
+  ) => Workspace[];
   sort: {
     sortBy: WorkspaceSortBy;
     sortOrder: WorkspaceSortOrder;
@@ -96,6 +170,10 @@ export interface WorkspaceSortFilterModel {
  */
 export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
   const { t } = useTranslation('common');
+  const [sorters] = useState(() => ({
+    active: createWorkspaceSorter(),
+    archived: createWorkspaceSorter(),
+  }));
 
   // Filter + sort state (persisted in the UI preferences store).
   const workspaceFilters = useUiPreferencesStore((s) => s.workspaceFilters);
@@ -222,7 +300,11 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
     workspaceSort.sortOrder !== DEFAULT_WORKSPACE_SORT.sortOrder;
 
   const filterAndSort = useCallback(
-    (workspaces: Workspace[], searchQuery: string): Workspace[] => {
+    (
+      workspaces: Workspace[],
+      searchQuery: string,
+      list: 'active' | 'archived' = 'active'
+    ): Workspace[] => {
       let result = workspaces;
 
       if (excludedHostIds.length > 0) {
@@ -272,32 +354,11 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
         );
       }
 
-      // Sort: pinned first, then by the selected timestamp (missing first).
-      return [...result].sort((a, b) => {
-        if (a.isPinned !== b.isPinned) {
-          return a.isPinned ? -1 : 1;
-        }
-
-        const aTimestamp = getWorkspaceSortTimestamp(a, workspaceSort.sortBy);
-        const bTimestamp = getWorkspaceSortTimestamp(b, workspaceSort.sortBy);
-
-        if (aTimestamp === null && bTimestamp === null) {
-          return a.name.localeCompare(b.name);
-        }
-        if (aTimestamp === null) {
-          return -1;
-        }
-        if (bTimestamp === null) {
-          return 1;
-        }
-        if (aTimestamp === bTimestamp) {
-          return a.name.localeCompare(b.name);
-        }
-
-        return workspaceSort.sortOrder === 'asc'
-          ? aTimestamp - bTimestamp
-          : bTimestamp - aTimestamp;
-      });
+      return sorters[list](
+        result,
+        workspaceSort.sortBy,
+        workspaceSort.sortOrder
+      );
     },
     [
       workspaceFilters,
@@ -305,6 +366,7 @@ export function useWorkspaceSortFilter(): WorkspaceSortFilterModel {
       remoteProjectByLocalId,
       workspaceSort.sortBy,
       workspaceSort.sortOrder,
+      sorters,
     ]
   );
 
