@@ -27,7 +27,10 @@ import {
   useWorkspaceIssueStatuses,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useWorkspaceIssueGrouping } from '@/shared/hooks/useWorkspaceIssueGrouping';
-import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
+import {
+  getHostWorkspaceKey,
+  type SidebarWorkspace,
+} from '@/shared/hooks/useWorkspaces';
 import {
   groupWorkspacesByIssue,
   bucketIssueGroupsByStatus,
@@ -48,6 +51,7 @@ import {
   WorkspacesSidebar,
   categorizeWorkspaces,
   type WorkspacesSidebarPersistKeys,
+  type WorkspacesSidebarWorkspace,
 } from '@vibe/ui/components/WorkspacesSidebar';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { IconButton } from '@vibe/ui/components/IconButton';
@@ -89,6 +93,28 @@ export type WorkspaceLayoutMode = 'flat' | 'accordion';
 const DRAFT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
 
 const PAGE_SIZE = 50;
+const EMPTY_GITHUB_ISSUES: NonNullable<
+  WorkspacesSidebarWorkspace['githubIssues']
+> = [];
+type SidebarRow = SidebarWorkspace & WorkspacesSidebarWorkspace;
+const sidebarRows = new WeakMap<SidebarWorkspace, SidebarRow>();
+
+function decorateSidebarWorkspace(
+  workspace: SidebarWorkspace,
+  hostPrimaryColor: string | undefined,
+  githubIssues = EMPTY_GITHUB_ISSUES
+): SidebarRow {
+  const cached = sidebarRows.get(workspace);
+  if (
+    cached &&
+    cached.hostPrimaryColor === hostPrimaryColor &&
+    cached.githubIssues === githubIssues
+  )
+    return cached;
+  const row = { ...workspace, hostPrimaryColor, githubIssues };
+  sidebarRows.set(workspace, row);
+  return row;
+}
 
 interface WorkspacesSidebarContainerProps {
   onScrollToBottom?: (behavior?: 'auto' | 'smooth') => void;
@@ -259,15 +285,16 @@ export function WorkspacesSidebarContainer({
   const isIssueGrouped = groupMode === 'issue';
   const workspaceIssueMeta = useWorkspaceIssueGrouping();
 
-  const withGithubIssues = useCallback(
-    (workspace: (typeof activeWorkspaces)[number]) => ({
-      ...workspace,
-      githubIssues:
+  const toSidebarRow = useCallback(
+    (workspace: SidebarWorkspace) =>
+      decorateSidebarWorkspace(
+        workspace,
+        hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
         workspaceIssueMeta.get(
           getHostWorkspaceKey(workspace.id, workspace.hostId)
-        )?.githubIssues ?? [],
-    }),
-    [workspaceIssueMeta]
+        )?.githubIssues
+      ),
+    [workspaceIssueMeta, hostPrimaryColors]
   );
 
   // Shared workspace sort/filter model (project options + filter/sort pipeline).
@@ -306,13 +333,7 @@ export function WorkspacesSidebarContainer({
   // Apply sidebar filters (project + PR) + search, then sort.
   const sortedActiveWorkspaces = useMemo(() => {
     const filtered = filterAndSort(
-      activeWorkspaces
-        .map((workspace) => ({
-          ...workspace,
-          hostPrimaryColor:
-            hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
-        }))
-        .map(withGithubIssues),
+      activeWorkspaces.map(toSidebarRow),
       searchQuery
     );
     if (selectedHostView === 'all') return filtered;
@@ -325,19 +346,12 @@ export function WorkspacesSidebarContainer({
     activeWorkspaces,
     searchQuery,
     selectedHostView,
-    hostPrimaryColors,
-    withGithubIssues,
+    toSidebarRow,
   ]);
 
   const sortedArchivedWorkspaces = useMemo(() => {
     const filtered = filterAndSort(
-      archivedWorkspaces
-        .map((workspace) => ({
-          ...workspace,
-          hostPrimaryColor:
-            hostPrimaryColors[getHostPrimaryColorKey(workspace.hostId ?? null)],
-        }))
-        .map(withGithubIssues),
+      archivedWorkspaces.map(toSidebarRow),
       searchQuery
     );
     if (selectedHostView === 'all') return filtered;
@@ -350,8 +364,7 @@ export function WorkspacesSidebarContainer({
     archivedWorkspaces,
     searchQuery,
     selectedHostView,
-    hostPrimaryColors,
-    withGithubIssues,
+    toSidebarRow,
   ]);
 
   // Apply pagination (only when not searching)

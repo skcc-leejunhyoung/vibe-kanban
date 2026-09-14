@@ -12,7 +12,15 @@ import {
   WarningIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
-import type { MouseEvent, Ref } from 'react';
+import {
+  memo,
+  useCallback,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  type MouseEvent,
+  type Ref,
+} from 'react';
 import { cn } from '../lib/cn';
 import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { RunningDots } from './RunningDots';
@@ -98,7 +106,47 @@ export interface WorkspaceSummaryProps {
   hostPrimaryColor?: string;
 }
 
+// List callers bind row-specific click/ref callbacks inline. Keep those fresh
+// in this small adapter so the memoized visual row can skip unrelated patches.
 export function WorkspaceSummary({
+  onClick,
+  onOpenWorkspaceActions,
+  forwardedRef,
+  ...props
+}: WorkspaceSummaryProps) {
+  const callbacksRef = useRef({ onClick, onOpenWorkspaceActions });
+  const elementRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    callbacksRef.current = { onClick, onOpenWorkspaceActions };
+  });
+  useImperativeHandle(forwardedRef, () => elementRef.current!, []);
+  const handleClick = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) =>
+      callbacksRef.current.onClick?.(event),
+    []
+  );
+  const handleOpenActions = useCallback(
+    (id: string) => callbacksRef.current.onOpenWorkspaceActions?.(id),
+    []
+  );
+  return (
+    <MemoizedWorkspaceSummary
+      {...props}
+      onClick={onClick ? handleClick : undefined}
+      onOpenWorkspaceActions={
+        onOpenWorkspaceActions ? handleOpenActions : undefined
+      }
+      forwardedRef={elementRef}
+      elapsed={
+        props.latestProcessCompletedAt
+          ? formatRelativeElapsed(props.latestProcessCompletedAt)
+          : ''
+      }
+    />
+  );
+}
+
+const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
   name,
   workspaceId,
   filesChanged,
@@ -131,7 +179,8 @@ export function WorkspaceSummary({
   forwardedRef,
   latestPrompt,
   hostPrimaryColor,
-}: WorkspaceSummaryProps) {
+  elapsed,
+}: WorkspaceSummaryProps & { elapsed: string }) {
   const { t } = useTranslation('common');
   const hasChanges = filesChanged !== undefined && filesChanged > 0;
   const isFailed =
@@ -335,9 +384,7 @@ export function WorkspaceSummary({
                   {t('workspaces.draft')}
                 </span>
               ) : latestProcessCompletedAt ? (
-                <span className="min-w-0 flex-1 truncate">
-                  {formatRelativeElapsed(latestProcessCompletedAt)}
-                </span>
+                <span className="min-w-0 flex-1 truncate">{elapsed}</span>
               ) : (
                 <span className="flex-1" />
               ))}
@@ -382,4 +429,4 @@ export function WorkspaceSummary({
       )}
     </div>
   );
-}
+});

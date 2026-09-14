@@ -205,3 +205,93 @@ describe('materializeHostWorkspaceStream', () => {
     ).toBe(true);
   });
 });
+
+describe('sidebar reference and ordering cache', () => {
+  it('preserves unchanged rows across status/summary patches, sorting ties, pinning and host changes', async () => {
+    const { createSidebarWorkspaceList, toSidebarWorkspace } = await import(
+      './useWorkspaces'
+    );
+    const select = createSidebarWorkspaceList();
+    const record = (id: string, createdAt: string, pinned = false) =>
+      ({
+        id,
+        name: id,
+        branch: id,
+        created_at: createdAt,
+        updated_at: createdAt,
+        pinned,
+        archived: false,
+        is_running: false,
+      }) as WorkspaceWithStatus;
+    const records = {
+      a: record('a', '2026-09-01T00:00:00Z'),
+      b: record('b', '2026-09-02T00:00:00Z'),
+      c: record('c', '2026-09-02T00:00:00Z'),
+    };
+    const summaries = new Map();
+    const original = select(records, summaries, null);
+    expect(original.map((row) => row.id)).toEqual(['b', 'c', 'a']);
+    const patched = select(
+      { ...records, a: { ...records.a, is_running: true } },
+      summaries,
+      null
+    );
+    expect(patched[0]).toBe(original[0]);
+    expect(patched[1]).toBe(original[1]);
+    expect(patched[2]).not.toBe(original[2]);
+    const pinned = select(
+      { ...records, a: { ...records.a, pinned: true } },
+      summaries,
+      null
+    );
+    expect(pinned.map((row) => row.id)).toEqual(['a', 'b', 'c']);
+    const reordered = select(
+      { c: records.c, b: records.b, a: records.a },
+      summaries,
+      null
+    );
+    expect(reordered.map((row) => row.id)).toEqual(['c', 'b', 'a']);
+    const remote = select(records, summaries, 'host-b');
+    expect(remote.every((row) => row.hostId === 'host-b')).toBe(true);
+    expect(remote[0]).not.toBe(original[0]);
+    const summary = {
+      files_changed: 3,
+    } as import('shared/types').WorkspaceSummary;
+    const withSummary = toSidebarWorkspace(records.a, summary, 'host-b');
+    expect(toSidebarWorkspace(records.a, summary, 'host-b')).toBe(withSummary);
+    expect(
+      toSidebarWorkspace(records.a, { ...summary, files_changed: 4 }, 'host-b')
+        .filesChanged
+    ).toBe(4);
+    expect(select({}, summaries, null)).toEqual([]);
+  });
+
+  it('uses the same reference cache for remote active and archived rows', async () => {
+    const { createSidebarWorkspaceList } = await import('./useWorkspaces');
+    const select = createSidebarWorkspaceList();
+    const a = {
+      id: 'a',
+      created_at: '2026-09-01T00:00:00Z',
+      pinned: false,
+      archived: false,
+    } as WorkspaceWithStatus;
+    const b = { ...a, id: 'b', archived: true };
+    const first = materializeHostWorkspaceStream(
+      { a, b },
+      new Map(),
+      new Map(),
+      'host',
+      select
+    );
+    const next = materializeHostWorkspaceStream(
+      { a: { ...a, is_running: true }, b },
+      new Map(),
+      new Map(),
+      'host',
+      select
+    );
+    expect(next.archivedWorkspaces[0]).toBe(first.archivedWorkspaces[0]);
+    expect(next.workspaces[0].isRunning).toBe(true);
+    expect(next.workspaceRecordsById['host:b']).toBe(b);
+  });
+});

@@ -126,12 +126,25 @@ type WorkspacesState = {
 };
 
 // Transform WorkspaceWithStatus to SidebarWorkspace, optionally merging summary data
-function toSidebarWorkspace(
+const sidebarWorkspaceCache = new WeakMap<
+  WorkspaceWithStatus,
+  {
+    summary: WorkspaceSummary | undefined;
+    workspace: SidebarWorkspace;
+  }
+>();
+const createdAtTimestamps = new WeakMap<SidebarWorkspace, number>();
+
+export function toSidebarWorkspace(
   ws: WorkspaceWithStatus,
   summary?: WorkspaceSummary,
   hostId: string | null = null
 ): SidebarWorkspace {
-  return {
+  const cached = sidebarWorkspaceCache.get(ws);
+  if (cached?.summary === summary && cached?.workspace.hostId === hostId) {
+    return cached.workspace;
+  }
+  const workspace: SidebarWorkspace = {
     id: ws.id,
     name: ws.name ?? ws.branch, // Use name if available, fallback to branch
     branch: ws.branch,
@@ -169,6 +182,45 @@ function toSidebarWorkspace(
     })),
     latestPrompt: summary?.latest_prompt ?? undefined,
     hostId,
+  };
+  createdAtTimestamps.set(workspace, Date.parse(ws.created_at));
+  sidebarWorkspaceCache.set(ws, { summary, workspace });
+  return workspace;
+}
+
+// Reuse the ordering when a patch changes only status/summary fields. The
+// input's insertion order is part of the key to preserve stable timestamp ties.
+export function createSidebarWorkspaceList() {
+  let previous: SidebarWorkspace[] = [];
+  let order: number[] = [];
+  return (
+    records: Record<string, WorkspaceWithStatus>,
+    summaries: ReadonlyMap<string, WorkspaceSummary>,
+    hostId: string | null
+  ) => {
+    const next = Object.values(records).map((ws) =>
+      toSidebarWorkspace(ws, summaries.get(ws.id), hostId)
+    );
+    if (
+      next.length !== previous.length ||
+      next.some(
+        (ws, i) =>
+          ws.id !== previous[i].id ||
+          ws.isPinned !== previous[i].isPinned ||
+          ws.createdAt !== previous[i].createdAt
+      )
+    ) {
+      order = next
+        .map((_, i) => i)
+        .sort(
+          (a, b) =>
+            Number(next[b].isPinned) - Number(next[a].isPinned) ||
+            createdAtTimestamps.get(next[b])! -
+              createdAtTimestamps.get(next[a])!
+        );
+    }
+    previous = next;
+    return order.map((i) => next[i]);
   };
 }
 
@@ -301,39 +353,18 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
     placeholderData: keepPreviousData,
   });
 
-  const workspaces = useMemo(() => {
-    if (!activeData?.workspaces) return [];
-    return Object.values(activeData.workspaces)
-      .sort((a, b) => {
-        // First sort by pinned (pinned first)
-        if (a.pinned !== b.pinned) {
-          return a.pinned ? -1 : 1;
-        }
-        // Then by created_at (newest first)
-        return (
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
-      })
-      .map((ws) => toSidebarWorkspace(ws, activeSummaries.get(ws.id), hostId));
-  }, [activeData, activeSummaries, hostId]);
+  const [selectActive] = useState(createSidebarWorkspaceList);
+  const [selectArchived] = useState(createSidebarWorkspaceList);
+  const workspaces = useMemo(
+    () => selectActive(activeData?.workspaces ?? {}, activeSummaries, hostId),
+    [activeData, activeSummaries, hostId, selectActive]
+  );
 
-  const archivedWorkspaces = useMemo(() => {
-    if (!archivedData?.workspaces) return [];
-    return Object.values(archivedData.workspaces)
-      .sort((a, b) => {
-        // First sort by pinned (pinned first)
-        if (a.pinned !== b.pinned) {
-          return a.pinned ? -1 : 1;
-        }
-        // Then by created_at (newest first)
-        return (
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
-      })
-      .map((ws) =>
-        toSidebarWorkspace(ws, archivedSummaries.get(ws.id), hostId)
-      );
-  }, [archivedData, archivedSummaries, hostId]);
+  const archivedWorkspaces = useMemo(
+    () =>
+      selectArchived(archivedData?.workspaces ?? {}, archivedSummaries, hostId),
+    [archivedData, archivedSummaries, hostId, selectArchived]
+  );
 
   const workspaceRecordsById = useMemo(() => {
     const byId: Record<string, WorkspaceWithStatus> = {};
@@ -380,29 +411,30 @@ export function materializeHostWorkspaceStream(
   recordsById: Record<string, WorkspaceWithStatus>,
   activeSummaries: ReadonlyMap<string, WorkspaceSummary>,
   archivedSummaries: ReadonlyMap<string, WorkspaceSummary>,
-  hostId: string
+  hostId: string,
+  selectWorkspaces = createSidebarWorkspaceList()
 ): Pick<
   UseWorkspacesResult,
   'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById'
 > {
-  const records = Object.values(recordsById).sort(
-    (a, b) =>
-      Number(b.pinned) - Number(a.pinned) ||
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-  );
+  const summaries = new Map<string, WorkspaceSummary>();
+  // Active and archived streams can briefly contain the same id during an
+  // archive transition; select the summary using the authoritative raw row.
+  for (const workspace of Object.values(recordsById)) {
+    const summary = (
+      workspace.archived ? archivedSummaries : activeSummaries
+    ).get(workspace.id);
+    if (summary) summaries.set(workspace.id, summary);
+  }
+  const records = selectWorkspaces(recordsById, summaries, hostId);
   const workspaces: SidebarWorkspace[] = [];
   const archivedWorkspaces: SidebarWorkspace[] = [];
   const workspaceRecordsById: Record<string, WorkspaceWithStatus> = {};
 
   for (const workspace of records) {
-    workspaceRecordsById[getHostWorkspaceKey(workspace.id, hostId)] = workspace;
-    const summaries = workspace.archived ? archivedSummaries : activeSummaries;
-    const item = toSidebarWorkspace(
-      workspace,
-      summaries.get(workspace.id),
-      hostId
-    );
-    (workspace.archived ? archivedWorkspaces : workspaces).push(item);
+    workspaceRecordsById[getHostWorkspaceKey(workspace.id, hostId)] =
+      recordsById[workspace.id];
+    (workspace.isArchived ? archivedWorkspaces : workspaces).push(workspace);
   }
 
   return { workspaces, archivedWorkspaces, workspaceRecordsById };
@@ -442,6 +474,7 @@ const RemoteWorkspaceStreamsContext = createContext<
 function useRemoteHostWorkspaceStream(
   hostId: string
 ): RemoteHostWorkspaceStream {
+  const [selectWorkspaces] = useState(createSidebarWorkspaceList);
   const endpoint = `/api/host/${hostId}/workspaces/streams/ws`;
   const initialData = useCallback(
     (): WorkspacesState => ({ workspaces: {} }),
@@ -477,7 +510,8 @@ function useRemoteHostWorkspaceStream(
       data?.workspaces ?? {},
       activeSummaries,
       archivedSummaries,
-      hostId
+      hostId,
+      selectWorkspaces
     );
 
     return {
@@ -491,6 +525,7 @@ function useRemoteHostWorkspaceStream(
     activeSummaries,
     archivedSummaries,
     hostId,
+    selectWorkspaces,
     isInitialized,
     isConnected,
     error,
