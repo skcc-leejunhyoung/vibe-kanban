@@ -13,6 +13,7 @@ import { SpinnerIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 
 import {
+  buildConversationRowsIncremental,
   findPreviousUserMessageIndex,
   type ConversationRow,
 } from '../model/conversation-row-model';
@@ -38,6 +39,8 @@ import type {
   AddEntryType,
   ConversationTimelineSource,
   DisplayEntry,
+  ExecutionProcessState,
+  PatchTypeWithKey,
 } from '@/shared/hooks/useConversationHistory/types';
 import {
   isAggregatedGroup,
@@ -76,6 +79,282 @@ export interface ConversationListHandle {
 
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
 const STREAMING_UNVIRTUALIZED_BUFFER_ROWS = 24;
+
+const isUserEntry = (entry: PatchTypeWithKey) =>
+  entry.type === 'NORMALIZED_ENTRY' &&
+  entry.content.entry_type.type === 'user_message';
+
+// Only these raw entries influence other processes / the final next-action
+// state. Keep them in the source when substituting a cached process's output.
+function isSemanticEntry(entry: PatchTypeWithKey) {
+  if (entry.type !== 'NORMALIZED_ENTRY') return false;
+  const type = entry.content.entry_type;
+  return (
+    type.type === 'token_usage_info' ||
+    (type.type === 'tool_use' && type.status.status === 'pending_approval') ||
+    (type.type === 'error_message' && type.error_type.type === 'setup_required')
+  );
+}
+
+const aggregationBoundary: PatchTypeWithKey = {
+  type: 'NORMALIZED_ENTRY',
+  content: {
+    entry_type: { type: 'user_message' },
+    content: '',
+    timestamp: null,
+  },
+  patchKey: 'aggregation-boundary',
+  executionProcessId: '',
+};
+
+/** Per-conversation cache; discard it when the host/session scope changes. */
+export function createConversationDerivation() {
+  type ProcessCache = {
+    raw: PatchTypeWithKey[];
+    action: ExecutionProcessState['executionProcess']['executor_action'];
+    status: string | undefined;
+    exitCode: bigint | null | undefined;
+    semanticEntries: PatchTypeWithKey[];
+    entries: PatchTypeWithKey[];
+    userCount: number;
+  };
+  const processes = new Map<string, ProcessCache>();
+  const scriptOutputCache = new Map<
+    string,
+    { count: number; output: string }
+  >();
+  let context: ExecutionProcessState['executionProcess'][] = [];
+  let blocks = new Map<
+    string,
+    {
+      parts: ProcessCache[];
+      input: PatchTypeWithKey[];
+      multipleUsers: boolean;
+      laterUser: boolean;
+      displayEntries: DisplayEntry[];
+      rows: ConversationRow[];
+    }
+  >();
+
+  return (source: ConversationTimelineSource) => {
+    const ordered = Object.values(source.executionProcessState).sort(
+      (a, b) =>
+        Date.parse(a.executionProcess.created_at) -
+        Date.parse(b.executionProcess.created_at)
+    );
+    // Ordering/actions affect setup prompts, first/last turns, and handoffs.
+    // Ordinary status and log updates invalidate only their own process.
+    if (
+      ordered.length !== context.length ||
+      ordered.some(
+        (p, i) =>
+          p.executionProcess.id !== context[i].id ||
+          p.executionProcess.executor_action !== context[i].executor_action
+      )
+    ) {
+      processes.clear();
+    }
+    context = ordered.map((p) => p.executionProcess);
+    const live = new Map(source.liveExecutionProcesses.map((p) => [p.id, p]));
+    const currentScriptOutputCache = new Map(scriptOutputCache);
+    const sparseState: ConversationTimelineSource['executionProcessState'] = {};
+    const changed = new Set<string>();
+    for (const process of ordered) {
+      const id = process.executionProcess.id;
+      const cached = processes.get(id);
+      const current = live.get(id);
+      if (
+        cached?.raw === process.entries &&
+        cached.action === process.executionProcess.executor_action &&
+        cached.status === current?.status &&
+        cached.exitCode === current?.exit_code
+      ) {
+        sparseState[id] = { ...process, entries: cached.semanticEntries };
+        const output = scriptOutputCache.get(id);
+        if (output)
+          currentScriptOutputCache.set(id, {
+            ...output,
+            count: cached.semanticEntries.length,
+          });
+      } else {
+        sparseState[id] = process;
+        changed.add(id);
+      }
+    }
+    const derived = deriveConversationEntries({
+      source: { ...source, executionProcessState: sparseState },
+      scriptOutputCache: currentScriptOutputCache,
+    });
+    const entriesByProcess = new Map<string, PatchTypeWithKey[]>();
+    for (const entry of derived.entries) {
+      let group = entriesByProcess.get(entry.executionProcessId);
+      if (!group) {
+        group = [];
+        entriesByProcess.set(entry.executionProcessId, group);
+      }
+      group.push(entry);
+    }
+    for (const process of ordered) {
+      const id = process.executionProcess.id;
+      if (!changed.has(id)) continue;
+      const output = currentScriptOutputCache.get(id);
+      if (output) scriptOutputCache.set(id, output);
+      const entries = entriesByProcess.get(id) ?? [];
+      const previousEntries = processes.get(id)?.entries;
+      // These few generated entries are not backed by stream references.
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (!/:(user|script|handoff|loading)$/.test(entry.patchKey)) continue;
+        const previous = previousEntries?.find(
+          (old) => old.patchKey === entry.patchKey
+        );
+        if (previous && JSON.stringify(previous) === JSON.stringify(entry))
+          entries[i] = previous;
+      }
+      processes.set(id, {
+        raw: process.entries,
+        action: process.executionProcess.executor_action,
+        status: live.get(id)?.status,
+        exitCode: live.get(id)?.exit_code,
+        semanticEntries: process.entries.filter(isSemanticEntry),
+        entries,
+        userCount: entries.filter(isUserEntry).length,
+      });
+    }
+    for (const id of scriptOutputCache.keys()) {
+      if (!(id in sparseState)) scriptOutputCache.delete(id);
+    }
+
+    const entries: PatchTypeWithKey[] = [];
+    const groups: ProcessCache[][] = [];
+    let userCount = 0;
+    for (const process of ordered) {
+      const cached = processes.get(process.executionProcess.id)!;
+      entries.push(...cached.entries);
+      userCount += cached.userCount;
+      if (!cached.entries.length) continue;
+      const first = cached.entries[0];
+      // Synthetic user/script/handoff entries break every aggregation kind.
+      // Promptless processes share a block so tools/thinking can span them.
+      if (!groups.length || /:(user|script|handoff)$/.test(first.patchKey)) {
+        groups.push([]);
+      }
+      groups.at(-1)!.push(cached);
+    }
+    entries.push(...(entriesByProcess.get('') ?? []));
+
+    const nextBlocks: typeof blocks = new Map();
+    const displayEntries: DisplayEntry[] = [];
+    const rows: ConversationRow[] = [];
+    let remainingUsers = userCount;
+    for (const parts of groups) {
+      const key = parts[0].entries[0].executionProcessId;
+      remainingUsers -= parts.reduce((sum, part) => sum + part.userCount, 0);
+      const multipleUsers = userCount > 1;
+      const laterUser = remainingUsers > 0;
+      let block = blocks.get(key);
+      if (
+        !block ||
+        block.multipleUsers !== multipleUsers ||
+        block.laterUser !== laterUser ||
+        block.parts.length !== parts.length ||
+        parts.some((part, i) => part !== block!.parts[i])
+      ) {
+        const input =
+          parts.length === 1
+            ? parts[0].entries
+            : parts.flatMap((part) => part.entries);
+        let prefixLength = 0;
+        let start = 0;
+        if (
+          block &&
+          block.multipleUsers === multipleUsers &&
+          block.laterUser === laterUser
+        ) {
+          let common = 0;
+          while (common < input.length && input[common] === block.input[common])
+            common++;
+          if (common === input.length && common === block.input.length) {
+            block = { ...block, parts, input };
+            nextBlocks.set(key, block);
+            displayEntries.push(...block.displayEntries);
+            rows.push(...block.rows);
+            continue;
+          }
+          // Resume at the last unchanged, visible aggregation barrier. This
+          // also keeps a single long streaming process incremental. Include
+          // the barrier itself so no tool/thinking group can cross the cut.
+          for (let i = common - 1; i >= 0; i--) {
+            const entry = input[i];
+            if (
+              entry.type === 'NORMALIZED_ENTRY' &&
+              entry.content.entry_type.type !== 'thinking' &&
+              entry.content.entry_type.type !== 'tool_use'
+            ) {
+              const index = block.displayEntries.findIndex(
+                (old) => old.patchKey === entry.patchKey
+              );
+              if (index >= 0) {
+                start = i;
+                prefixLength = index;
+                break;
+              }
+            }
+          }
+        }
+        const tail = input.slice(start);
+        // Preserve the global "previous thinking turn" rule locally, then
+        // remove the boundary markers before exposing rows to the renderer.
+        if (multipleUsers) tail.unshift(aggregationBoundary);
+        if (multipleUsers && laterUser) tail.push(aggregationBoundary);
+        const timeline = deriveConversationTimeline(tail, [], []);
+        const previousDisplayEntries =
+          block?.displayEntries.slice(prefixLength) ?? [];
+        const previousRows = block?.rows.slice(prefixLength) ?? [];
+        const previous = new Map(
+          previousDisplayEntries.map((entry) => [entry.patchKey, entry])
+        );
+        const stable = timeline.displayEntries
+          .filter((entry) => entry !== aggregationBoundary)
+          .map((entry) => {
+            const old = previous.get(entry.patchKey);
+            if (!old || old.type !== entry.type) return entry;
+            if (
+              'entries' in old &&
+              'entries' in entry &&
+              old.entries.length === entry.entries.length &&
+              old.entries.every((item, i) => item === entry.entries[i])
+            )
+              return old;
+            return entry;
+          });
+        block = {
+          parts,
+          input,
+          multipleUsers,
+          laterUser,
+          displayEntries: [
+            ...(block?.displayEntries.slice(0, prefixLength) ?? []),
+            ...stable,
+          ],
+          rows: [
+            ...(block?.rows.slice(0, prefixLength) ?? []),
+            ...buildConversationRowsIncremental(
+              stable,
+              previousDisplayEntries,
+              previousRows
+            ),
+          ],
+        };
+      }
+      nextBlocks.set(key, block);
+      displayEntries.push(...block.displayEntries);
+      rows.push(...block.rows);
+    }
+    blocks = nextBlocks;
+    return { ...derived, entries, displayEntries, rows };
+  };
+}
 
 function renderRowContent(
   entry: DisplayEntry,
@@ -177,9 +456,7 @@ export const ConversationList = forwardRef<
   const lastSettledTailStartIndexRef = useRef<number | null>(null);
   const { setEntries, reset } = useEntriesActions();
   const setTokenUsageInfo = useSetTokenUsageInfo();
-  const scriptOutputCacheRef = useRef<
-    Map<string, { count: number; output: string }>
-  >(new Map());
+  const deriveConversationRef = useRef(createConversationDerivation());
   const scrollOnEntriesChangedRef = useRef<
     ((addType: AddEntryType, isInitialLoad: boolean) => void) | null
   >(null);
@@ -259,7 +536,7 @@ export const ConversationList = forwardRef<
     pendingUpdateRef.current = null;
     topGrowthHoldDeadlineRef.current = 0;
     lastScrollHeightRef.current = 0;
-    scriptOutputCacheRef.current.clear();
+    deriveConversationRef.current = createConversationDerivation();
     if (planRevealSpacerRef.current) {
       planRevealSpacerRef.current.style.height = '0px';
     }
@@ -382,26 +659,16 @@ export const ConversationList = forwardRef<
       }
     }
 
-    const derivedEntries = deriveConversationEntries({
-      source: pending.source,
-      scriptOutputCache: scriptOutputCacheRef.current,
-    });
+    const derivedEntries = deriveConversationRef.current(pending.source);
 
     setHasSetupScriptRun(derivedEntries.hasSetupScriptRun);
     setHasCleanupScriptRun(derivedEntries.hasCleanupScriptRun);
     setHasRunningProcess(derivedEntries.hasRunningProcess);
     setTokenUsageInfo(derivedEntries.latestTokenUsageInfo);
 
-    const derivedTimeline = deriveConversationTimeline(
-      derivedEntries.entries,
-      prevEntriesRef.current,
-      prevRowsRef.current
-    );
+    prevRowsRef.current = derivedEntries.rows;
 
-    prevEntriesRef.current = derivedTimeline.displayEntries;
-    prevRowsRef.current = derivedTimeline.rows;
-
-    setFilteredEntries(derivedTimeline.displayEntries);
+    setFilteredEntries(derivedEntries.displayEntries);
     setDataVersion((current) => current + 1);
     setEntries(derivedEntries.entries);
 
@@ -441,7 +708,6 @@ export const ConversationList = forwardRef<
     scopeKey: conversationScopeKey,
   });
 
-  const prevEntriesRef = useRef<DisplayEntry[]>([]);
   const prevRowsRef = useRef<ConversationRow[]>([]);
   const conversationRows = useMemo(
     () => prevRowsRef.current,

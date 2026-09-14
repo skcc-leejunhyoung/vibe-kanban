@@ -45,6 +45,45 @@ import {
   REMAINING_BATCH_SIZE,
 } from '@/shared/hooks/useConversationHistory/constants';
 
+// Immer preserves untouched entries. Include the position and process in the
+// hit check: remove/move patches and a replay may reuse an object at a new key.
+const keyedPatches = new WeakMap<
+  PatchType,
+  { index: number; entry: PatchTypeWithKey }
+>();
+
+export function patchWithKey(
+  patch: PatchType,
+  executionProcessId: string,
+  index: number
+): PatchTypeWithKey {
+  const cached = keyedPatches.get(patch);
+  if (
+    cached?.index === index &&
+    cached.entry.executionProcessId === executionProcessId
+  )
+    return cached.entry;
+  const patchKey = `${executionProcessId}:${index}`;
+  const keyed = { ...patch, patchKey, executionProcessId };
+  keyedPatches.set(patch, { index, entry: keyed });
+  return keyed;
+}
+
+export function latestConversationEntry(state: ExecutionProcessStateStore) {
+  let latest: ExecutionProcessStateStore[string] | undefined;
+  let latestTime = -Infinity;
+  for (const process of Object.values(state)) {
+    if (process.entries.length === 0) continue;
+    const time = new Date(process.executionProcess.created_at).getTime();
+    // Stable sort previously put the later inserted process last on ties.
+    if (!latest || time >= latestTime) {
+      latest = process;
+      latestTime = time;
+    }
+  }
+  return latest?.entries.at(-1);
+}
+
 export const useConversationHistory = ({
   onTimelineUpdated,
   scopeKey,
@@ -63,6 +102,8 @@ export const useConversationHistory = ({
   const hostIdRef = useRef(hostId);
   hostIdRef.current = hostId;
   const executionProcesses = useRef<ExecutionProcess[]>(executionProcessesRaw);
+  const executionProcessesRawRef = useRef(executionProcessesRaw);
+  executionProcessesRawRef.current = executionProcessesRaw;
   const displayedExecutionProcesses = useRef<ExecutionProcessStateStore>({});
   const loadedInitialEntries = useRef(false);
   const emittedEmptyInitialRef = useRef(false);
@@ -167,18 +208,6 @@ export const useConversationHistory = ({
     });
   };
 
-  const patchWithKey = (
-    patch: PatchType,
-    executionProcessId: string,
-    index: number
-  ) => {
-    return {
-      ...patch,
-      patchKey: `${executionProcessId}:${index}`,
-      executionProcessId,
-    };
-  };
-
   const flattenEntries = (
     executionProcessState: ExecutionProcessStateStore
   ): PatchTypeWithKey[] => {
@@ -220,18 +249,7 @@ export const useConversationHistory = ({
       const timelineSource = buildTimelineSource(executionProcessState);
       let modifiedAddEntryType = addEntryType;
 
-      const latestEntry = Object.values(executionProcessState)
-        .sort(
-          (a, b) =>
-            new Date(
-              a.executionProcess.created_at as unknown as string
-            ).getTime() -
-            new Date(
-              b.executionProcess.created_at as unknown as string
-            ).getTime()
-        )
-        .flatMap((processState) => processState.entries)
-        .at(-1);
+      const latestEntry = latestConversationEntry(executionProcessState);
 
       if (
         latestEntry?.type === 'NORMALIZED_ENTRY' &&
@@ -502,7 +520,9 @@ export const useConversationHistory = ({
   // Clean up entries for processes that have been removed (e.g., after reset)
   useEffect(() => {
     if (isLoading || !isConnected) return;
-    const visibleProcessIds = new Set(executionProcessesRaw.map((p) => p.id));
+    const visibleProcessIds = new Set(
+      executionProcessesRawRef.current.map((p) => p.id)
+    );
     const displayedIds = Object.keys(displayedExecutionProcesses.current);
     let changed = false;
 
@@ -516,7 +536,7 @@ export const useConversationHistory = ({
     if (changed) {
       emitEntries(displayedExecutionProcesses.current, 'historic', false);
     }
-  }, [idListKey, executionProcessesRaw, emitEntries, isLoading, isConnected]);
+  }, [idListKey, emitEntries, isLoading, isConnected]);
 
   useEffect(() => {
     displayedExecutionProcesses.current = {};
@@ -675,11 +695,9 @@ export const useConversationHistory = ({
   ]);
 
   useEffect(() => {
-    if (!executionProcessesRaw) return;
-
     let statusChanged = false;
 
-    for (const process of executionProcessesRaw) {
+    for (const process of executionProcessesRawRef.current) {
       const previousStatus = previousStatusMapRef.current.get(process.id);
       const currentStatus = process.status;
 
@@ -704,15 +722,15 @@ export const useConversationHistory = ({
     if (statusChanged) {
       emitEntries(displayedExecutionProcesses.current, 'running', false);
     }
-  }, [idStatusKey, executionProcessesRaw, emitEntries]);
+  }, [idStatusKey, emitEntries]);
 
   // If an execution process is removed, remove it from the state
   useEffect(() => {
-    if (!executionProcessesRaw) return;
-
     const removedProcessIds = Object.keys(
       displayedExecutionProcesses.current
-    ).filter((id) => !executionProcessesRaw.some((p) => p.id === id));
+    ).filter(
+      (id) => !executionProcessesRawRef.current.some((p) => p.id === id)
+    );
 
     if (removedProcessIds.length > 0) {
       mergeIntoDisplayed((state) => {
@@ -721,7 +739,7 @@ export const useConversationHistory = ({
         });
       });
     }
-  }, [scopeKey, idListKey, executionProcessesRaw]);
+  }, [scopeKey, idListKey]);
 
   return {
     isFirstTurn,
