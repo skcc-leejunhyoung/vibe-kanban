@@ -1,7 +1,9 @@
-import { act, memo, Profiler, type ReactNode } from 'react';
+import { act, memo, Profiler, Suspense, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyPatch, type Operation } from 'rfc6902';
+import { apply as applyOperation } from 'rfc6902/patch';
+import { produce } from 'immer';
 import type { ExecutionProcess } from 'shared/types';
 import { setLocalApiTransport } from '@/shared/lib/localApiTransport';
 import {
@@ -19,6 +21,14 @@ const host = vi.hoisted(() => ({ id: null as string | null }));
 vi.mock('rfc6902', async (importOriginal) => {
   const actual = await importOriginal<typeof import('rfc6902')>();
   return { ...actual, applyPatch: vi.fn(actual.applyPatch) };
+});
+vi.mock('rfc6902/patch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('rfc6902/patch')>();
+  return { ...actual, apply: vi.fn(actual.apply) };
+});
+vi.mock('immer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('immer')>();
+  return { ...actual, produce: vi.fn(actual.produce) };
 });
 vi.mock('@/shared/providers/HostIdProvider', () => ({
   useHostId: () => host.id,
@@ -65,6 +75,8 @@ beforeEach(() => {
   host.id = null;
   FakeWebSocket.instances = [];
   vi.mocked(applyPatch).mockClear();
+  vi.mocked(applyOperation).mockClear();
+  vi.mocked(produce).mockClear();
   frames = new Map();
   let frameId = 0;
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
@@ -596,7 +608,7 @@ describe('batched stream lifecycle', () => {
         })
       );
       if (visibilityState === 'visible') await flushFrame();
-      else await act(() => vi.advanceTimersByTime(100));
+      else await act(() => vi.advanceTimersByTime(99));
       expect(hook.result.executionProcesses[0].status).toBe('completed');
       expect(hook.result.isAttemptRunning).toBe(false);
       // Unrelated metadata updates must not cancel or postpone the handoff.
@@ -903,6 +915,292 @@ describe('batched stream lifecycle', () => {
       });
       expect(FakeWebSocket.instances.length).toBe(duration >= 8000 ? 2 : 1);
       expect(hook.result.data).toEqual({ entries: ['initial', 'hidden'] });
+    }
+  );
+});
+
+describe('execution control across batch boundaries', () => {
+  it('keeps the committed observer while a later render is suspended', async () => {
+    const onApplied = vi.fn();
+    const uncommitted = vi.fn();
+    const pending = new Promise<never>(() => {});
+    function Probe({ suspend }: { suspend: boolean }) {
+      useJsonPatchWsStream('/stream', true, initialData, {
+        patchObserver: {
+          selectState: () => false,
+          onApplied: suspend ? uncommitted : onApplied,
+        },
+      });
+      if (suspend) throw pending;
+      return null;
+    }
+    await render(
+      <Suspense fallback={null}>
+        <Probe suspend={false} />
+      </Suspense>
+    );
+    const ws = FakeWebSocket.instances[0];
+    await act(() => ws.open());
+    await render(
+      <Suspense fallback={null}>
+        <Probe suspend />
+      </Suspense>
+    );
+    await act(() =>
+      ws.message({
+        JsonPatch: [{ op: 'add', path: '/entries/-', value: 'live' }],
+      })
+    );
+    await flushFrame();
+    expect(onApplied).toHaveBeenCalledTimes(1);
+    expect(uncommitted).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it.each(['visible', 'hidden'])(
+    'does not reconnect if a child start is already queued at the handoff deadline (%s)',
+    async (visibilityState) => {
+      const hook = await renderHook(() => useExecutionProcesses('session-a'));
+      const ws = FakeWebSocket.instances[0];
+      await act(() => {
+        ws.open();
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/a',
+              value: { ...process('a'), status: 'running' },
+            },
+          ],
+        });
+        ws.message({ Ready: true });
+      });
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/a/status',
+              value: 'completed',
+            },
+          ],
+        })
+      );
+      await flushFrame();
+      await act(() => vi.advanceTimersByTime(999));
+      Object.assign(document, { visibilityState });
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/child',
+              value: { ...process('child'), status: 'running' },
+            },
+          ],
+        })
+      );
+      await act(() => vi.advanceTimersByTime(1));
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      expect(ws.close).not.toHaveBeenCalled();
+      await flushFrame();
+      expect(hook.result.isAttemptRunning).toBe(true);
+    }
+  );
+
+  it('preserves completion reconciliation when a short process is removed in the same frame', async () => {
+    const hook = await renderHook(() => useExecutionProcesses('session-a'));
+    const ws = FakeWebSocket.instances[0];
+    await act(() => {
+      ws.open();
+      ws.message({
+        JsonPatch: [{ op: 'replace', path: '/execution_processes', value: {} }],
+      });
+      ws.message({ Ready: true });
+    });
+    await act(() =>
+      ws.message({
+        JsonPatch: [
+          {
+            op: 'add',
+            path: '/execution_processes/short',
+            value: {
+              ...process('short'),
+              run_reason: 'setupscript',
+              status: 'running',
+            },
+          },
+        ],
+      })
+    );
+    await act(() =>
+      ws.message({
+        JsonPatch: [{ op: 'remove', path: '/execution_processes/short' }],
+      })
+    );
+    await flushFrame();
+    await act(() => vi.advanceTimersByTime(1000));
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('reconciles a coalesced terminal row once without requiring a running render', async () => {
+    const hook = await renderHook(() => useExecutionProcesses('session-a'));
+    const ws = FakeWebSocket.instances[0];
+    await act(() => {
+      ws.open();
+      ws.message({
+        JsonPatch: [{ op: 'replace', path: '/execution_processes', value: {} }],
+      });
+      ws.message({ Ready: true });
+    });
+    await act(() =>
+      ws.message({
+        JsonPatch: [
+          {
+            op: 'replace',
+            path: '/execution_processes/a',
+            value: process('a'),
+          },
+          {
+            op: 'replace',
+            path: '/execution_processes/b',
+            value: { ...process('b'), status: 'failed' },
+          },
+        ],
+      })
+    );
+    await flushFrame();
+    expect(hook.result.executionProcesses).toHaveLength(2);
+    await act(() => vi.advanceTimersByTime(1000));
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('observes 60 execution transitions in one document update and one render', async () => {
+    const hook = await renderHook(() => useExecutionProcesses('session-a'));
+    const ws = FakeWebSocket.instances[0];
+    await act(() => {
+      ws.open();
+      ws.message({
+        JsonPatch: [
+          {
+            op: 'add',
+            path: '/execution_processes/a',
+            value: { ...process('a'), status: 'running' },
+          },
+        ],
+      });
+      ws.message({ Ready: true });
+    });
+    vi.mocked(produce).mockClear();
+    vi.mocked(applyOperation).mockClear();
+    hook.onRender.mockClear();
+    for (let i = 0; i < 60; i++) {
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/a/status',
+              value: i % 2 ? 'completed' : 'running',
+            },
+          ],
+        })
+      );
+    }
+    expect(produce).not.toHaveBeenCalled();
+    await flushFrame();
+    expect(hook.result.isAttemptRunning).toBe(false);
+    expect(produce).toHaveBeenCalledTimes(1);
+    expect(applyOperation).toHaveBeenCalledTimes(60);
+    expect(hook.onRender).toHaveBeenCalledTimes(1);
+    console.info(
+      '60 execution messages: immutable docs / operation applications / commits:',
+      vi.mocked(produce).mock.calls.length,
+      vi.mocked(applyOperation).mock.calls.length,
+      hook.onRender.mock.calls.length
+    );
+    await act(() => vi.advanceTimersByTime(1000));
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it.each(['short child', 'metadata', 'invalid child', 'invalid completion'])(
+    'handles a queued %s at the handoff deadline without losing the timer',
+    async (kind) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const hook = await renderHook(() => useExecutionProcesses('session-a'));
+      const ws = FakeWebSocket.instances[0];
+      await act(() => {
+        ws.open();
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'add',
+              path: '/execution_processes/a',
+              value: { ...process('a'), status: 'running' },
+            },
+          ],
+        });
+        ws.message({ Ready: true });
+      });
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/a/status',
+              value: 'completed',
+            },
+          ],
+        })
+      );
+      await flushFrame();
+      await act(() => vi.advanceTimersByTime(999));
+      if (kind === 'metadata') {
+        await act(() =>
+          ws.message({
+            JsonPatch: [
+              {
+                op: 'add',
+                path: '/execution_processes/a/dropped',
+                value: true,
+              },
+            ],
+          })
+        );
+      } else {
+        const JsonPatch: Operation[] = [
+          {
+            op: 'add',
+            path: '/execution_processes/child',
+            value: { ...process('child'), status: 'running' },
+          },
+        ];
+        if (kind === 'invalid child')
+          JsonPatch.push({ op: 'add', path: 'invalid-pointer', value: 0 });
+        await act(() => ws.message({ JsonPatch }));
+        if (kind === 'short child' || kind === 'invalid completion') {
+          const removal: Operation[] = [
+            { op: 'remove', path: '/execution_processes/child' },
+          ];
+          if (kind === 'invalid completion')
+            removal.push({ op: 'add', path: 'invalid-pointer', value: 0 });
+          await act(() => ws.message({ JsonPatch: removal }));
+        }
+      }
+      await act(() => vi.advanceTimersByTime(1));
+      if (kind === 'invalid completion') {
+        expect(hook.result.isAttemptRunning).toBe(true);
+        await act(() => vi.advanceTimersByTime(1000));
+        expect(FakeWebSocket.instances).toHaveLength(1);
+        return;
+      }
+      if (kind === 'short child') {
+        expect(FakeWebSocket.instances).toHaveLength(1);
+        await act(() => vi.advanceTimersByTime(999));
+        expect(FakeWebSocket.instances).toHaveLength(1);
+        await act(() => vi.advanceTimersByTime(1));
+      }
+      expect(FakeWebSocket.instances).toHaveLength(2);
     }
   );
 });

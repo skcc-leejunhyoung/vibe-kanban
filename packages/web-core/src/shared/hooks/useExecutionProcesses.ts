@@ -3,7 +3,6 @@ import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import {
   advanceExecutionActivity,
   TERMINAL_EXECUTION_RECONCILE_DELAY_MS,
-  type ExecutionActivityState,
 } from '@/shared/lib/executionProcessReconciliation';
 import { EXECUTION_PROCESS_STREAM_SILENCE_TIMEOUT_MS } from '@/shared/lib/wsStreamHeartbeat';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -62,8 +61,25 @@ export const useExecutionProcesses = (
       ),
     []
   );
+  const selectRunningState = useCallback(
+    (state: ExecutionProcessState) =>
+      Object.values(state.execution_processes).some(
+        (process) =>
+          process.session_id === sessionId &&
+          isAttemptProcess(process) &&
+          process.status === 'running'
+      ),
+    [sessionId]
+  );
+  const terminalReconcileTimerRef = useRef<number | null>(null);
+  const clearTerminalReconcile = useCallback(() => {
+    if (terminalReconcileTimerRef.current !== null) {
+      window.clearTimeout(terminalReconcileTimerRef.current);
+      terminalReconcileTimerRef.current = null;
+    }
+  }, []);
 
-  const { data, isConnected, isInitialized, error, reconcile } =
+  const { data, isConnected, isInitialized, error, reconcile, flush } =
     useJsonPatchWsStream<ExecutionProcessState>(
       endpoint,
       !!sessionId,
@@ -74,8 +90,58 @@ export const useExecutionProcesses = (
         keepSnapshotForEndpoint: true,
         silenceTimeoutMs: EXECUTION_PROCESS_STREAM_SILENCE_TIMEOUT_MS,
         shouldReconcileAfterSilence,
+        patchObserver: {
+          selectState: selectRunningState,
+          onApplied(states, previous, current, isReady) {
+            let activity = {
+              sessionId,
+              wasRunning: selectRunningState(previous),
+            };
+            let shouldReconcile = false;
+            for (const running of states) {
+              const transition = advanceExecutionActivity(
+                activity,
+                sessionId,
+                running
+              );
+              activity = transition.state;
+              shouldReconcile = running
+                ? false
+                : shouldReconcile || transition.shouldReconcile;
+            }
+
+            // The server can coalesce a short execution into a terminal row.
+            // Initial history is a baseline, not a live completion event.
+            shouldReconcile ||=
+              isReady &&
+              Object.values(current.execution_processes).some(
+                (process) =>
+                  process.session_id === sessionId &&
+                  isAttemptProcess(process) &&
+                  process.status !== 'running' &&
+                  !previous.execution_processes[process.id]
+              );
+
+            if (activity.wasRunning || shouldReconcile)
+              clearTerminalReconcile();
+            if (activity.wasRunning || !shouldReconcile) return;
+
+            // A continuation may start just before this handoff deadline.
+            // Flush first: its observed state can cancel/replace this timer
+            // synchronously, without waiting for React to render the batch.
+            const timerId = window.setTimeout(() => {
+              flush();
+              if (terminalReconcileTimerRef.current !== timerId) return;
+              terminalReconcileTimerRef.current = null;
+              reconcile();
+            }, TERMINAL_EXECUTION_RECONCILE_DELAY_MS);
+            terminalReconcileTimerRef.current = timerId;
+          },
+        },
       }
     );
+
+  useEffect(() => clearTerminalReconcile, [clearTerminalReconcile, reconcile]);
 
   const { executionProcesses, executionProcessesById, isAttemptRunning } =
     useMemo(() => {
@@ -106,80 +172,6 @@ export const useExecutionProcesses = (
       );
       return { executionProcesses, executionProcessesById, isAttemptRunning };
     }, [data, sessionId]);
-  const executionActivityRef = useRef<
-    ExecutionActivityState & {
-      processes?: Record<string, ExecutionProcess>;
-    }
-  >({
-    sessionId,
-    wasRunning: false,
-  });
-  const terminalReconcileTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    executionActivityRef.current = { sessionId, wasRunning: false };
-    return () => {
-      if (terminalReconcileTimerRef.current !== null) {
-        window.clearTimeout(terminalReconcileTimerRef.current);
-        terminalReconcileTimerRef.current = null;
-      }
-    };
-  }, [reconcile, sessionId]);
-
-  useEffect(() => {
-    if (!data) return;
-    const previous = executionActivityRef.current;
-    const transition = advanceExecutionActivity(
-      previous,
-      sessionId,
-      isAttemptRunning
-    );
-    executionActivityRef.current = {
-      ...transition.state,
-      processes: isInitialized ? executionProcessesById : undefined,
-    };
-
-    // A short execution can start and finish inside one frame. Compare live
-    // snapshots too, without counting initial history/replay as a new finish.
-    const previousProcesses = previous.processes;
-    const hasBatchedCompletion =
-      isInitialized &&
-      previousProcesses &&
-      executionProcesses.some(
-        (process) =>
-          isAttemptProcess(process) &&
-          process.status !== 'running' &&
-          (!previousProcesses[process.id] ||
-            previousProcesses[process.id].status === 'running')
-      );
-    const shouldReconcile = transition.shouldReconcile || hasBatchedCompletion;
-
-    if (
-      (isAttemptRunning || shouldReconcile) &&
-      terminalReconcileTimerRef.current !== null
-    ) {
-      window.clearTimeout(terminalReconcileTimerRef.current);
-      terminalReconcileTimerRef.current = null;
-    }
-    if (isAttemptRunning || !shouldReconcile) return;
-
-    // Vibe and other server-driven continuations are created after the
-    // completed-process patch. Reconnect once after that handoff window so a
-    // missed child-process add cannot leave the conversation stale forever.
-    terminalReconcileTimerRef.current = window.setTimeout(() => {
-      terminalReconcileTimerRef.current = null;
-      reconcile();
-    }, TERMINAL_EXECUTION_RECONCILE_DELAY_MS);
-  }, [
-    data,
-    executionProcesses,
-    executionProcessesById,
-    isAttemptRunning,
-    isInitialized,
-    reconcile,
-    sessionId,
-  ]);
-
   // Loading until the first snapshot — unless a cached snapshot is already
   // being served (data defined pre-Ready), which renders immediately.
   const isLoading = !!sessionId && !isInitialized && !error && !data;

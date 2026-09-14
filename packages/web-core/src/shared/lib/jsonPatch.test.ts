@@ -51,23 +51,54 @@ describe('applyUpsertPatchBatch', () => {
     const sequential = produce(original, (draft) =>
       applyUpsertPatch(draft, ops)
     );
-    const result = applyUpsertPatchBatch(original, ops);
+    const { data: result } = applyUpsertPatchBatch(original, [ops]);
     expect(result).toEqual(expected);
     expect(result).toEqual(sequential);
     expect(original).toEqual({ entries: ['first'], map: {} });
+    expect(applyUpsertPatchBatch(original, [ops], () => false).data).toEqual(
+      expected
+    );
+  });
+
+  it('samples message states even when the final document removes the process', () => {
+    const original = { processes: {} as Record<string, { running: boolean }> };
+    const batch = applyUpsertPatchBatch(
+      original,
+      [
+        [{ op: 'replace', path: '/processes/a', value: { running: true } }],
+        [{ op: 'remove', path: '/processes/a' }],
+      ],
+      (state) => Object.values(state.processes).some((p) => p.running)
+    );
+    expect(batch.states).toEqual([true, false]);
+    expect(batch.data).toEqual(original);
+    expect(original.processes).toEqual({});
+    expect(() =>
+      applyUpsertPatchBatch(
+        original,
+        [
+          [{ op: 'add', path: '/processes/a', value: { running: true } }],
+          [{ op: 'add', path: 'invalid-pointer', value: 0 }],
+        ],
+        (state) => Object.values(state.processes).some((p) => p.running)
+      )
+    ).toThrow();
+    expect(original.processes).toEqual({});
   });
 
   it('shares untouched branches and throws without mutating the input', () => {
     const original = { entries: ['first'], map: {} };
-    const result = applyUpsertPatchBatch(original, [
-      { op: 'add', path: '/entries/-', value: 'second' },
+    const { data: result } = applyUpsertPatchBatch(original, [
+      [{ op: 'add', path: '/entries/-', value: 'second' }],
     ]);
     expect(result.map).toBe(original.map);
-    expect(applyUpsertPatchBatch(result, [])).toBe(result);
+    expect(applyUpsertPatchBatch(result, []).data).toBe(result);
     expect(() =>
       applyUpsertPatchBatch(original, [
-        { op: 'add', path: '/entries/-', value: 'rolled back' },
-        { op: 'add', path: 'invalid-pointer', value: 1 },
+        [
+          { op: 'add', path: '/entries/-', value: 'rolled back' },
+          { op: 'add', path: 'invalid-pointer', value: 1 },
+        ],
       ])
     ).toThrow('Invalid JSON Pointer');
     expect(original.entries).toEqual(['first']);

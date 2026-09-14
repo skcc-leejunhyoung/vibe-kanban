@@ -58,6 +58,17 @@ interface UseJsonPatchStreamOptions<T> {
   silenceTimeoutMs?: number;
   /** Whether the current snapshot still needs terminal-state reconciliation. */
   shouldReconcileAfterSilence?: (data: T) => boolean;
+  /** Preserve control state between messages while rendering only once per batch. */
+  patchObserver?: {
+    /** Pure scalar selection; the draft must not escape this call. */
+    selectState: (data: T) => boolean;
+    onApplied: (
+      states: readonly boolean[],
+      previous: T,
+      current: T,
+      isReady: boolean
+    ) => void;
+  };
 }
 
 interface UseJsonPatchStreamResult<T> {
@@ -67,6 +78,8 @@ interface UseJsonPatchStreamResult<T> {
   error: string | null;
   /** Reconnect and replay the authoritative server snapshot. */
   reconcile: () => void;
+  /** Apply queued messages before making a time-sensitive control decision. */
+  flush: () => void;
 }
 
 /**
@@ -89,6 +102,13 @@ export const useJsonPatchWsStream = <T extends object>(
   // Initializers describe the next subscription; their identity isn't a
   // subscription key. Endpoint, enabled and host changes still reconnect.
   initialDataRef.current = initialData;
+  const patchObserver = options?.patchObserver;
+  const patchObserverRef = useRef(patchObserver);
+  useEffect(() => {
+    patchObserverRef.current = patchObserver;
+  }, [patchObserver]);
+  const flushRef = useRef<(() => void) | null>(null);
+  const flush = useCallback(() => flushRef.current?.(), []);
   // Which endpoint the current `data` state belongs to. On an endpoint switch
   // there is one paint before the effect resets state; this lets the render
   // below serve the new endpoint's cached snapshot instead of the stale data.
@@ -313,6 +333,7 @@ export const useJsonPatchWsStream = <T extends object>(
           };
 
           let pendingMessages: Operation[][] = [];
+          let isReady = false;
           let messageSequence = 0;
           let pendingSequence = 0;
           let rafId: number | null = null;
@@ -329,8 +350,16 @@ export const useJsonPatchWsStream = <T extends object>(
             let next = current;
             let updateError: string | null = null;
             let applied = false;
+            const observer = publish ? patchObserverRef.current : undefined;
+            let states: boolean[] = [];
             try {
-              next = applyUpsertPatchBatch(current, messages.flat());
+              const batch = applyUpsertPatchBatch(
+                current,
+                messages,
+                observer?.selectState
+              );
+              next = batch.data;
+              states = batch.states;
               applied = true;
             } catch {
               // Preserve the old per-message rollback boundary if malformed
@@ -338,6 +367,7 @@ export const useJsonPatchWsStream = <T extends object>(
               for (const ops of messages) {
                 try {
                   next = produce(next, (draft) => applyUpsertPatch(draft, ops));
+                  if (observer) states.push(observer.selectState(next));
                   applied = true;
                   updateError = null;
                 } catch (err) {
@@ -352,12 +382,16 @@ export const useJsonPatchWsStream = <T extends object>(
               if (applied) {
                 setData(next);
                 resetSilenceWatchdog(false);
+                observer?.onApplied(states, current, next, isReady);
               }
               // Later messages (even empty patches or heartbeats) clear an
               // earlier error. A delayed batch must preserve that ordering.
               if (pendingSequence === messageSequence) setError(updateError);
             }
             return applied;
+          };
+          flushRef.current = () => {
+            flushPending?.();
           };
 
           ws.onopen = () => {
@@ -415,6 +449,7 @@ export const useJsonPatchWsStream = <T extends object>(
               // Handle Ready messages (initial data has been sent)
               if ('Ready' in msg) {
                 flushPending?.();
+                isReady = true;
                 initializedForEndpointRef.current = streamKey;
                 setIsInitialized(true);
                 setError(null);
@@ -510,6 +545,7 @@ export const useJsonPatchWsStream = <T extends object>(
 
     return () => {
       cancelled = true;
+      flushRef.current = null;
       // Materialize the old endpoint's final batch for its cache without
       // publishing into an unmounted or newly scoped consumer.
       flushPending?.(false);
@@ -658,5 +694,6 @@ export const useJsonPatchWsStream = <T extends object>(
     isInitialized: isInitializedForCurrentEndpoint,
     error,
     reconcile,
+    flush,
   };
 };
