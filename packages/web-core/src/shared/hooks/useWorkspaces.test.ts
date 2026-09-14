@@ -65,6 +65,91 @@ describe('combined workspace summaries', () => {
       );
     }
   );
+
+  it.each([null, 'legacy-host'])(
+    'falls back to boolean filters only for an older host %s',
+    async (hostId) => {
+      const request = vi.mocked(makeLocalApiRequest);
+      request.mockReset();
+      request.mockImplementation(async (_path, options) => {
+        const { archived } = JSON.parse(options?.body as string);
+        if (archived === null) {
+          return new Response('invalid type: null, expected a boolean', {
+            status: 422,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            success: true,
+            data: {
+              summaries: [
+                {
+                  workspace_id: archived ? 'archived' : 'active',
+                  todo_total: 3,
+                },
+              ],
+            },
+          })
+        );
+      });
+
+      const map = await fetchWorkspaceSummaries(hostId, false);
+      expect([...map.keys()]).toEqual(['active', 'archived']);
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(
+        request.mock.calls.map(([, options]) =>
+          JSON.parse(options?.body as string)
+        )
+      ).toEqual([
+        { archived: null, include_latest_prompt: false },
+        { archived: false, include_latest_prompt: false },
+        { archived: true, include_latest_prompt: false },
+      ]);
+      for (const [, options] of request.mock.calls) {
+        expect(options).toMatchObject({
+          hostScope: 'explicit',
+          hostId,
+          relayHostId: hostId,
+        });
+      }
+    }
+  );
+
+  it.each([401, 403, 500])(
+    'does not retry non-schema error %s',
+    async (status) => {
+      const request = vi.mocked(makeLocalApiRequest);
+      request.mockReset();
+      request.mockResolvedValue(new Response(null, { status }));
+      expect((await fetchWorkspaceSummaries('failed-host')).size).toBe(0);
+      expect(request).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('keeps the other legacy list when one request fails without retrying again', async () => {
+    const request = vi.mocked(makeLocalApiRequest);
+    for (const failure of [
+      new Response(null, { status: 422 }),
+      new Error('offline'),
+    ]) {
+      request.mockReset();
+      request.mockResolvedValueOnce(new Response(null, { status: 422 }));
+      if (failure instanceof Error) request.mockRejectedValueOnce(failure);
+      else request.mockResolvedValueOnce(failure);
+      request.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: { summaries: [{ workspace_id: 'archived' }] },
+          })
+        )
+      );
+      expect([
+        ...(await fetchWorkspaceSummaries('legacy-host')).keys(),
+      ]).toEqual(['archived']);
+      expect(request).toHaveBeenCalledTimes(3);
+    }
+  });
 });
 
 describe('resolveOnlineWorkspaceStreamHostIds', () => {

@@ -2,6 +2,8 @@ SKC-4774 구현·검증 기록 (2026-09-14)
 
 기준 커밋: `cf261a9bf`. 현재 `vk/71df-gpt6-skc-4774-summaries-서브에이전트-히스토리-전량-스` 브랜치의 로컬 변경이다.
 
+먼저 최초 구현(`387981ee4`)의 검증을 기록하고, 문서 하단에 후속 보완과 재검증 결과를 기록한다.
+
 | 파일 | 변경 이유 |
 | --- | --- |
 | `crates/utils/src/msg_store.rs` | 읽기 잠금 아래 빌린 역순 이터레이터를 전달하는 `with_history` 접근자만 추가. |
@@ -58,3 +60,38 @@ SKC-4774 parent-log tail: initial_bytes=810172 unchanged_poll_bytes=0 appended_b
 캐시는 최대 32개 프로세스, 프로세스당 파싱 결과·대기 버퍼의 추정 메모리 2MiB, 미사용 10분 만료 정책을 사용한다. 상한을 넘는 결과는 응답에 포함하고 캐시 상태를 비워 다음 요청에서 다시 읽는다. 요청 취소 시에도 상한 적용 후 blocking task를 반환한다. 최초 조회·캐시 축출·파일 축소/교체 때는 처음부터 읽으며, 저장 실패나 아직 저장되지 않은 target의 확인에는 live stdout fallback을 유지한다.
 
 위 50ms 검증 범위는 이슈에서 허용한 TODO 추출 함수이다. 실제 HTTP 핸들러 전체 p95, DB·git diff 비용, Claude/Codex provider E2E와 실제 UI는 측정하지 않았다. 릴리스 빌드·서버 기동·push·PR 생성·jh 병합은 수행하지 않았다.
+
+후속 보완: `387981ee4` 재검토에서 확인한 두 회귀를 수정했다.
+
+- `subagent_log_cache.rs`: 같은 파일을 비우고 이전 오프셋보다 길게 다시 쓰는 경우, 파일 앞부분과 오프셋 직전의 최대 256바이트씩을 비교한다. 크기·수정 시간이 바뀐 경우에만 검사하며, 불일치하면 파싱 결과·부분 stdout·오프셋을 함께 초기화한다. 검사 버퍼도 메모리 상한에 포함한다. 앞부분 또는 끝부분만 같은 재작성과 이전 응답의 스냅샷 유지도 회귀 테스트에 포함했다.
+- `useWorkspaces.ts`: 통합 요청이 422로 거절된 경우에만 기존 boolean 필터로 active·archived를 병렬 조회한다. 각 조회의 실패는 독립 처리하고 boolean 요청은 다시 재시도하지 않는다. 최신 호스트는 1회, 구버전 호스트는 거절된 요청 1회와 기존 조회 2회이며, 호스트를 업데이트하면 다음 폴링부터 다시 1회가 된다. 호스트·prompt 옵션은 모든 요청에 동일하게 전달한다.
+- `useWorkspaces.test.ts`: 로컬·리모트 구버전 호환, 401/403/500에서 재시도하지 않음, 한 목록 실패 시 다른 목록 유지 테스트를 추가했다. 두 셸 모두 기존 shared `WorkspaceProvider`와 summaries 함수를 사용하므로 셸 변경 없이 적용된다.
+
+로컬의 `host_relay::proxy`와 리모트의 WebRTC·relay 전송 경로도 확인했다. 이 경로들은 422 상태를 그대로 `Response`에 전달하므로 공통 함수의 호환 처리가 두 웹에 동일하게 적용된다.
+
+수정 전에는 새 Rust 재작성 테스트 1개와 FE 호환 테스트 3개가 실패했다. 변경 후 검증 결과는 아래에 기록한다.
+
+| 재검증 명령 | 결과 |
+| --- | --- |
+| `pnpm i` | 성공, lockfile 변경 없음 |
+| `cargo test -p server subagent_log_cache --lib -- --nocapture` | 5개 통과. 재작성 테스트는 앞/끝 구간 변화 조합 3개를 검증 |
+| `cargo test -p utils -p executors -p server -- --nocapture` | 349개 통과. 기존 성능 벤치와 doctest 각 1개는 기본 실행에서 제외 |
+| `cargo check --workspace` | 성공 |
+| `cargo clippy -p utils -p executors -p server --all-targets -- -D warnings` | 성공 |
+| `cargo clean -p utils` 후 `pnpm run generate-types` | 공유 캐시 충돌 복구 후 성공. 생성 타입·스키마 변경 없음 |
+| `pnpm --filter @vibe/web-core run check` | 성공 |
+| `pnpm --filter @vibe/local-web run check` | 성공 |
+| `pnpm --filter @vibe/remote-web run check` | 성공 |
+| `pnpm --filter @vibe/web-core run test` | 117개 파일, 758개 테스트 통과 |
+| `pnpm --filter @vibe/local-web exec eslint --config .eslintrc.cjs ../web-core/src/shared/hooks/useWorkspaces.ts --report-unused-disable-directives --max-warnings 0` | 성공 |
+| `pnpm run format` | 성공 |
+
+보완 후 긴 부모 로그의 측정 결과는 다음과 같다. 이전의 105바이트 읽기에 재작성 확인용 512바이트가 더해진다. 변경 없는 완결 로그는 0바이트 읽기를 유지한다. TODO 추출 경로는 이번 보완에서 변경하지 않았으며, 위 p95는 최초 구현 시 측정한 기록이다.
+
+```text
+SKC-4774 parent-log tail: initial_bytes=810172 unchanged_poll_bytes=0 appended_record_bytes=105 checkpoint_bytes=512 total_read_bytes=617 retained_events=2
+```
+
+보완 후 첫 타입 생성 시 공유 target에서 SKC-4772 워크트리의 `utils` 산출물이 재사용되어 `with_history`를 찾지 못했다. `cargo clean -p utils`로 해당 패키지 산출물 1.4GiB만 정리한 뒤 같은 `CARGO_TARGET_DIR`에서 재생성해 해결했다. 소스 수정 없이 재시도가 통과했으며, 형제 작업의 소스에는 변경을 가하지 않았다.
+
+검사하는 두 구간을 모두 그대로 유지하며 중간 내용만 바꾸는 임의 편집은 이 방식으로 완전히 감지할 수 없다. 그런 편집까지 지원하려면 writer 세대 표식이 필요하다. 정상 append 판별 비용은 최대 512바이트이고, 재작성이 감지되면 새 로그를 처음부터 읽는다.

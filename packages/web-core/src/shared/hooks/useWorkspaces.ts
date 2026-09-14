@@ -253,38 +253,52 @@ export async function fetchWorkspaceSummaries(
   hostId: string | null,
   includeLatestPrompt = true
 ): Promise<Map<string, WorkspaceSummary>> {
-  try {
-    const response = await makeLocalApiRequest('/api/workspaces/summaries', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        archived: null,
-        include_latest_prompt: includeLatestPrompt,
-      }),
-      hostScope: 'explicit',
-      hostId,
-      relayHostId: hostId,
-    });
+  const fetchByArchived = async (
+    archived: boolean | null
+  ): Promise<Map<string, WorkspaceSummary>> => {
+    try {
+      const response = await makeLocalApiRequest('/api/workspaces/summaries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          archived,
+          include_latest_prompt: includeLatestPrompt,
+        }),
+        hostScope: 'explicit',
+        hostId,
+        relayHostId: hostId,
+      });
 
-    if (!response.ok) {
-      console.warn('Failed to fetch workspace summaries:', response.status);
+      // Older hosts require a boolean. Retry only schema rejection, once per
+      // list; a host upgraded between polls automatically resumes one request.
+      if (archived === null && response.status === 422) {
+        const lists = await Promise.all([
+          fetchByArchived(false),
+          fetchByArchived(true),
+        ]);
+        return new Map(lists.flatMap((list) => [...list]));
+      }
+
+      if (!response.ok) {
+        console.warn('Failed to fetch workspace summaries:', response.status);
+        return new Map();
+      }
+
+      const data: ApiResponse<WorkspaceSummaryResponse> = await response.json();
+      if (!data.success || !data.data?.summaries) {
+        return new Map();
+      }
+      const map = new Map<string, WorkspaceSummary>();
+      for (const summary of data.data.summaries) {
+        map.set(summary.workspace_id, summary);
+      }
+      return map;
+    } catch (err) {
+      console.warn('Error fetching workspace summaries:', err);
       return new Map();
     }
-
-    const data: ApiResponse<WorkspaceSummaryResponse> = await response.json();
-    if (!data.success || !data.data?.summaries) {
-      return new Map();
-    }
-
-    const map = new Map<string, WorkspaceSummary>();
-    for (const summary of data.data.summaries) {
-      map.set(summary.workspace_id, summary);
-    }
-    return map;
-  } catch (err) {
-    console.warn('Error fetching workspace summaries:', err);
-    return new Map();
-  }
+  };
+  return fetchByArchived(null);
 }
 
 export function useWorkspaces(enabled = true): UseWorkspacesResult {

@@ -25,6 +25,7 @@ use crate::DeploymentImpl;
 
 const MAX_PROCESSES: u64 = 32;
 const MAX_PROCESS_BYTES: usize = 2 * 1024 * 1024;
+const CHECKPOINT_BYTES: usize = 256;
 
 static LOGS: LazyLock<Cache<Uuid, Arc<Mutex<ProcessLogs>>>> = LazyLock::new(|| {
     Cache::builder()
@@ -129,6 +130,8 @@ struct ProcessLogs {
     path: PathBuf,
     metadata: Option<Metadata>,
     offset: u64,
+    head_bytes: Vec<u8>,
+    tail_bytes: Vec<u8>,
     parsed: Arc<ParsedLogs>,
     pending_stdout: String,
     has_records: bool,
@@ -148,20 +151,51 @@ fn same_file(a: &Metadata, b: &Metadata) -> bool {
 }
 
 impl ProcessLogs {
+    fn checkpoints_match(&self, file: &mut File, bytes_read: &mut u64) -> io::Result<bool> {
+        // ponytail: rewrites preserving both windows need a writer generation
+        // marker to distinguish them from appends without a full rescan.
+        let mut actual = [0; CHECKPOINT_BYTES];
+        for (start, expected) in [
+            (0, &self.head_bytes),
+            (self.offset - self.tail_bytes.len() as u64, &self.tail_bytes),
+        ] {
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut actual[..expected.len()])?;
+            *bytes_read += expected.len() as u64;
+            if &actual[..expected.len()] != expected.as_slice() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn tail(&mut self, path: &Path) -> io::Result<u64> {
         let mut file = File::open(path)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() {
             return Err(io::Error::other("execution log is not a regular file"));
         }
-        if self.path != path
+        let mut reset = self.path != path
             || self.metadata.as_ref().is_none_or(|previous| {
                 !same_file(previous, &metadata)
                     || self.offset > metadata.len()
+                    || previous.len() > metadata.len()
                     || (self.offset == metadata.len()
                         && previous.modified().ok() != metadata.modified().ok())
+            });
+        let mut bytes_read = 0;
+        if !reset
+            && self.offset > 0
+            && self.metadata.as_ref().is_some_and(|previous| {
+                previous.len() != metadata.len()
+                    || previous.modified().ok() != metadata.modified().ok()
             })
         {
+            // copytruncate can regrow past the old offset between polls. Check
+            // bounded windows only when metadata changed; unchanged polls read 0.
+            reset = !self.checkpoints_match(&mut file, &mut bytes_read)?;
+        }
+        if reset {
             *self = Self::default();
             self.path = path.to_owned();
         }
@@ -169,7 +203,6 @@ impl ProcessLogs {
         file.seek(SeekFrom::Start(self.offset))?;
         let mut reader = BufReader::new(file.take(metadata.len() - self.offset));
         let mut line = Vec::new();
-        let mut bytes_read = 0;
         loop {
             line.clear();
             let count = reader.read_until(b'\n', &mut line)?;
@@ -188,6 +221,13 @@ impl ProcessLogs {
                 break; // Incomplete JSONL record: retry it after the writer appends.
             }
             self.offset += count as u64;
+            self.head_bytes
+                .extend_from_slice(&line[..count.min(CHECKPOINT_BYTES - self.head_bytes.len())]);
+            let keep = CHECKPOINT_BYTES.saturating_sub(count);
+            self.tail_bytes
+                .drain(..self.tail_bytes.len().saturating_sub(keep));
+            self.tail_bytes
+                .extend_from_slice(&line[count.saturating_sub(CHECKPOINT_BYTES)..]);
             if let Ok(record) = record {
                 if !self.has_records && self.loaded_legacy {
                     self.parsed = Arc::default();
@@ -210,7 +250,9 @@ impl ProcessLogs {
         let bytes = parsed.bytes
             + parsed.events.capacity() * std::mem::size_of::<Value>()
             + parsed.session_id.as_ref().map_or(0, String::capacity)
-            + self.pending_stdout.capacity();
+            + self.pending_stdout.capacity()
+            + self.head_bytes.capacity()
+            + self.tail_bytes.capacity();
         if bytes > MAX_PROCESS_BYTES {
             // ponytail: oversized metadata is served but not retained; reread on
             // the next poll. Add an on-disk index if this rare case is common.
@@ -375,7 +417,7 @@ mod tests {
         assert_eq!(cache.offset, offset);
         writer.write_all(&next[split..]).unwrap();
         let appended = cache.tail(&path).unwrap();
-        assert_eq!(appended as usize, next.len());
+        assert_eq!(appended as usize, next.len() + CHECKPOINT_BYTES * 2);
         assert_eq!(cache.parsed.events.len(), 2);
         assert_eq!(
             cache.parsed.claude_output_file("다음").as_deref(),
@@ -388,7 +430,9 @@ mod tests {
         );
         assert_eq!(cache.tail(&path).unwrap(), 0);
         println!(
-            "SKC-4774 parent-log tail: initial_bytes={initial} unchanged_poll_bytes=0 appended_bytes={appended} retained_events=2"
+            "SKC-4774 parent-log tail: initial_bytes={initial} unchanged_poll_bytes=0 appended_record_bytes={} checkpoint_bytes={} total_read_bytes={appended} retained_events=2",
+            next.len(),
+            CHECKPOINT_BYTES * 2
         );
     }
 
@@ -417,6 +461,54 @@ mod tests {
         cache.tail(&path).unwrap();
         assert!(cache.parsed.claude_output_file("new").is_none());
         assert!(cache.parsed.claude_output_file("rot").is_some());
+    }
+
+    #[test]
+    fn copytruncate_regrowth_resets_cached_events_and_partial_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("process.jsonl");
+        let padding =
+            line("{\"type\":\"assistant\",\"message\":\"unchanged padding\"}\n").repeat(8);
+        // Exercise both checkpoints: an unchanged prefix or an unchanged tail
+        // must not hide a rewritten ownership event elsewhere in the log.
+        for (prefix, suffix) in [
+            (Vec::new(), Vec::new()),
+            (padding.clone(), Vec::new()),
+            (Vec::new(), padding.clone()),
+        ] {
+            let old = [
+                prefix.clone(),
+                line(&notification("old")),
+                suffix.clone(),
+                line("{\"partial\":"),
+            ]
+            .concat();
+            std::fs::write(&path, &old).unwrap();
+            let mut cache = ProcessLogs::default();
+            cache.tail(&path).unwrap();
+            let previous = cache.snapshot();
+            assert!(!cache.pending_stdout.is_empty());
+            let metadata = std::fs::metadata(&path).unwrap();
+
+            let replacement = [
+                prefix,
+                line(&notification("new")),
+                suffix,
+                line("{\"partial\":"),
+                line(&format!("1}}\n{}", notification("end"))),
+            ]
+            .concat();
+            assert!(replacement.len() > old.len());
+            std::fs::write(&path, &replacement).unwrap();
+            assert!(same_file(&metadata, &std::fs::metadata(&path).unwrap()));
+            cache.tail(&path).unwrap();
+            assert!(cache.parsed.claude_output_file("old").is_none());
+            assert!(cache.parsed.claude_output_file("new").is_some());
+            assert!(cache.parsed.claude_output_file("end").is_some());
+            assert!(cache.pending_stdout.is_empty());
+            assert!(previous.claude_output_file("old").is_some());
+            assert_eq!(cache.tail(&path).unwrap(), 0);
+        }
     }
 
     #[test]
