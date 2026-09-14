@@ -215,6 +215,44 @@ mod tests {
         assert!(frames[1].is_err());
     }
 
+    /// The completion criterion for a slow client: whatever the coalescer
+    /// emits must land the browser on exactly the document the unbatched
+    /// stream would have produced.
+    #[tokio::test]
+    async fn coalescing_preserves_the_final_document() {
+        let mut raw_ops = Vec::new();
+        for entry in 0..5usize {
+            raw_ops.push(add(&format!("/entries/{entry}"), 0));
+            for token in 1..=40 {
+                raw_ops.push(replace(&format!("/entries/{entry}"), token));
+                if token == 20 {
+                    raw_ops.push(replace("/cursor", entry));
+                }
+            }
+        }
+        raw_ops.push(remove("/entries/0"));
+        raw_ops.push(replace("/entries/0", 999));
+
+        let frames = collect(raw_ops.iter().cloned().map(patch).collect()).await;
+        let coalesced: Vec<PatchOperation> = frames
+            .iter()
+            .flat_map(|frame| ops(frame.as_ref().unwrap()))
+            .collect();
+
+        let apply = |ops: Vec<PatchOperation>| {
+            let mut doc = json!({"entries": [], "cursor": 0});
+            json_patch::patch(&mut doc, &Patch(ops)).unwrap();
+            doc
+        };
+        assert_eq!(apply(coalesced.clone()), apply(raw_ops.clone()));
+        println!(
+            "streamed ops: raw={} coalesced={} frames={}",
+            raw_ops.len(),
+            coalesced.len(),
+            frames.len()
+        );
+    }
+
     #[test]
     fn squash_keeps_unrelated_replaces_and_drops_superseded_ones() {
         assert_eq!(
