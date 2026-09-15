@@ -9,6 +9,9 @@
 //! - Keys carry the session id / user id plus the exact resource, so two
 //!   users or two projects can never share an entry.
 //! - Membership removal and org/project deletion flush the access cache.
+//! - A miss whose database read overlapped an invalidation drops its result
+//!   (generation counter), so a revoke that lands mid-request cannot be
+//!   overwritten by the stale positive read.
 //!
 //! Anything that revokes access outside this process (manual SQL, the relay
 //! server's inactivity revoke) is only bounded by [`AUTH_CACHE_TTL`].
@@ -17,7 +20,10 @@
 
 use std::{
     future::Future,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -86,6 +92,12 @@ pub(crate) enum SessionRejection {
 pub(crate) struct AuthCache {
     sessions: Cache<Uuid, Arc<CachedSession>>,
     access: Cache<(Uuid, AccessScope), ()>,
+    /// Bumped by every invalidation. A miss snapshots it before its database
+    /// read and discards what it inserted if the value moved, closing the
+    /// read-before-revoke / insert-after-invalidate window.
+    /// ponytail: one global counter, so any revoke makes concurrent misses
+    /// re-read once; per-key counters if revokes ever become frequent.
+    generation: AtomicU64,
 }
 
 impl AuthCache {
@@ -99,7 +111,16 @@ impl AuthCache {
                 .time_to_live(ttl)
                 .max_capacity(MAX_ACCESS_ENTRIES)
                 .build(),
+            generation: AtomicU64::new(0),
         }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Resolve a session from cache, falling back to `load` (one JOIN query)
@@ -114,6 +135,7 @@ impl AuthCache {
         let session = match self.sessions.get(&session_id).await {
             Some(session) => session,
             None => {
+                let generation = self.generation();
                 let row = load
                     .await
                     .map_err(SessionRejection::Database)?
@@ -127,6 +149,13 @@ impl AuthCache {
                     last_used_at: Mutex::new(row.last_used_at),
                 });
                 self.sessions.insert(session_id, Arc::clone(&session)).await;
+                // A revoke that committed after our SELECT snapshot has
+                // already run its invalidation; keep it, not our stale read.
+                // This request itself still proceeds, as it would have before
+                // caching existed.
+                if self.generation() != generation {
+                    self.sessions.invalidate(&session_id).await;
+                }
                 session
             }
         };
@@ -142,10 +171,12 @@ impl AuthCache {
     }
 
     pub async fn invalidate_session(&self, session_id: Uuid) {
+        self.bump_generation();
         self.sessions.invalidate(&session_id).await;
     }
 
     pub fn invalidate_all_sessions(&self) {
+        self.bump_generation();
         self.sessions.invalidate_all();
     }
 
@@ -161,14 +192,21 @@ impl AuthCache {
         if self.access.get(&key).await.is_some() {
             return Ok(());
         }
+        let generation = self.generation();
         verify.await?;
         self.access.insert(key, ()).await;
+        // Same guard as `resolve_session`: a removal that committed after our
+        // membership read wins over the stale grant we just stored.
+        if self.generation() != generation {
+            self.access.invalidate(&key).await;
+        }
         Ok(())
     }
 
     /// Membership changes are rare admin actions; flushing everything is
     /// cheaper and safer than tracking which resources a user could reach.
     pub fn invalidate_access(&self) {
+        self.bump_generation();
         self.access.invalidate_all();
     }
 }
@@ -177,7 +215,7 @@ impl AuthCache {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use chrono::Duration as ChronoDuration;
+    use chrono::{Duration as ChronoDuration, TimeZone};
 
     use super::*;
 
@@ -362,6 +400,91 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
+    #[tokio::test]
+    async fn revoke_during_a_cache_miss_beats_the_stale_read() {
+        let cache = AuthCache::new(Duration::from_secs(30));
+        let (session_id, user_id) = (Uuid::new_v4(), Uuid::new_v4());
+        let now = Utc::now();
+
+        // The SELECT snapshot saw the session alive; logout committed and ran
+        // its invalidation while that read was still in flight.
+        let racing_load = async {
+            cache.invalidate_session(session_id).await;
+            Ok(Some(row(user_id, false, now)))
+        };
+        cache
+            .resolve_session(session_id, now, racing_load)
+            .await
+            .unwrap();
+
+        assert!(
+            cache.sessions.get(&session_id).await.is_none(),
+            "stale positive read must not be cached"
+        );
+        let next = cache
+            .resolve_session(session_id, now, async { Ok(None) })
+            .await;
+        assert!(
+            matches!(next, Err(SessionRejection::NotFound)),
+            "next request goes back to the database"
+        );
+    }
+
+    #[tokio::test]
+    async fn touch_follows_the_database_day_boundary() {
+        // `touch` stores date_trunc('day', NOW()) in UTC; mirror that shape.
+        let now = Utc.with_ymd_and_hms(2026, 9, 15, 10, 0, 0).unwrap();
+        let midnight_today = Utc.with_ymd_and_hms(2026, 9, 15, 0, 0, 0).unwrap();
+        let yesterday_late = Utc.with_ymd_and_hms(2026, 9, 14, 23, 59, 59).unwrap();
+        let cache = AuthCache::new(Duration::from_secs(30));
+
+        let touched_today = cache
+            .resolve_session(Uuid::new_v4(), now, async {
+                Ok(Some(SessionWithUser {
+                    last_used_at: Some(midnight_today),
+                    ..row(Uuid::new_v4(), false, now)
+                }))
+            })
+            .await
+            .unwrap();
+        assert!(
+            !touched_today.needs_touch(now),
+            "already touched today → no UPDATE"
+        );
+
+        let touched_yesterday = cache
+            .resolve_session(Uuid::new_v4(), now, async {
+                Ok(Some(SessionWithUser {
+                    last_used_at: Some(yesterday_late),
+                    ..row(Uuid::new_v4(), false, now)
+                }))
+            })
+            .await
+            .unwrap();
+        assert!(touched_yesterday.needs_touch(now), "day changed → UPDATE");
+    }
+
+    #[tokio::test]
+    async fn inactivity_is_re_evaluated_on_cache_hits() {
+        let cache = AuthCache::new(Duration::from_secs(30));
+        let session_id = Uuid::new_v4();
+        let now = Utc::now();
+        cache
+            .resolve_session(session_id, now, async {
+                Ok(Some(row(Uuid::new_v4(), false, now)))
+            })
+            .await
+            .unwrap();
+
+        // Cached and still within TTL, but the clock is now past the limit.
+        let later = now + MAX_SESSION_INACTIVITY_DURATION + ChronoDuration::days(1);
+        let hit = cache
+            .resolve_session(session_id, later, async { Ok(None) })
+            .await;
+        assert!(matches!(hit, Err(SessionRejection::Inactive { .. })));
+        assert!(cache.sessions.get(&session_id).await.is_none());
+    }
+
     async fn verify(calls: &AtomicUsize, allowed: bool) -> Result<(), IdentityError> {
         calls.fetch_add(1, Ordering::SeqCst);
         if allowed {
@@ -482,6 +605,34 @@ mod tests {
             denied.is_err(),
             "next request is denied without waiting for TTL"
         );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn membership_removed_during_a_cache_miss_beats_the_stale_read() {
+        let cache = AuthCache::new(Duration::from_secs(30));
+        let (user_id, project_id) = (Uuid::new_v4(), Uuid::new_v4());
+        let calls = AtomicUsize::new(0);
+
+        // The membership SELECT saw the row; remove_member committed and
+        // flushed the cache before this request could store its result.
+        let racing_verify = async {
+            cache.invalidate_access();
+            verify(&calls, true).await
+        };
+        cache
+            .check_access(user_id, AccessScope::Project(project_id), racing_verify)
+            .await
+            .unwrap();
+
+        let denied = cache
+            .check_access(
+                user_id,
+                AccessScope::Project(project_id),
+                verify(&calls, false),
+            )
+            .await;
+        assert!(denied.is_err(), "stale grant must not be served from cache");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
