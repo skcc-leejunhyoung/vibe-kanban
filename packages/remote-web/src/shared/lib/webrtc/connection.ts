@@ -30,6 +30,8 @@ interface PendingHttp {
   resolve: (resp: DataChannelResponse) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  sendState: "queued" | "sending" | "sent";
+  sendAbort: AbortController;
 }
 
 interface WsHandlers {
@@ -170,13 +172,23 @@ export class WebRtcConnection {
       const timer = setTimeout(() => {
         this.pendingHttp.delete(id);
         reject(new Error("WebRTC HTTP request timed out"));
-        // A request may still be only partly sent under backpressure. Abort its
-        // remaining fragments before the transport retries via the relay.
-        this.handleDisconnect();
-        this.close();
+        pending.sendAbort.abort();
+        // Only a partially sent message corrupts this ordered chunk stream.
+        // Queued and fully sent requests can expire without failing their peers.
+        if (pending.sendState === "sending") {
+          this.handleDisconnect();
+          this.close();
+        }
       }, HTTP_TIMEOUT_MS);
 
-      this.pendingHttp.set(id, { resolve, reject, timer });
+      const pending: PendingHttp = {
+        resolve,
+        reject,
+        timer,
+        sendState: "queued",
+        sendAbort: new AbortController(),
+      };
+      this.pendingHttp.set(id, pending);
       this.sendMessage(msg);
     });
   }
@@ -391,7 +403,7 @@ export class WebRtcConnection {
     }
   }
 
-  private waitForBuffer(): Promise<void> {
+  private waitForBuffer(requestAbort?: AbortSignal): Promise<void> {
     const dc = this.dataChannel;
     const signal = this.sendAbort.signal;
     return new Promise((resolve, reject) => {
@@ -401,13 +413,18 @@ export class WebRtcConnection {
         dc.removeEventListener("close", onClosed);
         dc.removeEventListener("error", onClosed);
         signal.removeEventListener("abort", onClosed);
+        requestAbort?.removeEventListener("abort", onClosed);
       };
       const onClosed = () => {
         cleanup();
         reject(new Error("WebRTC closed while waiting for send buffer"));
       };
       const onLow = () => {
-        if (signal.aborted || dc.readyState !== "open") {
+        if (
+          signal.aborted ||
+          requestAbort?.aborted ||
+          dc.readyState !== "open"
+        ) {
           onClosed();
         } else if (dc.bufferedAmount <= BUFFER_LOW_WATER) {
           cleanup();
@@ -422,25 +439,37 @@ export class WebRtcConnection {
       dc.addEventListener("close", onClosed);
       dc.addEventListener("error", onClosed);
       signal.addEventListener("abort", onClosed);
+      requestAbort?.addEventListener("abort", onClosed);
       // Recheck after subscribing so drain/close cannot be missed.
       onLow();
     });
   }
 
-  private async sendRaw(data: Uint8Array): Promise<void> {
+  private async sendRaw(
+    data: Uint8Array,
+    pending?: PendingHttp,
+  ): Promise<void> {
     const chunks = fragment(data);
     for (const chunk of chunks) {
       if (
         this.dataChannel.bufferedAmount + chunk.byteLength >
         BUFFER_HIGH_WATER
       ) {
-        await this.waitForBuffer();
+        try {
+          await this.waitForBuffer(pending?.sendAbort.signal);
+        } catch (error) {
+          if (pending?.sendAbort.signal.aborted) return;
+          throw error;
+        }
       }
       if (!this.isConnected || this.sendAbort.signal.aborted) {
         throw new Error("WebRTC not connected");
       }
+      if (pending?.sendAbort.signal.aborted) return;
+      if (pending) pending.sendState = "sending";
       this.dataChannel.send(new Uint8Array(chunk) as Uint8Array<ArrayBuffer>);
     }
+    if (pending) pending.sendState = "sent";
   }
 
   private sendMessage(msg: DataChannelMessage): void {
@@ -456,9 +485,12 @@ export class WebRtcConnection {
     // must never interleave, including while the first message waits for drain.
     this.sendQueue = this.sendQueue
       .then(async () => {
-        if (msg.type === "http_request" && !this.pendingHttp.has(msg.id))
-          return;
-        await this.sendRaw(data);
+        const pending =
+          msg.type === "http_request"
+            ? this.pendingHttp.get(msg.id)
+            : undefined;
+        if (msg.type === "http_request" && !pending) return;
+        await this.sendRaw(data, pending);
       })
       .catch(() => {
         // A partial message cannot be resumed on this channel. Closing rejects

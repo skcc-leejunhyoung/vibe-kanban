@@ -285,8 +285,6 @@ impl WebRtcClient {
         // Shared state for routing incoming messages.
         let pending_http: Arc<Mutex<PendingHttpMap>> = Arc::new(Mutex::new(HashMap::new()));
         let pending_ws_open: Arc<Mutex<PendingWsOpenMap>> = Arc::new(Mutex::new(HashMap::new()));
-        let ws_frame_senders: Arc<Mutex<HashMap<Uuid, mpsc::Sender<WsFrame>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
 
         // Detect ICE disconnection.
         let disconnect_token = shutdown.child_token();
@@ -319,7 +317,7 @@ impl WebRtcClient {
         }));
 
         // Incoming message handler: defragment → dispatch.
-        let (incoming_tx, mut incoming_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
         let defrag = Arc::new(std::sync::Mutex::new(fragment::Defragmenter::new()));
 
         data_channel.on_message(Box::new(move |msg: RtcDcMessage| {
@@ -336,97 +334,14 @@ impl WebRtcClient {
             })
         }));
 
-        // Message dispatch task: routes incoming messages to pending requests.
-        let pending_http_dispatch = pending_http.clone();
-        let pending_ws_open_dispatch = pending_ws_open.clone();
-        let ws_frame_senders_dispatch = ws_frame_senders.clone();
-        tokio::spawn(async move {
-            while let Some(raw) = incoming_rx.recv().await {
-                let msg: DataChannelMessage = match serde_json::from_slice(&raw) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        tracing::warn!(?e, "Invalid data channel message from server");
-                        continue;
-                    }
-                };
-
-                match msg {
-                    DataChannelMessage::HttpResponse(response) => {
-                        tracing::trace!(
-                            id = %response.id,
-                            status = response.status,
-                            body_len = response
-                                .body_b64
-                                .as_ref()
-                                .map(|b| b.len())
-                                .unwrap_or(0),
-                            "[client-peer] received HTTP response"
-                        );
-                        let mut pending = pending_http_dispatch.lock().await;
-                        if let Some(tx) = pending.remove(&response.id) {
-                            let _ = tx.send(Ok(response));
-                        } else {
-                            tracing::warn!(
-                                id = %response.id,
-                                "[client-peer] response for unknown request"
-                            );
-                        }
-                    }
-
-                    DataChannelMessage::WsOpened(opened) => {
-                        let mut pending = pending_ws_open_dispatch.lock().await;
-                        if let Some(result_tx) = pending.remove(&opened.conn_id) {
-                            // Reserve the 65th slot for a retryable close frame.
-                            let (frame_tx, frame_rx) = mpsc::channel(65);
-                            ws_frame_senders_dispatch
-                                .lock()
-                                .await
-                                .insert(opened.conn_id, frame_tx);
-                            let conn = WsConnection {
-                                sender: WsSender {
-                                    conn_id: opened.conn_id,
-                                    dc_write_tx: dc_write_tx.clone(),
-                                },
-                                conn_id: opened.conn_id,
-                                selected_protocol: opened.selected_protocol,
-                                frame_rx,
-                            };
-                            let _ = result_tx.send(Ok(Ok(conn)));
-                        }
-                    }
-
-                    DataChannelMessage::WsFrame(frame) => {
-                        let mut senders = ws_frame_senders_dispatch.lock().await;
-                        if let Some(close) = dispatch_ws_frame(&mut senders, frame) {
-                            // Unbounded control-only queue: never block dispatch on
-                            // the shared writer queue, which may itself be full.
-                            if ws_close_tx.send(close).is_err() {
-                                tracing::warn!(
-                                    "[client-peer] writer closed before WS overload notification"
-                                );
-                            }
-                        }
-                    }
-
-                    DataChannelMessage::WsClose(close) => {
-                        ws_frame_senders_dispatch
-                            .lock()
-                            .await
-                            .remove(&close.conn_id);
-                    }
-
-                    DataChannelMessage::WsError(err) => {
-                        let mut pending = pending_ws_open_dispatch.lock().await;
-                        if let Some(result_tx) = pending.remove(&err.conn_id) {
-                            let _ = result_tx.send(Ok(Err(err.error)));
-                        }
-                        ws_frame_senders_dispatch.lock().await.remove(&err.conn_id);
-                    }
-
-                    DataChannelMessage::HttpRequest(_) | DataChannelMessage::WsOpen(_) => {}
-                }
-            }
-        });
+        // Keep the dispatch loop independently testable without starting ICE.
+        tokio::spawn(dispatch_messages(
+            incoming_rx,
+            pending_http.clone(),
+            pending_ws_open.clone(),
+            dc_write_tx,
+            ws_close_tx,
+        ));
 
         // Writer task: processes commands and writes to the data channel.
         let dc_writer = data_channel.clone();
@@ -637,6 +552,95 @@ impl WebRtcClient {
     }
 }
 
+async fn dispatch_messages(
+    mut incoming_rx: mpsc::Receiver<Vec<u8>>,
+    pending_http: Arc<Mutex<PendingHttpMap>>,
+    pending_ws_open: Arc<Mutex<PendingWsOpenMap>>,
+    dc_write_tx: mpsc::Sender<Vec<u8>>,
+    ws_close_tx: mpsc::UnboundedSender<WsClose>,
+) {
+    // Only this task owns the routing map; no shared lock is needed.
+    let mut ws_frame_senders = HashMap::new();
+    while let Some(raw) = incoming_rx.recv().await {
+        let msg: DataChannelMessage = match serde_json::from_slice(&raw) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(?e, "Invalid data channel message from server");
+                continue;
+            }
+        };
+
+        match msg {
+            DataChannelMessage::HttpResponse(response) => {
+                tracing::trace!(
+                    id = %response.id,
+                    status = response.status,
+                    body_len = response
+                        .body_b64
+                        .as_ref()
+                        .map(|b| b.len())
+                        .unwrap_or(0),
+                    "[client-peer] received HTTP response"
+                );
+                let mut pending = pending_http.lock().await;
+                if let Some(tx) = pending.remove(&response.id) {
+                    let _ = tx.send(Ok(response));
+                } else {
+                    tracing::warn!(
+                        id = %response.id,
+                        "[client-peer] response for unknown request"
+                    );
+                }
+            }
+
+            DataChannelMessage::WsOpened(opened) => {
+                let mut pending = pending_ws_open.lock().await;
+                if let Some(result_tx) = pending.remove(&opened.conn_id) {
+                    // Reserve the 65th slot for a retryable close frame.
+                    let (frame_tx, frame_rx) = mpsc::channel(65);
+                    ws_frame_senders.insert(opened.conn_id, frame_tx);
+                    let conn = WsConnection {
+                        sender: WsSender {
+                            conn_id: opened.conn_id,
+                            dc_write_tx: dc_write_tx.clone(),
+                        },
+                        conn_id: opened.conn_id,
+                        selected_protocol: opened.selected_protocol,
+                        frame_rx,
+                    };
+                    let _ = result_tx.send(Ok(Ok(conn)));
+                }
+            }
+
+            DataChannelMessage::WsFrame(frame) => {
+                if let Some(close) = dispatch_ws_frame(&mut ws_frame_senders, frame) {
+                    // Unbounded control-only queue: never block dispatch on
+                    // the shared writer queue, which may itself be full.
+                    if ws_close_tx.send(close).is_err() {
+                        tracing::warn!(
+                            "[client-peer] writer closed before WS overload notification"
+                        );
+                    }
+                }
+            }
+
+            DataChannelMessage::WsClose(close) => {
+                ws_frame_senders.remove(&close.conn_id);
+            }
+
+            DataChannelMessage::WsError(err) => {
+                let mut pending = pending_ws_open.lock().await;
+                if let Some(result_tx) = pending.remove(&err.conn_id) {
+                    let _ = result_tx.send(Ok(Err(err.error)));
+                }
+                ws_frame_senders.remove(&err.conn_id);
+            }
+
+            DataChannelMessage::HttpRequest(_) | DataChannelMessage::WsOpen(_) => {}
+        }
+    }
+}
+
 /// Drop only the congested stream. Its receiver reaches EOF after buffered
 /// frames, causing the WS bridge to close; the peer also receives an explicit
 /// retryable close so it can release its backend connection.
@@ -738,7 +742,145 @@ async fn write_to_dc(dc: &Arc<RTCDataChannel>, data: Vec<u8>) -> Result<(), WebR
 
 #[cfg(test)]
 mod tests {
+    use futures_util::StreamExt;
+    use tokio::{io::DuplexStream, task::JoinHandle};
+    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+
     use super::*;
+
+    async fn receive(tx: &mpsc::Sender<Vec<u8>>, message: DataChannelMessage) {
+        tx.send(serde_json::to_vec(&message).unwrap())
+            .await
+            .unwrap();
+    }
+
+    async fn open_test_ws(
+        pending: &Mutex<PendingWsOpenMap>,
+        incoming: &mpsc::Sender<Vec<u8>>,
+    ) -> WsConnection {
+        let conn_id = Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+        pending.lock().await.insert(conn_id, tx);
+        receive(
+            incoming,
+            DataChannelMessage::WsOpened(crate::proxy::WsOpened {
+                conn_id,
+                selected_protocol: None,
+            }),
+        )
+        .await;
+        rx.await.unwrap().unwrap().unwrap()
+    }
+
+    async fn bridge_to_browser(
+        conn: WsConnection,
+    ) -> (WebSocketStream<DuplexStream>, JoinHandle<()>) {
+        // Real WebSocket framing over memory IO; no listener or server stack.
+        let (browser_io, server_io) = tokio::io::duplex(4096);
+        let browser = WebSocketStream::from_raw_socket(browser_io, Role::Client, None).await;
+        let server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let task = tokio::spawn(async move {
+            ws_bridge::bridge_tungstenite_ws(server, conn.into_ws_stream())
+                .await
+                .unwrap();
+        });
+        (browser, task)
+    }
+
+    #[tokio::test]
+    async fn dispatch_preserves_http_and_bridges_overload_close_and_reopened_snapshot() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let (incoming_tx, incoming_rx) = mpsc::channel(64);
+            let (write_tx, mut write_rx) = mpsc::channel(1);
+            // Even a full outbound data queue must not block overload notification.
+            write_tx.try_send(Vec::new()).unwrap();
+            let (close_tx, mut close_rx) = mpsc::unbounded_channel();
+            let pending_http = Arc::new(Mutex::new(HashMap::new()));
+            let pending_open = Arc::new(Mutex::new(HashMap::new()));
+            let dispatch = tokio::spawn(dispatch_messages(
+                incoming_rx,
+                pending_http.clone(),
+                pending_open.clone(),
+                write_tx,
+                close_tx,
+            ));
+            let slow = open_test_ws(&pending_open, &incoming_tx).await;
+            let mut fast = open_test_ws(&pending_open, &incoming_tx).await;
+            for _ in 0..65 {
+                receive(
+                    &incoming_tx,
+                    DataChannelMessage::WsFrame(frame(slow.conn_id)),
+                )
+                .await;
+            }
+            receive(
+                &incoming_tx,
+                DataChannelMessage::WsFrame(frame(fast.conn_id)),
+            )
+            .await;
+            let request_id = Uuid::new_v4();
+            let (http_tx, http_rx) = oneshot::channel();
+            pending_http.lock().await.insert(request_id, http_tx);
+            receive(
+                &incoming_tx,
+                DataChannelMessage::HttpResponse(DataChannelResponse {
+                    id: request_id,
+                    status: 200,
+                    headers: HashMap::new(),
+                    body_b64: None,
+                }),
+            )
+            .await;
+            assert_eq!(http_rx.await.unwrap().unwrap().status, 200);
+            assert_eq!(fast.frame_rx.recv().await.unwrap().conn_id, fast.conn_id);
+            let close = close_rx.recv().await.unwrap();
+            assert_eq!(close.conn_id, slow.conn_id);
+            assert_eq!(close.code, Some(1013));
+            assert!(slow.frame_rx.is_closed());
+            write_rx.recv().await.unwrap();
+
+            // The actual bridge must deliver 1013, not turn EOF into normal 1000.
+            let (mut browser, bridge) = bridge_to_browser(slow).await;
+            for _ in 0..64 {
+                assert!(matches!(
+                    browser.next().await.unwrap().unwrap(),
+                    Message::Text(_)
+                ));
+            }
+            assert!(matches!(
+                browser.next().await.unwrap().unwrap(),
+                Message::Close(Some(CloseFrame {
+                    code: CloseCode::Again,
+                    ..
+                }))
+            ));
+            bridge.await.unwrap();
+
+            // Reopen through the same dispatcher and replay an authoritative
+            // snapshot, including state lost when the old stream overflowed.
+            let recovered = open_test_ws(&pending_open, &incoming_tx).await;
+            let snapshot = r#"{"JsonPatch":[{"op":"replace","path":"/count","value":65}]}"#;
+            receive(
+                &incoming_tx,
+                DataChannelMessage::WsFrame(WsFrame::from_transport(
+                    recovered.conn_id,
+                    Message::Text(snapshot.into()),
+                )),
+            )
+            .await;
+            let (mut browser, bridge) = bridge_to_browser(recovered).await;
+            assert_eq!(
+                browser.next().await.unwrap().unwrap(),
+                Message::Text(snapshot.into())
+            );
+            bridge.abort();
+            assert!(bridge.await.unwrap_err().is_cancelled());
+            drop(incoming_tx);
+            dispatch.await.unwrap();
+        })
+        .await
+        .expect("a congested WS blocked dispatch or reconnect");
+    }
 
     fn frame(conn_id: Uuid) -> WsFrame {
         WsFrame::from_transport(conn_id, Message::Text("test".into()))
