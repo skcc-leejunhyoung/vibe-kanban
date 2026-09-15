@@ -97,7 +97,7 @@ impl GithubIssueLinkRepository {
         let update_synced_github_milestone_number =
             payload.synced_github_milestone_number.is_some();
         let synced_github_milestone_number = payload.synced_github_milestone_number.flatten();
-        sqlx::query_as::<_, GithubIssueLink>(
+        let updated = sqlx::query_as::<_, GithubIssueLink>(
             r#"
             UPDATE github_issue_links
             SET project_item_id = COALESCE($2, project_item_id),
@@ -120,6 +120,25 @@ impl GithubIssueLinkRepository {
                     COALESCE($17, comments_synced_after),
                 updated_at = NOW()
             WHERE id = $1
+              AND ROW(
+                  project_item_id, github_state, github_updated_at,
+                  last_synced_vibe_updated_at, synced_title, synced_description,
+                  synced_vibe_status_id, synced_github_status_option_id,
+                  synced_parent_issue_id, synced_milestone_id,
+                  synced_github_milestone_number, comments_synced_after
+              ) IS DISTINCT FROM ROW(
+                  COALESCE($2, project_item_id), COALESCE($3, github_state),
+                  COALESCE($4, github_updated_at),
+                  COALESCE($5, last_synced_vibe_updated_at),
+                  COALESCE($6, synced_title),
+                  CASE WHEN $7 THEN $8 ELSE synced_description END,
+                  COALESCE($9, synced_vibe_status_id),
+                  COALESCE($10, synced_github_status_option_id),
+                  CASE WHEN $11 THEN $12 ELSE synced_parent_issue_id END,
+                  CASE WHEN $13 THEN $14 ELSE synced_milestone_id END,
+                  CASE WHEN $15 THEN $16 ELSE synced_github_milestone_number END,
+                  COALESCE($17, comments_synced_after)
+              )
             RETURNING *
             "#,
         )
@@ -140,8 +159,21 @@ impl GithubIssueLinkRepository {
         .bind(update_synced_github_milestone_number)
         .bind(synced_github_milestone_number)
         .bind(payload.comments_synced_after)
-        .fetch_one(&mut **tx)
-        .await
+        .fetch_optional(&mut **tx)
+        .await?;
+        match updated {
+            Some(link) => Ok(link),
+            // A separate READ COMMITTED statement also sees a concurrent updater
+            // that made our PATCH a no-op while UPDATE waited on its row lock.
+            None => {
+                sqlx::query_as::<_, GithubIssueLink>(
+                    "SELECT * FROM github_issue_links WHERE id = $1",
+                )
+                .bind(id)
+                .fetch_one(&mut **tx)
+                .await
+            }
+        }
     }
 
     pub async fn delete(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<(), sqlx::Error> {
@@ -150,5 +182,107 @@ impl GithubIssueLinkRepository {
             .execute(&mut **tx)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Uses only a connection-local temporary table; no application rows touched.
+    #[tokio::test]
+    #[ignore = "requires SKC_TEST_DATABASE_URL pointing to an isolated PostgreSQL"]
+    async fn no_op_keeps_tuple_and_nullable_updates_work() {
+        let pool = PgPool::connect(&std::env::var("SKC_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TEMP TABLE github_issue_links (
+                id uuid PRIMARY KEY, project_id uuid, issue_id uuid,
+                repository text, number integer, url text, github_node_id text,
+                project_item_id text, github_state text, github_updated_at timestamptz,
+                last_synced_vibe_updated_at timestamptz, synced_title text,
+                synced_description text, synced_vibe_status_id uuid,
+                synced_github_status_option_id text, synced_parent_issue_id uuid,
+                synced_milestone_id uuid, synced_github_milestone_number integer,
+                comments_synced_after timestamptz, created_at timestamptz,
+                updated_at timestamptz
+            ) ON COMMIT DROP;
+            INSERT INTO github_issue_links
+                (id, project_id, issue_id, repository, number, url, github_state,
+                 synced_title, synced_description, created_at, updated_at)
+            VALUES ('00000000-0000-0000-0000-000000000001',
+                    gen_random_uuid(), gen_random_uuid(), 'owner/repo', 1, 'url',
+                    'open', 'title', 'description', '2026-01-01Z', '2026-01-01Z');",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        let id = Uuid::from_u128(1);
+        let before: (String, chrono::DateTime<chrono::Utc>) =
+            sqlx::query_as("SELECT ctid::text, updated_at FROM github_issue_links")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        for payload in [
+            UpdateGithubIssueLinkRequest::default(),
+            serde_json::from_value(
+                serde_json::json!({"synced_title": "title", "github_state": null}),
+            )
+            .unwrap(),
+        ] {
+            let row = GithubIssueLinkRepository::update(&mut tx, id, payload)
+                .await
+                .unwrap();
+            assert_eq!(row.synced_title.as_deref(), Some("title"));
+        }
+        let after: (String, chrono::DateTime<chrono::Utc>) =
+            sqlx::query_as("SELECT ctid::text, updated_at FROM github_issue_links")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            before, after,
+            "no-op must not create a tuple or update timestamp"
+        );
+        let changed = GithubIssueLinkRepository::update(
+            &mut tx,
+            id,
+            serde_json::from_value(serde_json::json!({
+                "synced_title": "changed", "synced_description": null,
+                "synced_github_milestone_number": 3
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(changed.synced_title.as_deref(), Some("changed"));
+        assert_eq!(changed.synced_description, None);
+        assert_eq!(changed.synced_github_milestone_number, Some(3));
+        let new_tuple: String = sqlx::query_scalar("SELECT ctid::text FROM github_issue_links")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_ne!(before.0, new_tuple);
+        let cleared = GithubIssueLinkRepository::update(
+            &mut tx,
+            id,
+            serde_json::from_value(serde_json::json!({"synced_github_milestone_number": null}))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cleared.synced_github_milestone_number, None);
+        assert!(matches!(
+            GithubIssueLinkRepository::update(
+                &mut tx,
+                Uuid::nil(),
+                UpdateGithubIssueLinkRequest::default()
+            )
+            .await,
+            Err(sqlx::Error::RowNotFound)
+        ));
+        tx.rollback().await.unwrap();
     }
 }

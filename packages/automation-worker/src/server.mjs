@@ -76,7 +76,7 @@ const MAX_BODY_BYTES = 1024 * 1024;
 // is the real access control. There is no unauthenticated mode: a tokenless
 // server would let any local webpage (CSRF) create and run a rule, i.e. execute
 // code on the host. Fail closed — refuse to boot without a token.
-if (!ADMIN_TOKEN) {
+if (!ADMIN_TOKEN && !process.argv.includes('--self-test')) {
   console.error(
     'ADMIN_TOKEN is required; refusing to start. Set one (e.g. ADMIN_TOKEN=$(openssl rand -hex 32)) and restart.'
   );
@@ -276,26 +276,30 @@ const eventInFlight = new Map();
 const githubIssueLinkInFlight = new Map();
 let writeQueue = Promise.resolve();
 
-await bootstrap();
+if (process.argv.includes('--self-test')) {
+  await testGithubIssueReconcile();
+} else {
+  await bootstrap();
 
-const server = http.createServer(async (req, res) => {
-  try {
-    await route(req, res);
-  } catch (error) {
-    const status = Number(error?.statusCode) || 500;
-    await log('error', 'request failed', {
-      error: errorMessage(error),
-      url: sanitizeUrl(req.url),
-    });
-    sendJson(res, status, {
-      error: status === 413 ? 'payload too large' : 'internal server error',
-    });
-  }
-});
+  const server = http.createServer(async (req, res) => {
+    try {
+      await route(req, res);
+    } catch (error) {
+      const status = Number(error?.statusCode) || 500;
+      await log('error', 'request failed', {
+        error: errorMessage(error),
+        url: sanitizeUrl(req.url),
+      });
+      sendJson(res, status, {
+        error: status === 413 ? 'payload too large' : 'internal server error',
+      });
+    }
+  });
 
-server.listen(PORT, HOST, () => {
-  console.log(`automation worker listening on http://${HOST}:${PORT}`);
-});
+  server.listen(PORT, HOST, () => {
+    console.log(`automation worker listening on http://${HOST}:${PORT}`);
+  });
+}
 
 async function bootstrap() {
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -2300,7 +2304,7 @@ async function linkGithubIssueOnce(input, operationKey) {
   const vibeIssue = await vibeApi(
     vibe,
     'GET',
-    `/v1/issues/${encodeURIComponent(input.issueId)}`
+    `/v1/issues/${encodeURIComponent(input.issueId)}`,
   );
   assertGithubIssueProject(vibeIssue, vibe.config.projectId);
   const existingLink = await findGithubIssueLinkForIssue(vibe, input.issueId);
@@ -2313,7 +2317,7 @@ async function linkGithubIssueOnce(input, operationKey) {
   const title = String(input.title || '').trim();
   if (!title) throw new Error('issue title is required');
   let operation = (state.githubIssueLinkOperations || []).find(
-    (item) => item.key === operationKey
+    (item) => item.key === operationKey,
   );
   if (!operation) {
     operation = {
@@ -2363,7 +2367,7 @@ async function linkGithubIssueOnce(input, operationKey) {
     operation.projectItemId = await addGithubIssueToProject(
       github,
       config.githubProjectId,
-      issue.node_id
+      issue.node_id,
     );
     await persistState();
   }
@@ -2377,7 +2381,7 @@ async function linkGithubIssueOnce(input, operationKey) {
     const currentOptionId = await githubProjectStatusOption(
       github,
       projectItemId,
-      config.githubStatusFieldId
+      config.githubStatusFieldId,
     );
     const decision = decideGithubProjectStatusSync({
       statusMappings: config.statusMappings,
@@ -2391,7 +2395,7 @@ async function linkGithubIssueOnce(input, operationKey) {
         github,
         config,
         projectItemId,
-        decision.githubOptionId
+        decision.githubOptionId,
       );
     } else if (
       decision.action === 'adopt' &&
@@ -2401,7 +2405,7 @@ async function linkGithubIssueOnce(input, operationKey) {
         vibe,
         'PATCH',
         `/v1/issues/${encodeURIComponent(effectiveInput.issueId)}`,
-        { status_id: decision.vibeStatusId }
+        { status_id: decision.vibeStatusId },
       );
     }
     syncedStatusOptionId = decision.githubOptionId;
@@ -2421,7 +2425,7 @@ async function linkGithubIssueOnce(input, operationKey) {
     github_updated_at: normalizeOptionalTimestamp(issue.updated_at),
     last_synced_vibe_updated_at: normalizeOptionalTimestamp(
       vibeIssue.updated_at,
-      effectiveInput.vibeUpdatedAt
+      effectiveInput.vibeUpdatedAt,
     ),
     synced_title: String(effectiveInput.title || ''),
     synced_description:
@@ -2444,15 +2448,10 @@ async function linkGithubIssueOnce(input, operationKey) {
     githubIssueUpdatedAt: issue.updated_at,
     syncLink: created.data,
   });
-  await vibeApi(
-    vibe,
-    'PATCH',
-    `/v1/github_issue_links/${encodeURIComponent(created.data.id)}`,
-    {
-      synced_milestone_id: milestoneSync.milestoneId,
-      synced_github_milestone_number: milestoneSync.githubNumber,
-    }
-  );
+  await patchGithubIssueLink(vibe, created.data, {
+    synced_milestone_id: milestoneSync.milestoneId,
+    synced_github_milestone_number: milestoneSync.githubNumber,
+  });
   removeGithubIssueLinkOperation(operationKey);
   await persistState();
   await log('info', 'github issue linked', {
@@ -2748,7 +2747,7 @@ async function reconcileGithubIssueParent({
         githubIssueLinkKey({
           repository: githubParentRepository,
           number: githubParent.number,
-        })
+        }),
       )
     : null;
   if (githubParent && !githubParentLink) return undefined;
@@ -2768,7 +2767,7 @@ async function reconcileGithubIssueParent({
       nextParentLink &&
       !githubIssueRepositoriesShareOwner(
         nextParentLink.repository,
-        link.repository
+        link.repository,
       )
     ) {
       return undefined;
@@ -2786,11 +2785,113 @@ async function reconcileGithubIssueParent({
       vibe,
       'PATCH',
       `/v1/issues/${encodeURIComponent(vibeIssue.id)}`,
-      { parent_issue_id: decision.parentIssueId }
+      { parent_issue_id: decision.parentIssueId },
     );
     vibeIssue.parent_issue_id = decision.parentIssueId;
   }
   return decision.parentIssueId;
+}
+
+// Match the server's nullable-field semantics; unknown types are sent rather
+// than guessed (in particular arrays are never reordered or stringified).
+function githubLinkFieldEqual(field, current, next) {
+  if (next === undefined) return true;
+  const clearable = [
+    'synced_description',
+    'synced_parent_issue_id',
+    'synced_milestone_id',
+    'synced_github_milestone_number',
+  ];
+  const coalesced = [
+    'project_item_id',
+    'github_state',
+    'github_updated_at',
+    'last_synced_vibe_updated_at',
+    'synced_title',
+    'synced_vibe_status_id',
+    'synced_github_status_option_id',
+    'comments_synced_after',
+  ];
+  if (next === null && coalesced.includes(field)) return true;
+  if (next === null) return clearable.includes(field) && current === null;
+  if (
+    current == null ||
+    typeof next === 'object' ||
+    typeof current === 'object'
+  )
+    return false;
+  if (
+    [
+      'github_updated_at',
+      'last_synced_vibe_updated_at',
+      'comments_synced_after',
+    ].includes(field)
+  ) {
+    const timestamp = (value) => {
+      if (
+        typeof value !== 'string' ||
+        !/T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+      )
+        return null;
+      const millis = Date.parse(value);
+      if (!Number.isFinite(millis)) return null;
+      // Date.parse truncates sub-millisecond precision; preserve it separately.
+      const fraction = value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/i)?.[1] || '';
+      return `${millis}:${fraction.slice(3).replace(/0+$/, '')}`;
+    };
+    const normalized = timestamp(next);
+    return normalized !== null && normalized === timestamp(current);
+  }
+  if (field === 'synced_github_milestone_number') {
+    const integer = (value) => {
+      if (
+        !['string', 'number'].includes(typeof value) ||
+        !/^-?\d+$/.test(String(value))
+      )
+        return null;
+      const number = Number(value);
+      return Number.isSafeInteger(number) &&
+        number >= -2147483648 &&
+        number <= 2147483647
+        ? number
+        : null;
+    };
+    return integer(next) !== null && integer(next) === integer(current);
+  }
+  if (
+    [
+      'synced_vibe_status_id',
+      'synced_parent_issue_id',
+      'synced_milestone_id',
+    ].includes(field)
+  ) {
+    const uuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return typeof next === 'string' &&
+      typeof current === 'string' &&
+      uuid.test(next) &&
+      uuid.test(current)
+      ? next.toLowerCase() === current.toLowerCase()
+      : false;
+  }
+  return (
+    typeof next === 'string' && typeof current === 'string' && next === current
+  );
+}
+
+async function patchGithubIssueLink(vibe, link, payload) {
+  const changes = Object.fromEntries(
+    Object.entries(payload).filter(
+      ([field, value]) => !githubLinkFieldEqual(field, link[field], value),
+    ),
+  );
+  if (!Object.keys(changes).length) return;
+  return vibeApi(
+    vibe,
+    'PATCH',
+    `/v1/github_issue_links/${encodeURIComponent(link.id)}`,
+    changes,
+  );
 }
 
 async function reconcileGithubIssueLink(
@@ -2799,22 +2900,22 @@ async function reconcileGithubIssueLink(
   vibe,
   link,
   vibeIssue,
-  { linksByIssueId, linksByExternalKey, milestones, issueMilestones }
+  { linksByIssueId, linksByExternalKey, milestones, issueMilestones },
 ) {
   const config = rule.config || {};
   const syncTitle = config.fields?.title !== false;
   const syncDescription = config.fields?.description !== false;
   const apiBase = String(
-    github.config.apiBase || 'https://api.github.com'
+    github.config.apiBase || 'https://api.github.com',
   ).replace(/\/+$/, '');
   const response = await fetch(
     `${apiBase}/repos/${link.repository}/issues/${link.number}`,
-    { headers: githubHeaders(github.config.token) }
+    { headers: githubHeaders(github.config.token) },
   );
   const text = await response.text();
   if (!response.ok)
     throw new Error(
-      `GitHub issue lookup error: ${response.status} ${text.slice(0, 200)}`
+      `GitHub issue lookup error: ${response.status} ${text.slice(0, 200)}`,
     );
   const external = JSON.parse(text);
   const milestoneSync = await syncGithubMilestone({
@@ -2830,7 +2931,7 @@ async function reconcileGithubIssueLink(
     issueMilestones,
   });
   const hasVibeMarker = String(external.body || '').includes(
-    '<!-- vibe-kanban-issue:'
+    '<!-- vibe-kanban-issue:',
   );
   const externalDescription = withoutGithubIssueMarker(external.body);
   const syncedDescription = link.synced_description ?? null;
@@ -2857,7 +2958,7 @@ async function reconcileGithubIssueLink(
       {
         ...(syncTitle ? { title } : {}),
         ...(syncDescription ? { description } : {}),
-      }
+      },
     );
   } else if (vibeChanged) {
     const update = await fetch(
@@ -2875,11 +2976,11 @@ async function reconcileGithubIssueLink(
               }
             : {}),
         }),
-      }
+      },
     );
     if (!update.ok) {
       throw new Error(
-        `GitHub issue update error: ${update.status} ${(await update.text()).slice(0, 200)}`
+        `GitHub issue update error: ${update.status} ${(await update.text()).slice(0, 200)}`,
       );
     }
   }
@@ -2889,7 +2990,7 @@ async function reconcileGithubIssueLink(
     githubStatusOption = await githubProjectStatusOption(
       github,
       link.project_item_id,
-      config.githubStatusFieldId
+      config.githubStatusFieldId,
     );
     // Links written before a baseline existed (or by a legacy import) adopt the
     // board value instead of pushing the Vibe column back over it.
@@ -2905,7 +3006,7 @@ async function reconcileGithubIssueLink(
         github,
         config,
         link.project_item_id,
-        decision.githubOptionId
+        decision.githubOptionId,
       );
       githubStatusOption = decision.githubOptionId;
     } else if (decision.action === 'adopt') {
@@ -2916,7 +3017,7 @@ async function reconcileGithubIssueLink(
           `/v1/issues/${encodeURIComponent(vibeIssue.id)}`,
           {
             status_id: decision.vibeStatusId,
-          }
+          },
         );
       }
       vibeIssue.status_id = decision.vibeStatusId;
@@ -2934,26 +3035,21 @@ async function reconcileGithubIssueLink(
     linksByExternalKey,
   });
 
-  await vibeApi(
-    vibe,
-    'PATCH',
-    `/v1/github_issue_links/${encodeURIComponent(link.id)}`,
-    {
-      project_item_id: link.project_item_id,
-      github_state: external.state,
-      github_updated_at: external.updated_at,
-      last_synced_vibe_updated_at: vibeIssue.updated_at,
-      synced_title: syncTitle ? title : undefined,
-      synced_description: syncDescription ? description : undefined,
-      synced_vibe_status_id: vibeIssue.status_id,
-      synced_github_status_option_id: githubStatusOption,
-      ...(syncedParentIssueId !== undefined
-        ? { synced_parent_issue_id: syncedParentIssueId }
-        : {}),
-      synced_milestone_id: milestoneSync.milestoneId,
-      synced_github_milestone_number: milestoneSync.githubNumber,
-    }
-  );
+  await patchGithubIssueLink(vibe, link, {
+    project_item_id: link.project_item_id,
+    github_state: external.state,
+    github_updated_at: external.updated_at,
+    last_synced_vibe_updated_at: vibeIssue.updated_at,
+    synced_title: syncTitle ? title : undefined,
+    synced_description: syncDescription ? description : undefined,
+    synced_vibe_status_id: vibeIssue.status_id,
+    synced_github_status_option_id: githubStatusOption,
+    ...(syncedParentIssueId !== undefined
+      ? { synced_parent_issue_id: syncedParentIssueId }
+      : {}),
+    synced_milestone_id: milestoneSync.milestoneId,
+    synced_github_milestone_number: milestoneSync.githubNumber,
+  });
 
   if (config.fields?.comments !== false) {
     try {
@@ -2971,28 +3067,37 @@ async function reconcileGithubIssueLink(
   }
 }
 
-// Fetch every comment on a mapped GitHub issue. Capped at 20 pages.
-// ponytail: full scan, no ?since cursor — add github_issue_links.comments_synced_after
-// as a `since` if an issue ever exceeds ~2000 comments.
-async function fetchGithubIssueComments(apiBase, repository, number, token) {
+// A missing cursor deliberately fetches all history. The immutable
+// comments_synced_after is a publication cutoff, never a moving read cursor.
+async function fetchGithubIssueComments(
+  apiBase,
+  repository,
+  number,
+  token,
+  since,
+) {
   const comments = [];
   for (let page = 1; page <= 20; page += 1) {
     const params = new URLSearchParams({ per_page: '100', page: String(page) });
+    if (since) params.set('since', since);
     const response = await fetch(
       `${apiBase}/repos/${repository}/issues/${number}/comments?${params}`,
-      { headers: githubHeaders(token) }
+      { headers: githubHeaders(token) },
     );
     const text = await response.text();
     if (!response.ok) {
       throw new Error(
-        `GitHub issue comments error: ${response.status} ${text.slice(0, 200)}`
+        `GitHub issue comments error: ${response.status} ${text.slice(0, 200)}`,
       );
     }
     const batch = JSON.parse(text);
+    if (!Array.isArray(batch))
+      throw new Error('Invalid GitHub comments response');
     for (const comment of batch) comments.push(comment);
-    if (!Array.isArray(batch) || batch.length < 100) break;
+    if (batch.length < 100) return comments;
   }
-  return comments;
+  // Never advance a cursor past an incomplete page set.
+  throw new Error('GitHub comment sync exceeded 20 pages');
 }
 
 async function githubCreateIssueComment(apiBase, repository, number, token, body) {
@@ -3034,7 +3139,13 @@ async function githubUpdateIssueComment(apiBase, repository, token, commentId, b
 // (its repository/number and issue_id); planCommentSync applies the seeding
 // cutoff and echo/native filters so nothing leaks in from — or out to —
 // unrelated issues, PRs, or pre-existing history.
-async function reconcileGithubIssueComments(github, vibe, link, external, apiBase) {
+async function reconcileGithubIssueComments(
+  github,
+  vibe,
+  link,
+  external,
+  apiBase,
+) {
   // G1: a link should only ever point at an issue, but never sync a PR's
   // conversation as issue comments even if one slipped through.
   if (external && external.pull_request) return;
@@ -3047,12 +3158,7 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
   let cutoff = link.comments_synced_after;
   if (!cutoff) {
     cutoff = new Date().toISOString();
-    await vibeApi(
-      vibe,
-      'PATCH',
-      `/v1/github_issue_links/${encodeURIComponent(link.id)}`,
-      { comments_synced_after: cutoff }
-    );
+    await patchGithubIssueLink(vibe, link, { comments_synced_after: cutoff });
   }
 
   const [githubComments, vibeBody] = await Promise.all([
@@ -3060,7 +3166,7 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
     vibeApi(
       vibe,
       'GET',
-      `/v1/issue_comments?issue_id=${encodeURIComponent(link.issue_id)}`
+      `/v1/issue_comments?issue_id=${encodeURIComponent(link.issue_id)}`,
     ),
   ]);
   const plan = planCommentSync({
@@ -3074,7 +3180,7 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
       vibe,
       'PATCH',
       `/v1/issue_comments/${encodeURIComponent(repair.vibeCommentId)}`,
-      { github_comment_id: repair.githubCommentId }
+      { github_comment_id: repair.githubCommentId },
     );
   }
   for (const gc of plan.imports) {
@@ -3092,13 +3198,13 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
       link.repository,
       link.number,
       token,
-      withCommentMarker(vc.message, vc.id)
+      withCommentMarker(vc.message, vc.id),
     );
     await vibeApi(
       vibe,
       'PATCH',
       `/v1/issue_comments/${encodeURIComponent(vc.id)}`,
-      { github_comment_id: String(created.id) }
+      { github_comment_id: String(created.id) },
     );
   }
   for (const edit of plan.edits) {
@@ -3107,7 +3213,7 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
         vibe,
         'PATCH',
         `/v1/issue_comments/${encodeURIComponent(edit.vibe.id)}`,
-        { message: edit.message }
+        { message: edit.message },
       );
     } else {
       await githubUpdateIssueComment(
@@ -3115,7 +3221,7 @@ async function reconcileGithubIssueComments(github, vibe, link, external, apiBas
         link.repository,
         token,
         edit.github.id,
-        withCommentMarker(edit.vibe.message, edit.vibe.id)
+        withCommentMarker(edit.vibe.message, edit.vibe.id),
       );
     }
   }
@@ -3933,4 +4039,153 @@ function withTimeout(promise, ms, message) {
 
 function maxSlackTs(a, b) {
   return Number(a || 0) >= Number(b || 0) ? a : b;
+}
+
+// Run without credentials, timers or network: node src/server.mjs --self-test.
+async function testGithubIssueReconcile() {
+  const { default: test } = await import('node:test');
+  const { default: assert } = await import('node:assert/strict');
+  const stamp = '2026-09-01T00:00:00Z';
+  const link = {
+    id: 'link',
+    issue_id: 'issue',
+    repository: 'owner/repo',
+    number: 1,
+    github_state: 'open',
+    github_updated_at: stamp,
+    last_synced_vibe_updated_at: stamp,
+    synced_title: 'title',
+    synced_description: null,
+    synced_vibe_status_id: '00000000-0000-0000-0000-000000000001',
+    synced_milestone_id: null,
+    synced_github_milestone_number: null,
+    comments_synced_after: stamp,
+  };
+  const external = {
+    title: 'title',
+    body: '',
+    state: 'open',
+    updated_at: stamp,
+  };
+  const issue = {
+    id: 'issue',
+    title: 'title',
+    description: null,
+    status_id: '00000000-0000-0000-0000-000000000001',
+    updated_at: stamp,
+  };
+  function harness() {
+    const calls = [];
+    const context = vm.createContext({
+      URLSearchParams,
+      Date,
+      Map,
+      Set,
+      console,
+      githubHeaders: () => ({}),
+      syncGithubMilestone: async () => ({
+        milestoneId: null,
+        githubNumber: null,
+      }),
+      withoutGithubIssueMarker: () => null,
+      shouldSyncGithubProjectStatus: () => false,
+      reconcileGithubIssueParent: async () => undefined,
+      normalizeOptionalTimestamp,
+      planCommentSync,
+      githubCommentSyncCache: new Map(),
+      fetch: async (url) => {
+        calls.push(['GET', url]);
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify(url.includes('/comments?') ? [] : external),
+        };
+      },
+      vibeApi: async (_vibe, method, url, payload) => {
+        calls.push([method, url, payload]);
+        return { issue_comments: [], data: { ...link, ...payload } };
+      },
+      log: async () => {},
+    });
+    const functions = [
+      reconcileGithubIssueLink,
+      reconcileGithubIssueComments,
+      fetchGithubIssueComments,
+    ];
+    // Include the shared guard when testing the optimized implementation.
+    if (typeof patchGithubIssueLink === 'function') {
+      functions.push(patchGithubIssueLink, githubLinkFieldEqual);
+    }
+    vm.runInContext(functions.map((fn) => fn.toString()).join('\n'), context);
+    return { calls, context };
+  }
+  await test('unchanged link skips PATCH; real title changes pass', async () => {
+    const { calls, context } = harness();
+    const run = (row) =>
+      context.reconcileGithubIssueLink(
+        { config: { fields: { comments: false } } },
+        { config: {} },
+        { config: {} },
+        { ...link },
+        row,
+        {},
+      );
+    await run({ ...issue });
+    assert.equal(calls.filter(([method]) => method === 'PATCH').length, 0);
+    await run({ ...issue, title: 'changed' });
+    assert.ok(
+      calls.some(
+        ([method, url]) =>
+          method === 'PATCH' && url.includes('github_issue_links'),
+      ),
+    );
+  });
+  await test('PATCH comparison preserves types, clears and timestamp precision', async () => {
+    assert.ok(
+      githubLinkFieldEqual(
+        'github_updated_at',
+        stamp,
+        '2026-09-01T09:00:00.000+09:00',
+      ),
+    );
+    assert.ok(
+      !githubLinkFieldEqual(
+        'github_updated_at',
+        '2026-09-01T00:00:00.000001Z',
+        stamp,
+      ),
+    );
+    assert.ok(!githubLinkFieldEqual('github_updated_at', 'invalid', 'invalid'));
+    assert.ok(githubLinkFieldEqual('synced_github_milestone_number', 3, '3'));
+    assert.ok(!githubLinkFieldEqual('synced_github_milestone_number', 3, ''));
+    assert.ok(!githubLinkFieldEqual('synced_github_milestone_number', 3, 4));
+    assert.ok(githubLinkFieldEqual('synced_title', 'keep', null));
+    assert.ok(githubLinkFieldEqual('synced_description', 'keep', undefined));
+    assert.ok(!githubLinkFieldEqual('synced_description', 'clear', null));
+    assert.ok(!githubLinkFieldEqual('synced_description', undefined, null));
+    assert.ok(!githubLinkFieldEqual('synced_title', '3', 3));
+    assert.ok(!githubLinkFieldEqual('future_array', ['a', 'b'], ['b', 'a']));
+    assert.ok(
+      githubLinkFieldEqual(
+        'synced_parent_issue_id',
+        'ABCDEF00-0000-0000-0000-000000000001',
+        'abcdef00-0000-0000-0000-000000000001',
+      ),
+    );
+  });
+  await test('unchanged comments skip GET after initial sync', async () => {
+    const { calls, context } = harness();
+    const run = () =>
+      context.reconcileGithubIssueComments(
+        { config: {} },
+        { config: {} },
+        { ...link },
+        external,
+        'https://github.test',
+      );
+    await run();
+    calls.length = 0;
+    await run();
+    assert.equal(calls.filter(([method]) => method === 'GET').length, 0);
+  });
 }
