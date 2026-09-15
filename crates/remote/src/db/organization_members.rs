@@ -89,41 +89,67 @@ pub(crate) async fn assert_membership(
     }
 }
 
+/// Missing issue and non-membership are both `NotFound`, so one EXISTS query
+/// replaces the former issue→org lookup plus membership check.
 pub(crate) async fn assert_issue_access(
     pool: &PgPool,
     issue_id: Uuid,
     user_id: Uuid,
 ) -> Result<(), IdentityError> {
-    let org_id = sqlx::query_scalar!(
+    let allowed = sqlx::query_scalar!(
         r#"
-        SELECT p.organization_id
-        FROM issues i
-        JOIN projects p ON i.project_id = p.id
-        WHERE i.id = $1
+        SELECT EXISTS(
+            SELECT 1
+            FROM issues i
+            JOIN projects p ON p.id = i.project_id
+            JOIN organization_member_metadata m
+                ON m.organization_id = p.organization_id
+               AND m.user_id = $2
+            WHERE i.id = $1
+        ) AS "exists!"
         "#,
-        issue_id
+        issue_id,
+        user_id
     )
-    .fetch_optional(pool)
-    .await?
-    .ok_or(IdentityError::NotFound)?;
+    .fetch_one(pool)
+    .await?;
 
-    assert_membership(pool, org_id, user_id).await
+    if allowed {
+        Ok(())
+    } else {
+        Err(IdentityError::NotFound)
+    }
 }
 
+/// Missing project and non-membership are both `NotFound`, so one EXISTS query
+/// replaces the former project→org lookup plus membership check.
 pub(crate) async fn assert_project_access(
     pool: &PgPool,
     project_id: Uuid,
     user_id: Uuid,
 ) -> Result<(), IdentityError> {
-    let org_id = sqlx::query_scalar!(
-        r#"SELECT organization_id FROM projects WHERE id = $1"#,
-        project_id
+    let allowed = sqlx::query_scalar!(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM projects p
+            JOIN organization_member_metadata m
+                ON m.organization_id = p.organization_id
+               AND m.user_id = $2
+            WHERE p.id = $1
+        ) AS "exists!"
+        "#,
+        project_id,
+        user_id
     )
-    .fetch_optional(pool)
-    .await?
-    .ok_or(IdentityError::NotFound)?;
+    .fetch_one(pool)
+    .await?;
 
-    assert_membership(pool, org_id, user_id).await
+    if allowed {
+        Ok(())
+    } else {
+        Err(IdentityError::NotFound)
+    }
 }
 
 pub(crate) async fn list_by_organization(

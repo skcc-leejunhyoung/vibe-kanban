@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT EXISTS(\n            SELECT 1\n            FROM projects p\n            JOIN organization_member_metadata m\n                ON m.organization_id = p.organization_id\n               AND m.user_id = $2\n            WHERE p.id = $1\n        ) AS \"exists!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c66a9056bb75e6ffc05be33ade7df4aad99c2711507fe2d82309e02ef386119a"
+}
