@@ -1,8 +1,21 @@
 pub use api_types::AuthSession;
-use chrono::Duration;
+use api_types::User;
+use chrono::{DateTime, Duration, Utc};
 use sqlx::{PgPool, query_as};
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::auth::AUTH_CACHE;
+
+/// The subset of `auth_sessions` the request middleware needs, joined with
+/// the user row so a cache miss costs one round trip instead of two.
+#[derive(Debug, Clone)]
+pub struct SessionWithUser {
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub user: User,
+}
 
 #[derive(Debug, Error)]
 pub enum AuthSessionError {
@@ -82,6 +95,49 @@ impl<'a> AuthSessionRepository<'a> {
         .fetch_optional(self.pool)
         .await?
         .ok_or(AuthSessionError::NotFound)
+    }
+
+    /// Session + user in one query; the auth middleware's only read on a cache miss.
+    pub async fn get_with_user(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<SessionWithUser>, AuthSessionError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT
+                s.created_at   AS "created_at!",
+                s.last_used_at AS "last_used_at?",
+                s.revoked_at   AS "revoked_at?",
+                u.id           AS "user_id!: Uuid",
+                u.email        AS "email!",
+                u.first_name   AS "first_name?",
+                u.last_name    AS "last_name?",
+                u.username     AS "username?",
+                u.created_at   AS "user_created_at!",
+                u.updated_at   AS "user_updated_at!"
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.id = $1
+            "#,
+            session_id
+        )
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row.map(|r| SessionWithUser {
+            created_at: r.created_at,
+            last_used_at: r.last_used_at,
+            revoked_at: r.revoked_at,
+            user: User {
+                id: r.user_id,
+                email: r.email,
+                first_name: r.first_name,
+                last_name: r.last_name,
+                username: r.username,
+                created_at: r.user_created_at,
+                updated_at: r.user_updated_at,
+            },
+        }))
     }
 
     pub async fn touch(&self, session_id: Uuid) -> Result<(), AuthSessionError> {
@@ -218,10 +274,13 @@ impl<'a> AuthSessionRepository<'a> {
         .map_err(AuthSessionError::from)?;
 
         tx.commit().await.map_err(AuthSessionError::from)?;
+        AUTH_CACHE.invalidate_session(session_id).await;
 
         Ok(update_result.rows_affected() as i64)
     }
 
+    /// Runs inside the caller's transaction, so the caller must call
+    /// `AUTH_CACHE.invalidate_all_sessions()` after it commits.
     pub(super) async fn revoke_issued_user_sessions(
         connection: &mut sqlx::PgConnection,
         user_id: Uuid,
@@ -291,6 +350,7 @@ impl<'a> AuthSessionRepository<'a> {
         )
         .execute(self.pool)
         .await?;
+        AUTH_CACHE.invalidate_session(session_id).await;
         Ok(())
     }
 

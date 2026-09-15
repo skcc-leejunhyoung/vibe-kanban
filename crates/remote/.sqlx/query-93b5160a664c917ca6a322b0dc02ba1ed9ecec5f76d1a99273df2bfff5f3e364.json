@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                s.created_at   AS \"created_at!\",\n                s.last_used_at AS \"last_used_at?\",\n                s.revoked_at   AS \"revoked_at?\",\n                u.id           AS \"user_id!: Uuid\",\n                u.email        AS \"email!\",\n                u.first_name   AS \"first_name?\",\n                u.last_name    AS \"last_name?\",\n                u.username     AS \"username?\",\n                u.created_at   AS \"user_created_at!\",\n                u.updated_at   AS \"user_updated_at!\"\n            FROM auth_sessions s\n            JOIN users u ON u.id = s.user_id\n            WHERE s.id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_used_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "revoked_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "user_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "email!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "first_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "username?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "user_updated_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "93b5160a664c917ca6a322b0dc02ba1ed9ecec5f76d1a99273df2bfff5f3e364"
+}

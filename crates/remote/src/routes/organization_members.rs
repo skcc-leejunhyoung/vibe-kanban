@@ -19,7 +19,7 @@ use super::error::{ErrorResponse, membership_error};
 use crate::{
     AppState,
     audit::{self, AuditAction, AuditEvent},
-    auth::RequestContext,
+    auth::{AUTH_CACHE, RequestContext},
     db::{
         identity_errors::IdentityError,
         invitations::{Invitation, InvitationRepository},
@@ -399,6 +399,10 @@ async fn remove_member(
     tx.commit()
         .await
         .map_err(|_| ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "Database error"))?;
+
+    // Drop cached membership grants so the removed user's next request is
+    // denied immediately instead of after the cache TTL.
+    AUTH_CACHE.invalidate_access();
 
     audit::emit(
         AuditEvent::system(AuditAction::MemberRemove)

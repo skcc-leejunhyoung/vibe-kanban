@@ -85,6 +85,9 @@ impl<'a> OAuthAccountRepository<'a> {
         // so a failure just before redemption cannot destroy the recovery itself.
         super::auth::AuthSessionRepository::revoke_issued_user_sessions(&mut tx, user_id).await?;
         tx.commit().await?;
+        // After commit, so a request racing the transaction cannot re-cache a
+        // session that is about to be revoked.
+        crate::auth::AUTH_CACHE.invalidate_all_sessions();
         Ok(true)
     }
 

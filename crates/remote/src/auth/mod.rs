@@ -1,3 +1,4 @@
+mod cache;
 mod handoff;
 mod jwt;
 mod local;
@@ -5,6 +6,7 @@ mod middleware;
 mod oauth_token_validator;
 mod provider;
 
+pub(crate) use cache::{AUTH_CACHE, AccessScope};
 pub(crate) use handoff::{CallbackResult, HandoffError, OAuthHandoffService};
 pub(crate) use jwt::{JwtError, JwtService};
 pub(crate) use local::{LocalAuthError, auth_methods_response, is_local_provider, login};

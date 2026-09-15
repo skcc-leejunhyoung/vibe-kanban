@@ -276,6 +276,9 @@ impl<'a> OrganizationRepository<'a> {
             return Err(IdentityError::PermissionDenied);
         }
 
+        // Memberships were cascade-deleted; drop cached grants immediately.
+        crate::auth::AUTH_CACHE.invalidate_access();
+
         Ok(())
     }
 }

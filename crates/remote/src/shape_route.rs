@@ -29,11 +29,39 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    auth::RequestContext,
+    auth::{AUTH_CACHE, AccessScope, RequestContext},
     db::organization_members,
     routes::electric_proxy::{OrgShapeQuery, ProxyError, ShapeQuery, proxy_table},
     shape_definition::{ShapeDefinition, ShapeExport},
 };
+
+/// Membership check behind the positive-only access cache: a long poll that
+/// hits the cache costs no Postgres round trip; a denial is re-checked every
+/// time, so newly granted access is visible immediately.
+async fn check_scope_access(
+    state: &AppState,
+    user_id: Uuid,
+    scope: AccessScope,
+) -> Result<(), ProxyError> {
+    let pool = state.pool();
+    let verify = async move {
+        match scope {
+            AccessScope::Org(id) => {
+                organization_members::assert_membership(pool, id, user_id).await
+            }
+            AccessScope::Project(id) => {
+                organization_members::assert_project_access(pool, id, user_id).await
+            }
+            AccessScope::Issue(id) => {
+                organization_members::assert_issue_access(pool, id, user_id).await
+            }
+        }
+    };
+    AUTH_CACHE
+        .check_access(user_id, scope, verify)
+        .await
+        .map_err(|e| ProxyError::Authorization(e.to_string()))
+}
 
 // =============================================================================
 // HasQueryParams — structural trait linking handlers to their query extractor
@@ -174,13 +202,8 @@ fn build_proxy_handler(
             move |State(state): State<AppState>,
                   Extension(ctx): Extension<RequestContext>,
                   Query(query): Query<OrgShapeQuery>| async move {
-                organization_members::assert_membership(
-                    state.pool(),
-                    query.organization_id,
-                    ctx.user.id,
-                )
-                .await
-                .map_err(|e| ProxyError::Authorization(e.to_string()))?;
+                check_scope_access(&state, ctx.user.id, AccessScope::Org(query.organization_id))
+                    .await?;
 
                 proxy_table(
                     &state,
@@ -197,13 +220,8 @@ fn build_proxy_handler(
             move |State(state): State<AppState>,
                   Extension(ctx): Extension<RequestContext>,
                   Query(query): Query<OrgShapeQuery>| async move {
-                organization_members::assert_membership(
-                    state.pool(),
-                    query.organization_id,
-                    ctx.user.id,
-                )
-                .await
-                .map_err(|e| ProxyError::Authorization(e.to_string()))?;
+                check_scope_access(&state, ctx.user.id, AccessScope::Org(query.organization_id))
+                    .await?;
 
                 proxy_table(
                     &state,
@@ -221,9 +239,7 @@ fn build_proxy_handler(
                   Extension(ctx): Extension<RequestContext>,
                   Path(project_id): Path<Uuid>,
                   Query(query): Query<ShapeQuery>| async move {
-                organization_members::assert_project_access(state.pool(), project_id, ctx.user.id)
-                    .await
-                    .map_err(|e| ProxyError::Authorization(e.to_string()))?;
+                check_scope_access(&state, ctx.user.id, AccessScope::Project(project_id)).await?;
 
                 proxy_table(
                     &state,
@@ -241,9 +257,7 @@ fn build_proxy_handler(
                   Extension(ctx): Extension<RequestContext>,
                   Path(issue_id): Path<Uuid>,
                   Query(query): Query<ShapeQuery>| async move {
-                organization_members::assert_issue_access(state.pool(), issue_id, ctx.user.id)
-                    .await
-                    .map_err(|e| ProxyError::Authorization(e.to_string()))?;
+                check_scope_access(&state, ctx.user.id, AccessScope::Issue(issue_id)).await?;
 
                 proxy_table(
                     &state,

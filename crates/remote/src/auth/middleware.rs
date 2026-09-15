@@ -12,15 +12,11 @@ use tower_http::request_id::RequestId;
 use tracing::{Span, warn};
 use uuid::Uuid;
 
+use super::cache::{AUTH_CACHE, SessionRejection};
 use crate::{
     AppState, audit,
     audit::{AuditAction, AuditEvent},
-    db::{
-        self,
-        auth::{AuthSessionError, AuthSessionRepository, MAX_SESSION_INACTIVITY_DURATION},
-        identity_errors::IdentityError,
-        users::UserRepository,
-    },
+    db::{self, auth::AuthSessionRepository},
 };
 
 #[derive(Clone)]
@@ -96,74 +92,58 @@ pub(super) async fn request_context_from_auth_session_id(
     state: &AppState,
     session_id: Uuid,
 ) -> Result<RequestContext, Response> {
-    let pool = state.pool();
-    let session_repo = AuthSessionRepository::new(pool);
-    let session = match session_repo.get(session_id).await {
+    let session_repo = AuthSessionRepository::new(state.pool());
+    let now = Utc::now();
+
+    // Cache hit: zero queries. Miss: one session+user JOIN. Revocation
+    // invalidates the entry from `db::auth`, so a hit is never a revoked session.
+    let session = match AUTH_CACHE
+        .resolve_session(session_id, now, session_repo.get_with_user(session_id))
+        .await
+    {
         Ok(session) => session,
-        Err(AuthSessionError::NotFound) => {
+        Err(SessionRejection::NotFound) => {
             warn!("session `{}` not found", session_id);
             return Err(StatusCode::UNAUTHORIZED.into_response());
         }
-        Err(AuthSessionError::Database(error)) => {
+        Err(SessionRejection::Revoked) => {
+            warn!("session `{}` rejected (revoked)", session_id);
+            return Err(StatusCode::UNAUTHORIZED.into_response());
+        }
+        Err(SessionRejection::Inactive { user_id }) => {
+            warn!(
+                "session `{}` expired due to inactivity; revoking",
+                session_id
+            );
+            if let Err(error) = session_repo.revoke(session_id).await {
+                warn!(?error, "failed to revoke inactive session");
+            }
+            audit::emit(
+                AuditEvent::system(AuditAction::AuthSessionRevoked)
+                    .user(user_id, Some(session_id))
+                    .resource("auth_session", Some(session_id))
+                    .http("", "", 401)
+                    .description("Session revoked due to inactivity"),
+            );
+            return Err(StatusCode::UNAUTHORIZED.into_response());
+        }
+        Err(SessionRejection::Database(error)) => {
             warn!(?error, "failed to load session");
             return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
-        Err(_) => {
-            warn!("failed to load session for unknown reason");
-            return Err(StatusCode::UNAUTHORIZED.into_response());
-        }
     };
 
-    if session.revoked_at.is_some() {
-        warn!("session `{}` rejected (revoked)", session.id);
-        return Err(StatusCode::UNAUTHORIZED.into_response());
+    // `last_used_at` is day-granular: only pay for the UPDATE when the day changed.
+    if session.needs_touch(now) {
+        match session_repo.touch(session_id).await {
+            Ok(()) => session.mark_touched(now),
+            Err(error) => warn!(?error, "failed to update session last-used timestamp"),
+        }
     }
 
-    if session.inactivity_duration(Utc::now()) > MAX_SESSION_INACTIVITY_DURATION {
-        warn!(
-            "session `{}` expired due to inactivity; revoking",
-            session.id
-        );
-        if let Err(error) = session_repo.revoke(session.id).await {
-            warn!(?error, "failed to revoke inactive session");
-        }
-        audit::emit(
-            AuditEvent::system(AuditAction::AuthSessionRevoked)
-                .user(session.user_id, Some(session.id))
-                .resource("auth_session", Some(session.id))
-                .http("", "", 401)
-                .description("Session revoked due to inactivity"),
-        );
-        return Err(StatusCode::UNAUTHORIZED.into_response());
-    }
-
-    let user_repo = UserRepository::new(pool);
-    let user = match user_repo.fetch_user(session.user_id).await {
-        Ok(user) => user,
-        Err(IdentityError::NotFound) => {
-            warn!("user `{}` missing", session.user_id);
-            return Err(StatusCode::UNAUTHORIZED.into_response());
-        }
-        Err(IdentityError::Database(error)) => {
-            warn!(?error, "failed to load user");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-        }
-        Err(_) => {
-            warn!("unexpected error loading user");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-        }
-    };
-
-    let ctx = RequestContext {
-        user,
-        session_id: session.id,
-        access_token_expires_at: Utc::now(),
-    };
-
-    match session_repo.touch(session.id).await {
-        Ok(_) => {}
-        Err(error) => warn!(?error, "failed to update session last-used timestamp"),
-    }
-
-    Ok(ctx)
+    Ok(RequestContext {
+        user: session.user.clone(),
+        session_id,
+        access_token_expires_at: now,
+    })
 }

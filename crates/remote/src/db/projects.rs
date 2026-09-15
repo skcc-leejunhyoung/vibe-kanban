@@ -204,6 +204,7 @@ impl ProjectRepository {
             .await?;
         let txid = get_txid(&mut *tx).await?;
         tx.commit().await?;
+        crate::auth::AUTH_CACHE.invalidate_access();
         Ok(DeleteResponse { txid })
     }
 
