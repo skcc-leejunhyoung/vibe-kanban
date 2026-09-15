@@ -196,32 +196,56 @@ afterEach(async () => {
 });
 
 describe("WebRTC backpressure", () => {
-  it("expires a sent GET without retrying a healthy POST through the relay", async () => {
+  it("expires a sent GET without resending a POST routed through the relay", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const slow = requestLocalApiViaWebRtc("/api/slow");
     await vi.advanceTimersByTimeAsync(1000);
+    relayRequest.mockResolvedValueOnce(new Response(null, { status: 201 }));
     const post = requestLocalApiViaWebRtc("/api/create", {
       method: "POST",
       body: "{}",
     });
     await flush();
-    const sent = dc.outgoing.find(
-      (message) => message.type === "http_request" && message.method === "POST",
-    );
-    if (sent?.type !== "http_request") throw new Error("POST was not sent");
+    expect((await post).status).toBe(201);
+    expect(dc.outgoing).toEqual([
+      expect.objectContaining({ type: "http_request", method: "GET" }),
+    ]);
     await vi.advanceTimersByTimeAsync(29000);
     expect(conn.isConnected).toBe(true);
-    dc.receive({
-      type: "http_response",
-      id: sent.id,
-      status: 201,
-      headers: {},
-    });
-    expect((await post).status).toBe(201);
     await slow;
-    expect(relayRequest.mock.calls).toEqual([["/api/slow", {}]]);
+    expect(relayRequest.mock.calls).toEqual([
+      ["/api/create", { method: "POST", body: "{}" }],
+      ["/api/slow", {}],
+    ]);
     expect(disconnected).not.toHaveBeenCalled();
   });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"])(
+    "keeps a pending %s on the relay when the WebRTC backlog overflows",
+    async (method) => {
+      const ws = await openWs();
+      let complete!: (response: Response) => void;
+      relayRequest.mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const init = { method, body: "{}" };
+      const request = requestLocalApiViaWebRtc("/api/change", init);
+      await flush();
+      expect(dc.outgoing).toEqual([
+        expect.objectContaining({ type: "ws_open" }),
+      ]);
+      Reflect.set(conn, "queuedBytes", 128 * 1024 * 1024);
+      ws.send(frame(ws.connId, "over capacity"));
+      await flush();
+      expect(disconnected).toHaveBeenCalledOnce();
+      expect(relayRequest.mock.calls).toEqual([["/api/change", init]]);
+      complete(new Response(null, { status: 201 }));
+      expect((await request).status).toBe(201);
+      expect(relayRequest).toHaveBeenCalledOnce();
+    },
+  );
 
   it("cancels an unsent request and releases its buffer wait without closing the channel", async () => {
     dc.bufferedAmount = 1024 * 1024;
@@ -317,13 +341,24 @@ describe("WebRTC backpressure", () => {
     },
   );
 
-  it("closes on the JS backlog cap without allocating a huge test payload", async () => {
-    const ws = await openWs();
-    Reflect.set(conn, "queuedBytes", 128 * 1024 * 1024);
-    ws.send(frame(ws.connId, "over capacity"));
-    expect(disconnected).toHaveBeenCalledOnce();
-    expect(ws.handlers.onClose).toHaveBeenCalledOnce();
-  });
+  it.each(["GET", "HEAD"])(
+    "falls back for a sent %s when the JS backlog cap closes the channel",
+    async (method) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const ws = await openWs();
+      const request = requestLocalApiViaWebRtc("/api/read", { method });
+      await flush();
+      expect(dc.outgoing.at(-1)).toEqual(
+        expect.objectContaining({ type: "http_request", method }),
+      );
+      Reflect.set(conn, "queuedBytes", 128 * 1024 * 1024);
+      ws.send(frame(ws.connId, "over capacity"));
+      expect((await request).status).toBe(200);
+      expect(relayRequest.mock.calls).toEqual([["/api/read", { method }]]);
+      expect(disconnected).toHaveBeenCalledOnce();
+      expect(ws.handlers.onClose).toHaveBeenCalledOnce();
+    },
+  );
 
   it("reconnects the real stream hook after 1013 and replaces stale state with a replayed snapshot", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

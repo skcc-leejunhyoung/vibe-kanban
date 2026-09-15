@@ -64,6 +64,13 @@ export async function requestLocalApiViaWebRtc(
     return requestLocalApiViaRelay(pathOrUrl, requestInit);
   }
 
+  const method = (requestInit.method ?? "GET").toUpperCase();
+  // A lost WebRTC response cannot tell us whether a mutation already ran.
+  // Send mutations through the relay once, before entering the fallback path.
+  if (method !== "GET" && method !== "HEAD") {
+    return requestLocalApiViaRelay(pathOrUrl, requestInit);
+  }
+
   const hostId = resolveHostId(requestInit);
   if (!hostId) {
     return requestLocalApiViaRelay(pathOrUrl, requestInit);
@@ -74,7 +81,6 @@ export async function requestLocalApiViaWebRtc(
     return requestLocalApiViaRelay(pathOrUrl, requestInit);
   }
 
-  const method = (requestInit.method ?? "GET").toUpperCase();
   const headers: Record<string, string[]> = {};
   if (requestInit.headers) {
     const h = new Headers(requestInit.headers);
