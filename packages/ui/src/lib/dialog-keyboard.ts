@@ -75,6 +75,22 @@ export function findDialogPrimaryAction(
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+/**
+ * Hands focus back to the element that opened a dialog. Declines when the
+ * opener is gone, or when focus already sits in another dialog: focus scopes
+ * restore on a `setTimeout(0)`, so in an `await ConfirmDialog.show()` chain the
+ * next dialog has already mounted and focused itself by then — restoring would
+ * yank focus out of it, back behind the modal.
+ */
+export function restoreDialogFocus(opener: HTMLElement | null): void {
+  if (!opener?.isConnected) return;
+  const active = document.activeElement;
+  if (active && active !== document.body && active.closest('[role="dialog"]')) {
+    return;
+  }
+  opener.focus({ preventScroll: true });
+}
+
 /** Cmd+Enter (mac) / Ctrl+Enter — the dialog "confirm" gesture. */
 export function isDialogConfirmKey(event: KeyboardEvent): boolean {
   return (

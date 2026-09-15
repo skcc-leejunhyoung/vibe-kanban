@@ -8,6 +8,7 @@ import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 import {
   findDialogPrimaryAction,
+  restoreDialogFocus,
   useDialogKeyboard,
 } from '../lib/dialog-keyboard';
 import {
@@ -110,10 +111,13 @@ const Dialog = React.forwardRef<
     }, []);
     // On close, hand focus back to the opener ourselves: Radix's default also
     // select()s text inputs, which would clobber a draft on the next keystroke.
+    // Always preventDefault — the fallback would target the same opener, so
+    // letting it run would defeat restoreDialogFocus declining.
     const handleUnmountAutoFocus = React.useCallback((event: Event) => {
       event.preventDefault();
-      openerRef.current?.focus({ preventScroll: true });
+      const opener = openerRef.current;
       openerRef.current = null;
+      restoreDialogFocus(opener);
     }, []);
 
     useHotkeys(

@@ -12,6 +12,7 @@ import {
   findDialogPrimaryAction,
   isDialogConfirmKey,
   markEscapeDeferred,
+  restoreDialogFocus,
 } from '../lib/dialog-keyboard';
 
 // Shares the modal-stack top check with DialogContent so Escape/confirm only
@@ -175,8 +176,10 @@ const DialogContent = React.forwardRef<
         const opener = openerRef.current;
         openerRef.current = null;
         if (event.defaultPrevented || !opener) return;
+        // No opener recorded still falls through to Radix's trigger restore;
+        // once we have one we own the outcome, even if it declines.
         event.preventDefault();
-        opener.focus({ preventScroll: true });
+        restoreDialogFocus(opener);
       },
       [onCloseAutoFocus]
     );
