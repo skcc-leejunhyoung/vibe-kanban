@@ -73,6 +73,15 @@ Two sanctioned exceptions, both using `KEYBOARD_CURSOR_RING` from
   SettingsDialog section nav) — excluded from the global rule, so they draw
   their own `focus:` ring.
 
+Dialog initial focus is owned by the shell, not the content: `KeyboardDialog`
+focuses the button `Enter` would activate (`findDialogPrimaryAction`, i.e. the
+`type="submit"`/`data-dialog-primary` button — an OK-only alert lands on OK)
+and falls back to the container; a dialog that autofocuses its own field keeps
+it. Do NOT add `autoFocus` to footer buttons — it runs before the shell
+captures the opener, so focus would no longer return to the opener (e.g. the
+issue list add-row or the command bar input) on close. `KeyboardDialog` joins
+Radix's FocusScope stack, so it may stack over Radix modals (command bar).
+
 ### Example Component Styling
 
 ```tsx
