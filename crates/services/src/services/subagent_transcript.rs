@@ -65,17 +65,14 @@ pub async fn read(
             output_file,
         } => {
             let session = agent_session_id.context("Claude session is unavailable")?;
-            let path = match output_file.as_ref().filter(|path| !path.is_empty()) {
-                Some(path) => path.clone(),
-                None => {
-                    find_live_claude_task_output_file(session, task_id)
-                        .await
-                        .context("No transcript reported for this task")?
-                        .0
-                }
-            };
-            let (bytes, truncated) =
-                read_file_tail(&path, task_id, session, TRANSCRIPT_MAX_BYTES).await?;
+            let projects = executors::executors::claude::claude_projects_dir();
+            let (bytes, truncated) = read_claude_task_output_file(
+                projects.as_deref(),
+                session,
+                task_id,
+                output_file.as_deref(),
+            )
+            .await?;
             let text = String::from_utf8_lossy(&bytes);
             let mut content = task_output_to_markdown(&text);
             let mut entries = task_output_to_entries(&text, working_dir);
@@ -122,24 +119,42 @@ pub fn find_claude_session_id(stdout: &str) -> Option<String> {
     })
 }
 
-async fn find_live_claude_task_output_file(
+async fn read_claude_task_output_file(
+    projects: Option<&std::path::Path>,
     session_id: &str,
     task_id: &str,
-) -> Option<(String, String)> {
-    let projects = executors::executors::claude::claude_projects_dir()?;
-    let mut entries = tokio::fs::read_dir(projects).await.ok()?;
+    output_file: Option<&str>,
+) -> Result<(Vec<u8>, bool)> {
+    if let Some(path) = output_file.filter(|path| !path.is_empty()) {
+        match read_file_tail(path, task_id, session_id, TRANSCRIPT_MAX_BYTES).await {
+            Ok(transcript) => return Ok(transcript),
+            // Claude's temporary task output may be cleaned up before its
+            // durable SDK transcript. Never hide access or validation errors.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let projects = projects.context("Claude projects directory is unavailable")?;
+    let mut entries = tokio::fs::read_dir(projects).await?;
     let file_name = format!("agent-{task_id}.jsonl");
-    while let Ok(Some(entry)) = entries.next_entry().await {
+    while let Some(entry) = entries.next_entry().await? {
         let path = entry
             .path()
             .join(session_id)
             .join("subagents")
             .join(&file_name);
-        if tokio::fs::try_exists(&path).await.ok()? {
-            return Some((path.to_string_lossy().into_owned(), session_id.to_string()));
+        // Entries such as .DS_Store are not project directories (ENOTDIR).
+        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            return Ok(read_file_tail(
+                &path.to_string_lossy(),
+                task_id,
+                session_id,
+                TRANSCRIPT_MAX_BYTES,
+            )
+            .await?);
         }
     }
-    None
+    anyhow::bail!("No transcript reported for this task")
 }
 
 /// Read at most the last `max_bytes` of a regular file. Refuses special files
@@ -281,6 +296,97 @@ pub fn codex_from_process(
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+
+    #[tokio::test]
+    async fn claude_transcript_recovers_missing_outputs_despite_non_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".DS_Store"), b"metadata").unwrap();
+        let subagents = dir.path().join("project/session-1/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(
+            subagents.join("agent-task-1.jsonl"),
+            vec![b'x'; super::TRANSCRIPT_MAX_BYTES + 17],
+        )
+        .unwrap();
+        let missing_output = dir.path().join("cleaned/session-1/tasks/task-1.output");
+
+        for output in [missing_output.to_str(), None, Some("")] {
+            let (bytes, truncated) = super::read_claude_task_output_file(
+                Some(dir.path()),
+                "session-1",
+                "task-1",
+                output,
+            )
+            .await
+            .expect("the durable transcript must remain readable");
+            assert_eq!(bytes, vec![b'x'; super::TRANSCRIPT_MAX_BYTES]);
+            assert!(truncated);
+        }
+        for (session, task) in [("other-session", "task-1"), ("session-1", "other-task")] {
+            assert_eq!(
+                super::read_claude_task_output_file(Some(dir.path()), session, task, None)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "No transcript reported for this task",
+                "non-project files must not abort a complete search"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_transcript_preserves_output_priority_and_path_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let subagents = dir.path().join("project/session-1/subagents");
+        let tasks = dir.path().join("session-1/tasks");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::create_dir_all(&tasks).unwrap();
+        let durable = subagents.join("agent-task-1.jsonl");
+        std::fs::write(&durable, b"durable transcript").unwrap();
+        let output = tasks.join("task-1.output");
+        std::fs::write(&output, b"reported output").unwrap();
+
+        for projects in [Some(dir.path()), None] {
+            let result = super::read_claude_task_output_file(
+                projects,
+                "session-1",
+                "task-1",
+                output.to_str(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result, (b"reported output".to_vec(), false));
+        }
+        let invalid = tasks.join("other-task.output");
+        std::fs::write(&invalid, b"wrong task").unwrap();
+        std::fs::remove_file(&output).unwrap();
+        std::fs::create_dir(&output).unwrap();
+        for path in [&invalid, &output] {
+            assert!(
+                super::read_claude_task_output_file(
+                    Some(dir.path()),
+                    "session-1",
+                    "task-1",
+                    path.to_str(),
+                )
+                .await
+                .is_err(),
+                "a valid fallback must not hide a path validation failure"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&durable).unwrap();
+            std::os::unix::fs::symlink(&invalid, &durable).unwrap();
+            assert!(
+                super::read_claude_task_output_file(Some(dir.path()), "session-1", "task-1", None)
+                    .await
+                    .is_err(),
+                "canonical fallback paths must still match the task and session"
+            );
+        }
+    }
 
     /// A running subagent appends to its transcript while the dialog reads it.
     /// Growth is normal, not an error — only a change of file identity is.
