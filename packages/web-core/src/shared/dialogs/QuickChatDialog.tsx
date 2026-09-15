@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { create, useModal } from '@ebay/nice-modal-react';
+import { useDropzone } from 'react-dropzone';
 import { useQuery } from '@tanstack/react-query';
 import {
   ComputerTowerIcon,
@@ -145,6 +146,15 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       undefined,
       selectedHostId
     );
+
+  // Drop files anywhere on the chat box, same as the workspace-create box.
+  // `noClick`/`noKeyboard`: the paperclip owns those; the zone only handles drops.
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop: uploadFiles,
+    disabled: submitting || !repo,
+    noClick: true,
+    noKeyboard: true,
+  });
 
   useEffect(() => {
     const justOpened = modal.visible && !wasVisibleRef.current;
@@ -485,6 +495,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           repoSummaryTitle={repo?.path ?? 'Select a folder'}
           onPasteFiles={uploadFiles}
           localAttachments={localAttachments}
+          dropzone={{ getRootProps, getInputProps, isDragActive }}
           sendLabel="Send"
           sendingLabel="Starting…"
         />
