@@ -2944,16 +2944,12 @@ async function reconcileGithubIssueLink(
   const apiBase = String(
     github.config.apiBase || 'https://api.github.com'
   ).replace(/\/+$/, '');
-  const response = await fetch(
-    `${apiBase}/repos/${link.repository}/issues/${link.number}`,
-    { headers: githubHeaders(github.config.token) }
+  const external = await fetchGithubIssueSnapshot(
+    apiBase,
+    link.repository,
+    link.number,
+    github.config.token
   );
-  const text = await response.text();
-  if (!response.ok)
-    throw new Error(
-      `GitHub issue lookup error: ${response.status} ${text.slice(0, 200)}`
-    );
-  const external = JSON.parse(text);
   const milestoneSync = await syncGithubMilestone({
     github,
     vibe,
@@ -3110,6 +3106,21 @@ async function reconcileGithubIssueLink(
   }
 }
 
+async function fetchGithubIssueSnapshot(apiBase, repository, number, token) {
+  const response = await fetch(
+    `${apiBase}/repos/${repository}/issues/${number}`,
+    {
+      headers: githubHeaders(token),
+    }
+  );
+  const text = await response.text();
+  if (!response.ok)
+    throw new Error(
+      `GitHub issue lookup error: ${response.status} ${text.slice(0, 200)}`
+    );
+  return JSON.parse(text);
+}
+
 // A missing cursor deliberately fetches all history. The immutable
 // comments_synced_after is a publication cutoff, never a moving read cursor.
 async function fetchGithubIssueComments(
@@ -3186,6 +3197,29 @@ function githubCommentSyncKey(github, vibe, link) {
   return JSON.stringify([github.id, vibe.id, link.id]);
 }
 
+// Same v1 wire format as GithubIssueLinkRepository::comment_versions: UUID order,
+// UTC and six fractional digits. Date alone would lose PostgreSQL microseconds.
+function vibeCommentSnapshotVersion(comments) {
+  const revisions = [];
+  for (const comment of comments) {
+    const timestamp = normalizeOptionalTimestamp(comment.updated_at);
+    if (
+      typeof comment.id !== 'string' ||
+      !timestamp ||
+      typeof comment.updated_at !== 'string'
+    )
+      return null;
+    const fraction =
+      comment.updated_at.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/i)?.[1] || '';
+    if (/[1-9]/.test(fraction.slice(6))) return null;
+    const micros = fraction.padEnd(6, '0').slice(3, 6);
+    revisions.push(
+      `${comment.id.toLowerCase()}:${timestamp.slice(0, -1)}${micros}Z`
+    );
+  }
+  return `v1:${createHash('md5').update(revisions.sort().join(',')).digest('hex')}`;
+}
+
 // Bidirectional comment reconcile for one mapped issue. Scope is the 1:1 link
 // (its repository/number and issue_id); planCommentSync applies the seeding
 // cutoff and echo/native filters so nothing leaks in from — or out to —
@@ -3223,7 +3257,7 @@ async function reconcileGithubIssueComments(
   }
   const cacheable =
     normalizeOptionalTimestamp(external.updated_at) !== null &&
-    typeof commentVersion?.version === 'string' &&
+    /^v1:[a-f0-9]{32}$/.test(commentVersion?.version || '') &&
     Number.isSafeInteger(commentVersion.comment_count) &&
     commentVersion.comment_count >= 0 &&
     Number.isSafeInteger(external.comments) &&
@@ -3243,7 +3277,13 @@ async function reconcileGithubIssueComments(
     cached.githubCommentCount === external.comments;
   const vibeUnchanged =
     cached && cached.vibeVersion === commentVersion?.version;
-  if (cacheable && githubUnchanged && vibeUnchanged && !cached.confirmChanges)
+  if (
+    cacheable &&
+    githubUnchanged &&
+    vibeUnchanged &&
+    !cached.confirmChanges &&
+    !cached.confirmFull
+  )
     return;
 
   // Never checkpoint a partial page set or partially applied plan. A failed run
@@ -3252,11 +3292,11 @@ async function reconcileGithubIssueComments(
   const full =
     !cacheable ||
     !cached ||
+    cached.confirmFull ||
     external.comments < cached.githubComments.size ||
     commentVersion.comment_count < cached.vibeComments.size;
-  const since = full ? undefined : cached.cursor;
-  // Capture BEFORE reads/writes and overlap one minute (GitHub since is strict).
-  // One confirmation pass also covers same-second edits during a changed poll.
+  // Vibe deltas are verified against the complete revision, so a late commit or
+  // clock skew outside this overlap triggers a full read instead of being lost.
   const cursor = new Date(Date.now() - 60_000).toISOString();
 
   // Push cutoff: stamped once on the link's first reconcile. It gates only the
@@ -3269,28 +3309,79 @@ async function reconcileGithubIssueComments(
     await patchGithubIssueLink(vibe, link, { comments_synced_after: cutoff });
   }
 
-  const params = new URLSearchParams({ issue_id: link.issue_id });
-  if (since) params.set('updated_after', since);
-  const [githubDelta, vibeBody] = await Promise.all([
-    fetchGithubIssueComments(
-      apiBase,
-      link.repository,
-      link.number,
-      token,
-      since
-    ),
-    vibeApi(vibe, 'GET', `/v1/issue_comments?${params}`),
-  ]);
-  if (!Array.isArray(vibeBody?.issue_comments))
-    throw new Error('Invalid Vibe comments response');
-  // Reconcile against BOTH complete snapshots: a changed comment's counterpart
-  // may be older than since, and dropping it would duplicate imports or miss edits.
-  const githubComments = new Map(full ? [] : cached.githubComments);
-  const vibeComments = new Map(full ? [] : cached.vibeComments);
-  for (const comment of githubDelta)
-    githubComments.set(String(comment.id), comment);
-  for (const comment of vibeBody.issue_comments)
-    vibeComments.set(String(comment.id), comment);
+  let githubSnapshot = external;
+  let vibeVersion = commentVersion;
+  let githubComments;
+  let vibeComments;
+  let readFull;
+  let paginated;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    readFull = full || attempt > 0;
+    const params = new URLSearchParams({ issue_id: link.issue_id });
+    if (!readFull) params.set('updated_after', cached.cursor);
+    // GitHub's watermark uses its own clock, not the worker's. Overlap also
+    // includes same-second edits during the confirmation pass.
+    const githubSince = readFull
+      ? undefined
+      : new Date(Date.parse(cached.githubUpdatedAt) - 60_000).toISOString();
+    const [githubDelta, vibeBody] = await Promise.all([
+      fetchGithubIssueComments(
+        apiBase,
+        link.repository,
+        link.number,
+        token,
+        githubSince
+      ),
+      vibeApi(vibe, 'GET', `/v1/issue_comments?${params}`),
+    ]);
+    paginated = githubDelta.length >= 100;
+    if (!Array.isArray(vibeBody?.issue_comments))
+      throw new Error('Invalid Vibe comments response');
+    // Keep old counterparts when merging deltas, but do not act on this snapshot
+    // until both sources have been validated. A retry discards the entire merge.
+    githubComments = new Map(readFull ? [] : cached.githubComments);
+    vibeComments = new Map(readFull ? [] : cached.vibeComments);
+    for (const comment of githubDelta)
+      githubComments.set(String(comment.id), comment);
+    for (const comment of vibeBody.issue_comments)
+      vibeComments.set(String(comment.id), comment);
+    const [githubAfter, versionsAfter] = await Promise.all([
+      fetchGithubIssueSnapshot(apiBase, link.repository, link.number, token),
+      cacheable
+        ? vibeApi(
+            vibe,
+            'GET',
+            `/v1/github_issue_links?issue_id=${encodeURIComponent(link.issue_id)}&include_comment_versions=true`
+          )
+        : null,
+    ]);
+    const vibeAfter = versionsAfter?.comment_versions?.find(
+      (row) => row.issue_id === link.issue_id
+    );
+    const githubComplete =
+      !githubAfter.pull_request &&
+      normalizeOptionalTimestamp(githubAfter.updated_at) !== null &&
+      Number.isSafeInteger(githubAfter.comments) &&
+      githubComments.size === githubAfter.comments &&
+      githubSnapshot.comments === githubAfter.comments &&
+      githubLinkFieldEqual(
+        'github_updated_at',
+        githubSnapshot.updated_at,
+        githubAfter.updated_at
+      );
+    const vibeComplete =
+      !cacheable ||
+      (vibeComments.size === vibeAfter?.comment_count &&
+        vibeCommentSnapshotVersion(vibeComments.values()) ===
+          vibeAfter?.version);
+    githubSnapshot = githubAfter;
+    vibeVersion = vibeAfter;
+    if (githubComplete && vibeComplete) break;
+    if (attempt === 1)
+      throw new Error(
+        'Comment snapshot changed or is incomplete; retry from full history'
+      );
+  }
   const plan = planCommentSync({
     githubComments: [...githubComments.values()],
     vibeComments: [...vibeComments.values()],
@@ -3348,18 +3439,39 @@ async function reconcileGithubIssueComments(
     }
   }
   if (cacheable) {
+    // GitHub timestamps have second precision. A delete+insert during paging
+    // can preserve both timestamp and count. Confirm full reads and paginated
+    // deltas with a full read before allowing the idle gate to close.
+    const sameGithubSnapshot =
+      cached &&
+      githubComments.size === cached.githubComments.size &&
+      [...githubComments].every(([id, comment]) => {
+        const previous = cached.githubComments.get(id);
+        return (
+          previous &&
+          previous.body === comment.body &&
+          githubLinkFieldEqual(
+            'github_updated_at',
+            previous.updated_at,
+            comment.updated_at
+          )
+        );
+      });
     githubCommentSyncCache.set(key, {
       githubConnectorId: github.id,
       scope,
       cutoff,
       githubConfig: github.config,
       vibeConfig: vibe.config,
-      githubUpdatedAt: external.updated_at,
-      githubCommentCount: external.comments,
-      vibeVersion: commentVersion.version,
+      githubUpdatedAt: githubSnapshot.updated_at,
+      githubCommentCount: githubSnapshot.comments,
+      vibeVersion: vibeVersion.version,
       cursor,
       githubComments,
       vibeComments,
+      confirmFull:
+        (readFull || paginated) &&
+        (!cached?.confirmFull || !sameGithubSnapshot),
       confirmChanges: !githubUnchanged || !vibeUnchanged,
     });
   }
@@ -4227,6 +4339,7 @@ async function testGithubIssueReconcile() {
     const stampNow = () => new Date(++data.now).toISOString();
     const context = vm.createContext({
       URLSearchParams,
+      createHash,
       Map,
       Set,
       console,
@@ -4285,7 +4398,8 @@ async function testGithubIssueReconcile() {
           });
           ghIssue.updated_at = body.updated_at;
         }
-        return { ok: true, text: async () => JSON.stringify(body) };
+        const text = JSON.stringify(body);
+        return { ok: true, text: async () => text };
       },
       vibeApi: async (_vibe, method, url, payload) => {
         calls.push([method, url, payload]);
@@ -4309,6 +4423,11 @@ async function testGithubIssueReconcile() {
                   !since || Date.parse(comment.updated_at) >= Date.parse(since)
               )
             ),
+          };
+        }
+        if (method === 'GET' && url.startsWith('/v1/github_issue_links?')) {
+          return {
+            comment_versions: [{ issue_id: row.issue_id, ...version() }],
           };
         }
         if (url === '/v1/issue_comments' && method === 'POST') {
@@ -4337,6 +4456,8 @@ async function testGithubIssueReconcile() {
       reconcileGithubIssueLink,
       reconcileGithubIssueComments,
       fetchGithubIssueComments,
+      fetchGithubIssueSnapshot,
+      vibeCommentSnapshotVersion,
       patchGithubIssueLink,
       githubLinkFieldEqual,
       githubCommentSyncKey,
@@ -4346,16 +4467,14 @@ async function testGithubIssueReconcile() {
     vm.runInContext(functions.map((fn) => fn.toString()).join('\n'), context);
     const version = () => ({
       comment_count: data.vibeComments.length,
-      version: JSON.stringify(
-        data.vibeComments.map((comment) => [comment.id, comment.updated_at])
-      ),
+      version: vibeCommentSnapshotVersion(data.vibeComments),
     });
     const run = (override = version()) =>
       context.reconcileGithubIssueComments(
         github,
         vibe,
         row,
-        ghIssue,
+        { ...ghIssue },
         'https://github.test',
         override
       );
@@ -4534,7 +4653,11 @@ async function testGithubIssueReconcile() {
     await h.run();
     assert.equal(h.data.vibeComments[0].message, 'edited');
     assert.equal(h.data.vibeComments.length, 1);
-    const gets = h.calls.filter(([method]) => method === 'GET');
+    const gets = h.calls.filter(
+      ([method, url]) =>
+        method === 'GET' &&
+        (url.includes('/comments?') || url.includes('/issue_comments?'))
+    );
     assert.equal(gets.length, 2);
     assert.ok(
       gets.every(
@@ -4704,6 +4827,253 @@ async function testGithubIssueReconcile() {
     await h.run();
     assert.equal(h.data.githubComments.length, 0);
     assert.ok(h.row.comments_synced_after);
+  });
+  await test('comment revision wire format preserves microseconds, timezone and row order', () => {
+    const rows = [
+      {
+        id: '00000000-0000-0000-0000-00000000000A',
+        updated_at: '2026-09-15T09:00:00.123456+09:00',
+      },
+      {
+        id: '00000000-0000-0000-0000-000000000001',
+        updated_at: '2026-09-14T23:59:59.000001Z',
+      },
+    ];
+    const expected = 'v1:7a08436d059eb88a1eddd63a65610327';
+    assert.equal(vibeCommentSnapshotVersion(rows), expected);
+    assert.equal(vibeCommentSnapshotVersion(rows.toReversed()), expected);
+    rows[1].updated_at = '2026-09-14T23:59:59.000002Z';
+    assert.notEqual(vibeCommentSnapshotVersion(rows), expected);
+    rows[1].updated_at = 'invalid';
+    assert.equal(vibeCommentSnapshotVersion(rows), null);
+    assert.equal(
+      vibeCommentSnapshotVersion([]),
+      'v1:d41d8cd98f00b204e9800998ecf8427e'
+    );
+  });
+  await test('clock skew cannot hide new comments or edits outside the cursor', async () => {
+    for (const editing of [false, true]) {
+      const h = harness();
+      if (editing) {
+        h.data.githubComments.push({ id: 1, body: 'old', updated_at: stamp });
+        h.data.vibeComments.push({
+          id: 'v1',
+          message: 'old',
+          github_comment_id: '1',
+          created_at: stamp,
+          updated_at: stamp,
+        });
+        h.ghIssue.comments = 1;
+      }
+      await h.settle();
+      const serverTime = new Date(h.data.now - 120_000).toISOString();
+      if (editing) {
+        Object.assign(h.data.vibeComments[0], {
+          message: 'must sync',
+          updated_at: serverTime,
+        });
+      } else {
+        h.data.vibeComments.push({
+          id: 'native',
+          message: 'must sync',
+          created_at: serverTime,
+          updated_at: serverTime,
+        });
+      }
+      await h.run();
+      assert.equal(h.data.githubComments.length, 1);
+      assert.equal(
+        withoutCommentMarker(h.data.githubComments[0].body),
+        'must sync'
+      );
+      assert.ok(
+        h.calls.some(
+          ([method, url]) =>
+            method === 'GET' &&
+            url.startsWith('/v1/issue_comments?') &&
+            !url.includes('updated_after=')
+        ),
+        'an incomplete delta must retry without a cursor'
+      );
+    }
+  });
+  await test('a late commit older than the advanced cursor is recovered', async () => {
+    const h = harness();
+    await h.settle();
+    const transactionTime = new Date(h.data.now).toISOString();
+    h.data.now += 120_000;
+    h.data.vibeComments.push({
+      id: 'private',
+      message: 'unrelated edit',
+      created_at: stamp,
+      updated_at: new Date(h.data.now).toISOString(),
+    });
+    await h.settle();
+    h.data.vibeComments.push({
+      id: 'late',
+      message: 'late commit',
+      created_at: transactionTime,
+      updated_at: transactionTime,
+    });
+    await h.run();
+    assert.equal(h.data.githubComments.length, 1);
+    assert.equal(
+      withoutCommentMarker(h.data.githubComments[0].body),
+      'late commit'
+    );
+  });
+  await test('deletion during pagination retries before importing incomplete history', async () => {
+    const h = harness();
+    h.data.githubComments = Array.from({ length: 201 }, (_, index) => ({
+      id: index + 1,
+      body: `comment ${index + 1}`,
+      updated_at: stamp,
+    }));
+    h.ghIssue.comments = 201;
+    const fetch = h.context.fetch;
+    let deleted = false;
+    h.context.fetch = async (url, options) => {
+      const response = await fetch(url, options);
+      if (
+        !deleted &&
+        url.includes('/comments?') &&
+        new URL(url).searchParams.get('page') === '1'
+      ) {
+        deleted = true;
+        h.data.githubComments.shift();
+        h.ghIssue.comments = 200;
+        h.ghIssue.updated_at = new Date(h.data.now).toISOString();
+      }
+      return response;
+    };
+    await h.run();
+    assert.equal(h.data.vibeComments.length, 200);
+    assert.ok(h.data.vibeComments.some((c) => c.github_comment_id === '101'));
+    assert.ok(
+      !h.data.vibeComments.some((c) => c.github_comment_id === '1'),
+      'the discarded partial snapshot must not produce imports'
+    );
+    h.row.github_updated_at = h.ghIssue.updated_at;
+    await h.settle();
+    for (let tick = 0; tick < 15; tick += 1) await h.run();
+    assert.ok(
+      !h.calls.some(
+        ([method, url]) =>
+          method === 'GET' &&
+          (url.includes('/comments?') || url.includes('/issue_comments?'))
+      )
+    );
+  });
+  await test('same-second delete and insert are recovered by a full confirmation', async () => {
+    for (const incremental of [false, true]) {
+      const h = harness();
+      if (incremental) {
+        await h.settle();
+        h.data.now += 240_000;
+      }
+      h.data.githubComments = Array.from({ length: 201 }, (_, index) => ({
+        id: index + 1,
+        body: `comment ${index + 1}`,
+        updated_at: incremental
+          ? new Date(h.data.now - 120_000).toISOString()
+          : stamp,
+      }));
+      h.ghIssue.comments = 201;
+      h.ghIssue.updated_at = new Date(h.data.now).toISOString();
+      h.row.github_updated_at = h.ghIssue.updated_at;
+      const fetch = h.context.fetch;
+      let replaced = false;
+      h.context.fetch = async (url, options) => {
+        const response = await fetch(url, options);
+        if (
+          !replaced &&
+          url.includes('/comments?') &&
+          new URL(url).searchParams.get('page') === '1'
+        ) {
+          replaced = true;
+          h.data.githubComments.shift();
+          h.data.githubComments.push({
+            id: 202,
+            body: 'replacement',
+            updated_at: h.ghIssue.updated_at,
+          });
+        }
+        return response;
+      };
+      await h.run();
+      await h.run();
+      assert.ok(h.data.vibeComments.some((c) => c.github_comment_id === '101'));
+      await h.settle();
+      for (let tick = 0; tick < 15; tick += 1) await h.run();
+      assert.ok(
+        !h.calls.some(
+          ([method, url]) =>
+            method === 'GET' &&
+            (url.includes('/comments?') || url.includes('/issue_comments?'))
+        )
+      );
+    }
+  });
+  await test('repeated inconsistent reads have a bounded retry and no comment writes or checkpoint', async () => {
+    const h = harness();
+    const fetch = h.context.fetch;
+    h.context.fetch = async (url, options) => {
+      const response = await fetch(url, options);
+      if (url.includes('/comments?')) {
+        h.ghIssue.updated_at = new Date(++h.data.now).toISOString();
+      }
+      return response;
+    };
+    await assert.rejects(h.run(), /snapshot changed or is incomplete/);
+    assert.equal(
+      h.calls.filter(([, url]) => url.includes('/comments?')).length,
+      2
+    );
+    assert.equal(h.context.githubCommentSyncCache.size, 0);
+    assert.ok(h.calls.every(([method]) => method === 'GET'));
+    h.context.fetch = fetch;
+    await h.run();
+    assert.equal(h.context.githubCommentSyncCache.size, 1);
+  });
+  await test('GitHub cursors use source time even when the worker clock is ahead', async () => {
+    const h = harness();
+    h.data.githubComments.push({ id: 1, body: 'old', updated_at: stamp });
+    h.data.vibeComments.push({
+      id: 'v1',
+      message: 'old',
+      github_comment_id: '1',
+      created_at: stamp,
+      updated_at: stamp,
+    });
+    h.ghIssue.comments = 1;
+    await h.settle();
+    const sourceTime = new Date(h.data.now - 120_000).toISOString();
+    h.data.githubComments[0] = {
+      id: 1,
+      body: 'source edit',
+      updated_at: sourceTime,
+    };
+    h.ghIssue.updated_at = sourceTime;
+    await h.run();
+    assert.equal(h.data.vibeComments[0].message, 'source edit');
+    const get = h.calls.find(([, url]) => url.includes('/comments?'));
+    assert.equal(
+      new URL(get[1]).searchParams.get('since'),
+      '2026-08-31T23:59:00.000Z'
+    );
+  });
+  await test('legacy comment revisions keep the full-sync compatibility path', async () => {
+    const h = harness();
+    await h.run({ comment_count: 0, version: 'legacy-opaque-revision' });
+    assert.equal(h.context.githubCommentSyncCache.size, 0);
+    assert.ok(
+      h.calls
+        .filter(([method]) => method === 'GET')
+        .every(
+          ([, url]) =>
+            !url.includes('since=') && !url.includes('updated_after=')
+        )
+    );
   });
   await test('pagination reads complete histories at and beyond 2000 comments', async () => {
     for (const count of [1999, 2000, 2001]) {

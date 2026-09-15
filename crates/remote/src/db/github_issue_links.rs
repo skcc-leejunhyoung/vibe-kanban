@@ -48,6 +48,8 @@ impl GithubIssueLinkRepository {
 
     /// Called only with issue IDs from an already authorized link listing.
     /// Hash every row's revision so an edit to an older comment is detected too.
+    /// v1 is also computed by the worker to verify a merged delta. Fix timezone
+    /// and microsecond precision so the digest is independent of DB sessions.
     pub async fn comment_versions(
         pool: &PgPool,
         issue_ids: &[Uuid],
@@ -55,8 +57,10 @@ impl GithubIssueLinkRepository {
         sqlx::query_as::<_, GithubIssueCommentVersion>(
             r#"
             SELECT ids.issue_id, COUNT(c.id) AS comment_count,
-                   MD5(COALESCE(STRING_AGG(c.id::text || ':' || c.updated_at::text,
-                                          ',' ORDER BY c.id), '')) AS version
+                   'v1:' || MD5(COALESCE(STRING_AGG(
+                       c.id::text || ':' || TO_CHAR(c.updated_at AT TIME ZONE 'UTC',
+                                                   'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+                       ',' ORDER BY c.id), '')) AS version
             FROM (SELECT DISTINCT UNNEST($1::uuid[]) AS issue_id) ids
             LEFT JOIN issue_comments c ON c.issue_id = ids.issue_id
             GROUP BY ids.issue_id
@@ -216,6 +220,60 @@ impl GithubIssueLinkRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires SKC_TEST_DATABASE_URL pointing to an isolated PostgreSQL"]
+    async fn comment_revision_matches_worker_wire_format() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&std::env::var("SKC_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TEMP TABLE issue_comments (
+                id uuid PRIMARY KEY, issue_id uuid NOT NULL, updated_at timestamptz NOT NULL
+            );
+            INSERT INTO issue_comments VALUES
+                ('00000000-0000-0000-0000-00000000000a',
+                 '00000000-0000-0000-0000-000000000001', '2026-09-15T09:00:00.123456+09:00'),
+                ('00000000-0000-0000-0000-000000000001',
+                 '00000000-0000-0000-0000-000000000001', '2026-09-14T23:59:59.000001Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let issue_id = Uuid::from_u128(1);
+        for timezone in ["UTC", "Asia/Seoul"] {
+            sqlx::query("SELECT set_config('TimeZone', $1, false)")
+                .bind(timezone)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let rows = GithubIssueLinkRepository::comment_versions(&pool, &[issue_id, Uuid::nil()])
+                .await
+                .unwrap();
+            let revision = rows.iter().find(|row| row.issue_id == issue_id).unwrap();
+            assert_eq!(revision.comment_count, 2);
+            assert_eq!(revision.version, "v1:7a08436d059eb88a1eddd63a65610327");
+            assert_eq!(
+                rows.iter()
+                    .find(|row| row.issue_id.is_nil())
+                    .unwrap()
+                    .version,
+                "v1:d41d8cd98f00b204e9800998ecf8427e"
+            );
+        }
+        sqlx::query("UPDATE issue_comments SET updated_at = updated_at + INTERVAL '1 microsecond' WHERE id = $1")
+            .bind(issue_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let changed = GithubIssueLinkRepository::comment_versions(&pool, &[issue_id])
+            .await
+            .unwrap();
+        assert_ne!(changed[0].version, "v1:7a08436d059eb88a1eddd63a65610327");
+        pool.close().await;
+    }
 
     // Uses only a connection-local temporary table; no application rows touched.
     #[tokio::test]
