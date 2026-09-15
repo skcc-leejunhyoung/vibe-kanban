@@ -19,11 +19,13 @@ let cacheExpiresAt = 0;
 let pairingChannel: BroadcastChannel | undefined;
 let notificationsInitialized = false;
 let cachedHostIds: string[] = [];
+let cachedCredentials = new Map<string, string>();
 
-export function relayPairingRefetchInterval(): number | false {
+export function relayPairingRefetchInterval(): number {
   initializePairingNotifications();
-  // ponytail: older browsers without BroadcastChannel reconcile within 60s.
-  return pairingChannel ? false : 60_000;
+  // Pre-upgrade windows cannot broadcast changes, even in modern browsers.
+  // Keep a slow reconciliation poll until every writer can be trusted to notify.
+  return 60_000;
 }
 
 function initializePairingNotifications(): void {
@@ -98,6 +100,7 @@ function emitRelayPairingChange(
   broadcast = true
 ): void {
   pairedHostsCache = undefined;
+  cachedCredentials.delete(change.hostId); // This change is already notified.
   if (broadcast) {
     initializePairingNotifications();
     try {
@@ -107,6 +110,10 @@ function emitRelayPairingChange(
       pairingChannel = undefined;
     }
   }
+  notifyRelayPairingChange(change);
+}
+
+function notifyRelayPairingChange(change: RelayPairingChange): void {
   for (const listener of relayPairingChangeListeners) {
     try {
       listener(change);
@@ -132,16 +139,48 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export function listPairedRelayHosts(): Promise<PairedRelayHost[]> {
+export function listPairedRelayHosts(
+  refresh = false
+): Promise<PairedRelayHost[]> {
   const interval = relayPairingRefetchInterval();
-  if (pairedHostsCache && Date.now() < cacheExpiresAt) return pairedHostsCache;
+  if (
+    pairedHostsCache &&
+    (cacheExpiresAt === Infinity || (!refresh && Date.now() < cacheExpiresAt))
+  ) {
+    return pairedHostsCache;
+  }
   cacheExpiresAt = Infinity; // Also share reads that take longer than the fallback TTL.
   const pending: Promise<PairedRelayHost[]> = readPairedRelayHosts().then(
     (hosts) => {
       // A committed write may overtake a read. Never publish its old snapshot.
       if (pairedHostsCache !== pending) return listPairedRelayHosts();
       cachedHostIds = hosts.map((host) => host.host_id);
-      cacheExpiresAt = interval === false ? Infinity : Date.now() + interval;
+      cacheExpiresAt = Date.now() + interval;
+      // Reconcile auth caches too when an older window changed a pairing
+      // without broadcasting. Compare public identity/session metadata only.
+      const credentials = new Map(
+        hosts.map((host) => [
+          host.host_id,
+          JSON.stringify([
+            host.client_id,
+            host.public_key_b64,
+            host.server_public_key_b64,
+            host.signing_session_id,
+            host.paired_at,
+          ]),
+        ])
+      );
+      const previous = cachedCredentials;
+      cachedCredentials = credentials;
+      for (const [hostId, identity] of previous) {
+        if (credentials.get(hostId) !== identity) {
+          // The current read is already fresh; do not invalidate it again.
+          notifyRelayPairingChange({
+            hostId,
+            type: credentials.has(hostId) ? 'saved' : 'removed',
+          });
+        }
+      }
       return hosts;
     },
     (error: unknown) => {

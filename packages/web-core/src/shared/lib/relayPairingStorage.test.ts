@@ -127,7 +127,7 @@ describe('pairing cache', () => {
     expect(db.open).toHaveBeenCalledTimes(1);
     expect(results.every((result) => result === results[0])).toBe(true);
     expect(await storage.listPairedRelayHosts()).toBe(results[0]);
-    expect(storage.relayPairingRefetchInterval()).toBe(false);
+    expect(storage.relayPairingRefetchInterval()).toBe(60_000);
     console.log(
       '100 cold pairing lookups: IDB opens =',
       db.open.mock.calls.length
@@ -247,106 +247,202 @@ vi.mock('@/shared/lib/remoteApi', () => ({
   listRelayHosts: async () => [{ id: 'a', name: 'Host A', status: 'online' }],
 }));
 
-it('commits zero host-list renders over 60 idle seconds and reflects other-tab removal', async () => {
-  vi.useFakeTimers();
-  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  Object.assign(document, { nodeType: 9, activeElement: null });
-  Object.assign(window, {
-    document,
-    setTimeout,
-    clearTimeout,
-    HTMLIFrameElement: class {},
-  });
-  const root = createRoot(
-    Object.assign(new EventTarget(), {
-      nodeType: 1,
-      tagName: 'DIV',
-      ownerDocument: document,
-    }) as unknown as HTMLElement
-  );
-  const { QueryClient, QueryClientProvider } = await import(
-    '@tanstack/react-query'
-  );
-  const { useWorkspaceHostOptions } = await import(
-    '../hooks/useWorkspaceHostOptions'
-  );
-  const { useRelayAppBarHosts } = await import(
-    '../../../../remote-web/src/shared/hooks/useRelayAppBarHosts'
-  );
-  const { privateKey } = (await crypto.subtle.generateKey('Ed25519', false, [
-    'sign',
-    'verify',
-  ])) as CryptoKeyPair;
-  db.rows.set('a', { ...host('a'), private_key: privateKey });
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  const renders = { picker: 0, appBar: 0 };
-  let pickerIds: string[] = [];
-  let appBarIds: string[] = [];
-  function Picker() {
-    pickerIds = useWorkspaceHostOptions().hosts.map((host) => host.id);
-    renders.picker++;
-    return null;
-  }
-  function AppBar() {
-    appBarIds = useRelayAppBarHosts(true).hosts.map((host) => host.id);
-    renders.appBar++;
-    return null;
-  }
-  try {
-    await act(async () => {
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(Picker),
-          createElement(AppBar)
-        )
-      );
+it.each(['notified', 'failed-refetch', 'legacy'])(
+  'keeps idle host lists stable and handles %s removal',
+  async (mode) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    Object.assign(document, { nodeType: 9, activeElement: null });
+    Object.assign(window, {
+      document,
+      setTimeout,
+      clearTimeout,
+      HTMLIFrameElement: class {},
     });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    expect(pickerIds).toEqual(['a']);
-    expect(appBarIds).toEqual(['a']);
-    const before = { ...renders };
-    const opens = db.open.mock.calls.length;
-    for (let i = 0; i < 12; i++) {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(5_000);
-      });
-    }
-    console.log(
-      '60s idle: picker/app-bar renders, IDB opens =',
-      renders.picker - before.picker,
-      renders.appBar - before.appBar,
-      db.open.mock.calls.length - opens
+    const root = createRoot(
+      Object.assign(new EventTarget(), {
+        nodeType: 1,
+        tagName: 'DIV',
+        ownerDocument: document,
+      }) as unknown as HTMLElement
     );
-    expect(renders).toEqual(before);
-    expect(db.open).toHaveBeenCalledTimes(opens);
-    await act(async () => {
-      db.rows.delete('a');
-      channels[0].onmessage?.({ data: { hostId: 'a', type: 'removed' } });
-      await vi.advanceTimersByTimeAsync(1);
+    const { QueryClient, QueryClientProvider } = await import(
+      '@tanstack/react-query'
+    );
+    const { useWorkspaceHostOptions } = await import(
+      '../hooks/useWorkspaceHostOptions'
+    );
+    const { useRelayAppBarHosts } = await import(
+      '../../../../remote-web/src/shared/hooks/useRelayAppBarHosts'
+    );
+    const { privateKey } = (await crypto.subtle.generateKey('Ed25519', false, [
+      'sign',
+      'verify',
+    ])) as CryptoKeyPair;
+    db.rows.set('a', { ...host('a'), private_key: privateKey });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: 3, retryDelay: 1 } },
     });
-    expect(pickerIds).toEqual([]);
-    expect(appBarIds).toEqual([]);
-    const storage = await import('./relayPairingStorage');
-    await act(async () => {
-      await storage.savePairedRelayHost(host('a'));
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    expect(pickerIds).toEqual(['a']);
-    expect(appBarIds).toEqual(['a']);
-    await act(async () => {
-      await storage.removePairedRelayHost('a');
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    expect(pickerIds).toEqual([]);
-    expect(appBarIds).toEqual([]);
-  } finally {
-    await act(() => root.unmount());
-    client.clear();
+    const renders = { picker: 0, appBar: 0 };
+    let pickerIds: string[] = [];
+    let appBarIds: string[] = [];
+    function Picker() {
+      pickerIds = useWorkspaceHostOptions().hosts.map((host) => host.id);
+      renders.picker++;
+      return null;
+    }
+    function AppBar() {
+      appBarIds = useRelayAppBarHosts(true).hosts.map((host) => host.id);
+      renders.appBar++;
+      return null;
+    }
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client },
+            createElement(Picker),
+            createElement(AppBar)
+          )
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(pickerIds).toEqual(['a']);
+      expect(appBarIds).toEqual(['a']);
+      const before = { ...renders };
+      const opens = db.open.mock.calls.length;
+      for (let i = 0; i < 12; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+      }
+      console.log(
+        '60s idle: picker/app-bar renders, IDB opens =',
+        renders.picker - before.picker,
+        renders.appBar - before.appBar,
+        db.open.mock.calls.length - opens
+      );
+      expect(renders).toEqual(before);
+      expect(db.open).toHaveBeenCalledTimes(opens + 1);
+      await act(async () => {
+        db.rows.delete('a');
+        if (mode === 'failed-refetch') {
+          const failRead = () => {
+            const request = {
+              onerror: () => {},
+              error: new Error('IDB temporarily unavailable'),
+            };
+            queueMicrotask(() => request.onerror());
+            return request as ReturnType<typeof db.open>;
+          };
+          for (let i = 0; i < 4; i++) db.open.mockImplementationOnce(failRead);
+        }
+        if (mode !== 'legacy') {
+          channels[0].onmessage?.({ data: { hostId: 'a', type: 'removed' } });
+        }
+        await vi.advanceTimersByTimeAsync(mode === 'legacy' ? 60_000 : 50);
+      });
+      expect(pickerIds).toEqual([]);
+      expect(appBarIds).toEqual([]);
+      if (mode === 'legacy') {
+        await act(async () => {
+          db.rows.set('a', host('a'));
+          await vi.advanceTimersByTimeAsync(60_000);
+        });
+        expect(pickerIds).toEqual(['a']);
+        expect(appBarIds).toEqual(['a']);
+      }
+      const storage = await import('./relayPairingStorage');
+      await act(async () => {
+        await storage.savePairedRelayHost(host('a'));
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(pickerIds).toEqual(['a']);
+      expect(appBarIds).toEqual(['a']);
+      await act(async () => {
+        await storage.removePairedRelayHost('a');
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(pickerIds).toEqual([]);
+      expect(appBarIds).toEqual([]);
+      if (mode === 'notified') {
+        await act(async () => {
+          await storage.savePairedRelayHost(host('a'));
+          await vi.advanceTimersByTimeAsync(1);
+        });
+        await act(() =>
+          root.render(createElement(QueryClientProvider, { client }))
+        );
+        db.rows.delete('a');
+        channels[0].onmessage?.({ data: { hostId: 'a', type: 'removed' } });
+        await act(() =>
+          root.render(
+            createElement(
+              QueryClientProvider,
+              { client },
+              createElement(Picker),
+              createElement(AppBar)
+            )
+          )
+        );
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1);
+        });
+        expect(pickerIds).toEqual([]);
+        expect(appBarIds).toEqual([]);
+      }
+    } finally {
+      await act(() => root.unmount());
+      client.clear();
+    }
   }
+);
+
+it('reconciles pre-upgrade window changes and notifies auth caches only for changed credentials', async () => {
+  vi.useFakeTimers();
+  db.rows.set('a', host('a'));
+  const storage = await import('./relayPairingStorage');
+  await storage.listPairedRelayHosts();
+  const changed = vi.fn();
+  storage.subscribeRelayPairingChanges(changed);
+  await vi.advanceTimersByTimeAsync(60_000);
+  await storage.listPairedRelayHosts();
+  expect(changed).not.toHaveBeenCalled();
+  db.rows.set('a', {
+    ...host('a'),
+    public_key_b64: 'new-key',
+    signing_session_id: 'new-session',
+  });
+  await vi.advanceTimersByTimeAsync(60_000);
+  const refreshed = await Promise.all(
+    Array.from({ length: 100 }, () => storage.listPairedRelayHosts())
+  );
+  expect(db.open).toHaveBeenCalledTimes(3);
+  expect(refreshed.every((hosts) => hosts === refreshed[0])).toBe(true);
+  expect(refreshed[0][0].signing_session_id).toBe('new-session');
+  db.rows.delete('a');
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(await storage.listPairedRelayHosts()).toEqual([]);
+  expect(changed.mock.calls.map(([change]) => change)).toEqual([
+    { hostId: 'a', type: 'saved' },
+    { hostId: 'a', type: 'removed' },
+  ]);
+  expect(channels[0].postMessage).not.toHaveBeenCalled();
+});
+
+it('shares forced reconciliation without letting a warm request cache postpone it', async () => {
+  const storage = await import('./relayPairingStorage');
+  db.rows.set('a', host('a'));
+  await storage.listPairedRelayHosts();
+  db.rows.delete('a');
+  const results = await Promise.all(
+    Array.from({ length: 100 }, () => storage.listPairedRelayHosts(true))
+  );
+  expect(
+    results.every((hosts) => hosts.length === 0 && hosts === results[0])
+  ).toBe(true);
+  expect(db.open).toHaveBeenCalledTimes(2);
 });

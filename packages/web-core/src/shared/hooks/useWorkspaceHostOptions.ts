@@ -27,7 +27,7 @@ function mapRelayHostStatus(host: RelayHost): AppBarHostStatus {
  */
 export function buildRelayHostOptions(
   relayHosts: RelayHost[],
-  pairedHosts: PairedRelayHost[]
+  pairedHosts: Pick<PairedRelayHost, 'host_id'>[]
 ): AppBarHost[] {
   const pairedHostIds = new Set(pairedHosts.map((host) => host.host_id));
 
@@ -88,11 +88,24 @@ export function useWorkspaceHostOptions(): { hosts: AppBarHost[] } {
   return { hosts };
 }
 
+// CryptoKey objects get new identities on each IDB read. Host pickers only
+// depend on membership, so React Query can structurally share this projection.
+function selectPairedHostIds(hosts: PairedRelayHost[]) {
+  return hosts.map(({ host_id }) => ({ host_id }));
+}
+
 export function usePairedRelayHostsQuery(enabled: boolean) {
   const queryClient = useQueryClient();
   useEffect(() => {
     if (!enabled) return;
-    return subscribeRelayPairingChanges(() => {
+    return subscribeRelayPairingChanges(({ hostId, type }) => {
+      if (type === 'removed') {
+        // A failed refetch must not keep an explicitly unpaired host visible.
+        queryClient.setQueryData<PairedRelayHost[]>(
+          RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
+          (hosts) => hosts?.filter((host) => host.host_id !== hostId)
+        );
+      }
       void queryClient.invalidateQueries(
         { queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY },
         { cancelRefetch: false }
@@ -101,9 +114,10 @@ export function usePairedRelayHostsQuery(enabled: boolean) {
   }, [enabled, queryClient]);
   return useQuery({
     queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
-    queryFn: listPairedRelayHosts,
+    queryFn: () => listPairedRelayHosts(true),
+    select: selectPairedHostIds,
     enabled,
-    // Mount/focus reads hit the memory cache; changes explicitly invalidate it.
+    // Periodic reconciliation must read IDB even if a request warmed the cache.
     staleTime: 0,
     refetchInterval: enabled ? relayPairingRefetchInterval() : false,
   });
