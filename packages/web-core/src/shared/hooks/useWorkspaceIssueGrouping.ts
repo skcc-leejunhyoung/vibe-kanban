@@ -26,9 +26,9 @@ import { collapseSelfHostId } from '@/shared/lib/routes/appNavigation';
  * Aggregate a project-scoped Electric shape across many projects. Mirrors
  * useAllOrganizationProjects: uses the raw collection API
  * (createShapeCollection + subscribeChanges) instead of calling useShape in a
- * loop, which would violate the rules of hooks. Collections are cached (5-min
- * GC), so projects already synced elsewhere (e.g. the open kanban board) don't
- * re-sync.
+ * loop, which would violate the rules of hooks. Collections are cached
+ * (30-second GC), so projects already synced elsewhere (e.g. the open kanban
+ * board) don't re-sync.
  */
 function useAggregatedProjectShape<T extends Record<string, unknown>>(
   shape: ShapeDefinition<T>,

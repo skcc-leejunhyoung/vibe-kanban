@@ -1,6 +1,10 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useLiveQuery } from '@tanstack/react-db';
-import { createShapeCollection } from '@/shared/lib/electric/collections';
+import {
+  createShapeCollection,
+  retryShapeSource,
+  subscribeShapeErrors,
+} from '@/shared/lib/electric/collections';
 import { useSyncErrorContext } from '@/shared/hooks/useSyncErrorContext';
 import type { MutationDefinition, ShapeDefinition } from 'shared/remote-types';
 import type { SyncError } from '@/shared/lib/electric/types';
@@ -68,6 +72,10 @@ export interface UseShapeOptions<
  * Hook for subscribing to a shape's data via Electric sync,
  * with optional optimistic mutation support.
  *
+ * The returned object is referentially stable until one of its fields
+ * changes, so providers can memoize on it and context consumers only
+ * re-render when the shape's data actually changed.
+ *
  * @param shape - The shape definition from shared/remote-types.ts
  * @param params - URL parameters matching the shape's requirements
  * @param options - Optional configuration (enabled, mutation, etc.)
@@ -98,18 +106,10 @@ export function useShape<
   const { enabled = true, mutation } = options;
 
   const [error, setError] = useState<SyncError | null>(null);
-  const [retryKey, setRetryKey] = useState(0);
 
   const syncErrorContext = useSyncErrorContext();
   const registerErrorFn = syncErrorContext?.registerError;
   const clearErrorFn = syncErrorContext?.clearError;
-
-  const handleError = useCallback((err: SyncError) => setError(err), []);
-
-  const retry = useCallback(() => {
-    setError(null);
-    setRetryKey((k) => k + 1);
-  }, []);
 
   const paramsKey = JSON.stringify(params);
   const stableParams = useMemo(
@@ -122,6 +122,27 @@ export function useShape<
     [shape.table, paramsKey]
   );
 
+  const collection = useMemo(() => {
+    if (!enabled) return null;
+    return createShapeCollection(shape, stableParams, undefined, mutation);
+  }, [enabled, shape, mutation, stableParams]);
+
+  // One collection serves every hook reading the same shape + params, so
+  // errors are delivered through a per-collection listener set rather than a
+  // callback captured by whichever caller happened to create it.
+  useEffect(() => {
+    if (!collection) return;
+    return subscribeShapeErrors(collection, {
+      onError: setError,
+      onRecover: () => setError(null),
+    });
+  }, [collection]);
+
+  const retry = useCallback(() => {
+    setError(null);
+    if (collection) retryShapeSource(collection);
+  }, [collection]);
+
   useEffect(() => {
     if (error && registerErrorFn) {
       registerErrorFn(streamId, shape.table, error, retry);
@@ -133,13 +154,6 @@ export function useShape<
       clearErrorFn?.(streamId);
     };
   }, [error, streamId, shape.table, retry, registerErrorFn, clearErrorFn]);
-
-  const collection = useMemo(() => {
-    if (!enabled) return null;
-    const config = { onError: handleError };
-    void retryKey;
-    return createShapeCollection(shape, stableParams, config, mutation);
-  }, [enabled, shape, mutation, handleError, retryKey, stableParams]);
 
   const { data, isLoading: queryLoading } = useLiveQuery(
     (query) => (collection ? query.from({ item: collection }) : undefined),
@@ -257,26 +271,22 @@ export function useShape<
     [typedCollection]
   );
 
-  const base: UseShapeResult<T> = {
-    data: items,
+  const result = useMemo(() => {
+    const base: UseShapeResult<T> = { data: items, isLoading, error, retry };
+    return mutation ? { ...base, insert, update, updateMany, remove } : base;
+  }, [
+    items,
     isLoading,
     error,
     retry,
-  };
+    mutation,
+    insert,
+    update,
+    updateMany,
+    remove,
+  ]);
 
-  if (mutation) {
-    return {
-      ...base,
-      insert,
-      update,
-      updateMany,
-      remove,
-    } as M extends MutationDefinition<unknown, unknown, unknown>
-      ? UseShapeMutationResult<T, MutationCreateType<M>, MutationUpdateType<M>>
-      : UseShapeResult<T>;
-  }
-
-  return base as M extends MutationDefinition<unknown, unknown, unknown>
+  return result as M extends MutationDefinition<unknown, unknown, unknown>
     ? UseShapeMutationResult<T, MutationCreateType<M>, MutationUpdateType<M>>
     : UseShapeResult<T>;
 }

@@ -1,13 +1,17 @@
 import { useMemo, useCallback, type ReactNode } from 'react';
 import { useShape } from '@/shared/integrations/electric/hooks';
 import {
+  groupBy,
+  useGroupedBy,
+  useStableGroups,
+} from '@/shared/lib/stableGroups';
+import {
   PROJECT_ISSUES_SHAPE,
   PROJECT_PROJECT_STATUSES_SHAPE,
   PROJECT_TAGS_SHAPE,
   PROJECT_MILESTONES_SHAPE,
   PROJECT_ISSUE_MILESTONES_SHAPE,
   PROJECT_ISSUE_ASSIGNEES_SHAPE,
-  PROJECT_ISSUE_FOLLOWERS_SHAPE,
   PROJECT_ISSUE_TAGS_SHAPE,
   PROJECT_ISSUE_RELATIONSHIPS_SHAPE,
   PROJECT_PULL_REQUESTS_SHAPE,
@@ -20,19 +24,22 @@ import {
   PROJECT_MILESTONE_MUTATION,
   ISSUE_MILESTONE_MUTATION,
   ISSUE_ASSIGNEE_MUTATION,
-  ISSUE_FOLLOWER_MUTATION,
   ISSUE_TAG_MUTATION,
   ISSUE_RELATIONSHIP_MUTATION,
   PULL_REQUEST_ISSUE_MUTATION,
   GITHUB_ISSUE_LINK_MUTATION,
   type Issue,
+  type IssueRelationship,
   type ProjectStatus,
+  type PullRequest,
   type Tag,
   type ProjectMilestone,
+  type Workspace,
 } from 'shared/remote-types';
 import {
   ProjectContext,
   type ProjectContextValue,
+  type ProjectGithubIssueLink,
 } from '@/shared/hooks/useProjectContext';
 
 interface ProjectProviderProps {
@@ -40,11 +47,22 @@ interface ProjectProviderProps {
   children: ReactNode;
 }
 
+/** Shared result for lookups with no rows, so callers can memoize on it. */
+const EMPTY: never[] = [];
+
+const byIssueId = (row: { issue_id: string | null }) => row.issue_id;
+const byStatusId = (row: Issue) => row.status_id;
+const byRelatedIssueIds = (row: IssueRelationship) => [
+  row.issue_id,
+  row.related_issue_id,
+];
+
 export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
   const params = useMemo(() => ({ project_id: projectId }), [projectId]);
   const enabled = Boolean(projectId);
 
-  // Shape subscriptions (with mutations where needed)
+  // Shape subscriptions (with mutations where needed). Issue followers are
+  // not subscribed: nothing in the UI reads them.
   const issuesResult = useShape(PROJECT_ISSUES_SHAPE, params, {
     enabled,
     mutation: ISSUE_MUTATION,
@@ -69,10 +87,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
   const issueAssigneesResult = useShape(PROJECT_ISSUE_ASSIGNEES_SHAPE, params, {
     enabled,
     mutation: ISSUE_ASSIGNEE_MUTATION,
-  });
-  const issueFollowersResult = useShape(PROJECT_ISSUE_FOLLOWERS_SHAPE, params, {
-    enabled,
-    mutation: ISSUE_FOLLOWER_MUTATION,
   });
   const issueTagsResult = useShape(PROJECT_ISSUE_TAGS_SHAPE, params, {
     enabled,
@@ -112,7 +126,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     milestonesResult.error ||
     issueMilestonesResult.error ||
     issueAssigneesResult.error ||
-    issueFollowersResult.error ||
     issueTagsResult.error ||
     issueRelationshipsResult.error ||
     pullRequestsResult.error ||
@@ -129,7 +142,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     milestonesResult.retry();
     issueMilestonesResult.retry();
     issueAssigneesResult.retry();
-    issueFollowersResult.retry();
     issueTagsResult.retry();
     issueRelationshipsResult.retry();
     pullRequestsResult.retry();
@@ -143,7 +155,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     milestonesResult,
     issueMilestonesResult,
     issueAssigneesResult,
-    issueFollowersResult,
     issueTagsResult,
     issueRelationshipsResult,
     pullRequestsResult,
@@ -184,6 +195,73 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     return map;
   }, [milestonesResult.data]);
 
+  // Per-issue groups, rebuilt only when their own shape changes.
+  const issuesByStatusId = useGroupedBy(issuesResult.data, byStatusId);
+  const assigneesByIssueId = useGroupedBy(issueAssigneesResult.data, byIssueId);
+  const issueTagsByIssueId = useGroupedBy(issueTagsResult.data, byIssueId);
+  const issueMilestonesByIssueId = useGroupedBy(
+    issueMilestonesResult.data,
+    byIssueId
+  );
+  const relationshipsByIssueId = useGroupedBy(
+    issueRelationshipsResult.data,
+    byRelatedIssueIds
+  );
+  const workspacesByIssueId = useGroupedBy(workspacesResult.data, byIssueId);
+
+  const tagObjectsByIssueId = useStableGroups(
+    useMemo(() => {
+      const map = new Map<string, Tag[]>();
+      for (const [issueId, links] of issueTagsByIssueId) {
+        map.set(
+          issueId,
+          links
+            .map((link) => tagsById.get(link.tag_id))
+            .filter((tag): tag is Tag => tag !== undefined)
+        );
+      }
+      return map;
+    }, [issueTagsByIssueId, tagsById])
+  );
+
+  const milestoneByIssueId = useMemo(() => {
+    const map = new Map<string, ProjectMilestone>();
+    for (const [issueId, links] of issueMilestonesByIssueId) {
+      const milestone = milestonesById.get(links[0].milestone_id);
+      if (milestone) map.set(issueId, milestone);
+    }
+    return map;
+  }, [issueMilestonesByIssueId, milestonesById]);
+
+  // Pull requests per issue, in pull_requests order (matching the previous
+  // filter-based lookup).
+  const pullRequestsByIssueId = useStableGroups(
+    useMemo(() => {
+      const linksByPullRequestId = groupBy(
+        pullRequestIssuesResult.data,
+        (link) => link.pull_request_id
+      );
+      const map = new Map<string, PullRequest[]>();
+      for (const pr of pullRequestsResult.data) {
+        for (const link of linksByPullRequestId.get(pr.id) ?? EMPTY) {
+          const prs = map.get(link.issue_id);
+          if (!prs) map.set(link.issue_id, [pr]);
+          else if (!prs.includes(pr)) prs.push(pr);
+        }
+      }
+      return map;
+    }, [pullRequestIssuesResult.data, pullRequestsResult.data])
+  );
+
+  // An issue maps to at most one GitHub issue link (UNIQUE(issue_id)).
+  const githubIssueLinkByIssueId = useMemo(() => {
+    const map = new Map<string, ProjectGithubIssueLink>();
+    for (const link of githubIssueLinksResult.data) {
+      if (!map.has(link.issue_id)) map.set(link.issue_id, link);
+    }
+    return map;
+  }, [githubIssueLinksResult.data]);
+
   // Lookup helpers
   const getIssue = useCallback(
     (issueId: string) => issuesById.get(issueId),
@@ -191,57 +269,33 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
   );
 
   const getIssuesForStatus = useCallback(
-    (statusId: string) =>
-      issuesResult.data.filter((i) => i.status_id === statusId),
-    [issuesResult.data]
+    (statusId: string): Issue[] => issuesByStatusId.get(statusId) ?? EMPTY,
+    [issuesByStatusId]
   );
 
   const getAssigneesForIssue = useCallback(
-    (issueId: string) =>
-      issueAssigneesResult.data.filter((a) => a.issue_id === issueId),
-    [issueAssigneesResult.data]
-  );
-
-  const getFollowersForIssue = useCallback(
-    (issueId: string) =>
-      issueFollowersResult.data.filter((f) => f.issue_id === issueId),
-    [issueFollowersResult.data]
+    (issueId: string) => assigneesByIssueId.get(issueId) ?? EMPTY,
+    [assigneesByIssueId]
   );
 
   const getTagsForIssue = useCallback(
-    (issueId: string) =>
-      issueTagsResult.data.filter((t) => t.issue_id === issueId),
-    [issueTagsResult.data]
+    (issueId: string) => issueTagsByIssueId.get(issueId) ?? EMPTY,
+    [issueTagsByIssueId]
   );
 
   const getTagObjectsForIssue = useCallback(
-    (issueId: string) => {
-      const issueTags = issueTagsResult.data.filter(
-        (t) => t.issue_id === issueId
-      );
-      return issueTags
-        .map((it) => tagsById.get(it.tag_id))
-        .filter((t): t is Tag => t !== undefined);
-    },
-    [issueTagsResult.data, tagsById]
+    (issueId: string): Tag[] => tagObjectsByIssueId.get(issueId) ?? EMPTY,
+    [tagObjectsByIssueId]
   );
 
   const getMilestoneForIssue = useCallback(
-    (issueId: string) => {
-      const link = issueMilestonesResult.data.find(
-        (item) => item.issue_id === issueId
-      );
-      return link ? milestonesById.get(link.milestone_id) : undefined;
-    },
-    [issueMilestonesResult.data, milestonesById]
+    (issueId: string) => milestoneByIssueId.get(issueId),
+    [milestoneByIssueId]
   );
 
   const getRelationshipsForIssue = useCallback(
-    (issueId: string) =>
-      issueRelationshipsResult.data.filter(
-        (r) => r.issue_id === issueId || r.related_issue_id === issueId
-      ),
-    [issueRelationshipsResult.data]
+    (issueId: string) => relationshipsByIssueId.get(issueId) ?? EMPTY,
+    [relationshipsByIssueId]
   );
 
   const getStatus = useCallback(
@@ -255,28 +309,19 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
   );
 
   const getPullRequestsForIssue = useCallback(
-    (issueId: string) => {
-      const prIds = pullRequestIssuesResult.data
-        .filter((link) => link.issue_id === issueId)
-        .map((link) => link.pull_request_id);
-      const prIdSet = new Set(prIds);
-      return pullRequestsResult.data.filter((pr) => prIdSet.has(pr.id));
-    },
-    [pullRequestIssuesResult.data, pullRequestsResult.data]
+    (issueId: string): PullRequest[] =>
+      pullRequestsByIssueId.get(issueId) ?? EMPTY,
+    [pullRequestsByIssueId]
   );
 
-  // An issue maps to at most one GitHub issue link (UNIQUE(issue_id)), so return
-  // the first match rather than a list.
   const getGithubIssueLinkForIssue = useCallback(
-    (issueId: string) =>
-      githubIssueLinksResult.data.find((link) => link.issue_id === issueId),
-    [githubIssueLinksResult.data]
+    (issueId: string) => githubIssueLinkByIssueId.get(issueId),
+    [githubIssueLinkByIssueId]
   );
 
   const getWorkspacesForIssue = useCallback(
-    (issueId: string) =>
-      workspacesResult.data.filter((w) => w.issue_id === issueId),
-    [workspacesResult.data]
+    (issueId: string): Workspace[] => workspacesByIssueId.get(issueId) ?? EMPTY,
+    [workspacesByIssueId]
   );
 
   const value = useMemo<ProjectContextValue>(
@@ -288,7 +333,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       statuses: statusesResult.data,
       tags: tagsResult.data,
       issueAssignees: issueAssigneesResult.data,
-      issueFollowers: issueFollowersResult.data,
       issueTags: issueTagsResult.data,
       milestones: milestonesResult.data,
       issueMilestones: issueMilestonesResult.data,
@@ -322,10 +366,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       insertIssueAssignee: issueAssigneesResult.insert,
       removeIssueAssignee: issueAssigneesResult.remove,
 
-      // IssueFollower mutations
-      insertIssueFollower: issueFollowersResult.insert,
-      removeIssueFollower: issueFollowersResult.remove,
-
       // IssueTag mutations
       insertIssueTag: issueTagsResult.insert,
       removeIssueTag: issueTagsResult.remove,
@@ -352,7 +392,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getIssue,
       getIssuesForStatus,
       getAssigneesForIssue,
-      getFollowersForIssue,
       getTagsForIssue,
       getTagObjectsForIssue,
       getMilestoneForIssue,
@@ -368,13 +407,14 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       statusesById,
       tagsById,
     }),
+    // useShape results are memoized, so each only changes with its own
+    // data / loading / error / mutation helpers.
     [
       projectId,
       issuesResult,
       statusesResult,
       tagsResult,
       issueAssigneesResult,
-      issueFollowersResult,
       issueTagsResult,
       milestonesResult,
       issueMilestonesResult,
@@ -389,7 +429,6 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getIssue,
       getIssuesForStatus,
       getAssigneesForIssue,
-      getFollowersForIssue,
       getTagsForIssue,
       getTagObjectsForIssue,
       getMilestoneForIssue,

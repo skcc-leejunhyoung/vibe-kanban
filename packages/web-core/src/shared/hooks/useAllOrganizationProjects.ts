@@ -13,7 +13,7 @@ interface UseAllOrganizationProjectsOptions {
  * Uses the raw collection API (createShapeCollection + subscribeChanges)
  * to avoid calling useShape in a loop (which would violate React hooks rules).
  *
- * Collections are cached by createShapeCollection (5-min GC),
+ * Collections are cached by createShapeCollection (30-second GC),
  * so no duplicate syncs if the same org's projects are subscribed elsewhere.
  */
 export function useAllOrganizationProjects(

@@ -2,12 +2,12 @@ import { useContext } from 'react';
 import { createHmrContext } from '@/shared/lib/hmrContext';
 import type { InsertResult, MutationResult } from '@/shared/lib/electric/types';
 import type { SyncError } from '@/shared/lib/electric/types';
+import type { ProjectGithubIssueLink } from '@/shared/lib/electric/collections';
 import type {
   Issue,
   ProjectStatus,
   Tag,
   IssueAssignee,
-  IssueFollower,
   IssueTag,
   ProjectMilestone,
   IssueMilestone,
@@ -23,7 +23,6 @@ import type {
   CreateTagRequest,
   UpdateTagRequest,
   CreateIssueAssigneeRequest,
-  CreateIssueFollowerRequest,
   CreateIssueTagRequest,
   CreateProjectMilestoneRequest,
   UpdateProjectMilestoneRequest,
@@ -34,6 +33,8 @@ import type {
   UpdateGithubIssueLinkRequest,
 } from 'shared/remote-types';
 
+export type { ProjectGithubIssueLink };
+
 /**
  * ProjectContext provides project-scoped data and mutations.
  *
@@ -42,12 +43,17 @@ import type {
  * - ProjectStatuses (data + mutations)
  * - Tags (data + mutations)
  * - IssueAssignees (data + mutations)
- * - IssueFollowers (data + mutations)
  * - IssueTags (data + mutations)
  * - IssueRelationships (data + mutations)
  * - PullRequests (data only)
  * - PullRequestIssues (data + mutations)
+ * - GithubIssueLinks (data + mutations; synced with the columns the UI reads,
+ *   see `ProjectGithubIssueLink`)
  * - Workspaces (data only)
+ *
+ * Per-issue lookup helpers answer from maps rebuilt only when their source
+ * shape changes and hand back the same array while an issue's rows are
+ * unchanged, so consumers can memoize on their results.
  */
 export interface ProjectContextValue {
   projectId: string;
@@ -57,14 +63,13 @@ export interface ProjectContextValue {
   statuses: ProjectStatus[];
   tags: Tag[];
   issueAssignees: IssueAssignee[];
-  issueFollowers: IssueFollower[];
   issueTags: IssueTag[];
   milestones: ProjectMilestone[];
   issueMilestones: IssueMilestone[];
   issueRelationships: IssueRelationship[];
   pullRequests: PullRequest[];
   pullRequestIssues: PullRequestIssue[];
-  githubIssueLinks: GithubIssueLink[];
+  githubIssueLinks: ProjectGithubIssueLink[];
   workspaces: Workspace[];
 
   // Loading/error state
@@ -100,12 +105,6 @@ export interface ProjectContextValue {
     data: CreateIssueAssigneeRequest
   ) => InsertResult<IssueAssignee>;
   removeIssueAssignee: (id: string) => MutationResult;
-
-  // IssueFollower mutations
-  insertIssueFollower: (
-    data: CreateIssueFollowerRequest
-  ) => InsertResult<IssueFollower>;
-  removeIssueFollower: (id: string) => MutationResult;
 
   // IssueTag mutations
   insertIssueTag: (data: CreateIssueTagRequest) => InsertResult<IssueTag>;
@@ -149,7 +148,6 @@ export interface ProjectContextValue {
   getIssue: (issueId: string) => Issue | undefined;
   getIssuesForStatus: (statusId: string) => Issue[];
   getAssigneesForIssue: (issueId: string) => IssueAssignee[];
-  getFollowersForIssue: (issueId: string) => IssueFollower[];
   getTagsForIssue: (issueId: string) => IssueTag[];
   getTagObjectsForIssue: (issueId: string) => Tag[];
   getMilestoneForIssue: (issueId: string) => ProjectMilestone | undefined;
@@ -157,7 +155,9 @@ export interface ProjectContextValue {
   getStatus: (statusId: string) => ProjectStatus | undefined;
   getTag: (tagId: string) => Tag | undefined;
   getPullRequestsForIssue: (issueId: string) => PullRequest[];
-  getGithubIssueLinkForIssue: (issueId: string) => GithubIssueLink | undefined;
+  getGithubIssueLinkForIssue: (
+    issueId: string
+  ) => ProjectGithubIssueLink | undefined;
   getWorkspacesForIssue: (issueId: string) => Workspace[];
 
   // Computed aggregations (Maps for O(1) lookup)

@@ -59,22 +59,21 @@ import type { OrganizationMemberWithProfile } from 'shared/types';
 import {
   KanbanProvider,
   KanbanBoard,
-  KanbanCard,
   KanbanCards,
   KanbanHeader,
   type DropResult,
 } from '@vibe/ui/components/KanbanBoard';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
-import {
-  KanbanCardContent,
-  type KanbanGithubIssue,
-} from '@vibe/ui/components/KanbanCardContent';
-import {
-  IssueWorkspaceCard,
-  type WorkspaceWithStats,
-  type WorkspacePr,
+import type { KanbanGithubIssue } from '@vibe/ui/components/KanbanCardContent';
+import type {
+  WorkspaceWithStats,
+  WorkspacePr,
 } from '@vibe/ui/components/IssueWorkspaceCard';
-import { resolveRelationshipsForIssue } from '@/shared/lib/resolveRelationships';
+import {
+  resolveRelationshipsForIssue,
+  type ResolvedRelationship,
+} from '@/shared/lib/resolveRelationships';
+import { useStableGroups } from '@/shared/lib/stableGroups';
 import { KanbanFilterBar } from '@vibe/ui/components/KanbanFilterBar';
 import { ViewNavTabs } from '@vibe/ui/components/ViewNavTabs';
 import { IssueListView } from '@vibe/ui/components/IssueListView';
@@ -86,7 +85,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@vibe/ui/components/Dropdown';
-import { SearchableTagDropdownContainer } from '@/shared/components/SearchableTagDropdownContainer';
 import type { IssuePriority } from 'shared/remote-types';
 import { useIssueMultiSelect } from '@/shared/hooks/useIssueMultiSelect';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
@@ -99,11 +97,48 @@ import {
   useKeyNavRight,
 } from '@/shared/keyboard';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
+import { KanbanIssueCard } from './KanbanIssueCard';
 import { shouldStartBoardNavigation } from '../model/shouldStartBoardNavigation';
 import { isWorkspaceVisibleOnIssueCard } from '../model/isWorkspaceVisibleOnIssueCard';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { COMMAND_PALETTE_EVENT } from '@/shared/lib/commandPaletteEvents';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
+
+/** Shared empty prop for cards with nothing to show, so memoized cards skip. */
+const EMPTY: never[] = [];
+
+const isSameGithubIssue = (a: KanbanGithubIssue, b: KanbanGithubIssue) =>
+  a.id === b.id &&
+  a.number === b.number &&
+  a.repository === b.repository &&
+  a.url === b.url;
+
+const isSameResolvedRelationship = (
+  a: ResolvedRelationship,
+  b: ResolvedRelationship
+) =>
+  a.relationshipId === b.relationshipId &&
+  a.displayType === b.displayType &&
+  a.relatedIssueId === b.relatedIssueId &&
+  a.relatedIssueDisplayId === b.relatedIssueDisplayId;
+
+const isSameWorkspaceCard = (a: WorkspaceWithStats, b: WorkspaceWithStats) => {
+  if (
+    a.prs.length !== b.prs.length ||
+    !a.prs.every(
+      (pr, index) =>
+        pr.number === b.prs[index].number &&
+        pr.url === b.prs[index].url &&
+        pr.status === b.prs[index].status
+    )
+  ) {
+    return false;
+  }
+  for (const key of Object.keys(a) as (keyof WorkspaceWithStats)[]) {
+    if (key !== 'prs' && !Object.is(a[key], b[key])) return false;
+  }
+  return true;
+};
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -610,8 +645,6 @@ export function KanbanContainer() {
     [issues, insertIssue, insertIssueAssignee, projectId, createAssigneeIds]
   );
 
-  // Track items as arrays of IDs grouped by status
-  const [items, setItems] = useState<Record<string, string[]>>({});
   const [isFiltersDialogOpen, setIsFiltersDialogOpen] = useState(false);
 
   // Collapsed status sections in the list view. Lifted out of IssueListSection
@@ -635,55 +668,65 @@ export function KanbanContainer() {
     [collapsedStatusIds, projectId, setCollapsedGroups]
   );
 
-  // Sync items from filtered issues when they change
-  useEffect(() => {
-    // Skip rebuild during drag-drop sync to prevent flicker
-    if (isSyncingRef.current) {
-      return;
-    }
-
-    const { sortField, sortDirection } = kanbanFilters;
+  // Card ids per status, filtered and sorted for the active view. Derived, so
+  // a shape message that leaves the filtered issues alone (workspaces, pull
+  // requests, GitHub links, …) never re-sorts the columns.
+  const { sortField, sortDirection } = kanbanFilters;
+  const groupedItems = useMemo(() => {
     const grouped: Record<string, string[]> = {};
 
     for (const status of statuses) {
-      // Filter issues for this status
-      let statusIssues = filteredIssues.filter(
-        (i) => i.status_id === status.id
-      );
-
-      // Sort within column based on user preference
-      statusIssues = [...statusIssues].sort((a, b) => {
-        let comparison = 0;
-        switch (sortField) {
-          case 'priority':
-            comparison =
-              (a.priority ? PRIORITY_ORDER[a.priority] : Infinity) -
-              (b.priority ? PRIORITY_ORDER[b.priority] : Infinity);
-            break;
-          case 'created_at':
-            comparison =
-              new Date(a.created_at).getTime() -
-              new Date(b.created_at).getTime();
-            break;
-          case 'updated_at':
-            comparison =
-              new Date(a.updated_at).getTime() -
-              new Date(b.updated_at).getTime();
-            break;
-          case 'title':
-            comparison = a.title.localeCompare(b.title);
-            break;
-          case 'sort_order':
-          default:
-            comparison = a.sort_order - b.sort_order;
-        }
-        return sortDirection === 'desc' ? -comparison : comparison;
-      });
+      const statusIssues = filteredIssues
+        .filter((i) => i.status_id === status.id)
+        // Sort within column based on user preference
+        .sort((a, b) => {
+          let comparison = 0;
+          switch (sortField) {
+            case 'priority':
+              comparison =
+                (a.priority ? PRIORITY_ORDER[a.priority] : Infinity) -
+                (b.priority ? PRIORITY_ORDER[b.priority] : Infinity);
+              break;
+            case 'created_at':
+              comparison =
+                new Date(a.created_at).getTime() -
+                new Date(b.created_at).getTime();
+              break;
+            case 'updated_at':
+              comparison =
+                new Date(a.updated_at).getTime() -
+                new Date(b.updated_at).getTime();
+              break;
+            case 'title':
+              comparison = a.title.localeCompare(b.title);
+              break;
+            case 'sort_order':
+            default:
+              comparison = a.sort_order - b.sort_order;
+          }
+          return sortDirection === 'desc' ? -comparison : comparison;
+        });
 
       grouped[status.id] = statusIssues.map((i) => i.id);
     }
-    setItems(grouped);
-  }, [filteredIssues, statuses, kanbanFilters]);
+    return grouped;
+  }, [filteredIssues, statuses, sortField, sortDirection]);
+
+  // A drag-drop reorder is shown from local state until the bulk update has
+  // synced back; the derived order takes over on the next data change after
+  // that (deferred while the sync is in flight to prevent flicker).
+  const [dragItems, setDragItems] = useState<Record<string, string[]> | null>(
+    null
+  );
+  const dropDragItemsAfterSyncRef = useRef(false);
+  useEffect(() => {
+    if (isSyncingRef.current) {
+      dropDragItemsAfterSyncRef.current = true;
+      return;
+    }
+    setDragItems(null);
+  }, [groupedItems]);
+  const items = dragItems ?? groupedItems;
 
   // Create a lookup map for issue data
   const issueMap = useMemo(() => {
@@ -694,20 +737,25 @@ export function KanbanContainer() {
     return map;
   }, [issues]);
 
-  // Create a lookup map for issue assignees (issue_id -> OrganizationMemberWithProfile[])
-  const issueAssigneesMap = useMemo(() => {
-    const map: Record<string, OrganizationMemberWithProfile[]> = {};
-    for (const assignee of issueAssignees) {
-      const member = membersWithProfilesById.get(assignee.user_id);
-      if (member) {
-        if (!map[assignee.issue_id]) {
-          map[assignee.issue_id] = [];
-        }
-        map[assignee.issue_id].push(member);
+  // issue_id -> members, with each issue's array kept stable across changes
+  // to other issues' assignees so memoized cards can skip.
+  const assigneesByIssueId = useStableGroups(
+    useMemo(() => {
+      const map = new Map<string, OrganizationMemberWithProfile[]>();
+      for (const assignee of issueAssignees) {
+        const member = membersWithProfilesById.get(assignee.user_id);
+        if (!member) continue;
+        const members = map.get(assignee.issue_id);
+        if (members) members.push(member);
+        else map.set(assignee.issue_id, [member]);
       }
-    }
-    return map;
-  }, [issueAssignees, membersWithProfilesById]);
+      return map;
+    }, [issueAssignees, membersWithProfilesById])
+  );
+  const issueAssigneesMap = useMemo(
+    () => Object.fromEntries(assigneesByIssueId),
+    [assigneesByIssueId]
+  );
 
   const membersWithProfiles = useMemo(
     () => [...membersWithProfilesById.values()],
@@ -729,12 +777,21 @@ export function KanbanContainer() {
     [archivedWorkspaces]
   );
 
+  // Read through a ref so the callback, a prop of every memoized card, keeps
+  // its identity while local workspace state ticks.
+  const workspaceLookupsRef = useRef({ workspaceHostMap, localWorkspacesById });
+  useEffect(() => {
+    workspaceLookupsRef.current = { workspaceHostMap, localWorkspacesById };
+  }, [workspaceHostMap, localWorkspacesById]);
+
   const openIssueWorkspace = useCallback(
     async (
       issueId: string,
       workspaceAttemptId: string,
       ownerHostId?: string | null
     ) => {
+      const { workspaceHostMap, localWorkspacesById } =
+        workspaceLookupsRef.current;
       const hostId = ownerHostId ?? workspaceHostMap.get(workspaceAttemptId);
       if (!localWorkspacesById.has(workspaceAttemptId) && !hostId) {
         // The workspace lives on a paired host that is offline, or whose host
@@ -755,7 +812,7 @@ export function KanbanContainer() {
         { hostId }
       );
     },
-    [appNavigation, projectId, workspaceHostMap, localWorkspacesById, t]
+    [appNavigation, projectId, t]
   );
 
   // Open a workspace from a table-row workspace card (mirrors the kanban card).
@@ -789,83 +846,112 @@ export function KanbanContainer() {
     return map;
   }, [pullRequests]);
 
-  const githubIssuesByIssueId = useMemo(() => {
-    const map = new Map<string, KanbanGithubIssue[]>();
-    for (const link of githubIssueLinks) {
-      const list = map.get(link.issue_id) ?? [];
-      list.push({
-        id: link.id,
-        number: link.number,
-        repository: link.repository,
-        url: link.url,
-      });
-      map.set(link.issue_id, list);
-    }
-    return map;
-  }, [githubIssueLinks]);
-
-  const workspacesByIssueId = useMemo(() => {
-    if (!showWorkspaces) {
-      return new Map<string, WorkspaceWithStats[]>();
-    }
-
-    const map = new Map<string, WorkspaceWithStats[]>();
-
-    for (const issue of issues) {
-      const nonArchivedWorkspaces = getWorkspacesForIssue(issue.id)
-        // Show every linked, non-archived workspace — including ones that live
-        // on a paired host and therefore have no local counterpart on this
-        // machine. This mirrors the issue detail view; previously the board
-        // additionally required `localWorkspacesById.has(...)`, which silently
-        // hid remote-host workspaces from the cards.
-        .filter((workspace) =>
-          isWorkspaceVisibleOnIssueCard(workspace, locallyArchivedWorkspaceIds)
-        )
-        .map((workspace) => {
-          const localWorkspace = workspace.local_workspace_id
-            ? localWorkspacesById.get(workspace.local_workspace_id)
-            : undefined;
-
-          return {
-            id: workspace.id,
-            localWorkspaceId: workspace.local_workspace_id,
-            hostId: workspace.host_id,
-            name: workspace.name,
-            archived: workspace.archived,
-            filesChanged: workspace.files_changed ?? 0,
-            linesAdded: workspace.lines_added ?? 0,
-            linesRemoved: workspace.lines_removed ?? 0,
-            prs: prsByWorkspaceId.get(workspace.id) ?? [],
-            owner: membersWithProfilesById.get(workspace.owner_user_id) ?? null,
-            updatedAt: workspace.updated_at,
-            isOwnedByCurrentUser: workspace.owner_user_id === userId,
-            isRunning: localWorkspace?.isRunning,
-            hasPendingApproval: localWorkspace?.hasPendingApproval,
-            hasRunningDevServer: localWorkspace?.hasRunningDevServer,
-            hasUnseenActivity: localWorkspace?.hasUnseenActivity,
-            todoTotal: localWorkspace?.todoTotal,
-            todoCompleted: localWorkspace?.todoCompleted,
-            latestProcessCompletedAt: localWorkspace?.latestProcessCompletedAt,
-            latestProcessStatus: localWorkspace?.latestProcessStatus,
-          };
+  const githubIssuesByIssueId = useStableGroups(
+    useMemo(() => {
+      const map = new Map<string, KanbanGithubIssue[]>();
+      for (const link of githubIssueLinks) {
+        const list = map.get(link.issue_id) ?? [];
+        list.push({
+          id: link.id,
+          number: link.number,
+          repository: link.repository,
+          url: link.url,
         });
-
-      if (nonArchivedWorkspaces.length > 0) {
-        map.set(issue.id, nonArchivedWorkspaces);
+        map.set(link.issue_id, list);
       }
-    }
+      return map;
+    }, [githubIssueLinks]),
+    isSameGithubIssue
+  );
 
-    return map;
-  }, [
-    showWorkspaces,
-    issues,
-    getWorkspacesForIssue,
-    localWorkspacesById,
-    locallyArchivedWorkspaceIds,
-    prsByWorkspaceId,
-    membersWithProfilesById,
-    userId,
-  ]);
+  // Resolved relationship badges per issue. issuesById changes on every issue
+  // update, so the per-issue arrays are kept stable by content instead.
+  const relationshipsByIssueId = useStableGroups(
+    useMemo(() => {
+      const map = new Map<string, ResolvedRelationship[]>();
+      for (const issue of issues) {
+        const relationships = getRelationshipsForIssue(issue.id);
+        if (relationships.length === 0) continue;
+        map.set(
+          issue.id,
+          resolveRelationshipsForIssue(issue.id, relationships, issuesById)
+        );
+      }
+      return map;
+    }, [issues, getRelationshipsForIssue, issuesById]),
+    isSameResolvedRelationship
+  );
+
+  const workspacesByIssueId = useStableGroups(
+    useMemo(() => {
+      if (!showWorkspaces) {
+        return new Map<string, WorkspaceWithStats[]>();
+      }
+
+      const map = new Map<string, WorkspaceWithStats[]>();
+
+      for (const issue of issues) {
+        const nonArchivedWorkspaces = getWorkspacesForIssue(issue.id)
+          // Show every linked, non-archived workspace — including ones that live
+          // on a paired host and therefore have no local counterpart on this
+          // machine. This mirrors the issue detail view; previously the board
+          // additionally required `localWorkspacesById.has(...)`, which silently
+          // hid remote-host workspaces from the cards.
+          .filter((workspace) =>
+            isWorkspaceVisibleOnIssueCard(
+              workspace,
+              locallyArchivedWorkspaceIds
+            )
+          )
+          .map((workspace) => {
+            const localWorkspace = workspace.local_workspace_id
+              ? localWorkspacesById.get(workspace.local_workspace_id)
+              : undefined;
+
+            return {
+              id: workspace.id,
+              localWorkspaceId: workspace.local_workspace_id,
+              hostId: workspace.host_id,
+              name: workspace.name,
+              archived: workspace.archived,
+              filesChanged: workspace.files_changed ?? 0,
+              linesAdded: workspace.lines_added ?? 0,
+              linesRemoved: workspace.lines_removed ?? 0,
+              prs: prsByWorkspaceId.get(workspace.id) ?? [],
+              owner:
+                membersWithProfilesById.get(workspace.owner_user_id) ?? null,
+              updatedAt: workspace.updated_at,
+              isOwnedByCurrentUser: workspace.owner_user_id === userId,
+              isRunning: localWorkspace?.isRunning,
+              hasPendingApproval: localWorkspace?.hasPendingApproval,
+              hasRunningDevServer: localWorkspace?.hasRunningDevServer,
+              hasUnseenActivity: localWorkspace?.hasUnseenActivity,
+              todoTotal: localWorkspace?.todoTotal,
+              todoCompleted: localWorkspace?.todoCompleted,
+              latestProcessCompletedAt:
+                localWorkspace?.latestProcessCompletedAt,
+              latestProcessStatus: localWorkspace?.latestProcessStatus,
+            };
+          });
+
+        if (nonArchivedWorkspaces.length > 0) {
+          map.set(issue.id, nonArchivedWorkspaces);
+        }
+      }
+
+      return map;
+    }, [
+      showWorkspaces,
+      issues,
+      getWorkspacesForIssue,
+      localWorkspacesById,
+      locallyArchivedWorkspaceIds,
+      prsByWorkspaceId,
+      membersWithProfilesById,
+      userId,
+    ]),
+    isSameWorkspaceCard
+  );
 
   // Calculate sort_order based on column index and issue position
   // Formula: 1000 * [COLUMN_INDEX] + [ISSUE_INDEX] (both 1-based)
@@ -905,28 +991,26 @@ export function KanbanContainer() {
       const destId = destination.droppableId;
       const isCrossColumn = sourceId !== destId;
 
-      // Update local state and capture new items for bulk update
-      let newItems: Record<string, string[]> = {};
-      setItems((prev) => {
-        const sourceItems = [...(prev[sourceId] ?? [])];
-        const [moved] = sourceItems.splice(source.index, 1);
+      // Apply the move locally and capture the new order for the bulk update
+      const sourceItems = [...(items[sourceId] ?? [])];
+      const [moved] = sourceItems.splice(source.index, 1);
+      let newItems: Record<string, string[]>;
 
-        if (!isCrossColumn) {
-          // Within-column reorder
-          sourceItems.splice(destination.index, 0, moved);
-          newItems = { ...prev, [sourceId]: sourceItems };
-        } else {
-          // Cross-column move
-          const destItems = [...(prev[destId] ?? [])];
-          destItems.splice(destination.index, 0, moved);
-          newItems = {
-            ...prev,
-            [sourceId]: sourceItems,
-            [destId]: destItems,
-          };
-        }
-        return newItems;
-      });
+      if (!isCrossColumn) {
+        // Within-column reorder
+        sourceItems.splice(destination.index, 0, moved);
+        newItems = { ...items, [sourceId]: sourceItems };
+      } else {
+        // Cross-column move
+        const destItems = [...(items[destId] ?? [])];
+        destItems.splice(destination.index, 0, moved);
+        newItems = {
+          ...items,
+          [sourceId]: sourceItems,
+          [destId]: destItems,
+        };
+      }
+      setDragItems(newItems);
 
       // Build bulk updates for all issues in affected columns
       const updates: BulkUpdateIssueItem[] = [];
@@ -963,13 +1047,17 @@ export function KanbanContainer() {
           console.error('Failed to bulk update sort order:', err);
         })
         .finally(() => {
-          // Delay clearing flag to let Electric sync complete
+          // Keep the local order until Electric has had a chance to sync
           setTimeout(() => {
             isSyncingRef.current = false;
+            if (dropDragItemsAfterSyncRef.current) {
+              dropDragItemsAfterSyncRef.current = false;
+              setDragItems(null);
+            }
           }, 500);
         });
     },
-    [kanbanFilters.sortField, calculateSortOrder]
+    [kanbanFilters.sortField, calculateSortOrder, items]
   );
 
   // Multi-select support
@@ -1758,138 +1846,48 @@ export function KanbanContainer() {
                       {issueIds.map((issueId, index) => {
                         const issue = issueMap[issueId];
                         if (!issue) return null;
-                        const issueWorkspaces =
-                          workspacesByIssueId.get(issue.id) ?? [];
-                        const workspaceIdsShownOnCard = new Set(
-                          issueWorkspaces.map((workspace) => workspace.id)
-                        );
-                        const issueCardPullRequests = getPullRequestsForIssue(
-                          issue.id
-                        ).filter((pr) => {
-                          if (!pr.workspace_id) {
-                            return true;
-                          }
-
-                          // If this PR is already visible under a workspace card,
-                          // do not render it again at the issue level.
-                          return !workspaceIdsShownOnCard.has(pr.workspace_id);
-                        });
-
+                        // Every prop comes from a per-issue lookup that keeps
+                        // its identity while this issue's rows are unchanged,
+                        // so the memoized card only re-renders for its own
+                        // data (or selection / cursor / open state).
                         return (
-                          <KanbanCard
+                          <KanbanIssueCard
                             key={issue.id}
-                            id={issue.id}
-                            name={issue.title}
+                            issue={issue}
                             index={index}
-                            className="group scroll-mt-10"
-                            onClick={(e) => handleCardClick(issue.id, e)}
+                            projectId={projectId}
                             isOpen={selectedKanbanIssueId === issue.id}
-                            isMobile={isMobile}
                             isSelected={selectedIssueIds.has(issue.id)}
                             isFocused={cursorIssueId === issue.id}
-                            forwardedRef={(node) => {
-                              if (node) cardRefs.current.set(issue.id, node);
-                              else cardRefs.current.delete(issue.id);
-                            }}
+                            isMobile={isMobile}
                             dragDisabled={isMultiSelectActive}
-                          >
-                            <KanbanCardContent
-                              displayId={issue.simple_id}
-                              title={issue.title}
-                              description={issue.description}
-                              priority={issue.priority}
-                              milestone={(() => {
-                                const milestone = getMilestoneForIssue(
-                                  issue.id
-                                );
-                                return milestone
-                                  ? {
-                                      name: milestone.name,
-                                      targetDate: milestone.target_date,
-                                    }
-                                  : null;
-                              })()}
-                              tags={getTagObjectsForIssue(issue.id)}
-                              assignees={issueAssigneesMap[issue.id] ?? []}
-                              pullRequests={issueCardPullRequests}
-                              githubIssues={
-                                githubIssuesByIssueId.get(issue.id) ?? []
-                              }
-                              relationships={resolveRelationshipsForIssue(
-                                issue.id,
-                                getRelationshipsForIssue(issue.id),
-                                issuesById
-                              )}
-                              isSubIssue={!!issue.parent_issue_id}
-                              isMobile={isMobile}
-                              onPriorityClick={(e) => {
-                                e.stopPropagation();
-                                handleCardPriorityClick(issue.id);
-                              }}
-                              onAssigneeClick={(e) => {
-                                e.stopPropagation();
-                                handleCardAssigneeClick(issue.id);
-                              }}
-                              onOpenInNewTabClick={() =>
-                                openInSplitPane(
-                                  `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(issue.id)}`
-                                )
-                              }
-                              onMoreActionsClick={() =>
-                                handleCardMoreActionsClick(issue.id)
-                              }
-                              tagEditProps={{
-                                allTags: tags,
-                                selectedTagIds: getTagsForIssue(issue.id).map(
-                                  (it) => it.tag_id
-                                ),
-                                onTagToggle: (tagId) =>
-                                  handleCardTagToggle(issue.id, tagId),
-                                onCreateTag: handleCreateTag,
-                                renderTagEditor: ({
-                                  allTags,
-                                  selectedTagIds,
-                                  onTagToggle,
-                                  onCreateTag,
-                                  trigger,
-                                }) => (
-                                  <SearchableTagDropdownContainer
-                                    tags={allTags}
-                                    selectedTagIds={selectedTagIds}
-                                    onTagToggle={onTagToggle}
-                                    onCreateTag={onCreateTag}
-                                    disabled={false}
-                                    contentClassName=""
-                                    trigger={trigger}
-                                  />
-                                ),
-                              }}
-                            />
-                            {issueWorkspaces.length > 0 && (
-                              <div className="mt-base flex flex-col gap-half">
-                                {issueWorkspaces.map((workspace) => (
-                                  <IssueWorkspaceCard
-                                    key={workspace.id}
-                                    workspace={workspace}
-                                    onClick={
-                                      workspace.localWorkspaceId
-                                        ? () =>
-                                            openIssueWorkspace(
-                                              issue.id,
-                                              workspace.localWorkspaceId!,
-                                              workspace.hostId
-                                            )
-                                        : undefined
-                                    }
-                                    showOwner={false}
-                                    showStatusBadge={false}
-                                    showNoPrText={false}
-                                    compact={isMobile}
-                                  />
-                                ))}
-                              </div>
-                            )}
-                          </KanbanCard>
+                            tags={getTagObjectsForIssue(issue.id)}
+                            allTags={tags}
+                            issueTags={getTagsForIssue(issue.id)}
+                            assignees={
+                              assigneesByIssueId.get(issue.id) ?? EMPTY
+                            }
+                            milestone={getMilestoneForIssue(issue.id)}
+                            pullRequests={getPullRequestsForIssue(issue.id)}
+                            githubIssues={
+                              githubIssuesByIssueId.get(issue.id) ?? EMPTY
+                            }
+                            relationships={
+                              relationshipsByIssueId.get(issue.id) ?? EMPTY
+                            }
+                            workspaces={
+                              workspacesByIssueId.get(issue.id) ?? EMPTY
+                            }
+                            onCardClick={handleCardClick}
+                            onPriorityClick={handleCardPriorityClick}
+                            onAssigneeClick={handleCardAssigneeClick}
+                            onMoreActionsClick={handleCardMoreActionsClick}
+                            onOpenInSplitPane={openInSplitPane}
+                            onTagToggle={handleCardTagToggle}
+                            onCreateTag={handleCreateTag}
+                            onWorkspaceClick={openIssueWorkspace}
+                            onCardRef={registerRowRef}
+                          />
                         );
                       })}
                     </KanbanCards>
