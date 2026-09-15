@@ -287,7 +287,12 @@ function IssueListAddRow({
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         onKeyDown={handleKeyDown}
-        onBlur={() => {
+        onBlur={(e) => {
+          // A dialog (e.g. an async OK-only alert) taking focus hands it back
+          // on close — keep the draft and stay in edit mode.
+          if ((e.relatedTarget as Element | null)?.closest('[role="dialog"]')) {
+            return;
+          }
           setTitle('');
           onStopEditing?.(false);
         }}

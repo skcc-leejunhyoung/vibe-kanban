@@ -2,6 +2,7 @@ import * as React from 'react';
 import { X } from 'lucide-react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { createPortal } from 'react-dom';
+import { FocusScope } from '@radix-ui/react-focus-scope';
 
 import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
@@ -59,8 +60,10 @@ const Dialog = React.forwardRef<
     },
     ref
   ) => {
-    const { isTopLayer } = useModalKeyboardLayer(!!open);
+    const { isTopLayer, isOverPointerBlockingLayer } =
+      useModalKeyboardLayer(!!open);
     const dialogRef = React.useRef<HTMLDivElement | null>(null);
+    const openerRef = React.useRef<HTMLElement | null>(null);
 
     const setDialogRef = React.useCallback(
       (node: HTMLDivElement | null) => {
@@ -89,36 +92,29 @@ const Dialog = React.forwardRef<
       onClose: handleClose,
     });
 
-    // Move focus into the dialog when it opens. KeyboardDialog is a custom (non-
-    // Radix) implementation with no built-in focus management, so otherwise focus
-    // stays on whatever was focused before — e.g. the workspace chat input (a
-    // Lexical contentEditable). react-hotkeys-hook ignores keys fired from form
-    // fields/contentEditable, so the dialog's Enter shortcut never ran and the
-    // keystroke leaked into the chat box instead. Focusing the dialog container
-    // (unless the dialog autofocused a field of its own) fixes both, and we
-    // restore the prior focus on close so the chat input stays usable.
-    React.useEffect(() => {
-      if (!open) return;
-      const active = document.activeElement as HTMLElement | null;
-      // Remember external focus (e.g. the chat input) to restore on close; ignore
-      // focus that's already inside the dialog (a field it autofocused itself).
-      const previouslyFocused =
-        active && !dialogRef.current?.contains(active) ? active : null;
-
-      const raf = requestAnimationFrame(() => {
-        const el = dialogRef.current;
-        if (el && !el.contains(document.activeElement)) {
-          el.focus();
-        }
-      });
-
-      return () => {
-        cancelAnimationFrame(raf);
-        if (previouslyFocused?.isConnected) {
-          previouslyFocused.focus?.();
-        }
-      };
-    }, [open]);
+    // Focus management runs through Radix's FocusScope (trapping stays with
+    // useDialogKeyboard) so this dialog joins the same focus-scope stack as
+    // Radix dialogs: a Radix modal underneath (e.g. the command bar) is
+    // paused instead of pulling focus back to its own input.
+    //
+    // On open, FocusScope raises this only when nothing inside is focused yet
+    // (dialogs that autofocus their own field keep it). Focus the button that
+    // Enter activates — an OK-only alert lands on OK — else the container, so
+    // keys don't leak into whatever was focused before (e.g. the chat box).
+    const handleMountAutoFocus = React.useCallback((event: Event) => {
+      event.preventDefault();
+      const el = dialogRef.current;
+      if (!el) return;
+      openerRef.current = document.activeElement as HTMLElement | null;
+      (findDialogPrimaryAction(el) ?? el).focus();
+    }, []);
+    // On close, hand focus back to the opener ourselves: Radix's default also
+    // select()s text inputs, which would clobber a draft on the next keystroke.
+    const handleUnmountAutoFocus = React.useCallback((event: Event) => {
+      event.preventDefault();
+      openerRef.current?.focus({ preventScroll: true });
+      openerRef.current = null;
+    }, []);
 
     useHotkeys(
       'enter',
@@ -168,53 +164,65 @@ const Dialog = React.forwardRef<
 
     if (!open) return null;
 
+    // A Radix modal underneath sets `pointer-events: none` on <body>; opt back
+    // in only then, so a Radix select/menu opened *above* us still inerts us.
+    const liftPointerEvents = isOverPointerBlockingLayer();
+
     return createPortal(
       <div
         className={cn(
           'fixed inset-0 z-[10000] flex items-start justify-center p-4',
           scrollMode === 'content' ? 'overflow-hidden' : 'overflow-y-auto'
         )}
+        style={liftPointerEvents ? { pointerEvents: 'auto' } : undefined}
       >
         <div
           data-tauri-drag-region
           className="fixed inset-0 bg-black/50"
           onClick={() => (uncloseable ? {} : onOpenChange?.(false))}
         />
-        <div
-          ref={setDialogRef}
-          tabIndex={-1}
-          role="dialog"
-          aria-modal="true"
-          className={cn(
-            'z-[10000] flex w-full flex-col outline-none duration-200',
-            fullscreen
-              ? 'fixed inset-0 bg-black text-white'
-              : 'relative my-8 gap-4 bg-primary p-6 shadow-lg sm:rounded-lg',
-            className
-          )}
-          style={{
-            ...style,
-            maxWidth: fullscreen ? 'none' : getKeyboardDialogMaxWidth(size),
-          }}
-          {...props}
+        <FocusScope
+          asChild
+          trapped={false}
+          onMountAutoFocus={handleMountAutoFocus}
+          onUnmountAutoFocus={handleUnmountAutoFocus}
         >
-          {!uncloseable && (
-            <button
-              type="button"
-              className={cn(
-                'absolute right-4 z-10 opacity-70 transition-opacity hover:opacity-100',
-                fullscreen
-                  ? 'top-[max(1rem,env(safe-area-inset-top))] rounded-full bg-black/50 p-2'
-                  : 'top-4 rounded-sm'
-              )}
-              onClick={() => onOpenChange?.(false)}
-            >
-              <X className="h-4 w-4" />
-              <span className="sr-only">Close</span>
-            </button>
-          )}
-          {children}
-        </div>
+          <div
+            ref={setDialogRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            className={cn(
+              'z-[10000] flex w-full flex-col outline-none duration-200',
+              fullscreen
+                ? 'fixed inset-0 bg-black text-white'
+                : 'relative my-8 gap-4 bg-primary p-6 shadow-lg sm:rounded-lg',
+              className
+            )}
+            style={{
+              ...style,
+              maxWidth: fullscreen ? 'none' : getKeyboardDialogMaxWidth(size),
+            }}
+            {...props}
+          >
+            {!uncloseable && (
+              <button
+                type="button"
+                className={cn(
+                  'absolute right-4 z-10 opacity-70 transition-opacity hover:opacity-100',
+                  fullscreen
+                    ? 'top-[max(1rem,env(safe-area-inset-top))] rounded-full bg-black/50 p-2'
+                    : 'top-4 rounded-sm'
+                )}
+                onClick={() => onOpenChange?.(false)}
+              >
+                <X className="h-4 w-4" />
+                <span className="sr-only">Close</span>
+              </button>
+            )}
+            {children}
+          </div>
+        </FocusScope>
       </div>,
       document.body
     );

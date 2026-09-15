@@ -27,7 +27,9 @@ function Dialog({
 }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
   const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
   const isOpen = open ?? internalOpen;
-  const { isTopLayer } = useModalKeyboardLayer(isOpen);
+  const { isTopLayer } = useModalKeyboardLayer(isOpen, {
+    blocksOutsidePointer: true,
+  });
 
   const handleOpenChange = React.useCallback(
     (nextOpen: boolean) => {
@@ -100,6 +102,9 @@ const DialogContent = React.forwardRef<
       wrapperZIndex = DIALOG_WRAPPER_Z_INDEX,
       onKeyDown,
       onEscapeKeyDown,
+      onInteractOutside,
+      onOpenAutoFocus,
+      onCloseAutoFocus,
       ...props
     },
     ref
@@ -141,6 +146,41 @@ const DialogContent = React.forwardRef<
       [onEscapeKeyDown, isTopLayer]
     );
 
+    // A KeyboardDialog stacked above is not a Radix layer, so Radix would
+    // read a click on it as "outside" and dismiss us — the shared modal stack
+    // knows the click belongs to the dialog on top.
+    const handleInteractOutside = React.useCallback(
+      (event: Parameters<NonNullable<typeof onInteractOutside>>[0]) => {
+        onInteractOutside?.(event);
+        if (isTopLayer && !isTopLayer()) event.preventDefault();
+      },
+      [onInteractOutside, isTopLayer]
+    );
+
+    // Radix's default close-autofocus select()s the text input it returns to,
+    // which would clobber a draft (e.g. the issue list add-row) on the next
+    // keystroke. Remember the opener ourselves and return focus without
+    // selecting. Callers that preventDefault() keep full control.
+    const openerRef = React.useRef<HTMLElement | null>(null);
+    const handleOpenAutoFocus = React.useCallback(
+      (event: Event) => {
+        onOpenAutoFocus?.(event);
+        openerRef.current = document.activeElement as HTMLElement | null;
+      },
+      [onOpenAutoFocus]
+    );
+    const handleCloseAutoFocus = React.useCallback(
+      (event: Event) => {
+        onCloseAutoFocus?.(event);
+        const opener = openerRef.current;
+        openerRef.current = null;
+        if (event.defaultPrevented || !opener) return;
+        event.preventDefault();
+        opener.focus({ preventScroll: true });
+      },
+      [onCloseAutoFocus]
+    );
+
     return (
       <DialogPortal>
         <DialogOverlay />
@@ -159,6 +199,9 @@ const DialogContent = React.forwardRef<
             className={cn(dialogContentBaseClasses, className)}
             onKeyDown={handleKeyDown}
             onEscapeKeyDown={handleEscapeKeyDown}
+            onInteractOutside={handleInteractOutside}
+            onOpenAutoFocus={handleOpenAutoFocus}
+            onCloseAutoFocus={handleCloseAutoFocus}
             {...props}
           >
             {children}

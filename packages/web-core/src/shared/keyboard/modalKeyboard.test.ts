@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  hasPointerBlockingLayerBelow,
   isModalKeyboardActive,
   isTopModalKeyboardLayer,
   registerModalKeyboardLayer,
@@ -43,5 +44,29 @@ describe('modal keyboard layers', () => {
     expect(enableScope.mock.calls.map(([scope]) => scope)).toEqual(
       controls.activeScopes
     );
+  });
+
+  it('reports a pointer-blocking (Radix modal) layer only when it sits below', () => {
+    const controls = {
+      activeScopes: [],
+      enableScope: vi.fn(),
+      disableScope: vi.fn(),
+    };
+    const radix = Symbol('radix');
+    const keyboard = Symbol('keyboard');
+    const unregistered = Symbol('unregistered');
+
+    const closeRadix = registerModalKeyboardLayer(radix, controls, {
+      blocksOutsidePointer: true,
+    });
+    // Not registered yet (first open render) — everything open is below it.
+    expect(hasPointerBlockingLayerBelow(unregistered)).toBe(true);
+    const closeKeyboard = registerModalKeyboardLayer(keyboard, controls);
+    expect(hasPointerBlockingLayerBelow(keyboard)).toBe(true);
+    expect(hasPointerBlockingLayerBelow(radix)).toBe(false);
+
+    closeRadix();
+    closeKeyboard();
+    expect(hasPointerBlockingLayerBelow(unregistered)).toBe(false);
   });
 });

@@ -9,12 +9,22 @@ interface HotkeyScopeControls {
   disableScope: (scope: string) => void;
 }
 
-const openModalStack: symbol[] = [];
+interface ModalLayerOptions {
+  /**
+   * Radix modal layers set `pointer-events: none` on <body> while open. A
+   * non-Radix dialog stacked above one must opt back in on itself (see
+   * KeyboardDialog), so the stack records which layers do this.
+   */
+  blocksOutsidePointer?: boolean;
+}
+
+const openModalStack: { id: symbol; blocksOutsidePointer: boolean }[] = [];
 let scopesToRestore: string[] = [];
 
 export function registerModalKeyboardLayer(
   id: symbol,
-  controls: HotkeyScopeControls
+  controls: HotkeyScopeControls,
+  { blocksOutsidePointer = false }: ModalLayerOptions = {}
 ) {
   if (openModalStack.length === 0) {
     scopesToRestore = [...controls.activeScopes];
@@ -22,10 +32,10 @@ export function registerModalKeyboardLayer(
     controls.enableScope(DIALOG_SCOPE);
   }
 
-  openModalStack.push(id);
+  openModalStack.push({ id, blocksOutsidePointer });
 
   return () => {
-    const index = openModalStack.lastIndexOf(id);
+    const index = openModalStack.map((layer) => layer.id).lastIndexOf(id);
     if (index === -1) return;
     openModalStack.splice(index, 1);
 
@@ -42,7 +52,15 @@ export function isModalKeyboardActive() {
 }
 
 export function isTopModalKeyboardLayer(id: symbol) {
-  return openModalStack[openModalStack.length - 1] === id;
+  return openModalStack[openModalStack.length - 1]?.id === id;
+}
+
+/** Whether a pointer-blocking (Radix modal) layer sits below `id`. */
+export function hasPointerBlockingLayerBelow(id: symbol) {
+  const index = openModalStack.findIndex((layer) => layer.id === id);
+  return openModalStack
+    .slice(0, index === -1 ? undefined : index)
+    .some((layer) => layer.blocksOutsidePointer);
 }
 
 /**
@@ -50,8 +68,12 @@ export function isTopModalKeyboardLayer(id: symbol) {
  * shortcuts. Native listeners can use `isModalKeyboardActive`, while
  * react-hotkeys-hook listeners are isolated through the dialog scope.
  */
-export function useModalKeyboardLayer(open: boolean) {
+export function useModalKeyboardLayer(
+  open: boolean,
+  options?: ModalLayerOptions
+) {
   const { activeScopes, enableScope, disableScope } = useHotkeysContext();
+  const blocksOutsidePointer = options?.blocksOutsidePointer ?? false;
   const idRef = useRef<symbol>();
   const activeScopesRef = useRef(activeScopes);
   activeScopesRef.current = activeScopes;
@@ -62,17 +84,25 @@ export function useModalKeyboardLayer(open: boolean) {
 
   useEffect(() => {
     if (!open) return;
-    return registerModalKeyboardLayer(idRef.current!, {
-      activeScopes: activeScopesRef.current,
-      enableScope,
-      disableScope,
-    });
-  }, [open, enableScope, disableScope]);
+    return registerModalKeyboardLayer(
+      idRef.current!,
+      {
+        activeScopes: activeScopesRef.current,
+        enableScope,
+        disableScope,
+      },
+      { blocksOutsidePointer }
+    );
+  }, [open, enableScope, disableScope, blocksOutsidePointer]);
 
   const isTopLayer = useCallback(
     () => isTopModalKeyboardLayer(idRef.current!),
     []
   );
+  const isOverPointerBlockingLayer = useCallback(
+    () => hasPointerBlockingLayerBelow(idRef.current!),
+    []
+  );
 
-  return { isTopLayer };
+  return { isTopLayer, isOverPointerBlockingLayer };
 }

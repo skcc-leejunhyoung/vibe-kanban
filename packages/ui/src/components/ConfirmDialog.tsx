@@ -90,7 +90,6 @@ const ConfirmDialogImpl = NiceModal.create<ConfirmDialogProps>((props) => {
             </Button>
             <Button
               type="submit"
-              autoFocus={variant === 'success'}
               variant={getConfirmButtonVariant()}
               onClick={handleConfirm}
             >
@@ -101,7 +100,6 @@ const ConfirmDialogImpl = NiceModal.create<ConfirmDialogProps>((props) => {
           <div className="flex w-full">
             <Button
               type="submit"
-              autoFocus={variant === 'success'}
               className="ml-auto"
               variant={getConfirmButtonVariant()}
               onClick={handleConfirm}
