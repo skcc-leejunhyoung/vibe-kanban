@@ -113,6 +113,7 @@ This generates both the Axum router and TypeScript type metadata (via `HasJsonPa
 - **JWT** (`auth/jwt.rs`): Signed with `VIBEKANBAN_REMOTE_JWT_SECRET`. All protected routes use `require_session` middleware.
 - **OAuth** (`auth/provider.rs`): GitHub and Google. At least one must be configured. Empty env vars are treated as disabled.
 - **Membership**: All resource routes check organisation/project membership before DB access. Use `RequestContext` from the middleware to get user info.
+- **Auth cache** (`auth/cache.rs`): 30s in-process TTL cache for session→user and (user, resource)→access. Only *positive* results are cached, so granting access is immediate; **revoking is not** — any new code path that revokes a session or removes a membership must call `AUTH_CACHE.invalidate_session` / `invalidate_all_sessions` / `invalidate_access` **after** its transaction commits, or the old grant survives for up to 30s. Assumes a single `remote-server` replica.
 
 ## Frontend (`packages/remote-web/`)
 
