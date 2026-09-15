@@ -6,6 +6,6 @@
   "scripts": {
     "start": "node src/server.mjs",
     "check": "node --check src/server.mjs",
-    "test": "node --test src/*.test.mjs"
+    "test": "node --test src/*.test.mjs && node src/server.mjs --self-test"
   }
 }

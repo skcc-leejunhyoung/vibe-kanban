@@ -52,6 +52,8 @@ pub struct UpdateIssueCommentRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListIssueCommentsQuery {
     pub issue_id: Uuid,
+    /// Inclusive lower bound; callers may overlap windows to avoid boundary loss.
+    pub updated_after: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

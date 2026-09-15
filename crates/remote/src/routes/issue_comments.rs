@@ -53,15 +53,19 @@ async fn list_issue_comments(
 ) -> Result<Json<ListIssueCommentsResponse>, ErrorResponse> {
     ensure_issue_access(state.pool(), ctx.user.id, query.issue_id).await?;
 
-    let issue_comments = IssueCommentRepository::list_by_issue(state.pool(), query.issue_id)
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, issue_id = %query.issue_id, "failed to list issue comments");
-            ErrorResponse::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to list issue comments",
-            )
-        })?;
+    let issue_comments = IssueCommentRepository::list_by_issue_updated_after(
+        state.pool(),
+        query.issue_id,
+        query.updated_after,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(?error, issue_id = %query.issue_id, "failed to list issue comments");
+        ErrorResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to list issue comments",
+        )
+    })?;
 
     Ok(Json(ListIssueCommentsResponse { issue_comments }))
 }
@@ -264,4 +268,25 @@ async fn delete_issue_comment(
         })?;
 
     Ok(Json(response))
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    #[test]
+    fn comment_cursor_query_is_optional_and_rejects_invalid_timestamps() {
+        let base = "/v1/issue_comments?issue_id=00000000-0000-0000-0000-000000000001";
+        let absent = Query::<ListIssueCommentsQuery>::try_from_uri(&base.parse().unwrap()).unwrap();
+        assert!(absent.updated_after.is_none());
+        let valid = format!("{base}&updated_after=2026-09-15T09:00:00%2B09:00");
+        let parsed =
+            Query::<ListIssueCommentsQuery>::try_from_uri(&valid.parse().unwrap()).unwrap();
+        assert_eq!(
+            parsed.updated_after.unwrap().to_rfc3339(),
+            "2026-09-15T00:00:00+00:00"
+        );
+        let invalid = format!("{base}&updated_after=invalid");
+        assert!(Query::<ListIssueCommentsQuery>::try_from_uri(&invalid.parse().unwrap()).is_err());
+    }
 }

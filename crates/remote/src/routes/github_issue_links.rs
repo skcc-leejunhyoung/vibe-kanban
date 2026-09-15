@@ -7,7 +7,7 @@ use axum::{
     extract::{Extension, Path, Query, State},
     http::StatusCode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
@@ -18,7 +18,9 @@ use crate::{
     AppState,
     auth::RequestContext,
     db::{
-        begin_tx, get_txid, github_issue_links::GithubIssueLinkRepository, issues::IssueRepository,
+        begin_tx, get_txid,
+        github_issue_links::{GithubIssueCommentVersion, GithubIssueLinkRepository},
+        issues::IssueRepository,
     },
     mutation_definition::MutationBuilder,
 };
@@ -27,6 +29,16 @@ use crate::{
 pub struct ListGithubIssueLinksQuery {
     pub project_id: Option<Uuid>,
     pub issue_id: Option<Uuid>,
+    #[serde(default)]
+    pub include_comment_versions: bool,
+}
+
+#[derive(Serialize)]
+struct GithubIssueLinksWithCommentVersions {
+    #[serde(flatten)]
+    links: ListGithubIssueLinksResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comment_versions: Option<Vec<GithubIssueCommentVersion>>,
 }
 
 pub fn mutation()
@@ -47,7 +59,7 @@ async fn list_github_issue_links(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
     Query(query): Query<ListGithubIssueLinksQuery>,
-) -> Result<Json<ListGithubIssueLinksResponse>, ErrorResponse> {
+) -> Result<Json<GithubIssueLinksWithCommentVersions>, ErrorResponse> {
     let links = match (query.project_id, query.issue_id) {
         (Some(project_id), None) => {
             ensure_project_access(state.pool(), ctx.user.id, project_id).await?;
@@ -66,8 +78,21 @@ async fn list_github_issue_links(
     }
     .map_err(internal_error)?;
 
-    Ok(Json(ListGithubIssueLinksResponse {
-        github_issue_links: links,
+    let comment_versions = if query.include_comment_versions {
+        let issue_ids: Vec<_> = links.iter().map(|link| link.issue_id).collect();
+        Some(
+            GithubIssueLinkRepository::comment_versions(state.pool(), &issue_ids)
+                .await
+                .map_err(internal_error)?,
+        )
+    } else {
+        None
+    };
+    Ok(Json(GithubIssueLinksWithCommentVersions {
+        links: ListGithubIssueLinksResponse {
+            github_issue_links: links,
+        },
+        comment_versions,
     }))
 }
 
@@ -149,4 +174,31 @@ async fn load_link(state: &AppState, id: Uuid) -> Result<GithubIssueLink, ErrorR
 fn internal_error(error: sqlx::Error) -> ErrorResponse {
     tracing::error!(?error, "github issue link database operation failed");
     ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comment_versions_are_opt_in_and_preserve_the_existing_list_shape() {
+        let response = GithubIssueLinksWithCommentVersions {
+            links: ListGithubIssueLinksResponse {
+                github_issue_links: vec![],
+            },
+            comment_versions: None,
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({ "github_issue_links": [] })
+        );
+        let base = "/v1/github_issue_links?project_id=00000000-0000-0000-0000-000000000001";
+        let default =
+            Query::<ListGithubIssueLinksQuery>::try_from_uri(&base.parse().unwrap()).unwrap();
+        assert!(!default.include_comment_versions);
+        let enabled = format!("{base}&include_comment_versions=true");
+        let query =
+            Query::<ListGithubIssueLinksQuery>::try_from_uri(&enabled.parse().unwrap()).unwrap();
+        assert!(query.include_comment_versions);
+    }
 }

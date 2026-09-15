@@ -2,6 +2,13 @@ use api_types::{CreateGithubIssueLinkRequest, GithubIssueLink, UpdateGithubIssue
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct GithubIssueCommentVersion {
+    pub issue_id: Uuid,
+    pub comment_count: i64,
+    pub version: String,
+}
+
 pub struct GithubIssueLinkRepository;
 
 impl GithubIssueLinkRepository {
@@ -35,6 +42,27 @@ impl GithubIssueLinkRepository {
             "SELECT * FROM github_issue_links WHERE issue_id = $1 ORDER BY created_at",
         )
         .bind(issue_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Called only with issue IDs from an already authorized link listing.
+    /// Hash every row's revision so an edit to an older comment is detected too.
+    pub async fn comment_versions(
+        pool: &PgPool,
+        issue_ids: &[Uuid],
+    ) -> Result<Vec<GithubIssueCommentVersion>, sqlx::Error> {
+        sqlx::query_as::<_, GithubIssueCommentVersion>(
+            r#"
+            SELECT ids.issue_id, COUNT(c.id) AS comment_count,
+                   MD5(COALESCE(STRING_AGG(c.id::text || ':' || c.updated_at::text,
+                                          ',' ORDER BY c.id), '')) AS version
+            FROM (SELECT DISTINCT UNNEST($1::uuid[]) AS issue_id) ids
+            LEFT JOIN issue_comments c ON c.issue_id = ids.issue_id
+            GROUP BY ids.issue_id
+            "#,
+        )
+        .bind(issue_ids)
         .fetch_all(pool)
         .await
     }
