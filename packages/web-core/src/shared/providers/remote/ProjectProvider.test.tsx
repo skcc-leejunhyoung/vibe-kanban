@@ -13,6 +13,9 @@ import {
   useProjectContext,
   type ProjectContextValue,
 } from '@/shared/hooks/useProjectContext';
+import { useShape } from '@/shared/integrations/electric/hooks';
+import { createShapeCollection } from '@/shared/lib/electric/collections';
+import { PROJECT_ISSUES_SHAPE } from 'shared/remote-types';
 import { ProjectProvider } from './ProjectProvider';
 
 vi.mock('@tanstack/electric-db-collection', async () => {
@@ -83,12 +86,17 @@ function seedRows(
   };
 }
 
-async function renderProvider() {
+async function renderProvider(options: { withReadOnlyReader?: boolean } = {}) {
   const projectId = `p${++projectCounter}`;
   const values: ProjectContextValue[] = [];
   let bump: () => void = () => {};
   function Probe() {
     values.push(useProjectContext());
+    return null;
+  }
+  // A read-only reader of the same shape, like the navbar breadcrumb.
+  function ReadOnlyReader() {
+    useShape(PROJECT_ISSUES_SHAPE, { project_id: projectId });
     return null;
   }
   // The provider's own parent re-renders (e.g. on org context changes), which
@@ -99,6 +107,7 @@ async function renderProvider() {
     return (
       <ProjectProvider projectId={projectId}>
         <Probe />
+        {options.withReadOnlyReader ? <ReadOnlyReader /> : null}
       </ProjectProvider>
     );
   }
@@ -121,6 +130,30 @@ async function renderProvider() {
     session: (table: string) => lastSessionFor(`${table}-${projectId}`),
   };
 }
+
+describe('ProjectProvider streams', () => {
+  it('opens 12 project streams and shares them with other readers', async () => {
+    const provider = await renderProvider({ withReadOnlyReader: true });
+    // Collection ids end with the project id (legacy ids also had a `-mut`
+    // twin for mutating readers, counted here on purpose).
+    const ownStream = new RegExp(`-${provider.projectId}(-mut)?$`);
+    const streams = () =>
+      electricSessions.filter((s) => ownStream.test(s.id)).map((s) => s.id);
+
+    expect(streams()).toHaveLength(12);
+    expect(new Set(streams()).size).toBe(12);
+    expect(streams()).not.toContain(`issue_followers-${provider.projectId}`);
+
+    // A raw reader (e.g. the sidebar's issue grouping) reuses the same
+    // collection instead of opening a second `issues` stream.
+    const raw = createShapeCollection(PROJECT_ISSUES_SHAPE, {
+      project_id: provider.projectId,
+    });
+    const subscription = raw.subscribeChanges(() => {});
+    expect(streams()).toHaveLength(12);
+    subscription.unsubscribe();
+  });
+});
 
 describe('ProjectProvider context stability', () => {
   it('keeps the context value when the parent re-renders without data changes', async () => {
