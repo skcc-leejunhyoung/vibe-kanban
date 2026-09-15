@@ -754,7 +754,12 @@ repo_id: string, executor_config: ExecutorConfig, prompt: string,
 /**
  * Optional explicit name; defaults to the first line of the prompt.
  */
-name: string | null, };
+name: string | null,
+/**
+ * Attachments uploaded before the workspace existed. Copied into
+ * `.vibe-attachments/` inside the repo's checkout so the agent can read them.
+ */
+attachment_ids: Array<string> | null, };
 
 export type GenerateSpecRequest = {
 /**

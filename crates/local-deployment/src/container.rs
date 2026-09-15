@@ -1383,6 +1383,18 @@ impl LocalContainerService {
             }
         }
 
+        self.copy_workspace_attachments(workspace_dir, workspace)
+            .await
+    }
+
+    /// Copy this workspace's attachments into `<dir>/.vibe-attachments/`, which
+    /// carries its own `.gitignore` (`*`) so it stays invisible to git — the same
+    /// place agent-produced images are written.
+    async fn copy_workspace_attachments(
+        &self,
+        workspace_dir: &Path,
+        workspace: &Workspace,
+    ) -> Result<(), ContainerError> {
         let agent_working_dir = Session::find_latest_by_workspace_id(&self.db.pool, workspace.id)
             .await?
             .and_then(|session| session.agent_working_dir);
@@ -2814,7 +2826,12 @@ impl ContainerService for LocalContainerService {
         // checkout. There is no worktree to materialize, and we must NOT copy
         // project files or write CLAUDE.md/AGENTS.md config shims — that would
         // mutate the real repo. `container_ref` is already set, so just return it.
+        // Attachments are the exception: they go to the self-ignoring
+        // `.vibe-attachments/` dir, so the agent can actually open the files the
+        // user attached to the prompt.
         if workspace.in_place {
+            self.copy_workspace_attachments(&workspace_dir, workspace)
+                .await?;
             return Ok(workspace_dir.to_string_lossy().to_string());
         }
 

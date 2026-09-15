@@ -130,6 +130,9 @@ pub struct CreateQuickChatRequest {
     pub prompt: String,
     /// Optional explicit name; defaults to the first line of the prompt.
     pub name: Option<String>,
+    /// Attachments uploaded before the workspace existed. Copied into
+    /// `.vibe-attachments/` inside the repo's checkout so the agent can read them.
+    pub attachment_ids: Option<Vec<Uuid>>,
 }
 
 /// Request to expand a rough brief into a development-ready technical task by

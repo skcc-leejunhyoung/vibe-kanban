@@ -942,6 +942,7 @@ pub async fn create_and_start_quick_chat(
         executor_config,
         prompt,
         name,
+        attachment_ids,
     } = payload;
 
     let prompt = normalize_prompt(&prompt).ok_or_else(|| {
@@ -993,6 +994,12 @@ pub async fn create_and_start_quick_chat(
         )
         .await
         .map_err(ApiError::from)?;
+
+    // Associate before starting: `start_workspace` -> `ensure_container_exists`
+    // is what copies them into `<repo>/.vibe-attachments/`.
+    if let Some(ids) = &attachment_ids {
+        managed_workspace.associate_attachments(ids).await?;
+    }
 
     let workspace = managed_workspace.workspace.clone();
     tracing::info!(

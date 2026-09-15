@@ -24,6 +24,7 @@ import { configApi, repoApi, workspacesApi } from '@/shared/lib/api';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
+import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { toPrettyCase } from '@/shared/lib/string';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { AgentIcon } from '@/shared/components/AgentIcon';
@@ -47,9 +48,10 @@ import {
  * standard workspace conversation view.
  *
  * The input reuses the workspace-create card (`CreateChatBox`) for a consistent
- * look: WYSIWYG editor, agent + model selectors, and the primary send button.
- * The repo-summary slot doubles as the folder picker; attachments are hidden
- * (in-place has no isolated tree to stage them in).
+ * look: WYSIWYG editor, agent + model selectors, attachments, and the primary
+ * send button. The repo-summary slot doubles as the folder picker. Attachments
+ * land in the repo's `.vibe-attachments/` (self-ignoring), the same place the
+ * agent writes its own images.
  */
 const QuickChatDialogImpl = create<NoProps>(() => {
   const modal = useModal();
@@ -130,6 +132,20 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     onPersist: setScratchConfig,
   });
 
+  // Attachments are uploaded before the workspace exists, then handed to the
+  // quick-chat create call as ids; the markdown link is appended to the prompt.
+  const handleInsertMarkdown = useCallback((markdown: string) => {
+    setPrompt((prev) => (prev.trim() ? `${prev}\n\n${markdown}` : markdown));
+  }, []);
+
+  const { uploadFiles, getAttachmentIds, clearAttachments, localAttachments } =
+    useCreateAttachments(
+      handleInsertMarkdown,
+      undefined,
+      undefined,
+      selectedHostId
+    );
+
   useEffect(() => {
     const justOpened = modal.visible && !wasVisibleRef.current;
     wasVisibleRef.current = modal.visible;
@@ -169,8 +185,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       setPrompt('');
       setSubmitting(false);
       setError(null);
+      clearAttachments();
     }
-  }, [modal.visible]);
+  }, [modal.visible, clearAttachments]);
 
   const close = () => {
     modal.resolve(null);
@@ -268,6 +285,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           executor_config: executorConfig,
           prompt: prompt.trim(),
           name: null,
+          attachment_ids: getAttachmentIds(),
         },
         selectedHostId
       );
@@ -295,6 +313,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     repo,
     executorConfig,
     prompt,
+    getAttachmentIds,
     modal,
     openInNewPane,
     appNavigation,
@@ -338,6 +357,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             setSelectedHostId(event.target.value || null);
             setRepo(null);
             setError(null);
+            // Uploaded to the previous host's cache — those ids mean nothing here.
+            clearAttachments();
           }}
           className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
           aria-label="Quick chat host"
@@ -404,6 +425,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             repoIds,
             repoId,
             executor,
+            onPasteFiles,
+            localAttachments,
           }) => (
             <WYSIWYGEditor
               placeholder="What can the agent help with?"
@@ -416,6 +439,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               repoId={repoId}
               executor={executor}
               hostId={selectedHostId}
+              onPasteFiles={onPasteFiles}
+              localAttachments={localAttachments}
               autoFocus
               // Quick chat always keeps Return available for line breaks. Unlike
               // regular workspace chat, it only starts an agent on Cmd/Ctrl+Return.
@@ -458,7 +483,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             repo ? repo.display_name || repo.name : 'Select a folder…'
           }
           repoSummaryTitle={repo?.path ?? 'Select a folder'}
-          showAttachments={false}
+          onPasteFiles={uploadFiles}
+          localAttachments={localAttachments}
           sendLabel="Send"
           sendingLabel="Starting…"
         />

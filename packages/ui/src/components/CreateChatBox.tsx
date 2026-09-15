@@ -84,8 +84,6 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   repoSummaryLabel: ReactNode;
   repoSummaryTitle: string;
   linkedIssue?: LinkedIssueBadgeProps | null;
-  /** Hide the attach-file control (e.g. quick chat, which has no attachments). */
-  showAttachments?: boolean;
   /** Override the primary button label (defaults to "Create"/"Creating"). */
   sendLabel?: string;
   sendingLabel?: string;
@@ -131,7 +129,6 @@ export function CreateChatBox<TExecutor extends string = string>({
   repoSummaryLabel,
   repoSummaryTitle,
   linkedIssue,
-  showAttachments = true,
   sendLabel,
   sendingLabel,
   fillHeight = false,
@@ -245,24 +242,20 @@ export function CreateChatBox<TExecutor extends string = string>({
       }
       footerLeft={
         <>
-          {showAttachments && (
-            <>
-              <ToolbarIconButton
-                icon={PaperclipIcon}
-                aria-label={t('tasks:taskFormDialog.attachFile')}
-                title={t('tasks:taskFormDialog.attachFile')}
-                onClick={handleAttachClick}
-                disabled={isDisabled}
-              />
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={handleFileInputChange}
-              />
-            </>
-          )}
+          <ToolbarIconButton
+            icon={PaperclipIcon}
+            aria-label={t('tasks:taskFormDialog.attachFile')}
+            title={t('tasks:taskFormDialog.attachFile')}
+            onClick={handleAttachClick}
+            disabled={isDisabled}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileInputChange}
+          />
           <button
             type="button"
             onClick={onEditRepos}

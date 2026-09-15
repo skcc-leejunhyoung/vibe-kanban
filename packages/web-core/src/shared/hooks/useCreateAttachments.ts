@@ -13,13 +13,18 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
  * Uploads attachments and tracks their IDs for association with the workspace.
  * Also tracks uploaded attachments for immediate preview in the editor.
  * Supports restoring previously uploaded attachments from a persisted draft.
+ *
+ * `hostIdOverride` targets a host other than the route's (quick chat has its own
+ * host picker); `null` means "this machine", `undefined` means "use the route".
  */
 export function useCreateAttachments(
   onInsertMarkdown: (markdown: string) => void,
   initialAttachments?: DraftWorkspaceAttachment[],
-  onAttachmentsChange?: (attachments: DraftWorkspaceAttachment[]) => void
+  onAttachmentsChange?: (attachments: DraftWorkspaceAttachment[]) => void,
+  hostIdOverride?: string | null
 ) {
-  const hostId = useHostId();
+  const routeHostId = useHostId();
+  const hostId = hostIdOverride !== undefined ? hostIdOverride : routeHostId;
   const [attachments, setAttachments] = useState<DraftWorkspaceAttachment[]>(
     initialAttachments ?? []
   );
