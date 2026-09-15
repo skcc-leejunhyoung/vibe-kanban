@@ -196,10 +196,18 @@ impl ClaudeCode {
         if self.dangerously_skip_permissions.unwrap_or(false) {
             builder = builder.extend_params(["--dangerously-skip-permissions"]);
         }
+        let router = self.claude_code_router.unwrap_or(false);
         if let Some(model) = &self.model {
-            builder = builder.extend_params(["--model", model]);
+            let model = if router {
+                selector_model_id_to_ccr(model)
+            } else {
+                model.clone()
+            };
+            builder = builder.extend_params(["--model".to_string(), model]);
         }
-        if let Some(effort) = &self.effort {
+        // Effort maps to Anthropic's thinking budget; a routed third-party model
+        // may reject it, and a stale value can survive switching to the router.
+        if let Some(effort) = self.effort.as_ref().filter(|_| !router) {
             builder = builder.extend_params(["--effort", effort.as_ref()]);
         }
         if let Some(agent) = &self.agent {
@@ -285,24 +293,144 @@ impl ClaudeCode {
     }
 
     fn compute_cmd_key(&self) -> String {
-        serde_json::to_string(&self.cmd).unwrap_or_default()
+        // The router flag changes both the base command and the model catalog,
+        // so it has to key the discovery cache alongside the cmd overrides.
+        format!(
+            "{}|ccr={}",
+            serde_json::to_string(&self.cmd).unwrap_or_default(),
+            self.claude_code_router.unwrap_or(false)
+        )
     }
 }
 
-fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscoveredOptions {
+/// Claude Code Router addresses a model as `provider,model`, while the model
+/// selector's wire format is `provider/model` (split on the *first* slash, so a
+/// model id that itself contains slashes survives the round trip).
+fn ccr_model_id_to_selector(id: &str) -> String {
+    id.replacen(',', "/", 1)
+}
+
+fn selector_model_id_to_ccr(id: &str) -> String {
+    id.replacen('/', ",", 1)
+}
+
+/// Subset of `~/.claude-code-router/config.json` we need to populate the model
+/// selector. Everything else (API keys, transformers, …) stays CCR's business.
+#[derive(Debug, Deserialize)]
+struct CcrConfig {
+    #[serde(default, rename = "Providers")]
+    providers: Vec<CcrProvider>,
+    #[serde(default, rename = "Router")]
+    router: Option<CcrRouter>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CcrProvider {
+    name: String,
+    #[serde(default)]
+    models: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CcrRouter {
+    #[serde(default)]
+    default: Option<String>,
+}
+
+fn ccr_config_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".claude-code-router").join("config.json"))
+}
+
+fn permission_policies() -> Vec<PermissionPolicy> {
+    vec![
+        PermissionPolicy::Auto,
+        PermissionPolicy::DontAsk,
+        PermissionPolicy::Supervised,
+        PermissionPolicy::Plan,
+    ]
+}
+
+fn parse_ccr_model_selector(raw: &str) -> Option<crate::model_selector::ModelSelectorConfig> {
+    use crate::model_selector::{ModelInfo, ModelProvider, ModelSelectorConfig};
+
+    let config: CcrConfig = serde_json::from_str(raw).ok()?;
+
+    let providers: Vec<ModelProvider> = config
+        .providers
+        .iter()
+        .filter(|provider| !provider.models.is_empty())
+        .map(|provider| ModelProvider {
+            id: provider.name.clone(),
+            name: provider.name.clone(),
+        })
+        .collect();
+
+    let models: Vec<ModelInfo> = config
+        .providers
+        .iter()
+        .flat_map(|provider| {
+            provider.models.iter().map(|model| ModelInfo {
+                id: model.clone(),
+                name: model.clone(),
+                provider_id: Some(provider.name.clone()),
+                // Routed models are third-party; Claude's `--effort` levels and
+                // the Fast tier do not apply to them.
+                reasoning_options: vec![],
+                supports_fast: false,
+            })
+        })
+        .collect();
+
+    if models.is_empty() {
+        return None;
+    }
+
+    // An empty `Router.default` means "CCR decides"; surface no default so the
+    // selector shows its own Default entry and we omit `--model` entirely.
+    let default_model = config
+        .router
+        .and_then(|router| router.default)
+        .filter(|value| !value.is_empty())
+        .map(|value| ccr_model_id_to_selector(&value));
+
+    Some(ModelSelectorConfig {
+        providers,
+        models,
+        default_model,
+        agents: vec![],
+        permissions: permission_policies(),
+    })
+}
+
+fn ccr_model_selector() -> Option<crate::model_selector::ModelSelectorConfig> {
+    let raw = std::fs::read_to_string(ccr_config_path()?).ok()?;
+    parse_ccr_model_selector(&raw)
+}
+
+fn default_discovered_options(
+    claude_code_router: bool,
+) -> crate::executor_discovery::ExecutorDiscoveredOptions {
     use crate::{
         executor_discovery::ExecutorDiscoveredOptions,
         model_selector::{ModelInfo, ModelSelectorConfig, ReasoningOption},
     };
 
-    let effort_options =
-        ReasoningOption::from_names(slash_commands::CLAUDE_EFFORT_LEVELS.map(String::from));
+    // With the router enabled every request is re-routed by CCR, so Claude's own
+    // model list is not what actually answers. Offer CCR's catalog instead.
+    let model_selector = if claude_code_router {
+        ccr_model_selector().unwrap_or_else(|| ModelSelectorConfig {
+            permissions: permission_policies(),
+            ..Default::default()
+        })
+    } else {
+        let effort_options =
+            ReasoningOption::from_names(slash_commands::CLAUDE_EFFORT_LEVELS.map(String::from));
 
-    let supports_effort =
-        |id: &str| -> bool { id.contains("fable") || id.contains("opus") || id.contains("sonnet") };
+        let supports_effort = |id: &str| -> bool {
+            id.contains("fable") || id.contains("opus") || id.contains("sonnet")
+        };
 
-    ExecutorDiscoveredOptions {
-        model_selector: ModelSelectorConfig {
+        ModelSelectorConfig {
             providers: vec![],
             models: [
                 ("fable", "Fable"),
@@ -325,13 +453,12 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
             .collect(),
             default_model: Some("opus".to_string()),
             agents: vec![],
-            permissions: vec![
-                PermissionPolicy::Auto,
-                PermissionPolicy::DontAsk,
-                PermissionPolicy::Supervised,
-                PermissionPolicy::Plan,
-            ],
-        },
+            permissions: permission_policies(),
+        }
+    };
+
+    ExecutorDiscoveredOptions {
+        model_selector,
         slash_commands: ClaudeCode::hardcoded_slash_commands(),
         loading_models: false,
         loading_agents: false,
@@ -463,6 +590,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
         let cache = executor_options_cache();
         let cmd_key = self.compute_cmd_key();
         let base_executor = BaseCodingAgent::ClaudeCode;
+        let ccr = self.claude_code_router.unwrap_or(false);
 
         let (target_path, initial_options) = if let Some(wd) = workdir {
             let wd_buf = wd.to_path_buf();
@@ -497,7 +625,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                         opts
                     })
                     .unwrap_or_else(|| {
-                        let mut opts = default_discovered_options();
+                        let mut opts = default_discovered_options(ccr);
                         opts.loading_models = true;
                         opts.loading_agents = true;
                         opts.loading_slash_commands = true;
@@ -521,7 +649,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                         opts
                     })
                     .unwrap_or_else(|| {
-                        let mut opts = default_discovered_options();
+                        let mut opts = default_discovered_options(ccr);
                         opts.loading_models = true;
                         opts.loading_agents = true;
                         opts.loading_slash_commands = true;
@@ -533,7 +661,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             let mut opts = cache
                 .get(&global_key)
                 .map(|cached| cached.as_ref().clone())
-                .unwrap_or_else(default_discovered_options);
+                .unwrap_or_else(|| default_discovered_options(ccr));
             opts.loading_models = true;
             opts.loading_agents = true;
             opts.loading_slash_commands = true;
@@ -548,12 +676,28 @@ impl StandardCodingAgentExecutor for ClaudeCode {
 
         let discovery_stream = async_stream::stream! {
             let discovery_path = target_path.as_deref().unwrap_or(Path::new(".")).to_path_buf();
-            let mut final_options = default_discovered_options();
+            let mut final_options = default_discovered_options(ccr);
             final_options.model_selector = fallback_model_selector;
 
             match this.discover_agents_and_slash_commands_initial(&discovery_path).await {
                 Ok((mut agent_options, slash_commands_initial, plugins, live_models)) => {
-                    if apply_live_models(&mut final_options.model_selector, live_models) {
+                    // Under the router the CLI still reports Anthropic's catalog,
+                    // but CCR is what picks the model — advertise its providers.
+                    let ccr_selector = ccr.then(ccr_model_selector).flatten();
+                    if let Some(selector) = ccr_selector {
+                        final_options.model_selector.providers = selector.providers;
+                        final_options.model_selector.models = selector.models;
+                        final_options.model_selector.default_model = selector.default_model;
+                        yield patch::update_providers(
+                            final_options.model_selector.providers.clone(),
+                        );
+                        yield patch::update_models(final_options.model_selector.models.clone());
+                        yield patch::update_default_model(
+                            final_options.model_selector.default_model.clone(),
+                        );
+                    } else if !ccr
+                        && apply_live_models(&mut final_options.model_selector, live_models)
+                    {
                         yield patch::update_models(final_options.model_selector.models.clone());
                         yield patch::update_default_model(
                             final_options.model_selector.default_model.clone(),
@@ -639,7 +783,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             executor: BaseCodingAgent::ClaudeCode,
             variant: None,
             model_id: self.model.clone().or_else(|| {
-                default_discovered_options()
+                default_discovered_options(self.claude_code_router.unwrap_or(false))
                     .model_selector
                     .default_model
                     .clone()
@@ -3578,8 +3722,112 @@ mod tests {
     }
 
     #[test]
+    fn ccr_config_becomes_a_provider_scoped_model_selector() {
+        let raw = r#"{
+            "Providers": [
+                {"name": "openrouter", "models": ["google/gemma-4-31b-it"]},
+                {"name": "sailresearch", "models": ["moonshotai/Kimi-K3"]},
+                {"name": "empty", "models": []}
+            ],
+            "Router": {"default": "sailresearch,moonshotai/Kimi-K3"}
+        }"#;
+
+        let selector = parse_ccr_model_selector(raw).expect("selector");
+
+        // Providers without models would render an empty submenu.
+        assert_eq!(
+            selector
+                .providers
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            ["openrouter", "sailresearch"]
+        );
+
+        let kimi = selector
+            .models
+            .iter()
+            .find(|m| m.id == "moonshotai/Kimi-K3")
+            .expect("kimi listed");
+        assert_eq!(kimi.provider_id.as_deref(), Some("sailresearch"));
+        assert!(kimi.reasoning_options.is_empty());
+
+        // CCR's `provider,model` becomes the selector's `provider/model`, and a
+        // model id containing slashes has to survive the round trip intact.
+        assert_eq!(
+            selector.default_model.as_deref(),
+            Some("sailresearch/moonshotai/Kimi-K3")
+        );
+        assert_eq!(
+            selector_model_id_to_ccr("sailresearch/moonshotai/Kimi-K3"),
+            "sailresearch,moonshotai/Kimi-K3"
+        );
+    }
+
+    #[test]
+    fn ccr_empty_router_default_leaves_routing_to_ccr() {
+        let raw = r#"{
+            "Providers": [{"name": "openrouter", "models": ["openai/gpt-oss-120b"]}],
+            "Router": {"default": ""}
+        }"#;
+
+        let selector = parse_ccr_model_selector(raw).expect("selector");
+        assert!(selector.default_model.is_none());
+
+        // No providers at all is not a usable catalog.
+        assert!(parse_ccr_model_selector(r#"{"Providers": []}"#).is_none());
+    }
+
+    #[tokio::test]
+    async fn ccr_model_is_passed_in_router_notation() {
+        async fn model_args(router: bool, model: &str) -> String {
+            let claude = ClaudeCode {
+                claude_code_router: Some(router),
+                plan: None,
+                approvals: None,
+                dont_ask: None,
+                model: Some(model.to_string()),
+                effort: None,
+                agent: None,
+                append_prompt: AppendPrompt::default(),
+                dangerously_skip_permissions: None,
+                cmd: crate::command::CmdOverrides {
+                    base_command_override: None,
+                    additional_params: None,
+                    env: None,
+                },
+                approvals_service: None,
+                disable_api_key: None,
+                auto_resume_on_limit: None,
+            };
+            format!(
+                "{:?}",
+                claude
+                    .build_command_builder()
+                    .await
+                    .expect("builder")
+                    .build_initial()
+                    .expect("params")
+            )
+        }
+
+        let routed = model_args(true, "sailresearch/moonshotai/Kimi-K3").await;
+        assert!(
+            routed.contains(r#""--model", "sailresearch,moonshotai/Kimi-K3""#),
+            "expected router notation, got {routed}"
+        );
+
+        // Without the router the id is forwarded verbatim.
+        let direct = model_args(false, "openrouter/some-model").await;
+        assert!(
+            direct.contains(r#""--model", "openrouter/some-model""#),
+            "expected verbatim model id, got {direct}"
+        );
+    }
+
+    #[test]
     fn unsupported_live_models_preserve_cached_selector() {
-        let mut selector = default_discovered_options().model_selector;
+        let mut selector = default_discovered_options(false).model_selector;
         selector.models[0].id = "cached-model".to_string();
         selector.default_model = Some("cached-model".to_string());
 
