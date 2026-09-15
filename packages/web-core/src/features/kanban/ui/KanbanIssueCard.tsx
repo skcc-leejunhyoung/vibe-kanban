@@ -43,7 +43,11 @@ export interface KanbanIssueCardProps {
   onAssigneeClick: (issueId: string) => void;
   onMoreActionsClick: (issueId: string) => void;
   onOpenInSplitPane: (url: string) => void;
-  onTagToggle: (issueId: string, tagId: string) => void;
+  onTagToggle: (
+    issueId: string,
+    tagId: string,
+    existingIssueTagId?: string
+  ) => void;
   onCreateTag: (data: { name: string; color: string }) => string;
   onWorkspaceClick: (
     issueId: string,
@@ -168,7 +172,12 @@ export const KanbanIssueCard = memo(function KanbanIssueCard({
         tagEditProps={{
           allTags,
           selectedTagIds,
-          onTagToggle: (tagId) => onTagToggle(issue.id, tagId),
+          onTagToggle: (tagId) =>
+            onTagToggle(
+              issue.id,
+              tagId,
+              issueTags.find((issueTag) => issueTag.tag_id === tagId)?.id
+            ),
           onCreateTag,
           renderTagEditor,
         }}

@@ -37,8 +37,16 @@ export function OrgProvider({ organizationId, children }: OrgProviderProps) {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
+  // useQuery hands back a new tracked object every render; only its fields
+  // are stable, so depend on those rather than on the result object.
+  const {
+    data: members,
+    isLoading: membersLoading,
+    refetch: refetchMembers,
+  } = membersQuery;
+
   // Combined loading state
-  const isLoading = projectsResult.isLoading || membersQuery.isLoading;
+  const isLoading = projectsResult.isLoading || membersLoading;
 
   // First error found
   const error = projectsResult.error || null;
@@ -46,8 +54,8 @@ export function OrgProvider({ organizationId, children }: OrgProviderProps) {
   // Combined retry
   const retry = useCallback(() => {
     projectsResult.retry();
-    membersQuery.refetch();
-  }, [projectsResult, membersQuery]);
+    refetchMembers();
+  }, [projectsResult, refetchMembers]);
 
   // Computed Maps for O(1) lookup
   const projectsById = useMemo(() => {
@@ -60,11 +68,11 @@ export function OrgProvider({ organizationId, children }: OrgProviderProps) {
 
   const membersWithProfilesById = useMemo(() => {
     const map = new Map<string, OrganizationMemberWithProfile>();
-    for (const member of membersQuery.data ?? []) {
+    for (const member of members ?? []) {
       map.set(member.user_id, member);
     }
     return map;
-  }, [membersQuery.data]);
+  }, [members]);
 
   // Lookup helpers
   const getProject = useCallback(

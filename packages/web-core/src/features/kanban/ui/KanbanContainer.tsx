@@ -1660,17 +1660,17 @@ export function KanbanContainer() {
     [projectId, selectedIssueIds, isMultiSelectActive]
   );
 
+  // The card passes the existing link id from its own issueTags prop, so this
+  // callback doesn't depend on the (per-change) tag lookup and stays stable.
   const handleCardTagToggle = useCallback(
-    (issueId: string, tagId: string) => {
-      const currentIssueTags = getTagsForIssue(issueId);
-      const existing = currentIssueTags.find((it) => it.tag_id === tagId);
-      if (existing) {
-        removeIssueTag(existing.id);
+    (issueId: string, tagId: string, existingIssueTagId?: string) => {
+      if (existingIssueTagId) {
+        removeIssueTag(existingIssueTagId);
       } else {
         insertIssueTag({ issue_id: issueId, tag_id: tagId });
       }
     },
-    [getTagsForIssue, insertIssueTag, removeIssueTag]
+    [insertIssueTag, removeIssueTag]
   );
 
   const getResolvedRelationshipsForIssue = useCallback(

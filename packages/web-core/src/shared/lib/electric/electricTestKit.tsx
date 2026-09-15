@@ -114,6 +114,20 @@ export function emitChange(
   session.params.commit();
 }
 
+/**
+ * Seed every open session from a `table -> rows` map (unknown tables get an
+ * empty snapshot). Collection ids are `<table>-<param value>`.
+ */
+export function emitSnapshotsByTable(
+  rowsByTable: Record<string, Record<string, unknown>[]>
+): void {
+  for (const session of electricSessions) {
+    const base = session.id.replace(/-mut$/, '');
+    const table = base.slice(0, base.lastIndexOf('-'));
+    emitSnapshot(session, rowsByTable[table] ?? []);
+  }
+}
+
 export function configureTestAuthRuntime(): {
   unregisterShape: ReturnType<typeof vi.fn>;
   registerShape: ReturnType<typeof vi.fn>;
@@ -129,24 +143,108 @@ export function configureTestAuthRuntime(): {
   return { unregisterShape, registerShape };
 }
 
+interface FakeNode extends EventTarget {
+  nodeType: number;
+  parentNode: FakeNode | null;
+  removeChild?: (child: FakeNode) => FakeNode;
+  contains?: (other: FakeNode | null) => boolean;
+  [key: string]: unknown;
+}
+
 /**
- * React without a DOM: probes render no host nodes, so a bare EventTarget is
- * enough for the root container. Effects, memoization, context and Profiler
- * all run for real.
+ * Just enough Node/Element for react-dom's commit phase (create, append,
+ * insert, remove, attributes, styles, text). No layout, CSS or real events.
  */
-export function installDomlessReact(): {
-  render: (node: ReactNode) => Promise<void>;
-  unmount: () => Promise<void>;
-} {
+function createFakeNode(ownerDocument: object, tagName: string): FakeNode {
+  const childNodes: FakeNode[] = [];
+  const attributes: Record<string, string> = {};
+  const node = new EventTarget() as FakeNode;
+  Object.assign(node, {
+    nodeType: 1,
+    tagName: tagName.toUpperCase(),
+    nodeName: tagName.toUpperCase(),
+    namespaceURI: 'http://www.w3.org/1999/xhtml',
+    ownerDocument,
+    parentNode: null,
+    childNodes,
+    style: { setProperty() {}, removeProperty() {} },
+    textContent: '',
+    setAttribute(name: string, value: unknown) {
+      attributes[name] = String(value);
+    },
+    removeAttribute(name: string) {
+      delete attributes[name];
+    },
+    getAttribute(name: string) {
+      return attributes[name] ?? null;
+    },
+    hasAttribute(name: string) {
+      return name in attributes;
+    },
+    appendChild(child: FakeNode) {
+      child.parentNode?.removeChild?.(child);
+      child.parentNode = node;
+      childNodes.push(child);
+      return child;
+    },
+    insertBefore(child: FakeNode, before: FakeNode | null) {
+      child.parentNode?.removeChild?.(child);
+      child.parentNode = node;
+      const index = before ? childNodes.indexOf(before) : -1;
+      childNodes.splice(index < 0 ? childNodes.length : index, 0, child);
+      return child;
+    },
+    removeChild(child: FakeNode) {
+      const index = childNodes.indexOf(child);
+      if (index >= 0) childNodes.splice(index, 1);
+      child.parentNode = null;
+      return child;
+    },
+    contains(other: FakeNode | null): boolean {
+      return (
+        other === node || childNodes.some((c) => Boolean(c.contains?.(other)))
+      );
+    },
+    focus() {},
+    blur() {},
+    scrollIntoView() {},
+  });
+  Object.defineProperties(node, {
+    firstChild: { get: () => childNodes[0] ?? null },
+    lastChild: { get: () => childNodes[childNodes.length - 1] ?? null },
+  });
+  return node;
+}
+
+function createFakeTextNode(ownerDocument: object, text: string): FakeNode {
+  return Object.assign(new EventTarget() as FakeNode, {
+    nodeType: 3,
+    nodeName: '#text',
+    ownerDocument,
+    parentNode: null,
+    nodeValue: text,
+    textContent: text,
+    contains: () => false,
+  });
+}
+
+function installFakeDocument(withElements: boolean): FakeNode {
+  const document = Object.assign(new EventTarget() as FakeNode, {
+    nodeType: 9,
+    nodeName: '#document',
+    visibilityState: 'visible',
+    activeElement: null,
+  });
+  if (withElements) {
+    Object.assign(document, {
+      createElement: (tag: string) => createFakeNode(document, tag),
+      createElementNS: (_ns: string, tag: string) =>
+        createFakeNode(document, tag),
+      createTextNode: (text: string) => createFakeTextNode(document, text),
+    });
+  }
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  vi.stubGlobal(
-    'document',
-    Object.assign(new EventTarget(), {
-      nodeType: 9,
-      visibilityState: 'visible',
-      activeElement: null,
-    })
-  );
+  vi.stubGlobal('document', document);
   vi.stubGlobal(
     'window',
     Object.assign(new EventTarget(), {
@@ -156,18 +254,47 @@ export function installDomlessReact(): {
       HTMLIFrameElement: class {},
     })
   );
-  const container = Object.assign(new EventTarget(), {
-    nodeType: 1,
-    tagName: 'DIV',
-    ownerDocument: document,
-  });
+  return document;
+}
+
+function createReactHarness(container: FakeNode) {
   const root: Root = createRoot(container as unknown as HTMLElement);
   return {
-    render: async (node) => {
+    render: async (node: ReactNode) => {
       await act(() => root.render(node));
     },
     unmount: async () => {
       await act(() => root.unmount());
     },
   };
+}
+
+/**
+ * React without a DOM: probes render no host nodes, so a bare EventTarget is
+ * enough for the root container. Effects, memoization, context and Profiler
+ * all run for real.
+ */
+export function installDomlessReact(): {
+  render: (node: ReactNode) => Promise<void>;
+  unmount: () => Promise<void>;
+} {
+  const document = installFakeDocument(false);
+  const container = Object.assign(new EventTarget() as FakeNode, {
+    nodeType: 1,
+    tagName: 'DIV',
+    ownerDocument: document,
+  });
+  return createReactHarness(container);
+}
+
+/**
+ * React on the fake DOM above, for components that render real host elements
+ * (divs, buttons, text) without jsdom.
+ */
+export function installFakeDomReact(): {
+  render: (node: ReactNode) => Promise<void>;
+  unmount: () => Promise<void>;
+} {
+  const document = installFakeDocument(true);
+  return createReactHarness(createFakeNode(document, 'div'));
 }

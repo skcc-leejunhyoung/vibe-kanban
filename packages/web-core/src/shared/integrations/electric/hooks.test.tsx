@@ -117,4 +117,18 @@ describe('useShape result identity', () => {
     expect(after.data.map((row) => row.title)).toEqual(['renamed']);
     expect(after.retry).toBe(before.retry);
   });
+
+  it('keeps untouched rows referentially stable when another row changes', async () => {
+    const shape = await renderShape();
+    await act(() => emitSnapshot(shape.session(), [issue('a'), issue('b')]));
+    const rowB = shape.latest().data.find((row) => row.id === 'b');
+
+    await act(() =>
+      emitChange(shape.session(), 'update', issue('a', 'renamed'))
+    );
+
+    const data = shape.latest().data;
+    expect(data.find((row) => row.id === 'a')?.title).toBe('renamed');
+    expect(data.find((row) => row.id === 'b')).toBe(rowB);
+  });
 });
