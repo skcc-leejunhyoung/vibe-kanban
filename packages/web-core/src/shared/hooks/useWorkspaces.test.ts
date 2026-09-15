@@ -437,3 +437,61 @@ describe('sidebar reference and ordering cache', () => {
     expect(next.workspaceRecordsById['host:b']).toBe(b);
   });
 });
+
+describe('SKC-4780 host caches', () => {
+  it('reuses a merged result for unchanged streams and equivalent host ids', () => {
+    const streams = new Map([['a', hostResult('a', ['one'])]]);
+    expect(combineRemoteWorkspaceStreams(streams, ['a'])).toBe(
+      combineRemoteWorkspaceStreams(streams, ['a'])
+    );
+    expect(combineRemoteWorkspaceStreams(streams, []).workspaces).toEqual([]);
+  });
+
+  it('does not rematerialize host B when host A is patched', async () => {
+    const { createSidebarWorkspaceList } = await import('./useWorkspaces');
+    const a = {
+      a: { id: 'a', created_at: '2026-01-01' } as WorkspaceWithStatus,
+    };
+    const b = {
+      b: { id: 'b', created_at: '2026-01-01' } as WorkspaceWithStatus,
+    };
+    const summaries = new Map<string, WorkspaceSummary>();
+    const selectA = vi.fn(createSidebarWorkspaceList());
+    const selectB = vi.fn(createSidebarWorkspaceList());
+    materializeHostWorkspaceStream(a, summaries, summaries, 'a', selectA);
+    const before = materializeHostWorkspaceStream(
+      b,
+      summaries,
+      summaries,
+      'b',
+      selectB
+    );
+    const patched = materializeHostWorkspaceStream(
+      { a: { ...a.a, archived: true } },
+      summaries,
+      summaries,
+      'a',
+      selectA
+    );
+    const after = materializeHostWorkspaceStream(
+      b,
+      summaries,
+      summaries,
+      'b',
+      selectB
+    );
+    expect(selectA).toHaveBeenCalledTimes(2);
+    expect(selectB).toHaveBeenCalledTimes(1);
+    expect(after).toBe(before);
+    expect(patched.archivedWorkspaces).toHaveLength(1);
+    const updated = materializeHostWorkspaceStream(
+      b,
+      new Map([['b', { files_changed: 2 } as WorkspaceSummary]]),
+      summaries,
+      'b',
+      selectB
+    );
+    expect(updated.workspaces[0].filesChanged).toBe(2);
+    expect(selectB).toHaveBeenCalledTimes(2);
+  });
+});

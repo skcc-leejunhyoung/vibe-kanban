@@ -409,6 +409,23 @@ type HostWorkspaceSnapshot = {
 
 type RemoteHostWorkspaceStream = UseWorkspacesResult;
 
+type MaterializedHost = Pick<
+  UseWorkspacesResult,
+  'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById'
+>;
+
+// One entry per mounted host selector; immutable records/summaries invalidate it.
+const hostMaterializations = new WeakMap<
+  ReturnType<typeof createSidebarWorkspaceList>,
+  {
+    records: Record<string, WorkspaceWithStatus>;
+    active: ReadonlyMap<string, WorkspaceSummary>;
+    archived: ReadonlyMap<string, WorkspaceSummary>;
+    hostId: string;
+    result: MaterializedHost;
+  }
+>();
+
 export function materializeHostWorkspaceStream(
   recordsById: Record<string, WorkspaceWithStatus>,
   activeSummaries: ReadonlyMap<string, WorkspaceSummary>,
@@ -419,6 +436,15 @@ export function materializeHostWorkspaceStream(
   UseWorkspacesResult,
   'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById'
 > {
+  const cached = hostMaterializations.get(selectWorkspaces);
+  if (
+    cached?.records === recordsById &&
+    cached.active === activeSummaries &&
+    cached.archived === archivedSummaries &&
+    cached.hostId === hostId
+  )
+    return cached.result;
+
   const summaries = new Map<string, WorkspaceSummary>();
   // Active and archived streams can briefly contain the same id during an
   // archive transition; select the summary using the authoritative raw row.
@@ -439,8 +465,25 @@ export function materializeHostWorkspaceStream(
     (workspace.isArchived ? archivedWorkspaces : workspaces).push(workspace);
   }
 
-  return { workspaces, archivedWorkspaces, workspaceRecordsById };
+  const result = { workspaces, archivedWorkspaces, workspaceRecordsById };
+  hostMaterializations.set(selectWorkspaces, {
+    records: recordsById,
+    active: activeSummaries,
+    archived: archivedSummaries,
+    hostId,
+    result,
+  });
+  return result;
 }
+
+const combinedStreamCache = new WeakMap<
+  ReadonlyMap<string, RemoteHostWorkspaceStream>,
+  {
+    key: string;
+    results: RemoteHostWorkspaceStream[];
+    result: UseWorkspacesResult;
+  }
+>();
 
 export function combineRemoteWorkspaceStreams(
   streams: ReadonlyMap<string, RemoteHostWorkspaceStream>,
@@ -450,12 +493,21 @@ export function combineRemoteWorkspaceStreams(
     const result = streams.get(hostId);
     return result ? [result] : [];
   });
+  const key = JSON.stringify(onlineHostIds);
+  const cached = combinedStreamCache.get(streams);
+  if (
+    cached?.key === key &&
+    cached.results.length === results.length &&
+    results.every((result, i) => result === cached.results[i])
+  ) {
+    return cached.result;
+  }
   const workspaceRecordsById = Object.assign(
     {},
     ...results.map((result) => result.workspaceRecordsById)
   );
 
-  return {
+  const result = {
     workspaces: results.flatMap((result) => result.workspaces),
     archivedWorkspaces: results.flatMap((result) => result.archivedWorkspaces),
     workspaceRecordsById,
@@ -467,6 +519,8 @@ export function combineRemoteWorkspaceStreams(
       results.length > 0 && results.every((result) => result.isConnected),
     error: results.find((result) => result.error)?.error ?? null,
   };
+  combinedStreamCache.set(streams, { key, results, result });
+  return result;
 }
 
 const RemoteWorkspaceStreamsContext = createContext<
@@ -560,6 +614,17 @@ export function resolveOnlineWorkspaceStreamHostIds(
     : [];
 }
 
+function useOnlineWorkspaceStreamHostIds(
+  hosts: ReadonlyArray<{ id: string; status: string }>,
+  enabled: boolean
+): string[] {
+  // Names and freshly allocated host objects do not change stream membership.
+  const key = JSON.stringify(
+    resolveOnlineWorkspaceStreamHostIds(hosts, enabled)
+  );
+  return useMemo(() => JSON.parse(key) as string[], [key]);
+}
+
 export function UnifiedWorkspaceStreamsProvider({
   children,
   enabled = true,
@@ -569,10 +634,7 @@ export function UnifiedWorkspaceStreamsProvider({
 }) {
   const runtime = useAppRuntime();
   const { hosts } = useWorkspaceHostOptions();
-  const onlineHostIds = useMemo(
-    () => resolveOnlineWorkspaceStreamHostIds(hosts, enabled),
-    [enabled, hosts]
-  );
+  const onlineHostIds = useOnlineWorkspaceStreamHostIds(hosts, enabled);
   const [streams, setStreams] = useState<
     Map<string, RemoteHostWorkspaceStream>
   >(() => new Map());
@@ -657,6 +719,15 @@ async function fetchHostWorkspaceSnapshot(
   return { active, archived };
 }
 
+function combineHostWorkspaceSnapshots(
+  queries: { data: HostWorkspaceSnapshot | undefined }[]
+): HostWorkspaceSnapshot {
+  return {
+    active: queries.flatMap((query) => query.data?.active ?? []),
+    archived: queries.flatMap((query) => query.data?.archived ?? []),
+  };
+}
+
 /**
  * Unified local + remote workspace list. The route's current host keeps its
  * live WebSocket stream; other online hosts are refreshed as lightweight
@@ -666,16 +737,21 @@ async function fetchHostWorkspaceSnapshot(
 export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
   const runtime = useAppRuntime();
   const remoteStreams = useContext(RemoteWorkspaceStreamsContext);
-  const current = useWorkspaces(enabled && runtime !== 'remote');
+  const {
+    workspaces,
+    archivedWorkspaces,
+    workspaceRecordsById,
+    isLoading,
+    isConnected,
+    error,
+  } = useWorkspaces(enabled && runtime !== 'remote');
   const currentHostId = useHostId();
   const { hosts } = useWorkspaceHostOptions();
+  const onlineHostIds = useOnlineWorkspaceStreamHostIds(hosts, enabled);
   const snapshotHostIds = useMemo<(string | null)[]>(() => {
     if (!enabled || runtime !== 'local') return [];
-    const onlineRemoteHostIds = hosts
-      .filter((host) => host.status === 'online')
-      .map((host) => host.id);
-    return resolveSnapshotHostIds(onlineRemoteHostIds, currentHostId);
-  }, [enabled, hosts, currentHostId, runtime]);
+    return resolveSnapshotHostIds(onlineHostIds, currentHostId);
+  }, [enabled, onlineHostIds, currentHostId, runtime]);
   const snapshots = useQueries({
     queries: snapshotHostIds.map((hostId) => ({
       queryKey: ['unified-workspaces', hostId],
@@ -683,6 +759,7 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
       staleTime: 15_000,
       refetchInterval: 15_000,
     })),
+    combine: combineHostWorkspaceSnapshots,
   });
 
   return useMemo(() => {
@@ -691,18 +768,29 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
     if (runtime === 'remote') {
       return combineRemoteWorkspaceStreams(
         remoteStreams ?? new Map(),
-        resolveOnlineWorkspaceStreamHostIds(hosts, true)
+        onlineHostIds
       );
     }
 
-    const remoteActive = snapshots.flatMap((query) => query.data?.active ?? []);
-    const remoteArchived = snapshots.flatMap(
-      (query) => query.data?.archived ?? []
-    );
     return {
-      ...current,
-      workspaces: [...current.workspaces, ...remoteActive],
-      archivedWorkspaces: [...current.archivedWorkspaces, ...remoteArchived],
+      workspaces: [...workspaces, ...snapshots.active],
+      archivedWorkspaces: [...archivedWorkspaces, ...snapshots.archived],
+      workspaceRecordsById,
+      isLoading,
+      isConnected,
+      error,
     };
-  }, [current, enabled, snapshots, runtime, remoteStreams, hosts]);
+  }, [
+    workspaces,
+    archivedWorkspaces,
+    workspaceRecordsById,
+    isLoading,
+    isConnected,
+    error,
+    enabled,
+    snapshots,
+    runtime,
+    remoteStreams,
+    onlineHostIds,
+  ]);
 }

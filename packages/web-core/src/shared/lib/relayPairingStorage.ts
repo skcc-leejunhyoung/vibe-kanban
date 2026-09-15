@@ -13,6 +13,53 @@ type RelayPairingChangeListener = (change: RelayPairingChange) => void;
 
 const relayPairingChangeListeners = new Set<RelayPairingChangeListener>();
 
+// Cache the promise as well as its value so a cold request burst opens IDB once.
+let pairedHostsCache: Promise<PairedRelayHost[]> | undefined;
+let cacheExpiresAt = 0;
+let pairingChannel: BroadcastChannel | undefined;
+let notificationsInitialized = false;
+let cachedHostIds: string[] = [];
+
+export function relayPairingRefetchInterval(): number | false {
+  initializePairingNotifications();
+  // ponytail: older browsers without BroadcastChannel reconcile within 60s.
+  return pairingChannel ? false : 60_000;
+}
+
+function initializePairingNotifications(): void {
+  if (notificationsInitialized || typeof window === 'undefined') return;
+  notificationsInitialized = true;
+  // Suspended/BFCache pages may miss broadcasts. Reconcile on resume as well.
+  const reconcile = () => {
+    for (const hostId of cachedHostIds.length ? cachedHostIds : ['']) {
+      emitRelayPairingChange({ hostId, type: 'saved' }, false);
+    }
+  };
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) reconcile();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') reconcile();
+  });
+  try {
+    pairingChannel = new BroadcastChannel(DB_NAME);
+    pairingChannel.onmessage = ({ data }: MessageEvent<unknown>) => {
+      if (
+        data &&
+        typeof data === 'object' &&
+        'hostId' in data &&
+        typeof data.hostId === 'string' &&
+        'type' in data &&
+        (data.type === 'saved' || data.type === 'removed')
+      ) {
+        emitRelayPairingChange({ hostId: data.hostId, type: data.type }, false);
+      }
+    };
+  } catch {
+    // The query and request cache use the bounded fallback above.
+  }
+}
+
 export interface PairedRelayHost {
   host_id: string;
   host_name: string;
@@ -39,13 +86,27 @@ export interface PairedRelayHost {
 export function subscribeRelayPairingChanges(
   listener: RelayPairingChangeListener
 ): () => void {
+  initializePairingNotifications();
   relayPairingChangeListeners.add(listener);
   return () => {
     relayPairingChangeListeners.delete(listener);
   };
 }
 
-function emitRelayPairingChange(change: RelayPairingChange): void {
+function emitRelayPairingChange(
+  change: RelayPairingChange,
+  broadcast = true
+): void {
+  pairedHostsCache = undefined;
+  if (broadcast) {
+    initializePairingNotifications();
+    try {
+      pairingChannel?.postMessage(change);
+    } catch {
+      pairingChannel?.close();
+      pairingChannel = undefined;
+    }
+  }
   for (const listener of relayPairingChangeListeners) {
     try {
       listener(change);
@@ -71,25 +132,45 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function listPairedRelayHosts(): Promise<PairedRelayHost[]> {
-  const db = await openDb();
-  return new Promise<PairedRelayHost[]>((resolve, reject) => {
-    const tx = db.transaction(PAIRED_HOSTS_STORE, 'readonly');
-    const store = tx.objectStore(PAIRED_HOSTS_STORE);
-    const request = store.getAll();
+export function listPairedRelayHosts(): Promise<PairedRelayHost[]> {
+  const interval = relayPairingRefetchInterval();
+  if (pairedHostsCache && Date.now() < cacheExpiresAt) return pairedHostsCache;
+  cacheExpiresAt = Infinity; // Also share reads that take longer than the fallback TTL.
+  const pending: Promise<PairedRelayHost[]> = readPairedRelayHosts().then(
+    (hosts) => {
+      // A committed write may overtake a read. Never publish its old snapshot.
+      if (pairedHostsCache !== pending) return listPairedRelayHosts();
+      cachedHostIds = hosts.map((host) => host.host_id);
+      cacheExpiresAt = interval === false ? Infinity : Date.now() + interval;
+      return hosts;
+    },
+    (error: unknown) => {
+      if (pairedHostsCache === pending) pairedHostsCache = undefined;
+      throw error;
+    }
+  );
+  pairedHostsCache = pending;
+  return pending;
+}
 
-    request.onsuccess = () => {
-      const pairedHosts = (request.result as PairedRelayHost[]) ?? [];
-      pairedHosts.sort((a, b) => b.paired_at.localeCompare(a.paired_at));
-      resolve(pairedHosts);
-    };
-    request.onerror = () => reject(request.error);
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-    tx.oncomplete = () => {
-      db.close();
-    };
-  });
+async function readPairedRelayHosts(): Promise<PairedRelayHost[]> {
+  const db = await openDb();
+  try {
+    return await new Promise<PairedRelayHost[]>((resolve, reject) => {
+      const tx = db.transaction(PAIRED_HOSTS_STORE, 'readonly');
+      const request = tx.objectStore(PAIRED_HOSTS_STORE).getAll();
+      request.onerror = () => reject(request.error);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+      tx.oncomplete = () => {
+        const pairedHosts = (request.result as PairedRelayHost[]) ?? [];
+        pairedHosts.sort((a, b) => b.paired_at.localeCompare(a.paired_at));
+        resolve(pairedHosts);
+      };
+    });
+  } finally {
+    db.close();
+  }
 }
 
 export async function savePairedRelayHost(
@@ -146,6 +227,7 @@ export async function clearPairedRelayHosts(): Promise<void> {
       clearRequest.onerror = () => reject(clearRequest.error);
       tx.oncomplete = () => {
         db.close();
+        pairedHostsCache = undefined;
         hostIds.forEach((hostId) =>
           emitRelayPairingChange({ hostId, type: 'removed' })
         );

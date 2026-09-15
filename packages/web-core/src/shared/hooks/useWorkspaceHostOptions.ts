@@ -1,9 +1,13 @@
-import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AppBarHost, AppBarHostStatus } from '@vibe/ui/components/AppBar';
 import type { RelayHost } from 'shared/remote-types';
 import type { PairedRelayHost } from '@/shared/lib/relayPairingStorage';
-import { listPairedRelayHosts } from '@/shared/lib/relayPairingStorage';
+import {
+  listPairedRelayHosts,
+  relayPairingRefetchInterval,
+  subscribeRelayPairingChanges,
+} from '@/shared/lib/relayPairingStorage';
 import { listRelayHosts } from '@/shared/lib/remoteApi';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useRemoteCloudHostsState } from '@/shared/hooks/useRemoteCloudHosts';
@@ -59,23 +63,7 @@ export function useWorkspaceHostOptions(): { hosts: AppBarHost[] } {
     refetchInterval: 30_000,
   });
 
-  const pairedHostsQuery = useQuery({
-    queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
-    queryFn: async () => {
-      try {
-        return await listPairedRelayHosts();
-      } catch (error) {
-        console.error(
-          'Failed to load paired relay hosts for workspace host picker',
-          error
-        );
-        return [];
-      }
-    },
-    enabled: isRemote,
-    staleTime: 5_000,
-    refetchInterval: 5_000,
-  });
+  const pairedHostsQuery = usePairedRelayHostsQuery(isRemote);
 
   const hosts = useMemo<AppBarHost[]>(() => {
     if (!isRemote) {
@@ -98,4 +86,25 @@ export function useWorkspaceHostOptions(): { hosts: AppBarHost[] } {
   ]);
 
   return { hosts };
+}
+
+export function usePairedRelayHostsQuery(enabled: boolean) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribeRelayPairingChanges(() => {
+      void queryClient.invalidateQueries(
+        { queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY },
+        { cancelRefetch: false }
+      );
+    });
+  }, [enabled, queryClient]);
+  return useQuery({
+    queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
+    queryFn: listPairedRelayHosts,
+    enabled,
+    // Mount/focus reads hit the memory cache; changes explicitly invalidate it.
+    staleTime: 0,
+    refetchInterval: enabled ? relayPairingRefetchInterval() : false,
+  });
 }

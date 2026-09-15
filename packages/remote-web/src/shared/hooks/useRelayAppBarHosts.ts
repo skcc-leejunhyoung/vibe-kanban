@@ -1,13 +1,12 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { AppBarHost } from "@vibe/ui/components/AppBar";
-import { buildRelayHostOptions } from "@/shared/hooks/useWorkspaceHostOptions";
-import { listPairedRelayHosts } from "@/shared/lib/relayPairingStorage";
-import { listRelayHosts } from "@/shared/lib/remoteApi";
 import {
-  RELAY_REMOTE_HOSTS_QUERY_KEY,
-  RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
-} from "@/shared/lib/relayHostQueryKeys";
+  buildRelayHostOptions,
+  usePairedRelayHostsQuery,
+} from "@/shared/hooks/useWorkspaceHostOptions";
+import { listRelayHosts } from "@/shared/lib/remoteApi";
+import { RELAY_REMOTE_HOSTS_QUERY_KEY } from "@/shared/lib/relayHostQueryKeys";
 
 interface UseRelayAppBarHostsResult {
   hosts: AppBarHost[];
@@ -25,20 +24,7 @@ export function useRelayAppBarHosts(
     refetchInterval: 30_000,
   });
 
-  const pairedHostsQuery = useQuery({
-    queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
-    queryFn: async () => {
-      try {
-        return await listPairedRelayHosts();
-      } catch (error) {
-        console.error("Failed to load paired relay hosts for app bar", error);
-        return [];
-      }
-    },
-    enabled,
-    staleTime: 5_000,
-    refetchInterval: 5_000,
-  });
+  const pairedHostsQuery = usePairedRelayHostsQuery(enabled);
 
   const hosts = useMemo<AppBarHost[]>(() => {
     if (!enabled) {
