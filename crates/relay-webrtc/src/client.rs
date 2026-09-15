@@ -11,6 +11,10 @@ use tokio::{
     sync::{Mutex, Notify, mpsc, oneshot},
     time::Duration,
 };
+use tokio_tungstenite::tungstenite::{
+    Message,
+    protocol::{CloseFrame, frame::coding::CloseCode},
+};
 use tokio_util::sync::{CancellationToken, PollSender};
 use uuid::Uuid;
 use webrtc::{
@@ -272,6 +276,9 @@ impl WebRtcClient {
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel(64);
         let (dc_write_tx, mut dc_write_rx) = mpsc::channel::<Vec<u8>>(64);
+        // Control messages cannot wait behind a saturated WS data queue. Only
+        // one close is queued per removed, established connection.
+        let (ws_close_tx, mut ws_close_rx) = mpsc::unbounded_channel::<WsClose>();
         let connected = Arc::new(AtomicBool::new(false));
         let connected_notify = Arc::new(Notify::new());
 
@@ -369,7 +376,8 @@ impl WebRtcClient {
                     DataChannelMessage::WsOpened(opened) => {
                         let mut pending = pending_ws_open_dispatch.lock().await;
                         if let Some(result_tx) = pending.remove(&opened.conn_id) {
-                            let (frame_tx, frame_rx) = mpsc::channel(64);
+                            // Reserve the 65th slot for a retryable close frame.
+                            let (frame_tx, frame_rx) = mpsc::channel(65);
                             ws_frame_senders_dispatch
                                 .lock()
                                 .await
@@ -388,16 +396,15 @@ impl WebRtcClient {
                     }
 
                     DataChannelMessage::WsFrame(frame) => {
-                        let conn_id = frame.conn_id;
-                        let tx = {
-                            let senders = ws_frame_senders_dispatch.lock().await;
-                            senders.get(&conn_id).cloned()
-                        };
-
-                        if let Some(tx) = tx
-                            && tx.send(frame).await.is_err()
-                        {
-                            ws_frame_senders_dispatch.lock().await.remove(&conn_id);
+                        let mut senders = ws_frame_senders_dispatch.lock().await;
+                        if let Some(close) = dispatch_ws_frame(&mut senders, frame) {
+                            // Unbounded control-only queue: never block dispatch on
+                            // the shared writer queue, which may itself be full.
+                            if ws_close_tx.send(close).is_err() {
+                                tracing::warn!(
+                                    "[client-peer] writer closed before WS overload notification"
+                                );
+                            }
                         }
                     }
 
@@ -429,6 +436,15 @@ impl WebRtcClient {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    _ = writer_shutdown.cancelled() => break,
+                    Some(close) = ws_close_rx.recv() => {
+                        let data = serde_json::to_vec(&DataChannelMessage::WsClose(close));
+                        if let Ok(data) = data
+                            && let Err(e) = write_to_dc(&dc_writer, data).await
+                        {
+                            tracing::warn!(?e, "[client-peer] failed to write WS overload notification");
+                        }
+                    }
                     Some(cmd) = cmd_rx.recv() => {
                         handle_command(
                             cmd,
@@ -442,7 +458,6 @@ impl WebRtcClient {
                             tracing::warn!(?e, "[client-peer] failed to write queued data");
                         }
                     }
-                    _ = writer_shutdown.cancelled() => break,
                 }
             }
         });
@@ -622,6 +637,45 @@ impl WebRtcClient {
     }
 }
 
+/// Drop only the congested stream. Its receiver reaches EOF after buffered
+/// frames, causing the WS bridge to close; the peer also receives an explicit
+/// retryable close so it can release its backend connection.
+fn dispatch_ws_frame(
+    senders: &mut HashMap<Uuid, mpsc::Sender<WsFrame>>,
+    frame: WsFrame,
+) -> Option<WsClose> {
+    let conn_id = frame.conn_id;
+    let sender = senders.get(&conn_id)?;
+    let result = if sender.capacity() <= 1 {
+        Err(mpsc::error::TrySendError::Full(frame))
+    } else {
+        sender.try_send(frame)
+    };
+    let reason = match result {
+        Ok(()) => return None,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            "WebSocket receive queue full; reconnect to resync"
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => "WebSocket receiver closed",
+    };
+    tracing::warn!(%conn_id, reason, "[client-peer] closing WebSocket stream");
+    // EOF alone can become a normal 1000 closure in the bridge, suppressing
+    // frontend retries. Deliver 1013 through the reserved slot before EOF.
+    let _ = sender.try_send(WsFrame::from_transport(
+        conn_id,
+        Message::Close(Some(CloseFrame {
+            code: CloseCode::Again,
+            reason: reason.into(),
+        })),
+    ));
+    senders.remove(&conn_id);
+    Some(WsClose {
+        conn_id,
+        code: Some(1013),
+        reason: Some(reason.to_string()),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Command handler
 // ---------------------------------------------------------------------------
@@ -680,4 +734,51 @@ async fn write_to_dc(dc: &Arc<RTCDataChannel>, data: Vec<u8>) -> Result<(), WebR
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(conn_id: Uuid) -> WsFrame {
+        WsFrame::from_transport(conn_id, Message::Text("test".into()))
+    }
+
+    #[tokio::test]
+    async fn full_ws_queue_closes_only_that_stream_and_allows_reconnect() {
+        let slow = Uuid::new_v4();
+        let fast = Uuid::new_v4();
+        let (slow_tx, mut slow_rx) = mpsc::channel(65);
+        let (fast_tx, mut fast_rx) = mpsc::channel(65);
+        let mut senders = HashMap::from([(slow, slow_tx), (fast, fast_tx)]);
+        for _ in 0..64 {
+            assert!(dispatch_ws_frame(&mut senders, frame(slow)).is_none());
+        }
+        let close = dispatch_ws_frame(&mut senders, frame(slow)).unwrap();
+        assert_eq!(close.conn_id, slow);
+        assert_eq!(close.code, Some(1013));
+        assert!(slow_rx.is_closed());
+        assert!(dispatch_ws_frame(&mut senders, frame(slow)).is_none());
+        assert!(dispatch_ws_frame(&mut senders, frame(fast)).is_none());
+        assert_eq!(fast_rx.recv().await.unwrap().conn_id, fast);
+        for _ in 0..64 {
+            assert!(slow_rx.recv().await.is_some());
+        }
+        let terminal: Message = slow_rx.recv().await.unwrap().into_transport().unwrap();
+        assert!(matches!(
+            terminal,
+            Message::Close(Some(CloseFrame {
+                code: CloseCode::Again,
+                ..
+            }))
+        ));
+        assert!(slow_rx.recv().await.is_none());
+
+        let reconnected = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(64);
+        senders.insert(reconnected, tx);
+        assert!(dispatch_ws_frame(&mut senders, frame(reconnected)).is_none());
+        assert_eq!(rx.recv().await.unwrap().conn_id, reconnected);
+        assert!(senders.contains_key(&fast));
+    }
 }

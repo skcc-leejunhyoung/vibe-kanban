@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs, io,
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex, Once},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -10,7 +10,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
-use tokio::sync::{RwLock, RwLockMappedWriteGuard, RwLockWriteGuard};
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -95,8 +95,8 @@ pub fn build_response_signing_message(
 struct RelaySigningSession {
     peer_public_key: VerifyingKey,
     created_at: Instant,
-    last_used_at: Instant,
-    seen_nonces: HashMap<Uuid, Instant>,
+    last_used_at: StdMutex<Instant>,
+    seen_nonces: Mutex<HashMap<Uuid, Instant>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +106,7 @@ pub enum RelaySignatureValidationError {
     InvalidNonce,
     ReplayNonce,
     InvalidSignature,
+    NonceCapacityExceeded,
 }
 
 impl RelaySignatureValidationError {
@@ -116,6 +117,7 @@ impl RelaySignatureValidationError {
             Self::InvalidNonce => "invalid nonce",
             Self::ReplayNonce => "replayed nonce",
             Self::InvalidSignature => "invalid signature",
+            Self::NonceCapacityExceeded => "signing session nonce capacity exceeded",
         }
     }
 }
@@ -133,10 +135,15 @@ const RELAY_SIGNATURE_MAX_TIMESTAMP_DRIFT_SECS: i64 = 30;
 const RELAY_SIGNING_SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const RELAY_SIGNING_SESSION_IDLE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const RELAY_NONCE_TTL: Duration = Duration::from_secs(2 * 60);
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_SESSION_NONCES: usize = 65_536;
+
+type SessionMap = RwLock<HashMap<Uuid, Arc<RelaySigningSession>>>;
 
 #[derive(Clone)]
 pub struct RelaySigningService {
-    sessions: Arc<RwLock<HashMap<Uuid, RelaySigningSession>>>,
+    sessions: Arc<SessionMap>,
+    cleanup_started: Arc<Once>,
     server_signing_key: Arc<SigningKey>,
     /// When set, registered sessions are persisted here so they survive a host
     /// restart. `None` for client-side / in-memory-only instances.
@@ -147,6 +154,7 @@ impl RelaySigningService {
     pub fn new(server_signing_key: SigningKey) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_signing_key),
             persist_path: None,
         }
@@ -188,6 +196,7 @@ impl RelaySigningService {
 
         Ok(Self {
             sessions: Arc::new(RwLock::new(sessions)),
+            cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(key),
             persist_path: Some(Arc::new(persist_path)),
         })
@@ -234,6 +243,7 @@ impl RelaySigningService {
     /// Refresh requests use this path so concurrent callers converge on one
     /// session ID instead of repeatedly invalidating each other.
     pub async fn get_or_create_session(&self, peer_public_key: VerifyingKey) -> Uuid {
+        self.start_cleanup();
         let now = Instant::now();
         let mut sessions = self.sessions.write().await;
         let previous_len = sessions.len();
@@ -243,7 +253,7 @@ impl RelaySigningService {
                 is_session_active(session, now)
                     && session.peer_public_key.as_bytes() == peer_public_key.as_bytes()
             })
-            .max_by_key(|(_, session)| session.last_used_at)
+            .max_by_key(|(_, session)| *session.last_used_at.lock().unwrap())
             .map(|(id, _)| *id);
 
         sessions.retain(|id, session| {
@@ -254,16 +264,11 @@ impl RelaySigningService {
 
         let signing_session_id = existing_id.unwrap_or_else(Uuid::new_v4);
         if let Some(session) = sessions.get_mut(&signing_session_id) {
-            session.last_used_at = now;
+            *session.last_used_at.lock().unwrap() = now;
         } else {
             sessions.insert(
                 signing_session_id,
-                RelaySigningSession {
-                    peer_public_key,
-                    created_at: now,
-                    last_used_at: now,
-                    seen_nonces: HashMap::new(),
-                },
+                Arc::new(RelaySigningSession::new(peer_public_key, now)),
             );
         }
 
@@ -279,6 +284,7 @@ impl RelaySigningService {
     /// On the server this is called via `create_session`; on the client
     /// it is called after receiving a session ID from the server.
     pub async fn register_session(&self, signing_session_id: Uuid, peer_public_key: VerifyingKey) {
+        self.start_cleanup();
         let now = Instant::now();
         let mut sessions = self.sessions.write().await;
         sessions.retain(|id, session| {
@@ -286,15 +292,17 @@ impl RelaySigningService {
                 || (is_session_active(session, now)
                     && session.peer_public_key.as_bytes() != peer_public_key.as_bytes())
         });
-        sessions.insert(
-            signing_session_id,
-            RelaySigningSession {
-                peer_public_key,
-                created_at: now,
-                last_used_at: now,
-                seen_nonces: HashMap::new(),
-            },
-        );
+        if let Some(session) = sessions.get(&signing_session_id)
+            && session.peer_public_key == peer_public_key
+            && is_session_active(session, now)
+        {
+            *session.last_used_at.lock().unwrap() = now;
+        } else {
+            sessions.insert(
+                signing_session_id,
+                Arc::new(RelaySigningSession::new(peer_public_key, now)),
+            );
+        }
         drop(sessions);
         self.persist_sessions().await;
     }
@@ -331,17 +339,11 @@ impl RelaySigningService {
         validate_timestamp(request_signature.timestamp)?;
 
         let signature = parse_signature_b64(&request_signature.signature_b64)?;
-        let mut session = self
+        let session = self
             .get_valid_session(request_signature.signing_session_id)
             .await?;
 
-        session
-            .seen_nonces
-            .retain(|_, seen_at| Instant::now().duration_since(*seen_at) <= RELAY_NONCE_TTL);
-        if session.seen_nonces.contains_key(&request_signature.nonce) {
-            return Err(RelaySignatureValidationError::ReplayNonce);
-        }
-
+        // Hashing and Ed25519 verification hold neither the map nor nonce lock.
         let message =
             build_request_signing_message(request_signature, method, path_and_query, body);
         session
@@ -349,64 +351,129 @@ impl RelaySigningService {
             .verify(message.as_bytes(), &signature)
             .map_err(|_| RelaySignatureValidationError::InvalidSignature)?;
 
-        session
-            .seen_nonces
-            .insert(request_signature.nonce, Instant::now());
-        session.last_used_at = Instant::now();
+        self.consume_nonce(&session, request_signature).await?;
 
+        Ok(())
+    }
+
+    async fn consume_nonce(
+        &self,
+        session: &Arc<RelaySigningSession>,
+        signature: &RequestSignature,
+    ) -> Result<(), RelaySignatureValidationError> {
+        // Wait on this session only. Never wait for its nonce lock while holding
+        // the map: an unrelated session must remain usable even during cleanup.
+        let mut nonces = session.seen_nonces.lock().await;
+        let sessions = self.sessions.read().await;
+        // Pin the current registration through check-and-insert. A refresh or
+        // replacement during signature verification must not revive an old Arc.
+        if !sessions
+            .get(&signature.signing_session_id)
+            .is_some_and(|current| {
+                Arc::ptr_eq(current, session) && is_session_active(current, Instant::now())
+            })
+        {
+            return Err(RelaySignatureValidationError::MissingSigningSession);
+        }
+        validate_timestamp(signature.timestamp)?;
+        if nonces.contains_key(&signature.nonce) {
+            return Err(RelaySignatureValidationError::ReplayNonce);
+        }
+        // Fail closed if the timer is delayed; never evict a live replay nonce.
+        if nonces.len() >= MAX_SESSION_NONCES {
+            return Err(RelaySignatureValidationError::NonceCapacityExceeded);
+        }
+        let now = Instant::now();
+        nonces.insert(signature.nonce, now);
+        *session.last_used_at.lock().unwrap() = now;
         Ok(())
     }
 
     /// Get the peer's public key for a valid signing session.
     pub async fn get_session_peer_key(&self, signing_session_id: Uuid) -> Option<VerifyingKey> {
-        let sessions = self.sessions.read().await;
-        let now = Instant::now();
-        sessions.get(&signing_session_id).and_then(|session| {
-            if now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
-                && now.duration_since(session.last_used_at) <= RELAY_SIGNING_SESSION_IDLE_TTL
-            {
-                Some(session.peer_public_key)
-            } else {
-                None
-            }
-        })
+        self.get_valid_session(signing_session_id)
+            .await
+            .ok()
+            .map(|session| session.peer_public_key)
     }
 
     /// Check if any active signing session has the given Ed25519 public key.
     /// Used by the embedded SSH server for public key authentication.
     pub async fn has_active_session_with_key(&self, key_bytes: &[u8; 32]) -> bool {
+        self.start_cleanup();
         let sessions = self.sessions.read().await;
         let now = Instant::now();
         sessions.values().any(|session| {
-            now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
-                && now.duration_since(session.last_used_at) <= RELAY_SIGNING_SESSION_IDLE_TTL
-                && session.peer_public_key.as_bytes() == key_bytes
+            is_session_active(session, now) && session.peer_public_key.as_bytes() == key_bytes
         })
     }
 
     async fn get_valid_session(
         &self,
         signing_session_id: Uuid,
-    ) -> Result<RwLockMappedWriteGuard<'_, RelaySigningSession>, RelaySignatureValidationError>
-    {
-        let mut sessions = self.sessions.write().await;
-        let now = Instant::now();
-        sessions.retain(|_, session| is_session_active(session, now));
-        RwLockWriteGuard::try_map(sessions, |sessions| sessions.get_mut(&signing_session_id))
-            .map_err(|_| RelaySignatureValidationError::MissingSigningSession)
+    ) -> Result<Arc<RelaySigningSession>, RelaySignatureValidationError> {
+        self.start_cleanup();
+        self.sessions
+            .read()
+            .await
+            .get(&signing_session_id)
+            .filter(|session| is_session_active(session, Instant::now()))
+            .cloned()
+            .ok_or(RelaySignatureValidationError::MissingSigningSession)
     }
+
+    fn start_cleanup(&self) {
+        self.cleanup_started.call_once(|| {
+            let sessions = Arc::downgrade(&self.sessions);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(CLEANUP_INTERVAL).await;
+                    let Some(sessions) = sessions.upgrade() else {
+                        break;
+                    };
+                    cleanup_sessions(&sessions).await;
+                }
+            });
+        });
+    }
+}
+
+impl RelaySigningSession {
+    fn new(peer_public_key: VerifyingKey, now: Instant) -> Self {
+        Self {
+            peer_public_key,
+            created_at: now,
+            last_used_at: StdMutex::new(now),
+            seen_nonces: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+async fn cleanup_sessions(sessions: &SessionMap) {
+    let snapshot: Vec<_> = sessions.read().await.values().cloned().collect();
+    for session in snapshot {
+        // A busy session can wait until the next tick; its hard cap still holds.
+        if let Ok(mut nonces) = session.seen_nonces.try_lock() {
+            let now = Instant::now();
+            nonces.retain(|_, seen_at| now.duration_since(*seen_at) <= RELAY_NONCE_TTL);
+        }
+    }
+    let mut sessions = sessions.write().await;
+    let now = Instant::now();
+    sessions.retain(|_, session| is_session_active(session, now));
 }
 
 fn is_session_active(session: &RelaySigningSession, now: Instant) -> bool {
     now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
-        && now.duration_since(session.last_used_at) <= RELAY_SIGNING_SESSION_IDLE_TTL
+        && now.saturating_duration_since(*session.last_used_at.lock().unwrap())
+            <= RELAY_SIGNING_SESSION_IDLE_TTL
 }
 
 /// Read persisted (session_id, peer_public_key) pairs from disk into a fresh
 /// session map. `created_at`/`last_used_at` are reset to now and `seen_nonces`
 /// is empty — only the identity binding is persisted, not the replay window.
 /// Malformed lines are skipped so a partially-corrupt file degrades gracefully.
-fn read_persisted_sessions(path: &Path) -> HashMap<Uuid, RelaySigningSession> {
+fn read_persisted_sessions(path: &Path) -> HashMap<Uuid, Arc<RelaySigningSession>> {
     let mut map = HashMap::new();
     let Ok(content) = fs::read_to_string(path) else {
         return map;
@@ -432,15 +499,7 @@ fn read_persisted_sessions(path: &Path) -> HashMap<Uuid, RelaySigningSession> {
         let Ok(peer_public_key) = VerifyingKey::from_bytes(&arr) else {
             continue;
         };
-        map.insert(
-            id,
-            RelaySigningSession {
-                peer_public_key,
-                created_at: now,
-                last_used_at: now,
-                seen_nonces: HashMap::new(),
-            },
-        );
+        map.insert(id, Arc::new(RelaySigningSession::new(peer_public_key, now)));
     }
     map
 }
@@ -489,6 +548,173 @@ fn parse_signature_b64(signature_b64: &str) -> Result<Signature, RelaySignatureV
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn other_session_is_not_blocked() {
+        let service = RelaySigningService::new(SigningKey::generate(&mut OsRng));
+        let a = SigningKey::generate(&mut OsRng);
+        let b = SigningKey::generate(&mut OsRng);
+        let id_a = service.create_session(a.verifying_key()).await;
+        let id_b = service.create_session(b.verifying_key()).await;
+        let sig = build_request_signature(&b, id_b, "GET", "/", b"");
+        let session = service.get_valid_session(id_a).await.unwrap();
+        let held = session.seen_nonces.lock().await;
+        let started = Instant::now();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            service.verify_request(&sig, "GET", "/", b""),
+        )
+        .await
+        .expect("session B blocked by session A")
+        .unwrap();
+        eprintln!(
+            "after: session B completed in {:?} while session A was locked",
+            started.elapsed()
+        );
+        drop(held);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_verification_measurement() {
+        let service = RelaySigningService::new(SigningKey::generate(&mut OsRng));
+        let mut requests = Vec::new();
+        for _ in 0..8 {
+            let key = SigningKey::generate(&mut OsRng);
+            let id = service.create_session(key.verifying_key()).await;
+            requests.push(
+                (0..128)
+                    .map(|_| build_request_signature(&key, id, "GET", "/", b""))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let started = Instant::now();
+        let mut tasks = tokio::task::JoinSet::new();
+        for signatures in requests {
+            let service = service.clone();
+            tasks.spawn(async move {
+                for sig in signatures {
+                    service.verify_request(&sig, "GET", "/", b"").await.unwrap();
+                }
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        eprintln!(
+            "1024 verifications / 8 sessions: {:?}, {:.0} requests/s",
+            started.elapsed(),
+            1024.0 / started.elapsed().as_secs_f64()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_nonce_is_consumed_once() {
+        let service = RelaySigningService::new(SigningKey::generate(&mut OsRng));
+        let key = SigningKey::generate(&mut OsRng);
+        let id = service.create_session(key.verifying_key()).await;
+        let sig = build_request_signature(&key, id, "GET", "/", b"");
+        let barrier = Arc::new(tokio::sync::Barrier::new(32));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..32 {
+            let (service, sig, barrier) = (service.clone(), sig.clone(), barrier.clone());
+            tasks.spawn(async move {
+                barrier.wait().await;
+                service.verify_request(&sig, "GET", "/", b"").await
+            });
+        }
+        let mut accepted = 0;
+        while let Some(result) = tasks.join_next().await {
+            match result.unwrap() {
+                Ok(()) => accepted += 1,
+                Err(error) => assert_eq!(error, RelaySignatureValidationError::ReplayNonce),
+            }
+        }
+        assert_eq!(accepted, 1);
+        service.register_session(id, key.verifying_key()).await;
+        assert_eq!(
+            service.verify_request(&sig, "GET", "/", b"").await,
+            Err(RelaySignatureValidationError::ReplayNonce)
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_signature_and_replaced_session_cannot_consume_nonce() {
+        let service = RelaySigningService::new(SigningKey::generate(&mut OsRng));
+        let key = SigningKey::generate(&mut OsRng);
+        let id = service.create_session(key.verifying_key()).await;
+        let sig = build_request_signature(&key, id, "GET", "/", b"");
+        assert_eq!(
+            service.verify_request(&sig, "POST", "/", b"").await,
+            Err(RelaySignatureValidationError::InvalidSignature)
+        );
+        service.verify_request(&sig, "GET", "/", b"").await.unwrap();
+        let old = service.get_valid_session(id).await.unwrap();
+        service
+            .register_session(id, SigningKey::generate(&mut OsRng).verifying_key())
+            .await;
+        assert_eq!(
+            service.consume_nonce(&old, &sig).await,
+            Err(RelaySignatureValidationError::MissingSigningSession)
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_expires_nonces_and_sessions_and_capacity_fails_closed() {
+        let service = RelaySigningService::new(SigningKey::generate(&mut OsRng));
+        let key = SigningKey::generate(&mut OsRng);
+        let id = service.create_session(key.verifying_key()).await;
+        let session = service.get_valid_session(id).await.unwrap();
+        let live = build_request_signature(&key, id, "GET", "/", b"");
+        service
+            .verify_request(&live, "GET", "/", b"")
+            .await
+            .unwrap();
+        let expired = Instant::now() - RELAY_NONCE_TTL - Duration::from_secs(1);
+        {
+            let mut nonces = session.seen_nonces.lock().await;
+            for _ in 1..MAX_SESSION_NONCES {
+                nonces.insert(Uuid::new_v4(), expired);
+            }
+        }
+        let fresh = build_request_signature(&key, id, "GET", "/", b"");
+        assert_eq!(
+            service.verify_request(&fresh, "GET", "/", b"").await,
+            Err(RelaySignatureValidationError::NonceCapacityExceeded)
+        );
+        cleanup_sessions(&service.sessions).await;
+        assert_eq!(session.seen_nonces.lock().await.len(), 1);
+        assert_eq!(
+            service.verify_request(&live, "GET", "/", b"").await,
+            Err(RelaySignatureValidationError::ReplayNonce)
+        );
+        service
+            .verify_request(&fresh, "GET", "/", b"")
+            .await
+            .unwrap();
+        *session.last_used_at.lock().unwrap() =
+            Instant::now() - RELAY_SIGNING_SESSION_IDLE_TTL - Duration::from_secs(1);
+        assert!(service.get_session_peer_key(id).await.is_none());
+        cleanup_sessions(&service.sessions).await;
+        assert!(service.sessions.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn timer_cleans_idle_sessions_without_requests() {
+        let service = RelaySigningService::new(SigningKey::generate(&mut OsRng));
+        let id = service
+            .create_session(SigningKey::generate(&mut OsRng).verifying_key())
+            .await;
+        let session = service.get_valid_session(id).await.unwrap();
+        *session.last_used_at.lock().unwrap() =
+            Instant::now() - RELAY_SIGNING_SESSION_IDLE_TTL - Duration::from_secs(1);
+        tokio::time::timeout(CLEANUP_INTERVAL + Duration::from_secs(2), async {
+            while !service.sessions.read().await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("periodic cleanup did not run");
+    }
 
     fn tmp_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("vk-signing-test-{tag}-{}", Uuid::new_v4()))
@@ -547,6 +773,7 @@ mod tests {
 
         let writer = RelaySigningService {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key.clone()),
             persist_path: Some(Arc::new(path.clone())),
         };
@@ -555,6 +782,7 @@ mod tests {
         // Fresh instance loads persisted sessions from disk.
         let reloaded = RelaySigningService {
             sessions: Arc::new(RwLock::new(read_persisted_sessions(&path))),
+            cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key),
             persist_path: Some(Arc::new(path.clone())),
         };
@@ -619,6 +847,7 @@ mod tests {
         );
         let service = RelaySigningService {
             sessions: Arc::new(RwLock::new(read_persisted_sessions(&path))),
+            cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key),
             persist_path: Some(Arc::new(path.clone())),
         };
@@ -640,6 +869,7 @@ mod tests {
         let client_key = SigningKey::generate(&mut OsRng);
         let service = RelaySigningService {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key),
             persist_path: Some(Arc::new(path.clone())),
         };

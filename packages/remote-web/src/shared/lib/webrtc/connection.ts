@@ -17,6 +17,10 @@ const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 const HTTP_TIMEOUT_MS = 30_000;
+const BUFFER_HIGH_WATER = 1024 * 1024;
+const BUFFER_LOW_WATER = 256 * 1024;
+// Includes base64 overhead for the backend's 50 MiB signed request limit.
+const MAX_QUEUED_BYTES = 128 * 1024 * 1024;
 
 export interface WebRtcConnectionCallbacks {
   onDisconnect: () => void;
@@ -39,6 +43,9 @@ export class WebRtcConnection {
   private dataChannel: RTCDataChannel;
   private defragmenter = new Defragmenter();
   private connected = false;
+  private sendQueue: Promise<void> = Promise.resolve();
+  private queuedBytes = 0;
+  private sendAbort = new AbortController();
 
   private pendingHttp = new Map<string, PendingHttp>();
   private pendingWsOpen = new Map<
@@ -163,6 +170,10 @@ export class WebRtcConnection {
       const timer = setTimeout(() => {
         this.pendingHttp.delete(id);
         reject(new Error("WebRTC HTTP request timed out"));
+        // A request may still be only partly sent under backpressure. Abort its
+        // remaining fragments before the transport retries via the relay.
+        this.handleDisconnect();
+        this.close();
       }, HTTP_TIMEOUT_MS);
 
       this.pendingHttp.set(id, { resolve, reject, timer });
@@ -223,7 +234,9 @@ export class WebRtcConnection {
   }
 
   close(): void {
-    this.connected = false;
+    // Connection-manager cleanup may be closing a stale connection. Do not
+    // let its callback remove a newer connection for the same host.
+    this.handleDisconnect(false);
     try {
       this.dataChannel.close();
     } catch {
@@ -270,6 +283,7 @@ export class WebRtcConnection {
 
   private setupDataChannel(): void {
     this.dataChannel.binaryType = "arraybuffer";
+    this.dataChannel.bufferedAmountLowThreshold = BUFFER_LOW_WATER;
 
     this.dataChannel.onmessage = (event: MessageEvent) => {
       const complete = this.defragmenter.process(event.data);
@@ -295,7 +309,8 @@ export class WebRtcConnection {
     };
   }
 
-  private handleDisconnect(): void {
+  private handleDisconnect(notify = true): void {
+    this.sendAbort.abort();
     if (!this.connected) return;
     this.connected = false;
 
@@ -319,7 +334,7 @@ export class WebRtcConnection {
       this.activeWs.delete(connId);
     }
 
-    this.callbacks.onDisconnect();
+    if (notify) this.callbacks.onDisconnect();
   }
 
   private handleMessage(raw: Uint8Array): void {
@@ -376,14 +391,83 @@ export class WebRtcConnection {
     }
   }
 
-  private sendRaw(data: Uint8Array): void {
+  private waitForBuffer(): Promise<void> {
+    const dc = this.dataChannel;
+    const signal = this.sendAbort.signal;
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        dc.removeEventListener("bufferedamountlow", onLow);
+        dc.removeEventListener("close", onClosed);
+        dc.removeEventListener("error", onClosed);
+        signal.removeEventListener("abort", onClosed);
+      };
+      const onClosed = () => {
+        cleanup();
+        reject(new Error("WebRTC closed while waiting for send buffer"));
+      };
+      const onLow = () => {
+        if (signal.aborted || dc.readyState !== "open") {
+          onClosed();
+        } else if (dc.bufferedAmount <= BUFFER_LOW_WATER) {
+          cleanup();
+          resolve();
+        }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("WebRTC send buffer timed out"));
+      }, HTTP_TIMEOUT_MS);
+      dc.addEventListener("bufferedamountlow", onLow);
+      dc.addEventListener("close", onClosed);
+      dc.addEventListener("error", onClosed);
+      signal.addEventListener("abort", onClosed);
+      // Recheck after subscribing so drain/close cannot be missed.
+      onLow();
+    });
+  }
+
+  private async sendRaw(data: Uint8Array): Promise<void> {
     const chunks = fragment(data);
     for (const chunk of chunks) {
+      if (
+        this.dataChannel.bufferedAmount + chunk.byteLength >
+        BUFFER_HIGH_WATER
+      ) {
+        await this.waitForBuffer();
+      }
+      if (!this.isConnected || this.sendAbort.signal.aborted) {
+        throw new Error("WebRTC not connected");
+      }
       this.dataChannel.send(new Uint8Array(chunk) as Uint8Array<ArrayBuffer>);
     }
   }
 
   private sendMessage(msg: DataChannelMessage): void {
-    this.sendRaw(TEXT_ENCODER.encode(JSON.stringify(msg)));
+    const data = TEXT_ENCODER.encode(JSON.stringify(msg));
+    // Bound the JS backlog as well as the browser's SCTP buffer.
+    if (this.queuedBytes + data.byteLength > MAX_QUEUED_BYTES) {
+      this.handleDisconnect();
+      this.close();
+      return;
+    }
+    this.queuedBytes += data.byteLength;
+    // The chunk protocol has no message IDs: fragments from different messages
+    // must never interleave, including while the first message waits for drain.
+    this.sendQueue = this.sendQueue
+      .then(async () => {
+        if (msg.type === "http_request" && !this.pendingHttp.has(msg.id))
+          return;
+        await this.sendRaw(data);
+      })
+      .catch(() => {
+        // A partial message cannot be resumed on this channel. Closing rejects
+        // pending operations and lets the existing transport reconnect/fallback.
+        this.handleDisconnect();
+        this.close();
+      })
+      .finally(() => {
+        this.queuedBytes -= data.byteLength;
+      });
   }
 }
