@@ -48,6 +48,7 @@ use workspace_utils::{
     msg_store::MsgStore,
     path::make_path_relative,
     stream_lines::LinesStreamExt,
+    text::Utf8Decoder,
 };
 
 use crate::{
@@ -178,6 +179,11 @@ struct CommandState {
     exit_code: Option<i32>,
     awaiting_approval: bool,
     call_id: String,
+    /// `ExecCommandOutputDelta.chunk` is documented as raw bytes that may not
+    /// be valid UTF-8, so a character can straddle two deltas. Decode each
+    /// stream incrementally instead of lossily per delta.
+    stdout_decoder: Utf8Decoder,
+    stderr_decoder: Utf8Decoder,
 }
 
 const MAX_NORMALIZED_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
@@ -2476,6 +2482,7 @@ pub fn normalize_logs(
                             exit_code: None,
                             awaiting_approval: false,
                             call_id: call_id.clone(),
+                            ..Default::default()
                         },
                     );
                     let command_state = state.commands.get_mut(&call_id).unwrap();
@@ -2492,7 +2499,10 @@ pub fn normalize_logs(
                     chunk,
                 }) => {
                     if let Some(command_state) = state.commands.get_mut(&call_id) {
-                        let chunk = String::from_utf8_lossy(&chunk);
+                        let chunk = match stream {
+                            ExecOutputStream::Stdout => command_state.stdout_decoder.push(&chunk),
+                            ExecOutputStream::Stderr => command_state.stderr_decoder.push(&chunk),
+                        };
                         if chunk.is_empty() {
                             continue;
                         }
@@ -3536,6 +3546,45 @@ mod tests {
         assert!(
             replaces <= max_replaces,
             "{replaces} replaces for {deltas} deltas in {elapsed:?} (allowed {max_replaces})"
+        );
+    }
+
+    /// `ExecCommandOutputDelta.chunk` is raw bytes, so codex can split a
+    /// multi-byte character across two deltas. Decoding each delta on its own
+    /// would leave U+FFFD in the rendered command output.
+    #[tokio::test]
+    async fn command_output_delta_split_mid_character_decodes_intact() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let text = "빌드 성공했습니다";
+        let bytes = text.as_bytes();
+        let cut = 4; // mid-way through the second syllable
+        assert!(String::from_utf8_lossy(&bytes[..cut]).contains('\u{FFFD}'));
+
+        let begin = json!({
+            "type": "exec_command_begin", "call_id": "call-1", "turn_id": "turn-1",
+            "command": ["echo", text], "cwd": "file:///tmp/test-worktree", "parsed_cmd": []
+        });
+        serde_json::from_value::<EventMsg>(begin.clone()).unwrap();
+        let mut lines = vec![json!({"method":"codex/event","params":{"msg": begin}}).to_string()];
+        for part in [&bytes[..cut], &bytes[cut..]] {
+            let delta = json!({
+                "type": "exec_command_output_delta", "call_id": "call-1",
+                "stream": "stdout", "chunk": STANDARD.encode(part)
+            });
+            serde_json::from_value::<EventMsg>(delta.clone()).unwrap();
+            lines.push(json!({"method":"codex/event","params":{"msg": delta}}).to_string());
+        }
+
+        let entries = normalize_lines(&lines).await;
+        let rendered = serde_json::to_string(&entries).unwrap();
+        assert!(
+            !rendered.contains('\u{FFFD}'),
+            "command output was corrupted: {rendered}"
+        );
+        assert!(
+            rendered.contains(text),
+            "expected {text:?} in rendered output: {rendered}"
         );
     }
 

@@ -75,7 +75,7 @@ use tokio_util::io::ReaderStream;
 use utils::{
     log_msg::LogMsg,
     msg_store::MsgStore,
-    text::{git_branch_id, short_uuid, truncate_to_char_boundary},
+    text::{Utf8Decoder, git_branch_id, short_uuid, truncate_to_char_boundary},
 };
 use uuid::Uuid;
 use workspace_manager::{RepoWorkspaceInput, WorkspaceError, WorkspaceManager};
@@ -83,6 +83,28 @@ use workspace_manager::{RepoWorkspaceInput, WorkspaceError, WorkspaceManager};
 use crate::{command, copy};
 
 const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
+
+/// A child's byte stream as log messages.
+///
+/// `ReaderStream` cuts on read boundaries, which land mid-character for
+/// non-ASCII output. Decoding each chunk with `String::from_utf8_lossy` would
+/// burn the straddling character into U+FFFD before anything downstream could
+/// reassemble it, so carry the incomplete tail across chunks instead. A chunk
+/// that is nothing but a held-back tail decodes to "" and is dropped rather
+/// than pushed as an empty log message.
+fn decoded_log_stream<R>(
+    reader: R,
+    wrap: fn(String) -> LogMsg,
+) -> impl futures::Stream<Item = Result<LogMsg, io::Error>>
+where
+    R: tokio::io::AsyncRead,
+{
+    let mut decoder = Utf8Decoder::new();
+    ReaderStream::new(reader)
+        .map_ok(move |chunk| decoder.push(&chunk))
+        .try_filter(|text| std::future::ready(!text.is_empty()))
+        .map_ok(wrap)
+}
 
 fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<bool> {
     let debug_dir = target_dir.join("debug");
@@ -1259,13 +1281,8 @@ impl LocalContainerService {
         let out = child.inner().stdout.take().expect("no stdout");
         let err = child.inner().stderr.take().expect("no stderr");
 
-        // Map stdout bytes -> LogMsg::Stdout
-        let out = ReaderStream::new(out)
-            .map_ok(|chunk| LogMsg::Stdout(String::from_utf8_lossy(&chunk).into_owned()));
-
-        // Map stderr bytes -> LogMsg::Stderr
-        let err = ReaderStream::new(err)
-            .map_ok(|chunk| LogMsg::Stderr(String::from_utf8_lossy(&chunk).into_owned()));
+        let out = decoded_log_stream(out, LogMsg::Stdout);
+        let err = decoded_log_stream(err, LogMsg::Stderr);
 
         // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
 
@@ -3636,6 +3653,44 @@ mod tests {
                 log_skip_cleanup: false,
                 finalize_with_queue: None,
             }
+        );
+    }
+
+    /// The capture path reads a child's stdout in arbitrary-sized chunks, so a
+    /// multi-byte character lands across a boundary as soon as the output is
+    /// long enough. The reassembled log must carry the text exactly, with no
+    /// U+FFFD — decoding each chunk on its own is what corrupted Korean output
+    /// in the persisted logs.
+    #[tokio::test]
+    async fn decoded_log_stream_survives_chunk_boundaries_in_multibyte_text() {
+        use futures::TryStreamExt;
+
+        // Long enough that tokio's reads split it in several places.
+        let text = "검증했습니다 ".repeat(4000) + "🎉 끝";
+        let reader = std::io::Cursor::new(text.clone().into_bytes());
+        let msgs: Vec<LogMsg> = decoded_log_stream(reader, LogMsg::Stdout)
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert!(
+            msgs.len() > 1,
+            "expected a chunked read, got {}",
+            msgs.len()
+        );
+        let joined: String = msgs
+            .iter()
+            .map(|m| match m {
+                LogMsg::Stdout(s) => s.as_str(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert!(!joined.contains('\u{FFFD}'), "decoded output was corrupted");
+        assert_eq!(joined, text);
+        assert!(
+            msgs.iter()
+                .all(|m| !matches!(m, LogMsg::Stdout(s) if s.is_empty())),
+            "empty chunks must be dropped"
         );
     }
 }

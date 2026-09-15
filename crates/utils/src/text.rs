@@ -51,6 +51,55 @@ pub fn truncate_to_char_boundary(content: &str, max_len: usize) -> &str {
     &content[..cutoff]
 }
 
+/// Incremental UTF-8 decoder for byte streams that can split anywhere.
+///
+/// Decoding each chunk on its own with [`String::from_utf8_lossy`] turns a
+/// multi-byte character straddling a chunk boundary into U+FFFD permanently —
+/// agent stdout is read in arbitrary-sized chunks, so non-ASCII output gets
+/// corrupted at every boundary it happens to land on. This holds an incomplete
+/// trailing sequence (never more than 3 bytes) back until the next chunk
+/// completes it. Bytes that are genuinely invalid UTF-8 are still replaced.
+///
+/// Bytes still held when the stream ends belong to a truncated character that
+/// has no correct rendering, so they are dropped rather than emitted as U+FFFD.
+#[derive(Debug, Default)]
+pub struct Utf8Decoder {
+    carry: Vec<u8>,
+}
+
+impl Utf8Decoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decode `chunk`, prefixed by whatever was held back from the last call.
+    pub fn push(&mut self, chunk: &[u8]) -> String {
+        if self.carry.is_empty() && chunk.is_empty() {
+            return String::new();
+        }
+        self.carry.extend_from_slice(chunk);
+        let buf = std::mem::take(&mut self.carry);
+
+        // Step over complete sequences — valid or not — to find where an
+        // incomplete trailing one begins, if there is one at all.
+        let mut at = 0;
+        let keep = loop {
+            match std::str::from_utf8(&buf[at..]) {
+                Ok(_) => break buf.len(),
+                Err(e) => match e.error_len() {
+                    // Complete but invalid: `from_utf8_lossy` replaces it below.
+                    Some(n) => at += e.valid_up_to() + n,
+                    // Truncated tail: wait for the bytes that finish it.
+                    None => break at + e.valid_up_to(),
+                },
+            }
+        };
+
+        self.carry.extend_from_slice(&buf[keep..]);
+        String::from_utf8_lossy(&buf[..keep]).into_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -94,5 +143,74 @@ mod tests {
         let input = "🔥🔥🔥"; // each fire emoji is 4 bytes
         assert_eq!(truncate_to_char_boundary(input, 5), "🔥");
         assert_eq!(truncate_to_char_boundary(input, 3), "");
+    }
+}
+
+#[cfg(test)]
+mod utf8_decoder_tests {
+    use super::Utf8Decoder;
+
+    /// The real failure: a 3-byte Hangul syllable cut by a read boundary.
+    /// Decoding each half on its own yields two U+FFFD instead of the char.
+    #[test]
+    fn character_split_across_chunks_survives() {
+        let bytes = "검증했습니다".as_bytes();
+        let (head, tail) = bytes.split_at(4); // mid-way through '증'
+        assert!(String::from_utf8_lossy(head).contains('\u{FFFD}'));
+
+        let mut dec = Utf8Decoder::new();
+        let out = dec.push(head) + &dec.push(tail);
+        assert_eq!(out, "검증했습니다");
+    }
+
+    /// Every split position of a mixed-script string must reassemble exactly,
+    /// including a byte-at-a-time feed.
+    #[test]
+    fn all_split_positions_reassemble_exactly() {
+        let text = "검증 ok 🎉 한글 mixed ascii ünïcode";
+        let bytes = text.as_bytes();
+        for cut in 0..=bytes.len() {
+            let mut dec = Utf8Decoder::new();
+            let out = dec.push(&bytes[..cut]) + &dec.push(&bytes[cut..]);
+            assert_eq!(out, text, "split at {cut}");
+        }
+
+        let mut dec = Utf8Decoder::new();
+        let out: String = bytes.iter().map(|b| dec.push(&[*b])).collect();
+        assert_eq!(out, text, "byte-at-a-time");
+    }
+
+    /// Genuinely invalid bytes are still replaced, and a truncated tail in the
+    /// same buffer is still carried rather than swallowed by the first error.
+    #[test]
+    fn invalid_bytes_replaced_and_trailing_tail_still_carried() {
+        let mut dec = Utf8Decoder::new();
+        let mut buf = vec![b'a', 0xFF, b'b'];
+        buf.extend_from_slice(&"증".as_bytes()[..2]);
+        let first = dec.push(&buf);
+        assert_eq!(first, "a\u{FFFD}b");
+        assert_eq!(dec.push(&"증".as_bytes()[2..]), "증");
+    }
+
+    /// The carry is an incomplete sequence, so it can never grow past 3 bytes
+    /// no matter how the stream is chopped.
+    #[test]
+    fn carry_stays_bounded() {
+        let mut dec = Utf8Decoder::new();
+        for _ in 0..1000 {
+            dec.push("🎉한글".as_bytes());
+            dec.push(&[0xF0]); // lone lead byte
+            assert!(dec.carry.len() <= 3, "carry grew to {}", dec.carry.len());
+        }
+    }
+
+    /// A stream ending mid-character drops the truncated bytes instead of
+    /// rendering them as U+FFFD.
+    #[test]
+    fn truncated_tail_at_end_of_stream_is_dropped() {
+        let mut dec = Utf8Decoder::new();
+        let bytes = "ab증".as_bytes();
+        assert_eq!(dec.push(&bytes[..3]), "ab");
+        assert!(!dec.carry.is_empty());
     }
 }

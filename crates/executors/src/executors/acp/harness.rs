@@ -18,6 +18,7 @@ use tokio_util::{
 use tracing::error;
 use workspace_utils::{
     approvals::ApprovalStatus, command_ext::GroupSpawnNoWindowExt, stream_lines::LinesStreamExt,
+    text::Utf8Decoder,
 };
 
 use super::{AcpClient, SessionManager};
@@ -259,8 +260,12 @@ impl AcpAgentHarness {
         let stdin_shutdown_rx = shutdown_rx.clone();
         tokio::spawn(async move {
             let mut child_stdin = orig_stdin;
+            // Same read-boundary hazard as child stdout: a per-chunk lossy
+            // decode would corrupt any non-ASCII character the duplex happens
+            // to split, silently mangling the prompt sent to the agent.
+            let mut decoder = Utf8Decoder::new();
             let mut lines = ReaderStream::new(acp_out_reader)
-                .map(|res| res.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+                .map(move |res| res.map(|bytes| decoder.push(&bytes)))
                 .lines();
             while let Some(result) = lines.next().await {
                 if *stdin_shutdown_rx.borrow() {
