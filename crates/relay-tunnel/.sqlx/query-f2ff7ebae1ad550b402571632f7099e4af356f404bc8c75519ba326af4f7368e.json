@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                rbs.id              AS \"id!: Uuid\",\n                rbs.host_id         AS \"host_id!: Uuid\",\n                rbs.user_id         AS \"user_id!: Uuid\",\n                rbs.auth_session_id AS \"auth_session_id!: Uuid\",\n                rbs.last_used_at    AS \"last_used_at?\",\n                rbs.revoked_at      AS \"revoked_at?\",\n                s.user_id           AS \"session_user_id?: Uuid\",\n                s.created_at        AS \"session_created_at?\",\n                s.last_used_at      AS \"session_last_used_at?\",\n                s.revoked_at        AS \"session_revoked_at?\",\n                EXISTS (\n                    SELECT 1\n                    FROM hosts h\n                    LEFT JOIN organization_member_metadata om\n                        ON om.organization_id = h.shared_with_organization_id\n                        AND om.user_id = s.user_id\n                    WHERE h.id = $2\n                      AND (h.owner_user_id = s.user_id OR om.user_id IS NOT NULL)\n                ) AS \"host_allowed!\"\n            FROM relay_browser_sessions rbs\n            LEFT JOIN auth_sessions s ON s.id = rbs.auth_session_id\n            WHERE rbs.id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "host_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "auth_session_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_used_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "revoked_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "session_user_id?: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "session_created_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "session_last_used_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "session_revoked_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "host_allowed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "f2ff7ebae1ad550b402571632f7099e4af356f404bc8c75519ba326af4f7368e"
+}
