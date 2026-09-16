@@ -5,7 +5,9 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import {
   appendLogBatch,
   EMPTY_LOG_BUFFER,
-  MAX_LOG_LINES,
+  MAX_LOG_BYTES,
+  MAX_LOG_ENTRIES,
+  trimLogBuffer,
   type LogBufferState,
   type LogStreamEntry as LogEntry,
 } from '@/shared/lib/logBuffer';
@@ -51,6 +53,7 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
     // otherwise re-renders (and re-copies the whole log array) thousands of
     // times a second.
     let pending: LogEntry[] = [];
+    let pendingBytes = 0;
     let pendingDropped = 0;
     let pendingReplace = false;
     let rafHandle: number | null = null;
@@ -62,6 +65,7 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
       const alreadyDropped = pendingDropped;
       const replace = pendingReplace;
       pending = [];
+      pendingBytes = 0;
       pendingDropped = 0;
       pendingReplace = false;
       setBuffer((prev) =>
@@ -122,10 +126,18 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
               return;
             }
             pending.push(entry);
+            pendingBytes += entry.content.length;
             // A hidden tab gets no animation frames, so bound the queue too.
-            if (pending.length > MAX_LOG_LINES) {
-              pendingDropped += pending.length - MAX_LOG_LINES;
-              pending = pending.slice(-MAX_LOG_LINES);
+            // Trim only past double the ceiling: trimming on every entry once
+            // saturated would slice the whole queue per line.
+            if (
+              pending.length > MAX_LOG_ENTRIES * 2 ||
+              pendingBytes > MAX_LOG_BYTES * 2
+            ) {
+              const trimmed = trimLogBuffer(pending, pendingBytes);
+              pending = trimmed.logs;
+              pendingBytes = trimmed.bytes;
+              pendingDropped += trimmed.trimmed;
             }
             if (rafHandle === null) {
               rafHandle = requestAnimationFrame(flush);
