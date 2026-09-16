@@ -44,6 +44,24 @@ export function filterDevServerProcesses(
 }
 
 /**
+ * Identity of the dev-server processes visible on an execution-process stream.
+ *
+ * Changes exactly when a dev server appears, disappears, or changes status —
+ * which is the only thing the workspace dev-server query needs to refetch for.
+ */
+export function devServerStreamSignature(
+  processes: ExecutionProcess[] | undefined
+): string {
+  if (!processes) return '';
+  let signature = '';
+  for (const process of processes) {
+    if (process.run_reason !== 'devserver') continue;
+    signature += `${process.id}:${process.status};`;
+  }
+  return signature;
+}
+
+/**
  * Filter processes to only include running dev servers.
  */
 export function filterRunningDevServers(

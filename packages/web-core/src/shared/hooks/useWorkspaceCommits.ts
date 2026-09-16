@@ -3,6 +3,7 @@ import type { WorkspaceCommit } from 'shared/types';
 import { workspacesApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { WORKSPACE_GIT_BACKUP_POLL_MS } from '@/shared/lib/workspaceGitRefetch';
 
 export const workspaceCommitsKey = (
   workspaceId: string | null | undefined,
@@ -31,7 +32,9 @@ export function useWorkspaceCommits(
     // Commits change as the agent works; keep it reasonably fresh but avoid
     // hammering on every focus.
     staleTime: 10_000,
-    // Reconcile commits created, amended, rebased, or removed outside the UI.
-    refetchInterval: enabled && workspaceId ? 5_000 : false,
+    // Backup only; commit-changing actions invalidate this key and the
+    // workspace diff stream drives the agent-commit case.
+    refetchInterval:
+      enabled && workspaceId ? WORKSPACE_GIT_BACKUP_POLL_MS : false,
   });
 }

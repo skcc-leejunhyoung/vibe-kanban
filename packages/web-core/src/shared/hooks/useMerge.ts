@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
+import { workspaceCommitsKey } from '@/shared/hooks/useWorkspaceCommits';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 
 type MergeParams = {
@@ -42,6 +43,11 @@ export function useMerge(
 
       // Invalidate all repo branches queries
       queryClient.invalidateQueries({ queryKey: repoBranchKeys.all });
+
+      // The merge moves the base, so the ahead-of-base commit list changes.
+      queryClient.invalidateQueries({
+        queryKey: workspaceCommitsKey(workspaceId, hostId),
+      });
 
       onSuccess?.();
     },

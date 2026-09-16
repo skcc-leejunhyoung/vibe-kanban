@@ -75,9 +75,9 @@ export function useSessionQueueInteraction({
       queryFn: () => queueApi.getStatus(sessionId!, hostId),
       enabled: !!sessionId,
       // Queue state is in-memory and has no push stream of its own. Poll only
-      // while work is waiting, including in non-focused split-screen panes.
+      // while work is waiting; in-document split panes share this tab's
+      // visibility, so the default (pause while hidden) is enough.
       refetchInterval: (query) => queueStatusRefetchInterval(query.state.data),
-      refetchIntervalInBackground: true,
     });
 
   const queuedMessages =

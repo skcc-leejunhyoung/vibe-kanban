@@ -2,11 +2,18 @@ import { useEffect, useState, useRef } from 'react';
 import type { PatchType } from 'shared/types';
 import { openLocalApiStream } from '@/shared/lib/localApiTransport';
 import { useHostId } from '@/shared/providers/HostIdProvider';
-
-type LogEntry = Extract<PatchType, { type: 'STDOUT' } | { type: 'STDERR' }>;
+import {
+  appendLogBatch,
+  EMPTY_LOG_BUFFER,
+  MAX_LOG_LINES,
+  type LogBufferState,
+  type LogStreamEntry as LogEntry,
+} from '@/shared/lib/logBuffer';
 
 interface UseLogStreamResult {
   logs: LogEntry[];
+  /** Lines trimmed off the front by the ring buffer since the stream started. */
+  dropped: number;
   error: string | null;
 }
 
@@ -14,7 +21,7 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
   // Context host, not the document fallback: in a split pane this process
   // lives on the pane's host, which may differ from the focused route's.
   const hostId = useHostId();
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_LOG_BUFFER);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const retryCountRef = useRef<number>(0);
@@ -36,9 +43,31 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
     currentProcessIdRef.current = processId;
 
     // Clear logs when process changes
-    setLogs([]);
+    setBuffer(EMPTY_LOG_BUFFER);
     setError(null);
     finishedRef.current = false;
+
+    // One state write per frame instead of per line: a chatty dev server
+    // otherwise re-renders (and re-copies the whole log array) thousands of
+    // times a second.
+    let pending: LogEntry[] = [];
+    let pendingDropped = 0;
+    let pendingReplace = false;
+    let rafHandle: number | null = null;
+
+    const flush = () => {
+      rafHandle = null;
+      if (pending.length === 0 && pendingDropped === 0) return;
+      const batch = pending;
+      const alreadyDropped = pendingDropped;
+      const replace = pendingReplace;
+      pending = [];
+      pendingDropped = 0;
+      pendingReplace = false;
+      setBuffer((prev) =>
+        appendLogBatch(prev, batch, { replace, alreadyDropped })
+      );
+    };
 
     const open = () => {
       // Don't reconnect if the stream already signalled finished
@@ -63,11 +92,10 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
           wsRef.current = ws;
           isIntentionallyClosed.current = false;
 
-          // Track whether this is a reconnect so we can replace (not append)
-          // logs on the first incoming message to avoid duplicates from
-          // the server replaying history.
-          const isReconnect = retryCountRef.current > 0;
-          let pendingReplace = isReconnect;
+          // Track whether this is a reconnect so the first flushed batch
+          // replaces (not appends to) the logs, avoiding duplicates from the
+          // server replaying history.
+          pendingReplace = retryCountRef.current > 0;
 
           ws.onopen = () => {
             // Ignore if processId has changed since WebSocket was opened
@@ -93,13 +121,14 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
             ) {
               return;
             }
-            if (pendingReplace) {
-              // First entry after reconnect: replace old logs to avoid
-              // duplicates from the history replay.
-              pendingReplace = false;
-              setLogs([entry]);
-            } else {
-              setLogs((prev) => [...prev, entry]);
+            pending.push(entry);
+            // A hidden tab gets no animation frames, so bound the queue too.
+            if (pending.length > MAX_LOG_LINES) {
+              pendingDropped += pending.length - MAX_LOG_LINES;
+              pending = pending.slice(-MAX_LOG_LINES);
+            }
+            if (rafHandle === null) {
+              rafHandle = requestAnimationFrame(flush);
             }
           };
 
@@ -128,6 +157,8 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
               } else if (data.finished === true) {
                 finishedRef.current = true;
                 isIntentionallyClosed.current = true;
+                // Don't strand the tail of the log in the pending batch.
+                flush();
                 ws.close();
               }
             } catch (e) {
@@ -149,6 +180,7 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
             ) {
               return;
             }
+            flush();
             // Only retry if the close was not intentional and not a normal closure
             if (!isIntentionallyClosed.current && event.code !== 1000) {
               const next = retryCountRef.current + 1;
@@ -181,6 +213,10 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
 
     return () => {
       cancelled = true;
+      if (rafHandle !== null) {
+        cancelAnimationFrame(rafHandle);
+        rafHandle = null;
+      }
       if (wsRef.current) {
         isIntentionallyClosed.current = true;
         wsRef.current.close();
@@ -193,5 +229,5 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
     };
   }, [processId, hostId]);
 
-  return { logs, error };
+  return { logs: buffer.logs, dropped: buffer.dropped, error };
 };

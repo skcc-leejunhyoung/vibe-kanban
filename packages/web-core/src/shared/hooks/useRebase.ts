@@ -4,6 +4,7 @@ import type { RebaseWorkspaceRequest } from 'shared/types';
 import type { GitOperationError } from 'shared/types';
 import { repoBranchKeys } from '@/shared/hooks/useRepoBranches';
 import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
+import { workspaceCommitsKey } from '@/shared/hooks/useWorkspaceCommits';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export function useRebase(
@@ -62,6 +63,11 @@ export function useRebase(
             queryKey: repoBranchKeys.byRepo(repoId),
           });
         }
+
+        // Rebasing rewrites the commits this workspace adds on top of base.
+        queryClient.invalidateQueries({
+          queryKey: workspaceCommitsKey(workspaceId, hostId),
+        });
 
         onSuccess?.();
       },

@@ -252,9 +252,12 @@ function detectPreviewUrlFromBuffer(
 
 export function usePreviewUrl(
   logs: Array<{ content: string }> | undefined,
-  previewProxyPort?: number
+  previewProxyPort?: number,
+  /** Lines the log ring buffer trimmed off the front (see useLogStream). */
+  dropped = 0
 ): PreviewUrlInfo | undefined {
   const [urlInfo, setUrlInfo] = useState<PreviewUrlInfo | undefined>();
+  // Absolute line index (survives ring-buffer trimming), not an array offset.
   const lastIndexRef = useRef(0);
   const logBufferRef = useRef('');
 
@@ -267,7 +270,7 @@ export function usePreviewUrl(
     }
 
     // Reset if logs were cleared (new process started)
-    if (logs.length < lastIndexRef.current) {
+    if (dropped + logs.length < lastIndexRef.current) {
       lastIndexRef.current = 0;
       setUrlInfo(undefined);
       logBufferRef.current = '';
@@ -283,7 +286,7 @@ export function usePreviewUrl(
 
     // Scan new log entries for URL
     let detectedUrl: PreviewUrlInfo | undefined;
-    const newEntries = logs.slice(lastIndexRef.current);
+    const newEntries = logs.slice(Math.max(0, lastIndexRef.current - dropped));
     if (newEntries.length > 0) {
       const chunk = newEntries.map((entry) => entry.content).join('');
       const merged = `${logBufferRef.current}${chunk}`;
@@ -305,8 +308,8 @@ export function usePreviewUrl(
       });
     }
 
-    lastIndexRef.current = logs.length;
-  }, [logs, urlInfo, previewProxyPort]);
+    lastIndexRef.current = dropped + logs.length;
+  }, [logs, urlInfo, previewProxyPort, dropped]);
 
   return urlInfo;
 }

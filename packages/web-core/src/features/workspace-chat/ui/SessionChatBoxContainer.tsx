@@ -297,13 +297,15 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [queryClient, hostId, workspaceId, t]
   );
 
-  // Usage-based auto-resume status for the current session. Polled so the
-  // "waiting to resume" badge + countdown stay live.
+  // Usage-based auto-resume status for the current session. Only the pending
+  // countdown needs to tick; otherwise this is a slow backup poll (the setter
+  // invalidates the key directly).
   const autoResumeQuery = useQuery({
     queryKey: ['sessionAutoResume', hostId, sessionId],
     queryFn: () => sessionsApi.getAutoResume(sessionId!, hostId),
     enabled: !!sessionId,
-    refetchInterval: 10000,
+    refetchInterval: (query) =>
+      query.state.data?.pending_resume_at ? 10_000 : 60_000,
   });
 
   const autoResumeEnabled =

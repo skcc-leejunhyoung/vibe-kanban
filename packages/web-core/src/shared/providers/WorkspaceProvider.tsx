@@ -24,6 +24,12 @@ import {
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceSessions } from '@/shared/hooks/useWorkspaceSessions';
 import { useGitHubComments } from '@/shared/hooks/useGitHubComments';
+import { branchStatusKeys } from '@/shared/hooks/useBranchStatus';
+import { workspaceCommitsKey } from '@/shared/hooks/useWorkspaceCommits';
+import {
+  GIT_EVENT_SETTLE_MS,
+  workspaceDiffSignature,
+} from '@/shared/lib/workspaceGitRefetch';
 import { useDiffStream } from '@/shared/hooks/useDiffStream';
 import { useCommitDiff } from '@/shared/hooks/useCommitDiff';
 import { workspacesApi } from '@/shared/lib/api';
@@ -180,6 +186,35 @@ function WorkspaceProviderContent({
     }),
     [diffs]
   );
+
+  // Git state (ahead/behind, commit list) only moves when the worktree does,
+  // and the diff stream above already reports that live. Trail its bursts
+  // instead of polling branch status + commits every 5s from six call sites;
+  // WORKSPACE_GIT_BACKUP_POLL_MS covers a burst that never settles.
+  const diffSignature = workspaceDiffSignature(diffStats);
+  const lastDiffRef = useRef<{
+    workspaceId?: string;
+    signature: string | null;
+  }>({ workspaceId, signature: null });
+  useEffect(() => {
+    const previous = lastDiffRef.current;
+    lastDiffRef.current = { workspaceId, signature: diffSignature };
+    // First signature (and the one after a workspace switch) is the mount
+    // baseline — those queries just fetched under their own key.
+    if (previous.workspaceId !== workspaceId) return;
+    if (previous.signature === null || previous.signature === diffSignature)
+      return;
+    if (!workspaceId || isCreateMode) return;
+    const timer = setTimeout(() => {
+      void queryClient.invalidateQueries({
+        queryKey: branchStatusKeys.byWorkspace(workspaceId, hostId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: workspaceCommitsKey(workspaceId, hostId),
+      });
+    }, GIT_EVENT_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [diffSignature, workspaceId, hostId, isCreateMode, queryClient]);
 
   const rafRef = useRef<number | null>(null);
   const batchCountRef = useRef(0);

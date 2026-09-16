@@ -213,8 +213,8 @@ export function PreviewBrowserContainer({
         : latest
     );
   }, [runningDevServers]);
-  const { logs } = useLogStream(primaryDevServer?.id ?? '');
-  const urlInfo = usePreviewUrl(logs, previewProxyPort ?? undefined);
+  const { logs, dropped } = useLogStream(primaryDevServer?.id ?? '');
+  const urlInfo = usePreviewUrl(logs, previewProxyPort ?? undefined, dropped);
 
   // Detect failed dev server process (failed status or completed with non-zero exit code)
   const failedDevServerProcess = devServerProcesses.find(
