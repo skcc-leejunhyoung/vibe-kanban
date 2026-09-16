@@ -1941,6 +1941,13 @@ impl ClaudeLogProcessor {
                     Some("task_progress") => {
                         if let (Some(tool_use_id), Some(desc)) = (tool_use_id, description)
                             && let Some(info) = self.tool_map.get_mut(tool_use_id)
+                            // The CLI runs plain tool calls (background Bash,
+                            // Monitor) through the same task machinery as
+                            // subagents. Rewriting those entries as TaskCreate
+                            // would show a shell command as a subagent card and
+                            // lose the command text, so only real Task tools
+                            // become subagent entries.
+                            && matches!(info.tool_data, ClaudeToolData::Task { .. })
                         {
                             // `task_progress` names the specific subagent role;
                             // upgrade entries that only had a generic kind.
@@ -1983,6 +1990,11 @@ impl ClaudeLogProcessor {
                     Some("task_notification") => {
                         if let Some(tool_use_id) = tool_use_id
                             && let Some(info) = self.tool_map.get(tool_use_id).cloned()
+                            // Same reason as `task_progress`: a background
+                            // command keeps its own tool entry (its result
+                            // already settled it) instead of turning into a
+                            // subagent card on completion.
+                            && matches!(info.tool_data, ClaudeToolData::Task { .. })
                         {
                             // "stopped" = interrupted before finishing; showing it
                             // as success would misreport cancelled subagents.
@@ -5945,6 +5957,36 @@ mod tests {
         let control = task_control(&entries[0]).expect("finished task keeps its identity");
         assert!(!control.can_open_transcript);
         assert!(!control.can_stop);
+    }
+
+    #[test]
+    fn background_command_keeps_its_command_entry() {
+        // Claude Code routes every Bash call through a `local_bash` task, so
+        // the task events must not rewrite the command row as a subagent card.
+        let entries = normalize_sequence(&[
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"Bash","input":{"command":"cargo build","description":"Build"}}]}}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"tool_1","description":"Build","task_type":"local_bash"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"Command running in background with ID: b1","is_error":false}]}}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"b1","tool_use_id":"tool_1","description":"Compiling"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"tool_1","status":"completed","output_file":"/tmp/tasks/b1.output","summary":"Build"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        match &entries[0].entry_type {
+            NormalizedEntryType::ToolUse {
+                action_type:
+                    ActionType::CommandRun {
+                        command, result, ..
+                    },
+                ..
+            } => {
+                assert_eq!(command, "cargo build");
+                assert_eq!(
+                    result.as_ref().and_then(|r| r.output.as_deref()),
+                    Some("Command running in background with ID: b1")
+                );
+            }
+            other => panic!("expected the command entry to survive, got {other:?}"),
+        }
     }
 
     #[test]
