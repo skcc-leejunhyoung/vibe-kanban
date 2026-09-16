@@ -187,10 +187,15 @@ function WorkspaceProviderContent({
     [diffs]
   );
 
-  // Git state (ahead/behind, commit list) only moves when the worktree does,
-  // and the diff stream above already reports that live. Trail its bursts
-  // instead of polling branch status + commits every 5s from six call sites;
-  // WORKSPACE_GIT_BACKUP_POLL_MS covers a burst that never settles.
+  // Uncommitted state (the Commit button, uncommitted_count) moves whenever the
+  // worktree does, and the diff stream above already reports that live. Trail
+  // its bursts instead of polling branch status from six call sites every 5s.
+  // This does NOT cover committing: the stream diffs the worktree against the
+  // merge-base with the target branch, so a commit leaves it byte-identical —
+  // except in an in-place workspace, whose base is HEAD. The agent's commit
+  // comes in via useAgentTurnGitRefetch, explicit git actions invalidate these
+  // keys themselves, and WORKSPACE_GIT_BACKUP_POLL_MS is the floor for the
+  // rest (an external `git commit`, or a diff burst that never settles).
   const diffSignature = workspaceDiffSignature(diffStats);
   const lastDiffRef = useRef<{
     workspaceId?: string;

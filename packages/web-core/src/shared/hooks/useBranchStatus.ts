@@ -3,6 +3,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { WORKSPACE_GIT_BACKUP_POLL_MS } from '@/shared/lib/workspaceGitRefetch';
+import { useAgentTurnGitRefetch } from '@/shared/hooks/useAgentTurnGitRefetch';
 
 export const branchStatusKeys = {
   byWorkspace: (
@@ -14,13 +15,15 @@ export const branchStatusKeys = {
 
 export function useBranchStatus(workspaceId?: string) {
   const hostId = useHostId();
-  return useQuery({
+  const query = useQuery({
     queryKey: branchStatusKeys.byWorkspace(workspaceId, hostId),
     queryFn: () => workspacesApi.getBranchStatus(workspaceId!, hostId),
     enabled: !!workspaceId,
-    // Backup only. Git state moves on commits/pushes/merges, which either run
-    // through a mutation that invalidates this key or show up on the workspace
-    // diff stream (see WorkspaceProvider's git-event refetch).
+    // Backup only. Explicit git actions invalidate this key, uncommitted edits
+    // arrive on the workspace diff stream, and the agent's auto-commit comes in
+    // via useAgentTurnGitRefetch below.
     refetchInterval: WORKSPACE_GIT_BACKUP_POLL_MS,
   });
+  useAgentTurnGitRefetch(!!workspaceId, query.refetch);
+  return query;
 }

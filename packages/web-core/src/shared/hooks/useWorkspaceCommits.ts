@@ -4,6 +4,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { WORKSPACE_GIT_BACKUP_POLL_MS } from '@/shared/lib/workspaceGitRefetch';
+import { useAgentTurnGitRefetch } from '@/shared/hooks/useAgentTurnGitRefetch';
 
 export const workspaceCommitsKey = (
   workspaceId: string | null | undefined,
@@ -25,16 +26,18 @@ export function useWorkspaceCommits(
 ) {
   const hostId = useHostId();
 
-  return useQuery<WorkspaceCommit[]>({
+  const query = useQuery<WorkspaceCommit[]>({
     queryKey: workspaceCommitsKey(workspaceId, hostId),
     queryFn: () => workspacesApi.getCommits(workspaceId!, hostId),
     enabled: enabled && !!workspaceId,
     // Commits change as the agent works; keep it reasonably fresh but avoid
     // hammering on every focus.
     staleTime: 10_000,
-    // Backup only; commit-changing actions invalidate this key and the
-    // workspace diff stream drives the agent-commit case.
+    // Backup only; commit-changing actions invalidate this key and the agent's
+    // auto-commit comes in via useAgentTurnGitRefetch below.
     refetchInterval:
       enabled && workspaceId ? WORKSPACE_GIT_BACKUP_POLL_MS : false,
   });
+  useAgentTurnGitRefetch(enabled && !!workspaceId, query.refetch);
+  return query;
 }
