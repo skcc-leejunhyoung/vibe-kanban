@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeTerminalOutput,
   encodeTerminalInput,
+  formatTerminalError,
 } from '@/shared/lib/terminalCodec';
 
 const toBase64 = (bytes: Uint8Array) =>
@@ -35,5 +36,25 @@ describe('terminal wire codec', () => {
       .map((frame) => new TextDecoder().decode(frame))
       .join('');
     expect(perFrame).toContain('�');
+  });
+});
+
+describe('formatTerminalError', () => {
+  const render = (message: string) =>
+    new TextDecoder().decode(formatTerminalError(message));
+
+  it('writes the failure into the terminal in red', () => {
+    expect(render('Failed to create PTY: no such file')).toBe(
+      '\r\n\x1b[31mFailed to create PTY: no such file\x1b[0m\r\n'
+    );
+  });
+
+  it('neutralises control bytes so the message cannot drive the terminal', () => {
+    // The message reaches an ANSI interpreter, so an escape smuggled through a
+    // path or error string must not become a cursor/colour command.
+    const rendered = render('bad \x1b[2Jpath\r\nmore');
+    expect(rendered).not.toContain('\x1b[2J');
+    expect(rendered.match(/\x1b/g)).toHaveLength(2); // only our own red/reset
+    expect(rendered).toContain('bad  [2Jpath  more');
   });
 });

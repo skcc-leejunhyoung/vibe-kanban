@@ -46,6 +46,8 @@ export interface TerminalContextType {
     resize: (cols: number, rows: number) => void;
   };
   getTerminalConnection: (tabId: string) => TerminalConnection | null;
+  /** Resize the PTY, remembering the size so a connect/reconnect replays it. */
+  resizeTerminal: (tabId: string, cols: number, rows: number) => void;
 }
 
 export const TerminalContext = createHmrContext<TerminalContextType | null>(

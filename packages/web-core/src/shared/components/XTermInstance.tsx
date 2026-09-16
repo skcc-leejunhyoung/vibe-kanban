@@ -51,6 +51,7 @@ export function XTermInstance({
     getTerminalInstance,
     createTerminalConnection,
     getTerminalConnection,
+    resizeTerminal,
   } = useTerminal();
 
   // Kept in a ref so a fresh inline `onClose` from the parent never tears down
@@ -63,10 +64,9 @@ export function XTermInstance({
   const fitTerminal = useCallback(() => {
     fitAddonRef.current?.fit();
     if (terminalRef.current) {
-      const conn = getTerminalConnection(tabId);
-      conn?.resize(terminalRef.current.cols, terminalRef.current.rows);
+      resizeTerminal(tabId, terminalRef.current.cols, terminalRef.current.rows);
     }
-  }, [tabId, getTerminalConnection]);
+  }, [tabId, resizeTerminal]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -114,7 +114,9 @@ export function XTermInstance({
     void document.fonts.ready.then(() => {
       if (disposed) return;
       fitAddon.fit();
-      getTerminalConnection(tabId)?.resize(terminal.cols, terminal.rows);
+      // The terminal font is a webfont here, so this refit usually lands while
+      // the socket is still connecting — resizeTerminal records it either way.
+      resizeTerminal(tabId, terminal.cols, terminal.rows);
     });
 
     if (!getTerminalConnection(tabId)) {
@@ -150,6 +152,7 @@ export function XTermInstance({
     registerTerminalInstance,
     createTerminalConnection,
     getTerminalConnection,
+    resizeTerminal,
   ]);
 
   useEffect(() => {

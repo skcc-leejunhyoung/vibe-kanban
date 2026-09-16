@@ -10,6 +10,7 @@ import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
 import {
   decodeTerminalOutput,
   encodeTerminalInput,
+  formatTerminalError,
 } from '@/shared/lib/terminalCodec';
 
 interface TerminalConnection {
@@ -164,6 +165,14 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     Map<string, { onData: (data: Uint8Array) => void; onExit?: () => void }>
   >(new Map());
 
+  // Last size xterm asked for, per tab. Kept outside the socket because a
+  // resize issued while connecting is dropped, and a reconnect spawns a PTY at
+  // the size baked into the endpoint URL — both leave the shell rendering to
+  // different dimensions than xterm.
+  const lastSizeRef = useRef<Map<string, { cols: number; rows: number }>>(
+    new Map()
+  );
+
   // Store reconnection state for each connection
   const reconnectStateRef = useRef<
     Map<
@@ -215,6 +224,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       terminalConnectionsRef.current.delete(tabId);
     }
     connectionCallbacksRef.current.delete(tabId);
+    lastSizeRef.current.delete(tabId);
   }, []);
 
   const closeTab = useCallback(
@@ -347,6 +357,10 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
               if (latestState) {
                 latestState.retryCount = 0;
               }
+              const size = lastSizeRef.current.get(tabId);
+              if (size) {
+                ws.send(JSON.stringify({ type: 'resize', ...size }));
+              }
             };
 
             ws.onmessage = (event) => {
@@ -357,6 +371,8 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
                   callbacks.onData(decodeTerminalOutput(msg.data));
                 } else if (msg.type === 'exit' && callbacks) {
                   callbacks.onExit?.();
+                } else if (msg.type === 'error' && callbacks) {
+                  callbacks.onData(formatTerminalError(String(msg.message)));
                 }
               } catch {
                 // Ignore parse errors
@@ -431,6 +447,14 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     []
   );
 
+  const resizeTerminal = useCallback(
+    (tabId: string, cols: number, rows: number) => {
+      lastSizeRef.current.set(tabId, { cols, rows });
+      terminalConnectionsRef.current.get(tabId)?.resize(cols, rows);
+    },
+    []
+  );
+
   const value = useMemo(
     () => ({
       getTabsForWorkspace,
@@ -445,6 +469,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       unregisterTerminalInstance,
       createTerminalConnection,
       getTerminalConnection,
+      resizeTerminal,
     }),
     [
       getTabsForWorkspace,
@@ -459,6 +484,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       unregisterTerminalInstance,
       createTerminalConnection,
       getTerminalConnection,
+      resizeTerminal,
     ]
   );
 
