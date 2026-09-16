@@ -1990,11 +1990,14 @@ impl ClaudeLogProcessor {
                     Some("task_notification") => {
                         if let Some(tool_use_id) = tool_use_id
                             && let Some(info) = self.tool_map.get(tool_use_id).cloned()
-                            // Same reason as `task_progress`: a background
-                            // command keeps its own tool entry (its result
-                            // already settled it) instead of turning into a
-                            // subagent card on completion.
-                            && matches!(info.tool_data, ClaudeToolData::Task { .. })
+                            // Subagent cards are for Task tools; a command keeps
+                            // its command row and only takes the status (see
+                            // below). Anything else the CLI wraps in a task
+                            // keeps whatever its own tool_result rendered.
+                            && matches!(
+                                info.tool_data,
+                                ClaudeToolData::Task { .. } | ClaudeToolData::Bash { .. }
+                            )
                         {
                             // "stopped" = interrupted before finishing; showing it
                             // as success would misreport cancelled subagents.
@@ -2004,40 +2007,63 @@ impl ClaudeLogProcessor {
                                 }
                                 _ => ToolStatus::Success,
                             };
-                            let (subagent_type, task_desc) = Self::task_tool_fields(&info);
-                            let meta = self.task_meta.entry(tool_use_id.clone()).or_default();
-                            meta.finished = true;
-                            // Terminal entries never show a stop button, so
-                            // accepting the notification's task id (e.g. when a
-                            // replay missed `task_started`) can't mislabel a
-                            // foreground subagent as stoppable.
-                            if meta.task_id.is_none() {
-                                meta.task_id = task_id.clone();
+                            // A backgrounded command settles here (its
+                            // tool_result was only the launch ack), but it stays
+                            // a command row: same command, same output, only the
+                            // status moves to the task's terminal state.
+                            if let ClaudeToolData::Bash { .. } = info.tool_data {
+                                let result = self
+                                    .task_meta
+                                    .get(tool_use_id)
+                                    .and_then(|meta| meta.command_result.clone());
+                                let entry = Self::tool_use_entry(
+                                    info.tool_name.clone(),
+                                    ActionType::CommandRun {
+                                        command: info.content.clone(),
+                                        result,
+                                        category: CommandCategory::from_command(&info.content),
+                                    },
+                                    task_status,
+                                    info.content.clone(),
+                                );
+                                patches.push(ConversationPatch::replace(info.entry_index, entry));
+                            } else {
+                                let (subagent_type, task_desc) = Self::task_tool_fields(&info);
+                                let meta = self.task_meta.entry(tool_use_id.clone()).or_default();
+                                meta.finished = true;
+                                // Terminal entries never show a stop button, so
+                                // accepting the notification's task id (e.g. when a
+                                // replay missed `task_started`) can't mislabel a
+                                // foreground subagent as stoppable.
+                                if meta.task_id.is_none() {
+                                    meta.task_id = task_id.clone();
+                                }
+                                if let Some(path) =
+                                    output_file.clone().filter(|path| !path.is_empty())
+                                {
+                                    meta.output_file = Some(path);
+                                }
+                                let meta = meta.clone();
+                                let desc = summary
+                                    .clone()
+                                    .or(description.clone())
+                                    .or(task_desc)
+                                    .unwrap_or_else(|| info.content.clone());
+                                let entry = Self::tool_use_entry(
+                                    info.tool_name.clone(),
+                                    ActionType::TaskCreate {
+                                        description: desc.clone(),
+                                        subagent_type,
+                                        result: None,
+                                        last_activity: meta.last_activity.clone(),
+                                        duration_ms: meta.duration_ms,
+                                        control: meta.control(),
+                                    },
+                                    task_status,
+                                    desc,
+                                );
+                                patches.push(ConversationPatch::replace(info.entry_index, entry));
                             }
-                            if let Some(path) = output_file.clone().filter(|path| !path.is_empty())
-                            {
-                                meta.output_file = Some(path);
-                            }
-                            let meta = meta.clone();
-                            let desc = summary
-                                .clone()
-                                .or(description.clone())
-                                .or(task_desc)
-                                .unwrap_or_else(|| info.content.clone());
-                            let entry = Self::tool_use_entry(
-                                info.tool_name.clone(),
-                                ActionType::TaskCreate {
-                                    description: desc.clone(),
-                                    subagent_type,
-                                    result: None,
-                                    last_activity: meta.last_activity.clone(),
-                                    duration_ms: meta.duration_ms,
-                                    control: meta.control(),
-                                },
-                                task_status,
-                                desc,
-                            );
-                            patches.push(ConversationPatch::replace(info.entry_index, entry));
                         }
                     }
                     Some(subtype) => {
@@ -2316,6 +2342,13 @@ impl ClaudeLogProcessor {
                             } else {
                                 ToolStatus::Success
                             };
+
+                            // A backgrounded command only gets its launch ack
+                            // here; `task_notification` settles it later and
+                            // needs this output to keep the row intact.
+                            if let Some(meta) = self.task_meta.get_mut(tool_use_id) {
+                                meta.command_result = result.clone();
+                            }
 
                             let entry = Self::tool_use_entry(
                                 info.tool_name.clone(),
@@ -3613,6 +3646,9 @@ struct ClaudeTaskMeta {
     task_id: Option<String>,
     /// SDK transcript path from `task_notification` (empty for bash tasks).
     output_file: Option<String>,
+    /// Last result rendered on a task-wrapped command entry, so a late
+    /// `task_notification` can settle its status without dropping the output.
+    command_result: Option<crate::logs::CommandRunResult>,
     /// Agent tasks stream JSONL while running; background shell tasks do not.
     has_live_transcript: bool,
     /// Set once `task_notification` reported a terminal status.
@@ -5986,6 +6022,39 @@ mod tests {
                 );
             }
             other => panic!("expected the command entry to survive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stopped_background_command_fails_its_command_entry() {
+        // A killed background command only ever gets a successful launch ack as
+        // its tool_result; without the notification status the row would stay
+        // green forever.
+        let entries = normalize_sequence(&[
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"Bash","input":{"command":"cargo build","description":"Build"}}]}}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"tool_1","description":"Build","task_type":"local_bash"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"Command running in background with ID: b1","is_error":false}]}}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"tool_1","status":"stopped","output_file":"/tmp/tasks/b1.output"}"#,
+        ]);
+        assert_eq!(entries.len(), 1);
+        match &entries[0].entry_type {
+            NormalizedEntryType::ToolUse {
+                action_type:
+                    ActionType::CommandRun {
+                        command, result, ..
+                    },
+                status,
+                ..
+            } => {
+                assert_eq!(command, "cargo build");
+                assert!(matches!(status, ToolStatus::Failed));
+                // The launch ack survives the status change.
+                assert_eq!(
+                    result.as_ref().and_then(|r| r.output.as_deref()),
+                    Some("Command running in background with ID: b1")
+                );
+            }
+            other => panic!("expected a failed command entry, got {other:?}"),
         }
     }
 
