@@ -36,7 +36,6 @@ export function resolveRemoteDestinationFromPath(
       return { kind: "export" };
     case "/notifications":
       return { kind: "notifications" };
-
     case "/pull-requests":
     case "/hosts/$hostId/pull-requests":
       return {
