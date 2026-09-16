@@ -136,6 +136,7 @@ import {
   openNewPane,
   openUrlInSplitPane,
   openWorkspacesForActivePane,
+  revealDestinationInPane,
 } from '@/shared/lib/openInSplitPane';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import { getChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
@@ -1486,7 +1487,13 @@ export const Actions = {
     icon: TerminalIcon,
     keywords: ['terminal', 'shell', 'console', 'home', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
-    execute: (ctx) => ctx.appNavigation.goToTerminal(),
+    execute: (ctx) =>
+      revealDestinationInPane(
+        { kind: 'terminal' },
+        ctx.appNavigation,
+        ctx.appRuntime,
+        () => ctx.appNavigation.goToTerminal()
+      ),
   } satisfies GlobalActionDefinition,
 
   GotoPullRequests: {

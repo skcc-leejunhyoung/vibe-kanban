@@ -134,6 +134,28 @@ export function openDestinationForActivePane(
 }
 
 /**
+ * Like {@link openDestinationForActivePane}, but never leaves two panes on the
+ * same destination — it focuses the pane already showing it instead. Required
+ * for destinations backed by a singleton resource: the terminal owns one PTY
+ * and one xterm DOM element, so a second pane adopts that element away and
+ * leaves the first pane blank.
+ */
+export function revealDestinationInPane(
+  destination: WorkspacePaneDestination,
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime,
+  navigateDocument: () => void
+): void {
+  if (!isActivePaneTargeted(appNavigation, appRuntime)) {
+    navigateDocument();
+    return;
+  }
+  // adoptRouteDestination is the store's dedupe-by-key path; setPaneDestination
+  // (what openDestinationForActivePane uses) would happily duplicate.
+  useWorkspacePanesStore.getState().adoptRouteDestination(destination);
+}
+
+/**
  * The workspace document chrome should act on: the active secondary pane's
  * workspace while the pane grid is on screen, else null (act on the routed
  * primary as usual). Plain variant for action `execute` bodies.

@@ -223,6 +223,26 @@ describe('adoptRouteDestination', () => {
     expect(store.getState().panes).toHaveLength(2);
   });
 
+  it('keeps the terminal to a single pane', () => {
+    // The terminal owns one PTY and one xterm DOM element. A second pane on the
+    // same destination would adopt that element away and blank the first, so
+    // Goto: Terminal routes through here rather than setPaneDestination.
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().adoptRouteDestination({ kind: 'terminal' });
+    const terminalPaneId = store.getState().activePaneId;
+
+    store.getState().openPaneForDestination(ws('ws-b'));
+    expect(store.getState().activePaneId).not.toBe(terminalPaneId);
+
+    store.getState().adoptRouteDestination({ kind: 'terminal' });
+    expect(
+      store
+        .getState()
+        .panes.filter((pane) => pane.destination?.kind === 'terminal')
+    ).toHaveLength(1);
+    expect(store.getState().activePaneId).toBe(terminalPaneId);
+  });
+
   it('folds workspace-create into the existing project pane', () => {
     store
       .getState()

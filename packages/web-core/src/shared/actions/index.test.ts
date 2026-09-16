@@ -64,6 +64,7 @@ vi.mock('@vibe/ui/lib/open-url', () => ({
 vi.mock('@/shared/lib/openInSplitPane', () => ({
   openUrlInSplitPane: vi.fn(),
   getChromeTargetWorkspace: vi.fn(),
+  revealDestinationInPane: vi.fn(),
 }));
 vi.mock('@/shared/lib/reviewAndCreatePr', () => ({
   runReviewAndCreatePr: vi.fn(),
@@ -99,6 +100,7 @@ import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import {
   getChromeTargetWorkspace,
   openUrlInSplitPane,
+  revealDestinationInPane,
 } from '@/shared/lib/openInSplitPane';
 import { PrDetailsDialog } from '@/shared/dialogs/tasks/PrDetailsDialog';
 import { SelectionDialog } from '@/shared/dialogs/command-bar/SelectionDialog';
@@ -426,9 +428,22 @@ describe('command palette navigation actions', () => {
       })
     ).toBe(true);
 
+    // The terminal owns one PTY and one xterm DOM element, so it has to land in
+    // the pane already showing it — a second pane would adopt that element away
+    // and leave the first one blank.
     const goToTerminal = vi.fn();
     const { ctx } = makeCtx({}, { appNavigation: { goToTerminal } as never });
     Actions.GotoTerminal.execute(ctx);
+
+    const reveal = vi.mocked(revealDestinationInPane);
+    expect(reveal).toHaveBeenCalledWith(
+      { kind: 'terminal' },
+      ctx.appNavigation,
+      ctx.appRuntime,
+      expect.any(Function)
+    );
+    // Off the pane grid (mobile, routed surface) it falls back to the document.
+    reveal.mock.calls[0]?.[3]?.();
     expect(goToTerminal).toHaveBeenCalled();
   });
 
