@@ -412,6 +412,26 @@ describe('command palette navigation actions', () => {
     expect(goToProjectIssue).not.toHaveBeenCalled();
   });
 
+  it('offers the standalone terminal from the palette on every screen', () => {
+    expect(getPageActions('root')).toContain(Actions.GotoTerminal);
+    // No workspace, no project: the home terminal is always reachable.
+    expect(isActionVisible(Actions.GotoTerminal, openWorkspaceContext)).toBe(
+      true
+    );
+    expect(
+      isActionVisible(Actions.GotoTerminal, {
+        ...openWorkspaceContext,
+        layoutMode: 'workspaces',
+        hasWorkspace: false,
+      })
+    ).toBe(true);
+
+    const goToTerminal = vi.fn();
+    const { ctx } = makeCtx({}, { appNavigation: { goToTerminal } as never });
+    Actions.GotoTerminal.execute(ctx);
+    expect(goToTerminal).toHaveBeenCalled();
+  });
+
   it('only shows the pull request refresh action on the pull requests page', () => {
     expect(
       isActionVisible(Actions.RefreshPullRequests, {

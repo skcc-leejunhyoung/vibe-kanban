@@ -46,8 +46,15 @@ enum TerminalCommand {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TerminalMessage {
-    Output { data: String },
-    Error { message: String },
+    Output {
+        data: String,
+    },
+    /// The shell exited. The client closes the tab on this instead of treating
+    /// the socket drop as a dead link and reconnecting into a fresh shell.
+    Exit,
+    Error {
+        message: String,
+    },
 }
 
 async fn terminal_ws(
@@ -133,6 +140,11 @@ async fn handle_terminal_ws(
         tokio::select! {
             maybe_output = output_rx.recv() => {
                 let Some(data) = maybe_output else {
+                    // PTY reader hit EOF: the shell exited (`exit`, Ctrl-D, or a
+                    // crash). Say so explicitly — dropping the socket instead
+                    // reaches the client as an abnormal close, which its
+                    // reconnect path cannot tell apart from a lost connection.
+                    let _ = send_exit(&mut socket).await;
                     break;
                 };
 
@@ -179,6 +191,13 @@ async fn handle_terminal_ws(
     let _ = deployment.pty().close_session(session_id).await;
 }
 
+async fn send_exit(socket: &mut MaybeSignedWebSocket) -> anyhow::Result<()> {
+    let json = serde_json::to_string(&TerminalMessage::Exit)?;
+    socket.send(Message::Text(json.into())).await?;
+    socket.close().await?;
+    Ok(())
+}
+
 async fn send_error(socket: &mut MaybeSignedWebSocket, message: &str) -> anyhow::Result<()> {
     let msg = TerminalMessage::Error {
         message: message.to_string(),
@@ -191,4 +210,31 @@ async fn send_error(socket: &mut MaybeSignedWebSocket, message: &str) -> anyhow:
 
 pub(super) fn router() -> Router<DeploymentImpl> {
     Router::new().route("/terminal/ws", get(terminal_ws))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omitting_workspace_id_selects_the_home_terminal() {
+        let query: TerminalQuery = serde_urlencoded::from_str("cols=120&rows=40").unwrap();
+        assert!(query.workspace_id.is_none());
+        assert_eq!((query.cols, query.rows), (120, 40));
+    }
+
+    #[test]
+    fn workspace_id_still_round_trips() {
+        let id = Uuid::new_v4();
+        let query: TerminalQuery =
+            serde_urlencoded::from_str(&format!("workspace_id={id}")).unwrap();
+        assert_eq!(query.workspace_id, Some(id));
+        assert_eq!((query.cols, query.rows), (80, 24));
+    }
+
+    #[test]
+    fn exit_is_tagged_so_the_client_can_close_the_tab() {
+        let json = serde_json::to_string(&TerminalMessage::Exit).unwrap();
+        assert_eq!(json, r#"{"type":"exit"}"#);
+    }
 }

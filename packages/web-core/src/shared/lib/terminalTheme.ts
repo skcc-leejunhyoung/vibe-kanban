@@ -23,6 +23,31 @@ export const TERMINAL_FONT_FAMILY = [
 /** Deep enough to scroll back through a build log. */
 export const TERMINAL_SCROLLBACK = 10000;
 
+const TERMINAL_BASE_FONT_SIZE = 12;
+const ROOT_BASE_FONT_SIZE = 16;
+
+/**
+ * App zoom (`installAppZoom`) scales the root font size, so every rem-sized
+ * surface grows with it — except xterm, which sizes its cells in px. Scale the
+ * terminal by the same factor, rounded to whole pixels for the same reason the
+ * zoom itself steps in integers: fractional cell metrics render blurry.
+ */
+export function scaleTerminalFontSize(rootFontSizePx: number): number {
+  if (!Number.isFinite(rootFontSizePx) || rootFontSizePx <= 0) {
+    return TERMINAL_BASE_FONT_SIZE;
+  }
+  return Math.max(
+    6,
+    Math.round((TERMINAL_BASE_FONT_SIZE * rootFontSizePx) / ROOT_BASE_FONT_SIZE)
+  );
+}
+
+export function getTerminalFontSize(): number {
+  return scaleTerminalFontSize(
+    parseFloat(getComputedStyle(document.documentElement).fontSize)
+  );
+}
+
 /**
  * Convert HSL CSS variable value (e.g., "210 40% 98%") to hex color.
  */

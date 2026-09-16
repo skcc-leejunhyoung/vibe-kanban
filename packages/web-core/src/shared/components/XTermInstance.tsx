@@ -8,6 +8,7 @@ import { useTheme } from '@/shared/hooks/useTheme';
 import {
   TERMINAL_FONT_FAMILY,
   TERMINAL_SCROLLBACK,
+  getTerminalFontSize,
   getTerminalTheme,
 } from '@/shared/lib/terminalTheme';
 import { useTerminal } from '@/shared/hooks/useTerminal';
@@ -86,7 +87,7 @@ export function XTermInstance({
 
     const terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 12,
+      fontSize: getTerminalFontSize(),
       fontFamily: TERMINAL_FONT_FAMILY,
       scrollback: TERMINAL_SCROLLBACK,
       // Lets Alt+←/→ reach zsh as word-motions instead of being eaten by macOS.
@@ -155,6 +156,26 @@ export function XTermInstance({
     if (!resizeRef.current) return;
     const observer = new ResizeObserver(fitTerminal);
     observer.observe(resizeRef.current);
+    return () => observer.disconnect();
+  }, [fitTerminal]);
+
+  // App zoom rewrites the root font size on <html>; follow it so the terminal
+  // does not stay pinned at its unzoomed size while the rest of the UI scales.
+  useEffect(() => {
+    const applyFontSize = () => {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      const fontSize = getTerminalFontSize();
+      if (terminal.options.fontSize === fontSize) return;
+      terminal.options.fontSize = fontSize;
+      fitTerminal();
+    };
+    applyFontSize();
+    const observer = new MutationObserver(applyFontSize);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['style'],
+    });
     return () => observer.disconnect();
   }, [fitTerminal]);
 
