@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -50,6 +50,10 @@ const FAILURE_BACKOFF_BASE_MINUTES: i64 = 60;
 const FAILURE_BACKOFF_CAP_MINUTES: i64 = 6 * 60;
 const MAX_SYNC_JOB_ATTEMPTS: i64 = 4;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
+const RESULT_FILE_PREFIX: &str = ".vibe-memory-sync-";
+/// Comfortably past one `EXECUTION_TIMEOUT` plus its repair follow-ups, so a
+/// match can never belong to a live run.
+const STALE_RESULT_AGE: Duration = Duration::from_secs(3 * 60 * 60);
 const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 static RUN_LOCK: Mutex<()> = Mutex::const_new(());
 static GLOBAL_RUN_LOCK: Mutex<()> = Mutex::const_new(());
@@ -1052,6 +1056,64 @@ async fn write_codex_scope_snapshot(scope_key: &str, snapshot: &str) -> anyhow::
     Ok(())
 }
 
+/// Owns every file one sync run can leave in the repository: the JSON result
+/// itself plus the `.tmp`/`.new` siblings and mangled path copies agents write
+/// on their way to it. Cleanup lives in `Drop` so every exit path — including an
+/// early `?` — leaves the repository clean.
+struct SyncResultFile {
+    path: PathBuf,
+    stem: String,
+}
+
+impl SyncResultFile {
+    fn new(repo_path: &Path) -> Self {
+        let stem = format!("{RESULT_FILE_PREFIX}{}", Uuid::new_v4());
+        Self {
+            path: repo_path.join(format!("{stem}.json")),
+            stem,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for SyncResultFile {
+    fn drop(&mut self) {
+        if let Some(directory) = self.path.parent() {
+            remove_result_files(directory, |name, _| name.starts_with(&self.stem));
+        }
+    }
+}
+
+/// Sweeps results stranded by a crash or a hard kill, which no in-process guard
+/// can clean up.
+fn sweep_stale_result_files(directory: &Path) {
+    remove_result_files(directory, |_, entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > STALE_RESULT_AGE))
+    });
+}
+
+/// Blocking on purpose: `Drop` cannot await, and this is a single directory read.
+fn remove_result_files(directory: &Path, should_remove: impl Fn(&str, &std::fs::DirEntry) -> bool) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if file_name.starts_with(RESULT_FILE_PREFIX) && should_remove(file_name, &entry) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn sync_one(
     deployment: &DeploymentImpl,
@@ -1063,6 +1125,9 @@ async fn sync_one(
     trigger_kind: &str,
     idle_policy: IdlePolicy,
 ) -> anyhow::Result<()> {
+    // Before the idle checks below can skip this repository: debris from a
+    // killed run outlives every in-process guard, so sweep on every visit.
+    sweep_stale_result_files(&repo.path);
     let client = deployment.remote_client()?;
     let previous = client
         .agent_memory_snapshot(
@@ -1200,31 +1265,22 @@ async fn sync_one(
             "unchanged memory mutation validation failure; retry blocked until synchronization input changes"
         );
     }
-    let result_path = repo
-        .path
-        .join(format!(".vibe-memory-sync-{}.json", Uuid::new_v4()));
+    let result_file = SyncResultFile::new(&repo.path);
+    let result_path = result_file.path();
     let prompt = build_prompt(
-        &result_path,
+        result_path,
         scope_key,
         agent_kind,
         previous.as_ref().map(|snapshot| snapshot.content.as_str()),
         &inbox.snapshots,
         &mutations,
     )?;
-    let first_run = run_agent(repo, scope_key, agent_kind, &prompt, &result_path, None).await;
-    let mut run = match first_run {
-        Ok(run) => run,
-        Err(error) => {
-            let _ = tokio::fs::remove_file(&result_path).await;
-            return Err(error);
-        }
-    };
+    let mut run = run_agent(repo, scope_key, agent_kind, &prompt, result_path, None).await?;
     if let Err(error) = validate_snapshot_scope(&run.result.snapshot, scope_key, agent_kind) {
         let Some(session_id) = run.session_id.as_deref() else {
-            let _ = tokio::fs::remove_file(&result_path).await;
             return Err(error);
         };
-        let repair_prompt = build_snapshot_repair_prompt(&result_path, &error);
+        let repair_prompt = build_snapshot_repair_prompt(result_path, &error);
         log_event(
             deployment,
             run_id,
@@ -1241,7 +1297,7 @@ async fn sync_one(
             scope_key,
             agent_kind,
             &repair_prompt,
-            &result_path,
+            result_path,
             Some(session_id),
         )
         .await
@@ -1254,7 +1310,7 @@ async fn sync_one(
         .any(|validation| validation.receipt.status == AgentMemoryReceiptStatus::Deferred)
         && let Some(session_id) = run.session_id.as_deref()
     {
-        let repair_prompt = build_repair_prompt(&result_path, &mutations, &validations)?;
+        let repair_prompt = build_repair_prompt(result_path, &mutations, &validations)?;
         log_event(
             deployment,
             run_id,
@@ -1271,7 +1327,7 @@ async fn sync_one(
             scope_key,
             agent_kind,
             &repair_prompt,
-            &result_path,
+            result_path,
             Some(session_id),
         )
         .await
@@ -1280,18 +1336,14 @@ async fn sync_one(
                 run = repaired;
                 validations = validate_mutation_result_detailed(&mutations, &run.result);
             }
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&result_path).await;
-                return Err(error.context("memory mutation repair follow-up failed"));
-            }
+            Err(error) => return Err(error.context("memory mutation repair follow-up failed")),
         }
     }
     if let Err(error) = validate_snapshot_scope(&run.result.snapshot, scope_key, agent_kind) {
         let Some(session_id) = run.session_id.clone() else {
-            let _ = tokio::fs::remove_file(&result_path).await;
             return Err(error);
         };
-        let repair_prompt = build_snapshot_repair_prompt(&result_path, &error);
+        let repair_prompt = build_snapshot_repair_prompt(result_path, &error);
         log_event(
             deployment,
             run_id,
@@ -1308,7 +1360,7 @@ async fn sync_one(
             scope_key,
             agent_kind,
             &repair_prompt,
-            &result_path,
+            result_path,
             Some(&session_id),
         )
         .await
@@ -1316,7 +1368,6 @@ async fn sync_one(
         validate_snapshot_scope(&run.result.snapshot, scope_key, agent_kind)?;
         validations = validate_mutation_result_detailed(&mutations, &run.result);
     }
-    let _ = tokio::fs::remove_file(&result_path).await;
     let result = run.result;
     let mutation_receipts = validations
         .into_iter()
@@ -2534,6 +2585,57 @@ mod tests {
         assert!(should_retry_job(3));
         assert!(!should_retry_job(4));
         assert!(!should_retry_job(100));
+    }
+
+    #[test]
+    fn sync_result_cleanup_covers_agent_leftovers_and_crash_debris() {
+        let directory =
+            std::env::temp_dir().join(format!("vibe-memory-cleanup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let unrelated = directory.join("README.md");
+        std::fs::write(&unrelated, "keep").unwrap();
+        let live_other_run = directory.join(format!("{RESULT_FILE_PREFIX}{}.json", Uuid::new_v4()));
+        std::fs::write(&live_other_run, "{}").unwrap();
+
+        let leftovers = {
+            let result_file = SyncResultFile::new(&directory);
+            let result_path = result_file.path().to_path_buf();
+            // Agents reach the result through atomic-write siblings, and have
+            // been seen writing a mangled copy of the path outright.
+            let leftovers = vec![
+                result_path.clone(),
+                result_path.with_extension("json.tmp"),
+                result_path.with_extension("json.new"),
+                directory.join(format!("{}deadbeef.json", result_file.stem)),
+            ];
+            for path in &leftovers {
+                std::fs::write(path, "{}").unwrap();
+            }
+            leftovers
+        };
+
+        for path in &leftovers {
+            assert!(!path.exists(), "{} survived the guard", path.display());
+        }
+        assert!(unrelated.exists());
+        assert!(live_other_run.exists());
+
+        let stale = directory.join(format!("{RESULT_FILE_PREFIX}{}.json", Uuid::new_v4()));
+        std::fs::write(&stale, "{}").unwrap();
+        let aged = std::fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::now() - STALE_RESULT_AGE * 2);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(aged)
+            .unwrap();
+        sweep_stale_result_files(&directory);
+        assert!(!stale.exists());
+        assert!(live_other_run.exists());
+        assert!(unrelated.exists());
+
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[tokio::test]
