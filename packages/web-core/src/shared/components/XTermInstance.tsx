@@ -69,13 +69,14 @@ export function XTermInstance({
   }, [tabId, resizeTerminal]);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
 
     const existing = getTerminalInstance(tabId);
     if (existing) {
       const { terminal, fitAddon } = existing;
       if (terminal.element) {
-        containerRef.current.appendChild(terminal.element);
+        container.appendChild(terminal.element);
         fitAddon.fit();
       }
       terminalRef.current = terminal;
@@ -100,7 +101,7 @@ export function XTermInstance({
 
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(webLinksAddon);
-    terminal.open(containerRef.current);
+    terminal.open(container);
 
     fitAddon.fit();
 
@@ -139,8 +140,13 @@ export function XTermInstance({
 
     return () => {
       disposed = true;
-      if (terminal.element && terminal.element.parentNode) {
-        terminal.element.parentNode.removeChild(terminal.element);
+      // Detach only while this mount still owns the element. xterm keeps one
+      // DOM node per terminal, and another mount of the same tab — the right
+      // sidebar swapping with the expanded terminal panel — may already have
+      // adopted it; an unconditional removeChild would rip it back out and
+      // leave that panel blank.
+      if (terminal.element?.parentNode === container) {
+        container.removeChild(terminal.element);
       }
       terminalRef.current = null;
       fitAddonRef.current = null;
