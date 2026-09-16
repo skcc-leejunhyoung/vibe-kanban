@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use db::models::{execution_process::ExecutionProcess, scratch::Scratch, workspace::Workspace};
 use futures::StreamExt;
 use serde_json::json;
@@ -10,6 +15,17 @@ use super::{
     patches::execution_process_patch,
     types::{EventPatch, RecordTypes},
 };
+
+/// Per-subscription latch for the lag warning. The error below does not end the
+/// stream by itself, and `coalesce_log_stream` keeps polling until its batch
+/// window closes, so an unlatched warning can repeat for one lagged receiver.
+fn lag_latch() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
+
+fn first_lag(latch: &AtomicBool) -> bool {
+    !latch.swap(true, Ordering::Relaxed)
+}
 
 impl EventService {
     fn execution_processes_snapshot_msg(processes: Vec<ExecutionProcess>) -> LogMsg {
@@ -59,7 +75,9 @@ impl EventService {
             .await?;
 
         // Get filtered event stream
+        let lag_logged = lag_latch();
         let filtered_stream = BroadcastStream::new(receiver).filter_map(move |msg_result| {
+            let lag_logged = lag_logged.clone();
             async move {
                 match msg_result {
                     Ok(LogMsg::JsonPatch(patch)) => {
@@ -148,11 +166,13 @@ impl EventService {
                         // afterwards and could regress the client back to
                         // stale state. Terminate with an error so WS/SSE
                         // reconnects and obtains a fresh initial snapshot.
-                        tracing::warn!(
-                            session_id = %session_id,
-                            skipped,
-                            "Execution-process stream lagged; reconnecting for a fresh snapshot"
-                        );
+                        if first_lag(&lag_logged) {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                skipped,
+                                "Execution-process stream lagged; reconnecting for a fresh snapshot"
+                            );
+                        }
                         Some(Err(std::io::Error::other(format!(
                             "execution-process stream lagged by {skipped} messages"
                         ))))
@@ -200,12 +220,14 @@ impl EventService {
         let initial_msg = LogMsg::JsonPatch(serde_json::from_value(initial_patch).unwrap());
 
         let type_str = scratch_type.to_string();
+        let lag_logged = lag_latch();
 
         // Filter to only this scratch's events by matching id and payload.type in the patch value
         let filtered_stream =
             BroadcastStream::new(self.msg_store.get_receiver()).filter_map(move |msg_result| {
                 let id_str = scratch_id.to_string();
                 let type_str = type_str.clone();
+                let lag_logged = lag_logged.clone();
                 async move {
                     match msg_result {
                         Ok(LogMsg::JsonPatch(patch)) => {
@@ -238,7 +260,24 @@ impl EventService {
                             None
                         }
                         Ok(other) => Some(Ok(other)),
-                        Err(_) => None,
+                        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                            // Same reasoning as
+                            // `stream_execution_processes_for_session_raw`: the
+                            // snapshot above was read after subscribing, so
+                            // replaying the skipped span would land older state
+                            // on top of it. Close instead and let the client
+                            // reconnect onto a fresh snapshot.
+                            if first_lag(&lag_logged) {
+                                tracing::warn!(
+                                    scratch_id = %scratch_id,
+                                    skipped,
+                                    "Scratch stream lagged; reconnecting for a fresh snapshot"
+                                );
+                            }
+                            Some(Err(std::io::Error::other(format!(
+                                "scratch stream lagged by {skipped} messages"
+                            ))))
+                        }
                     }
                 }
             });
@@ -269,48 +308,52 @@ impl EventService {
         }]);
         let initial_msg = LogMsg::JsonPatch(serde_json::from_value(initial_patch).unwrap());
 
-        let filtered_stream = BroadcastStream::new(self.msg_store.get_receiver()).filter_map(
-            move |msg_result| async move {
-                match msg_result {
-                    Ok(LogMsg::JsonPatch(patch)) => {
-                        if let Some(op) = patch.0.first()
-                            && op.path().starts_with("/workspaces")
-                        {
-                            // If archived filter is set, handle state transitions
-                            if let Some(archived_filter) = archived {
-                                // Extract workspace data from Add/Replace operations
-                                let value = match op {
-                                    json_patch::PatchOperation::Add(a) => Some(&a.value),
-                                    json_patch::PatchOperation::Replace(r) => Some(&r.value),
-                                    json_patch::PatchOperation::Remove(_) => {
-                                        // Allow remove operations through - client will handle
-                                        return Some(Ok(LogMsg::JsonPatch(patch)));
-                                    }
-                                    _ => None,
-                                };
-
-                                if let Some(v) = value
-                                    && let Some(ws_archived) =
-                                        v.get("archived").and_then(|a| a.as_bool())
-                                {
-                                    if ws_archived == archived_filter {
-                                        // Workspace matches this filter
-                                        // Convert Replace to Add since workspace may be new to this filtered stream
-                                        if let json_patch::PatchOperation::Replace(r) = op {
-                                            let add_patch = json_patch::Patch(vec![
-                                                json_patch::PatchOperation::Add(
-                                                    json_patch::AddOperation {
-                                                        path: r.path.clone(),
-                                                        value: r.value.clone(),
-                                                    },
-                                                ),
-                                            ]);
-                                            return Some(Ok(LogMsg::JsonPatch(add_patch)));
+        let lag_logged = lag_latch();
+        let filtered_stream =
+            BroadcastStream::new(self.msg_store.get_receiver()).filter_map(move |msg_result| {
+                let lag_logged = lag_logged.clone();
+                async move {
+                    match msg_result {
+                        Ok(LogMsg::JsonPatch(patch)) => {
+                            if let Some(op) = patch.0.first()
+                                && op.path().starts_with("/workspaces")
+                            {
+                                // If archived filter is set, handle state transitions
+                                if let Some(archived_filter) = archived {
+                                    // Extract workspace data from Add/Replace operations
+                                    let value = match op {
+                                        json_patch::PatchOperation::Add(a) => Some(&a.value),
+                                        json_patch::PatchOperation::Replace(r) => Some(&r.value),
+                                        json_patch::PatchOperation::Remove(_) => {
+                                            // Allow remove operations through - client will handle
+                                            return Some(Ok(LogMsg::JsonPatch(patch)));
                                         }
-                                        return Some(Ok(LogMsg::JsonPatch(patch)));
-                                    } else {
-                                        // Workspace no longer matches this filter - send remove
-                                        let remove_patch = json_patch::Patch(vec![
+                                        _ => None,
+                                    };
+
+                                    if let Some(v) = value
+                                        && let Some(ws_archived) =
+                                            v.get("archived").and_then(|a| a.as_bool())
+                                    {
+                                        if ws_archived == archived_filter {
+                                            // Workspace matches this filter
+                                            // Convert Replace to Add since workspace may be new to this filtered stream
+                                            if let json_patch::PatchOperation::Replace(r) = op {
+                                                let add_patch = json_patch::Patch(vec![
+                                                    json_patch::PatchOperation::Add(
+                                                        json_patch::AddOperation {
+                                                            path: r.path.clone(),
+                                                            value: r.value.clone(),
+                                                        },
+                                                    ),
+                                                ]);
+                                                return Some(Ok(LogMsg::JsonPatch(add_patch)));
+                                            }
+                                            return Some(Ok(LogMsg::JsonPatch(patch)));
+                                        } else {
+                                            // Workspace no longer matches this filter - send remove
+                                            let remove_patch =
+                                                json_patch::Patch(vec![
                                             json_patch::PatchOperation::Remove(
                                                 json_patch::RemoveOperation {
                                                     path: op
@@ -321,19 +364,37 @@ impl EventService {
                                                 },
                                             ),
                                         ]);
-                                        return Some(Ok(LogMsg::JsonPatch(remove_patch)));
+                                            return Some(Ok(LogMsg::JsonPatch(remove_patch)));
+                                        }
                                     }
                                 }
+                                return Some(Ok(LogMsg::JsonPatch(patch)));
                             }
-                            return Some(Ok(LogMsg::JsonPatch(patch)));
+                            None
                         }
-                        None
+                        Ok(other) => Some(Ok(other)),
+                        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                            // Same reasoning as
+                            // `stream_execution_processes_for_session_raw`: the
+                            // snapshot above was read after subscribing, so
+                            // replaying the skipped span would land older state on
+                            // top of it (a completed workspace back to running).
+                            // Close instead and let the client reconnect onto a
+                            // fresh snapshot.
+                            if first_lag(&lag_logged) {
+                                tracing::warn!(
+                                    ?archived,
+                                    skipped,
+                                    "Workspaces stream lagged; reconnecting for a fresh snapshot"
+                                );
+                            }
+                            Some(Err(std::io::Error::other(format!(
+                                "workspaces stream lagged by {skipped} messages"
+                            ))))
+                        }
                     }
-                    Ok(other) => Some(Ok(other)),
-                    Err(_) => None,
                 }
-            },
-        );
+            });
 
         let initial_stream = futures::stream::iter(vec![Ok(initial_msg), Ok(LogMsg::Ready)]);
         Ok(initial_stream.chain(filtered_stream).boxed())

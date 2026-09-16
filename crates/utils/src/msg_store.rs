@@ -23,6 +23,10 @@ const LAG_LOG_INTERVAL: Duration = Duration::from_secs(1);
 /// holds up to `HISTORY_BYTES`, so recovering a whole span at once would clone
 /// that much per lagging subscriber; stepping keeps the copy bounded.
 const RECOVERY_CHUNK: u64 = 256;
+/// Byte ceiling for one recovery step. A count alone is not a bound: 256 large
+/// messages still clone far more than 256 log lines, so a chunk stops at
+/// whichever limit it hits first (always yielding at least one message).
+const RECOVERY_CHUNK_BYTES: usize = 1024 * 1024;
 
 pub(crate) struct ByteCounter {
     bytes: usize,
@@ -65,14 +69,22 @@ struct Inner {
 }
 
 impl Inner {
-    /// Clone `count` messages starting at absolute position `start`, or `None`
-    /// when any of them has already been evicted (or was never pushed).
-    fn range(&self, start: u64, count: u64) -> Option<Vec<LogMsg>> {
+    /// Clone up to `count` messages starting at absolute position `start`,
+    /// stopping early once `max_bytes` is exceeded (the first message always
+    /// comes through). `None` when any of the `count` has already been evicted
+    /// (or was never pushed).
+    fn range(&self, start: u64, count: u64, max_bytes: usize) -> Option<Vec<LogMsg>> {
         let offset = usize::try_from(start.checked_sub(self.evicted)?).ok()?;
         let end = offset.checked_add(usize::try_from(count).ok()?)?;
         (end <= self.history.len()).then(|| {
+            let mut bytes = 0usize;
             self.history
                 .range(offset..end)
+                .take_while(|s| {
+                    let first = bytes == 0;
+                    bytes = bytes.saturating_add(s.bytes);
+                    first || bytes <= max_bytes
+                })
                 .map(|s| s.msg.clone())
                 .collect()
         })
@@ -167,15 +179,19 @@ impl LiveSubscriber {
     /// a hole in it.
     fn replay_gap_chunk(&mut self) -> Result<LogMsg, io::Error> {
         let count = RECOVERY_CHUNK.min(self.gap_end - self.gap);
-        let replayed = self
-            .inner
-            .upgrade()
-            .and_then(|inner| inner.read().unwrap().range(self.gap, count));
+        let replayed = self.inner.upgrade().and_then(|inner| {
+            inner
+                .read()
+                .unwrap()
+                .range(self.gap, count, RECOVERY_CHUNK_BYTES)
+        });
         match replayed {
             Some(msgs) => {
-                self.gap += count;
+                // The byte ceiling can cut the chunk short; advance by what was
+                // actually replayed so the rest of the gap is retried.
+                self.gap += msgs.len() as u64;
                 self.buffered.extend(msgs);
-                // `range` yielded `count >= 1` messages, so this cannot be empty.
+                // `range` yields at least one message for `count >= 1`.
                 Ok(self.buffered.pop_front().expect("replayed chunk is empty"))
             }
             None => {

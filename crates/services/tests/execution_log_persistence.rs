@@ -7,6 +7,16 @@ use uuid::Uuid;
 
 const BURST_LINES: usize = 5_000;
 
+/// `asset_dir()` is not redirectable, so the test writes under the real
+/// `dev_assets/sessions/<uuid>/`. Remove it on the way out, panic included.
+struct SessionLogDir(Uuid);
+
+impl Drop for SessionLogDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(self.0));
+    }
+}
+
 /// A blocked sqlite UPDATE (SessionId) must not cost raw JSONL lines: while the
 /// storage consumer waits for a pool connection the producer bursts far past
 /// the broadcast capacity, so every line has to reach the file anyway.
@@ -19,6 +29,7 @@ async fn blocked_db_update_must_not_drop_raw_log_lines() {
         .unwrap();
     sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
     let session = Uuid::new_v4();
+    let _cleanup = SessionLogDir(session);
     let execution = Uuid::new_v4();
     let store = Arc::new(MsgStore::new());
     let stores = Arc::new(RwLock::new(HashMap::from([(execution, store.clone())])));
@@ -53,9 +64,6 @@ async fn blocked_db_update_must_not_drop_raw_log_lines() {
         .unwrap();
 
     let jsonl = tokio::fs::read_to_string(&path).await.unwrap();
-    tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
-        .await
-        .unwrap();
     let lines: Vec<LogMsg> = jsonl
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())

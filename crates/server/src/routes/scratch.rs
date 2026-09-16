@@ -1,6 +1,9 @@
 use axum::{
     BoxError, Json, Router,
-    extract::{Path, State, ws::Message},
+    extract::{
+        Path, State,
+        ws::{CloseFrame, Message, close_code},
+    },
     http::StatusCode,
     response::{
         IntoResponse, Json as ResponseJson, Sse,
@@ -158,6 +161,14 @@ async fn handle_scratch_ws(
                     }
                     Some(Err(e)) => {
                         tracing::error!("scratch stream error: {}", e);
+                        // Tell the client why, so it reconnects for a fresh
+                        // snapshot instead of reading an abrupt 1006 close.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: close_code::ERROR,
+                                reason: "scratch stream error".into(),
+                            })))
+                            .await;
                         break;
                     }
                     None => break,

@@ -1,6 +1,9 @@
 use axum::{
     BoxError, Extension,
-    extract::{Query, State, ws::Message},
+    extract::{
+        Query, State,
+        ws::{CloseFrame, Message, close_code},
+    },
     http::StatusCode,
     response::{
         IntoResponse, Sse,
@@ -124,6 +127,14 @@ async fn handle_workspace_diff_ws(
                     }
                     Some(Err(e)) => {
                         tracing::error!("stream error: {}", e);
+                        // Tell the client why, so it reconnects for a fresh
+                        // snapshot instead of reading an abrupt 1006 close.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: close_code::ERROR,
+                                reason: "diff stream error".into(),
+                            })))
+                            .await;
                         break;
                     }
                     None => break,
@@ -168,6 +179,14 @@ async fn handle_workspaces_ws(
                     }
                     Some(Err(e)) => {
                         tracing::error!("stream error: {}", e);
+                        // Tell the client why, so it reconnects for a fresh
+                        // snapshot instead of reading an abrupt 1006 close.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: close_code::ERROR,
+                                reason: "workspaces stream error".into(),
+                            })))
+                            .await;
                         break;
                     }
                     None => break,
