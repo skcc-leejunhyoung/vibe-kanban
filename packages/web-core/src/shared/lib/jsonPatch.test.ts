@@ -104,3 +104,38 @@ describe('applyUpsertPatchBatch', () => {
     expect(original.entries).toEqual(['first']);
   });
 });
+
+// The lag fix closes a stale stream and relies on the reconnect's snapshot to
+// resynchronize. `useJsonPatchWsStream` keeps its accumulated data across a
+// reconnect (it only initializes when `dataRef.current` is unset), so the
+// snapshot patch alone has to carry the client to the server's state —
+// including dropping rows the server no longer has.
+describe('reconnect snapshot', () => {
+  it('replaces stale accumulated state wholesale', () => {
+    const stale = {
+      workspaces: {
+        kept: { status: 'running' },
+        deleted_while_disconnected: { status: 'running' },
+      },
+    };
+
+    const snapshot: Operation[] = [
+      {
+        op: 'replace',
+        path: '/workspaces',
+        value: {
+          kept: { status: 'completed' },
+          created_while_disconnected: {},
+        },
+      },
+    ];
+
+    const next = produce(stale, (draft) => applyUpsertPatch(draft, snapshot));
+
+    expect(next.workspaces).toEqual({
+      kept: { status: 'completed' },
+      created_while_disconnected: {},
+    });
+    expect(stale.workspaces.deleted_while_disconnected).toBeDefined();
+  });
+});
