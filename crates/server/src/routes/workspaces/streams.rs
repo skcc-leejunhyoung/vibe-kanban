@@ -204,3 +204,52 @@ async fn handle_workspaces_ws(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::to_bytes, response::IntoResponse};
+    use futures_util::stream;
+    use utils::log_msg::LogMsg;
+
+    use super::*;
+
+    /// Build the response exactly the way `stream_workspaces_sse` does, so the
+    /// test covers the route's own composition rather than axum in isolation.
+    fn sse_response(
+        source: impl futures_util::Stream<Item = Result<LogMsg, std::io::Error>> + Send + 'static,
+    ) -> axum::response::Response {
+        Sse::new(
+            coalesce_log_stream(source)
+                .map_ok(|msg| msg.to_sse_event())
+                .map_err(|e| -> BoxError { Box::new(e) }),
+        )
+        .keep_alive(KeepAlive::default())
+        .into_response()
+    }
+
+    /// The lag fix banks on an SSE body *aborting* rather than ending: the
+    /// browser's fetch reader has to throw so the client reconnects onto a
+    /// fresh snapshot. If coalescing, the SSE encoding or axum's `SseBody`
+    /// turned the error into a normal end-of-stream, the client would treat it
+    /// as a clean close and park on stale state forever.
+    #[tokio::test]
+    async fn a_stream_error_aborts_the_sse_body_while_a_clean_end_does_not() {
+        let ended = sse_response(stream::iter(vec![Ok(LogMsg::Ready)])).into_body();
+        assert!(
+            to_bytes(ended, usize::MAX).await.is_ok(),
+            "a stream that simply ends must produce a complete body"
+        );
+
+        let lagged = sse_response(stream::iter(vec![
+            Ok(LogMsg::Ready),
+            Err(std::io::Error::other(
+                "workspaces stream lagged by 1024 messages",
+            )),
+        ]))
+        .into_body();
+        assert!(
+            to_bytes(lagged, usize::MAX).await.is_err(),
+            "a lagged stream must abort the body, not end it"
+        );
+    }
+}
