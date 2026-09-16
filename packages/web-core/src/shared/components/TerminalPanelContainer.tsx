@@ -73,7 +73,15 @@ export function TerminalPanelContainer() {
   }, [workspaceId, clearWorkspaceTabs]);
 
   if (!workspaceId || !hasWorkspaceDir) return null;
-  return <TerminalTabs tabKey={workspaceId} workspaceId={workspaceId} />;
+  // Keyed so switching workspaces gets a fresh scope rather than carrying the
+  // previous one's in-flight create guard.
+  return (
+    <TerminalTabs
+      key={workspaceId}
+      tabKey={workspaceId}
+      workspaceId={workspaceId}
+    />
+  );
 }
 
 /** Standalone terminal pane: no workspace, starts in the user's home directory. */

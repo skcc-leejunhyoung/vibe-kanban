@@ -8,11 +8,9 @@ export interface TerminalInstance {
   fitAddon: FitAddon;
 }
 
+/** Tabs carry nothing but identity — the panel renders one terminal per id. */
 export interface TerminalTab {
   id: string;
-  title: string;
-  /** Terminal scope key: a workspace id, or the standalone-terminal sentinel. */
-  workspaceId: string;
 }
 
 interface TerminalConnection {
@@ -26,8 +24,6 @@ export interface TerminalContextType {
   getActiveTab: (workspaceId: string) => TerminalTab | null;
   createTab: (workspaceId: string) => void;
   closeTab: (workspaceId: string, tabId: string) => void;
-  setActiveTab: (workspaceId: string, tabId: string) => void;
-  updateTabTitle: (workspaceId: string, tabId: string, title: string) => void;
   clearWorkspaceTabs: (workspaceId: string) => void;
   registerTerminalInstance: (
     tabId: string,
@@ -35,7 +31,6 @@ export interface TerminalContextType {
     fitAddon: FitAddon
   ) => void;
   getTerminalInstance: (tabId: string) => TerminalInstance | null;
-  unregisterTerminalInstance: (tabId: string) => void;
   createTerminalConnection: (
     tabId: string,
     endpoint: string,

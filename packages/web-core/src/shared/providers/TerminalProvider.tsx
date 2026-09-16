@@ -27,13 +27,6 @@ interface TerminalState {
 type TerminalAction =
   | { type: 'CREATE_TAB'; workspaceId: string }
   | { type: 'CLOSE_TAB'; workspaceId: string; tabId: string }
-  | { type: 'SET_ACTIVE_TAB'; workspaceId: string; tabId: string }
-  | {
-      type: 'UPDATE_TAB_TITLE';
-      workspaceId: string;
-      tabId: string;
-      title: string;
-    }
   | { type: 'CLEAR_WORKSPACE_TABS'; workspaceId: string };
 
 function generateTabId(): string {
@@ -48,11 +41,7 @@ function terminalReducer(
     case 'CREATE_TAB': {
       const { workspaceId } = action;
       const existingTabs = state.tabsByWorkspace[workspaceId] || [];
-      const newTab: TerminalTab = {
-        id: generateTabId(),
-        title: `Terminal ${existingTabs.length + 1}`,
-        workspaceId,
-      };
+      const newTab: TerminalTab = { id: generateTabId() };
       return {
         ...state,
         tabsByWorkspace: {
@@ -90,31 +79,6 @@ function terminalReducer(
         activeTabByWorkspace: {
           ...state.activeTabByWorkspace,
           [workspaceId]: newActiveTab,
-        },
-      };
-    }
-
-    case 'SET_ACTIVE_TAB': {
-      const { workspaceId, tabId } = action;
-      return {
-        ...state,
-        activeTabByWorkspace: {
-          ...state.activeTabByWorkspace,
-          [workspaceId]: tabId,
-        },
-      };
-    }
-
-    case 'UPDATE_TAB_TITLE': {
-      const { workspaceId, tabId, title } = action;
-      const tabs = state.tabsByWorkspace[workspaceId] || [];
-      return {
-        ...state,
-        tabsByWorkspace: {
-          ...state.tabsByWorkspace,
-          [workspaceId]: tabs.map((t) =>
-            t.id === tabId ? { ...t, title } : t
-          ),
         },
       };
     }
@@ -242,17 +206,6 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     [closeTerminalConnection]
   );
 
-  const setActiveTab = useCallback((workspaceId: string, tabId: string) => {
-    dispatch({ type: 'SET_ACTIVE_TAB', workspaceId, tabId });
-  }, []);
-
-  const updateTabTitle = useCallback(
-    (workspaceId: string, tabId: string, title: string) => {
-      dispatch({ type: 'UPDATE_TAB_TITLE', workspaceId, tabId, title });
-    },
-    []
-  );
-
   const clearWorkspaceTabs = useCallback(
     (workspaceId: string) => {
       // Dispose all terminal instances for this workspace
@@ -284,10 +237,6 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     },
     []
   );
-
-  const unregisterTerminalInstance = useCallback((tabId: string) => {
-    terminalInstancesRef.current.delete(tabId);
-  }, []);
 
   const createTerminalConnection = useCallback(
     (
@@ -461,12 +410,9 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       getActiveTab,
       createTab,
       closeTab,
-      setActiveTab,
-      updateTabTitle,
       clearWorkspaceTabs,
       registerTerminalInstance,
       getTerminalInstance,
-      unregisterTerminalInstance,
       createTerminalConnection,
       getTerminalConnection,
       resizeTerminal,
@@ -476,12 +422,9 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       getActiveTab,
       createTab,
       closeTab,
-      setActiveTab,
-      updateTabTitle,
       clearWorkspaceTabs,
       registerTerminalInstance,
       getTerminalInstance,
-      unregisterTerminalInstance,
       createTerminalConnection,
       getTerminalConnection,
       resizeTerminal,
