@@ -8,6 +8,12 @@ type ExecutorDiscoveryStreamState = {
 };
 
 interface ExecutorDiscoveryOpts {
+  /**
+   * Profile variant being configured. Variants can carry a different model
+   * catalog (a Claude Code Router variant lists CCR's providers), so omitting
+   * it silently discovers the DEFAULT variant instead.
+   */
+  variant?: string | null;
   workspaceId?: string;
   sessionId?: string;
   repoId?: string;
@@ -39,16 +45,17 @@ function useExecutorDiscovery(
   agent: BaseCodingAgent | null | undefined,
   opts?: ExecutorDiscoveryOpts
 ) {
-  const { workspaceId, sessionId, repoId, hostId } = opts ?? {};
+  const { variant, workspaceId, sessionId, repoId, hostId } = opts ?? {};
   const endpoint = useMemo(() => {
     if (!agent) return undefined;
     return agentsApi.getDiscoveredOptionsStreamUrl(agent, {
+      variant,
       workspaceId,
       sessionId,
       repoId,
       hostScopeKey: hostId === undefined ? 'current' : (hostId ?? 'local'),
     });
-  }, [agent, workspaceId, sessionId, repoId, hostId]);
+  }, [agent, variant, workspaceId, sessionId, repoId, hostId]);
 
   const initialData = useCallback(
     (): ExecutorDiscoveryStreamState => ({

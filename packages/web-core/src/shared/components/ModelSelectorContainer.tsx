@@ -135,6 +135,7 @@ export function ModelSelectorContainer({
     loadingModels,
     error: streamError,
   } = useModelSelectorConfig(agent, {
+    variant: resolvedPreset,
     workspaceId: sessionId ? workspaceId : undefined,
     sessionId,
     hostId,

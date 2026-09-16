@@ -277,6 +277,7 @@ export function useExecutorConfig({
   const { config: modelSelectorConfig } = useModelSelectorConfig(
     executor.effective,
     {
+      variant: variant.resolved,
       workspaceId: sessionId ? workspaceId : undefined,
       sessionId,
       hostId: targetHostId,

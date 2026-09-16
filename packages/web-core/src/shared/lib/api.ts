@@ -2779,6 +2779,7 @@ export const agentsApi = {
   getDiscoveredOptionsStreamUrl: (
     agent: BaseCodingAgent,
     opts?: {
+      variant?: string | null;
       workspaceId?: string;
       sessionId?: string;
       repoId?: string;
@@ -2787,6 +2788,9 @@ export const agentsApi = {
   ): string => {
     const params = new URLSearchParams();
     params.set('executor', agent);
+    // The variant decides the model catalog (a Claude Code Router variant lists
+    // CCR's providers), so discovery must run against it and not DEFAULT.
+    if (opts?.variant) params.set('variant', opts.variant);
     if (opts?.workspaceId) params.set('workspace_id', opts.workspaceId);
     if (opts?.sessionId) params.set('session_id', opts.sessionId);
     if (opts?.repoId) params.set('repo_id', opts.repoId);

@@ -765,12 +765,26 @@ async fn get_agent_preset_options(
 #[derive(Debug, Deserialize)]
 pub struct ExecutorDiscoveredOptionsStreamQuery {
     executor: BaseCodingAgent,
+    /// Profile variant to discover for. A variant can change the model catalog
+    /// (Claude Code Router swaps in CCR's providers), so discovery has to
+    /// resolve the variant the caller is configuring rather than always DEFAULT.
+    #[serde(default)]
+    variant: Option<String>,
     #[serde(default)]
     session_id: Option<Uuid>,
     #[serde(default)]
     workspace_id: Option<Uuid>,
     #[serde(default)]
     repo_id: Option<Uuid>,
+}
+
+impl ExecutorDiscoveredOptionsStreamQuery {
+    fn executor_profile_id(&self) -> ExecutorProfileId {
+        match self.variant.clone() {
+            Some(variant) => ExecutorProfileId::with_variant(self.executor, variant),
+            None => ExecutorProfileId::new(self.executor),
+        }
+    }
 }
 
 pub async fn stream_executor_discovered_options_ws(
@@ -797,7 +811,7 @@ pub async fn stream_executor_discovered_options_sse(
         match deployment
             .container()
             .discover_executor_options(
-                ExecutorProfileId::new(query.executor),
+                query.executor_profile_id(),
                 query.session_id,
                 query.workspace_id,
                 query.repo_id,
@@ -832,7 +846,7 @@ async fn handle_executor_discovered_options_ws(
     match deployment
         .container()
         .discover_executor_options(
-            ExecutorProfileId::new(query.executor),
+            query.executor_profile_id(),
             query.session_id,
             query.workspace_id,
             query.repo_id,
@@ -928,5 +942,25 @@ mod compatibility_tests {
             serde_json::from_value::<CompatibleUpdateProfilesRequest>(versioned).unwrap(),
             CompatibleUpdateProfilesRequest::Versioned(_)
         ));
+    }
+
+    #[test]
+    fn discovery_query_resolves_the_requested_variant() {
+        let with_variant: ExecutorDiscoveredOptionsStreamQuery = serde_json::from_value(
+            serde_json::json!({"executor": "CLAUDE_CODE", "variant": "KIMI_K_3"}),
+        )
+        .unwrap();
+        assert_eq!(
+            with_variant.executor_profile_id(),
+            ExecutorProfileId::with_variant(BaseCodingAgent::ClaudeCode, "KIMI_K_3".to_string())
+        );
+
+        // Omitting the variant keeps the previous DEFAULT behaviour.
+        let without_variant: ExecutorDiscoveredOptionsStreamQuery =
+            serde_json::from_value(serde_json::json!({"executor": "CLAUDE_CODE"})).unwrap();
+        assert_eq!(
+            without_variant.executor_profile_id(),
+            ExecutorProfileId::new(BaseCodingAgent::ClaudeCode)
+        );
     }
 }
