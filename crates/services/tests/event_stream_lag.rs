@@ -59,8 +59,11 @@ async fn lagged_event_streams_error_instead_of_dropping_patches() {
         // Timed: silently dropping the lag leaves the stream parked forever,
         // which would hang the test instead of failing it.
         match tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await {
+            // Name-checked: each stream must fail through its own arm, not
+            // inherit a sibling's.
             Ok(Some(Err(e))) => assert!(
-                e.to_string().contains("lagged"),
+                e.to_string()
+                    .starts_with(&format!("{name} stream lagged by ")),
                 "{name}: unexpected error {e}"
             ),
             other => panic!("{name}: expected a lag error, got {other:?}"),
