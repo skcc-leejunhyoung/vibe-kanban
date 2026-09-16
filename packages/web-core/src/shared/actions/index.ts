@@ -1487,6 +1487,10 @@ export const Actions = {
     icon: TerminalIcon,
     keywords: ['terminal', 'shell', 'console', 'home', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
+    // The PTY lives on a host machine. The cloud app reaches hosts only through
+    // relay routes carrying a host id (`/hosts/{id}/...`), and a home-directory
+    // terminal has no such id to carry, so there is nothing to offer here.
+    isVisible: (ctx) => ctx.appRuntime === 'local',
     execute: (ctx) =>
       revealDestinationInPane(
         { kind: 'terminal' },

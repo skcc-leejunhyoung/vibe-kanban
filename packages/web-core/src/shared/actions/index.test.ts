@@ -414,19 +414,29 @@ describe('command palette navigation actions', () => {
     expect(goToProjectIssue).not.toHaveBeenCalled();
   });
 
-  it('offers the standalone terminal from the palette on every screen', () => {
+  it('offers the standalone terminal on local screens but not in the cloud app', () => {
     expect(getPageActions('root')).toContain(Actions.GotoTerminal);
-    // No workspace, no project: the home terminal is always reachable.
-    expect(isActionVisible(Actions.GotoTerminal, openWorkspaceContext)).toBe(
-      true
-    );
+    const local = { ...openWorkspaceContext, appRuntime: 'local' as const };
+
+    // No workspace, no project: the home terminal is always reachable locally.
+    expect(isActionVisible(Actions.GotoTerminal, local)).toBe(true);
     expect(
       isActionVisible(Actions.GotoTerminal, {
-        ...openWorkspaceContext,
+        ...local,
         layoutMode: 'workspaces',
         hasWorkspace: false,
       })
     ).toBe(true);
+
+    // The cloud app only reaches a host through `/hosts/{id}/...`, and a home
+    // terminal carries no host id — offering it there would open a panel that
+    // can never connect.
+    expect(
+      isActionVisible(Actions.GotoTerminal, {
+        ...local,
+        appRuntime: 'remote' as const,
+      })
+    ).toBe(false);
 
     // The terminal owns one PTY and one xterm DOM element, so it has to land in
     // the pane already showing it — a second pane would adopt that element away

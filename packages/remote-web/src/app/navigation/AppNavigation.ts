@@ -36,8 +36,7 @@ export function resolveRemoteDestinationFromPath(
       return { kind: "export" };
     case "/notifications":
       return { kind: "notifications" };
-    case "/terminal":
-      return { kind: "terminal" };
+
     case "/pull-requests":
     case "/hosts/$hostId/pull-requests":
       return {
@@ -180,7 +179,7 @@ function destinationToRemoteTarget(
     case "notifications":
       return { to: "/notifications" } as const;
     case "terminal":
-      return { to: "/terminal" } as const;
+      throw new Error("The terminal runs on a host, not in the cloud app");
     case "pull-requests":
       return {
         to: "/pull-requests",
