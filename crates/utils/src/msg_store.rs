@@ -80,12 +80,14 @@ impl Inner {
             let mut bytes = 0usize;
             self.history
                 .range(offset..end)
-                .take_while(|s| {
-                    let first = bytes == 0;
+                .enumerate()
+                .take_while(|(index, s)| {
                     bytes = bytes.saturating_add(s.bytes);
-                    first || bytes <= max_bytes
+                    // Index, not `bytes == 0`: the one-message floor must hold
+                    // structurally, since `replay_gap_chunk` unwraps on it.
+                    *index == 0 || bytes <= max_bytes
                 })
-                .map(|s| s.msg.clone())
+                .map(|(_, s)| s.msg.clone())
                 .collect()
         })
     }
@@ -547,6 +549,37 @@ mod tests {
         for _ in 0..8 {
             assert!(matches!(stream.next().await, Some(Ok(LogMsg::Stdout(_)))));
         }
+    }
+
+    /// Messages big enough that `RECOVERY_CHUNK_BYTES` cuts a recovery chunk
+    /// short before `RECOVERY_CHUNK` does. The gap must then advance by what
+    /// was actually replayed, or the remainder is skipped or re-sent.
+    #[tokio::test]
+    async fn byte_capped_recovery_chunks_replay_the_whole_gap_once() {
+        let store = MsgStore::with_broadcast_capacity(8, false);
+        let mut stream = store.history_plus_stream();
+        const PUSHED: usize = 40;
+        // ~256 KiB each: four per 1 MiB chunk, so the span spans many chunks.
+        let filler = "x".repeat(256 * 1024);
+        for index in 0..PUSHED {
+            store.push_stdout(format!("{index}:{filler}"));
+        }
+        assert_eq!(store.inner.read().unwrap().evicted, 0, "nothing evicted");
+
+        for expected in 0..PUSHED {
+            match stream.next().await {
+                Some(Ok(LogMsg::Stdout(content))) => {
+                    assert_eq!(content.split_once(':').unwrap().0, expected.to_string())
+                }
+                other => panic!("message {expected}: unexpected {other:?}"),
+            }
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), stream.next())
+                .await
+                .is_err(),
+            "no duplicates after the gap is replayed"
+        );
     }
 
     /// The subscription snapshot and the live receiver must not overlap or
