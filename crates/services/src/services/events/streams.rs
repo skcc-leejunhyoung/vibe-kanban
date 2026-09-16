@@ -261,12 +261,13 @@ impl EventService {
                         }
                         Ok(other) => Some(Ok(other)),
                         Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                            // Same reasoning as
-                            // `stream_execution_processes_for_session_raw`: the
-                            // snapshot above was read after subscribing, so
-                            // replaying the skipped span would land older state
-                            // on top of it. Close instead and let the client
-                            // reconnect onto a fresh snapshot.
+                            // This subscribes to the broadcast channel raw, so
+                            // nothing replays the dropped span. Resuming
+                            // mid-gap would leave the client stale with no
+                            // signal; error out instead so WS/SSE closes and
+                            // the reconnect re-reads the snapshot. (Healing
+                            // from retained history is not the fix here — see
+                            // `stream_execution_processes_for_session_raw`.)
                             if first_lag(&lag_logged) {
                                 tracing::warn!(
                                     scratch_id = %scratch_id,
@@ -374,13 +375,13 @@ impl EventService {
                         }
                         Ok(other) => Some(Ok(other)),
                         Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                            // Same reasoning as
-                            // `stream_execution_processes_for_session_raw`: the
-                            // snapshot above was read after subscribing, so
-                            // replaying the skipped span would land older state on
-                            // top of it (a completed workspace back to running).
-                            // Close instead and let the client reconnect onto a
-                            // fresh snapshot.
+                            // This subscribes to the broadcast channel raw, so
+                            // nothing replays the dropped span. Resuming
+                            // mid-gap leaves the board stale with no signal —
+                            // the reported symptom. Error out so WS/SSE closes
+                            // and the reconnect re-reads the snapshot. (Healing
+                            // from retained history is not the fix here — see
+                            // `stream_execution_processes_for_session_raw`.)
                             if first_lag(&lag_logged) {
                                 tracing::warn!(
                                     ?archived,
