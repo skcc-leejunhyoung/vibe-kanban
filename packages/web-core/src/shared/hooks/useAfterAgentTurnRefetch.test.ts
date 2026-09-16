@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AGENT_TURN_SETTLE_MS,
   agentTurnJustEnded,
-} from './useAgentTurnGitRefetch';
+} from './useAfterAgentTurnRefetch';
 
 describe('agentTurnJustEnded', () => {
   it('fires only on running -> not running', () => {
@@ -18,9 +18,10 @@ describe('agentTurnJustEnded', () => {
     expect(agentTurnJustEnded(true, undefined)).toBe(false);
   });
 
-  it('re-reads after the commit has had time to land, then once more', () => {
-    // The auto-commit runs after the completion patch is published, so the
-    // first shot must not be immediate and there must be a slower fallback.
+  it('re-reads after the post-terminal write has landed, then once more', () => {
+    // The auto-commit / pending-resume row is written after the completion
+    // patch is published, so the first shot must not be immediate and there
+    // must be a slower fallback.
     expect(AGENT_TURN_SETTLE_MS[0]).toBeGreaterThan(0);
     expect(AGENT_TURN_SETTLE_MS.length).toBeGreaterThan(1);
     expect(AGENT_TURN_SETTLE_MS).toEqual(

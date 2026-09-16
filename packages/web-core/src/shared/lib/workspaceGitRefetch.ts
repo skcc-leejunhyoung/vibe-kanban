@@ -6,7 +6,7 @@ import type { DiffStats } from 'shared/types';
  * They used to poll every 5s from six call sites. Everything that normally
  * moves git state now has an event: explicit actions invalidate these keys,
  * worktree edits arrive on the diff stream, and the agent's auto-commit comes
- * in through useAgentTurnGitRefetch. Polling is only the safety net for what
+ * in through useAfterAgentTurnRefetch. Polling is only the safety net for what
  * none of those report — a `git commit` run in an external terminal, or a diff
  * burst that never settles.
  */

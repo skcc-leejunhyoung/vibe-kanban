@@ -253,11 +253,11 @@ function detectPreviewUrlFromBuffer(
 export function usePreviewUrl(
   logs: Array<{ content: string }> | undefined,
   previewProxyPort?: number,
-  /** Lines the log ring buffer trimmed off the front (see useLogStream). */
+  /** Entries the log ring buffer trimmed off the front (see useLogStream). */
   dropped = 0
 ): PreviewUrlInfo | undefined {
   const [urlInfo, setUrlInfo] = useState<PreviewUrlInfo | undefined>();
-  // Absolute line index (survives ring-buffer trimming), not an array offset.
+  // Absolute entry index (survives ring-buffer trimming), not an array offset.
   const lastIndexRef = useRef(0);
   const logBufferRef = useRef('');
 

@@ -14,7 +14,7 @@ import {
 
 interface UseLogStreamResult {
   logs: LogEntry[];
-  /** Lines trimmed off the front by the ring buffer since the stream started. */
+  /** Entries trimmed off the front by the ring buffer since the stream started. */
   dropped: number;
   error: string | null;
 }

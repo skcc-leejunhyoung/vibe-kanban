@@ -3,7 +3,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { WORKSPACE_GIT_BACKUP_POLL_MS } from '@/shared/lib/workspaceGitRefetch';
-import { useAgentTurnGitRefetch } from '@/shared/hooks/useAgentTurnGitRefetch';
+import { useAfterAgentTurnRefetch } from '@/shared/hooks/useAfterAgentTurnRefetch';
 
 export const branchStatusKeys = {
   byWorkspace: (
@@ -21,9 +21,9 @@ export function useBranchStatus(workspaceId?: string) {
     enabled: !!workspaceId,
     // Backup only. Explicit git actions invalidate this key, uncommitted edits
     // arrive on the workspace diff stream, and the agent's auto-commit comes in
-    // via useAgentTurnGitRefetch below.
+    // via useAfterAgentTurnRefetch below.
     refetchInterval: WORKSPACE_GIT_BACKUP_POLL_MS,
   });
-  useAgentTurnGitRefetch(!!workspaceId, query.refetch);
+  useAfterAgentTurnRefetch(!!workspaceId, query.refetch);
   return query;
 }

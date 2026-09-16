@@ -193,7 +193,7 @@ function WorkspaceProviderContent({
   // This does NOT cover committing: the stream diffs the worktree against the
   // merge-base with the target branch, so a commit leaves it byte-identical —
   // except in an in-place workspace, whose base is HEAD. The agent's commit
-  // comes in via useAgentTurnGitRefetch, explicit git actions invalidate these
+  // comes in via useAfterAgentTurnRefetch, explicit git actions invalidate these
   // keys themselves, and WORKSPACE_GIT_BACKUP_POLL_MS is the floor for the
   // rest (an external `git commit`, or a diff burst that never settles).
   const diffSignature = workspaceDiffSignature(diffStats);

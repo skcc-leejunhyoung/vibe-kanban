@@ -4,7 +4,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { WORKSPACE_GIT_BACKUP_POLL_MS } from '@/shared/lib/workspaceGitRefetch';
-import { useAgentTurnGitRefetch } from '@/shared/hooks/useAgentTurnGitRefetch';
+import { useAfterAgentTurnRefetch } from '@/shared/hooks/useAfterAgentTurnRefetch';
 
 export const workspaceCommitsKey = (
   workspaceId: string | null | undefined,
@@ -34,10 +34,10 @@ export function useWorkspaceCommits(
     // hammering on every focus.
     staleTime: 10_000,
     // Backup only; commit-changing actions invalidate this key and the agent's
-    // auto-commit comes in via useAgentTurnGitRefetch below.
+    // auto-commit comes in via useAfterAgentTurnRefetch below.
     refetchInterval:
       enabled && workspaceId ? WORKSPACE_GIT_BACKUP_POLL_MS : false,
   });
-  useAgentTurnGitRefetch(enabled && !!workspaceId, query.refetch);
+  useAfterAgentTurnRefetch(enabled && !!workspaceId, query.refetch);
   return query;
 }

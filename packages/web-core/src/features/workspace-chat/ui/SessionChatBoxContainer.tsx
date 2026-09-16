@@ -39,6 +39,7 @@ import { useSessionSend } from '../model/hooks/useSessionSend';
 import { useSessionAttachments } from '../model/hooks/useSessionAttachments';
 import { useMessageEditRetry } from '../model/hooks/useMessageEditRetry';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
+import { useAfterAgentTurnRefetch } from '@/shared/hooks/useAfterAgentTurnRefetch';
 import { useWorkspaceBranch } from '../model/hooks/useWorkspaceBranch';
 import { useApprovalMutation } from '../model/hooks/useApprovalMutation';
 import { useApprovals } from '@/shared/hooks/useApprovals';
@@ -298,8 +299,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   );
 
   // Usage-based auto-resume status for the current session. Only the pending
-  // countdown needs to tick; otherwise this is a slow backup poll (the setter
-  // invalidates the key directly).
+  // countdown needs to tick; otherwise this is a slow backup poll. A resume is
+  // only ever scheduled as a turn ends (maybe_schedule_rate_limit_resume runs
+  // in the same post-terminal block as the auto-commit), so the turn-end
+  // refetch below is what makes the badge appear; the setter invalidates the
+  // key directly.
   const autoResumeQuery = useQuery({
     queryKey: ['sessionAutoResume', hostId, sessionId],
     queryFn: () => sessionsApi.getAutoResume(sessionId!, hostId),
@@ -307,6 +311,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     refetchInterval: (query) =>
       query.state.data?.pending_resume_at ? 10_000 : 60_000,
   });
+  useAfterAgentTurnRefetch(!!sessionId, autoResumeQuery.refetch);
 
   const autoResumeEnabled =
     autoResumeQuery.data?.enabled ?? session?.auto_resume_enabled ?? false;
