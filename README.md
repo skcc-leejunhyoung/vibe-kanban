@@ -120,7 +120,11 @@ The following environment variables can be configured at build time or runtime:
 | `HOST` | Runtime | `127.0.0.1` | Backend server host |
 | `MCP_HOST` | Runtime | Value of `HOST` | MCP server connection host (use `127.0.0.1` when `HOST=0.0.0.0` on Windows) |
 | `MCP_PORT` | Runtime | Value of `BACKEND_PORT` | MCP server connection port |
-| `DISABLE_WORKTREE_CLEANUP` | Runtime | Not set | Disable all git worktree cleanup including orphan and expired workspace cleanup (for debugging) |
+| `DISABLE_WORKTREE_CLEANUP` | Runtime | Not set | Disable automatic worktree, Cargo-cache, and configured Docker build-cache cleanup (for debugging) |
+| `VIBE_KANBAN_EXTRA_CARGO_TARGET_DIRS` | Runtime | Not set | Platform path-list of additional Cargo target directories eligible for pressure-based debug-cache cleanup |
+| `VIBE_KANBAN_EXTRA_CARGO_CACHE_MAX_GIB` | Runtime | `60` | Maximum combined debug-cache size for discovered and configured extra Cargo targets |
+| `VIBE_KANBAN_MIN_FREE_DISK_GIB` | Runtime | `40` | Minimum free disk space maintained by extra Cargo target cleanup on Unix |
+| `VIBE_KANBAN_DOCKER_CACHE_MAX_STORAGE` | Runtime | Not set | Optional BuildKit cache cap (for example `12GB`) enforced by the 30-minute cleanup pass |
 | `VK_ALLOWED_ORIGINS` | Runtime | Not set | Comma-separated list of origins that are allowed to make backend API requests (e.g., `https://my-vibekanban-frontend.com`) |
 | `VK_SHARED_API_BASE` | Runtime | Not set | Base URL for the remote/cloud API used by the local desktop app |
 | `VK_SHARED_RELAY_API_BASE` | Runtime | Not set | Base URL for the relay API used by tunnel-mode connections |

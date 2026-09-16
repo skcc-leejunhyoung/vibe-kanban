@@ -83,6 +83,42 @@ use workspace_manager::{RepoWorkspaceInput, WorkspaceError, WorkspaceManager};
 use crate::{command, copy};
 
 const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
+const GIB: u64 = 1024 * 1024 * 1024;
+const DEFAULT_EXTRA_CARGO_CACHE_MAX_GIB: u64 = 60;
+const DEFAULT_MIN_FREE_DISK_GIB: u64 = 40;
+
+#[derive(Debug, Default, Clone, Copy)]
+struct CargoCachePruneStats {
+    removed_targets: usize,
+    busy_targets: usize,
+    removed_bytes: u64,
+}
+
+impl CargoCachePruneStats {
+    fn merge(&mut self, other: Self) {
+        self.removed_targets += other.removed_targets;
+        self.busy_targets += other.busy_targets;
+        self.removed_bytes = self.removed_bytes.saturating_add(other.removed_bytes);
+    }
+}
+
+#[derive(Debug, Default)]
+struct ExtraCargoCachePruneReport {
+    configured_targets: usize,
+    measured_targets: usize,
+    total_bytes_before: u64,
+    available_bytes_before: u64,
+    pressure_triggered: bool,
+    stats: CargoCachePruneStats,
+}
+
+#[derive(Debug, Default)]
+struct DockerCachePruneReport {
+    configured: bool,
+    active_build: bool,
+    succeeded: bool,
+    summary: Option<String>,
+}
 
 /// A child's byte stream as log messages.
 ///
@@ -106,20 +142,85 @@ where
         .map_ok(wrap)
 }
 
-fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<bool> {
+fn path_size(path: &Path) -> io::Result<u64> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(0);
+    }
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+
+    let mut total = 0u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() && !file_type.is_symlink() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                total = total.saturating_add(entry.metadata()?.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn cargo_debug_size(target_dir: &Path) -> io::Result<Option<u64>> {
+    match std::fs::symlink_metadata(target_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+
     let debug_dir = target_dir.join("debug");
     match std::fs::symlink_metadata(&debug_dir) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => return Ok(false),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+
+    match std::fs::symlink_metadata(debug_dir.join(".cargo-lock")) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(debug_dir)? {
+        let entry = entry?;
+        if entry.file_name() != ".cargo-lock" {
+            bytes = bytes.saturating_add(path_size(&entry.path())?);
+        }
+    }
+    Ok(Some(bytes))
+}
+
+fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<CargoCachePruneStats> {
+    let debug_dir = target_dir.join("debug");
+    match std::fs::symlink_metadata(&debug_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(CargoCachePruneStats::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(CargoCachePruneStats::default());
+        }
         Err(error) => return Err(error),
     };
 
     let lock_path = debug_dir.join(".cargo-lock");
     match std::fs::symlink_metadata(&lock_path) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => return Ok(false),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(CargoCachePruneStats::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(CargoCachePruneStats::default());
+        }
         Err(error) => return Err(error),
     };
 
@@ -129,17 +230,23 @@ fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<bool> {
         .open(&lock_path)?;
     match lock.try_lock() {
         Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Ok(CargoCachePruneStats {
+                busy_targets: 1,
+                ..CargoCachePruneStats::default()
+            });
+        }
         Err(std::fs::TryLockError::Error(error)) => return Err(error),
     }
 
-    let mut removed = false;
+    let mut stats = CargoCachePruneStats::default();
     for entry in std::fs::read_dir(&debug_dir)? {
         let entry = entry?;
         if entry.file_name() == ".cargo-lock" {
             continue;
         }
         let path = entry.path();
+        stats.removed_bytes = stats.removed_bytes.saturating_add(path_size(&path)?);
         let file_type = entry.file_type()?;
         let result = if file_type.is_dir() && !file_type.is_symlink() {
             std::fs::remove_dir_all(&path)
@@ -151,14 +258,14 @@ fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<bool> {
         {
             return Err(error);
         }
-        removed = true;
+        stats.removed_targets = 1;
     }
-    Ok(removed)
+    Ok(stats)
 }
 
-fn prune_stale_cargo_debug_caches(workspace_dir: &Path) -> io::Result<usize> {
+fn prune_stale_cargo_debug_caches(workspace_dir: &Path) -> io::Result<CargoCachePruneStats> {
     let mut pending = vec![workspace_dir.to_path_buf()];
-    let mut removed = 0;
+    let mut stats = CargoCachePruneStats::default();
     while let Some(dir) = pending.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -174,14 +281,214 @@ fn prune_stale_cargo_debug_caches(workspace_dir: &Path) -> io::Result<usize> {
             let path = entry.path();
             match entry.file_name().to_str() {
                 Some("target") => {
-                    removed += usize::from(prune_cargo_debug_dir(&path)?);
+                    stats.merge(prune_cargo_debug_dir(&path)?);
                 }
                 Some(".git") | Some("node_modules") => {}
                 _ => pending.push(path),
             }
         }
     }
-    Ok(removed)
+    Ok(stats)
+}
+
+fn prune_extra_cargo_targets(
+    target_dirs: Vec<PathBuf>,
+    available_bytes: u64,
+    max_total_bytes: u64,
+    min_free_bytes: u64,
+) -> io::Result<ExtraCargoCachePruneReport> {
+    let mut report = ExtraCargoCachePruneReport {
+        configured_targets: target_dirs.len(),
+        available_bytes_before: available_bytes,
+        ..ExtraCargoCachePruneReport::default()
+    };
+    let mut measured = Vec::new();
+    for target_dir in target_dirs {
+        if let Some(bytes) = cargo_debug_size(&target_dir)? {
+            report.measured_targets += 1;
+            report.total_bytes_before = report.total_bytes_before.saturating_add(bytes);
+            measured.push((bytes, target_dir));
+        }
+    }
+
+    let mut remaining_bytes = report.total_bytes_before;
+    let mut estimated_available = available_bytes;
+    report.pressure_triggered =
+        remaining_bytes > max_total_bytes || estimated_available < min_free_bytes;
+    if !report.pressure_triggered {
+        return Ok(report);
+    }
+
+    measured.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+    for (_, target_dir) in measured {
+        if remaining_bytes <= max_total_bytes && estimated_available >= min_free_bytes {
+            break;
+        }
+        let stats = prune_cargo_debug_dir(&target_dir)?;
+        remaining_bytes = remaining_bytes.saturating_sub(stats.removed_bytes);
+        estimated_available = estimated_available.saturating_add(stats.removed_bytes);
+        report.stats.merge(stats);
+    }
+    Ok(report)
+}
+
+fn checkout_cargo_target_dirs(current_dir: &Path, home_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut target_dirs = Vec::new();
+    if let Some(root) = current_dir.ancestors().find(|candidate| {
+        candidate
+            .join("crates/local-deployment/Cargo.toml")
+            .is_file()
+            && candidate.join("npx-cli").is_dir()
+    }) {
+        target_dirs.extend([
+            root.join("target"),
+            root.join("crates/remote/target"),
+            root.join("crates/relay-tunnel/target"),
+        ]);
+    }
+    if let Some(home_dir) = home_dir {
+        target_dirs.push(home_dir.join(".cache/vk-agents-target"));
+    }
+    target_dirs
+}
+
+fn configured_extra_cargo_target_dirs() -> Vec<PathBuf> {
+    let current_dir = std::env::current_dir().unwrap_or_default();
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
+    let mut target_dirs = checkout_cargo_target_dirs(&current_dir, home_dir.as_deref());
+    if let Some(cargo_target_dir) = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+        target_dirs.push(cargo_target_dir);
+    }
+    if let Some(raw) = std::env::var_os("VIBE_KANBAN_EXTRA_CARGO_TARGET_DIRS") {
+        target_dirs.extend(std::env::split_paths(&raw));
+    }
+
+    let mut seen = HashSet::new();
+    target_dirs
+        .into_iter()
+        .filter(|path| {
+            if !path.is_absolute() {
+                tracing::warn!(path = %path.display(), "Ignoring relative Cargo cache target");
+                return false;
+            }
+            seen.insert(path.clone())
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn docker_build_active() -> bool {
+    std::process::Command::new("ps")
+        .args(["-Ao", "command="])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .is_some_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(is_docker_build_command)
+        })
+}
+
+#[cfg(not(unix))]
+fn docker_build_active() -> bool {
+    false
+}
+
+fn is_docker_build_command(command: &str) -> bool {
+    let tokens: Vec<_> = command.split_whitespace().collect();
+    tokens.iter().enumerate().any(|(index, token)| {
+        let executable = Path::new(token)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(token);
+        let args = &tokens[index + 1..];
+        match executable {
+            "docker" | "docker-compose" => args.iter().any(|arg| matches!(*arg, "build" | "bake")),
+            "buildctl" => args.contains(&"build"),
+            _ => false,
+        }
+    })
+}
+
+fn final_output_line(bytes: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.chars().take(256).collect())
+}
+
+fn prune_docker_build_cache() -> DockerCachePruneReport {
+    let Some(max_storage) =
+        std::env::var_os("VIBE_KANBAN_DOCKER_CACHE_MAX_STORAGE").filter(|value| !value.is_empty())
+    else {
+        return DockerCachePruneReport::default();
+    };
+    if docker_build_active() {
+        return DockerCachePruneReport {
+            configured: true,
+            active_build: true,
+            ..DockerCachePruneReport::default()
+        };
+    }
+
+    match std::process::Command::new("docker")
+        .args(["buildx", "prune", "--force", "--max-used-space"])
+        .arg(max_storage)
+        .output()
+    {
+        Ok(output) => DockerCachePruneReport {
+            configured: true,
+            succeeded: output.status.success(),
+            summary: final_output_line(if output.status.success() {
+                &output.stdout
+            } else {
+                &output.stderr
+            }),
+            ..DockerCachePruneReport::default()
+        },
+        Err(error) => DockerCachePruneReport {
+            configured: true,
+            summary: Some(error.to_string()),
+            ..DockerCachePruneReport::default()
+        },
+    }
+}
+
+fn gib_limit_from_env(name: &str, default_gib: u64) -> u64 {
+    match std::env::var(name) {
+        Ok(raw) => match raw.parse::<u64>().ok().and_then(|gib| gib.checked_mul(GIB)) {
+            Some(bytes) => bytes,
+            None => {
+                tracing::warn!(name, value = raw, default_gib, "Ignoring invalid GiB limit");
+                default_gib * GIB
+            }
+        },
+        Err(_) => default_gib * GIB,
+    }
+}
+
+#[cfg(unix)]
+fn available_space(path: &Path) -> io::Result<u64> {
+    let stats = nix::sys::statvfs::statvfs(path).map_err(io::Error::other)?;
+    Ok(u64::from(stats.blocks_available()).saturating_mul(stats.fragment_size()))
+}
+
+#[cfg(not(unix))]
+fn available_space(_path: &Path) -> io::Result<u64> {
+    Ok(u64::MAX)
+}
+
+fn minimum_available_space(target_dirs: &[PathBuf]) -> u64 {
+    // ponytail: configured targets normally share one local volume; use the
+    // minimum observed free space until cross-volume cache policies are needed.
+    target_dirs
+        .iter()
+        .filter(|path| path.exists())
+        .filter_map(|path| available_space(path).ok())
+        .min()
+        .unwrap_or(u64::MAX)
 }
 
 // Safety net for draining the stdout/stderr forwarder: normally the pipes EOF
@@ -603,7 +910,10 @@ impl LocalContainerService {
             return Ok(());
         }
 
+        let build_cache_summary = Workspace::build_cache_cleanup_summary(&self.db.pool).await?;
         let expired_workspaces = Workspace::find_expired_for_cleanup(&self.db.pool, None).await?;
+        let mut worktree_cleanup_failures = 0usize;
+        let mut worktree_recheck_skips = 0usize;
         if expired_workspaces.is_empty() {
             tracing::debug!("No expired workspaces found");
         } else {
@@ -619,9 +929,11 @@ impl LocalContainerService {
                         .await?
                         .pop()
                 else {
+                    worktree_recheck_skips += 1;
                     continue;
                 };
                 if let Err(error) = self.cleanup_workspace(&current, true).await {
+                    worktree_cleanup_failures += 1;
                     tracing::warn!(
                         workspace_id = %current.id,
                         %error,
@@ -633,6 +945,7 @@ impl LocalContainerService {
 
         let stale_build_caches =
             Workspace::find_expired_for_build_cache_cleanup(&self.db.pool, None).await?;
+        let mut workspace_cache_stats = CargoCachePruneStats::default();
         for workspace in &stale_build_caches {
             let Some(current) =
                 Workspace::find_expired_for_build_cache_cleanup(&self.db.pool, Some(workspace.id))
@@ -650,12 +963,18 @@ impl LocalContainerService {
             })
             .await
             {
-                Ok(Ok(removed)) if removed > 0 => tracing::info!(
-                    %workspace_id,
-                    removed_debug_directories = removed,
-                    "Removed stale Cargo debug outputs"
-                ),
-                Ok(Ok(_)) => {}
+                Ok(Ok(stats)) => {
+                    if stats.removed_targets > 0 || stats.busy_targets > 0 {
+                        tracing::info!(
+                            %workspace_id,
+                            removed_debug_directories = stats.removed_targets,
+                            busy_debug_directories = stats.busy_targets,
+                            removed_bytes = stats.removed_bytes,
+                            "Processed stale Cargo debug outputs"
+                        );
+                    }
+                    workspace_cache_stats.merge(stats);
+                }
                 Ok(Err(error)) => tracing::warn!(
                     %workspace_id,
                     %error,
@@ -668,6 +987,93 @@ impl LocalContainerService {
                 ),
             }
         }
+
+        let extra_target_dirs = configured_extra_cargo_target_dirs();
+        let extra_target_count = extra_target_dirs.len();
+        let available_bytes = minimum_available_space(&extra_target_dirs);
+        let max_total_bytes = gib_limit_from_env(
+            "VIBE_KANBAN_EXTRA_CARGO_CACHE_MAX_GIB",
+            DEFAULT_EXTRA_CARGO_CACHE_MAX_GIB,
+        );
+        let min_free_bytes =
+            gib_limit_from_env("VIBE_KANBAN_MIN_FREE_DISK_GIB", DEFAULT_MIN_FREE_DISK_GIB);
+        let extra_report = if extra_target_dirs.is_empty() {
+            ExtraCargoCachePruneReport::default()
+        } else {
+            match tokio::task::spawn_blocking(move || {
+                prune_extra_cargo_targets(
+                    extra_target_dirs,
+                    available_bytes,
+                    max_total_bytes,
+                    min_free_bytes,
+                )
+            })
+            .await
+            {
+                Ok(Ok(report)) => report,
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "Failed to process configured Cargo caches; will retry");
+                    ExtraCargoCachePruneReport {
+                        configured_targets: extra_target_count,
+                        ..ExtraCargoCachePruneReport::default()
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "Configured Cargo cache cleanup task failed; will retry");
+                    ExtraCargoCachePruneReport {
+                        configured_targets: extra_target_count,
+                        ..ExtraCargoCachePruneReport::default()
+                    }
+                }
+            }
+        };
+
+        let docker_report = match tokio::task::spawn_blocking(prune_docker_build_cache).await {
+            Ok(report) => report,
+            Err(error) => {
+                tracing::warn!(%error, "Docker build-cache cleanup task failed; will retry");
+                DockerCachePruneReport::default()
+            }
+        };
+        if docker_report.configured && !docker_report.active_build && !docker_report.succeeded {
+            tracing::warn!(
+                summary = ?docker_report.summary,
+                "Docker build-cache cleanup failed; will retry"
+            );
+        }
+
+        tracing::info!(
+            worktree_candidates = expired_workspaces.len(),
+            worktree_recheck_skips,
+            worktree_cleanup_failures,
+            build_cache_total = build_cache_summary.total,
+            build_cache_candidates = build_cache_summary.eligible,
+            excluded_unmanaged = build_cache_summary.unmanaged,
+            excluded_running = build_cache_summary.running,
+            excluded_pinned = build_cache_summary.pinned,
+            excluded_in_place = build_cache_summary.in_place,
+            excluded_deleted = build_cache_summary.worktree_deleted,
+            excluded_never_completed = build_cache_summary.never_completed,
+            excluded_too_recent = build_cache_summary.too_recent,
+            stale_cache_candidates = stale_build_caches.len(),
+            extra_configured_targets = extra_report.configured_targets,
+            extra_measured_targets = extra_report.measured_targets,
+            extra_cache_bytes_before = extra_report.total_bytes_before,
+            available_bytes_before = extra_report.available_bytes_before,
+            extra_pressure_triggered = extra_report.pressure_triggered,
+            docker_cache_configured = docker_report.configured,
+            docker_build_active = docker_report.active_build,
+            docker_cache_prune_succeeded = docker_report.succeeded,
+            docker_cache_prune_summary = ?docker_report.summary,
+            removed_debug_directories = workspace_cache_stats.removed_targets
+                + extra_report.stats.removed_targets,
+            busy_debug_directories = workspace_cache_stats.busy_targets
+                + extra_report.stats.busy_targets,
+            removed_bytes = workspace_cache_stats
+                .removed_bytes
+                .saturating_add(extra_report.stats.removed_bytes),
+            "Periodic workspace cleanup completed"
+        );
         Ok(())
     }
 
@@ -3575,14 +3981,19 @@ mod tests {
             .unwrap();
         busy_lock.try_lock().unwrap();
 
-        assert_eq!(prune_stale_cargo_debug_caches(root.path()).unwrap(), 2);
+        let first = prune_stale_cargo_debug_caches(root.path()).unwrap();
+        assert_eq!(first.removed_targets, 2);
+        assert_eq!(first.busy_targets, 1);
+        assert!(first.removed_bytes > 0);
         assert!(!root_debug.join("incremental/artifact").exists());
         assert!(!nested_debug.join("incremental/artifact").exists());
         assert!(root_debug.join(".cargo-lock").exists());
         assert!(nested_debug.join(".cargo-lock").exists());
         assert!(busy_debug.join("incremental/artifact").exists());
         drop(busy_lock);
-        assert_eq!(prune_stale_cargo_debug_caches(root.path()).unwrap(), 1);
+        let second = prune_stale_cargo_debug_caches(root.path()).unwrap();
+        assert_eq!(second.removed_targets, 1);
+        assert_eq!(second.busy_targets, 0);
         assert!(!busy_debug.join("incremental/artifact").exists());
         assert_eq!(
             std::fs::read(root.path().join("target/release/keep")).unwrap(),
@@ -3592,6 +4003,80 @@ mod tests {
             std::fs::read(root.path().join("source.rs")).unwrap(),
             b"source"
         );
+    }
+
+    #[test]
+    fn extra_cargo_cache_cleanup_enforces_size_and_free_space_limits() {
+        fn target(root: &Path, name: &str, bytes: usize) -> PathBuf {
+            let target = root.join(name);
+            let debug = target.join("debug");
+            std::fs::create_dir_all(&debug).unwrap();
+            std::fs::write(debug.join(".cargo-lock"), []).unwrap();
+            std::fs::write(debug.join("cache"), vec![0; bytes]).unwrap();
+            target
+        }
+
+        let size_root = tempfile::tempdir().unwrap();
+        let large = target(size_root.path(), "large", 30);
+        let medium = target(size_root.path(), "medium", 20);
+        let small = target(size_root.path(), "small", 10);
+        let report = prune_extra_cargo_targets(
+            vec![small.clone(), medium.clone(), large.clone()],
+            100,
+            25,
+            0,
+        )
+        .unwrap();
+        assert_eq!(report.total_bytes_before, 60);
+        assert_eq!(report.stats.removed_targets, 2);
+        assert_eq!(report.stats.removed_bytes, 50);
+        assert!(!large.join("debug/cache").exists());
+        assert!(!medium.join("debug/cache").exists());
+        assert!(small.join("debug/cache").exists());
+
+        let free_root = tempfile::tempdir().unwrap();
+        let larger = target(free_root.path(), "larger", 10);
+        let smaller = target(free_root.path(), "smaller", 8);
+        let report =
+            prune_extra_cargo_targets(vec![smaller.clone(), larger.clone()], 2, 100, 11).unwrap();
+        assert_eq!(report.stats.removed_targets, 1);
+        assert_eq!(report.stats.removed_bytes, 10);
+        assert!(!larger.join("debug/cache").exists());
+        assert!(smaller.join("debug/cache").exists());
+    }
+
+    #[test]
+    fn cargo_cache_discovery_includes_checkout_and_shared_target() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("crates/local-deployment")).unwrap();
+        std::fs::create_dir_all(root.path().join("npx-cli/dist")).unwrap();
+        std::fs::write(
+            root.path().join("crates/local-deployment/Cargo.toml"),
+            b"[package]",
+        )
+        .unwrap();
+        let home = root.path().join("home");
+
+        assert_eq!(
+            checkout_cargo_target_dirs(&root.path().join("npx-cli/dist"), Some(&home)),
+            vec![
+                root.path().join("target"),
+                root.path().join("crates/remote/target"),
+                root.path().join("crates/relay-tunnel/target"),
+                home.join(".cache/vk-agents-target"),
+            ]
+        );
+    }
+
+    #[test]
+    fn docker_build_detection_ignores_non_build_commands() {
+        assert!(is_docker_build_command(
+            "/usr/local/bin/docker buildx build --load ."
+        ));
+        assert!(is_docker_build_command("docker compose -f dev.yml build"));
+        assert!(is_docker_build_command("buildctl --addr local build"));
+        assert!(!is_docker_build_command("docker builder prune --force"));
+        assert!(!is_docker_build_command("docker ps"));
     }
 
     /// Decision table for [`LocalContainerService::plan_post_completion`].

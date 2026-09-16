@@ -157,9 +157,13 @@ Vibe Kanban also checks for inactive worktrees every 30 minutes. Archived worksp
 
 Automatic cleanup skips pinned workspaces, running executions, in-place workspaces that use your original checkout, and repositories with uncommitted changes or untracked files. If repository state cannot be checked, the workspace is retained. Activity and pin/archive state are checked again before cleanup, and failed deletions are retried on a later pass.
 
-The same pass also removes stale Cargo `target/debug` outputs from inactive workspaces, including nested Cargo workspaces. This cache-only cleanup uses the latest completed execution rather than read-only UI activity, so uncommitted source files can remain while rebuildable debug outputs are reclaimed. Busy Cargo targets are skipped and retried later; release outputs are preserved.
+The same pass also removes stale Cargo `target/debug` outputs from inactive workspaces, including nested Cargo workspaces. This cache-only cleanup uses the latest completed execution rather than read-only UI activity, so uncommitted source files can remain while rebuildable debug outputs are reclaimed. Busy Cargo targets are skipped and retried later; release outputs are preserved. Each pass logs candidate counts, exclusion reasons, busy targets, and estimated reclaimed bytes.
 
-Full cleanup removes eligible worktree directories, including their remaining build outputs, but preserves database history and Git branches. It does not clean build caches in your original repository. Set `DISABLE_WORKTREE_CLEANUP` to disable inactive workspace cleanup; the development backend sets it by default.
+Source checkouts automatically include their root and nested Cargo targets plus `~/.cache/vk-agents-target`. You can include more shared or original-checkout targets by setting `VIBE_KANBAN_EXTRA_CARGO_TARGET_DIRS` to a platform path-list. These targets are cleaned largest-first only when their combined debug output exceeds `VIBE_KANBAN_EXTRA_CARGO_CACHE_MAX_GIB` (60 GiB by default) or free space falls below `VIBE_KANBAN_MIN_FREE_DISK_GIB` (40 GiB by default on Unix). The same non-blocking Cargo lock protects active builds.
+
+Set `VIBE_KANBAN_DOCKER_CACHE_MAX_STORAGE` (for example `12GB`) to apply a BuildKit cache cap during the same pass. On Unix, Docker cleanup is skipped while a Docker or BuildKit build command is active, and failures are logged for the next retry.
+
+Full cleanup removes eligible worktree directories, including their remaining build outputs, but preserves database history and Git branches. Original-repository caches outside the discovered source checkout remain untouched unless you explicitly list their Cargo target directories. Set `DISABLE_WORKTREE_CLEANUP` to disable inactive workspace, extra Cargo-cache, and configured Docker build-cache cleanup; the development backend sets it by default.
 
 ## Renaming Workspaces
 

@@ -78,6 +78,19 @@ pub struct WorkspaceWithStatus {
     pub is_errored: bool,
 }
 
+#[derive(Debug, Default, FromRow)]
+pub struct BuildCacheCleanupSummary {
+    pub total: i64,
+    pub eligible: i64,
+    pub unmanaged: i64,
+    pub running: i64,
+    pub pinned: i64,
+    pub in_place: i64,
+    pub worktree_deleted: i64,
+    pub never_completed: i64,
+    pub too_recent: i64,
+}
+
 struct WorkspaceStatusRow {
     id: Uuid,
     task_id: Option<Uuid>,
@@ -425,6 +438,65 @@ impl Workspace {
         )
         .bind(workspace_id)
         .fetch_all(pool)
+        .await
+    }
+
+    /// Summarise mutually exclusive build-cache cleanup gates for diagnostics.
+    pub async fn build_cache_cleanup_summary(
+        pool: &SqlitePool,
+    ) -> Result<BuildCacheCleanupSummary, sqlx::Error> {
+        sqlx::query_as::<_, BuildCacheCleanupSummary>(
+            r#"
+            WITH activity AS (
+                SELECT
+                    w.id,
+                    w.container_ref,
+                    w.archived,
+                    w.pinned,
+                    w.in_place,
+                    w.worktree_deleted,
+                    MAX(ep.completed_at) AS last_completed,
+                    EXISTS (
+                        SELECT 1
+                        FROM sessions running_session
+                        JOIN execution_processes running_process
+                            ON running_process.session_id = running_session.id
+                        WHERE running_session.workspace_id = w.id
+                            AND running_process.completed_at IS NULL
+                    ) AS is_running
+                FROM workspaces w
+                LEFT JOIN sessions s ON s.workspace_id = w.id
+                LEFT JOIN execution_processes ep ON ep.session_id = s.id
+                GROUP BY w.id
+            ), classified AS (
+                SELECT CASE
+                    WHEN container_ref IS NULL THEN 'unmanaged'
+                    WHEN worktree_deleted = TRUE THEN 'worktree_deleted'
+                    WHEN pinned = TRUE THEN 'pinned'
+                    WHEN in_place = TRUE THEN 'in_place'
+                    WHEN is_running = TRUE THEN 'running'
+                    WHEN last_completed IS NULL THEN 'never_completed'
+                    WHEN datetime('now',
+                        CASE WHEN archived = TRUE THEN '-1 hours' ELSE '-72 hours' END
+                    ) <= datetime(last_completed) THEN 'too_recent'
+                    ELSE 'eligible'
+                END AS reason
+                FROM activity
+            )
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(reason = 'eligible'), 0) AS eligible,
+                COALESCE(SUM(reason = 'unmanaged'), 0) AS unmanaged,
+                COALESCE(SUM(reason = 'running'), 0) AS running,
+                COALESCE(SUM(reason = 'pinned'), 0) AS pinned,
+                COALESCE(SUM(reason = 'in_place'), 0) AS in_place,
+                COALESCE(SUM(reason = 'worktree_deleted'), 0) AS worktree_deleted,
+                COALESCE(SUM(reason = 'never_completed'), 0) AS never_completed,
+                COALESCE(SUM(reason = 'too_recent'), 0) AS too_recent
+            FROM classified
+            "#,
+        )
+        .fetch_one(pool)
         .await
     }
 
@@ -1118,6 +1190,17 @@ mod tests {
                 .collect();
         actual_build_cache.sort();
         assert_eq!(actual_build_cache, expected_build_cache);
+
+        let summary = Workspace::build_cache_cleanup_summary(&pool).await.unwrap();
+        assert_eq!(summary.total, 10);
+        assert_eq!(summary.eligible, 4);
+        assert_eq!(summary.unmanaged, 0);
+        assert_eq!(summary.running, 1);
+        assert_eq!(summary.pinned, 1);
+        assert_eq!(summary.in_place, 1);
+        assert_eq!(summary.worktree_deleted, 1);
+        assert_eq!(summary.never_completed, 1);
+        assert_eq!(summary.too_recent, 1);
 
         // A workspace whose uncommitted changes could not be verified is
         // quarantined instead of retried, so it drops out of the candidates.

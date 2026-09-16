@@ -7086,6 +7086,7 @@ dependencies = [
  "futures",
  "git",
  "globwalk",
+ "nix 0.29.0",
  "portable-pty 0.8.1",
  "preview-proxy",
  "relay-control",
