@@ -35,7 +35,7 @@ export function agentTurnJustEnded(
  */
 export function useAfterAgentTurnRefetch(
   enabled: boolean,
-  refetch: () => void
+  refetch: (options?: { cancelRefetch?: boolean }) => void
 ): void {
   const isAttemptRunning = useContext(
     ExecutionProcessesContext
@@ -46,8 +46,11 @@ export function useAfterAgentTurnRefetch(
     const wasRunning = wasRunningRef.current;
     wasRunningRef.current = isAttemptRunning;
     if (!enabled || !agentTurnJustEnded(wasRunning, isAttemptRunning)) return;
+    // `cancelRefetch: false`, not the default: branch status has six observers
+    // and each one runs this hook, so the default would have them abort and
+    // restart each other's fetch — six requests where one will do.
     const timers = AGENT_TURN_SETTLE_MS.map((delay) =>
-      setTimeout(refetch, delay)
+      setTimeout(() => refetch({ cancelRefetch: false }), delay)
     );
     return () => timers.forEach(clearTimeout);
   }, [enabled, isAttemptRunning, refetch]);

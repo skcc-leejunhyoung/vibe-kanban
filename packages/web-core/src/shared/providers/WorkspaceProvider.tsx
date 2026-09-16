@@ -25,7 +25,6 @@ import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceSessions } from '@/shared/hooks/useWorkspaceSessions';
 import { useGitHubComments } from '@/shared/hooks/useGitHubComments';
 import { branchStatusKeys } from '@/shared/hooks/useBranchStatus';
-import { workspaceCommitsKey } from '@/shared/hooks/useWorkspaceCommits';
 import {
   GIT_EVENT_SETTLE_MS,
   workspaceDiffSignature,
@@ -193,9 +192,11 @@ function WorkspaceProviderContent({
   // This does NOT cover committing: the stream diffs the worktree against the
   // merge-base with the target branch, so a commit leaves it byte-identical —
   // except in an in-place workspace, whose base is HEAD. The agent's commit
-  // comes in via useAfterAgentTurnRefetch, explicit git actions invalidate these
-  // keys themselves, and WORKSPACE_GIT_BACKUP_POLL_MS is the floor for the
+  // comes in via useAfterAgentTurnRefetch, explicit git actions invalidate this
+  // key themselves, and WORKSPACE_GIT_BACKUP_POLL_MS is the floor for the
   // rest (an external `git commit`, or a diff burst that never settles).
+  // The commit list is not invalidated here: it is a function of the branch
+  // tip, which useWorkspaceCommits reads off this same branch status.
   const diffSignature = workspaceDiffSignature(diffStats);
   const lastDiffRef = useRef<{
     workspaceId?: string;
@@ -213,9 +214,6 @@ function WorkspaceProviderContent({
     const timer = setTimeout(() => {
       void queryClient.invalidateQueries({
         queryKey: branchStatusKeys.byWorkspace(workspaceId, hostId),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: workspaceCommitsKey(workspaceId, hostId),
       });
     }, GIT_EVENT_SETTLE_MS);
     return () => clearTimeout(timer);

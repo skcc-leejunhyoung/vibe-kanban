@@ -1,4 +1,4 @@
-import type { DiffStats } from 'shared/types';
+import type { DiffStats, RepoBranchStatus } from 'shared/types';
 
 /**
  * Backup poll for the workspace git queries (branch status, commit list).
@@ -22,4 +22,23 @@ export const GIT_EVENT_SETTLE_MS = 1_500;
 /** Compact identity of the worktree diff — changes on every edit or commit. */
 export function workspaceDiffSignature(stats: DiffStats): string {
   return `${stats.files_changed}:${stats.lines_added}:${stats.lines_removed}`;
+}
+
+/**
+ * Compact identity of each repo's branch tip and ahead-of-base count.
+ *
+ * Every git action that changes the commit list moves one of these: a commit
+ * or rebase moves `head_oid`, a merge or a target-branch change moves the
+ * merge-base and so `commits_ahead`. Branch status is the one query every one
+ * of those paths already invalidates, so deriving the commit list from it
+ * covers them all — including the Git panel buttons, which dispatch `Actions.*`
+ * rather than the mutation hooks.
+ */
+export function branchTipSignature(
+  status: RepoBranchStatus[] | undefined
+): string {
+  if (!status) return '';
+  return status
+    .map((s) => `${s.repo_id}:${s.head_oid ?? ''}:${s.commits_ahead ?? ''}`)
+    .join(';');
 }

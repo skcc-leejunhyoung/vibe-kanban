@@ -1,10 +1,14 @@
+import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { WorkspaceCommit } from 'shared/types';
 import { workspacesApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
-import { WORKSPACE_GIT_BACKUP_POLL_MS } from '@/shared/lib/workspaceGitRefetch';
-import { useAfterAgentTurnRefetch } from '@/shared/hooks/useAfterAgentTurnRefetch';
+import {
+  branchTipSignature,
+  WORKSPACE_GIT_BACKUP_POLL_MS,
+} from '@/shared/lib/workspaceGitRefetch';
+import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 
 export const workspaceCommitsKey = (
   workspaceId: string | null | undefined,
@@ -33,11 +37,32 @@ export function useWorkspaceCommits(
     // Commits change as the agent works; keep it reasonably fresh but avoid
     // hammering on every focus.
     staleTime: 10_000,
-    // Backup only; commit-changing actions invalidate this key and the agent's
-    // auto-commit comes in via useAfterAgentTurnRefetch below.
+    // Backup only; the branch tip below is what normally triggers a re-read.
     refetchInterval:
       enabled && workspaceId ? WORKSPACE_GIT_BACKUP_POLL_MS : false,
   });
-  useAfterAgentTurnRefetch(enabled && !!workspaceId, query.refetch);
+
+  // This list is a function of the branch tip, so re-read it whenever branch
+  // status reports the tip (or the ahead-of-base count) moved. Branch status is
+  // refreshed by every git action and by useAfterAgentTurnRefetch, so this one
+  // trigger covers commit / merge / rebase / pull / change-target from both the
+  // mutation hooks and the `Actions.*` paths the Git panel buttons dispatch.
+  const { data: branchStatus } = useBranchStatus(workspaceId ?? undefined);
+  const signature = branchTipSignature(branchStatus);
+  const refetch = query.refetch;
+  const lastTipRef = useRef({ workspaceId, signature });
+  useEffect(() => {
+    const previous = lastTipRef.current;
+    lastTipRef.current = { workspaceId, signature };
+    // A workspace switch already refetches through the new query key, and the
+    // empty signature is "branch status hasn't loaded yet", not a moved tip.
+    if (previous.workspaceId !== workspaceId) return;
+    if (!signature || previous.signature === signature) return;
+    if (!enabled || !workspaceId) return;
+    // Not the default `cancelRefetch: true`: several observers share this query
+    // and would otherwise each abort and restart the others' fetch.
+    void refetch({ cancelRefetch: false });
+  }, [signature, workspaceId, enabled, refetch]);
+
   return query;
 }
