@@ -23,6 +23,24 @@ function bodyOf(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+// A ReadableStream that emits the given chunks then errors — stands in for the
+// server aborting a chunked body mid-stream (what a lagged event stream does:
+// the handler yields Err, axum bails out of the body, hyper never writes the
+// terminating chunk).
+function abortingBodyOf(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let i = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i < chunks.length) {
+        controller.enqueue(encoder.encode(chunks[i++]));
+      } else {
+        controller.error(new TypeError('network error'));
+      }
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // sseEventToWsPayload: maps a server SSE event (LogMsg::to_sse_event encoding)
 // back to the exact JSON envelope the WS path produced (to_ws_message_unchecked),
@@ -170,6 +188,48 @@ describe('openSseAsWebSocket', () => {
       '/api/x',
       expect.objectContaining({ cache: 'no-store' })
     );
+  });
+
+  // Load-bearing for the backend's lagged-stream handling: the server drops
+  // patches it cannot replay and aborts the body instead of ending it, relying
+  // on the client to reconnect and pull a fresh snapshot. If a mid-stream abort
+  // were reported as a clean close, `useJsonPatchWsStream` would not reconnect
+  // (it skips reconnect only on code 1000 + wasClean) and the view would sit on
+  // stale state forever.
+  it('reports a mid-stream body abort as an unclean close', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: abortingBodyOf([
+        'event: ready\ndata: \n\n',
+        'event: json_patch\ndata: [{"op":"add","path":"/x","value":1}]\n\n',
+      ]),
+    } as Response);
+
+    const socket = openSseAsWebSocket(
+      '/api/x',
+      fetchMock as unknown as typeof fetch
+    );
+    const messages: string[] = [];
+    let errored = false;
+    let closeEvt: { code?: number; wasClean?: boolean } | null = null;
+    socket.onmessage = (e) => messages.push(e.data);
+    socket.onerror = () => {
+      errored = true;
+    };
+    socket.onclose = (e) => {
+      closeEvt = e;
+    };
+
+    await vi.waitFor(() => expect(closeEvt).not.toBeNull());
+
+    // Everything delivered before the abort still counts.
+    expect(messages).toEqual([
+      '{"Ready":true}',
+      '{"JsonPatch":[{"op":"add","path":"/x","value":1}]}',
+    ]);
+    expect(errored).toBe(true);
+    expect(closeEvt).toEqual({ wasClean: false });
   });
 
   // streamJsonPatchEntries (used by useConversationHistory) subscribes through
