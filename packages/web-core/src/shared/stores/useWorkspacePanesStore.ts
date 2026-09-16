@@ -18,7 +18,8 @@ export type WorkspacePaneDestination = Extract<
       | 'project-issue-workspace-create'
       | 'project-workspace-create'
       | 'pull-requests'
-      | 'notifications';
+      | 'notifications'
+      | 'terminal';
   }
 >;
 
@@ -34,6 +35,7 @@ export function isPaneRenderableDestination(
     case 'project-workspace-create':
     case 'pull-requests':
     case 'notifications':
+    case 'terminal':
       return true;
     default:
       return false;
@@ -92,6 +94,8 @@ export function paneDestinationKey(
       return 'pull-requests';
     case 'notifications':
       return 'notifications';
+    case 'terminal':
+      return 'terminal';
   }
 }
 
@@ -143,6 +147,7 @@ export function sameDestination(
     case 'pull-requests':
       return b.kind === 'pull-requests' && a.prUrl === b.prUrl;
     case 'notifications':
+    case 'terminal':
       return true;
   }
 }

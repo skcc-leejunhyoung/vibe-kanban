@@ -33,6 +33,7 @@ import { ProjectKanban } from '@/pages/kanban/ProjectKanban';
 import { PullRequestsPage } from '@/pages/pull-requests/PullRequestsPage';
 import { useIssueShortcuts } from '@/shared/keyboard/useIssueShortcuts';
 import { useWorkspaceShortcuts } from '@/shared/keyboard/useWorkspaceShortcuts';
+import { HomeTerminalPanel } from '@/shared/components/TerminalPanelContainer';
 import { NotificationsPage } from './NotificationsPage';
 import { WorkspaceDetail } from './WorkspaceDetail';
 import { WorkspacesSidebarContainer } from './WorkspacesSidebarContainer';
@@ -324,6 +325,8 @@ function PaneOutlet({
       return <PullRequestsPage initialPrUrl={destination.prUrl} />;
     case 'notifications':
       return <NotificationsPage />;
+    case 'terminal':
+      return <HomeTerminalPanel />;
   }
 }
 
@@ -354,6 +357,8 @@ function paneTitle(
       return t('workspacePanes.notificationsPane', {
         defaultValue: 'Notifications',
       });
+    case 'terminal':
+      return t('workspacePanes.terminalPane', { defaultValue: 'Terminal' });
   }
 }
 

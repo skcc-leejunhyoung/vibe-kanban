@@ -20,7 +20,8 @@ use crate::{
 
 #[derive(Debug, Deserialize)]
 struct TerminalQuery {
-    pub workspace_id: Uuid,
+    /// Omitted for the standalone terminal, which starts in the user's home.
+    pub workspace_id: Option<Uuid>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -54,7 +55,23 @@ async fn terminal_ws(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<TerminalQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let attempt = Workspace::find_by_id(&deployment.db().pool, query.workspace_id)
+    let working_dir = match query.workspace_id {
+        Some(workspace_id) => workspace_working_dir(&deployment, workspace_id).await?,
+        None => {
+            dirs::home_dir().ok_or_else(|| ApiError::BadRequest("No home directory".to_string()))?
+        }
+    };
+
+    Ok(ws.on_upgrade(move |socket| {
+        handle_terminal_ws(socket, deployment, working_dir, query.cols, query.rows)
+    }))
+}
+
+async fn workspace_working_dir(
+    deployment: &DeploymentImpl,
+    workspace_id: Uuid,
+) -> Result<PathBuf, ApiError> {
+    let attempt = Workspace::find_by_id(&deployment.db().pool, workspace_id)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Attempt not found".to_string()))?;
 
@@ -69,12 +86,11 @@ async fn terminal_ws(
         ));
     }
 
-    let mut working_dir = base_dir.clone();
-    match WorkspaceRepo::find_repos_for_workspace(&deployment.db().pool, query.workspace_id).await {
+    match WorkspaceRepo::find_repos_for_workspace(&deployment.db().pool, workspace_id).await {
         Ok(repos) if repos.len() == 1 => {
             let repo_dir = base_dir.join(&repos[0].name);
             if repo_dir.exists() {
-                working_dir = repo_dir;
+                return Ok(repo_dir);
             }
         }
         Ok(_) => {}
@@ -87,9 +103,7 @@ async fn terminal_ws(
         }
     }
 
-    Ok(ws.on_upgrade(move |socket| {
-        handle_terminal_ws(socket, deployment, working_dir, query.cols, query.rows)
-    }))
+    Ok(base_dir)
 }
 
 async fn handle_terminal_ws(

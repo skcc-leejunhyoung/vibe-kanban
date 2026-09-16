@@ -1,18 +1,37 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
 import { useTheme } from '@/shared/hooks/useTheme';
-import { getTerminalTheme } from '@/shared/lib/terminalTheme';
+import {
+  TERMINAL_FONT_FAMILY,
+  TERMINAL_SCROLLBACK,
+  getTerminalTheme,
+} from '@/shared/lib/terminalTheme';
 import { useTerminal } from '@/shared/hooks/useTerminal';
 
 interface XTermInstanceProps {
   tabId: string;
-  workspaceId: string;
+  /** Omit for a standalone terminal: the server then starts it in `$HOME`. */
+  workspaceId?: string;
   isActive: boolean;
   onClose?: () => void;
+}
+
+function terminalEndpoint(
+  workspaceId: string | undefined,
+  cols: number,
+  rows: number
+): string {
+  const params = new URLSearchParams({
+    cols: String(cols),
+    rows: String(rows),
+  });
+  if (workspaceId) params.set('workspace_id', workspaceId);
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  return `${protocol}//${window.location.host}/api/terminal/ws?${params}`;
 }
 
 export function XTermInstance({
@@ -25,7 +44,6 @@ export function XTermInstance({
   const resizeRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const initialSizeRef = useRef({ cols: 80, rows: 24 });
   const { theme } = useTheme();
   const {
     registerTerminalInstance,
@@ -34,11 +52,12 @@ export function XTermInstance({
     getTerminalConnection,
   } = useTerminal();
 
-  const endpoint = useMemo(() => {
-    const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-    const host = window.location.host;
-    return `${protocol}//${host}/api/terminal/ws?workspace_id=${workspaceId}&cols=${initialSizeRef.current.cols}&rows=${initialSizeRef.current.rows}`;
-  }, [workspaceId]);
+  // Kept in a ref so a fresh inline `onClose` from the parent never tears down
+  // and re-attaches the terminal.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   const fitTerminal = useCallback(() => {
     fitAddonRef.current?.fit();
@@ -68,7 +87,10 @@ export function XTermInstance({
     const terminal = new Terminal({
       cursorBlink: true,
       fontSize: 12,
-      fontFamily: '"IBM Plex Mono", monospace',
+      fontFamily: TERMINAL_FONT_FAMILY,
+      scrollback: TERMINAL_SCROLLBACK,
+      // Lets Alt+←/→ reach zsh as word-motions instead of being eaten by macOS.
+      macOptionIsMeta: true,
       theme: getTerminalTheme(),
     });
 
@@ -80,17 +102,28 @@ export function XTermInstance({
     terminal.open(containerRef.current);
 
     fitAddon.fit();
-    initialSizeRef.current = { cols: terminal.cols, rows: terminal.rows };
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
+    // xterm measures the cell box from the font that is loaded *now*; if the
+    // terminal font is still loading it measures the fallback and the whole
+    // grid stays misaligned. Re-fit once the real metrics are available.
+    let disposed = false;
+    void document.fonts.ready.then(() => {
+      if (disposed) return;
+      fitAddon.fit();
+      getTerminalConnection(tabId)?.resize(terminal.cols, terminal.rows);
+    });
+
     if (!getTerminalConnection(tabId)) {
+      // Connect only after fitting, so the PTY is spawned at the real size and
+      // the shell's first prompt is never drawn against a stale 80x24 grid.
       createTerminalConnection(
         tabId,
-        endpoint,
-        (data) => terminal?.write(data),
-        onClose
+        terminalEndpoint(workspaceId, terminal.cols, terminal.rows),
+        (data) => terminal.write(data),
+        () => onCloseRef.current?.()
       );
     }
 
@@ -102,6 +135,7 @@ export function XTermInstance({
     });
 
     return () => {
+      disposed = true;
       if (terminal.element && terminal.element.parentNode) {
         terminal.element.parentNode.removeChild(terminal.element);
       }
@@ -110,8 +144,7 @@ export function XTermInstance({
     };
   }, [
     tabId,
-    endpoint,
-    onClose,
+    workspaceId,
     getTerminalInstance,
     registerTerminalInstance,
     createTerminalConnection,

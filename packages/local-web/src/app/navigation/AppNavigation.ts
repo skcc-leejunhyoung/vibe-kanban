@@ -49,6 +49,8 @@ function resolveLocalDestinationFromPath(path: string): AppDestination | null {
       return { kind: 'export' };
     case '/_app/notifications':
       return { kind: 'notifications' };
+    case '/_app/terminal':
+      return { kind: 'terminal' };
     case '/_app/pull-requests':
       return {
         kind: 'pull-requests',
@@ -246,6 +248,8 @@ function destinationToLocalTarget(
       return { to: '/export' } as const;
     case 'notifications':
       return { to: '/notifications' } as const;
+    case 'terminal':
+      return { to: '/terminal' } as const;
     case 'pull-requests':
       return { to: '/pull-requests' } as const;
     case 'project':
@@ -361,6 +365,7 @@ export function createLocalAppNavigation(): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: 'export' }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: 'notifications' }, transition),
+    goToTerminal: (transition) => navigateTo({ kind: 'terminal' }, transition),
     goToPullRequests: (prUrl, transition) =>
       void router.navigate({
         to: '/pull-requests',

@@ -8,6 +8,8 @@ export type AppDestination =
   | { kind: 'workspace-vscode'; workspaceId: string; hostId?: string | null }
   | { kind: 'export' }
   | { kind: 'notifications' }
+  /** Standalone shell rooted at the user's home directory — no workspace. */
+  | { kind: 'terminal' }
   | { kind: 'pull-requests'; prUrl?: string }
   | { kind: 'project'; projectId: string }
   | {
@@ -88,6 +90,7 @@ export interface AppNavigation {
   ): void;
   goToExport(transition?: NavigationTransition): void;
   goToNotifications(transition?: NavigationTransition): void;
+  goToTerminal(transition?: NavigationTransition): void;
   goToPullRequests(prUrl?: string, transition?: NavigationTransition): void;
   goToProject(projectId: string, transition?: NavigationTransition): void;
   goToProjectIssue(

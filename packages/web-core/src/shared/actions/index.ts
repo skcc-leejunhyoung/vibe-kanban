@@ -1480,6 +1480,15 @@ export const Actions = {
     },
   } satisfies GlobalActionDefinition,
 
+  GotoTerminal: {
+    id: 'goto-terminal',
+    label: 'Goto: Terminal',
+    icon: TerminalIcon,
+    keywords: ['terminal', 'shell', 'console', 'home', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    execute: (ctx) => ctx.appNavigation.goToTerminal(),
+  } satisfies GlobalActionDefinition,
+
   GotoPullRequests: {
     id: 'goto-pull-requests',
     label: 'Goto: Pull Requests',

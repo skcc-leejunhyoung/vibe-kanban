@@ -7,6 +7,10 @@ import {
   type TerminalInstance,
 } from '@/shared/hooks/useTerminal';
 import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
+import {
+  decodeTerminalOutput,
+  encodeTerminalInput,
+} from '@/shared/lib/terminalCodec';
 
 interface TerminalConnection {
   ws: WebSocket;
@@ -20,7 +24,7 @@ interface TerminalState {
 }
 
 type TerminalAction =
-  | { type: 'CREATE_TAB'; workspaceId: string; cwd: string }
+  | { type: 'CREATE_TAB'; workspaceId: string }
   | { type: 'CLOSE_TAB'; workspaceId: string; tabId: string }
   | { type: 'SET_ACTIVE_TAB'; workspaceId: string; tabId: string }
   | {
@@ -35,31 +39,18 @@ function generateTabId(): string {
   return `term-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function encodeBase64(str: string): string {
-  const bytes = new TextEncoder().encode(str);
-  const binString = Array.from(bytes, (b) => String.fromCodePoint(b)).join('');
-  return btoa(binString);
-}
-
-function decodeBase64(base64: string): string {
-  const binString = atob(base64);
-  const bytes = Uint8Array.from(binString, (c) => c.codePointAt(0)!);
-  return new TextDecoder().decode(bytes);
-}
-
 function terminalReducer(
   state: TerminalState,
   action: TerminalAction
 ): TerminalState {
   switch (action.type) {
     case 'CREATE_TAB': {
-      const { workspaceId, cwd } = action;
+      const { workspaceId } = action;
       const existingTabs = state.tabsByWorkspace[workspaceId] || [];
       const newTab: TerminalTab = {
         id: generateTabId(),
         title: `Terminal ${existingTabs.length + 1}`,
         workspaceId,
-        cwd,
       };
       return {
         ...state,
@@ -170,7 +161,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
 
   // Store callback refs for each connection to prevent stale closures
   const connectionCallbacksRef = useRef<
-    Map<string, { onData: (data: string) => void; onExit?: () => void }>
+    Map<string, { onData: (data: Uint8Array) => void; onExit?: () => void }>
   >(new Map());
 
   // Store reconnection state for each connection
@@ -203,8 +194,8 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     [state.tabsByWorkspace, state.activeTabByWorkspace]
   );
 
-  const createTab = useCallback((workspaceId: string, cwd: string) => {
-    dispatch({ type: 'CREATE_TAB', workspaceId, cwd });
+  const createTab = useCallback((workspaceId: string) => {
+    dispatch({ type: 'CREATE_TAB', workspaceId });
   }, []);
 
   const closeTerminalConnection = useCallback((tabId: string) => {
@@ -292,7 +283,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     (
       tabId: string,
       endpoint: string,
-      onData: (data: string) => void,
+      onData: (data: Uint8Array) => void,
       onExit?: () => void
     ) => {
       // Close existing connection if any
@@ -363,7 +354,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
                 const msg = JSON.parse(event.data);
                 const callbacks = connectionCallbacksRef.current.get(tabId);
                 if (msg.type === 'output' && msg.data && callbacks) {
-                  callbacks.onData(decodeBase64(msg.data));
+                  callbacks.onData(decodeTerminalOutput(msg.data));
                 } else if (msg.type === 'exit' && callbacks) {
                   callbacks.onExit?.();
                 }
@@ -393,7 +384,10 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
             const send = (data: string) => {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(
-                  JSON.stringify({ type: 'input', data: encodeBase64(data) })
+                  JSON.stringify({
+                    type: 'input',
+                    data: encodeTerminalInput(data),
+                  })
                 );
               }
             };

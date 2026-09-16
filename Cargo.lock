@@ -11500,6 +11500,7 @@ dependencies = [
  "db",
  "deployment",
  "desktop-bridge",
+ "dirs 5.0.1",
  "dotenv",
  "ed25519-dalek 2.2.0",
  "embedded-ssh",

@@ -14,6 +14,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as OnboardingSignInRouteImport } from './routes/onboarding_.sign-in'
 import { Route as AppWorkspacesRouteImport } from './routes/_app.workspaces'
+import { Route as AppTerminalRouteImport } from './routes/_app.terminal'
 import { Route as AppPullRequestsRouteImport } from './routes/_app.pull-requests'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppExportRouteImport } from './routes/_app.export'
@@ -57,6 +58,11 @@ const OnboardingSignInRoute = OnboardingSignInRouteImport.update({
 const AppWorkspacesRoute = AppWorkspacesRouteImport.update({
   id: '/workspaces',
   path: '/workspaces',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTerminalRoute = AppTerminalRouteImport.update({
+  id: '/terminal',
+  path: '/terminal',
   getParentRoute: () => AppRoute,
 } as any)
 const AppPullRequestsRoute = AppPullRequestsRouteImport.update({
@@ -184,6 +190,7 @@ export interface FileRoutesByFullPath {
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
   '/pull-requests': typeof AppPullRequestsRoute
+  '/terminal': typeof AppTerminalRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -210,6 +217,7 @@ export interface FileRoutesByTo {
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
   '/pull-requests': typeof AppPullRequestsRoute
+  '/terminal': typeof AppTerminalRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -238,6 +246,7 @@ export interface FileRoutesById {
   '/_app/export': typeof AppExportRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/pull-requests': typeof AppPullRequestsRoute
+  '/_app/terminal': typeof AppTerminalRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
   '/onboarding_/sign-in': typeof OnboardingSignInRoute
   '/_app/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -266,6 +275,7 @@ export interface FileRouteTypes {
     | '/export'
     | '/notifications'
     | '/pull-requests'
+    | '/terminal'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -292,6 +302,7 @@ export interface FileRouteTypes {
     | '/export'
     | '/notifications'
     | '/pull-requests'
+    | '/terminal'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -319,6 +330,7 @@ export interface FileRouteTypes {
     | '/_app/export'
     | '/_app/notifications'
     | '/_app/pull-requests'
+    | '/_app/terminal'
     | '/_app/workspaces'
     | '/onboarding_/sign-in'
     | '/_app/projects/$projectId'
@@ -384,6 +396,13 @@ declare module '@tanstack/react-router' {
       path: '/workspaces'
       fullPath: '/workspaces'
       preLoaderRoute: typeof AppWorkspacesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/terminal': {
+      id: '/_app/terminal'
+      path: '/terminal'
+      fullPath: '/terminal'
+      preLoaderRoute: typeof AppTerminalRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/pull-requests': {
@@ -533,6 +552,7 @@ interface AppRouteChildren {
   AppExportRoute: typeof AppExportRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppPullRequestsRoute: typeof AppPullRequestsRoute
+  AppTerminalRoute: typeof AppTerminalRoute
   AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppProjectsProjectIdRoute: typeof AppProjectsProjectIdRoute
   AppWorkspaceWorkspaceIdRoute: typeof AppWorkspaceWorkspaceIdRoute
@@ -555,6 +575,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppExportRoute: AppExportRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppPullRequestsRoute: AppPullRequestsRoute,
+  AppTerminalRoute: AppTerminalRoute,
   AppWorkspacesRoute: AppWorkspacesRoute,
   AppProjectsProjectIdRoute: AppProjectsProjectIdRoute,
   AppWorkspaceWorkspaceIdRoute: AppWorkspaceWorkspaceIdRoute,

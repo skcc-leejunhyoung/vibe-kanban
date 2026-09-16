@@ -4,22 +4,61 @@ import { useTerminal } from '@/shared/hooks/useTerminal';
 import { TerminalPanel } from '@vibe/ui/components/TerminalPanel';
 import { XTermInstance } from './XTermInstance';
 
+/** Tab-store key for the standalone terminal, which belongs to no workspace. */
+const HOME_TERMINAL_KEY = 'home';
+
+/**
+ * Tabs for one terminal scope. `tabKey` partitions the tab store; `workspaceId`
+ * is what decides the shell's cwd server-side — omitted means `$HOME`.
+ */
+function TerminalTabs({
+  tabKey,
+  workspaceId,
+}: {
+  tabKey: string;
+  workspaceId?: string;
+}) {
+  const { getTabsForWorkspace, getActiveTab, createTab, closeTab } =
+    useTerminal();
+
+  const tabs = getTabsForWorkspace(tabKey);
+  const activeTab = getActiveTab(tabKey);
+  const creatingRef = useRef(false);
+
+  useEffect(() => {
+    if (tabs.length === 0 && !creatingRef.current) {
+      creatingRef.current = true;
+      createTab(tabKey);
+    }
+    if (tabs.length > 0) {
+      creatingRef.current = false;
+    }
+  }, [tabKey, tabs.length, createTab]);
+
+  return (
+    <TerminalPanel
+      tabs={tabs}
+      activeTabId={activeTab?.id ?? null}
+      renderTab={(tabId, isActive) => (
+        <XTermInstance
+          key={tabId}
+          tabId={tabId}
+          workspaceId={workspaceId}
+          isActive={isActive}
+          onClose={() => closeTab(tabKey, tabId)}
+        />
+      )}
+    />
+  );
+}
+
+/** Terminal for the selected workspace, rooted at its worktree. */
 export function TerminalPanelContainer() {
   const { workspace } = useWorkspaceContext();
-  const {
-    getTabsForWorkspace,
-    getActiveTab,
-    createTab,
-    closeTab,
-    clearWorkspaceTabs,
-  } = useTerminal();
+  const { clearWorkspaceTabs } = useTerminal();
 
   const workspaceId = workspace?.id;
-  const containerRef = workspace?.container_ref ?? null;
-  const tabs = workspaceId ? getTabsForWorkspace(workspaceId) : [];
-  const activeTab = workspaceId ? getActiveTab(workspaceId) : null;
-
-  const creatingRef = useRef(false);
+  const hasWorkspaceDir = !!workspace?.container_ref;
   const prevWorkspaceIdRef = useRef<string | null>(null);
 
   // Clean up terminals when workspace changes
@@ -33,35 +72,11 @@ export function TerminalPanelContainer() {
     prevWorkspaceIdRef.current = workspaceId ?? null;
   }, [workspaceId, clearWorkspaceTabs]);
 
-  // Auto-create first tab when workspace is selected and terminal mode is active
-  useEffect(() => {
-    if (
-      workspaceId &&
-      containerRef &&
-      tabs.length === 0 &&
-      !creatingRef.current
-    ) {
-      creatingRef.current = true;
-      createTab(workspaceId, containerRef);
-    }
-    if (tabs.length > 0) {
-      creatingRef.current = false;
-    }
-  }, [workspaceId, containerRef, tabs.length, createTab]);
+  if (!workspaceId || !hasWorkspaceDir) return null;
+  return <TerminalTabs tabKey={workspaceId} workspaceId={workspaceId} />;
+}
 
-  return (
-    <TerminalPanel
-      tabs={tabs}
-      activeTabId={activeTab?.id ?? null}
-      renderTab={(tabId, isActive) => (
-        <XTermInstance
-          key={tabId}
-          tabId={tabId}
-          workspaceId={workspaceId ?? ''}
-          isActive={isActive}
-          onClose={() => workspaceId && closeTab(workspaceId, tabId)}
-        />
-      )}
-    />
-  );
+/** Standalone terminal pane: no workspace, starts in the user's home directory. */
+export function HomeTerminalPanel() {
+  return <TerminalTabs tabKey={HOME_TERMINAL_KEY} />;
 }

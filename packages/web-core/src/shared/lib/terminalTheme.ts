@@ -1,6 +1,29 @@
 import type { ITheme } from '@xterm/xterm';
 
 /**
+ * Nerd Font families first: oh-my-zsh themes (powerlevel10k in particular) draw
+ * their prompt out of Private Use Area glyphs that plain monospace fonts do not
+ * have. xterm sizes its cell grid from the *first* family that resolves, so the
+ * widest-coverage monospace font has to lead — CJK then falls back cleanly to
+ * the platform's double-width face.
+ */
+export const TERMINAL_FONT_FAMILY = [
+  '"MesloLGS NF"',
+  '"MesloLGS Nerd Font Mono"',
+  '"MesloLGM Nerd Font Mono"',
+  '"JetBrainsMono Nerd Font Mono"',
+  '"FiraCode Nerd Font Mono"',
+  '"Hack Nerd Font Mono"',
+  '"IBM Plex Mono"',
+  'Menlo',
+  'Consolas',
+  'monospace',
+].join(', ');
+
+/** Deep enough to scroll back through a build log. */
+export const TERMINAL_SCROLLBACK = 10000;
+
+/**
  * Convert HSL CSS variable value (e.g., "210 40% 98%") to hex color.
  */
 function hslToHex(hslValue: string): string {

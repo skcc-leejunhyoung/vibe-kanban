@@ -72,6 +72,9 @@ export function navigateDocumentTo(
     case 'notifications':
       appNavigation.goToNotifications(transition);
       return;
+    case 'terminal':
+      appNavigation.goToTerminal(transition);
+      return;
   }
 }
 
@@ -176,6 +179,10 @@ export function createPaneAppNavigation(
     goToNotifications: (transition) =>
       navigateTo({ kind: 'notifications' }, transition, () =>
         base.goToNotifications(transition)
+      ),
+    goToTerminal: (transition) =>
+      navigateTo({ kind: 'terminal' }, transition, () =>
+        base.goToTerminal(transition)
       ),
     goToPullRequests: (prUrl, transition) =>
       navigateTo({ kind: 'pull-requests', prUrl }, transition, () =>

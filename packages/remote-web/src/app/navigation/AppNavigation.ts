@@ -36,6 +36,8 @@ export function resolveRemoteDestinationFromPath(
       return { kind: "export" };
     case "/notifications":
       return { kind: "notifications" };
+    case "/terminal":
+      return { kind: "terminal" };
     case "/pull-requests":
     case "/hosts/$hostId/pull-requests":
       return {
@@ -177,6 +179,8 @@ function destinationToRemoteTarget(
       return { to: "/export" } as const;
     case "notifications":
       return { to: "/notifications" } as const;
+    case "terminal":
+      return { to: "/terminal" } as const;
     case "pull-requests":
       return {
         to: "/pull-requests",
@@ -263,6 +267,7 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
+    goToTerminal: (transition) => navigateTo({ kind: "terminal" }, transition),
     goToPullRequests: (prUrl, transition) =>
       navigateTo({ kind: "pull-requests", prUrl }, transition),
     goToProject: (projectId, transition) =>
@@ -364,6 +369,7 @@ function createRemoteAppNavigation(): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
+    goToTerminal: (transition) => navigateTo({ kind: "terminal" }, transition),
     goToPullRequests: (prUrl, transition) =>
       navigateTo({ kind: "pull-requests", prUrl }, transition),
     goToProject: (projectId, transition) =>
