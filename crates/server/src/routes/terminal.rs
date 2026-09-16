@@ -237,4 +237,39 @@ mod tests {
         let json = serde_json::to_string(&TerminalMessage::Exit).unwrap();
         assert_eq!(json, r#"{"type":"exit"}"#);
     }
+
+    // The two sides of this socket are written in different languages and get
+    // edited independently, so pin the frames verbatim: these are exactly the
+    // strings TerminalProvider.tsx puts on and takes off the wire.
+    #[test]
+    fn client_frames_parse() {
+        let input: TerminalCommand =
+            serde_json::from_str(r#"{"type":"input","data":"7ZWc6riA"}"#).unwrap();
+        assert!(matches!(input, TerminalCommand::Input { data } if data == "7ZWc6riA"));
+
+        let resize: TerminalCommand =
+            serde_json::from_str(r#"{"type":"resize","cols":120,"rows":40}"#).unwrap();
+        assert!(matches!(
+            resize,
+            TerminalCommand::Resize {
+                cols: 120,
+                rows: 40
+            }
+        ));
+    }
+
+    #[test]
+    fn server_frames_match_the_fields_the_client_reads() {
+        let output = serde_json::to_string(&TerminalMessage::Output {
+            data: "7ZWc6riA".to_string(),
+        })
+        .unwrap();
+        assert_eq!(output, r#"{"type":"output","data":"7ZWc6riA"}"#);
+
+        let error = serde_json::to_string(&TerminalMessage::Error {
+            message: "boom".to_string(),
+        })
+        .unwrap();
+        assert_eq!(error, r#"{"type":"error","message":"boom"}"#);
+    }
 }
