@@ -8,18 +8,28 @@ use uuid::Uuid;
 /// Enough to overrun the 1024-slot broadcast channel of an unpolled subscriber.
 const BURST: usize = 2_000;
 
-async fn event_service(msg_store: Arc<MsgStore>) -> EventService {
+async fn event_service(msg_store: Arc<MsgStore>) -> (EventService, sqlx::SqlitePool) {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
     sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
-    EventService::new(
-        db::DBService { pool },
+    let events = EventService::new(
+        db::DBService { pool: pool.clone() },
         msg_store,
         Arc::new(tokio::sync::RwLock::new(0usize)),
-    )
+    );
+    (events, pool)
+}
+
+fn workspace_patch(id: Uuid) -> json_patch::Patch {
+    serde_json::from_value(serde_json::json!([{
+        "op": "replace",
+        "path": format!("/workspaces/{id}"),
+        "value": { "archived": false },
+    }]))
+    .unwrap()
 }
 
 /// Both streams take their DB snapshot *after* subscribing, so a lagged
@@ -29,7 +39,7 @@ async fn event_service(msg_store: Arc<MsgStore>) -> EventService {
 #[tokio::test]
 async fn lagged_event_streams_error_instead_of_dropping_patches() {
     let store = Arc::new(MsgStore::new());
-    let events = event_service(store.clone()).await;
+    let (events, _pool) = event_service(store.clone()).await;
 
     let mut workspaces = events.stream_workspaces_raw(None, None).await.unwrap();
     let mut scratch = events
@@ -68,5 +78,42 @@ async fn lagged_event_streams_error_instead_of_dropping_patches() {
             ),
             other => panic!("{name}: expected a lag error, got {other:?}"),
         }
+    }
+}
+
+/// The snapshot query and the subscription bracket a window. A patch published
+/// inside it is absent from the snapshot (the read already happened) and, if
+/// the subscription came second, already past on the broadcast channel — lost
+/// with no error until the next unrelated update. Holding the pool's only
+/// connection pins the query open so the window is deterministic instead of a
+/// microsecond race.
+#[tokio::test]
+async fn a_patch_published_during_the_snapshot_query_still_reaches_the_client() {
+    let store = Arc::new(MsgStore::new());
+    let (events, pool) = event_service(store.clone()).await;
+    let held = pool.acquire().await.unwrap();
+
+    let subscribing =
+        tokio::spawn(async move { events.stream_workspaces_raw(None, None).await.unwrap() });
+    // Let the task reach the blocked query before publishing into the window.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let id = Uuid::new_v4();
+    store.push_patch(workspace_patch(id));
+
+    drop(held);
+    let mut stream = subscribing.await.unwrap();
+
+    assert!(matches!(
+        stream.next().await,
+        Some(Ok(LogMsg::JsonPatch(_)))
+    ));
+    assert!(matches!(stream.next().await, Some(Ok(LogMsg::Ready))));
+    match tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await {
+        Ok(Some(Ok(LogMsg::JsonPatch(patch)))) => assert_eq!(
+            patch.0.first().unwrap().path().to_string(),
+            format!("/workspaces/{id}")
+        ),
+        other => panic!("patch published during the snapshot query was lost: {other:?}"),
     }
 }
