@@ -551,12 +551,18 @@ impl StandardCodingAgentExecutor for Opencode {
                     patch::executor_discovered_options(cached.as_ref().clone().with_loading(false))
                 })));
             }
-            let provisional = repo_path
-                .and_then(|rp| {
-                    let rp_buf = rp.to_path_buf();
-                    let repo_key =
-                        ExecutorConfigCacheKey::new(Some(&rp_buf), cmd_key.clone(), base_executor);
-                    cache.get_stale(&repo_key)
+            let provisional = cache
+                .get_stale(&target_key)
+                .or_else(|| {
+                    repo_path.and_then(|rp| {
+                        let rp_buf = rp.to_path_buf();
+                        let repo_key = ExecutorConfigCacheKey::new(
+                            Some(&rp_buf),
+                            cmd_key.clone(),
+                            base_executor,
+                        );
+                        cache.get_stale(&repo_key)
+                    })
                 })
                 .or_else(|| {
                     let global_key =
@@ -579,7 +585,9 @@ impl StandardCodingAgentExecutor for Opencode {
                 })));
             }
             let global_key = ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
-            let provisional = cache.get_stale(&global_key);
+            let provisional = cache
+                .get_stale(&target_key)
+                .or_else(|| cache.get_stale(&global_key));
             (
                 Some(rp.to_path_buf()),
                 provisional
@@ -593,7 +601,13 @@ impl StandardCodingAgentExecutor for Opencode {
                     patch::executor_discovered_options(cached.as_ref().clone().with_loading(false))
                 })));
             }
-            (None, default_discovered_options().with_loading(true))
+            (
+                None,
+                cache
+                    .get_stale(&global_key)
+                    .map(|p| p.as_ref().clone().with_loading(true))
+                    .unwrap_or_else(|| default_discovered_options().with_loading(true)),
+            )
         };
 
         let initial_patch = patch::executor_discovered_options(initial_options);
