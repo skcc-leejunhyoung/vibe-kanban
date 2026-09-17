@@ -491,6 +491,83 @@ fn minimum_available_space(target_dirs: &[PathBuf]) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+/// Budget for the agent-image cache: content-addressed display copies of images
+/// the agent viewed from outside a workspace. Nothing but chat rendering
+/// references them and they no longer die with their worktree, so the cache
+/// needs its own ceiling. An evicted image degrades its chat entry back to a
+/// plain tool row.
+const AGENT_IMAGE_CACHE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Default, Clone, Copy)]
+struct AgentImageCachePruneStats {
+    removed_files: usize,
+    removed_bytes: u64,
+    retained_bytes: u64,
+}
+
+/// Drop the oldest cached agent images until the directory fits `budget_bytes`.
+/// Only the `agent-` names the log normalizer writes are considered, so a file
+/// that ended up here by other means is never deleted.
+fn prune_agent_image_cache(dir: &Path, budget_bytes: u64) -> io::Result<AgentImageCachePruneStats> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // Nothing cached yet is the common case, not a failure.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(AgentImageCachePruneStats::default());
+        }
+        Err(error) => return Err(error),
+    };
+
+    let mut files = Vec::new();
+    let mut total_bytes = 0u64;
+    for entry in entries {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("agent-"))
+        {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        if !metadata.is_file() {
+            continue;
+        }
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        files.push((
+            metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
+            metadata.len(),
+            entry.path(),
+        ));
+    }
+
+    let mut stats = AgentImageCachePruneStats {
+        retained_bytes: total_bytes,
+        ..AgentImageCachePruneStats::default()
+    };
+    if total_bytes <= budget_bytes {
+        return Ok(stats);
+    }
+
+    // ponytail: content-hash names are written once and never rewritten, so
+    // mtime orders by first sighting rather than last view. Good enough while
+    // eviction is a rare ceiling; touch on serve if it starts evicting live
+    // conversations.
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, len, path) in files {
+        if stats.retained_bytes <= budget_bytes {
+            break;
+        }
+        if std::fs::remove_file(&path).is_err() {
+            continue;
+        }
+        stats.removed_files += 1;
+        stats.removed_bytes = stats.removed_bytes.saturating_add(len);
+        stats.retained_bytes = stats.retained_bytes.saturating_sub(len);
+    }
+    Ok(stats)
+}
+
 // Safety net for draining the stdout/stderr forwarder: normally the pipes EOF
 // promptly once the child (and its process group) exit, but an orphaned child
 // that inherited the pipe (e.g. an MCP server) can hold it open. Since the
@@ -1042,6 +1119,25 @@ impl LocalContainerService {
             );
         }
 
+        let agent_image_stats = match tokio::task::spawn_blocking(|| {
+            prune_agent_image_cache(
+                &utils::path::agent_image_cache_dir(),
+                AGENT_IMAGE_CACHE_BUDGET_BYTES,
+            )
+        })
+        .await
+        {
+            Ok(Ok(stats)) => stats,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "Agent image cache cleanup failed; will retry");
+                AgentImageCachePruneStats::default()
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Agent image cache cleanup task failed; will retry");
+                AgentImageCachePruneStats::default()
+            }
+        };
+
         tracing::info!(
             worktree_candidates = expired_workspaces.len(),
             worktree_recheck_skips,
@@ -1072,6 +1168,9 @@ impl LocalContainerService {
             removed_bytes = workspace_cache_stats
                 .removed_bytes
                 .saturating_add(extra_report.stats.removed_bytes),
+            agent_images_removed = agent_image_stats.removed_files,
+            agent_image_bytes_removed = agent_image_stats.removed_bytes,
+            agent_image_bytes_retained = agent_image_stats.retained_bytes,
             "Periodic workspace cleanup completed"
         );
         Ok(())
@@ -4061,6 +4160,49 @@ mod tests {
         assert!(!LocalContainerService::should_execute_queued_message(
             &ExecutionProcessStatus::Killed
         ));
+    }
+
+    #[test]
+    fn agent_image_cache_prune_evicts_oldest_and_leaves_foreign_files() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, len: usize, age_secs: u64| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, vec![b'x'; len]).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 - age_secs))
+                .unwrap();
+        };
+        write("agent-oldest.png", 100, 300);
+        write("agent-middle.png", 100, 200);
+        write("agent-newest.png", 100, 100);
+        write("not-ours.png", 100, 400);
+
+        // Under budget: nothing is touched.
+        let stats = prune_agent_image_cache(dir.path(), 1_000).unwrap();
+        assert_eq!(stats.removed_files, 0);
+        assert_eq!(stats.retained_bytes, 300, "foreign files are not counted");
+
+        // Over budget: oldest go first, and only ours are eligible.
+        let stats = prune_agent_image_cache(dir.path(), 150).unwrap();
+        assert_eq!(stats.removed_files, 2);
+        assert_eq!(stats.removed_bytes, 200);
+        assert_eq!(stats.retained_bytes, 100);
+        assert!(!dir.path().join("agent-oldest.png").exists());
+        assert!(!dir.path().join("agent-middle.png").exists());
+        assert!(dir.path().join("agent-newest.png").exists());
+        assert!(dir.path().join("not-ours.png").exists());
+
+        // A cache that was never created is not an error.
+        let missing = dir.path().join("nope");
+        assert_eq!(
+            prune_agent_image_cache(&missing, 0).unwrap().removed_files,
+            0
+        );
     }
 
     #[test]
