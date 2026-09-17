@@ -255,13 +255,8 @@ mod tests {
         assert_eq!(std::fs::read(cache.path().join(name)).unwrap(), png);
         assert!(!worktree.path().join(VIBE_ATTACHMENTS_DIR).exists());
 
-        // Same virtual path via the real entry point, and still no worktree dir.
-        let viewed = viewed_image_path(
-            worktree_str,
-            outside.path().join("shot.png").to_str().unwrap(),
-        );
-        assert_eq!(viewed, rel);
-        assert!(!worktree.path().join(VIBE_ATTACHMENTS_DIR).exists());
+        // `viewed_image_path` on an out-of-workspace file is covered end to end by
+        // the codex normalizer test; keep this one off the real cache directory.
 
         // In-workspace images keep their relative path (no copy).
         std::fs::write(worktree.path().join("in.png"), &png).unwrap();

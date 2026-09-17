@@ -288,12 +288,20 @@ pub async fn serve_workspace_image(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<WorkspaceImageQuery>,
 ) -> Result<Response, ApiError> {
-    let base_path = resolve_session_base_path(&deployment, &workspace, query.session_id).await?;
-    let canonical_path = resolve_workspace_image_path(&base_path, &query.path)
-        .or_else(|| {
-            resolve_agent_image_cache_path(&utils::path::agent_image_cache_dir(), &query.path)
-        })
-        .ok_or(ApiError::File(FileError::NotFound))?;
+    // Agent-viewed images from outside the workspace are content-addressed in
+    // the app cache. Resolve those before touching the workspace: it needs no
+    // worktree, so archived workspaces keep rendering and a plain image GET
+    // never materializes a checkout via `ensure_container_exists`.
+    let canonical_path =
+        match resolve_agent_image_cache_path(&utils::path::agent_image_cache_dir(), &query.path) {
+            Some(cached) => cached,
+            None => {
+                let base_path =
+                    resolve_session_base_path(&deployment, &workspace, query.session_id).await?;
+                resolve_workspace_image_path(&base_path, &query.path)
+                    .ok_or(ApiError::File(FileError::NotFound))?
+            }
+        };
 
     let content_type = MimeGuess::from_path(&canonical_path)
         .first_raw()
