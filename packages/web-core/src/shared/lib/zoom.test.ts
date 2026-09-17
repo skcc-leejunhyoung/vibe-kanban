@@ -46,6 +46,14 @@ describe('app zoom', () => {
     expect(zoom.getZoomPercent()).toBe(zoom.DEFAULT_ZOOM_PERCENT);
   });
 
+  it('rounds a fractional stored level back onto the integer steps', async () => {
+    const { zoom, style } = await loadZoom('18.5');
+    expect(style.fontSize).toBe(undefined);
+    expect(zoom.getZoomPercent()).toBe(119);
+    zoom.zoomIn();
+    expect(style.fontSize).toBe('20px');
+  });
+
   it('restores the stored level and notifies subscribers on change', async () => {
     const { zoom } = await loadZoom('20');
     expect(zoom.getZoomPercent()).toBe(125);

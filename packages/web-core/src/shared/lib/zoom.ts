@@ -18,7 +18,9 @@ function loadFontSize(): number {
   try {
     const stored = localStorage.getItem(ZOOM_STORAGE_KEY);
     if (stored) {
-      const size = Number(stored);
+      // Round: a hand-edited fractional level would reintroduce the blurry
+      // hairlines the integer steps exist to avoid.
+      const size = Math.round(Number(stored));
       if (size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE) return size;
     }
   } catch {
