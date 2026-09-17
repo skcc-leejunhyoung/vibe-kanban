@@ -164,9 +164,13 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         routeHostId ??
         (runtime === 'remote' ? (onlineHosts[0]?.id ?? null) : null);
       setSelectedHostId(nextHostId);
-      // The draft survives a dismissal, but attachment ids live in the host
-      // that received the upload — reopening on another host invalidates them.
-      if (nextHostId !== selectedHostId) clearAttachments();
+      // The draft survives a dismissal, but it is host-scoped: the repo is
+      // registered on the host that owns it and attachment ids live in the host
+      // that received the upload, so reopening elsewhere invalidates both.
+      if (nextHostId !== selectedHostId) {
+        setRepo(null);
+        clearAttachments();
+      }
     }
   }, [
     modal.visible,
@@ -197,12 +201,14 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   // state survives `hide()` and the post-send SPA navigation. Reset transient
   // state on dismissal so a reopen starts clean — otherwise a successful send
   // leaves `submitting` stuck (Send permanently disabled showing "Starting…").
-  // The draft (prompt + its attachments) and the agent/model selection
-  // (`scratchConfig`) are intentionally preserved across reopens; the draft is
-  // only cleared by a successful send or by the user emptying the field.
+  // The draft (prompt + its attachments + the folder it targets) and the
+  // agent/model selection (`scratchConfig`) are intentionally preserved across
+  // reopens; the draft is only cleared by a successful send, by the user
+  // emptying the field, or by switching host. Keeping the folder matters: the
+  // prompt is usually written *about* it, and silently reverting to the most
+  // recent repo would run the agent in the wrong working tree.
   useEffect(() => {
     if (!modal.visible) {
-      setRepo(null);
       setSubmitting(false);
       setError(null);
     }
