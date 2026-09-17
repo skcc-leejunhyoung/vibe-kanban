@@ -107,15 +107,80 @@ import {
   useDiffViewStore,
 } from '@/shared/stores/useDiffViewStore';
 
+// App zoom (root font-size steps) stands in for browser zoom wherever native
+// zoom is unavailable — an installed PWA has no ⌘± and pinch is blocked. It is
+// a client-local preference (localStorage), so it stays reachable even when the
+// host/remote config the rest of this section needs is loading or unreachable.
+function AppZoomField() {
+  const { t } = useTranslation('settings');
+  const zoomPercent = useSyncExternalStore(subscribeZoom, getZoomPercent);
+
+  if (!isAppZoomEnabled()) return null;
+
+  return (
+    <SettingsField
+      label={t('settings.general.appearance.zoom.label', {
+        defaultValue: 'Zoom',
+      })}
+      description={t('settings.general.appearance.zoom.helper', {
+        defaultValue:
+          'Scale the whole app, like browser zoom. Also bound to \u2318/Ctrl +, \u2212 and 0.',
+      })}
+    >
+      <div
+        className="flex items-center gap-base"
+        role="group"
+        aria-label={t('settings.general.appearance.zoom.label', {
+          defaultValue: 'Zoom',
+        })}
+      >
+        <IconButton
+          icon={MinusIcon}
+          variant="tertiary"
+          className="min-h-9 min-w-9"
+          onClick={zoomOut}
+          disabled={zoomPercent <= MIN_ZOOM_PERCENT}
+          aria-label={t('settings.general.appearance.zoom.out', {
+            defaultValue: 'Zoom out',
+          })}
+        />
+        <span
+          className="w-16 text-center text-sm tabular-nums text-normal"
+          aria-live="polite"
+        >
+          {zoomPercent}%
+        </span>
+        <IconButton
+          icon={PlusIcon}
+          variant="tertiary"
+          className="min-h-9 min-w-9"
+          onClick={zoomIn}
+          disabled={zoomPercent >= MAX_ZOOM_PERCENT}
+          aria-label={t('settings.general.appearance.zoom.in', {
+            defaultValue: 'Zoom in',
+          })}
+        />
+        <Button
+          variant="secondary"
+          size="xs"
+          onClick={zoomReset}
+          disabled={zoomPercent === DEFAULT_ZOOM_PERCENT}
+        >
+          {t('settings.general.appearance.zoom.reset', {
+            defaultValue: 'Reset',
+          })}
+        </Button>
+      </div>
+    </SettingsField>
+  );
+}
+
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
   const { setDirty: setContextDirty } = useSettingsDirty();
 
   const isMobile = useIsMobile();
   const [mobileFontScale, setMobileFontScale] = useMobileFontScale();
-  // App zoom (root font-size steps) stands in for browser zoom wherever native
-  // zoom is unavailable — an installed PWA has no ⌘± and pinch is blocked.
-  const zoomPercent = useSyncExternalStore(subscribeZoom, getZoomPercent);
   // Theme variants ("skins") are token-only presets (built-in + user-defined)
   // injected as a scoped <style>, applied on top of the Light/Dark mode. The
   // selection + presets sync through config (useConfigPreferenceSync), so the
@@ -335,23 +400,29 @@ export function GeneralSettingsSection() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-8 gap-2">
-        <SpinnerIcon
-          className="size-icon-lg animate-spin text-brand"
-          weight="bold"
-        />
-        <span className="text-normal">{t('settings.general.loading')}</span>
-      </div>
+      <>
+        <AppZoomField />
+        <div className="flex items-center justify-center py-8 gap-2">
+          <SpinnerIcon
+            className="size-icon-lg animate-spin text-brand"
+            weight="bold"
+          />
+          <span className="text-normal">{t('settings.general.loading')}</span>
+        </div>
+      </>
     );
   }
 
   if (!config) {
     return (
-      <div className="py-8">
-        <div className="bg-error/10 border border-error/50 rounded-sm p-4 text-error">
-          {t('settings.general.loadError')}
+      <>
+        <AppZoomField />
+        <div className="py-8">
+          <div className="bg-error/10 border border-error/50 rounded-sm p-4 text-error">
+            {t('settings.general.loadError')}
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -487,53 +558,7 @@ export function GeneralSettingsSection() {
           onChange={setContextBarVisible}
         />
 
-        {isAppZoomEnabled() && (
-          <SettingsField
-            label={t('settings.general.appearance.zoom.label', {
-              defaultValue: 'Zoom',
-            })}
-            description={t('settings.general.appearance.zoom.helper', {
-              defaultValue:
-                'Scale the whole app, like browser zoom. Also bound to ⌘/Ctrl +, − and 0.',
-            })}
-          >
-            <div className="flex items-center gap-base">
-              <IconButton
-                icon={MinusIcon}
-                variant="tertiary"
-                className="min-h-9 min-w-9"
-                onClick={zoomOut}
-                disabled={zoomPercent <= MIN_ZOOM_PERCENT}
-                aria-label={t('settings.general.appearance.zoom.out', {
-                  defaultValue: 'Zoom out',
-                })}
-              />
-              <span className="w-16 text-center text-sm tabular-nums text-normal">
-                {zoomPercent}%
-              </span>
-              <IconButton
-                icon={PlusIcon}
-                variant="tertiary"
-                className="min-h-9 min-w-9"
-                onClick={zoomIn}
-                disabled={zoomPercent >= MAX_ZOOM_PERCENT}
-                aria-label={t('settings.general.appearance.zoom.in', {
-                  defaultValue: 'Zoom in',
-                })}
-              />
-              <Button
-                variant="secondary"
-                size="xs"
-                onClick={zoomReset}
-                disabled={zoomPercent === DEFAULT_ZOOM_PERCENT}
-              >
-                {t('settings.general.appearance.zoom.reset', {
-                  defaultValue: 'Reset',
-                })}
-              </Button>
-            </div>
-          </SettingsField>
-        )}
+        <AppZoomField />
 
         {isMobile && (
           <SettingsField
