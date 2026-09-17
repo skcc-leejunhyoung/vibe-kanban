@@ -1190,6 +1190,12 @@ pub struct ClaudeLogProcessor {
     // Result-error fallback doesn't emit a second (time-less) entry on top of the
     // structured `rate_limit_event` one.
     rate_limit_reported: bool,
+    /// Live `BackgroundTasksWaiting` notices as `(entry index, tasks left)`. The
+    /// notice renders a spinner to explain an ongoing wait, so it has to be
+    /// settled once the awaited tasks end — otherwise it spins forever in a
+    /// finished conversation. The agent is idle while it waits, so every
+    /// `task_notification` during the wait is one of the tasks being awaited.
+    background_waits: Vec<(usize, usize)>,
 }
 
 impl ClaudeLogProcessor {
@@ -1211,7 +1217,31 @@ impl ClaudeLogProcessor {
             main_model_context_window: DEFAULT_CLAUDE_CONTEXT_WINDOW,
             context_tokens_used: 0,
             rate_limit_reported: false,
+            background_waits: Vec::new(),
         }
+    }
+
+    /// One awaited background task reported its end: drop it from every live
+    /// wait notice and replace the notice once nothing is left to wait for.
+    fn settle_background_waits(&mut self) -> Vec<json_patch::Patch> {
+        let mut patches = Vec::new();
+        self.background_waits.retain_mut(|(index, remaining)| {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining > 0 {
+                return true;
+            }
+            patches.push(ConversationPatch::replace(
+                *index,
+                NormalizedEntry {
+                    timestamp: None,
+                    entry_type: NormalizedEntryType::SystemMessage,
+                    content: "Background tasks finished".to_string(),
+                    metadata: None,
+                },
+            ));
+            false
+        });
+        patches
     }
 
     /// Process raw logs and convert them to normalized entries with patches
@@ -1311,6 +1341,11 @@ impl ClaudeLogProcessor {
                             metadata: None,
                         };
                         let patch_id = entry_index_provider.next();
+                        // `tasks` can arrive empty (older payloads); still expect
+                        // one notification so the notice can clear itself.
+                        processor
+                            .background_waits
+                            .push((patch_id, tasks.len().max(1)));
                         msg_store
                             .push_patch(ConversationPatch::add_normalized_entry(patch_id, entry));
                         continue;
@@ -2019,6 +2054,10 @@ impl ClaudeLogProcessor {
                         }
                     }
                     Some("task_notification") => {
+                        // Terminal for its task whatever the tool was, so it
+                        // also counts down the wait notice of a held turn —
+                        // including tools whose entry is left alone below.
+                        patches.extend(self.settle_background_waits());
                         if let Some(tool_use_id) = tool_use_id
                             && let Some(info) = self.tool_map.get(tool_use_id).cloned()
                             // Subagent cards are for Task tools; a command keeps
@@ -6055,6 +6094,95 @@ mod tests {
         let control = task_control(&entries[0]).expect("finished task keeps its identity");
         assert!(!control.can_open_transcript);
         assert!(!control.can_stop);
+    }
+
+    /// The wait notice explains a live spinner; once the awaited task reports
+    /// back it has to stop spinning, or a finished conversation keeps claiming
+    /// it is still waiting.
+    #[tokio::test]
+    async fn background_wait_notice_settles_when_the_task_finishes() {
+        use std::sync::Arc;
+
+        let msg_store = Arc::new(MsgStore::new_for_replay());
+        for line in [
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"Bash","input":{"command":"sleep 90","description":"Demo"}}]}}"#,
+            r#"{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"tool_1","description":"Demo","task_type":"local_bash"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"Command running in background with ID: b1","is_error":false}]}}"#,
+            &format!("{BACKGROUND_WAIT_MARKER}[\"sleep 90\"]"),
+            r#"{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"tool_1","status":"completed","summary":"Demo"}"#,
+        ] {
+            msg_store.push_stdout(format!("{line}\n"));
+        }
+        msg_store.push_finished();
+        ClaudeLogProcessor::process_logs(
+            msg_store.clone(),
+            Path::new("/tmp"),
+            EntryIndexProvider::test_new(),
+            HistoryStrategy::Default,
+        )
+        .await
+        .unwrap();
+
+        let entries = msg_store
+            .get_replay_patches()
+            .into_iter()
+            .flatten()
+            .filter_map(|patch| extract_normalized_entry_from_patch(&patch))
+            .map(|(_, entry)| entry)
+            .collect::<Vec<_>>();
+        assert!(
+            !entries.iter().any(|entry| matches!(
+                entry.entry_type,
+                NormalizedEntryType::BackgroundTasksWaiting { .. }
+            )),
+            "the wait notice should not survive the task it waited for: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry.entry_type,
+                NormalizedEntryType::SystemMessage
+            ) && entry.content == "Background tasks finished"),
+            "expected the settled notice, got {entries:?}"
+        );
+    }
+
+    /// Two tasks, one notification: the turn is still waiting, so the notice
+    /// must keep spinning.
+    #[tokio::test]
+    async fn background_wait_notice_stays_while_a_task_is_still_running() {
+        use std::sync::Arc;
+
+        let msg_store = Arc::new(MsgStore::new_for_replay());
+        for line in [
+            &format!("{BACKGROUND_WAIT_MARKER}[\"sleep 90\",\"sleep 120\"]"),
+            r#"{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"tool_1","status":"completed","summary":"Demo"}"#,
+        ] {
+            msg_store.push_stdout(format!("{line}\n"));
+        }
+        msg_store.push_finished();
+        ClaudeLogProcessor::process_logs(
+            msg_store.clone(),
+            Path::new("/tmp"),
+            EntryIndexProvider::test_new(),
+            HistoryStrategy::Default,
+        )
+        .await
+        .unwrap();
+
+        let entries = msg_store
+            .get_replay_patches()
+            .into_iter()
+            .flatten()
+            .filter_map(|patch| extract_normalized_entry_from_patch(&patch))
+            .map(|(_, entry)| entry)
+            .collect::<Vec<_>>();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry.entry_type,
+                NormalizedEntryType::BackgroundTasksWaiting { .. }
+            )),
+            "one of two tasks ended; the notice must stay: {entries:?}"
+        );
     }
 
     #[test]
