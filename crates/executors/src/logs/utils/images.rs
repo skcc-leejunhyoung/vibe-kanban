@@ -6,7 +6,7 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
-use workspace_utils::path::VIBE_ATTACHMENTS_DIR;
+use workspace_utils::path::{VIBE_ATTACHMENTS_DIR, make_path_relative};
 
 /// Hard cap so a malformed/hostile log line cannot fill the disk.
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
@@ -56,11 +56,46 @@ pub fn store_base64_image(worktree_path: &str, mime: &str, data: &str) -> Option
         return None;
     }
     let bytes = BASE64.decode(data.trim()).ok()?;
-    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+    store_image_bytes(worktree_path, ext, &bytes)
+}
+
+/// Copy an image file the agent viewed into `<worktree>/.vibe-attachments/`.
+/// Used for paths chat cannot serve as-is (outside the workspace, or a temp
+/// screenshot that gets deleted before the log is replayed).
+pub fn import_image_file(worktree_path: &str, path: &str) -> Option<String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .filter(|ext| IMAGE_EXTENSIONS.contains(&ext.as_str()))?;
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_IMAGE_BYTES as u64 {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    store_image_bytes(worktree_path, &ext, &bytes)
+}
+
+/// Workspace-relative path for an image the agent viewed, so chat renders it
+/// inline instead of degrading to a plain tool row. Out-of-workspace images are
+/// imported into `.vibe-attachments/`; when that fails the caller-visible path
+/// is returned unchanged.
+pub fn viewed_image_path(worktree_path: &str, raw_path: &str) -> String {
+    let relative = make_path_relative(raw_path, worktree_path);
+    if Path::new(&relative).is_absolute()
+        && let Some(imported) = import_image_file(worktree_path, &relative)
+    {
+        return imported;
+    }
+    relative
+}
+
+fn store_image_bytes(worktree_path: &str, ext: &str, bytes: &[u8]) -> Option<String> {
+    if worktree_path.is_empty() || bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
         return None;
     }
 
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let digest = format!("{:x}", Sha256::digest(bytes));
     let file_name = format!("agent-{}.{ext}", &digest[..16]);
     let root = std::fs::canonicalize(worktree_path).ok()?;
     let dir = root.join(VIBE_ATTACHMENTS_DIR);
@@ -77,7 +112,7 @@ pub fn store_base64_image(worktree_path: &str, mime: &str, data: &str) -> Option
     {
         // A partial write would be served as a valid cache hit forever, so
         // drop the stub and let the next call retry.
-        Ok(mut file) => match file.write_all(&bytes) {
+        Ok(mut file) => match file.write_all(bytes) {
             Ok(()) => {}
             Err(_) => {
                 let _ = std::fs::remove_file(&file_path);
@@ -181,6 +216,39 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(entries, 2); // image + .gitignore
+    }
+
+    #[test]
+    fn imports_out_of_workspace_viewed_image() {
+        use base64::Engine;
+
+        let worktree = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = outside.path().join("shot.png");
+        std::fs::write(&source, BASE64.decode(PNG_B64).unwrap()).unwrap();
+        let worktree_str = worktree.path().to_str().unwrap();
+
+        // Out-of-workspace image is copied in, so chat can serve it by path.
+        let rel = viewed_image_path(worktree_str, source.to_str().unwrap());
+        assert!(rel.starts_with(".vibe-attachments/agent-"), "{rel}");
+        assert!(worktree.path().join(&rel).is_file());
+
+        // In-workspace images keep their relative path (no copy).
+        std::fs::write(
+            worktree.path().join("in.png"),
+            BASE64.decode(PNG_B64).unwrap(),
+        )
+        .unwrap();
+        let inside = worktree.path().join("in.png");
+        assert_eq!(
+            viewed_image_path(worktree_str, inside.to_str().unwrap()),
+            "in.png"
+        );
+
+        // Unservable paths are returned untouched: chat falls back to a text row.
+        let missing = outside.path().join("gone.png");
+        let missing_str = missing.to_str().unwrap();
+        assert_eq!(viewed_image_path(worktree_str, missing_str), missing_str);
     }
 
     #[test]

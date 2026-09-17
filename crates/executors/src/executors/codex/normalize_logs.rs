@@ -1499,7 +1499,7 @@ fn handle_direct_item_completed(
             }
         }
         AppThreadItem::ImageView { path, .. } => {
-            let relative_path = make_path_relative(&path.render_for_ui(), worktree_path);
+            let relative_path = images::viewed_image_path(worktree_path, &path.render_for_ui());
             add_normalized_entry(
                 msg_store,
                 entry_index,
@@ -2782,7 +2782,7 @@ pub fn normalize_logs(
                     state.assistant = None;
                     state.thinking = None;
                     let path_str = path.inferred_native_path_string();
-                    let relative_path = make_path_relative(&path_str, &worktree_path_str);
+                    let relative_path = images::viewed_image_path(&worktree_path_str, &path_str);
                     add_normalized_entry(
                         &msg_store,
                         &entry_index,
