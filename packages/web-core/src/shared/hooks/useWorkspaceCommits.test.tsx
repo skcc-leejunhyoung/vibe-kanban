@@ -1,8 +1,8 @@
 import { act, StrictMode, type ReactNode } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { RepoBranchStatus } from 'shared/types';
+import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
 
 const api = vi.hoisted(() => ({
   getBranchStatus: vi.fn(),
@@ -35,7 +35,7 @@ const status = (
     has_uncommitted_changes,
   }) as unknown as RepoBranchStatus;
 
-let root: Root;
+let dom: ReturnType<typeof installDomlessReact>;
 let queryClient: QueryClient;
 let branchStatus: RepoBranchStatus[];
 
@@ -44,50 +44,22 @@ beforeEach(() => {
   api.getBranchStatus.mockImplementation(async () => branchStatus);
   api.getCommits.mockImplementation(async () => []);
 
-  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  // These probes render no DOM nodes — only the root surface is needed, while
-  // React's real effects, context and query subscriptions still run.
-  vi.stubGlobal(
-    'document',
-    Object.assign(new EventTarget(), {
-      nodeType: 9,
-      visibilityState: 'visible',
-      activeElement: null,
-    })
-  );
-  vi.stubGlobal(
-    'window',
-    Object.assign(new EventTarget(), {
-      document,
-      setTimeout,
-      clearTimeout,
-      // React's commit phase does `el instanceof win.HTMLIFrameElement`.
-      HTMLIFrameElement: class {},
-    })
-  );
-  const container = Object.assign(new EventTarget(), {
-    nodeType: 1,
-    tagName: 'DIV',
-    ownerDocument: document,
-  });
-  root = createRoot(container as unknown as HTMLElement);
+  dom = installDomlessReact();
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 });
 
 afterEach(async () => {
-  await act(() => root.unmount());
+  await dom.unmount();
   queryClient.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 async function render(node: ReactNode) {
-  await act(() =>
-    root.render(
-      <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
-    )
+  await dom.render(
+    <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
   );
   await settle();
 }
@@ -161,14 +133,12 @@ describe('useWorkspaceCommits branch-tip trigger', () => {
       status('aaa', 1),
     ]);
 
-    await act(() =>
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <StrictMode>
-            <Probe />
-          </StrictMode>
-        </QueryClientProvider>
-      )
+    await dom.render(
+      <QueryClientProvider client={queryClient}>
+        <StrictMode>
+          <Probe />
+        </StrictMode>
+      </QueryClientProvider>
     );
     await settle();
 
