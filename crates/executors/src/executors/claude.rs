@@ -64,6 +64,23 @@ use crate::{
 const SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
     "[WARN] Fast mode requires the native binary",
     "permissions.allow entries from .claude/settings.json: this workspace has not been trusted",
+    // Node deprecation notices from the launcher process. Never actionable for
+    // a vibe-kanban user, and the second line is the first one's continuation.
+    "[DEP0190]",
+    "node --trace-deprecation",
+];
+
+/// Benign only when Claude Code Router is in play. Without the router both lines
+/// carry real signal — the first means requests are billed against
+/// `ANTHROPIC_API_KEY` instead of the subscription, the second means the
+/// configured model name is wrong — so they stay visible in normal runs.
+const CCR_SUPPRESSED_STDERR_PATTERNS: &[&str] = &[
+    // CCR points the CLI at its local proxy via ANTHROPIC_BASE_URL/AUTH_TOKEN,
+    // which unavoidably disables the claude.ai login path.
+    "claude.ai connectors are disabled",
+    // CCR addresses models as `provider,model`, which is absent from the CLI's
+    // own catalog by design; the string is still forwarded and routed.
+    "[claude-code:unrecognized_model]",
 ];
 
 fn base_command(claude_code_router: bool) -> &'static str {
@@ -74,9 +91,22 @@ fn base_command(claude_code_router: bool) -> &'static str {
     }
 }
 
+fn is_suppressed_stderr_line(line: &str, claude_code_router: bool) -> bool {
+    SUPPRESSED_STDERR_PATTERNS
+        .iter()
+        .chain(
+            claude_code_router
+                .then_some(CCR_SUPPRESSED_STDERR_PATTERNS)
+                .into_iter()
+                .flatten(),
+        )
+        .any(|pattern| line.contains(pattern))
+}
+
 fn normalize_claude_stderr_logs(
     msg_store: Arc<MsgStore>,
     entry_index_provider: EntryIndexProvider,
+    claude_code_router: bool,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut stderr = msg_store.stderr_chunked_stream().lines();
@@ -95,10 +125,7 @@ fn normalize_claude_stderr_logs(
             .build();
 
         while let Some(Ok(line)) = stderr.next().await {
-            if SUPPRESSED_STDERR_PATTERNS
-                .iter()
-                .any(|pattern| line.contains(pattern))
-            {
+            if is_suppressed_stderr_line(&line, claude_code_router) {
                 continue;
             }
             for patch in processor.process(line + "\n") {
@@ -573,7 +600,11 @@ impl StandardCodingAgentExecutor for ClaudeCode {
         );
 
         // Process stderr logs
-        let h2 = normalize_claude_stderr_logs(msg_store, entry_index_provider);
+        let h2 = normalize_claude_stderr_logs(
+            msg_store,
+            entry_index_provider,
+            self.claude_code_router.unwrap_or(false),
+        );
 
         vec![h1, h2]
     }
@@ -3751,7 +3782,7 @@ mod tests {
         ));
         msg_store.push_finished();
 
-        normalize_claude_stderr_logs(msg_store.clone(), EntryIndexProvider::test_new())
+        normalize_claude_stderr_logs(msg_store.clone(), EntryIndexProvider::test_new(), false)
             .await
             .unwrap();
 
@@ -3767,6 +3798,37 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].content, "Error: Claude process failed\n");
+    }
+
+    #[test]
+    fn ccr_only_stderr_noise_stays_visible_without_the_router() {
+        // Verbatim lines from a `ccr code` run.
+        let dep = "(node:68593) [DEP0190] DeprecationWarning: Passing args to a child \
+                   process with shell option true can lead to security vulnerabilities";
+        let trace = "(Use `node --trace-deprecation ...` to show where the warning was created)";
+        let connectors = "\u{26a0} claude.ai connectors are disabled because ANTHROPIC_API_KEY \
+                          or another auth source is set";
+        let unrecognized = "[claude-code:unrecognized_model] \
+                            {\"model\":\"sailresearch,moonshotai/Kimi-K3\",\"query_source\":\"sdk\"}";
+
+        // Node deprecation chatter is noise regardless of the router.
+        for line in [dep, trace] {
+            assert!(is_suppressed_stderr_line(line, false), "{line}");
+            assert!(is_suppressed_stderr_line(line, true), "{line}");
+        }
+
+        // These two are expected under CCR but real signal without it: billing
+        // fell back to the API key, or the model name is wrong.
+        for line in [connectors, unrecognized] {
+            assert!(is_suppressed_stderr_line(line, true), "{line}");
+            assert!(!is_suppressed_stderr_line(line, false), "{line}");
+        }
+
+        // Genuine failures are never swallowed.
+        assert!(!is_suppressed_stderr_line(
+            "Error: Claude process failed",
+            true
+        ));
     }
 
     #[test]
