@@ -1898,11 +1898,20 @@ impl LocalContainerService {
     /// usage window plus a small margin; if the limit is still active on resume,
     /// a new schedule is created and we wait again.
     const RATE_LIMIT_RESUME_DELAY_SECS: i64 = 5 * 60 * 60 + 5 * 60;
+    /// Provider capacity errors clear in seconds-to-minutes, unlike a usage
+    /// limit which resets hours out.
+    const CAPACITY_RETRY_DELAY_SECS: i64 = 60;
+    /// Failed coding-agent runs (this one included) within
+    /// [`Self::CAPACITY_FAILURE_WINDOW_MINS`] that stop further capacity
+    /// retries — i.e. two retries, then the run is left failed.
+    const CAPACITY_MAX_FAILURES: usize = 3;
+    const CAPACITY_FAILURE_WINDOW_MINS: i64 = 30;
 
-    /// If this execution stopped because a usage rate limit was reached and the
-    /// session has auto-resume enabled, schedule an automatic "continue"
-    /// follow-up. Uses the agent-reported reset time when present and in the
-    /// future, otherwise a conservative estimate.
+    /// If this execution stopped because a usage rate limit was reached, or
+    /// because the provider reported the model at capacity, and the session has
+    /// auto-resume enabled, schedule an automatic "continue" follow-up. A usage
+    /// limit uses the agent-reported reset time when present and in the future,
+    /// otherwise a conservative estimate; a capacity error retries shortly.
     async fn maybe_schedule_rate_limit_resume(
         &self,
         ctx: &ExecutionContext,
@@ -1937,11 +1946,23 @@ impl LocalContainerService {
             }
         };
 
-        let Some(reset_hint) = Self::rate_limit_reset_hint_from_msgs(&msgs) else {
-            return Ok(false);
+        let resume_at = match Self::rate_limit_reset_hint_from_msgs(&msgs) {
+            Some(reset_hint) => Self::resume_at_from_hint(reset_hint.as_deref(), Utc::now()),
+            // Not a usage limit: retry shortly if the provider reported the
+            // model at capacity, which is transient. Only a failed run counts,
+            // so the same failure that feeds the bound below is the one we
+            // retry.
+            None => {
+                if !Self::capacity_error_in_msgs(&msgs)
+                    || !matches!(ctx.execution_process.status, ExecutionProcessStatus::Failed)
+                    || self.recent_failed_agent_runs(ctx.session.id).await?
+                        >= Self::CAPACITY_MAX_FAILURES
+                {
+                    return Ok(false);
+                }
+                Utc::now() + chrono::Duration::seconds(Self::CAPACITY_RETRY_DELAY_SECS)
+            }
         };
-
-        let resume_at = Self::resume_at_from_hint(reset_hint.as_deref(), Utc::now());
 
         PendingRateLimitResume::upsert(
             &self.db.pool,
@@ -1994,6 +2015,40 @@ impl LocalContainerService {
         }
 
         limit_reached.then_some(reset_hint)
+    }
+
+    /// True when the run logged the provider's transient capacity error (e.g.
+    /// codex's `Error: Selected model is at capacity`). Only error entries
+    /// count, so an agent merely quoting the phrase can't trigger a retry.
+    fn capacity_error_in_msgs(msgs: &[LogMsg]) -> bool {
+        msgs.iter().any(|msg| {
+            let LogMsg::JsonPatch(patch) = msg else {
+                return false;
+            };
+            extract_normalized_entry_from_patch(patch).is_some_and(|(_, entry)| {
+                matches!(entry.entry_type, NormalizedEntryType::ErrorMessage { .. })
+                    && entry.content.to_lowercase().contains("is at capacity")
+            })
+        })
+    }
+
+    /// Recent failed coding-agent runs for the session, including the one that
+    /// just exited. Bounds capacity retries without a schema change; counting
+    /// every failure (not just capacity ones) also keeps an otherwise flaky
+    /// session from auto-retrying.
+    async fn recent_failed_agent_runs(&self, session_id: Uuid) -> Result<usize, ContainerError> {
+        let since = Utc::now() - chrono::Duration::minutes(Self::CAPACITY_FAILURE_WINDOW_MINS);
+        Ok(
+            ExecutionProcess::find_by_session_id(&self.db.pool, session_id, false)
+                .await?
+                .iter()
+                .filter(|p| {
+                    matches!(p.run_reason, ExecutionProcessRunReason::CodingAgent)
+                        && matches!(p.status, ExecutionProcessStatus::Failed)
+                        && p.created_at >= since
+                })
+                .count(),
+        )
     }
 
     /// Decide how to wrap up a finished execution. Pure so the terminal-turn
@@ -3785,7 +3840,9 @@ fn success_exit_status() -> std::process::ExitStatus {
 
 #[cfg(test)]
 mod tests {
-    use executors::logs::{NormalizedEntry, RateLimitInfo, utils::patch::ConversationPatch};
+    use executors::logs::{
+        NormalizedEntry, NormalizedEntryError, RateLimitInfo, utils::patch::ConversationPatch,
+    };
 
     use super::*;
 
@@ -3824,6 +3881,40 @@ mod tests {
             LocalContainerService::rate_limit_reset_hint_from_msgs(&msgs),
             None
         );
+    }
+
+    #[test]
+    fn capacity_error_only_counts_error_entries() {
+        let entry = |entry_type, content: &str| {
+            LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+                0,
+                NormalizedEntry {
+                    timestamp: None,
+                    entry_type,
+                    content: content.to_string(),
+                    metadata: None,
+                },
+            ))
+        };
+        let capacity = "Error: Selected model is at capacity\n";
+
+        assert!(LocalContainerService::capacity_error_in_msgs(&[entry(
+            NormalizedEntryType::ErrorMessage {
+                error_type: NormalizedEntryError::Other,
+            },
+            capacity,
+        )]));
+        // An agent quoting the phrase is not a failed turn.
+        assert!(!LocalContainerService::capacity_error_in_msgs(&[entry(
+            NormalizedEntryType::AssistantMessage,
+            capacity,
+        )]));
+        assert!(!LocalContainerService::capacity_error_in_msgs(&[entry(
+            NormalizedEntryType::ErrorMessage {
+                error_type: NormalizedEntryError::Other,
+            },
+            "Error: something else\n",
+        )]));
     }
 
     #[test]
