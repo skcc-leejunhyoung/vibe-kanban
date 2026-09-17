@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
@@ -33,7 +33,14 @@ use uuid::Uuid;
 use crate::DeploymentImpl;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
-const EXECUTION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// An agent still producing output is still working, so only silence counts
+/// against it: a long reconciliation must never be killed for being slow.
+const AGENT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Backstop for the opposite failure — an agent that chatters forever without
+/// ever finishing. Generous enough that real work never reaches it.
+const AGENT_HARD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+/// How often the watchdog re-checks; also the granularity of both bounds above.
+const PROGRESS_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Base wait before re-probing a rate-limited agent when it did not report an
 /// exact reset time. Unlike an interactive session (which waits out the full
@@ -52,16 +59,18 @@ const MAX_SYNC_JOB_ATTEMPTS: i64 = 4;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const RESULT_FILE_PREFIX: &str = ".vibe-memory-sync-";
 /// Starting an agent means a process spawn plus whatever handshake its protocol
-/// needs, neither of which `EXECUTION_TIMEOUT` covers.
+/// needs, and no model work happens yet, so a plain wall-clock bound is safe
+/// here (unlike the run itself, which is watched for silence instead).
 const AGENT_SPAWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// The agent has already exited by the time teardown runs, so it must not be
 /// able to wedge a sync: a surviving grandchild holding an output pipe open
 /// would otherwise block `run_agent` forever, stranding the result file and
 /// holding the run lock so no later run can sweep it either.
 const AGENT_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(60);
-/// Comfortably past one `EXECUTION_TIMEOUT` plus its repair follow-ups, so a
-/// match can never belong to a live run.
-const STALE_RESULT_AGE: Duration = Duration::from_secs(3 * 60 * 60);
+/// Past the worst case of `AGENT_HARD_TIMEOUT` and its repair follow-ups, so a
+/// match can never belong to a live run. The result file's mtime moves whenever
+/// the agent rewrites it, so a long run keeps refreshing its own claim anyway.
+const STALE_RESULT_AGE: Duration = Duration::from_secs(12 * 60 * 60);
 const SNAPSHOT_FORMAT_VERSION: u8 = 2;
 static RUN_LOCK: Mutex<()> = Mutex::const_new(());
 static GLOBAL_RUN_LOCK: Mutex<()> = Mutex::const_new(());
@@ -2079,6 +2088,70 @@ async fn wait_for_sync_result(result_path: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Shared "last sign of life" timestamp: the output readers stamp it on every
+/// chunk, the watchdog reads it. Progress, not elapsed time, is what decides
+/// whether an agent is still working.
+#[derive(Clone)]
+struct ProgressClock(Arc<std::sync::Mutex<Instant>>);
+
+impl ProgressClock {
+    fn new() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Instant::now())))
+    }
+
+    fn tick(&self) {
+        if let Ok(mut last) = self.0.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.0
+            .lock()
+            .map(|last| last.elapsed())
+            .unwrap_or_else(|_| Duration::ZERO)
+    }
+}
+
+/// Resolves only once the agent looks stuck: either it has gone silent for
+/// `idle`, or it has been running for `hard` without ever finishing. Returns
+/// which bound tripped, for the error message.
+async fn watch_for_stall(
+    progress: ProgressClock,
+    started: Instant,
+    idle: Duration,
+    hard: Duration,
+    poll: Duration,
+) -> &'static str {
+    loop {
+        sleep(poll).await;
+        if progress.idle_for() >= idle {
+            return "went silent";
+        }
+        if started.elapsed() >= hard {
+            return "exceeded its hard time limit";
+        }
+    }
+}
+
+/// Copies a stream to the end, stamping the shared clock on every chunk so the
+/// watchdog can tell a working agent from a wedged one.
+async fn read_to_end_with_progress(
+    mut stream: impl tokio::io::AsyncRead + Unpin,
+    progress: ProgressClock,
+) -> std::io::Result<Vec<u8>> {
+    let mut sink = Vec::new();
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let read = stream.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(sink);
+        }
+        sink.extend_from_slice(&buffer[..read]);
+        progress.tick();
+    }
+}
+
 /// Terminates and reaps the agent's process group without waiting forever: a
 /// stuck kill must not outlive the sync that asked for it.
 async fn terminate_agent(spawned: &mut SpawnedChild) {
@@ -2173,31 +2246,26 @@ async fn run_agent(
     })
     .await
     .map_err(|_| anyhow::anyhow!("memory sync agent did not start"))??;
-    let mut stdout = spawned
+    let stdout = spawned
         .child
         .inner()
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("agent stdout is unavailable"))?;
-    let mut stderr = spawned
+    let stderr = spawned
         .child
         .inner()
         .stderr
         .take()
         .ok_or_else(|| anyhow::anyhow!("agent stderr is unavailable"))?;
-    let stdout_task = tokio::spawn(async move {
-        let mut sink = Vec::new();
-        stdout.read_to_end(&mut sink).await?;
-        Ok::<_, std::io::Error>(sink)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut sink = Vec::new();
-        stderr.read_to_end(&mut sink).await?;
-        Ok::<_, std::io::Error>(sink)
-    });
+    let progress = ProgressClock::new();
+    let stdout_task = tokio::spawn(read_to_end_with_progress(stdout, progress.clone()));
+    let stderr_task = tokio::spawn(read_to_end_with_progress(stderr, progress.clone()));
 
     let mut exit_signal = spawned.exit_signal.take();
-    let completion = tokio::time::timeout(EXECUTION_TIMEOUT, async {
+    let started = Instant::now();
+    let mut stalled: Option<&'static str> = None;
+    let work = async {
         let result_ready = wait_for_sync_result(result_path);
         enum Completion {
             Exited(bool),
@@ -2231,16 +2299,31 @@ async fn run_agent(
                 Ok(true)
             }
         }
-    })
-    .await;
-    if completion.is_err() {
+    };
+    let completion = tokio::select! {
+        result = work => Some(result),
+        reason = watch_for_stall(
+            progress,
+            started,
+            AGENT_IDLE_TIMEOUT,
+            AGENT_HARD_TIMEOUT,
+            PROGRESS_POLL_INTERVAL,
+        ) => {
+            stalled = Some(reason);
+            None
+        }
+    };
+    let Some(completion) = completion else {
         if let Some(cancel) = spawned.cancel.take() {
             cancel.cancel();
         }
         terminate_agent(&mut spawned).await;
-        anyhow::bail!("memory sync agent timed out");
-    }
-    let succeeded = completion??;
+        anyhow::bail!(
+            "memory sync agent {}",
+            stalled.unwrap_or("stopped making progress")
+        );
+    };
+    let succeeded = completion?;
     if exit_signal.is_some() {
         terminate_agent(&mut spawned).await;
     }
@@ -2637,6 +2720,46 @@ mod tests {
         assert!(should_retry_job(3));
         assert!(!should_retry_job(4));
         assert!(!should_retry_job(100));
+    }
+
+    #[tokio::test]
+    async fn a_chatty_agent_is_never_called_stalled() {
+        let progress = ProgressClock::new();
+        let ticker = tokio::spawn({
+            let progress = progress.clone();
+            async move {
+                // Busy for well past the idle bound, one chunk of output at a time.
+                for _ in 0..20 {
+                    sleep(Duration::from_millis(10)).await;
+                    progress.tick();
+                }
+            }
+        });
+        // Idle bound alone must not fire while output keeps arriving; the hard
+        // bound is what ends this run.
+        let reason = watch_for_stall(
+            progress,
+            Instant::now(),
+            Duration::from_millis(50),
+            Duration::from_millis(150),
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(reason, "exceeded its hard time limit");
+        ticker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_silent_agent_is_given_up_on() {
+        let reason = watch_for_stall(
+            ProgressClock::new(),
+            Instant::now(),
+            Duration::from_millis(30),
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(reason, "went silent");
     }
 
     #[tokio::test]
