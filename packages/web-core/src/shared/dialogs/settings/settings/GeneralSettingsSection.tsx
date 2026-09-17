@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { cloneDeep, isEqual, merge } from 'lodash';
 import {
   FolderSimpleIcon,
+  MinusIcon,
   PaletteIcon,
+  PlusIcon,
   SpeakerHighIcon,
   SpinnerIcon,
 } from '@phosphor-icons/react';
@@ -20,6 +28,17 @@ import {
   UiLanguage,
 } from 'shared/types';
 import { getModifierKey } from '@/shared/lib/platform';
+import {
+  DEFAULT_ZOOM_PERCENT,
+  MAX_ZOOM_PERCENT,
+  MIN_ZOOM_PERCENT,
+  getZoomPercent,
+  isAppZoomEnabled,
+  subscribeZoom,
+  zoomIn,
+  zoomOut,
+  zoomReset,
+} from '@/shared/lib/zoom';
 import { getLanguageOptions } from '@/i18n/languages';
 import { toPrettyCase } from '@/shared/lib/string';
 import {
@@ -56,6 +75,7 @@ import {
 import { ThemeVariantEditorDialog } from '@/shared/dialogs/settings/ThemeVariantEditorDialog';
 import { cn, playSound } from '@/shared/lib/utils';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import { Button } from '@vibe/ui/components/Button';
 import { IconButton } from '@vibe/ui/components/IconButton';
 import {
   DropdownMenu,
@@ -93,6 +113,9 @@ export function GeneralSettingsSection() {
 
   const isMobile = useIsMobile();
   const [mobileFontScale, setMobileFontScale] = useMobileFontScale();
+  // App zoom (root font-size steps) stands in for browser zoom wherever native
+  // zoom is unavailable — an installed PWA has no ⌘± and pinch is blocked.
+  const zoomPercent = useSyncExternalStore(subscribeZoom, getZoomPercent);
   // Theme variants ("skins") are token-only presets (built-in + user-defined)
   // injected as a scoped <style>, applied on top of the Light/Dark mode. The
   // selection + presets sync through config (useConfigPreferenceSync), so the
@@ -463,6 +486,54 @@ export function GeneralSettingsSection() {
           checked={contextBarVisible}
           onChange={setContextBarVisible}
         />
+
+        {isAppZoomEnabled() && (
+          <SettingsField
+            label={t('settings.general.appearance.zoom.label', {
+              defaultValue: 'Zoom',
+            })}
+            description={t('settings.general.appearance.zoom.helper', {
+              defaultValue:
+                'Scale the whole app, like browser zoom. Also bound to ⌘/Ctrl +, − and 0.',
+            })}
+          >
+            <div className="flex items-center gap-base">
+              <IconButton
+                icon={MinusIcon}
+                variant="tertiary"
+                className="min-h-9 min-w-9"
+                onClick={zoomOut}
+                disabled={zoomPercent <= MIN_ZOOM_PERCENT}
+                aria-label={t('settings.general.appearance.zoom.out', {
+                  defaultValue: 'Zoom out',
+                })}
+              />
+              <span className="w-16 text-center text-sm tabular-nums text-normal">
+                {zoomPercent}%
+              </span>
+              <IconButton
+                icon={PlusIcon}
+                variant="tertiary"
+                className="min-h-9 min-w-9"
+                onClick={zoomIn}
+                disabled={zoomPercent >= MAX_ZOOM_PERCENT}
+                aria-label={t('settings.general.appearance.zoom.in', {
+                  defaultValue: 'Zoom in',
+                })}
+              />
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={zoomReset}
+                disabled={zoomPercent === DEFAULT_ZOOM_PERCENT}
+              >
+                {t('settings.general.appearance.zoom.reset', {
+                  defaultValue: 'Reset',
+                })}
+              </Button>
+            </div>
+          </SettingsField>
+        )}
 
         {isMobile && (
           <SettingsField

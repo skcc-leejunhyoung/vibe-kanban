@@ -101,6 +101,13 @@
         "contextBar": {
           "label": "Show the floating action bar",
           "helper": "The draggable bar of quick actions floating over the workspace."
+        },
+        "zoom": {
+          "label": "Zoom",
+          "helper": "Scale the whole app, like browser zoom. Also bound to ⌘/Ctrl +, − and 0.",
+          "in": "Zoom in",
+          "out": "Zoom out",
+          "reset": "Reset"
         }
       },
       "diff": {

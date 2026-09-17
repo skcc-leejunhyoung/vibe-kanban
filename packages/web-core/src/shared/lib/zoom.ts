@@ -1,10 +1,18 @@
 import { isStandalonePwa, isTauriApp } from './platform';
 
 const ZOOM_STORAGE_KEY = 'vk-zoom-level';
+const ZOOM_EVENT = 'vk-zoom-change';
 const DEFAULT_FONT_SIZE = 16;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;
 const STEP = 1;
+
+const toPercent = (size: number) =>
+  Math.round((size / DEFAULT_FONT_SIZE) * 100);
+
+export const MIN_ZOOM_PERCENT = toPercent(MIN_FONT_SIZE);
+export const MAX_ZOOM_PERCENT = toPercent(MAX_FONT_SIZE);
+export const DEFAULT_ZOOM_PERCENT = toPercent(DEFAULT_FONT_SIZE);
 
 function loadFontSize(): number {
   try {
@@ -35,31 +43,45 @@ function applyFontSize(size: number): void {
   document.documentElement.style.fontSize = `${size}px`;
 }
 
-let currentFontSize = DEFAULT_FONT_SIZE;
+let currentFontSize: number | null = null;
 
-function zoomIn(): void {
-  currentFontSize = Math.min(currentFontSize + STEP, MAX_FONT_SIZE);
-  applyFontSize(currentFontSize);
-  saveFontSize(currentFontSize);
+function fontSize(): number {
+  return (currentFontSize ??= loadFontSize());
 }
 
-function zoomOut(): void {
-  currentFontSize = Math.max(currentFontSize - STEP, MIN_FONT_SIZE);
+function setFontSize(size: number): void {
+  currentFontSize = Math.min(Math.max(size, MIN_FONT_SIZE), MAX_FONT_SIZE);
   applyFontSize(currentFontSize);
   saveFontSize(currentFontSize);
+  window.dispatchEvent(new Event(ZOOM_EVENT));
 }
 
-function zoomReset(): void {
-  currentFontSize = DEFAULT_FONT_SIZE;
-  applyFontSize(currentFontSize);
-  saveFontSize(currentFontSize);
+export function zoomIn(): void {
+  setFontSize(fontSize() + STEP);
 }
 
-function initZoom(): void {
-  currentFontSize = loadFontSize();
-  if (currentFontSize !== DEFAULT_FONT_SIZE) {
-    applyFontSize(currentFontSize);
-  }
+export function zoomOut(): void {
+  setFontSize(fontSize() - STEP);
+}
+
+export function zoomReset(): void {
+  setFontSize(DEFAULT_FONT_SIZE);
+}
+
+export function getZoomPercent(): number {
+  return toPercent(fontSize());
+}
+
+export function subscribeZoom(onChange: () => void): () => void {
+  window.addEventListener(ZOOM_EVENT, onChange);
+  return () => window.removeEventListener(ZOOM_EVENT, onChange);
+}
+
+// Whether app zoom replaces native browser zoom in this context — also gates
+// the settings zoom control, which is the only way to zoom an iOS PWA (no
+// keyboard, and pinch is blocked below).
+export function isAppZoomEnabled(): boolean {
+  return isTauriApp() || isStandalonePwa();
 }
 
 // Custom zoom (Cmd/Ctrl + =/–/0) via root font-size scaling, replacing native
@@ -69,9 +91,9 @@ function initZoom(): void {
 // Safari's trackpad pinch is a bitmap magnification that never re-rasterizes.
 // Pinch-to-zoom is blocked for the same reason.
 export function installAppZoom(): void {
-  if (!isTauriApp() && !isStandalonePwa()) return;
+  if (!isAppZoomEnabled()) return;
 
-  initZoom();
+  if (fontSize() !== DEFAULT_FONT_SIZE) applyFontSize(fontSize());
 
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
