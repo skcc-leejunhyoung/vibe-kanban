@@ -49,6 +49,7 @@ import {
   useMobileFontScale,
   useThemePresets,
   useThemeVariant,
+  useContextBarVisible,
   useWorkspaceIssueStatuses,
   useUiPreferencesStore,
 } from '@/shared/stores/useUiPreferencesStore';
@@ -99,6 +100,7 @@ export function GeneralSettingsSection() {
   const [themeVariant, setThemeVariant] = useThemeVariant();
   const themePresets = useThemePresets();
   const [issueStatuses, setIssueStatuses] = useWorkspaceIssueStatuses();
+  const [contextBarVisible, setContextBarVisible] = useContextBarVisible();
   const rightSidebarSectionOrder = useUiPreferencesStore(
     (state) => state.rightSidebarSectionOrder
   );
@@ -453,6 +455,19 @@ export function GeneralSettingsSection() {
             placeholder={t('settings.general.appearance.language.placeholder')}
           />
         </SettingsField>
+
+        <SettingsCheckbox
+          id="show-context-bar"
+          label={t('settings.general.appearance.contextBar.label', {
+            defaultValue: 'Show the floating action bar',
+          })}
+          description={t('settings.general.appearance.contextBar.helper', {
+            defaultValue:
+              'The draggable bar of quick actions floating over the workspace.',
+          })}
+          checked={contextBarVisible}
+          onChange={setContextBarVisible}
+        />
 
         {isMobile && (
           <SettingsField

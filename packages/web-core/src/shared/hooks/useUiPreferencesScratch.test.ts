@@ -35,3 +35,22 @@ describe('workspace panel state round-trip', () => {
     expect(restored.untouched.isRightSidebarVisible).toBeUndefined();
   });
 });
+
+describe('context bar visibility round-trip', () => {
+  it('defaults to visible when the server payload predates the flag', () => {
+    const data = storeToScratchData(useUiPreferencesStore.getState());
+    delete (data as { is_context_bar_visible?: boolean | null })
+      .is_context_bar_visible;
+
+    expect(scratchDataToStore(data).isContextBarVisible).toBe(true);
+  });
+
+  it('preserves an explicit hide', () => {
+    const data = storeToScratchData({
+      ...useUiPreferencesStore.getState(),
+      isContextBarVisible: false,
+    });
+
+    expect(scratchDataToStore(data).isContextBarVisible).toBe(false);
+  });
+});

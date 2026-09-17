@@ -9,6 +9,7 @@ import { useActions } from '@/shared/hooks/useActions';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { IdeIcon } from '@/shared/components/IdeIcon';
 import { useContextBarPosition } from '@/shared/hooks/useContextBarPosition';
+import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ContextBarActionGroups } from '@/shared/actions';
 import {
   type ActionDefinition,
@@ -157,6 +158,7 @@ export function ContextBarContainer({
 }: ContextBarContainerProps) {
   const { executeAction } = useActions();
   const { config } = useUserSystem();
+  const isVisible = useUiPreferencesStore((s) => s.isContextBarVisible);
   const editorType =
     (config?.editor?.editor_type as EditorType | undefined) ?? null;
 
@@ -254,7 +256,7 @@ export function ContextBarContainer({
     return toRenderItems(filtered, 'secondary');
   }, [actionCtx, toRenderItems]);
 
-  if (isRealMobileDevice()) return null;
+  if (!isVisible || isRealMobileDevice()) return null;
 
   return (
     <ContextBar

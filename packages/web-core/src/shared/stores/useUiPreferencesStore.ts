@@ -89,6 +89,8 @@ const loadThemeVariant = (): ThemeVariant => {
 
 export type KanbanViewMode = 'kanban' | 'list';
 
+export const DEFAULT_CONTEXT_BAR_VISIBLE = true;
+
 export type ContextBarPosition =
   | 'top-left'
   | 'top-right'
@@ -493,6 +495,7 @@ type State = {
   repoActions: Record<string, RepoAction>;
   expanded: Record<string, boolean>;
   contextBarPosition: ContextBarPosition;
+  isContextBarVisible: boolean;
   paneSizes: Record<string, number | string>;
   collapsedPaths: Record<string, string[]>;
   fileSearchRepoId: string | null;
@@ -576,6 +579,7 @@ type State = {
   setExpanded: (key: string, value: boolean) => void;
   toggleExpanded: (key: string, defaultValue?: boolean) => void;
   setContextBarPosition: (position: ContextBarPosition) => void;
+  setContextBarVisible: (visible: boolean) => void;
   setPaneSize: (key: string, size: number | string) => void;
   setCollapsedPaths: (key: string, paths: string[]) => void;
   setFileSearchRepo: (repoId: string | null) => void;
@@ -672,6 +676,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   repoActions: {},
   expanded: {},
   contextBarPosition: 'middle-right',
+  isContextBarVisible: DEFAULT_CONTEXT_BAR_VISIBLE,
   paneSizes: {},
   collapsedPaths: {},
   fileSearchRepoId: null,
@@ -733,6 +738,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
       },
     })),
   setContextBarPosition: (position) => set({ contextBarPosition: position }),
+  setContextBarVisible: (visible) => set({ isContextBarVisible: visible }),
   setPaneSize: (key, size) =>
     set((s) => ({ paneSizes: { ...s.paneSizes, [key]: size } })),
   setCollapsedPaths: (key, paths) =>
@@ -1158,6 +1164,13 @@ export function useContextBarPosition(): [
   const position = useUiPreferencesStore((s) => s.contextBarPosition);
   const setPosition = useUiPreferencesStore((s) => s.setContextBarPosition);
   return [position, setPosition];
+}
+
+// Hook for context bar visibility
+export function useContextBarVisible(): [boolean, (visible: boolean) => void] {
+  const visible = useUiPreferencesStore((s) => s.isContextBarVisible);
+  const setVisible = useUiPreferencesStore((s) => s.setContextBarVisible);
+  return [visible, setVisible];
 }
 
 // Hook for pane size preference

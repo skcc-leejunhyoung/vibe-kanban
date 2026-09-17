@@ -131,6 +131,10 @@ expanded: { [key in string]?: boolean },
  */
 context_bar_position: string | null,
 /**
+ * Whether the floating context bar is shown (None = default visible)
+ */
+is_context_bar_visible: boolean | null,
+/**
  * Pane sizes
  */
 pane_sizes: { [key in string]?: JsonValue },

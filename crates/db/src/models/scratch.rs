@@ -148,6 +148,9 @@ pub struct UiPreferencesData {
     /// Context bar position
     #[serde(default)]
     pub context_bar_position: Option<String>,
+    /// Whether the floating context bar is shown (None = default visible)
+    #[serde(default)]
+    pub is_context_bar_visible: Option<bool>,
     /// Pane sizes
     #[serde(default)]
     pub pane_sizes: std::collections::HashMap<String, serde_json::Value>,

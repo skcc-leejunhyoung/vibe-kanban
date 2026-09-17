@@ -13,6 +13,7 @@ import {
   useUiPreferencesStore,
   PREVIEW_SHORTCUTS_GLOBAL_KEY,
   DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
+  DEFAULT_CONTEXT_BAR_VISIBLE,
   type RightMainPanelMode,
   type ContextBarPosition,
   type WorkspacePanelState,
@@ -49,6 +50,7 @@ export function storeToScratchData(state: {
   repoActions: Record<string, RepoAction>;
   expanded: Record<string, boolean>;
   contextBarPosition: ContextBarPosition;
+  isContextBarVisible: boolean;
   paneSizes: Record<string, number | string>;
   collapsedPaths: Record<string, string[]>;
   fileSearchRepoId: string | null;
@@ -86,6 +88,7 @@ export function storeToScratchData(state: {
     repo_actions: state.repoActions as { [key: string]: string },
     expanded: state.expanded,
     context_bar_position: state.contextBarPosition,
+    is_context_bar_visible: state.isContextBarVisible,
     pane_sizes: state.paneSizes as { [key: string]: JsonValue },
     collapsed_paths: state.collapsedPaths,
     file_search_repo_id: state.fileSearchRepoId,
@@ -143,6 +146,7 @@ export function scratchDataToStore(data: UiPreferencesData): {
   repoActions: Record<string, RepoAction>;
   expanded: Record<string, boolean>;
   contextBarPosition: ContextBarPosition;
+  isContextBarVisible: boolean;
   paneSizes: Record<string, number | string>;
   collapsedPaths: Record<string, string[]>;
   fileSearchRepoId: string | null;
@@ -221,6 +225,8 @@ export function scratchDataToStore(data: UiPreferencesData): {
     expanded: (data.expanded ?? {}) as Record<string, boolean>,
     contextBarPosition:
       (data.context_bar_position as ContextBarPosition) ?? 'middle-right',
+    isContextBarVisible:
+      data.is_context_bar_visible ?? DEFAULT_CONTEXT_BAR_VISIBLE,
     paneSizes: (data.pane_sizes ?? {}) as Record<string, number | string>,
     collapsedPaths: (data.collapsed_paths ?? {}) as Record<string, string[]>,
     fileSearchRepoId: data.file_search_repo_id ?? legacyFileSearchRepoId,
@@ -288,6 +294,7 @@ export function useUiPreferencesScratch() {
     repoActions: state.repoActions,
     expanded: state.expanded,
     contextBarPosition: state.contextBarPosition,
+    isContextBarVisible: state.isContextBarVisible,
     paneSizes: state.paneSizes,
     collapsedPaths: state.collapsedPaths,
     fileSearchRepoId: state.fileSearchRepoId,
@@ -323,6 +330,7 @@ export function useUiPreferencesScratch() {
       repoActions: currentState.repoActions,
       expanded: currentState.expanded,
       contextBarPosition: currentState.contextBarPosition,
+      isContextBarVisible: currentState.isContextBarVisible,
       paneSizes: currentState.paneSizes,
       collapsedPaths: currentState.collapsedPaths,
       fileSearchRepoId: currentState.fileSearchRepoId,
@@ -374,6 +382,7 @@ export function useUiPreferencesScratch() {
         repoActions: serverState.repoActions,
         expanded: serverState.expanded,
         contextBarPosition: serverState.contextBarPosition,
+        isContextBarVisible: serverState.isContextBarVisible,
         paneSizes: serverState.paneSizes,
         collapsedPaths: serverState.collapsedPaths,
         fileSearchRepoId: serverState.fileSearchRepoId,
