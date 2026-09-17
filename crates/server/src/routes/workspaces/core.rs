@@ -162,23 +162,31 @@ pub async fn delete_workspace(
         return Err(ApiError::Database(SqlxError::RowNotFound));
     }
 
-    if query.delete_remote {
-        if let Ok(client) = deployment.remote_client() {
-            match client.delete_workspace(workspace_id).await {
-                Ok(()) => {
-                    tracing::info!("Deleted remote workspace for {}", workspace_id);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to delete remote workspace for {}: {}",
-                        workspace_id,
-                        e
-                    );
-                }
+    match deployment.remote_client() {
+        Ok(client) if query.delete_remote => match client.delete_workspace(workspace_id).await {
+            Ok(()) => {
+                tracing::info!("Deleted remote workspace for {}", workspace_id);
             }
-        } else {
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to delete remote workspace for {}: {}",
+                    workspace_id,
+                    e
+                );
+            }
+        },
+        // The local row is gone, so the remote mirror can never be opened again.
+        // Archive it rather than deleting it: the issue keeps its PR links, but
+        // the board and issue panel stop listing a workspace that no longer
+        // exists. Without this the mirror stays `archived = false` forever and
+        // shows up as an unopenable, undeletable card.
+        Ok(client) => {
+            remote_sync::sync_workspace_to_remote(&client, workspace_id, None, Some(true), None)
+                .await;
+        }
+        Err(_) => {
             tracing::debug!(
-                "Remote client not available, skipping remote deletion for {}",
+                "Remote client not available, skipping remote cleanup for {}",
                 workspace_id
             );
         }
