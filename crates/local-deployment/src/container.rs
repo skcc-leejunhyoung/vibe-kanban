@@ -1898,14 +1898,17 @@ impl LocalContainerService {
     /// usage window plus a small margin; if the limit is still active on resume,
     /// a new schedule is created and we wait again.
     const RATE_LIMIT_RESUME_DELAY_SECS: i64 = 5 * 60 * 60 + 5 * 60;
+    /// Follow-up sent by the rate-limit watcher for both resume kinds. Also the
+    /// marker [`Self::recent_capacity_retries`] counts, so the scheduled row and
+    /// the bound must keep using the same word.
+    const RESUME_PROMPT: &'static str = "continue";
     /// Provider capacity errors clear in seconds-to-minutes, unlike a usage
     /// limit which resets hours out.
     const CAPACITY_RETRY_DELAY_SECS: i64 = 60;
-    /// Failed coding-agent runs (this one included) within
-    /// [`Self::CAPACITY_FAILURE_WINDOW_MINS`] that stop further capacity
-    /// retries — i.e. two retries, then the run is left failed.
-    const CAPACITY_MAX_FAILURES: usize = 3;
-    const CAPACITY_FAILURE_WINDOW_MINS: i64 = 30;
+    /// Auto-resume retries already started for this session within
+    /// [`Self::CAPACITY_RETRY_WINDOW_MINS`] that stop further capacity retries.
+    const CAPACITY_MAX_RETRIES: usize = 2;
+    const CAPACITY_RETRY_WINDOW_MINS: i64 = 30;
 
     /// If this execution stopped because a usage rate limit was reached, or
     /// because the provider reported the model at capacity, and the session has
@@ -1949,14 +1952,14 @@ impl LocalContainerService {
         let resume_at = match Self::rate_limit_reset_hint_from_msgs(&msgs) {
             Some(reset_hint) => Self::resume_at_from_hint(reset_hint.as_deref(), Utc::now()),
             // Not a usage limit: retry shortly if the provider reported the
-            // model at capacity, which is transient. Only a failed run counts,
-            // so the same failure that feeds the bound below is the one we
-            // retry.
+            // model at capacity, which is transient. The process status is no
+            // help here — codex reports the capacity failure as a failed *turn*
+            // while its app-server still exits 0, so the run lands as
+            // `Completed` and the logged error is the only signal.
             None => {
                 if !Self::capacity_error_in_msgs(&msgs)
-                    || !matches!(ctx.execution_process.status, ExecutionProcessStatus::Failed)
-                    || self.recent_failed_agent_runs(ctx.session.id).await?
-                        >= Self::CAPACITY_MAX_FAILURES
+                    || self.recent_capacity_retries(ctx.session.id).await?
+                        >= Self::CAPACITY_MAX_RETRIES
                 {
                     return Ok(false);
                 }
@@ -1969,7 +1972,7 @@ impl LocalContainerService {
             ctx.session.id,
             ctx.execution_process.id,
             resume_at,
-            "continue",
+            Self::RESUME_PROMPT,
         )
         .await
         .map_err(|e| ContainerError::Other(e.into()))?;
@@ -2032,20 +2035,24 @@ impl LocalContainerService {
         })
     }
 
-    /// Recent failed coding-agent runs for the session, including the one that
-    /// just exited. Bounds capacity retries without a schema change; counting
-    /// every failure (not just capacity ones) also keeps an otherwise flaky
-    /// session from auto-retrying.
-    async fn recent_failed_agent_runs(&self, session_id: Uuid) -> Result<usize, ContainerError> {
-        let since = Utc::now() - chrono::Duration::minutes(Self::CAPACITY_FAILURE_WINDOW_MINS);
+    /// Auto-resume retries already started for this session. The watcher starts
+    /// each one as a coding-agent follow-up carrying [`Self::RESUME_PROMPT`], so
+    /// counting those bounds capacity retries without a schema change. A user
+    /// typing the same word only makes the bound stricter.
+    async fn recent_capacity_retries(&self, session_id: Uuid) -> Result<usize, ContainerError> {
+        let since = Utc::now() - chrono::Duration::minutes(Self::CAPACITY_RETRY_WINDOW_MINS);
         Ok(
             ExecutionProcess::find_by_session_id(&self.db.pool, session_id, false)
                 .await?
                 .iter()
                 .filter(|p| {
-                    matches!(p.run_reason, ExecutionProcessRunReason::CodingAgent)
-                        && matches!(p.status, ExecutionProcessStatus::Failed)
-                        && p.created_at >= since
+                    p.created_at >= since
+                        && matches!(p.run_reason, ExecutionProcessRunReason::CodingAgent)
+                        && matches!(
+                            p.executor_action().map(ExecutorAction::typ),
+                            Ok(ExecutorActionType::CodingAgentFollowUpRequest(r))
+                                if r.prompt == Self::RESUME_PROMPT
+                        )
                 })
                 .count(),
         )
@@ -3896,14 +3903,20 @@ mod tests {
                 },
             ))
         };
+        // Codex stderr form, and the app-server `ServerNotification::Error`
+        // form — the one real capacity failures actually take.
         let capacity = "Error: Selected model is at capacity\n";
+        let capacity_app_server =
+            "Error: Selected model is at capacity. Please try a different model.";
 
-        assert!(LocalContainerService::capacity_error_in_msgs(&[entry(
-            NormalizedEntryType::ErrorMessage {
-                error_type: NormalizedEntryError::Other,
-            },
-            capacity,
-        )]));
+        for content in [capacity, capacity_app_server] {
+            assert!(LocalContainerService::capacity_error_in_msgs(&[entry(
+                NormalizedEntryType::ErrorMessage {
+                    error_type: NormalizedEntryError::Other,
+                },
+                content,
+            )]));
+        }
         // An agent quoting the phrase is not a failed turn.
         assert!(!LocalContainerService::capacity_error_in_msgs(&[entry(
             NormalizedEntryType::AssistantMessage,
