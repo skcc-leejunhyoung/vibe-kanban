@@ -54,10 +54,13 @@ export function useWorkspaceCommits(
   useEffect(() => {
     const previous = lastTipRef.current;
     lastTipRef.current = { workspaceId, signature };
-    // A workspace switch already refetches through the new query key, and the
-    // empty signature is "branch status hasn't loaded yet", not a moved tip.
+    // A workspace switch already refetches through the new query key. An empty
+    // signature is "branch status hasn't loaded yet" — on the previous side it
+    // means this is the first load, which is the mount baseline and not a moved
+    // tip (the commit query just fetched under its own key).
     if (previous.workspaceId !== workspaceId) return;
-    if (!signature || previous.signature === signature) return;
+    if (!signature || !previous.signature) return;
+    if (previous.signature === signature) return;
     if (!enabled || !workspaceId) return;
     // Not the default `cancelRefetch: true`: several observers share this query
     // and would otherwise each abort and restart the others' fetch.
