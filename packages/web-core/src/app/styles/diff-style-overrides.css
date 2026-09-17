@@ -892,8 +892,8 @@ diffs-container {
 diffs-container {
   --diffs-font-family: 'IBM Plex Mono', 'SF Mono', Monaco, Consolas, monospace;
   --diffs-header-font-family: 'IBM Plex Sans', 'Noto Emoji', sans-serif;
-  --diffs-font-size: 12px;
-  --diffs-line-height: 18px;
+  --diffs-font-size: 0.75rem;
+  --diffs-line-height: 1.125rem;
 }
 
 /* Light Mode Colors - Match old design */
