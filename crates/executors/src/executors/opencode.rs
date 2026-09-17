@@ -670,8 +670,13 @@ impl StandardCodingAgentExecutor for Opencode {
             let (providers_result, agents_result, commands_result, config_result) =
                 tokio::join!(providers_future, agents_future, commands_future, config_future);
 
+            // A failed provider probe leaves the catalog empty. Caching that
+            // would hide the picker for a whole TTL and short-circuit the
+            // re-probe, so only a successful shape is worth storing.
+            let mut providers_ok = false;
             match providers_result {
                 Ok(data) => {
+                    providers_ok = true;
                     models::seed_context_windows_cache(
                         &cmd_key_for_discovery,
                         models::extract_context_windows(&data),
@@ -700,6 +705,7 @@ impl StandardCodingAgentExecutor for Opencode {
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch OpenCode providers: {}", e);
+                    yield patch::models_loaded();
                 }
             }
 
@@ -750,21 +756,23 @@ impl StandardCodingAgentExecutor for Opencode {
                 }
             }
 
-            let cache = executor_options_cache();
-            if let Some(path) = &target_path {
-                let target_cache_key = ExecutorConfigCacheKey::new(
-                    Some(path),
-                    cmd_key_for_discovery.clone(),
+            if providers_ok {
+                let cache = executor_options_cache();
+                if let Some(path) = &target_path {
+                    let target_cache_key = ExecutorConfigCacheKey::new(
+                        Some(path),
+                        cmd_key_for_discovery.clone(),
+                        BaseCodingAgent::Opencode,
+                    );
+                    cache.put(target_cache_key, final_options.clone());
+                }
+                let global_cache_key = ExecutorConfigCacheKey::new(
+                    None,
+                    cmd_key_for_discovery,
                     BaseCodingAgent::Opencode,
                 );
-                cache.put(target_cache_key, final_options.clone());
+                cache.put(global_cache_key, final_options);
             }
-            let global_cache_key = ExecutorConfigCacheKey::new(
-                None,
-                cmd_key_for_discovery,
-                BaseCodingAgent::Opencode,
-            );
-            cache.put(global_cache_key, final_options);
         };
 
         Ok(Box::pin(
