@@ -2,8 +2,9 @@
  * Self-hosted fonts. Previously these were fetched from fonts.googleapis.com on
  * every page load, which leaked the client IP/User-Agent to Google and violated
  * the "all traffic stays on the tailnet" policy. The woff2 files ship in
- * ./fonts (Pretendard + IBM Plex Mono, both SIL OFL 1.1) and are bundled by Vite
- * so nothing is requested from a third party at runtime.
+ * ./fonts (Pretendard + IBM Plex Mono, both SIL OFL 1.1; Symbols Nerd Font Mono,
+ * MIT) and are bundled by Vite so nothing is requested from a third party at
+ * runtime.
  */
 @font-face {
   font-family: 'Pretendard Variable';
@@ -37,6 +38,32 @@
   font-style: normal;
   font-display: swap;
   src: url('./fonts/ibm-plex-mono-latin-600.woff2') format('woff2');
+}
+
+/*
+ * Terminal icon glyphs. oh-my-zsh themes (powerlevel10k above all) draw their
+ * prompt out of Nerd Font Private Use Area code points, which no ordinary
+ * monospace font carries. Relying on an installed Nerd Font works in Chrome
+ * but not in Safari — including the macOS web-app (PWA) build — which hides
+ * user-installed fonts from web content, so the prompt fell through to
+ * IBM Plex Mono and rendered as tofu. This face carries only the icon ranges
+ * (unicode-range keeps Latin flowing to the real monospace font and means the
+ * file is fetched the first time an icon is actually drawn, not on page load).
+ * Every glyph has the same advance, so it sits in one xterm cell.
+ */
+@font-face {
+  font-family: 'Symbols Nerd Font Mono';
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src:
+    local('Symbols Nerd Font Mono'),
+    local('SymbolsNFM'),
+    url('./fonts/SymbolsNerdFontMono-Regular.woff2') format('woff2');
+  unicode-range:
+    U+23FB-23FE, U+2630, U+2665, U+26A1, U+276C-2771, U+2B58, U+E000-E00A,
+    U+E0A0-E0D7, U+E200-E2A9, U+E300-E3E3, U+E5FA-E6BB, U+E700-E958,
+    U+EA60-EC84, U+ED00-EFCF, U+F000-F385, U+F400-F533, U+F0001-F1AF0;
 }
 
 @tailwind base;

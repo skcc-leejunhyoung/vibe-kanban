@@ -1,13 +1,20 @@
 import type { ITheme } from '@xterm/xterm';
 
 /**
- * Nerd Font families first: oh-my-zsh themes (powerlevel10k in particular) draw
- * their prompt out of Private Use Area glyphs that plain monospace fonts do not
- * have. xterm sizes its cell grid from the *first* family that resolves, so the
- * widest-coverage monospace font has to lead — CJK then falls back cleanly to
- * the platform's double-width face.
+ * oh-my-zsh themes (powerlevel10k in particular) draw their prompt out of Nerd
+ * Font Private Use Area glyphs that plain monospace fonts do not have.
+ *
+ * The bundled Symbols face leads. It is declared with a unicode-range covering
+ * only the icon blocks, so Latin text skips it and is set in the first *real*
+ * monospace family that resolves — an installed Nerd Font where the browser can
+ * see one, else the bundled IBM Plex Mono. xterm sizes its cell grid from that
+ * Latin measurement, and every Symbols glyph has the same advance, so icons land
+ * in exactly one cell. The order matters: with the Symbols face anywhere but
+ * first, Safari — which hides user-installed fonts from web content, PWA
+ * included — has no font left that carries the icons and renders tofu.
  */
 export const TERMINAL_FONT_FAMILY = [
+  '"Symbols Nerd Font Mono"',
   '"MesloLGS NF"',
   '"MesloLGS Nerd Font Mono"',
   '"MesloLGM Nerd Font Mono"',
