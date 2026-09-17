@@ -20,14 +20,14 @@ use deployment::Deployment;
 use executors::{
     approvals::{ExecutorApprovalService, NoopExecutorApprovalService},
     env::{ExecutionEnv, RepoContext},
-    executors::{BaseCodingAgent, ExecutorExitResult, StandardCodingAgentExecutor},
+    executors::{BaseCodingAgent, ExecutorExitResult, SpawnedChild, StandardCodingAgentExecutor},
     model_selector::PermissionPolicy,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::{io::AsyncReadExt, sync::Mutex, time::sleep};
+use tokio::{io::AsyncReadExt, sync::Mutex, task::JoinHandle, time::sleep};
 use uuid::Uuid;
 
 use crate::DeploymentImpl;
@@ -51,6 +51,14 @@ const FAILURE_BACKOFF_CAP_MINUTES: i64 = 6 * 60;
 const MAX_SYNC_JOB_ATTEMPTS: i64 = 4;
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const RESULT_FILE_PREFIX: &str = ".vibe-memory-sync-";
+/// Starting an agent means a process spawn plus whatever handshake its protocol
+/// needs, neither of which `EXECUTION_TIMEOUT` covers.
+const AGENT_SPAWN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// The agent has already exited by the time teardown runs, so it must not be
+/// able to wedge a sync: a surviving grandchild holding an output pipe open
+/// would otherwise block `run_agent` forever, stranding the result file and
+/// holding the run lock so no later run can sweep it either.
+const AGENT_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Comfortably past one `EXECUTION_TIMEOUT` plus its repair follow-ups, so a
 /// match can never belong to a live run.
 const STALE_RESULT_AGE: Duration = Duration::from_secs(3 * 60 * 60);
@@ -2071,6 +2079,50 @@ async fn wait_for_sync_result(result_path: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Terminates and reaps the agent's process group without waiting forever: a
+/// stuck kill must not outlive the sync that asked for it.
+async fn terminate_agent(spawned: &mut SpawnedChild) {
+    match tokio::time::timeout(
+        AGENT_TEARDOWN_TIMEOUT,
+        utils::process::kill_process_group(&mut spawned.child),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(?error, "failed to reap memory sync agent process group")
+        }
+        Err(_) => tracing::warn!("timed out reaping memory sync agent process group"),
+    }
+}
+
+/// Collects one of the agent's output streams, giving up rather than blocking on
+/// a pipe some grandchild still holds open after the agent itself exited. Losing
+/// the output only costs rate-limit detection and the session id (so a repair
+/// follow-up is skipped); losing the sync costs every later cleanup.
+async fn drain_agent_output(
+    mut task: JoinHandle<std::io::Result<Vec<u8>>>,
+    stream: &str,
+    deadline: Duration,
+) -> Vec<u8> {
+    match tokio::time::timeout(deadline, &mut task).await {
+        Ok(Ok(Ok(output))) => output,
+        Ok(Ok(Err(error))) => {
+            tracing::warn!(stream, ?error, "failed to read memory sync agent output");
+            Vec::new()
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(stream, ?error, "memory sync agent output reader failed");
+            Vec::new()
+        }
+        Err(_) => {
+            task.abort();
+            tracing::warn!(stream, "timed out reading memory sync agent output");
+            Vec::new()
+        }
+    }
+}
+
 async fn run_agent(
     repo: &Repo,
     _scope_key: &str,
@@ -2109,14 +2161,18 @@ async fn run_agent(
         false,
         String::new(),
     );
-    let mut spawned = match session_id {
-        Some(session_id) => {
-            agent
-                .spawn_follow_up(&repo.path, prompt, session_id, None, &env)
-                .await?
+    let mut spawned = tokio::time::timeout(AGENT_SPAWN_TIMEOUT, async {
+        match session_id {
+            Some(session_id) => {
+                agent
+                    .spawn_follow_up(&repo.path, prompt, session_id, None, &env)
+                    .await
+            }
+            None => agent.spawn(&repo.path, prompt, &env).await,
         }
-        None => agent.spawn(&repo.path, prompt, &env).await?,
-    };
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("memory sync agent did not start"))??;
     let mut stdout = spawned
         .child
         .inner()
@@ -2171,7 +2227,7 @@ async fn run_agent(
                 if let Some(cancel) = spawned.cancel.take() {
                     cancel.cancel();
                 }
-                utils::process::kill_process_group(&mut spawned.child).await?;
+                terminate_agent(&mut spawned).await;
                 Ok(true)
             }
         }
@@ -2181,19 +2237,15 @@ async fn run_agent(
         if let Some(cancel) = spawned.cancel.take() {
             cancel.cancel();
         }
-        utils::process::kill_process_group(&mut spawned.child)
-            .await
-            .context("failed to terminate timed-out memory sync agent")?;
+        terminate_agent(&mut spawned).await;
         anyhow::bail!("memory sync agent timed out");
     }
     let succeeded = completion??;
     if exit_signal.is_some() {
-        utils::process::kill_process_group(&mut spawned.child)
-            .await
-            .context("failed to reap memory sync agent process group")?;
+        terminate_agent(&mut spawned).await;
     }
-    let stdout = stdout_task.await??;
-    let stderr = stderr_task.await??;
+    let stdout = drain_agent_output(stdout_task, "stdout", AGENT_TEARDOWN_TIMEOUT).await;
+    let stderr = drain_agent_output(stderr_task, "stderr", AGENT_TEARDOWN_TIMEOUT).await;
     if !succeeded {
         if let Some(reset_hint) = detect_rate_limit(&stdout, &stderr) {
             return Err(MemorySyncRateLimited { reset_hint }.into());
@@ -2585,6 +2637,27 @@ mod tests {
         assert!(should_retry_job(3));
         assert!(!should_retry_job(4));
         assert!(!should_retry_job(100));
+    }
+
+    #[tokio::test]
+    async fn agent_output_drain_returns_even_when_a_pipe_never_closes() {
+        let closed = tokio::spawn(async { Ok::<_, std::io::Error>(b"done".to_vec()) });
+        assert_eq!(
+            drain_agent_output(closed, "stdout", Duration::from_secs(5)).await,
+            b"done".to_vec()
+        );
+
+        // A grandchild holding the pipe open looks exactly like this: the read
+        // never resolves. The sync must still make progress.
+        let never = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok::<_, std::io::Error>(Vec::new())
+        });
+        assert!(
+            drain_agent_output(never, "stdout", Duration::from_millis(50))
+                .await
+                .is_empty()
+        );
     }
 
     #[test]
