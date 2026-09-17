@@ -80,6 +80,11 @@ pub fn import_image_file(worktree_path: &str, path: &str) -> Option<String> {
 /// inline instead of degrading to a plain tool row. Out-of-workspace images are
 /// imported into `.vibe-attachments/`; when that fails the caller-visible path
 /// is returned unchanged.
+///
+/// Normalization re-runs from the raw log on every replay of a finished process
+/// (results are only cached in memory), and the import re-reads the original
+/// file, so an out-of-workspace image deleted after the run stops rendering once
+/// that cache goes cold. Persisting normalized patches would settle it.
 pub fn viewed_image_path(worktree_path: &str, raw_path: &str) -> String {
     let relative = make_path_relative(raw_path, worktree_path);
     if Path::new(&relative).is_absolute()

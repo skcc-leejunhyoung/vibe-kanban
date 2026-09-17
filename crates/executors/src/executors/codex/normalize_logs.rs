@@ -3638,6 +3638,56 @@ mod tests {
         );
     }
 
+    /// `view_image` on a file outside the worktree used to keep its absolute
+    /// path, which the inline-image endpoint refuses to serve, so chat silently
+    /// degraded to a plain text row. Both Codex wire formats (app-server item
+    /// and legacy `EventMsg`) must import the file into `.vibe-attachments/`.
+    #[tokio::test]
+    async fn view_image_outside_worktree_is_imported_for_inline_rendering() {
+        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+
+        let worktree = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = outside.path().join("shot.png");
+        let png = BASE64
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+            .unwrap();
+        std::fs::write(&source, &png).unwrap();
+        let source_str = source.to_str().unwrap();
+
+        let store = Arc::new(MsgStore::new());
+        let item = json!({"type":"imageView", "id":"view-1", "path":source_str});
+        let notification = json!({"jsonrpc":"2.0", "method":"item/completed", "params":{"threadId":"thread", "turnId":"turn", "completedAtMs":2, "item":item}});
+        serde_json::from_value::<ServerNotification>(notification.clone()).unwrap();
+        store.push_stdout(format!("{notification}\n"));
+        // Legacy exec-protocol sibling; `PathUri` only accepts `file:` URIs.
+        let legacy = json!({"method":"codex/event", "params":{"msg":{"type":"view_image_tool_call", "call_id":"c1", "path":format!("file://{source_str}")}}});
+        serde_json::from_value::<CodexNotificationParams>(legacy["params"].clone()).unwrap();
+        store.push_stdout(format!("{legacy}\n"));
+        store.push_finished();
+        for handle in normalize_logs(store.clone(), worktree.path()) {
+            handle.await.unwrap();
+        }
+
+        let paths: Vec<String> = latest_normalized_entries(&store)
+            .into_iter()
+            .filter_map(|entry| match entry.entry_type {
+                NormalizedEntryType::ToolUse {
+                    action_type: ActionType::ImageView { path },
+                    ..
+                } => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paths.len(), 2, "both wire formats must emit an image entry");
+        for path in &paths {
+            assert!(path.starts_with(".vibe-attachments/agent-"), "{path}");
+            assert_eq!(std::fs::read(worktree.path().join(path)).unwrap(), png);
+        }
+        // Identical bytes are content-addressed, so the two views share a file.
+        assert_eq!(paths[0], paths[1]);
+    }
+
     #[tokio::test]
     async fn image_generation_mcp_and_dynamic_protocol_items_keep_images_and_structured_content() {
         use crate::logs::artifacts::entry_candidates;
