@@ -628,7 +628,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             let target_key =
                 ExecutorConfigCacheKey::new(Some(&wd_buf), cmd_key.clone(), base_executor);
             let provisional = cache
-                .get(&target_key)
+                .get_stale(&target_key)
                 .or_else(|| {
                     repo_path.and_then(|rp| {
                         let rp_buf = rp.to_path_buf();
@@ -637,13 +637,13 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                             cmd_key.clone(),
                             base_executor,
                         );
-                        cache.get(&repo_key)
+                        cache.get_stale(&repo_key)
                     })
                 })
                 .or_else(|| {
                     let global_key =
                         ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
-                    cache.get(&global_key)
+                    cache.get_stale(&global_key)
                 });
             (
                 Some(wd.to_path_buf()),
@@ -668,7 +668,9 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             let target_key =
                 ExecutorConfigCacheKey::new(Some(&rp_buf), cmd_key.clone(), base_executor);
             let global_key = ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
-            let provisional = cache.get(&target_key).or_else(|| cache.get(&global_key));
+            let provisional = cache
+                .get_stale(&target_key)
+                .or_else(|| cache.get_stale(&global_key));
             (
                 Some(rp.to_path_buf()),
                 provisional
@@ -690,7 +692,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
         } else {
             let global_key = ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
             let mut opts = cache
-                .get(&global_key)
+                .get_stale(&global_key)
                 .map(|cached| cached.as_ref().clone())
                 .unwrap_or_else(|| default_discovered_options(ccr));
             opts.loading_models = true;

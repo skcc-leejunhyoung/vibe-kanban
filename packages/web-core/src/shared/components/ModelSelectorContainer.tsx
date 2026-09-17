@@ -552,7 +552,12 @@ export function ModelSelectorContainer({
     );
   }
 
-  const showModelSelector = loadingModels || config.models.length > 0;
+  // The server serves its cached catalog on the first patch and keeps
+  // `loading_models` set while it re-probes the CLI (seconds). Only treat that
+  // as "loading" when there is nothing to show — otherwise the picker stays
+  // live on the cached list and swaps in the fresh one when it lands.
+  const modelsPending = loadingModels && config.models.length === 0;
+  const showModelSelector = modelsPending || config.models.length > 0;
   const showDefaultOption = !config.default_model && config.models.length > 0;
   const displaySelectedModel = showModelSelector
     ? getSelectedModel(config.models, selectedProviderId, selectedModelId)
@@ -563,7 +568,7 @@ export function ModelSelectorContainer({
         selectedReasoningId
       )
     : null;
-  const modelLabelBase = loadingModels
+  const modelLabelBase = modelsPending
     ? loadingLabel
     : (displaySelectedModel?.name ?? selectedModelId ?? defaultLabel);
   const modelLabel = reasoningLabel
@@ -629,7 +634,7 @@ export function ModelSelectorContainer({
             <DropdownMenuTriggerButton
               size="sm"
               label={modelLabel}
-              disabled={loadingModels}
+              disabled={modelsPending}
             />
           }
           config={displayConfig ?? config}

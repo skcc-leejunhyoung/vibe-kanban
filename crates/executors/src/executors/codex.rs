@@ -504,7 +504,7 @@ impl StandardCodingAgentExecutor for Codex {
             BaseCodingAgent::Codex,
         );
         let mut initial_options = cache
-            .get(&cache_key)
+            .get_stale(&cache_key)
             .map(|cached| cached.as_ref().clone())
             .unwrap_or_else(static_discovered_options);
         initial_options.loading_models = true;

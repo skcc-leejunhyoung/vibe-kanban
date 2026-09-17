@@ -85,18 +85,21 @@ where
         }
     }
 
+    /// Fresh value only — for "skip the probe entirely" short circuits.
     #[must_use]
     pub fn get(&self, key: &K) -> Option<Arc<V>> {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         let entry = cache.get(key)?;
-        let value = entry.value.clone();
-        let expired = entry.cached_at.elapsed() > self.ttl;
-        if expired {
-            cache.pop(key);
-            None
-        } else {
-            Some(value)
-        }
+        (entry.cached_at.elapsed() <= self.ttl).then(|| entry.value.clone())
+    }
+
+    /// Last known value, TTL be damned — for the provisional catalog shown
+    /// while a refresh runs. Expired entries stay until LRU eviction, so a
+    /// picker opened after the TTL still renders instantly.
+    #[must_use]
+    pub fn get_stale(&self, key: &K) -> Option<Arc<V>> {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        Some(cache.get(key)?.value.clone())
     }
 
     pub fn put(&self, key: K, value: V) {
@@ -150,5 +153,27 @@ pub async fn preload_global_executor_options_cache() {
 
     for base_agent in executors {
         spawn_global_cache_refresh_for_agent_with_configs(base_agent, configs.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expired_entries_stay_readable_as_stale() {
+        let cache: TtlCache<&str, u32> = TtlCache::new(4, Duration::from_millis(1));
+        cache.put("k", 7);
+        assert_eq!(cache.get(&"k").as_deref(), Some(&7));
+
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(cache.get(&"k").is_none(), "fresh read honours the TTL");
+        assert_eq!(
+            cache.get_stale(&"k").as_deref(),
+            Some(&7),
+            "stale read still serves the last catalog"
+        );
+
+        assert!(cache.get_stale(&"missing").is_none());
     }
 }

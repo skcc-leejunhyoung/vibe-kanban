@@ -556,12 +556,12 @@ impl StandardCodingAgentExecutor for Opencode {
                     let rp_buf = rp.to_path_buf();
                     let repo_key =
                         ExecutorConfigCacheKey::new(Some(&rp_buf), cmd_key.clone(), base_executor);
-                    cache.get(&repo_key)
+                    cache.get_stale(&repo_key)
                 })
                 .or_else(|| {
                     let global_key =
                         ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
-                    cache.get(&global_key)
+                    cache.get_stale(&global_key)
                 });
             (
                 Some(wd.to_path_buf()),
@@ -579,7 +579,7 @@ impl StandardCodingAgentExecutor for Opencode {
                 })));
             }
             let global_key = ExecutorConfigCacheKey::new(None, cmd_key.clone(), base_executor);
-            let provisional = cache.get(&global_key);
+            let provisional = cache.get_stale(&global_key);
             (
                 Some(rp.to_path_buf()),
                 provisional
