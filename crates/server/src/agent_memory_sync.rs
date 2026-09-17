@@ -2318,6 +2318,10 @@ async fn run_agent(
             cancel.cancel();
         }
         terminate_agent(&mut spawned).await;
+        // Nothing reads these now, and a pipe held open elsewhere would keep
+        // them parked forever; dropping the handles alone would detach them.
+        stdout_task.abort();
+        stderr_task.abort();
         anyhow::bail!(
             "memory sync agent {}",
             stalled.unwrap_or("stopped making progress")
@@ -2728,25 +2732,26 @@ mod tests {
         let ticker = tokio::spawn({
             let progress = progress.clone();
             async move {
-                // Busy for well past the idle bound, one chunk of output at a time.
-                for _ in 0..20 {
-                    sleep(Duration::from_millis(10)).await;
+                // Busy for the whole run, one chunk of output at a time.
+                loop {
+                    sleep(Duration::from_millis(5)).await;
                     progress.tick();
                 }
             }
         });
         // Idle bound alone must not fire while output keeps arriving; the hard
-        // bound is what ends this run.
+        // bound is what ends this run. The idle bound is far enough above the
+        // tick interval that a scheduling hiccup cannot flip the verdict.
         let reason = watch_for_stall(
             progress,
             Instant::now(),
-            Duration::from_millis(50),
-            Duration::from_millis(150),
+            Duration::from_millis(200),
+            Duration::from_millis(300),
             Duration::from_millis(10),
         )
         .await;
         assert_eq!(reason, "exceeded its hard time limit");
-        ticker.await.unwrap();
+        ticker.abort();
     }
 
     #[tokio::test]
