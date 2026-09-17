@@ -49,7 +49,9 @@
  * IBM Plex Mono and rendered as tofu. This face carries only the icon ranges
  * (unicode-range keeps Latin flowing to the real monospace font and means the
  * file is fetched the first time an icon is actually drawn, not on page load).
- * Every glyph has the same advance, so it sits in one xterm cell.
+ * Every glyph advances a full em — wider than the 0.6em cell a Latin monospace
+ * font sizes — so it is the last resort in TERMINAL_FONT_FAMILY, behind the
+ * patched Nerd Fonts whose icons are already cell-width.
  */
 @font-face {
   font-family: 'Symbols Nerd Font Mono';

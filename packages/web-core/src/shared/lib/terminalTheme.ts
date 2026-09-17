@@ -4,23 +4,27 @@ import type { ITheme } from '@xterm/xterm';
  * oh-my-zsh themes (powerlevel10k in particular) draw their prompt out of Nerd
  * Font Private Use Area glyphs that plain monospace fonts do not have.
  *
- * The bundled Symbols face leads. It is declared with a unicode-range covering
- * only the icon blocks, so Latin text skips it and is set in the first *real*
- * monospace family that resolves — an installed Nerd Font where the browser can
- * see one, else the bundled IBM Plex Mono. xterm sizes its cell grid from that
- * Latin measurement, and every Symbols glyph has the same advance, so icons land
- * in exactly one cell. The order matters: with the Symbols face anywhere but
- * first, Safari — which hides user-installed fonts from web content, PWA
- * included — has no font left that carries the icons and renders tofu.
+ * Installed Nerd Fonts lead: they are patched full fonts, so their icons carry
+ * the same 0.6em advance as their Latin glyphs and land in exactly one xterm
+ * cell. The bundled Symbols face sits behind them as the fallback that Safari —
+ * which hides user-installed fonts from web content, PWA included — actually
+ * gets to use; its unicode-range covers only the icon blocks, so Latin text and
+ * therefore xterm's cell metric always come from a real monospace family.
+ *
+ * Order matters the other way round from what it looks like: the Symbols face
+ * is a symbols-only font with a full-em advance (1.0em against a 0.6em cell), so
+ * putting it first would make every icon overflow its cell even on browsers that
+ * can see a properly patched Nerd Font. Fallback is per character, so sitting
+ * late in the list still supplies the glyph wherever nothing earlier resolves.
  */
 export const TERMINAL_FONT_FAMILY = [
-  '"Symbols Nerd Font Mono"',
   '"MesloLGS NF"',
   '"MesloLGS Nerd Font Mono"',
   '"MesloLGM Nerd Font Mono"',
   '"JetBrainsMono Nerd Font Mono"',
   '"FiraCode Nerd Font Mono"',
   '"Hack Nerd Font Mono"',
+  '"Symbols Nerd Font Mono"',
   '"IBM Plex Mono"',
   'Menlo',
   'Consolas',

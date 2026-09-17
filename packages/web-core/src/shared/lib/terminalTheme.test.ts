@@ -21,15 +21,18 @@ describe('scaleTerminalFontSize', () => {
 });
 
 describe('TERMINAL_FONT_FAMILY', () => {
-  it('leads with the bundled icon face so Safari still gets Nerd Font glyphs', () => {
-    // Safari (PWA included) hides user-installed fonts from web content. The
-    // installed Nerd Fonts later in the stack therefore never resolve there,
-    // and only a bundled face can supply the powerlevel10k icons. It is
-    // unicode-range-limited to the icon blocks, so leading with it does not
-    // change which font sets Latin text or the cell metrics.
-    expect(TERMINAL_FONT_FAMILY.split(', ')[0]).toBe(
-      '"Symbols Nerd Font Mono"'
-    );
+  it('keeps the bundled icon face behind the patched Nerd Fonts', () => {
+    // The bundled Symbols face is symbols-only and advances a full em, against
+    // a cell sized from a 0.6em Latin font — leading with it makes every icon
+    // overflow its cell wherever a patched Nerd Font (0.6em icons) was
+    // available. Fallback is per character, so it still supplies the glyph in
+    // Safari, which hides user-installed fonts from web content.
+    const stack = TERMINAL_FONT_FAMILY.split(', ');
+    const symbols = stack.indexOf('"Symbols Nerd Font Mono"');
+    expect(symbols).toBeGreaterThan(stack.indexOf('"MesloLGS Nerd Font Mono"'));
+    // ...and ahead of every family that has no icons at all, or Safari is back
+    // to tofu.
+    expect(symbols).toBeLessThan(stack.indexOf('"IBM Plex Mono"'));
     expect(TERMINAL_FONT_FAMILY).toMatch(/monospace$/);
   });
 });
