@@ -6,7 +6,7 @@ use std::{fs::OpenOptions, io::Write, path::Path};
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
-use workspace_utils::path::{VIBE_ATTACHMENTS_DIR, make_path_relative};
+use workspace_utils::path::{VIBE_ATTACHMENTS_DIR, agent_image_cache_dir, make_path_relative};
 
 /// Hard cap so a malformed/hostile log line cannot fill the disk.
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
@@ -56,13 +56,33 @@ pub fn store_base64_image(worktree_path: &str, mime: &str, data: &str) -> Option
         return None;
     }
     let bytes = BASE64.decode(data.trim()).ok()?;
-    store_image_bytes(worktree_path, ext, &bytes)
+    let file_name = image_file_name(ext, &bytes)?;
+    let dir = std::fs::canonicalize(worktree_path)
+        .ok()?
+        .join(VIBE_ATTACHMENTS_DIR);
+    std::fs::create_dir_all(&dir).ok()?;
+    // The managed directory is never a link supplied by a workspace file.
+    if std::fs::canonicalize(&dir).ok()? != dir {
+        return None;
+    }
+    write_image_file(&dir, &file_name, &bytes)?;
+    // Never follow or overwrite a workspace-supplied .gitignore symlink.
+    if let Ok(mut file) = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(".gitignore"))
+    {
+        let _ = file.write_all(b"*\n");
+    }
+    Some(format!("{VIBE_ATTACHMENTS_DIR}/{file_name}"))
 }
 
-/// Copy an image file the agent viewed into `<worktree>/.vibe-attachments/`.
-/// Used for paths chat cannot serve as-is (outside the workspace, or a temp
-/// screenshot that gets deleted before the log is replayed).
-pub fn import_image_file(worktree_path: &str, path: &str) -> Option<String> {
+/// Cache an image file the agent viewed from outside the workspace, so chat can
+/// serve it without an absolute path. The copy goes to the app cache rather
+/// than into the worktree: checkouts stay clean and the copy outlives the
+/// worktree. The returned path is virtual — `serve_workspace_image` falls back
+/// to the cache when the worktree has no such file.
+pub fn import_image_file(path: &str) -> Option<String> {
     let ext = Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -73,13 +93,13 @@ pub fn import_image_file(worktree_path: &str, path: &str) -> Option<String> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
-    store_image_bytes(worktree_path, &ext, &bytes)
+    import_image_bytes_into(&agent_image_cache_dir(), &ext, &bytes)
 }
 
 /// Workspace-relative path for an image the agent viewed, so chat renders it
 /// inline instead of degrading to a plain tool row. Out-of-workspace images are
-/// imported into `.vibe-attachments/`; when that fails the caller-visible path
-/// is returned unchanged.
+/// cached outside the worktree; when that fails the caller-visible path is
+/// returned unchanged.
 ///
 /// Normalization re-runs from the raw log on every replay of a finished process
 /// (results are only cached in memory), and the import re-reads the original
@@ -88,28 +108,33 @@ pub fn import_image_file(worktree_path: &str, path: &str) -> Option<String> {
 pub fn viewed_image_path(worktree_path: &str, raw_path: &str) -> String {
     let relative = make_path_relative(raw_path, worktree_path);
     if Path::new(&relative).is_absolute()
-        && let Some(imported) = import_image_file(worktree_path, &relative)
+        && let Some(imported) = import_image_file(&relative)
     {
         return imported;
     }
     relative
 }
 
-fn store_image_bytes(worktree_path: &str, ext: &str, bytes: &[u8]) -> Option<String> {
-    if worktree_path.is_empty() || bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
-        return None;
-    }
+/// Split out so tests can direct the cache somewhere hermetic.
+fn import_image_bytes_into(dir: &Path, ext: &str, bytes: &[u8]) -> Option<String> {
+    let file_name = image_file_name(ext, bytes)?;
+    std::fs::create_dir_all(dir).ok()?;
+    let dir = std::fs::canonicalize(dir).ok()?;
+    write_image_file(&dir, &file_name, bytes)?;
+    Some(format!("{VIBE_ATTACHMENTS_DIR}/{file_name}"))
+}
 
-    let digest = format!("{:x}", Sha256::digest(bytes));
-    let file_name = format!("agent-{}.{ext}", &digest[..16]);
-    let root = std::fs::canonicalize(worktree_path).ok()?;
-    let dir = root.join(VIBE_ATTACHMENTS_DIR);
-    std::fs::create_dir_all(&dir).ok()?;
-    // The managed directory is never a link supplied by a workspace file.
-    if std::fs::canonicalize(&dir).ok()? != dir {
+/// Content-hash name, so replays and re-normalization are idempotent.
+fn image_file_name(ext: &str, bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
         return None;
     }
-    let file_path = dir.join(&file_name);
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    Some(format!("agent-{}.{ext}", &digest[..16]))
+}
+
+fn write_image_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Option<()> {
+    let file_path = dir.join(file_name);
     match OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -135,18 +160,7 @@ fn store_image_bytes(worktree_path: &str, ext: &str, bytes: &[u8]) -> Option<Str
         }
         Err(_) => return None,
     }
-    if std::fs::canonicalize(&file_path).ok()? != file_path {
-        return None;
-    }
-    // Never follow or overwrite a workspace-supplied .gitignore symlink.
-    if let Ok(mut file) = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dir.join(".gitignore"))
-    {
-        let _ = file.write_all(b"*\n");
-    }
-    Some(format!("{VIBE_ATTACHMENTS_DIR}/{file_name}"))
+    (std::fs::canonicalize(&file_path).ok()? == file_path).then_some(())
 }
 
 /// Collect `{"type":"image","source":{"type":"base64","media_type":..,"data":..}}`
@@ -224,26 +238,33 @@ mod tests {
     }
 
     #[test]
-    fn imports_out_of_workspace_viewed_image() {
+    fn caches_out_of_workspace_viewed_image_outside_the_worktree() {
         use base64::Engine;
 
         let worktree = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        let source = outside.path().join("shot.png");
-        std::fs::write(&source, BASE64.decode(PNG_B64).unwrap()).unwrap();
+        let png = BASE64.decode(PNG_B64).unwrap();
+        std::fs::write(outside.path().join("shot.png"), &png).unwrap();
         let worktree_str = worktree.path().to_str().unwrap();
 
-        // Out-of-workspace image is copied in, so chat can serve it by path.
-        let rel = viewed_image_path(worktree_str, source.to_str().unwrap());
+        // Out-of-workspace image lands in the cache, never in the worktree.
+        let rel = import_image_bytes_into(cache.path(), "png", &png).unwrap();
         assert!(rel.starts_with(".vibe-attachments/agent-"), "{rel}");
-        assert!(worktree.path().join(&rel).is_file());
+        let name = rel.strip_prefix(".vibe-attachments/").unwrap();
+        assert_eq!(std::fs::read(cache.path().join(name)).unwrap(), png);
+        assert!(!worktree.path().join(VIBE_ATTACHMENTS_DIR).exists());
+
+        // Same virtual path via the real entry point, and still no worktree dir.
+        let viewed = viewed_image_path(
+            worktree_str,
+            outside.path().join("shot.png").to_str().unwrap(),
+        );
+        assert_eq!(viewed, rel);
+        assert!(!worktree.path().join(VIBE_ATTACHMENTS_DIR).exists());
 
         // In-workspace images keep their relative path (no copy).
-        std::fs::write(
-            worktree.path().join("in.png"),
-            BASE64.decode(PNG_B64).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(worktree.path().join("in.png"), &png).unwrap();
         let inside = worktree.path().join("in.png");
         assert_eq!(
             viewed_image_path(worktree_str, inside.to_str().unwrap()),

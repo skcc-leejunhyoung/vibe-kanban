@@ -3682,10 +3682,11 @@ mod tests {
         assert_eq!(paths.len(), 2, "both wire formats must emit an image entry");
         for path in &paths {
             assert!(path.starts_with(".vibe-attachments/agent-"), "{path}");
-            assert_eq!(std::fs::read(worktree.path().join(path)).unwrap(), png);
         }
-        // Identical bytes are content-addressed, so the two views share a file.
+        // Identical bytes are content-addressed, so the two views share a name.
         assert_eq!(paths[0], paths[1]);
+        // The copy lives in the app cache; the worktree must stay untouched.
+        assert!(!worktree.path().join(".vibe-attachments").exists());
     }
 
     #[tokio::test]

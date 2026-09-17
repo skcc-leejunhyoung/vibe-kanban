@@ -3,6 +3,14 @@ use std::path::{Path, PathBuf};
 /// Directory name for storing attachments in worktrees
 pub const VIBE_ATTACHMENTS_DIR: &str = ".vibe-attachments";
 
+/// Images the agent viewed from outside the workspace are cached here instead
+/// of inside the worktree, so checkouts stay clean and the copy outlives the
+/// worktree. Chat still addresses them by a `.vibe-attachments/` path; the
+/// workspace image route falls back here when the worktree has no such file.
+pub fn agent_image_cache_dir() -> PathBuf {
+    crate::cache_dir().join("agent-images")
+}
+
 /// Directories that should always be skipped regardless of gitignore.
 /// .git is not in .gitignore but should never be watched.
 pub const ALWAYS_SKIP_DIRS: &[&str] = &[".git", "node_modules"];

@@ -290,6 +290,9 @@ pub async fn serve_workspace_image(
 ) -> Result<Response, ApiError> {
     let base_path = resolve_session_base_path(&deployment, &workspace, query.session_id).await?;
     let canonical_path = resolve_workspace_image_path(&base_path, &query.path)
+        .or_else(|| {
+            resolve_agent_image_cache_path(&utils::path::agent_image_cache_dir(), &query.path)
+        })
         .ok_or(ApiError::File(FileError::NotFound))?;
 
     let content_type = MimeGuess::from_path(&canonical_path)
@@ -347,6 +350,29 @@ fn resolve_workspace_image_path(base_path: &Path, relative: &str) -> Option<std:
     let canonical_path = std::fs::canonicalize(base_path.join(relative_path)).ok()?;
     canonical_path
         .starts_with(&canonical_base)
+        .then_some(canonical_path)
+}
+
+/// Images the agent viewed from outside the workspace are cached out of the
+/// worktree, but chat addresses them by the same `.vibe-attachments/` path.
+/// Only the flat content-hashed names the normalizer writes are accepted, so
+/// this cannot reach anything else in the cache directory.
+fn resolve_agent_image_cache_path(cache_dir: &Path, relative: &str) -> Option<std::path::PathBuf> {
+    let file_name = relative.strip_prefix(&format!("{}/", utils::path::VIBE_ATTACHMENTS_DIR))?;
+    if !file_name.starts_with("agent-") {
+        return None;
+    }
+    let mut components = Path::new(file_name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return None;
+    }
+
+    let canonical_dir = std::fs::canonicalize(cache_dir).ok()?;
+    let canonical_path = std::fs::canonicalize(canonical_dir.join(file_name)).ok()?;
+    canonical_path
+        .starts_with(&canonical_dir)
         .then_some(canonical_path)
 }
 
@@ -535,6 +561,39 @@ mod workspace_image_path_tests {
         assert!(resolve_workspace_image_path(dir.path(), "../secret.png").is_none());
         assert!(resolve_workspace_image_path(dir.path(), "shots/../../secret.png").is_none());
         assert!(resolve_workspace_image_path(dir.path(), "missing.png").is_none());
+    }
+
+    #[test]
+    fn falls_back_to_the_agent_image_cache() {
+        use super::resolve_agent_image_cache_path;
+
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::write(cache.path().join("agent-abc.png"), b"png").unwrap();
+        std::fs::create_dir(cache.path().join("agent-dir")).unwrap();
+        std::fs::write(cache.path().join("agent-dir/inner.png"), b"png").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"png").unwrap();
+
+        let resolved =
+            resolve_agent_image_cache_path(cache.path(), ".vibe-attachments/agent-abc.png")
+                .unwrap();
+        assert!(resolved.ends_with("agent-abc.png"));
+
+        // Only the flat `agent-` names the normalizer writes are reachable.
+        for rejected in [
+            ".vibe-attachments/agent-dir/inner.png",
+            ".vibe-attachments/uploaded.png",
+            ".vibe-attachments/agent-missing.png",
+            ".vibe-attachments/../agent-abc.png",
+            "agent-abc.png",
+        ] {
+            assert!(
+                resolve_agent_image_cache_path(cache.path(), rejected).is_none(),
+                "{rejected}"
+            );
+        }
+        let abs = outside.path().join("secret.png");
+        assert!(resolve_agent_image_cache_path(cache.path(), abs.to_str().unwrap()).is_none());
     }
 
     #[cfg(unix)]

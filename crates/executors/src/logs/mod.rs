@@ -262,9 +262,11 @@ pub enum ActionType {
         path: String,
     },
     /// An image the agent viewed or produced, rendered inline in chat.
-    /// `path` is workspace-relative when the image lives inside the workspace
-    /// (including `.vibe-attachments/`); absolute paths are kept for display
-    /// but are never served inline.
+    /// `path` is workspace-relative when the image lives inside the workspace,
+    /// or a `.vibe-attachments/` path the image route resolves — in the
+    /// worktree for chat uploads and agent-produced images, in the app cache
+    /// for images the agent viewed from outside the workspace. Absolute paths
+    /// are kept for display but are never served inline.
     ImageView {
         path: String,
     },
