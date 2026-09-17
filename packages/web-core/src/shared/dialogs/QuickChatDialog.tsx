@@ -160,12 +160,22 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     const justOpened = modal.visible && !wasVisibleRef.current;
     wasVisibleRef.current = modal.visible;
     if (justOpened) {
-      setSelectedHostId(
+      const nextHostId =
         routeHostId ??
-          (runtime === 'remote' ? (onlineHosts[0]?.id ?? null) : null)
-      );
+        (runtime === 'remote' ? (onlineHosts[0]?.id ?? null) : null);
+      setSelectedHostId(nextHostId);
+      // The draft survives a dismissal, but attachment ids live in the host
+      // that received the upload — reopening on another host invalidates them.
+      if (nextHostId !== selectedHostId) clearAttachments();
     }
-  }, [modal.visible, routeHostId, runtime, onlineHosts]);
+  }, [
+    modal.visible,
+    routeHostId,
+    runtime,
+    onlineHosts,
+    selectedHostId,
+    clearAttachments,
+  ]);
 
   // Pre-fill the folder with the most recently used repo so the common case is
   // a single keystroke (type + send).
@@ -186,18 +196,17 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   // nice-modal keeps this component mounted under the app layout, so React
   // state survives `hide()` and the post-send SPA navigation. Reset transient
   // state on dismissal so a reopen starts clean — otherwise a successful send
-  // leaves `submitting` stuck (Send permanently disabled showing "Starting…")
-  // and the previous prompt pre-filled. The agent/model selection
-  // (`scratchConfig`) is intentionally preserved across reopens.
+  // leaves `submitting` stuck (Send permanently disabled showing "Starting…").
+  // The draft (prompt + its attachments) and the agent/model selection
+  // (`scratchConfig`) are intentionally preserved across reopens; the draft is
+  // only cleared by a successful send or by the user emptying the field.
   useEffect(() => {
     if (!modal.visible) {
       setRepo(null);
-      setPrompt('');
       setSubmitting(false);
       setError(null);
-      clearAttachments();
     }
-  }, [modal.visible, clearAttachments]);
+  }, [modal.visible]);
 
   const close = () => {
     modal.resolve(null);
@@ -299,6 +308,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         },
         selectedHostId
       );
+      // Sent: the draft is now the workspace's first message, so drop it.
+      setPrompt('');
+      clearAttachments();
       modal.resolve(workspace.id);
       modal.hide();
       if (
@@ -324,6 +336,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     executorConfig,
     prompt,
     getAttachmentIds,
+    clearAttachments,
     modal,
     openInNewPane,
     appNavigation,
