@@ -26,6 +26,8 @@ export function decodeTerminalOutput(base64: string): Uint8Array {
  * ANSI interpreter, so its own control bytes are neutralised first.
  */
 export function formatTerminalError(message: string): Uint8Array {
-  const safe = message.replace(/[\x00-\x1f\x7f]/g, ' ');
+  // C0 *and* C1: xterm's parser treats 0x9b as CSI just like ESC[, so stripping
+  // only the low range would still let a crafted message drive the terminal.
+  const safe = message.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
   return new TextEncoder().encode(`\r\n\x1b[31m${safe}\x1b[0m\r\n`);
 }

@@ -57,4 +57,10 @@ describe('formatTerminalError', () => {
     expect(rendered.match(/\x1b/g)).toHaveLength(2); // only our own red/reset
     expect(rendered).toContain('bad  [2Jpath  more');
   });
+
+  it('neutralises 8-bit CSI, which xterm honours as well as ESC[', () => {
+    const rendered = render('bad \u009b2Jpath');
+    expect(rendered).not.toContain('\u009b');
+    expect(rendered).toContain('bad  2Jpath');
+  });
 });
