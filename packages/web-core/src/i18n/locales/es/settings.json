@@ -70,6 +70,10 @@
           "label": "Idioma",
           "placeholder": "Selecciona tu idioma",
           "helper": "Elige tu idioma preferido. El predeterminado del navegador sigue el idioma de tu sistema."
+        },
+        "contextBar": {
+          "label": "Mostrar la barra de acciones flotante",
+          "helper": "La barra arrastrable de acciones rápidas que flota sobre el espacio de trabajo."
         }
       },
       "taskExecution": {

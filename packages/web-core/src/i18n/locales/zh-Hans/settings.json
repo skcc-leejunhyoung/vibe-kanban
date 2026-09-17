@@ -70,6 +70,10 @@
           "label": "语言",
           "placeholder": "选择语言",
           "helper": "选择您喜欢的语言。浏览器默认将跟随您的系统语言。"
+        },
+        "contextBar": {
+          "label": "显示浮动操作栏",
+          "helper": "悬浮在工作区上方、可拖动的快捷操作栏。"
         }
       },
       "taskExecution": {

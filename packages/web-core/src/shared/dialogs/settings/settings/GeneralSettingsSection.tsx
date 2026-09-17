@@ -458,13 +458,8 @@ export function GeneralSettingsSection() {
 
         <SettingsCheckbox
           id="show-context-bar"
-          label={t('settings.general.appearance.contextBar.label', {
-            defaultValue: 'Show the floating action bar',
-          })}
-          description={t('settings.general.appearance.contextBar.helper', {
-            defaultValue:
-              'The draggable bar of quick actions floating over the workspace.',
-          })}
+          label={t('settings.general.appearance.contextBar.label')}
+          description={t('settings.general.appearance.contextBar.helper')}
           checked={contextBarVisible}
           onChange={setContextBarVisible}
         />

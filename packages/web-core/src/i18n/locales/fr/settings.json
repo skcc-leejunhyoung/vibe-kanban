@@ -70,6 +70,10 @@
           "label": "Langue",
           "placeholder": "Sélectionner une langue",
           "helper": "Choisissez votre langue préférée. Par défaut du navigateur suit la langue de votre système."
+        },
+        "contextBar": {
+          "label": "Afficher la barre d'actions flottante",
+          "helper": "La barre déplaçable d'actions rapides qui flotte au-dessus de l'espace de travail."
         }
       },
       "taskExecution": {
