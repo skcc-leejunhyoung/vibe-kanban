@@ -13,7 +13,8 @@ vi.mock('@/shared/providers/HostIdProvider', () => ({
   useHostId: () => null,
 }));
 vi.mock('@/shared/lib/api', () => ({
-  sessionsApi: { getByWorkspace: vi.fn() },
+  // Never resolves: the tests drive the cache directly and keep queries pending.
+  sessionsApi: { getByWorkspace: vi.fn(() => new Promise(() => {})) },
 }));
 
 function sessionList(ids: string[]): Session[] {
@@ -149,6 +150,52 @@ describe('useWorkspaceSessions', () => {
     });
 
     expect(probe.pane.selectedSessionId).toBe('a-latest');
+  });
+
+  it('keeps new-session mode picked before the session list loaded', async () => {
+    // A pane opened on a workspace whose sessions are not cached yet shows the
+    // composer right away, so the user can pick "new session" before the list
+    // lands. That choice must survive the list arriving.
+    queryClient.removeQueries({
+      queryKey: workspaceSessionKeys.byWorkspace('ws-a', null),
+    });
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+
+    await act(async () => probe.pane.startNewSession());
+    expect(probe.pane.isNewSessionMode).toBe(true);
+
+    queryClient.setQueryData(
+      workspaceSessionKeys.byWorkspace('ws-a', null),
+      sessionList(['a-latest', 'a-older'])
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(probe.pane.isNewSessionMode).toBe(true);
+    expect(probe.pane.selectedSessionId).toBeUndefined();
+  });
+
+  it('keeps the selection when the cached list is evicted', async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+    await act(async () => probe.pane.selectSession('a-older'));
+
+    // The pane stays mounted while the list goes back to "unknown" (eviction,
+    // a reset landing): that must not be read as "this workspace has no
+    // sessions" and drop what the user is looking at.
+    await act(async () => {
+      queryClient
+        .getQueryCache()
+        .find({ queryKey: workspaceSessionKeys.byWorkspace('ws-a', null) })!
+        .setData(undefined as never);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(
+      useWorkspaceSessionSelectionStore.getState().selections[':ws-a']
+    ).toEqual({ mode: 'existing', sessionId: 'a-older' });
   });
 
   it('does not leak new-session mode into another workspace', async () => {

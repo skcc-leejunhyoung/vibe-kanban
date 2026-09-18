@@ -26,6 +26,9 @@ export function workspaceSessionsQuery(
   };
 }
 
+/** Stable empty list so "no data yet" renders don't churn downstream memos. */
+const EMPTY_SESSIONS: Session[] = [];
+
 /** Discriminated union for session selection state */
 export type SessionSelection =
   | { mode: 'existing'; sessionId: string }
@@ -96,10 +99,11 @@ export function useWorkspaceSessions(
     (state) => state.setSelection
   );
 
-  const { data: sessions = [], isLoading } = useQuery<Session[]>({
+  const { data, isLoading } = useQuery<Session[]>({
     ...workspaceSessionsQuery(workspaceId, hostId),
     enabled: enabled && !!workspaceId,
   });
+  const sessions = data ?? EMPTY_SESSIONS;
 
   // Auto-select the most recently used session for this workspace.
   //
@@ -118,7 +122,12 @@ export function useWorkspaceSessions(
   // replaced. Explicit jumps (send, vibe review, command bar) call
   // selectSession/onSelectSession themselves.
   useEffect(() => {
-    if (sessions.length === 0) {
+    // Nothing known about this workspace's sessions yet (still loading, query
+    // disabled, cache evicted). The chat shows the composer meanwhile, so the
+    // user can pick "new session" before the list lands — treating "unknown" as
+    // "no sessions" here would drop that choice the moment it arrives.
+    if (data === undefined) return;
+    if (data.length === 0) {
       setStoredSelection(selectionKey, undefined);
       return;
     }
@@ -127,16 +136,16 @@ export function useWorkspaceSessions(
     if (currentSelection?.mode === 'new') return;
     if (
       currentSelection?.mode === 'existing' &&
-      sessions.some((session) => session.id === currentSelection.sessionId)
+      data.some((session) => session.id === currentSelection.sessionId)
     ) {
       return;
     }
     // Sessions are ordered by most recently used, so first is the most recently used
     setStoredSelection(selectionKey, {
       mode: 'existing',
-      sessionId: sessions[0].id,
+      sessionId: data[0].id,
     });
-  }, [sessions, selectionKey, setStoredSelection]);
+  }, [data, selectionKey, setStoredSelection]);
 
   const isNewSessionMode = selection?.mode === 'new' || sessions.length === 0;
   const selectedSessionId =
