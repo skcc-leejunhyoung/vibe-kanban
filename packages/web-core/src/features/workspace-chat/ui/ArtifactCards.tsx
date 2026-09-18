@@ -4,6 +4,7 @@ import { create, useModal } from '@ebay/nice-modal-react';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowSquareOutIcon,
+  ArrowsOutSimpleIcon,
   BrowserIcon,
   DownloadSimpleIcon,
   EyeIcon,
@@ -32,6 +33,9 @@ import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import {
   buildArtifactPreview,
   deduplicateManagedImages,
+  inlinePreviewKind,
+  isOfficeMime,
+  type InlinePreviewKind,
 } from './artifact-preview';
 
 type Scope = {
@@ -73,6 +77,163 @@ export function useExecutionArtifacts(
   return query;
 }
 
+type ArtifactContent = {
+  blob: Blob;
+  text: string;
+  preview?: ReturnType<typeof buildArtifactPreview>;
+  warnings: string[];
+};
+
+// Shared by the chat thumbnail and the dialog so opening costs no second fetch.
+function useArtifactContent(
+  artifact: ArtifactReference,
+  scope: Scope,
+  mode: 'preview' | 'source'
+) {
+  const { t } = useTranslation('common');
+  const { processId, workspaceId, sessionId, hostId } = scope;
+  return useQuery({
+    queryKey: [
+      'artifact-content',
+      hostId,
+      workspaceId,
+      sessionId,
+      processId,
+      artifact.id,
+      artifact.content_hash,
+      mode,
+    ],
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+    queryFn: async ({ signal }): Promise<ArtifactContent> => {
+      // Snapshots are served as octet streams; object URLs need the real type.
+      const fetchBytes = async (hash: string | undefined, mime: string) =>
+        new Blob(
+          [
+            await artifactsApi.content(
+              processId,
+              workspaceId,
+              sessionId,
+              artifact.id,
+              hostId,
+              hash,
+              signal
+            ),
+          ],
+          { type: mime }
+        );
+      const fetchBundle = async () => {
+        const bundle = await artifactsApi.bundle(
+          processId,
+          workspaceId,
+          sessionId,
+          artifact.id,
+          hostId,
+          signal
+        );
+        if (bundle.artifact.content_hash !== artifact.content_hash)
+          throw new Error(t('artifacts.changed'));
+        return bundle;
+      };
+      if (mode === 'preview' && isOfficeMime(artifact.mime)) {
+        const bundle = await fetchBundle();
+        const pdf = bundle.resources.find(
+          (resource) => resource.mime === 'application/pdf'
+        );
+        if (!pdf)
+          throw new Error(bundle.warnings.join(' ') || t('artifacts.binary'));
+        return {
+          blob: await fetchBytes(pdf.content_hash, 'application/pdf'),
+          text: '',
+          warnings: bundle.warnings,
+        };
+      }
+      const blob = await fetchBytes(
+        artifact.content_hash ?? undefined,
+        artifact.mime
+      );
+      const textual =
+        artifact.mime.startsWith('text/') ||
+        artifact.mime === 'image/svg+xml' ||
+        /\.(json|[cm]?js|[jt]sx?|vue|svelte|rs|py|sh|toml|ya?ml|xml)$/i.test(
+          artifact.name
+        );
+      if (textual && blob.size > 2 * 1024 * 1024)
+        throw new Error(t('artifacts.largeSource'));
+      const text = textual ? await blob.text() : '';
+      if (
+        mode === 'preview' &&
+        ['text/html', 'image/svg+xml'].includes(artifact.mime)
+      ) {
+        const bundle = await fetchBundle();
+        const resources = await Promise.all(
+          bundle.resources.map(async (resource) => ({
+            ...resource,
+            bytes: new Uint8Array(
+              await (
+                await fetchBytes(resource.content_hash, resource.mime)
+              ).arrayBuffer()
+            ),
+          }))
+        );
+        const preview = buildArtifactPreview(
+          text,
+          bundle.base_path ?? artifact.path ?? artifact.name,
+          resources,
+          artifact.mime === 'image/svg+xml'
+        );
+        return { blob, text, preview, warnings: bundle.warnings };
+      }
+      return { blob, text, warnings: [] };
+    },
+  });
+}
+
+function useObjectUrl(blob: Blob | undefined) {
+  const [url, setUrl] = useState<string>();
+  useEffect(() => {
+    if (!blob) {
+      setUrl(undefined);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [blob]);
+  return url;
+}
+
+function useArtifactDownload(artifact: ArtifactReference, scope: Scope) {
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string>();
+  const download = async () => {
+    setDownloading(true);
+    setError(undefined);
+    try {
+      const blob = await artifactsApi.content(
+        scope.processId,
+        scope.workspaceId,
+        scope.sessionId,
+        artifact.id,
+        scope.hostId,
+        artifact.content_hash ?? undefined
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = artifact.name.split('/').pop() ?? 'artifact';
+      anchor.click();
+      // Let the browser consume the click before releasing the download URL.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setDownloading(false);
+    }
+  };
+  return { download, downloading, error };
+}
+
 function ArtifactViewer({
   artifact,
   scope,
@@ -85,10 +246,10 @@ function ArtifactViewer({
   const { t } = useTranslation('common');
   const { theme } = useTheme();
   const [showSource, setShowSource] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState<string>();
   const [runtimeError, setRuntimeError] = useState<string>();
   const mode = showSource ? 'source' : 'preview';
+  const kind = inlinePreviewKind(artifact);
+  const isDocument = kind === 'pdf' || kind === 'office';
   const canToggleSource = [
     'text/html',
     'image/svg+xml',
@@ -109,107 +270,13 @@ function ArtifactViewer({
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [onClose]);
-  const { processId, workspaceId, sessionId, hostId } = scope;
-  const download = async () => {
-    setDownloading(true);
-    setDownloadError(undefined);
-    try {
-      const blob = await artifactsApi.content(
-        processId,
-        workspaceId,
-        sessionId,
-        artifact.id,
-        hostId,
-        artifact.content_hash ?? undefined
-      );
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = artifact.name.split('/').pop() ?? 'artifact';
-      anchor.click();
-      // Let the browser consume the click before releasing the download URL.
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (cause) {
-      setDownloadError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setDownloading(false);
-    }
-  };
-  const query = useQuery({
-    queryKey: [
-      'artifact-content',
-      hostId,
-      workspaceId,
-      sessionId,
-      processId,
-      artifact.id,
-      artifact.content_hash,
-      mode,
-    ],
-    gcTime: 0,
-    retry: false,
-    queryFn: async ({ signal }) => {
-      const blob = await artifactsApi.content(
-        processId,
-        workspaceId,
-        sessionId,
-        artifact.id,
-        hostId,
-        artifact.content_hash ?? undefined,
-        signal
-      );
-      const textual =
-        artifact.mime.startsWith('text/') ||
-        artifact.mime === 'image/svg+xml' ||
-        /\.(json|[cm]?js|[jt]sx?|vue|svelte|rs|py|sh|toml|ya?ml|xml)$/i.test(
-          artifact.name
-        );
-      if (textual && blob.size > 2 * 1024 * 1024)
-        throw new Error(t('artifacts.largeSource'));
-      const text = textual ? await blob.text() : '';
-      if (
-        mode === 'preview' &&
-        ['text/html', 'image/svg+xml'].includes(artifact.mime)
-      ) {
-        const bundle = await artifactsApi.bundle(
-          processId,
-          workspaceId,
-          sessionId,
-          artifact.id,
-          hostId,
-          signal
-        );
-        if (bundle.artifact.content_hash !== artifact.content_hash)
-          throw new Error(t('artifacts.changed'));
-        const resources = await Promise.all(
-          bundle.resources.map(async (resource) => ({
-            ...resource,
-            bytes: new Uint8Array(
-              await (
-                await artifactsApi.content(
-                  processId,
-                  workspaceId,
-                  sessionId,
-                  artifact.id,
-                  hostId,
-                  resource.content_hash,
-                  signal
-                )
-              ).arrayBuffer()
-            ),
-          }))
-        );
-        const preview = buildArtifactPreview(
-          text,
-          bundle.base_path ?? artifact.path ?? artifact.name,
-          resources,
-          artifact.mime === 'image/svg+xml'
-        );
-        return { blob, text, preview, warnings: bundle.warnings };
-      }
-      return { blob, text, preview: undefined, warnings: [] };
-    },
-  });
+  const {
+    download,
+    downloading,
+    error: downloadError,
+  } = useArtifactDownload(artifact, scope);
+  const query = useArtifactContent(artifact, scope, mode);
+  const documentUrl = useObjectUrl(isDocument ? query.data?.blob : undefined);
   const renderContent = () => {
     if (query.isPending) return <p role="status">{t('artifacts.loading')}</p>;
     if (query.error) return <p role="alert">{query.error.message}</p>;
@@ -238,6 +305,23 @@ function ArtifactViewer({
             srcDoc={preview.srcDoc}
           />
           <p className="text-low">{t('artifacts.staticPreview')}</p>
+        </>
+      );
+    if (isDocument)
+      return (
+        <>
+          {warnings.map((warning) => (
+            <p key={warning} className="text-low">
+              {warning}
+            </p>
+          ))}
+          {documentUrl && (
+            <iframe
+              className="h-[75vh] w-full border-0 bg-white"
+              title={artifact.name}
+              src={documentUrl}
+            />
+          )}
         </>
       );
     if (artifact.mime === 'text/vnd.mermaid')
@@ -330,51 +414,18 @@ const ArtifactPreviewDialog = defineModal<PreviewDialogProps, void>(
 function ArtifactCard({
   artifact,
   scope,
+  error,
 }: {
   artifact: ArtifactReference;
   scope: Scope;
+  error?: string;
 }) {
   const { t } = useTranslation('common');
-  const [error, setError] = useState<string>();
-  const [opening, setOpening] = useState(false);
   const setPanel = useUiPreferencesStore(
     (state) => state.setRightMainPanelMode
   );
   const ready = !!artifact.content_hash && artifact.status !== 'preparing';
   const appSource = /\.(tsx|jsx|vue|svelte)$/i.test(artifact.name);
-  const preview = async () => {
-    if (
-      !/^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(
-        artifact.mime
-      )
-    ) {
-      void ArtifactPreviewDialog.show({ artifact, scope });
-      return;
-    }
-    setOpening(true);
-    setError(undefined);
-    try {
-      const blob = await artifactsApi.content(
-        scope.processId,
-        scope.workspaceId,
-        scope.sessionId,
-        artifact.id,
-        scope.hostId,
-        artifact.content_hash ?? undefined
-      );
-      void ImagePreviewDialog.show({
-        imageBlob: new Blob([blob], { type: artifact.mime }),
-        altText: artifact.name,
-        fileName: artifact.name.split('/').pop(),
-        format: artifact.mime.split('/')[1],
-        sizeBytes: BigInt(blob.size),
-      });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setOpening(false);
-    }
-  };
   return (
     <div className="my-half flex items-start gap-base rounded-sm border border-border bg-panel p-base text-base">
       <div className="min-w-0 flex-1">
@@ -413,12 +464,13 @@ function ArtifactCard({
         ) : (
           <>
             <IconButton
-              icon={opening ? SpinnerIcon : EyeIcon}
-              iconClassName={opening ? 'animate-spin' : undefined}
+              icon={EyeIcon}
               aria-label={t('artifacts.preview')}
               title={t('artifacts.preview')}
-              disabled={!ready || opening}
-              onClick={() => void preview()}
+              disabled={!ready}
+              onClick={() =>
+                void ArtifactPreviewDialog.show({ artifact, scope })
+              }
             />
             {(appSource || artifact.mime === 'text/html') && (
               <IconButton
@@ -435,6 +487,148 @@ function ArtifactCard({
   );
 }
 
+// Image-like thumbnail in the chat; the dialog is the interactive surface.
+function ArtifactTile({
+  artifact,
+  scope,
+  kind,
+}: {
+  artifact: ArtifactReference;
+  scope: Scope;
+  kind: InlinePreviewKind;
+}) {
+  const { t } = useTranslation('common');
+  const { theme } = useTheme();
+  const setPanel = useUiPreferencesStore(
+    (state) => state.setRightMainPanelMode
+  );
+  const query = useArtifactContent(artifact, scope, 'preview');
+  const {
+    download,
+    downloading,
+    error: downloadError,
+  } = useArtifactDownload(artifact, scope);
+  const needsUrl = kind === 'image' || kind === 'pdf' || kind === 'office';
+  const url = useObjectUrl(needsUrl ? query.data?.blob : undefined);
+  if (query.error)
+    return (
+      <ArtifactCard
+        artifact={artifact}
+        scope={scope}
+        error={query.error.message}
+      />
+    );
+  const open = () => {
+    if (kind === 'image' && query.data)
+      void ImagePreviewDialog.show({
+        imageBlob: query.data.blob,
+        altText: artifact.name,
+        fileName: artifact.name.split('/').pop(),
+        format: artifact.mime.split('/')[1],
+        sizeBytes: BigInt(query.data.blob.size),
+      });
+    else void ArtifactPreviewDialog.show({ artifact, scope });
+  };
+  const renderPreview = () => {
+    if (query.isPending || (needsUrl && !url))
+      return (
+        <p role="status" className="p-base text-low">
+          {t('artifacts.loading')}
+        </p>
+      );
+    const { text, preview } = query.data;
+    switch (kind) {
+      case 'image':
+        return (
+          <img
+            src={url}
+            alt={artifact.name}
+            loading="lazy"
+            className="mx-auto max-h-[320px] max-w-full object-contain"
+          />
+        );
+      case 'mermaid':
+        return (
+          <MermaidDiagram
+            chart={text}
+            theme={getResolvedTheme(theme)}
+            isolated
+          />
+        );
+      case 'frame':
+        return preview ? (
+          <iframe
+            className="h-[320px] w-full border-0 bg-white"
+            title={artifact.name}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            srcDoc={preview.srcDoc}
+          />
+        ) : null;
+      default:
+        return (
+          <iframe
+            className="h-[320px] w-full border-0 bg-white"
+            title={artifact.name}
+            loading="lazy"
+            src={`${url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+          />
+        );
+    }
+  };
+  const note = downloadError ?? artifact.error;
+  return (
+    <figure className="my-half overflow-hidden rounded-sm border border-border bg-panel text-base">
+      {/* Thumbnails never trap wheel or clicks; frames stay inert until opened. */}
+      <div
+        className="max-h-[320px] cursor-zoom-in overflow-hidden [&_iframe]:pointer-events-none"
+        onClick={open}
+      >
+        {renderPreview()}
+      </div>
+      <figcaption className="flex items-center gap-base border-t border-border px-base py-half">
+        <span
+          className="min-w-0 flex-1 truncate font-medium text-high"
+          title={artifact.name}
+        >
+          {artifact.name.split('/').pop()}
+        </span>
+        {artifact.source_scope && (
+          <span className="shrink-0 text-low">{t('artifacts.subagent')}</span>
+        )}
+        <IconButton
+          icon={ArrowsOutSimpleIcon}
+          aria-label={t('artifacts.expand')}
+          title={t('artifacts.expand')}
+          onClick={open}
+        />
+        {artifact.mime === 'text/html' && (
+          <IconButton
+            icon={BrowserIcon}
+            aria-label={t('artifacts.devPreview')}
+            title={t('artifacts.devPreview')}
+            onClick={() => setPanel('preview', scope.workspaceId)}
+          />
+        )}
+        <IconButton
+          icon={downloading ? SpinnerIcon : DownloadSimpleIcon}
+          iconClassName={downloading ? 'animate-spin' : undefined}
+          aria-label={t('artifacts.download')}
+          title={t('artifacts.download')}
+          disabled={downloading}
+          onClick={() => void download()}
+        />
+      </figcaption>
+      {note && (
+        <p role="status" className="px-base pb-half text-low">
+          {note}
+        </p>
+      )}
+    </figure>
+  );
+}
+
 export function ArtifactCards({
   artifacts,
   processId,
@@ -447,19 +641,31 @@ export function ArtifactCards({
   sessionId: string;
 }) {
   const hostId = useHostId();
+  const scope = { processId, workspaceId, sessionId, hostId };
   return (
     <>
-      {deduplicateManagedImages(artifacts).map((artifact) => (
-        <ArtifactCard
-          key={artifact.id}
-          artifact={artifact}
-          scope={{ processId, workspaceId, sessionId, hostId }}
-        />
-      ))}
+      {deduplicateManagedImages(artifacts).map((artifact) => {
+        // Fenced Mermaid already renders inside the message itself.
+        if (artifact.path === null && artifact.mime === 'text/vnd.mermaid')
+          return null;
+        const kind = inlinePreviewKind(artifact);
+        return kind ? (
+          <ArtifactTile
+            key={artifact.id}
+            artifact={artifact}
+            scope={scope}
+            kind={kind}
+          />
+        ) : (
+          <ArtifactCard key={artifact.id} artifact={artifact} scope={scope} />
+        );
+      })}
     </>
   );
 }
 
+// Entry-bound and subagent-scoped artifacts render under their chat entry;
+// only unbound legacy observations remain at the end of the execution.
 export function ExecutionArtifactResults({
   processId,
   workspaceId,
@@ -468,7 +674,7 @@ export function ExecutionArtifactResults({
   const query = useExecutionArtifacts(processId, workspaceId, sessionId);
   const artifacts =
     query.data?.artifacts.filter(
-      (artifact) => artifact.source_entry === null || artifact.source_scope
+      (artifact) => artifact.source_entry === null && !artifact.source_scope
     ) ?? [];
   if (!artifacts.length && !query.data?.warnings.length) return null;
   return (

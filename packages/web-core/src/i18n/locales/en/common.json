@@ -757,6 +757,7 @@
     "staticPreview": "Static preview: network requests, dynamic imports and server code are unavailable.",
     "observed": "Workspace file observed during this execution",
     "preview": "Preview",
+    "expand": "Open full view",
     "source": "View source",
     "download": "Download",
     "devPreview": "Development server Preview",

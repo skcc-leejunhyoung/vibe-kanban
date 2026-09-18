@@ -1,5 +1,5 @@
 import { dataUrl, isolatePreviewDocument } from '@/shared/lib/isolatedPreview';
-import type { ArtifactReference } from 'shared/types';
+import type { ArtifactReference, SubagentControlTarget } from 'shared/types';
 
 // A tool can return both a file link and the same image as base64. Preserve
 // both references for replay, but show the named file instead of its Vibe copy.
@@ -147,4 +147,48 @@ export function buildArtifactPreview(
     node.textContent = rewriteCss(node.textContent ?? '', path);
   });
   return { srcDoc: isolatePreviewDocument(doc, svg), warnings: [...warnings] };
+}
+
+export type InlinePreviewKind =
+  | 'image'
+  | 'frame'
+  | 'mermaid'
+  | 'pdf'
+  | 'office';
+
+export function isOfficeMime(mime: string) {
+  return (
+    mime.startsWith('application/vnd.openxmlformats-officedocument.') ||
+    mime.startsWith('application/vnd.oasis.opendocument.') ||
+    [
+      'application/msword',
+      'application/vnd.ms-excel',
+      'application/vnd.ms-powerpoint',
+    ].includes(mime)
+  );
+}
+
+/** Ready snapshots the chat can show as a thumbnail; everything else stays a card. */
+export function inlinePreviewKind(
+  artifact: ArtifactReference
+): InlinePreviewKind | null {
+  if (artifact.url || !artifact.content_hash || artifact.status !== 'ready')
+    return null;
+  const { mime } = artifact;
+  if (
+    /^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(mime)
+  )
+    return 'image';
+  if (mime === 'text/html' || mime === 'image/svg+xml') return 'frame';
+  if (mime === 'text/vnd.mermaid') return 'mermaid';
+  if (mime === 'application/pdf') return 'pdf';
+  if (isOfficeMime(mime)) return 'office';
+  return null;
+}
+
+/** Mirrors services::subagent_transcript::scope for child-owned artifacts. */
+export function subagentScope(target: SubagentControlTarget) {
+  return target.executor === 'codex'
+    ? `codex:${target.thread_id}`
+    : `claude:${target.task_id}`;
 }

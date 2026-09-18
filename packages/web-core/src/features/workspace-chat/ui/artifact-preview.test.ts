@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ArtifactReference } from 'shared/types';
-import { deduplicateManagedImages } from './artifact-preview';
+import {
+  deduplicateManagedImages,
+  inlinePreviewKind,
+  subagentScope,
+} from './artifact-preview';
 
 describe('managed tool image copies', () => {
   it('hides a base64 copy without merging different file or execution origins', () => {
@@ -39,5 +43,57 @@ describe('managed tool image copies', () => {
         different,
       ]);
     }
+  });
+});
+
+describe('inline previews', () => {
+  const base: ArtifactReference = {
+    id: 'report',
+    execution_id: 'execution',
+    name: 'out/report.pdf',
+    path: 'out/report.pdf',
+    mime: 'application/pdf',
+    content_hash: 'a'.repeat(64),
+    source_entry: 1,
+    source: 'assistant_attachment',
+    url: null,
+    size_bytes: 10,
+    status: 'ready',
+    error: null,
+  };
+
+  it('renders documents and images inline and keeps the rest as cards', () => {
+    expect(inlinePreviewKind(base)).toBe('pdf');
+    expect(
+      inlinePreviewKind({
+        ...base,
+        mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      })
+    ).toBe('office');
+    expect(inlinePreviewKind({ ...base, mime: 'text/html' })).toBe('frame');
+    expect(inlinePreviewKind({ ...base, mime: 'image/png' })).toBe('image');
+    expect(inlinePreviewKind({ ...base, mime: 'text/vnd.mermaid' })).toBe(
+      'mermaid'
+    );
+    expect(inlinePreviewKind({ ...base, mime: 'text/markdown' })).toBeNull();
+    expect(
+      inlinePreviewKind({ ...base, status: 'preparing', content_hash: null })
+    ).toBeNull();
+    expect(
+      inlinePreviewKind({ ...base, url: 'https://example.com/report' })
+    ).toBeNull();
+  });
+
+  it('mirrors the backend subagent scope key', () => {
+    expect(subagentScope({ executor: 'codex', thread_id: 't1' })).toBe(
+      'codex:t1'
+    );
+    expect(
+      subagentScope({
+        executor: 'claude_code',
+        task_id: 'k1',
+        output_file: null,
+      })
+    ).toBe('claude:k1');
   });
 });

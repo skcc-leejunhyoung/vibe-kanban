@@ -43,6 +43,7 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { ArtifactCards, useExecutionArtifacts } from './ArtifactCards';
+import { subagentScope } from './artifact-preview';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -1771,12 +1772,32 @@ const DisplayConversationEntrySpaced = (props: Props) => {
     ).map((entry) => entry.patchKey)
   );
   entryKeys.add(props.expansionKey);
+  // Child-owned artifacts belong under the parent's subagent entry.
+  const scopes = new Set(
+    [
+      props.entry,
+      ...(props.aggregatedGroup?.entries ?? []).map((entry) =>
+        entry.type === 'NORMALIZED_ENTRY' ? entry.content : null
+      ),
+    ].flatMap((entry) =>
+      entry?.entry_type.type === 'tool_use' &&
+      entry.entry_type.action_type.action === 'task_create' &&
+      entry.entry_type.action_type.control
+        ? [
+            subagentScope(
+              subagentControlTarget(entry.entry_type.action_type.control)
+            ),
+          ]
+        : []
+    )
+  );
   const matching =
     props.artifactOverrides ??
     (artifacts.data?.artifacts ?? []).filter((artifact) =>
-      artifact.source_entry === null || artifact.source_scope
-        ? false
-        : entryKeys.has(`${props.executionProcessId}:${artifact.source_entry}`)
+      artifact.source_scope
+        ? scopes.has(artifact.source_scope)
+        : artifact.source_entry !== null &&
+          entryKeys.has(`${props.executionProcessId}:${artifact.source_entry}`)
     );
 
   return (

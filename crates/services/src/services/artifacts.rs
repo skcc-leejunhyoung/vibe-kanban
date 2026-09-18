@@ -244,6 +244,76 @@ fn mime(path: &str) -> String {
     }
 }
 
+fn is_office(mime: &str) -> bool {
+    mime.starts_with("application/vnd.openxmlformats-officedocument.")
+        || mime.starts_with("application/vnd.oasis.opendocument.")
+        || matches!(
+            mime,
+            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint"
+        )
+}
+
+// ponytail: one conversion at a time; per-call profiles allow parallel runs
+// if office attachments ever become frequent enough to matter.
+static OFFICE_CONVERSION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Office documents preview through the browser's native PDF viewer. Requires
+/// LibreOffice on the host; a missing binary only disables the preview.
+pub async fn office_to_pdf(bytes: &[u8], name: &str) -> Result<Vec<u8>> {
+    const CANDIDATES: [&str; 5] = [
+        "soffice",
+        "/opt/homebrew/bin/soffice",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/usr/lib/libreoffice/program/soffice",
+        "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+    ];
+    let _guard = OFFICE_CONVERSION.lock().await;
+    let dir = tempfile::tempdir()?;
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("bin");
+    let input = dir.path().join(format!("input.{extension}"));
+    tokio::fs::write(&input, bytes).await?;
+    // A private profile keeps a running LibreOffice GUI from swallowing the request.
+    let profile = url::Url::from_directory_path(dir.path().join("profile"))
+        .map_err(|()| anyhow::anyhow!("Invalid conversion directory"))?;
+    let mut output = None;
+    for binary in CANDIDATES {
+        let mut command = tokio::process::Command::new(binary);
+        command
+            .arg(format!("-env:UserInstallation={profile}"))
+            .args([
+                "--headless",
+                "--norestore",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+            ])
+            .arg(dir.path())
+            .arg(&input)
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(120), command.output()).await {
+            Ok(Ok(result)) => {
+                output = Some(result);
+                break;
+            }
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => bail!("LibreOffice conversion timed out"),
+        }
+    }
+    let output = output.ok_or_else(|| anyhow::anyhow!("LibreOffice (soffice) is not installed"))?;
+    tokio::fs::read(dir.path().join("input.pdf"))
+        .await
+        .with_context(|| {
+            format!(
+                "LibreOffice could not convert this document: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+        })
+}
+
 fn inline_id(execution: Uuid, scope: Option<&str>, index: usize, name: &str) -> String {
     // Preserve IDs already saved by the parent-only manifest format.
     let source = scope.map(|scope| format!("{scope}:")).unwrap_or_default();
@@ -907,6 +977,18 @@ impl ArtifactObserver {
         Ok((hash, bytes.len() as u32))
     }
 
+    async fn convert_office(&mut self, hash: &str, name: &str) -> Result<ArtifactResource> {
+        let bytes = tokio::fs::read(self.destination.join(hash)).await?;
+        let pdf = office_to_pdf(&bytes, name).await?;
+        let path = format!("{name}.pdf");
+        let content_hash = self.store(&pdf, &path).await?;
+        Ok(ArtifactResource {
+            path,
+            mime: "application/pdf".into(),
+            content_hash,
+        })
+    }
+
     async fn bundle_resources(&mut self, artifact: ArtifactReference) -> ArtifactBundle {
         let source_name = artifact.path.clone().unwrap_or_else(|| {
             self.working_dir
@@ -922,15 +1004,41 @@ impl ArtifactObserver {
             resources: Vec::new(),
             warnings: Vec::new(),
         };
+        let Some(hash) = artifact.content_hash.as_ref() else {
+            return bundle;
+        };
+        if is_office(&artifact.mime) {
+            // Every resource refresh rebundles; a converted PDF outlives the same snapshot.
+            let converted = self
+                .manifest
+                .bundles
+                .get(&artifact.id)
+                .filter(|previous| previous.artifact.content_hash.as_deref() == Some(hash))
+                .and_then(|previous| {
+                    previous
+                        .resources
+                        .iter()
+                        .find(|resource| resource.mime == "application/pdf")
+                        .cloned()
+                });
+            let converted = match converted {
+                Some(resource) => Ok(resource),
+                None => self.convert_office(hash, &source_name).await,
+            };
+            match converted {
+                Ok(resource) => bundle.resources.push(resource),
+                Err(error) => bundle
+                    .warnings
+                    .push(format!("PDF preview unavailable: {error:#}")),
+            }
+            return bundle;
+        }
         if !matches!(
             artifact.mime.as_str(),
             "text/html" | "image/svg+xml" | "text/css"
         ) {
             return bundle;
         }
-        let Some(hash) = artifact.content_hash.as_ref() else {
-            return bundle;
-        };
         if self.recovery {
             bundle
                 .warnings
@@ -1306,6 +1414,18 @@ mod tests {
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn office_documents_convert_to_pdf_when_libreoffice_is_installed() {
+        assert!(is_office(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ));
+        assert!(!is_office("application/pdf"));
+        match office_to_pdf(b"{\\rtf1\\ansi Hello}", "note.rtf").await {
+            Err(error) if error.to_string().contains("not installed") => {}
+            result => assert!(result.unwrap().starts_with(b"%PDF")),
+        }
     }
 
     #[tokio::test]
