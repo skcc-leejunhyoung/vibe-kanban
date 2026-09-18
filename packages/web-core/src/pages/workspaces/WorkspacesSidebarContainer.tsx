@@ -892,6 +892,7 @@ export function WorkspacesSidebarContainer({
       workspaces={paginatedActiveWorkspaces}
       totalWorkspacesCount={activeWorkspaces.length}
       archivedWorkspaces={paginatedArchivedWorkspaces}
+      totalArchivedCount={archivedWorkspaces.length}
       isLoading={isWorkspacesListLoading}
       selectedWorkspaceId={effectiveSelectedWorkspaceId ?? null}
       selectedWorkspaceOwnerHostId={effectiveSelectedHostId}

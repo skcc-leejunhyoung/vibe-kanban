@@ -94,6 +94,8 @@ export interface WorkspacesSidebarProps {
   workspaces: WorkspacesSidebarWorkspace[];
   totalWorkspacesCount: number;
   archivedWorkspaces?: WorkspacesSidebarWorkspace[];
+  /** Full archive size; `archivedWorkspaces` is paginated, so it can't count. */
+  totalArchivedCount?: number;
   isLoading?: boolean;
   selectedWorkspaceId: string | null;
   selectedWorkspaceOwnerHostId?: string | null;
@@ -287,6 +289,7 @@ export function WorkspacesSidebar({
   workspaces,
   totalWorkspacesCount,
   archivedWorkspaces = [],
+  totalArchivedCount,
   isLoading = false,
   selectedWorkspaceId,
   selectedWorkspaceOwnerHostId,
@@ -739,7 +742,7 @@ export function WorkspacesSidebar({
               <ArchiveIcon className="size-icon-xs" />
               <span>{t('common:workspaces.viewArchive')}</span>
               <span className="ml-auto text-xs bg-tertiary px-1.5 py-0.5 rounded">
-                {archivedWorkspaces.length}
+                {totalArchivedCount ?? archivedWorkspaces.length}
               </span>
             </>
           )}
