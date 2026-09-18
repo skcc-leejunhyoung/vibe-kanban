@@ -70,6 +70,10 @@ describe('inline previews', () => {
         mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       })
     ).toBe('office');
+    // services::artifacts::is_office converts these too; both lists must agree.
+    expect(inlinePreviewKind({ ...base, mime: 'application/rtf' })).toBe(
+      'office'
+    );
     expect(inlinePreviewKind({ ...base, mime: 'text/html' })).toBe('frame');
     expect(inlinePreviewKind({ ...base, mime: 'image/png' })).toBe('image');
     expect(inlinePreviewKind({ ...base, mime: 'text/vnd.mermaid' })).toBe(

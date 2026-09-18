@@ -244,7 +244,7 @@ fn mime(path: &str) -> String {
     }
 }
 
-fn is_office(mime: &str) -> bool {
+pub fn is_office(mime: &str) -> bool {
     mime.starts_with("application/vnd.openxmlformats-officedocument.")
         || mime.starts_with("application/vnd.oasis.opendocument.")
         || matches!(

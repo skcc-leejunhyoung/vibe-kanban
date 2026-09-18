@@ -519,20 +519,29 @@ function ArtifactTile({
       />
     );
   const open = () => {
-    if (kind === 'image' && query.data)
-      void ImagePreviewDialog.show({
-        imageBlob: query.data.blob,
-        altText: artifact.name,
-        fileName: artifact.name.split('/').pop(),
-        format: artifact.mime.split('/')[1],
-        sizeBytes: BigInt(query.data.blob.size),
-      });
-    else void ArtifactPreviewDialog.show({ artifact, scope });
+    // The dialog cannot render raw image bytes; wait for the tile's own fetch.
+    if (kind === 'image') {
+      if (query.data)
+        void ImagePreviewDialog.show({
+          imageBlob: query.data.blob,
+          altText: artifact.name,
+          fileName: artifact.name.split('/').pop(),
+          format: artifact.mime.split('/')[1],
+          sizeBytes: BigInt(query.data.blob.size),
+        });
+      return;
+    }
+    void ArtifactPreviewDialog.show({ artifact, scope });
   };
   const renderPreview = () => {
     if (query.isPending || (needsUrl && !url))
       return (
-        <p role="status" className="p-base text-low">
+        // Framed kinds always settle at 320px; reserve it so virtualized
+        // rows do not resize once the snapshot arrives.
+        <p
+          role="status"
+          className={`p-base text-low${kind === 'image' || kind === 'mermaid' ? '' : ' h-[320px]'}`}
+        >
           {t('artifacts.loading')}
         </p>
       );

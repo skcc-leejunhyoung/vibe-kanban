@@ -164,6 +164,9 @@ export function isOfficeMime(mime: string) {
       'application/msword',
       'application/vnd.ms-excel',
       'application/vnd.ms-powerpoint',
+      // Kept in sync with services::artifacts::is_office.
+      'application/rtf',
+      'text/rtf',
     ].includes(mime)
   );
 }
