@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
 use tokio_util::sync::CancellationToken;
@@ -60,6 +60,19 @@ fn running_background_tasks(input: &serde_json::Value) -> Vec<(String, String)> 
         .unwrap_or_default()
 }
 
+/// Identifies the set of tasks a wait notice covers, so re-blocking on the same
+/// tasks stays silent while a new set re-announces. Zero is reserved for "no
+/// notice outstanding".
+fn wait_fingerprint(running: &[(String, String)]) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut ids: Vec<&str> = running.iter().map(|(id, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    let mut hasher = DefaultHasher::new();
+    ids.hash(&mut hasher);
+    hasher.finish() | 1
+}
+
 /// Builds the Stop-hook `block` payload that tells the agent to wait for its
 /// running background tasks before ending the turn (keeps the same session
 /// alive so background work finishes without a follow-up spawn).
@@ -98,6 +111,11 @@ pub struct ClaudeAgentClient {
     /// resetting background_block_count and otherwise never trip the safety
     /// valve — blocking the turn forever.
     background_block_total: AtomicUsize,
+    /// Hash of the task ids the last wait notice covered. The notice settles
+    /// once those tasks end, so a later wait over a different set has to emit
+    /// a fresh one — otherwise a second wait in the same turn holds the turn
+    /// open with nothing on screen explaining it.
+    background_wait_notice: AtomicU64,
 }
 
 impl ClaudeAgentClient {
@@ -121,6 +139,7 @@ impl ClaudeAgentClient {
             cancel,
             background_block_count: AtomicUsize::new(0),
             background_block_total: AtomicUsize::new(0),
+            background_wait_notice: AtomicU64::new(0),
         })
     }
 
@@ -417,16 +436,21 @@ impl ClaudeAgentClient {
                 // A task finished: reset the per-task budget so the next task
                 // gets a fresh MAX_CONSECUTIVE_BLOCKS allowance.
                 self.background_block_count.store(0, Ordering::SeqCst);
+                self.background_wait_notice.store(0, Ordering::SeqCst);
             } else {
                 let consecutive = self.background_block_count.fetch_add(1, Ordering::SeqCst);
                 let total = self.background_block_total.fetch_add(1, Ordering::SeqCst);
                 if consecutive < MAX_CONSECUTIVE_BLOCKS && total < MAX_TOTAL_BLOCKS {
-                    // Surface the wait to the UI once at the start of each wait.
-                    // Only the first block emits: continuing tasks are re-reported
-                    // on every later block (no duplicate entry), while a fresh wait
-                    // re-emits because the per-task count was reset to 0 when the
-                    // previous tasks went idle.
-                    if consecutive == 0 {
+                    // Surface the wait to the UI once per set of awaited tasks:
+                    // re-blocking on the same tasks must not stack notices, but a
+                    // later wait over different tasks needs its own — the earlier
+                    // notice was settled when those tasks ended.
+                    let fingerprint = wait_fingerprint(&running);
+                    if self
+                        .background_wait_notice
+                        .swap(fingerprint, Ordering::SeqCst)
+                        != fingerprint
+                    {
                         let descriptions: Vec<&String> =
                             running.iter().map(|(_, what)| what).collect();
                         if let Ok(payload) = serde_json::to_string(&descriptions) {
@@ -564,6 +588,7 @@ fn question_answers_map(
 mod tests {
     use super::{
         QuestionAnswer, background_wait_block, question_answers_map, running_background_tasks,
+        wait_fingerprint,
     };
 
     // Shapes below mirror the real Stop-hook `input.background_tasks` observed
@@ -632,6 +657,31 @@ mod tests {
         assert!(reason.contains("bxwcb4god"));
         assert!(reason.contains("sleep 6"));
         assert!(reason.contains("still running"));
+    }
+
+    /// A second wait in the same turn covers different tasks, so it must get
+    /// its own notice: the first one was already settled when its task ended.
+    #[test]
+    fn wait_fingerprint_tracks_the_awaited_task_set() {
+        let first = vec![("b1".to_string(), "sleep 60".to_string())];
+        let same = vec![("b1".to_string(), "sleep 60".to_string())];
+        let later = vec![("b2".to_string(), "sleep 30".to_string())];
+        let both = vec![
+            ("b2".to_string(), "sleep 30".to_string()),
+            ("b1".to_string(), "sleep 60".to_string()),
+        ];
+
+        assert_eq!(wait_fingerprint(&first), wait_fingerprint(&same));
+        assert_ne!(wait_fingerprint(&first), wait_fingerprint(&later));
+        assert_ne!(wait_fingerprint(&first), wait_fingerprint(&both));
+        // Order of the CLI's list must not matter.
+        let both_rev = vec![
+            ("b1".to_string(), "sleep 60".to_string()),
+            ("b2".to_string(), "sleep 30".to_string()),
+        ];
+        assert_eq!(wait_fingerprint(&both), wait_fingerprint(&both_rev));
+        // 0 marks "no notice outstanding", so no set may hash to it.
+        assert_ne!(wait_fingerprint(&first), 0);
     }
 
     fn qa(question: &str, answer: &str) -> QuestionAnswer {
