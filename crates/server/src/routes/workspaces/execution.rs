@@ -113,6 +113,7 @@ pub async fn start_dev_server(
                 pool,
                 &CreateSession {
                     executor: Some("dev-server".to_string()),
+                    variant: None,
                     name: None,
                 },
                 Uuid::new_v4(),
@@ -209,6 +210,7 @@ async fn resolve_script_session(
                     pool,
                     &CreateSession {
                         executor: None,
+                        variant: None,
                         name: None,
                     },
                     Uuid::new_v4(),

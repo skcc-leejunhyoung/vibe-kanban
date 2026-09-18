@@ -601,6 +601,7 @@ pub trait ContainerService {
                     pool,
                     &CreateSession {
                         executor: None,
+                        variant: None,
                         name: None,
                     },
                     Uuid::new_v4(),
@@ -1247,6 +1248,7 @@ pub trait ContainerService {
             &self.db().pool,
             &CreateSession {
                 executor: Some(executor_config.executor.to_string()),
+                variant: executor_config.variant.clone(),
                 name: session_name,
             },
             Uuid::new_v4(),
@@ -1330,6 +1332,7 @@ pub trait ContainerService {
             &self.db().pool,
             &CreateSession {
                 executor: Some(executor_config.executor.to_string()),
+                variant: executor_config.variant.clone(),
                 name: None,
             },
             Uuid::new_v4(),
@@ -1451,6 +1454,7 @@ pub trait ContainerService {
             &self.db().pool,
             &CreateSession {
                 executor: Some(executor_config.executor.to_string()),
+                variant: executor_config.variant.clone(),
                 name: None,
             },
             Uuid::new_v4(),

@@ -48,6 +48,7 @@ pub async fn run_gh_cli_setup(
                     &deployment.db().pool,
                     &CreateSession {
                         executor: Some("gh-cli".to_string()),
+                        variant: None,
                         name: None,
                     },
                     Uuid::new_v4(),

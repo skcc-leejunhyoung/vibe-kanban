@@ -167,30 +167,20 @@ pub async fn create_session(
             "Workspace not found".to_string(),
         )))?;
 
-    let mut session = Session::create(
+    // `Session::create` seeds the per-session auto-resume toggle from the
+    // agent's default setting (the `auto_resume_on_limit` option in the agent
+    // settings screen), which is why the variant is handed over too.
+    let session = Session::create(
         pool,
         &CreateSession {
             executor: payload.executor,
+            variant: payload.variant,
             name: payload.name,
         },
         Uuid::new_v4(),
         payload.workspace_id,
     )
     .await?;
-
-    // Seed the per-session auto-resume toggle from the agent's default setting
-    // (the `auto_resume_on_limit` option in the agent settings screen).
-    if let Some(executor_str) = session.executor.as_deref()
-        && let Ok(executor) = BaseCodingAgent::from_str(executor_str)
-    {
-        let executor_profile_id = ExecutorProfileId {
-            executor,
-            variant: payload.variant,
-        };
-        if seed_auto_resume_default(pool, session.id, &executor_profile_id).await? {
-            session.auto_resume_enabled = true;
-        }
-    }
 
     Ok(ResponseJson(ApiResponse::success(session)))
 }

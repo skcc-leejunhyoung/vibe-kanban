@@ -1888,6 +1888,7 @@ pub async fn create_workspace_from_pr(
                 pool,
                 &CreateSession {
                     executor: None,
+                    variant: None,
                     name: None,
                 },
                 Uuid::new_v4(),

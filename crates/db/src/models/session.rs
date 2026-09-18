@@ -43,6 +43,11 @@ pub struct Session {
 #[derive(Debug, Deserialize, TS)]
 pub struct CreateSession {
     pub executor: Option<String>,
+    /// Variant of `executor` this session will run, when the caller already
+    /// knows it. Only used to seed the auto-resume toggle from the right
+    /// profile; the column stores the base executor alone.
+    #[serde(default)]
+    pub variant: Option<String>,
     pub name: Option<String>,
 }
 
@@ -164,7 +169,11 @@ impl Session {
     ) -> Result<Self, SessionError> {
         let agent_working_dir = Self::resolve_agent_working_dir(pool, workspace_id).await?;
         let name = data.name.as_deref().filter(|s| !s.is_empty());
-        let auto_resume_enabled = Self::seeded_auto_resume(data.executor.as_deref());
+        let auto_resume_enabled = Self::seeded_auto_resume(
+            &ExecutorConfigs::get_cached(),
+            data.executor.as_deref(),
+            data.variant.as_deref(),
+        );
 
         Ok(sqlx::query_as!(
             Session,
@@ -196,15 +205,24 @@ impl Session {
     /// sessions route, and they create the session with `executor` already set,
     /// which also skips the follow-up route's late seeding. Executors that are
     /// not coding agents (`dev-server`, `gh-cli`, …) don't parse and stay off.
-    ///
-    /// ponytail: resolves the DEFAULT variant because `CreateSession` carries no
-    /// variant; thread one through if a variant ever needs to disagree.
-    fn seeded_auto_resume(executor: Option<&str>) -> bool {
-        executor
-            .and_then(|executor| BaseCodingAgent::from_str(executor).ok())
-            .and_then(|executor| {
-                ExecutorConfigs::get_cached().get_coding_agent(&ExecutorProfileId::new(executor))
+    fn seeded_auto_resume(
+        configs: &ExecutorConfigs,
+        executor: Option<&str>,
+        variant: Option<&str>,
+    ) -> bool {
+        let Some(executor) = executor.and_then(|executor| BaseCodingAgent::from_str(executor).ok())
+        else {
+            return false;
+        };
+        // Variants carry their own `auto_resume_on_limit`, so one that opts out
+        // must not inherit DEFAULT's opt-in. An unknown variant falls back to
+        // DEFAULT, matching the config the run itself resolves.
+        configs
+            .get_coding_agent(&ExecutorProfileId {
+                executor,
+                variant: variant.map(str::to_string),
             })
+            .or_else(|| configs.get_coding_agent(&ExecutorProfileId::new(executor)))
             .is_some_and(|agent| agent.auto_resume_on_limit())
     }
 
@@ -302,16 +320,44 @@ mod tests {
     use super::*;
 
     /// The guard that keeps script/setup sessions (`dev-server`, `gh-cli`,
-    /// `cursor`) out of auto-resume now that every creation path seeds here.
-    /// Coding agents are left out because their answer comes from the machine's
-    /// profiles.json.
+    /// `cursor`) out of auto-resume now that every creation path seeds here:
+    /// none of those names parse as a coding agent. Coding agents are left out
+    /// because their answer comes from the machine's profiles.json.
     #[test]
     fn only_coding_agents_can_seed_auto_resume() {
+        let configs = profiles();
         for executor in [None, Some("dev-server"), Some("gh-cli"), Some("cursor")] {
             assert!(
-                !Session::seeded_auto_resume(executor),
+                !Session::seeded_auto_resume(&configs, executor, None),
                 "{executor:?} must not seed auto-resume"
             );
         }
+    }
+
+    /// A variant that opts out must not inherit DEFAULT's opt-in; an unknown
+    /// variant falls back to DEFAULT, which is what the run itself resolves.
+    #[test]
+    fn variant_overrides_the_default_auto_resume() {
+        let configs = profiles();
+        for (variant, expected) in [
+            (None, true),
+            (Some("NO_RESUME"), false),
+            (Some("NOT_A_VARIANT"), true),
+        ] {
+            assert_eq!(
+                Session::seeded_auto_resume(&configs, Some("CLAUDE_CODE"), variant),
+                expected,
+                "CLAUDE_CODE:{variant:?}"
+            );
+        }
+    }
+
+    fn profiles() -> ExecutorConfigs {
+        serde_json::from_str(
+            r#"{"executors":{"CLAUDE_CODE":{
+                 "DEFAULT":{"CLAUDE_CODE":{"auto_resume_on_limit":true}},
+                 "NO_RESUME":{"CLAUDE_CODE":{"auto_resume_on_limit":false}}}}}"#,
+        )
+        .expect("test profiles must parse")
     }
 }

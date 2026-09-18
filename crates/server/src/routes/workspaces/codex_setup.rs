@@ -55,6 +55,7 @@ pub async fn run_codex_setup(
                     &deployment.db().pool,
                     &CreateSession {
                         executor: Some("codex".to_string()),
+                        variant: None,
                         name: None,
                     },
                     Uuid::new_v4(),

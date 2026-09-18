@@ -2881,6 +2881,7 @@ impl LocalContainerService {
         let session_id = Uuid::new_v4();
         let create = CreateSession {
             executor: Some(executor_config.executor.to_string()),
+            variant: executor_config.variant.clone(),
             name: Some("vibe-review".to_string()),
         };
         let review_session =
