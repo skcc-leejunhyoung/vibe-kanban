@@ -109,7 +109,19 @@ function PaneChrome({
       ref={containerRef}
       tabIndex={-1}
       data-workspace-pane
-      className="relative flex h-full min-h-0 flex-col overflow-hidden outline-none"
+      className={cn(
+        'relative flex h-full min-h-0 flex-col overflow-hidden outline-none',
+        // An iframe never surfaces its inner clicks to the embedding document
+        // — neither onPointerDownCapture nor onFocusCapture below ever fires,
+        // so the dev-server preview can't be clicked into. Taking inactive
+        // iframes out of hit-testing lets the first click land on this
+        // container and activate the pane; the click after that reaches the
+        // page. Gated on multiple panes so a lone pane stays interactive even
+        // while activePaneId is still null.
+        // ponytail: costs the first click; iframe→iframe moves emit no parent
+        // event at all, so the alternative is polling document.activeElement.
+        !active && showActiveRing && '[&_iframe]:pointer-events-none'
+      )}
       onPointerDownCapture={onActivate}
       onFocusCapture={onActivate}
       onDragOver={(event) => {
