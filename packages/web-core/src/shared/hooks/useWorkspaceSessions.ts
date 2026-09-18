@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { create } from 'zustand';
 import { sessionsApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -95,27 +95,28 @@ export function useWorkspaceSessions(
   const setStoredSelection = useWorkspaceSessionSelectionStore(
     (state) => state.setSelection
   );
-  const prevWorkspaceIdRef = useRef(workspaceId);
 
   const { data: sessions = [], isLoading } = useQuery<Session[]>({
     ...workspaceSessionsQuery(workspaceId, hostId),
     enabled: enabled && !!workspaceId,
   });
 
-  // Combined effect: handle workspace changes and auto-select sessions
-  // This replaces two separate effects that had a race condition where the reset
-  // effect would fire after auto-select when sessions were cached, undoing the selection.
+  // Auto-select the most recently used session for this workspace.
+  //
+  // The selection is keyed by workspace, and several instances of this hook run
+  // at once for the same key: every pane has its own WorkspaceProvider and the
+  // app shell has a document-level one whose workspaceId follows the URL — which
+  // mirrors the *active* pane. So "this instance's workspaceId changed" says
+  // nothing about the pane the user is looking at: switching panes and coming
+  // back walks the document instance W -> other -> W, and treating that as a
+  // workspace switch used to overwrite the new-session mode a pane was showing.
+  // Per-workspace keys already keep one workspace's mode out of another's.
   useEffect(() => {
-    const workspaceChanged = prevWorkspaceIdRef.current !== workspaceId;
-    prevWorkspaceIdRef.current = workspaceId;
-
     if (sessions.length > 0) {
       // Sessions are ordered by most recently used, so first is the most recently used
-      // Always select first session when sessions are available for this workspace
-      // Only preserve new session mode within the same workspace
       const currentSelection =
         useWorkspaceSessionSelectionStore.getState().selections[selectionKey];
-      if (currentSelection?.mode !== 'new' || workspaceChanged) {
+      if (currentSelection?.mode !== 'new') {
         setStoredSelection(selectionKey, {
           mode: 'existing',
           sessionId: sessions[0].id,
@@ -124,7 +125,7 @@ export function useWorkspaceSessions(
     } else {
       setStoredSelection(selectionKey, undefined);
     }
-  }, [workspaceId, sessions, selectionKey, setStoredSelection]);
+  }, [sessions, selectionKey, setStoredSelection]);
 
   const isNewSessionMode = selection?.mode === 'new' || sessions.length === 0;
   const selectedSessionId =
