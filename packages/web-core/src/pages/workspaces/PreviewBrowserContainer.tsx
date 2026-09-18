@@ -691,6 +691,22 @@ export function PreviewBrowserContainer({
     setUrlInputValue(value);
   }, []);
 
+  const handleRefresh = useCallback(() => {
+    const canUseBridgeRefresh = Boolean(
+      showIframe &&
+        isReady &&
+        iframeRef.current?.contentWindow &&
+        bridgeRef.current
+    );
+
+    if (canUseBridgeRefresh) {
+      bridgeRef.current?.refresh();
+      return;
+    }
+    setImmediateLoad(true);
+    triggerPreviewRefresh(previewWorkspaceId);
+  }, [triggerPreviewRefresh, previewWorkspaceId, showIframe, isReady]);
+
   const navigateToPreviewUrl = useCallback(
     (rawUrl: string) => {
       const trimmed = rawUrl.trim();
@@ -723,13 +739,15 @@ export function PreviewBrowserContainer({
       const normalizedCurrentUrl = displayedPreviewUrl
         ? normalizePreviewUrl(displayedPreviewUrl, baseUrl)
         : null;
-      // Already on that page: nothing to navigate to. Don't drop the override
-      // here — that would send the iframe back to the auto-detected URL, i.e.
-      // away from the address the user just asked for.
+      // Already on that page: reload it, like a browser does when you pick the
+      // bookmark of the page you are on. Dropping the override here instead
+      // would send the iframe back to the auto-detected URL — away from the
+      // address the user just asked for.
       if (
         normalizedCurrentUrl &&
         normalizedInputDevUrl === normalizedCurrentUrl
       ) {
+        handleRefresh();
         return true;
       }
 
@@ -766,6 +784,7 @@ export function PreviewBrowserContainer({
       showIframe,
       previewProxyPort,
       clearOverride,
+      handleRefresh,
       resetNavigation,
       setOverrideUrl,
     ]
@@ -789,22 +808,6 @@ export function PreviewBrowserContainer({
   const handleStop = useCallback(() => {
     stop();
   }, [stop]);
-
-  const handleRefresh = useCallback(() => {
-    const canUseBridgeRefresh = Boolean(
-      showIframe &&
-        isReady &&
-        iframeRef.current?.contentWindow &&
-        bridgeRef.current
-    );
-
-    if (canUseBridgeRefresh) {
-      bridgeRef.current?.refresh();
-      return;
-    }
-    setImmediateLoad(true);
-    triggerPreviewRefresh(previewWorkspaceId);
-  }, [triggerPreviewRefresh, previewWorkspaceId, showIframe, isReady]);
 
   const handleClearOverride = useCallback(async () => {
     await clearOverride();
