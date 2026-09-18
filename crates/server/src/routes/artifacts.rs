@@ -140,12 +140,27 @@ pub async fn bundle(
     let manifest = scoped_manifest(&deployment, &process, &query)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Artifact snapshot not available".into()))?;
-    let bundle = query
+    let id = query
         .id
-        .as_ref()
-        .and_then(|id| manifest.bundles.get(id))
+        .as_deref()
         .ok_or_else(|| ApiError::BadRequest("Artifact snapshot not available".into()))?;
-    Ok(Json(ApiResponse::success(bundle.clone())))
+    let bundle = manifest
+        .bundles
+        .get(id)
+        .ok_or_else(|| ApiError::BadRequest("Artifact snapshot not available".into()))?;
+    let bundle = match artifacts::ensure_office_preview(
+        process.session_id,
+        process.id,
+        id,
+        deployment.file().clone(),
+    )
+    .await
+    .map_err(|error| ApiError::BadRequest(error.to_string()))?
+    {
+        Some(converted) => converted,
+        None => bundle.clone(),
+    };
+    Ok(Json(ApiResponse::success(bundle)))
 }
 
 pub async fn content(

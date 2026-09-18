@@ -249,7 +249,11 @@ fn is_office(mime: &str) -> bool {
         || mime.starts_with("application/vnd.oasis.opendocument.")
         || matches!(
             mime,
-            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint"
+            "application/msword"
+                | "application/vnd.ms-excel"
+                | "application/vnd.ms-powerpoint"
+                | "application/rtf"
+                | "text/rtf"
         )
 }
 
@@ -512,49 +516,20 @@ impl ArtifactObserver {
                 return Ok(manifest.clone());
             }
         }
-        let mut observer = Self {
-            root,
-            working_dir,
-            watcher: None,
-            pending: HashSet::new(),
-            destination: directory(session_id, execution_id),
-            file_service,
-            manifest: previous.unwrap_or_else(|| ArtifactManifest {
-                version: 1,
-                workspace_id,
-                session_id,
-                execution_id,
-                list: ArtifactList {
-                    artifacts: Vec::new(),
-                    complete: false,
-                    warnings: Vec::new(),
-                },
-                bundles: BTreeMap::new(),
-                transcripts: BTreeMap::new(),
-            }),
-            stored_hashes: HashSet::new(),
-            bytes: 0,
-            dirty: true,
-            recovery: true,
-            subagents: BTreeMap::new(),
-            subagent_handle: None,
-            codex: None,
-            agent_session_id: None,
-        };
-        tokio::fs::create_dir_all(&observer.destination).await?;
-        // Count all previous versions, including blobs no longer referenced by
-        // the latest manifest. Repeated child recovery cannot reset the budget.
-        let mut stored = tokio::fs::read_dir(&observer.destination).await?;
-        while let Some(file) = stored.next_entry().await? {
-            let hash = file.file_name().to_string_lossy().into_owned();
-            if hash.len() == 64
-                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                && file.file_type().await?.is_file()
-            {
-                observer.bytes += file.metadata().await?.len();
-                observer.stored_hashes.insert(hash);
-            }
-        }
+        let manifest = previous.unwrap_or_else(|| ArtifactManifest {
+            version: 1,
+            workspace_id,
+            session_id,
+            execution_id,
+            list: ArtifactList {
+                artifacts: Vec::new(),
+                complete: false,
+                warnings: Vec::new(),
+            },
+            bundles: BTreeMap::new(),
+            transcripts: BTreeMap::new(),
+        });
+        let mut observer = Self::attach(root, working_dir, manifest, file_service, true).await?;
         let preserved: HashSet<_> = observer
             .manifest
             .list
@@ -623,6 +598,48 @@ impl ArtifactObserver {
         }
         observer.tick(true).await?;
         Ok(observer.manifest)
+    }
+
+    /// Reopen a persisted manifest with its snapshot budget and no watcher.
+    async fn attach(
+        root: PathBuf,
+        working_dir: PathBuf,
+        manifest: ArtifactManifest,
+        file_service: FileService,
+        recovery: bool,
+    ) -> Result<Self> {
+        let mut observer = Self {
+            root,
+            working_dir,
+            watcher: None,
+            pending: HashSet::new(),
+            destination: directory(manifest.session_id, manifest.execution_id),
+            file_service,
+            manifest,
+            stored_hashes: HashSet::new(),
+            bytes: 0,
+            dirty: true,
+            recovery,
+            subagents: BTreeMap::new(),
+            subagent_handle: None,
+            codex: None,
+            agent_session_id: None,
+        };
+        tokio::fs::create_dir_all(&observer.destination).await?;
+        // Count all previous versions, including blobs no longer referenced by
+        // the latest manifest. Repeated child recovery cannot reset the budget.
+        let mut stored = tokio::fs::read_dir(&observer.destination).await?;
+        while let Some(file) = stored.next_entry().await? {
+            let hash = file.file_name().to_string_lossy().into_owned();
+            if hash.len() == 64
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && file.file_type().await?.is_file()
+            {
+                observer.bytes += file.metadata().await?.len();
+                observer.stored_hashes.insert(hash);
+            }
+        }
+        Ok(observer)
     }
 
     fn add_file(&mut self, path: PathBuf, source_entry: Option<u32>, scope: Option<&str>) {
@@ -1268,6 +1285,58 @@ impl ArtifactObserver {
     }
 }
 
+/// Completed manifests never rebundle, so office snapshots preserved before PDF
+/// conversion existed convert on their first preview. Returns the current bundle
+/// for office artifacts only; a persisted failure is not retried.
+pub async fn ensure_office_preview(
+    session_id: Uuid,
+    execution_id: Uuid,
+    artifact_id: &str,
+    file_service: FileService,
+) -> Result<Option<ArtifactBundle>> {
+    // ponytail: shares the recovery lock, so one slow conversion delays other
+    // legacy recoveries; use a per-execution lock if that ever shows up.
+    let _guard = RECOVERY.lock().await;
+    let Some(manifest) = load(session_id, execution_id).await? else {
+        return Ok(None);
+    };
+    let Some(bundle) = manifest.bundles.get(artifact_id) else {
+        return Ok(None);
+    };
+    if !is_office(&bundle.artifact.mime) {
+        return Ok(None);
+    }
+    let pending = manifest.list.complete
+        && bundle.artifact.content_hash.is_some()
+        && !bundle
+            .resources
+            .iter()
+            .any(|resource| resource.mime == "application/pdf")
+        && !bundle
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("PDF preview unavailable"));
+    if !pending {
+        return Ok(Some(bundle.clone()));
+    }
+    let artifact = bundle.artifact.clone();
+    let mut observer = ArtifactObserver::attach(
+        PathBuf::new(),
+        PathBuf::new(),
+        manifest,
+        file_service,
+        false,
+    )
+    .await?;
+    let bundle = observer.bundle_resources(artifact).await;
+    observer
+        .manifest
+        .bundles
+        .insert(artifact_id.to_string(), bundle.clone());
+    observer.dirty = true;
+    observer.persist().await?;
+    Ok(Some(bundle))
+}
 async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
@@ -1426,6 +1495,74 @@ mod tests {
             Err(error) if error.to_string().contains("not installed") => {}
             result => assert!(result.unwrap().starts_with(b"%PDF")),
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_office_snapshot_converts_on_first_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let files = FileService::new(pool).unwrap();
+        let session = Uuid::new_v4();
+        let execution = Uuid::new_v4();
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::fs::write(root.join("out/note.rtf"), b"{\\rtf1\\ansi Hello}").unwrap();
+        let mut observer = ArtifactObserver::start(
+            root.clone(),
+            root.clone(),
+            Uuid::new_v4(),
+            session,
+            execution,
+            files.clone(),
+        )
+        .await
+        .unwrap();
+        observer
+            .observe_entry(
+                0,
+                &NormalizedEntry {
+                    timestamp: None,
+                    metadata: None,
+                    content: "[doc](out/note.rtf \"vibe-artifact\")".into(),
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                },
+            )
+            .await;
+        observer.tick(true).await.unwrap();
+        drop(observer);
+        let mut manifest = load(session, execution).await.unwrap().unwrap();
+        let id = manifest.list.artifacts[0].id.clone();
+        let has_pdf = |bundle: &ArtifactBundle| {
+            bundle
+                .resources
+                .iter()
+                .any(|resource| resource.mime == "application/pdf")
+        };
+        let bundle = &manifest.bundles[&id];
+        if bundle.warnings.iter().any(|w| w.contains("not installed")) {
+            return;
+        }
+        assert!(has_pdf(bundle), "{:?}", bundle.warnings);
+        // A manifest preserved before conversion existed carries no PDF resource.
+        manifest.bundles.get_mut(&id).unwrap().resources.clear();
+        atomic_write(
+            &directory(session, execution).join("manifest.json"),
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .await
+        .unwrap();
+        let converted = ensure_office_preview(session, execution, &id, files)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(has_pdf(&converted));
+        assert!(has_pdf(
+            &load(session, execution).await.unwrap().unwrap().bundles[&id]
+        ));
+        tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
