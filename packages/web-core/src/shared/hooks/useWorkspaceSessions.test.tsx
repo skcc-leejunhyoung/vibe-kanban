@@ -123,6 +123,34 @@ describe('useWorkspaceSessions', () => {
     expect(probe.pane.selectedSessionId).toBeUndefined();
   });
 
+  it('keeps a user-picked session when focus leaves and comes back', async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+
+    await act(async () => probe.pane.selectSession('a-older'));
+    await probe.focusDocumentOn('ws-b');
+    await probe.focusDocumentOn('ws-a');
+
+    expect(probe.pane.selectedSessionId).toBe('a-older');
+  });
+
+  it('falls back to the latest session when the selected one is gone', async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+    await act(async () => probe.pane.selectSession('a-older'));
+
+    queryClient.setQueryData(
+      workspaceSessionKeys.byWorkspace('ws-a', null),
+      sessionList(['a-latest'])
+    );
+    // react-query notifies observers through its scheduler, not synchronously.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(probe.pane.selectedSessionId).toBe('a-latest');
+  });
+
   it('does not leak new-session mode into another workspace', async () => {
     const probe = renderPaneAndDocument();
     await probe.focusDocumentOn('ws-a');

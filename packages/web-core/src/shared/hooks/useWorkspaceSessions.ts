@@ -111,20 +111,31 @@ export function useWorkspaceSessions(
   // back walks the document instance W -> other -> W, and treating that as a
   // workspace switch used to overwrite the new-session mode a pane was showing.
   // Per-workspace keys already keep one workspace's mode out of another's.
+  //
+  // So this only ever *seeds* a selection: whatever the user picked — the
+  // new-session composer or an older session — stands until they pick something
+  // else, and only a selection pointing at a session that no longer exists is
+  // replaced. Explicit jumps (send, vibe review, command bar) call
+  // selectSession/onSelectSession themselves.
   useEffect(() => {
-    if (sessions.length > 0) {
-      // Sessions are ordered by most recently used, so first is the most recently used
-      const currentSelection =
-        useWorkspaceSessionSelectionStore.getState().selections[selectionKey];
-      if (currentSelection?.mode !== 'new') {
-        setStoredSelection(selectionKey, {
-          mode: 'existing',
-          sessionId: sessions[0].id,
-        });
-      }
-    } else {
+    if (sessions.length === 0) {
       setStoredSelection(selectionKey, undefined);
+      return;
     }
+    const currentSelection =
+      useWorkspaceSessionSelectionStore.getState().selections[selectionKey];
+    if (currentSelection?.mode === 'new') return;
+    if (
+      currentSelection?.mode === 'existing' &&
+      sessions.some((session) => session.id === currentSelection.sessionId)
+    ) {
+      return;
+    }
+    // Sessions are ordered by most recently used, so first is the most recently used
+    setStoredSelection(selectionKey, {
+      mode: 'existing',
+      sessionId: sessions[0].id,
+    });
   }, [sessions, selectionKey, setStoredSelection]);
 
   const isNewSessionMode = selection?.mode === 'new' || sessions.length === 0;
