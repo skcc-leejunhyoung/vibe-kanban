@@ -32,7 +32,7 @@ import { PreviewDevToolsBridge } from '@/shared/lib/previewDevToolsBridge';
 import { useInspectModeStore } from '@/features/workspace-chat/model/store/useInspectModeStore';
 import type { PreviewDevToolsMessage } from '@/shared/types/previewDevTools';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
-import { getTargetDevPort } from './previewUrl';
+import { getTargetDevPort, transformProxyUrlToDevUrl } from './previewUrl';
 
 const MIN_RESPONSIVE_WIDTH = 320;
 const MIN_RESPONSIVE_HEIGHT = 480;
@@ -112,49 +112,6 @@ function stripPreviewRefreshParam(rawUrl: string): string | null {
     const url = new URL(rawUrl);
     url.searchParams.delete('_refresh');
     return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Transform a proxy URL back to the dev server URL.
- * Proxy format: http://{devPort}.localhost:{proxyPort}{path}?_refresh=...
- * Dev format:   http://localhost:{devPort}{path}
- */
-function transformProxyUrlToDevUrl(
-  proxyUrl: string,
-  devPort: string
-): string | null {
-  try {
-    const url = new URL(proxyUrl);
-
-    const hostnameParts = url.hostname.split('.');
-    if (
-      hostnameParts.length < 2 ||
-      !hostnameParts.slice(1).join('.').startsWith('localhost')
-    ) {
-      return null;
-    }
-
-    url.searchParams.delete('_refresh');
-
-    const devUrl = new URL(`http://localhost${url.pathname}`);
-
-    const search = url.searchParams.toString();
-    if (search) {
-      devUrl.search = search;
-    }
-
-    if (url.hash) {
-      devUrl.hash = url.hash;
-    }
-
-    if (devPort !== '80') {
-      devUrl.port = devPort;
-    }
-
-    return devUrl.toString();
   } catch {
     return null;
   }
@@ -766,13 +723,13 @@ export function PreviewBrowserContainer({
       const normalizedCurrentUrl = displayedPreviewUrl
         ? normalizePreviewUrl(displayedPreviewUrl, baseUrl)
         : null;
+      // Already on that page: nothing to navigate to. Don't drop the override
+      // here — that would send the iframe back to the auto-detected URL, i.e.
+      // away from the address the user just asked for.
       if (
         normalizedCurrentUrl &&
         normalizedInputDevUrl === normalizedCurrentUrl
       ) {
-        if (hasOverride) {
-          clearOverride();
-        }
         return true;
       }
 
@@ -806,7 +763,6 @@ export function PreviewBrowserContainer({
       displayedPreviewUrl,
       iframeUrl,
       isLoopbackPreview,
-      hasOverride,
       showIframe,
       previewProxyPort,
       clearOverride,
