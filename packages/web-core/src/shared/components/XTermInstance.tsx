@@ -91,8 +91,12 @@ export function XTermInstance({
       fontSize: getTerminalFontSize(),
       fontFamily: TERMINAL_FONT_FAMILY,
       scrollback: TERMINAL_SCROLLBACK,
-      // Lets Alt+←/→ reach zsh as word-motions instead of being eaten by macOS.
-      macOptionIsMeta: true,
+      // macOptionIsMeta stays off on purpose. On macOS Option is a third-level
+      // shift — it is how the Korean IME types Latin letters without leaving
+      // Hangul mode — and turning it into Meta sends ESC+<key> instead, so
+      // Option+L fires whatever `bindkey "^[l"` is bound to. Alt+←/→ keep
+      // working regardless: xterm builds those from the modifier bitmask and
+      // rewrites Alt+Arrow to ESC b / ESC f on macOS.
       theme: getTerminalTheme(),
     });
 
