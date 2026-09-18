@@ -1,4 +1,10 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
+use executors::{
+    executors::BaseCodingAgent,
+    profile::{ExecutorConfigs, ExecutorProfileId},
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use thiserror::Error;
@@ -158,11 +164,12 @@ impl Session {
     ) -> Result<Self, SessionError> {
         let agent_working_dir = Self::resolve_agent_working_dir(pool, workspace_id).await?;
         let name = data.name.as_deref().filter(|s| !s.is_empty());
+        let auto_resume_enabled = Self::seeded_auto_resume(data.executor.as_deref());
 
         Ok(sqlx::query_as!(
             Session,
-            r#"INSERT INTO sessions (id, workspace_id, name, executor, agent_working_dir)
-               VALUES ($1, $2, $3, $4, $5)
+            r#"INSERT INTO sessions (id, workspace_id, name, executor, agent_working_dir, auto_resume_enabled)
+               VALUES ($1, $2, $3, $4, $5, $6)
                RETURNING id AS "id!: Uuid",
                          workspace_id AS "workspace_id!: Uuid",
                          name,
@@ -175,10 +182,30 @@ impl Session {
             workspace_id,
             name,
             data.executor,
-            agent_working_dir
+            agent_working_dir,
+            auto_resume_enabled
         )
         .fetch_one(pool)
         .await?)
+    }
+
+    /// Seed the per-session auto-resume toggle from the agent's
+    /// `auto_resume_on_limit` setting. Seeding here rather than at the call
+    /// sites is what makes that setting actually reach sessions started from the
+    /// board, from automation or for a review — none of those go through the
+    /// sessions route, and they create the session with `executor` already set,
+    /// which also skips the follow-up route's late seeding. Executors that are
+    /// not coding agents (`dev-server`, `gh-cli`, …) don't parse and stay off.
+    ///
+    /// ponytail: resolves the DEFAULT variant because `CreateSession` carries no
+    /// variant; thread one through if a variant ever needs to disagree.
+    fn seeded_auto_resume(executor: Option<&str>) -> bool {
+        executor
+            .and_then(|executor| BaseCodingAgent::from_str(executor).ok())
+            .and_then(|executor| {
+                ExecutorConfigs::get_cached().get_coding_agent(&ExecutorProfileId::new(executor))
+            })
+            .is_some_and(|agent| agent.auto_resume_on_limit())
     }
 
     async fn resolve_agent_working_dir(
@@ -267,5 +294,24 @@ impl Session {
             .execute(pool)
             .await?;
         Ok(result.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The guard that keeps script/setup sessions (`dev-server`, `gh-cli`,
+    /// `cursor`) out of auto-resume now that every creation path seeds here.
+    /// Coding agents are left out because their answer comes from the machine's
+    /// profiles.json.
+    #[test]
+    fn only_coding_agents_can_seed_auto_resume() {
+        for executor in [None, Some("dev-server"), Some("gh-cli"), Some("cursor")] {
+            assert!(
+                !Session::seeded_auto_resume(executor),
+                "{executor:?} must not seed auto-resume"
+            );
+        }
     }
 }
