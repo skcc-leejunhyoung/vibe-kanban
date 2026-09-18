@@ -384,6 +384,10 @@
           "label": "Quick Chat을 새 패널에서 열기",
           "helper": "패널 공간이 있으면 현재 패널을 유지하고 새 Quick Chat을 옆에 엽니다."
         },
+        "terminalNewPane": {
+          "label": "터미널을 새 패널에서 열기",
+          "helper": "패널 공간이 있으면 활성 패널의 내용을 바꾸는 대신 터미널을 옆 패널에 엽니다."
+        },
         "presetLayout": "{{count}}개 패널 배치",
         "rowsColumns": "{{rows}}행 × {{columns}}열"
       },

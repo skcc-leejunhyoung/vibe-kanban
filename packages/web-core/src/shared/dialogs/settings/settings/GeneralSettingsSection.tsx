@@ -1311,6 +1311,22 @@ export function GeneralSettingsSection() {
             updateDraft({ quick_chat_open_in_new_pane: checked })
           }
         />
+        {/* The standalone terminal is a local-app surface: the cloud app has no
+            host id to route a home-directory PTY to, so its command palette
+            never offers the action this toggle governs. */}
+        {runtime === 'local' && (
+          <SettingsCheckbox
+            id="terminal-open-in-new-pane"
+            label={t('settings.general.splitScreen.terminalNewPane.label')}
+            description={t(
+              'settings.general.splitScreen.terminalNewPane.helper'
+            )}
+            checked={draft?.terminal_open_in_new_pane ?? false}
+            onChange={(checked) =>
+              updateDraft({ terminal_open_in_new_pane: checked })
+            }
+          />
+        )}
         <SettingsField
           label={t('settings.general.splitScreen.maxPanes', {
             defaultValue: 'Maximum panes',

@@ -164,6 +164,7 @@ export function useActionVisibilityContext(
 
     return {
       appRuntime,
+      terminalOpensInNewPane: config?.terminal_open_in_new_pane ?? false,
       currentHostId,
       layoutMode,
       rightMainPanelMode: panelState.rightMainPanelMode,
@@ -196,6 +197,7 @@ export function useActionVisibilityContext(
     };
   }, [
     appRuntime,
+    config?.terminal_open_in_new_pane,
     currentHostId,
     layoutMode,
     panelState.rightMainPanelMode,

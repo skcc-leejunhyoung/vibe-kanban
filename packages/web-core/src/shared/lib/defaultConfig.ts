@@ -74,6 +74,7 @@ export const DEFAULT_CONFIG: Config = {
   kanban_project_views: {},
   pull_request_default_filters: {},
   quick_chat_open_in_new_pane: false,
+  terminal_open_in_new_pane: false,
   agent_memory_sync: {
     enabled: false,
     daily_local_time: '03:00',

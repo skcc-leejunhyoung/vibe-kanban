@@ -59,6 +59,28 @@ export function openDestinationInNewPane(
   return true;
 }
 
+/**
+ * Give a destination a pane of its own: focus the pane already showing it,
+ * else fill an empty pane, else append one, else take over the pane after the
+ * active one. Unlike {@link openDestinationInNewPane} it never leaves two
+ * panes on the same destination, so it is safe for singleton-backed ones (the
+ * terminal owns a single PTY and xterm element). Falls back to document
+ * navigation where there is no pane grid.
+ */
+export function openDestinationInOwnPane(
+  destination: WorkspacePaneDestination,
+  appNavigation: AppNavigation,
+  appRuntime: AppRuntime,
+  navigateDocument: () => void
+): void {
+  if (!paneGridAvailable(appRuntime)) {
+    navigateDocument();
+    return;
+  }
+  useWorkspacePanesStore.getState().openPaneForDestination(destination);
+  ensurePaneGridVisible(appNavigation);
+}
+
 /** Show the workspace picker in the active pane, or navigate normally. */
 export function openWorkspacesForActivePane(
   appNavigation: AppNavigation,

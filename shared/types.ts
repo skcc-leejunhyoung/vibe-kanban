@@ -1063,6 +1063,10 @@ pull_request_default_filters: JsonValue,
  */
 quick_chat_open_in_new_pane: boolean,
 /**
+ * Open the standalone terminal in its own workspace pane when supported.
+ */
+terminal_open_in_new_pane: boolean,
+/**
  * Daily agent-owned reconciliation of memory snapshots across this user's hosts.
  */
 agent_memory_sync: AgentMemorySyncConfig, };

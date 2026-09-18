@@ -194,6 +194,9 @@ pub struct Config {
     /// Open newly created quick chats in a new workspace pane when supported.
     #[serde(default)]
     pub quick_chat_open_in_new_pane: bool,
+    /// Open the standalone terminal in its own workspace pane when supported.
+    #[serde(default)]
+    pub terminal_open_in_new_pane: bool,
     /// Daily agent-owned reconciliation of memory snapshots across this user's hosts.
     #[serde(default)]
     pub agent_memory_sync: AgentMemorySyncConfig,
@@ -239,6 +242,7 @@ impl Config {
             kanban_project_views: default_json_object(),
             pull_request_default_filters: default_json_object(),
             quick_chat_open_in_new_pane: false,
+            terminal_open_in_new_pane: false,
             agent_memory_sync: AgentMemorySyncConfig::default(),
         }
     }
@@ -309,6 +313,7 @@ impl Default for Config {
             kanban_project_views: default_json_object(),
             pull_request_default_filters: default_json_object(),
             quick_chat_open_in_new_pane: false,
+            terminal_open_in_new_pane: false,
             agent_memory_sync: AgentMemorySyncConfig::default(),
         }
     }
@@ -345,6 +350,7 @@ mod tests {
             serde_json::Value::Array(vec![])
         );
         assert!(!migrated.quick_chat_open_in_new_pane);
+        assert!(!migrated.terminal_open_in_new_pane);
     }
 
     #[test]
@@ -386,5 +392,6 @@ mod tests {
             serde_json::Value::Array(vec![])
         );
         assert!(!config.quick_chat_open_in_new_pane);
+        assert!(!config.terminal_open_in_new_pane);
     }
 }

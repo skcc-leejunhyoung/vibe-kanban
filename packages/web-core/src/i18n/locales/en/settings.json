@@ -392,6 +392,10 @@
           "label": "Open Quick Chat in a new pane",
           "helper": "Keep the current pane open and show each new Quick Chat beside it when space is available."
         },
+        "terminalNewPane": {
+          "label": "Open Terminal in its own pane",
+          "helper": "Give the terminal a pane beside the current one when space is available, instead of replacing what the active pane shows."
+        },
         "presetLayout": "{{count}} pane layout",
         "rowsColumns": "{{rows}} rows × {{columns}} columns"
       },

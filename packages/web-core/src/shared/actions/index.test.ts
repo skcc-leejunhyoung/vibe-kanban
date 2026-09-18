@@ -65,6 +65,7 @@ vi.mock('@/shared/lib/openInSplitPane', () => ({
   openUrlInSplitPane: vi.fn(),
   getChromeTargetWorkspace: vi.fn(),
   revealDestinationInPane: vi.fn(),
+  openDestinationInOwnPane: vi.fn(),
 }));
 vi.mock('@/shared/lib/reviewAndCreatePr', () => ({
   runReviewAndCreatePr: vi.fn(),
@@ -99,6 +100,7 @@ import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import {
   getChromeTargetWorkspace,
+  openDestinationInOwnPane,
   openUrlInSplitPane,
   revealDestinationInPane,
 } from '@/shared/lib/openInSplitPane';
@@ -454,6 +456,43 @@ describe('command palette navigation actions', () => {
     );
     // Off the pane grid (mobile, routed surface) it falls back to the document.
     reveal.mock.calls[0]?.[3]?.();
+    expect(goToTerminal).toHaveBeenCalled();
+  });
+
+  it('gives the terminal its own pane when the setting is on', () => {
+    const off = { ...openWorkspaceContext, appRuntime: 'local' as const };
+    const on = { ...off, terminalOpensInNewPane: true };
+
+    // The palette row promises the pane the setting hands out.
+    expect(Actions.GotoTerminal.getLabel(off)).toBe('Goto: Terminal');
+    expect(Actions.GotoTerminal.getLabel(on)).toBe('Open Terminal');
+    // Still a local-only surface — the cloud app cannot route a home PTY.
+    expect(
+      isActionVisible(Actions.GotoTerminal, {
+        ...on,
+        appRuntime: 'remote' as const,
+      })
+    ).toBe(false);
+
+    const goToTerminal = vi.fn();
+    const { ctx } = makeCtx(
+      {},
+      {
+        appNavigation: { goToTerminal } as never,
+        terminalOpensInNewPane: true,
+      }
+    );
+    Actions.GotoTerminal.execute(ctx);
+
+    expect(revealDestinationInPane).not.toHaveBeenCalled();
+    const ownPane = vi.mocked(openDestinationInOwnPane);
+    expect(ownPane).toHaveBeenCalledWith(
+      { kind: 'terminal' },
+      ctx.appNavigation,
+      ctx.appRuntime,
+      expect.any(Function)
+    );
+    ownPane.mock.calls[0]?.[3]?.();
     expect(goToTerminal).toHaveBeenCalled();
   });
 

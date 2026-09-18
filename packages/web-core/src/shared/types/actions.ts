@@ -75,6 +75,8 @@ export interface NavigationProject {
 // Context provided to action executors (from React hooks)
 export interface ActionExecutorContext {
   appRuntime: AppRuntime;
+  /** Config: the standalone terminal opens in its own pane instead of the active one. */
+  terminalOpensInNewPane: boolean;
   userId: string | null;
   currentHostId: string | null;
   appNavigation: AppNavigation;
@@ -133,6 +135,8 @@ export interface ActionExecutorContext {
 // Context for evaluating action visibility and state conditions
 export interface ActionVisibilityContext {
   appRuntime: AppRuntime;
+  /** Config: the standalone terminal opens in its own pane instead of the active one. */
+  terminalOpensInNewPane: boolean;
   currentHostId: string | null;
   // Layout state
   layoutMode: LayoutMode;

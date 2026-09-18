@@ -133,6 +133,7 @@ import {
 } from '@/shared/lib/commandPaletteEvents';
 import {
   getChromeTargetWorkspace,
+  openDestinationInOwnPane,
   openNewPane,
   openUrlInSplitPane,
   openWorkspacesForActivePane,
@@ -1485,19 +1486,35 @@ export const Actions = {
     id: 'goto-terminal',
     label: 'Goto: Terminal',
     icon: TerminalIcon,
-    keywords: ['terminal', 'shell', 'console', 'home', 'go to', 'navigate'],
+    keywords: [
+      'terminal',
+      'shell',
+      'console',
+      'home',
+      'go to',
+      'navigate',
+      'open',
+    ],
     requiresTarget: ActionTargetType.NONE,
     // The PTY lives on a host machine. The cloud app reaches hosts only through
     // relay routes carrying a host id (`/hosts/{id}/...`), and a home-directory
     // terminal has no such id to carry, so there is nothing to offer here.
     isVisible: (ctx) => ctx.appRuntime === 'local',
-    execute: (ctx) =>
-      revealDestinationInPane(
-        { kind: 'terminal' },
-        ctx.appNavigation,
-        ctx.appRuntime,
-        () => ctx.appNavigation.goToTerminal()
-      ),
+    // With the setting on the terminal claims a pane of its own instead of
+    // replacing what the active one shows, so the label promises a pane.
+    getLabel: (ctx) =>
+      ctx.terminalOpensInNewPane ? 'Open Terminal' : 'Goto: Terminal',
+    execute: (ctx) => {
+      // Both paths dedupe by destination — the terminal owns one PTY and one
+      // xterm DOM element, so a second pane would adopt that element away and
+      // leave the first one blank.
+      const open = ctx.terminalOpensInNewPane
+        ? openDestinationInOwnPane
+        : revealDestinationInPane;
+      open({ kind: 'terminal' }, ctx.appNavigation, ctx.appRuntime, () =>
+        ctx.appNavigation.goToTerminal()
+      );
+    },
   } satisfies GlobalActionDefinition,
 
   GotoPullRequests: {

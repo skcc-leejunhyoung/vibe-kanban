@@ -41,6 +41,7 @@ import {
   registerPaneActionExecutor,
 } from '@/shared/lib/paneActionRegistry';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
 
 interface ActionsProviderProps {
   children: ReactNode;
@@ -50,6 +51,7 @@ interface ActionsProviderProps {
 export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
   const appRuntime = useAppRuntime();
   const { userId } = useAuth();
+  const { config } = useUserSystem();
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   // Derived from the destination (not router params) so split panes can scope
@@ -249,6 +251,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
   const executorContext = useMemo<ActionExecutorContext>(() => {
     return {
       appRuntime,
+      terminalOpensInNewPane: config?.terminal_open_in_new_pane ?? false,
       userId,
       currentHostId: hostId,
       appNavigation,
@@ -289,6 +292,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
     };
   }, [
     appRuntime,
+    config?.terminal_open_in_new_pane,
     userId,
     hostId,
     queryClient,

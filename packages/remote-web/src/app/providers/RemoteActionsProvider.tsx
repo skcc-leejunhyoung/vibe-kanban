@@ -182,6 +182,10 @@ export function RemoteActionsProvider({
   const executorContext = useMemo<ActionExecutorContext>(
     () => ({
       appRuntime,
+      // The standalone terminal action is hidden in the cloud app (a home
+      // directory PTY carries no host id to route to), so the setting that
+      // picks its pane has nothing to act on here.
+      terminalOpensInNewPane: false,
       userId,
       currentHostId: hostId ?? null,
       appNavigation,
