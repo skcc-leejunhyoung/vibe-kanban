@@ -59,5 +59,10 @@ describe('transformProxyUrlToDevUrl', () => {
     expect(
       transformProxyUrlToDevUrl('https://4173.preview.example.com/page', '4173')
     ).toBeNull();
+    // `notlocalhost` merely ends with the same letters — rewriting it to
+    // localhost would silently navigate to a different host.
+    expect(
+      transformProxyUrlToDevUrl('https://4173.notlocalhost/page', '4173')
+    ).toBeNull();
   });
 });

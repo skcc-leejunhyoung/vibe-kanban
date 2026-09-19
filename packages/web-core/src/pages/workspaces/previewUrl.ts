@@ -5,10 +5,11 @@
  */
 function hasProxyLocalhostSuffix(url: URL): boolean {
   const hostnameParts = url.hostname.split('.');
-  return (
-    hostnameParts.length >= 2 &&
-    hostnameParts.slice(1).join('.').endsWith('localhost')
-  );
+  if (hostnameParts.length < 2) return false;
+  // Match on the label boundary: `.localhost` is reserved for loopback, but
+  // `notlocalhost` is just some other host we must not rewrite to localhost.
+  const suffix = hostnameParts.slice(1).join('.');
+  return suffix === 'localhost' || suffix.endsWith('.localhost');
 }
 
 export function getTargetDevPort(
