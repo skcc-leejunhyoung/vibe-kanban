@@ -112,11 +112,16 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim AS runtime
 
+# poppler-utils provides pdftoppm, the only PDF rasterizer available here:
+# artifact thumbnails try macOS `sips` first and LibreOffice last, and neither
+# exists in this image, so without it every PDF artifact renders an error card
+# instead of a preview. Office artifacts still need LibreOffice, as before.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
     openssh-client \
+    poppler-utils \
     tini \
     wget \
   && rm -rf /var/lib/apt/lists/* \
