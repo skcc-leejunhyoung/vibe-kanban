@@ -85,6 +85,7 @@ describe('ensurePane / appendPane / focusPaneAt', () => {
     store.getState().openPaneForDestination(ws('ws-b'));
     store.getState().setActivePane('pane-1');
 
+    const serialBefore = store.getState().focusSerial;
     store.getState().appendPane();
     expect(store.getState().panes.map((pane) => pane.id)).toEqual([
       'pane-1',
@@ -96,7 +97,7 @@ describe('ensurePane / appendPane / focusPaneAt', () => {
     expect(store.getState().layout['pane-1']).toBeCloseTo(100 / 3);
     expect(store.getState().layout['pane-3']).toBeCloseTo(100 / 3);
     expect(store.getState().layout['pane-2']).toBeCloseTo(100 / 3);
-    expect(store.getState().focusSerial).toBe(1);
+    expect(store.getState().focusSerial).toBe(serialBefore + 1);
   });
 
   it('caps inserts at maxPanes', () => {
@@ -199,6 +200,39 @@ describe('openPaneForDestination', () => {
       store.getState().panes.map((pane) => pane.destination?.workspaceId)
     ).toEqual(['ws-a', 'ws-e', 'ws-c', 'ws-d']);
     expect(store.getState().activePaneId).toBe('pane-2');
+  });
+
+  // Picking the pane is only half the job: without a focusSerial bump the grid
+  // never moves DOM focus, so the caret stays in whatever had it before and
+  // keystrokes miss the pane that just opened.
+  it.each([
+    ['fills an empty pane', () => store.getState().ensurePane()],
+    [
+      'appends a pane',
+      () => store.getState().openPaneForDestination(ws('ws-a')),
+    ],
+    [
+      'activates the pane already showing it',
+      () => {
+        store.getState().openPaneForDestination(ws('ws-target'));
+        store.getState().openPaneForDestination(ws('ws-other'));
+      },
+    ],
+    [
+      'takes over a pane on a full grid',
+      () => {
+        for (const id of ['ws-a', 'ws-b', 'ws-c', 'ws-d']) {
+          store.getState().openPaneForDestination(ws(id));
+        }
+      },
+    ],
+  ])('requests DOM focus when it %s', (_name, setup) => {
+    setup();
+    const serialBefore = store.getState().focusSerial;
+
+    store.getState().openPaneForDestination(ws('ws-target'));
+
+    expect(store.getState().focusSerial).toBe(serialBefore + 1);
   });
 });
 
@@ -409,9 +443,10 @@ describe('helpers', () => {
       'pane-1'
     );
 
+    const serialBefore = store.getState().focusSerial;
     store.getState().cycleActivePane('next');
     expect(store.getState().activePaneId).toBe('pane-1');
-    expect(store.getState().focusSerial).toBe(2);
+    expect(store.getState().focusSerial).toBe(serialBefore + 1);
   });
 
   it('getActivePaneWorkspace only reports workspace destinations', () => {

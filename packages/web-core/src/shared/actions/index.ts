@@ -1496,6 +1496,9 @@ export const Actions = {
       'open',
     ],
     requiresTarget: ActionTargetType.NONE,
+    // The pane takes focus for us; restoring the pre-palette element on close
+    // would race the shell and usually win, leaving the caret behind.
+    restoreFocusOnClose: false,
     // The PTY lives on a host machine. The cloud app reaches hosts only through
     // relay routes carrying a host id (`/hosts/{id}/...`), and a home-directory
     // terminal has no such id to carry, so there is nothing to offer here.

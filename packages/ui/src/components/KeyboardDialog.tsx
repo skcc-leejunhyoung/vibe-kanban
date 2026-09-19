@@ -44,6 +44,12 @@ const Dialog = React.forwardRef<
     scrollMode?: 'viewport' | 'content';
     /** Edge-to-edge media viewer: no panel chrome, black backdrop. */
     fullscreen?: boolean;
+    /**
+     * Runs before focus returns to the opener on close; preventDefault() keeps
+     * the restore from happening at all, for dialogs that handed focus
+     * somewhere deliberate (e.g. a workspace pane they just opened).
+     */
+    onCloseAutoFocus?: (event: Event) => void;
   }
 >(
   (
@@ -56,6 +62,7 @@ const Dialog = React.forwardRef<
       size = 'xl',
       scrollMode = 'viewport',
       fullscreen = false,
+      onCloseAutoFocus,
       style,
       ...props
     },
@@ -113,12 +120,18 @@ const Dialog = React.forwardRef<
     // select()s text inputs, which would clobber a draft on the next keystroke.
     // Always preventDefault — the fallback would target the same opener, so
     // letting it run would defeat restoreDialogFocus declining.
-    const handleUnmountAutoFocus = React.useCallback((event: Event) => {
-      event.preventDefault();
-      const opener = openerRef.current;
-      openerRef.current = null;
-      restoreDialogFocus(opener);
-    }, []);
+    const handleUnmountAutoFocus = React.useCallback(
+      (event: Event) => {
+        onCloseAutoFocus?.(event);
+        const declined = event.defaultPrevented;
+        event.preventDefault();
+        const opener = openerRef.current;
+        openerRef.current = null;
+        if (declined) return;
+        restoreDialogFocus(opener);
+      },
+      [onCloseAutoFocus]
+    );
 
     useHotkeys(
       'enter',

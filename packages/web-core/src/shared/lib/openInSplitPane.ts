@@ -40,45 +40,28 @@ export function openNewPane(appNavigation: AppNavigation): void {
   ensurePaneGridVisible(appNavigation);
 }
 
-/** Open a destination in a newly appended pane, if this surface has room. */
-export function openDestinationInNewPane(
-  destination: WorkspacePaneDestination,
-  appNavigation: AppNavigation,
-  appRuntime: AppRuntime
-): boolean {
-  if (!paneGridAvailable(appRuntime)) return false;
-
-  const before = useWorkspacePanesStore.getState().panes.length;
-  useWorkspacePanesStore.getState().appendPane();
-  const { panes, activePaneId, setPaneDestination } =
-    useWorkspacePanesStore.getState();
-  if (panes.length === before || activePaneId === null) return false;
-
-  setPaneDestination(activePaneId, destination);
-  ensurePaneGridVisible(appNavigation);
-  return true;
-}
-
 /**
  * Give a destination a pane of its own: focus the pane already showing it,
  * else fill an empty pane, else append one, else take over the pane after the
- * active one. Unlike {@link openDestinationInNewPane} it never leaves two
- * panes on the same destination, so it is safe for singleton-backed ones (the
- * terminal owns a single PTY and xterm element). Falls back to document
- * navigation where there is no pane grid.
+ * active one. It never leaves two panes on the same destination, so it is safe
+ * for singleton-backed ones (the terminal owns a single PTY and xterm
+ * element). Returns false when there is no pane grid to use and it navigated
+ * the document instead — callers that suppress their own focus restore need to
+ * know which happened.
  */
 export function openDestinationInOwnPane(
   destination: WorkspacePaneDestination,
   appNavigation: AppNavigation,
   appRuntime: AppRuntime,
   navigateDocument: () => void
-): void {
+): boolean {
   if (!paneGridAvailable(appRuntime)) {
     navigateDocument();
-    return;
+    return false;
   }
   useWorkspacePanesStore.getState().openPaneForDestination(destination);
   ensurePaneGridVisible(appNavigation);
+  return true;
 }
 
 /** Show the workspace picker in the active pane, or navigate normally. */

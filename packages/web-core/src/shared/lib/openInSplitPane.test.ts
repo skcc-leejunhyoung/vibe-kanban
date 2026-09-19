@@ -62,6 +62,7 @@ describe('openDestinationInOwnPane', () => {
       nextPaneId: destinations.length,
       layout: {},
       resizedPaneId: null,
+      focusSerial: 0,
     });
   }
 
@@ -72,13 +73,18 @@ describe('openDestinationInOwnPane', () => {
     isMobile = false;
   });
 
-  it('appends a pane while the grid has room', () => {
+  it('appends a pane while the grid has room, and moves focus there', () => {
     seed([ws('ws1')], 4);
+    const serialBefore = state().focusSerial;
 
-    openDestinationInOwnPane(terminal, navigation, 'local', vi.fn());
+    expect(
+      openDestinationInOwnPane(terminal, navigation, 'local', vi.fn())
+    ).toBe(true);
 
     expect(paneKinds()).toEqual(['workspace', 'terminal']);
     expect(state().activePaneId).toBe('pane-1');
+    // Without this the pane opens but the caret stays where it was.
+    expect(state().focusSerial).toBe(serialBefore + 1);
   });
 
   it('takes over a pane once the grid is full, instead of navigating away', () => {
@@ -108,7 +114,10 @@ describe('openDestinationInOwnPane', () => {
     isMobile = true;
     const navigateDocument = vi.fn();
 
-    openDestinationInOwnPane(terminal, navigation, 'local', navigateDocument);
+    // False tells the caller it kept no pane, so its own focus restore stands.
+    expect(
+      openDestinationInOwnPane(terminal, navigation, 'local', navigateDocument)
+    ).toBe(false);
 
     expect(navigateDocument).toHaveBeenCalled();
     expect(paneKinds()).toEqual(['workspace']);

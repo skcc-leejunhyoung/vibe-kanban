@@ -466,6 +466,9 @@ describe('command palette navigation actions', () => {
     // The palette row promises the pane the setting hands out.
     expect(Actions.GotoTerminal.getLabel(off)).toBe('Goto: Terminal');
     expect(Actions.GotoTerminal.getLabel(on)).toBe('Open Terminal');
+    // The pane focuses the shell; the palette restoring its opener on close
+    // would race that and land the caret back outside the terminal.
+    expect(Actions.GotoTerminal.restoreFocusOnClose).toBe(false);
     // Still a local-only surface — the cloud app cannot route a home PTY.
     expect(
       isActionVisible(Actions.GotoTerminal, {

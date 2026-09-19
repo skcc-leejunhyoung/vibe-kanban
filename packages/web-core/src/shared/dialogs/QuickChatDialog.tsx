@@ -36,7 +36,7 @@ import { useFolderFavoritesStore } from '@/shared/stores/useFolderFavoritesStore
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostId } from '@/shared/providers/HostIdProvider';
-import { openDestinationInNewPane } from '@/shared/lib/openInSplitPane';
+import { openDestinationInOwnPane } from '@/shared/lib/openInSplitPane';
 import {
   REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
   loadRemoteSharedUserSystemInfo,
@@ -69,6 +69,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     routeHostId
   );
   const wasVisibleRef = useRef(false);
+  // Set when a send handed the new workspace to a pane, so the dialog's close
+  // focus restore stands down instead of yanking the caret back to its opener.
+  const keepPaneFocusRef = useRef(false);
 
   const selectedHostSystem = useQuery({
     queryKey: ['user-system', 'quick-chat', selectedHostId],
@@ -319,20 +322,23 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       clearAttachments();
       modal.resolve(workspace.id);
       modal.hide();
-      if (
-        !openInNewPane ||
-        !openDestinationInNewPane(
+      const goToDocument = () =>
+        appNavigation.goToWorkspace(workspace.id, { hostId: selectedHostId });
+      // The pane takes focus itself; letting the dialog restore its opener
+      // afterwards would pull the caret back out of the new chat.
+      keepPaneFocusRef.current =
+        !!openInNewPane &&
+        openDestinationInOwnPane(
           {
             kind: 'workspace',
             workspaceId: workspace.id,
             hostId: selectedHostId,
           },
           appNavigation,
-          runtime
-        )
-      ) {
-        appNavigation.goToWorkspace(workspace.id, { hostId: selectedHostId });
-      }
+          runtime,
+          goToDocument
+        );
+      if (!openInNewPane) goToDocument();
     } catch (e) {
       setError(getErrorMessage(e) || 'Failed to start quick chat.');
       setSubmitting(false);
@@ -355,6 +361,11 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       open={modal.visible}
       onOpenChange={(open) => {
         if (!open) close();
+      }}
+      onCloseAutoFocus={(event: Event) => {
+        if (!keepPaneFocusRef.current) return;
+        keepPaneFocusRef.current = false;
+        event.preventDefault();
       }}
       size="xl"
       // KeyboardDialog stacks dialogs at the top (items-start). Quick chat is

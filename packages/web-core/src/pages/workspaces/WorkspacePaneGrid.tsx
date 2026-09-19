@@ -97,7 +97,10 @@ function PaneChrome({
     if (focusSerial > 0 && active) {
       const target =
         containerRef.current?.querySelector<HTMLElement>(
-          '[data-chatbox-container="true"] [contenteditable="true"], [data-workspace-selector]'
+          // `.xterm-helper-textarea` is what `Terminal.focus()` focuses, so a
+          // terminal pane lands on the shell rather than on the bare pane box,
+          // where keystrokes would go nowhere.
+          '[data-chatbox-container="true"] [contenteditable="true"], [data-workspace-selector], .xterm-helper-textarea'
         ) ?? containerRef.current;
       target?.focus({ preventScroll: true });
     }

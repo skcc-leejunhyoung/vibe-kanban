@@ -402,8 +402,12 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         }),
       focusActivePane: () =>
         set((state) => ({ focusSerial: state.focusSerial + 1 })),
+      // Every branch bumps focusSerial: this runs only for deliberate "open it
+      // in a pane" gestures, and picking the pane without moving the caret
+      // there leaves the user typing into whatever held focus before.
       openPaneForDestination: (destination) =>
         set((state) => {
+          const focusSerial = state.focusSerial + 1;
           const key = paneDestinationKey(destination);
           const existing = state.panes.find(
             (pane) =>
@@ -418,6 +422,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
                 pane.id === existing.id ? { ...pane, destination } : pane
               ),
               activePaneId: existing.id,
+              focusSerial,
             };
           }
 
@@ -428,6 +433,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
                 pane.id === empty.id ? { ...pane, destination } : pane
               ),
               activePaneId: empty.id,
+              focusSerial,
             };
           }
 
@@ -439,6 +445,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
               nextPaneId: state.nextPaneId + 1,
               activePaneId: id,
               layout: layoutForPanes(panes, state.layout, state.resizedPaneId),
+              focusSerial,
             };
           }
 
@@ -456,6 +463,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
               pane.id === target.id ? { ...pane, destination } : pane
             ),
             activePaneId: target.id,
+            focusSerial,
           };
         }),
       adoptRouteDestination: (destination) =>
