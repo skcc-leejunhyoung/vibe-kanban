@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { streamJsonPatchEntries } from './streamJsonPatchEntries';
+import type { Operation } from 'rfc6902';
+import {
+  squashReplaces,
+  streamJsonPatchEntries,
+} from './streamJsonPatchEntries';
 import { setLocalApiTransport } from './localApiTransport';
 
 // ---------------------------------------------------------------------------
@@ -274,5 +278,184 @@ describe('streamJsonPatchEntries — connection watchdog (PWA resume)', () => {
       { id: 'b' },
       { id: 'c' },
     ]);
+  });
+});
+
+describe('squashReplaces — batch coalescing keeps op order', () => {
+  it('never drops an add that a later replace on the same index supersedes', () => {
+    // A running-process replay: the wait notice at 2 is settled after the
+    // agent has already appended 3. Dropping the add would make `add /3`
+    // land in slot 2 and the replace overwrite it.
+    const ops: Operation[] = [
+      { op: 'add', path: '/entries/2', value: 'waiting' },
+      { op: 'add', path: '/entries/3', value: 'x' },
+      { op: 'replace', path: '/entries/2', value: 'finished' },
+    ];
+    expect(squashReplaces(ops)).toEqual(ops);
+  });
+
+  it('keeps only the last of replaces on one path separated by unrelated replaces', () => {
+    const ops: Operation[] = [
+      { op: 'replace', path: '/entries/2', value: 'a' },
+      { op: 'replace', path: '/entries/3', value: 'b' },
+      { op: 'replace', path: '/entries/2', value: 'c' },
+    ];
+    expect(squashReplaces(ops)).toEqual([ops[1], ops[2]]);
+  });
+
+  it('treats index-shifting ops and related paths as barriers', () => {
+    const shifting: Operation[] = [
+      { op: 'replace', path: '/entries/2', value: 'a' },
+      { op: 'add', path: '/entries/3', value: 'x' },
+      { op: 'replace', path: '/entries/2', value: 'c' },
+    ];
+    expect(squashReplaces(shifting)).toEqual(shifting);
+
+    const nested: Operation[] = [
+      { op: 'replace', path: '/entries/2/content', value: 'a' },
+      { op: 'replace', path: '/entries/2', value: { content: 'b' } },
+      { op: 'replace', path: '/entries/2/content', value: 'c' },
+    ];
+    expect(squashReplaces(nested)).toEqual(nested);
+  });
+});
+
+describe('streamJsonPatchEntries — batch application', () => {
+  it('applies a burst that settles an earlier index after later adds without losing entries', async () => {
+    const onFinished = vi.fn();
+    streamJsonPatchEntries(URL, { onFinished });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = FakeWebSocket.instances[0];
+    ws.emitOpen();
+    ws.emitMessage({
+      JsonPatch: [
+        { op: 'add', path: '/entries/0', value: { id: 'a' } },
+        { op: 'add', path: '/entries/1', value: { id: 'waiting' } },
+        { op: 'add', path: '/entries/2', value: { id: 'x' } },
+        { op: 'add', path: '/entries/3', value: { id: 'y' } },
+        { op: 'replace', path: '/entries/1', value: { id: 'finished' } },
+        { op: 'add', path: '/entries/4', value: { id: 'z' } },
+      ],
+    });
+    ws.emitMessage({ finished: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onFinished.mock.calls[0][0]).toEqual([
+      { id: 'a' },
+      { id: 'finished' },
+      { id: 'x' },
+      { id: 'y' },
+      { id: 'z' },
+    ]);
+  });
+
+  it('applies patches through the timer fallback when no animation frame runs', async () => {
+    // A hidden document never runs rAF callbacks, a queued one included.
+    globalThis.requestAnimationFrame = (() =>
+      1) as unknown as typeof requestAnimationFrame;
+    const onEntries = vi.fn();
+    streamJsonPatchEntries(URL, { onEntries });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = FakeWebSocket.instances[0];
+    ws.emitOpen();
+    ws.emitMessage({
+      JsonPatch: [{ op: 'add', path: '/entries/0', value: { id: 'a' } }],
+    });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onEntries).toHaveBeenLastCalledWith([{ id: 'a' }]);
+  });
+});
+
+describe('streamJsonPatchEntries — silence watchdog (dead open socket)', () => {
+  it('reconnects when a heartbeat-bearing connection goes silent and rebuilds from the replay', async () => {
+    const onEntries = vi.fn();
+    const onFinished = vi.fn();
+    const onError = vi.fn();
+
+    streamJsonPatchEntries(URL, {
+      onEntries,
+      onFinished,
+      onError,
+      silenceTimeoutMs: 45_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = FakeWebSocket.instances[0];
+    first.emitOpen();
+    first.emitMessage({
+      JsonPatch: [{ op: 'add', path: '/entries/0', value: { id: 'a' } }],
+    });
+    first.emitMessage({ heartbeat: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onEntries).toHaveBeenLastCalledWith([{ id: 'a' }]);
+
+    // Healthy but quiet: keep-alives keep arriving, so no reconnect.
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(15_000);
+      first.emitMessage({ heartbeat: true });
+    }
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // The socket dies silently (suspended PWA): no data, no close event. The
+    // patch the server pushed meanwhile never arrives on it.
+    await vi.advanceTimersByTimeAsync(45_000 + 500 + 1);
+    expect(first.closeCalls).toBe(1);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // The replay on the fresh socket rebuilds the list, including the patch
+    // the dead socket swallowed.
+    const second = FakeWebSocket.instances[1];
+    second.emitOpen();
+    second.emitMessage({
+      JsonPatch: [
+        { op: 'add', path: '/entries/0', value: { id: 'a' } },
+        { op: 'add', path: '/entries/1', value: { id: 'b' } },
+      ],
+    });
+    second.emitMessage({ finished: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    expect(onFinished.mock.calls[0][0]).toEqual([{ id: 'a' }, { id: 'b' }]);
+  });
+
+  it('leaves a quiet connection alone when it never delivered a heartbeat (WebSocket)', async () => {
+    streamJsonPatchEntries(URL, { silenceTimeoutMs: 45_000 });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = FakeWebSocket.instances[0];
+    ws.emitOpen();
+    ws.emitMessage({
+      JsonPatch: [{ op: 'add', path: '/entries/0', value: { id: 'a' } }],
+    });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+    expect(ws.closeCalls).toBe(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('stops watching once the stream finished', async () => {
+    const onFinished = vi.fn();
+    const onError = vi.fn();
+    streamJsonPatchEntries(URL, {
+      onFinished,
+      onError,
+      silenceTimeoutMs: 45_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = FakeWebSocket.instances[0];
+    ws.emitOpen();
+    ws.emitMessage({ heartbeat: true });
+    ws.emitMessage({ finished: true });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(1);
   });
 });

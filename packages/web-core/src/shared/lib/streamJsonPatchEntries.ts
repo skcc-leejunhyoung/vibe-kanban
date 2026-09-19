@@ -24,6 +24,20 @@ export interface StreamOptions<E = unknown> {
    */
   connectTimeoutMs?: number;
   /**
+   * Abandon an OPEN socket that has delivered nothing for this many ms and
+   * retry; the server replays the full history on the new connection.
+   *
+   * Only armed on a connection that has delivered a heartbeat. The SSE
+   * transport surfaces the server's keep-alive comments (every 15s) as
+   * heartbeats, so a gap this long means the receive path is dead: a socket
+   * left half-open by a suspended PWA or a dropped TCP session never fires
+   * `close`, and without this the conversation stays frozen on the last entry
+   * it received until the user refreshes. The WebSocket variant of the log
+   * streams sends no heartbeat, so it never arms there and a quiet stream is
+   * left alone.
+   */
+  silenceTimeoutMs?: number;
+  /**
    * Maximum (re)connection attempts before giving up and calling `onError`.
    * Covers both stalled connects and drops that happen before `finished`.
    */
@@ -37,7 +51,12 @@ export interface StreamOptions<E = unknown> {
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+// Three missed 15s keep-alives.
+const DEFAULT_SILENCE_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_RETRIES = 5;
+// rAF does not run while the document is hidden (a queued frame included), so
+// a timer keeps the snapshot current regardless of visibility.
+const PATCH_FLUSH_TIMEOUT_MS = 100;
 
 interface StreamController<E = unknown> {
   /** Current entries array (immutable snapshot) */
@@ -67,6 +86,7 @@ export function streamJsonPatchEntries<E = unknown>(
   opts: StreamOptions<E> = {}
 ): StreamController<E> {
   const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+  const silenceTimeoutMs = opts.silenceTimeoutMs ?? DEFAULT_SILENCE_TIMEOUT_MS;
   const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
 
   let connected = false;
@@ -79,6 +99,10 @@ export function streamJsonPatchEntries<E = unknown>(
   let generation = 0;
   let ws: WebSocket | null = null;
   let connectTimer: ReturnType<typeof setTimeout> | null = null;
+  let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Set once the current connection has delivered a heartbeat; gates the
+  // silence watchdog (see `silenceTimeoutMs`).
+  let heartbeatSeen = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   // Fresh copy of the baseline the stream starts from. The server replays the
   // full history on every (re)connection, so each reconnect must rebuild from
@@ -90,9 +114,10 @@ export function streamJsonPatchEntries<E = unknown>(
   const subscribers = new Set<(entries: E[]) => void>();
   if (opts.onEntries) subscribers.add(opts.onEntries);
 
-  // --- rAF batching state ---
+  // --- batching state (animation frame, with a timer fallback) ---
   let pendingOps: Operation[] = [];
   let rafId: number | null = null;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const notify = () => {
     for (const cb of subscribers) {
@@ -104,11 +129,22 @@ export function streamJsonPatchEntries<E = unknown>(
     }
   };
 
+  const cancelFlush = () => {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+  };
+
   const flush = () => {
-    rafId = null;
+    cancelFlush();
     if (pendingOps.length === 0) return;
 
-    const ops = dedupeOps(pendingOps);
+    const ops = squashReplaces(pendingOps);
     pendingOps = [];
 
     snapshot = produce(snapshot, (draft) => {
@@ -117,10 +153,28 @@ export function streamJsonPatchEntries<E = unknown>(
     notify();
   };
 
+  const scheduleFlush = () => {
+    if (rafId !== null || flushTimer !== null) return;
+    if (
+      typeof document === 'undefined' ||
+      document.visibilityState !== 'hidden'
+    ) {
+      rafId = requestAnimationFrame(flush);
+    }
+    flushTimer = setTimeout(flush, PATCH_FLUSH_TIMEOUT_MS);
+  };
+
   const clearConnectTimer = () => {
     if (connectTimer !== null) {
       clearTimeout(connectTimer);
       connectTimer = null;
+    }
+  };
+
+  const clearSilenceTimer = () => {
+    if (silenceTimer !== null) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
     }
   };
 
@@ -131,10 +185,20 @@ export function streamJsonPatchEntries<E = unknown>(
     }
   };
 
-  const cancelRaf = () => {
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
+  // Abandon the current socket: bumping the generation makes its in-flight
+  // open()/listeners no-op even if the zombie later fires events.
+  const abandonSocket = () => {
+    generation += 1;
+    clearConnectTimer();
+    clearSilenceTimer();
+    const stalled = ws;
+    ws = null;
+    if (stalled) {
+      try {
+        stalled.close();
+      } catch {
+        /* ignore */
+      }
     }
   };
 
@@ -143,8 +207,9 @@ export function streamJsonPatchEntries<E = unknown>(
     if (closed || finished) return;
     closed = true;
     clearConnectTimer();
+    clearSilenceTimer();
     clearRetryTimer();
-    cancelRaf();
+    cancelFlush();
     if (ws) {
       try {
         ws.close();
@@ -170,27 +235,38 @@ export function streamJsonPatchEntries<E = unknown>(
     }, delay);
   };
 
-  const handleMessage = (event: MessageEvent) => {
+  // Silence watchdog: every delivery (patch or heartbeat) proves the receive
+  // path is alive and pushes the deadline out; reaching it means the socket is
+  // dead even though it never fired `close`.
+  const resetSilenceTimer = (myGen: number) => {
+    if (!heartbeatSeen || silenceTimeoutMs <= 0 || closed || finished) return;
+    clearSilenceTimer();
+    silenceTimer = setTimeout(() => {
+      silenceTimer = null;
+      if (closed || finished || myGen !== generation) return;
+      abandonSocket();
+      scheduleRetry(new Error('WebSocket silence timeout'));
+    }, silenceTimeoutMs);
+  };
+
+  const handleMessage = (event: MessageEvent, myGen: number) => {
     try {
       const msg = JSON.parse(event.data);
 
-      // Handle JsonPatch messages — accumulate ops for next rAF flush
+      if (msg.heartbeat !== undefined) heartbeatSeen = true;
+
+      // Handle JsonPatch messages — accumulate ops for the next flush
       if (msg.JsonPatch) {
-        const raw = msg.JsonPatch as Operation[];
-        pendingOps.push(...raw);
-        if (rafId === null) {
-          rafId = requestAnimationFrame(flush);
-        }
+        pendingOps.push(...(msg.JsonPatch as Operation[]));
+        scheduleFlush();
       }
 
       // Handle Finished messages — flush synchronously before closing
       if (msg.finished !== undefined) {
         finished = true;
         clearConnectTimer();
+        clearSilenceTimer();
         clearRetryTimer();
-        if (rafId !== null) {
-          cancelAnimationFrame(rafId);
-        }
         flush();
         opts.onFinished?.(snapshot.entries);
         if (ws) {
@@ -201,7 +277,10 @@ export function streamJsonPatchEntries<E = unknown>(
           }
           ws = null;
         }
+        return;
       }
+
+      resetSilenceTimer(myGen);
     } catch (err) {
       fail(err);
     }
@@ -221,24 +300,15 @@ export function streamJsonPatchEntries<E = unknown>(
     }
     const myGen = ++generation;
     connected = false;
+    heartbeatSeen = false;
+    clearSilenceTimer();
 
     // Connect watchdog: if the socket never opens, abandon it and retry rather
     // than letting the caller wait on the browser's multi-minute timeout.
     connectTimer = setTimeout(() => {
       connectTimer = null;
       if (closed || finished || myGen !== generation) return;
-      // Abandon this attempt: bumping the generation makes the in-flight
-      // open()/listeners no-op even if the zombie later fires events.
-      generation += 1;
-      const stalled = ws;
-      ws = null;
-      if (stalled) {
-        try {
-          stalled.close();
-        } catch {
-          /* ignore */
-        }
-      }
+      abandonSocket();
       scheduleRetry(new Error('WebSocket connect timeout'));
     }, connectTimeoutMs);
 
@@ -274,7 +344,7 @@ export function streamJsonPatchEntries<E = unknown>(
 
         opened.addEventListener('message', (event) => {
           if (myGen !== generation) return;
-          handleMessage(event as MessageEvent);
+          handleMessage(event as MessageEvent, myGen);
         });
 
         opened.addEventListener('error', () => {
@@ -286,10 +356,11 @@ export function streamJsonPatchEntries<E = unknown>(
         opened.addEventListener('close', () => {
           if (myGen !== generation) return;
           connected = false;
-          cancelRaf();
+          cancelFlush();
           if (closed || finished) return;
           // Closed before we saw "finished" — treat as a drop and reconnect.
           clearConnectTimer();
+          clearSilenceTimer();
           ws = null;
           scheduleRetry(new Error('WebSocket closed before finish'));
         });
@@ -324,8 +395,9 @@ export function streamJsonPatchEntries<E = unknown>(
       // Abandon any in-flight connection attempt.
       generation += 1;
       clearConnectTimer();
+      clearSilenceTimer();
       clearRetryTimer();
-      cancelRaf();
+      cancelFlush();
       if (ws) {
         try {
           ws.close();
@@ -341,18 +413,36 @@ export function streamJsonPatchEntries<E = unknown>(
 }
 
 /**
- * Dedupe multiple ops that touch the same path within a batch.
- * Last write for a path wins, while preserving the overall left-to-right
- * order of the *kept* final operations.
- *
- * Example:
- *   add /entries/4, replace /entries/4  -> keep only the final replace
+ * Drop a `replace` that a later `replace` on the same path supersedes, when
+ * only replaces on unrelated paths sit in between — the streaming-delta case
+ * where one entry is re-sent per token. Order is preserved and nothing else is
+ * ever dropped: `add`/`remove` shift the array index of everything after them,
+ * so an `add` superseded by a later `replace` of the same index cannot be
+ * skipped (the adds between them would land one slot early and the replace
+ * would then overwrite one of them). Mirrors `squash_replaces` in
+ * crates/utils/src/ws_batch.rs.
  */
-function dedupeOps(ops: Operation[]): Operation[] {
-  const lastIndexByPath = new Map<string, number>();
-  ops.forEach((op, i) => lastIndexByPath.set(op.path, i));
+export function squashReplaces(ops: Operation[]): Operation[] {
+  const dropped = new Set<number>();
+  const pending = new Map<string, number>();
+  ops.forEach((op, index) => {
+    if (op.op !== 'replace') {
+      pending.clear();
+      return;
+    }
+    for (const other of pending.keys()) {
+      if (other !== op.path && related(other, op.path)) pending.delete(other);
+    }
+    const previous = pending.get(op.path);
+    if (previous !== undefined) dropped.add(previous);
+    pending.set(op.path, index);
+  });
+  return dropped.size === 0 ? ops : ops.filter((_, i) => !dropped.has(i));
+}
 
-  // Keep only the last op for each path, in ascending order of their final index
-  const keptIndices = [...lastIndexByPath.values()].sort((a, b) => a - b);
-  return keptIndices.map((i) => ops[i]!);
+/** Whether one JSON pointer is a strict ancestor of the other. */
+function related(a: string, b: string): boolean {
+  const isPrefix = (outer: string, inner: string) =>
+    inner.startsWith(outer) && inner.charAt(outer.length) === '/';
+  return isPrefix(a, b) || isPrefix(b, a);
 }
