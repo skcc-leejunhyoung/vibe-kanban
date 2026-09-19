@@ -148,9 +148,9 @@ pub async fn bundle(
         .bundles
         .get(id)
         .ok_or_else(|| ApiError::BadRequest("Artifact snapshot not available".into()))?;
-    // Only office snapshots reload the manifest behind the recovery lock.
-    let converted = if artifacts::is_office(&bundle.artifact.mime) {
-        artifacts::ensure_office_preview(
+    // Only document snapshots reload the manifest behind the recovery lock.
+    let converted = if artifacts::is_document(&bundle.artifact.mime) {
+        artifacts::ensure_document_preview(
             process.session_id,
             process.id,
             id,

@@ -257,13 +257,37 @@ pub fn is_office(mime: &str) -> bool {
         )
 }
 
+pub fn is_document(mime: &str) -> bool {
+    mime == "application/pdf" || is_office(mime)
+}
+
 // ponytail: one conversion at a time; per-call profiles allow parallel runs
 // if office attachments ever become frequent enough to matter.
 static OFFICE_CONVERSION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Office documents preview through the browser's native PDF viewer. Requires
-/// LibreOffice on the host; a missing binary only disables the preview.
-pub async fn office_to_pdf(bytes: &[u8], name: &str) -> Result<Vec<u8>> {
+/// Runs the first installed candidate. `NotFound` moves on to the next path
+/// because launchd and ssh sessions rarely carry the Homebrew PATH.
+async fn run_first(
+    candidates: &[&str],
+    args: &[std::ffi::OsString],
+    timeout: Duration,
+) -> Result<Option<std::process::Output>> {
+    for binary in candidates {
+        let mut command = tokio::process::Command::new(binary);
+        command.args(args).kill_on_drop(true);
+        match tokio::time::timeout(timeout, command.output()).await {
+            Ok(Ok(output)) => return Ok(Some(output)),
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => bail!("{binary} timed out"),
+        }
+    }
+    Ok(None)
+}
+
+/// LibreOffice import/export in a private profile so a running GUI instance
+/// cannot swallow the request. A missing binary only disables the preview.
+async fn soffice_convert(bytes: &[u8], name: &str, target: &str) -> Result<Vec<u8>> {
     const CANDIDATES: [&str; 5] = [
         "soffice",
         "/opt/homebrew/bin/soffice",
@@ -279,36 +303,22 @@ pub async fn office_to_pdf(bytes: &[u8], name: &str) -> Result<Vec<u8>> {
         .unwrap_or("bin");
     let input = dir.path().join(format!("input.{extension}"));
     tokio::fs::write(&input, bytes).await?;
-    // A private profile keeps a running LibreOffice GUI from swallowing the request.
     let profile = url::Url::from_directory_path(dir.path().join("profile"))
         .map_err(|()| anyhow::anyhow!("Invalid conversion directory"))?;
-    let mut output = None;
-    for binary in CANDIDATES {
-        let mut command = tokio::process::Command::new(binary);
-        command
-            .arg(format!("-env:UserInstallation={profile}"))
-            .args([
-                "--headless",
-                "--norestore",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-            ])
-            .arg(dir.path())
-            .arg(&input)
-            .kill_on_drop(true);
-        match tokio::time::timeout(Duration::from_secs(120), command.output()).await {
-            Ok(Ok(result)) => {
-                output = Some(result);
-                break;
-            }
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Ok(Err(error)) => return Err(error.into()),
-            Err(_) => bail!("LibreOffice conversion timed out"),
-        }
-    }
-    let output = output.ok_or_else(|| anyhow::anyhow!("LibreOffice (soffice) is not installed"))?;
-    tokio::fs::read(dir.path().join("input.pdf"))
+    let args = [
+        std::ffi::OsString::from(format!("-env:UserInstallation={profile}")),
+        "--headless".into(),
+        "--norestore".into(),
+        "--convert-to".into(),
+        target.into(),
+        "--outdir".into(),
+        dir.path().into(),
+        input.as_os_str().into(),
+    ];
+    let output = run_first(&CANDIDATES, &args, Duration::from_secs(120))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("LibreOffice (soffice) is not installed"))?;
+    tokio::fs::read(dir.path().join(format!("input.{target}")))
         .await
         .with_context(|| {
             format!(
@@ -316,6 +326,65 @@ pub async fn office_to_pdf(bytes: &[u8], name: &str) -> Result<Vec<u8>> {
                 String::from_utf8_lossy(&output.stderr).trim()
             )
         })
+}
+
+/// Office documents preview through the browser's native PDF viewer.
+pub async fn office_to_pdf(bytes: &[u8], name: &str) -> Result<Vec<u8>> {
+    soffice_convert(bytes, name, "pdf").await
+}
+
+/// First page as PNG for the chat thumbnail: macOS ImageIO, then poppler,
+/// then LibreOffice's Draw import as the slow universal fallback.
+pub async fn pdf_to_png(bytes: &[u8]) -> Result<Vec<u8>> {
+    let dir = tempfile::tempdir()?;
+    let input = dir.path().join("input.pdf");
+    let output = dir.path().join("input.png");
+    tokio::fs::write(&input, bytes).await?;
+    let renderers: [(&[&str], Vec<std::ffi::OsString>); 2] = [
+        (
+            &["/usr/bin/sips", "sips"],
+            vec![
+                "-s".into(),
+                "format".into(),
+                "png".into(),
+                "-Z".into(),
+                "1200".into(),
+                input.as_os_str().into(),
+                "--out".into(),
+                output.as_os_str().into(),
+            ],
+        ),
+        (
+            &[
+                "pdftoppm",
+                "/opt/homebrew/bin/pdftoppm",
+                "/usr/local/bin/pdftoppm",
+            ],
+            vec![
+                "-png".into(),
+                "-singlefile".into(),
+                "-f".into(),
+                "1".into(),
+                "-l".into(),
+                "1".into(),
+                "-scale-to".into(),
+                "1200".into(),
+                input.as_os_str().into(),
+                dir.path().join("input").as_os_str().into(),
+            ],
+        ),
+    ];
+    for (candidates, args) in renderers {
+        // A failed exit leaves no file; the next renderer gets its turn.
+        if run_first(candidates, &args, Duration::from_secs(60))
+            .await?
+            .is_some()
+            && let Ok(png) = tokio::fs::read(&output).await
+        {
+            return Ok(png);
+        }
+    }
+    soffice_convert(bytes, "input.pdf", "png").await
 }
 
 fn inline_id(execution: Uuid, scope: Option<&str>, index: usize, name: &str) -> String {
@@ -1006,6 +1075,18 @@ impl ArtifactObserver {
         })
     }
 
+    async fn thumbnail(&mut self, pdf_hash: &str, name: &str) -> Result<ArtifactResource> {
+        let bytes = tokio::fs::read(self.destination.join(pdf_hash)).await?;
+        let png = pdf_to_png(&bytes).await?;
+        let path = format!("{name}.png");
+        let content_hash = self.store(&png, &path).await?;
+        Ok(ArtifactResource {
+            path,
+            mime: "image/png".into(),
+            content_hash,
+        })
+    }
+
     async fn bundle_resources(&mut self, artifact: ArtifactReference) -> ArtifactBundle {
         let source_name = artifact.path.clone().unwrap_or_else(|| {
             self.working_dir
@@ -1024,29 +1105,54 @@ impl ArtifactObserver {
         let Some(hash) = artifact.content_hash.as_ref() else {
             return bundle;
         };
-        if is_office(&artifact.mime) {
-            // Every resource refresh rebundles; a converted PDF outlives the same snapshot.
-            let converted = self
+        if is_document(&artifact.mime) {
+            // Every resource refresh rebundles; derived files outlive the same snapshot.
+            let previous = self
                 .manifest
                 .bundles
                 .get(&artifact.id)
                 .filter(|previous| previous.artifact.content_hash.as_deref() == Some(hash))
-                .and_then(|previous| {
-                    previous
-                        .resources
-                        .iter()
-                        .find(|resource| resource.mime == "application/pdf")
-                        .cloned()
-                });
-            let converted = match converted {
-                Some(resource) => Ok(resource),
-                None => self.convert_office(hash, &source_name).await,
+                .map(|previous| previous.resources.clone())
+                .unwrap_or_default();
+            let reuse = |mime: &str| {
+                previous
+                    .iter()
+                    .find(|resource| resource.mime == mime)
+                    .cloned()
             };
-            match converted {
+            let pdf = if is_office(&artifact.mime) {
+                match reuse("application/pdf") {
+                    Some(resource) => Ok(resource),
+                    None => self.convert_office(hash, &source_name).await,
+                }
+            } else {
+                Ok(ArtifactResource {
+                    path: source_name.clone(),
+                    mime: "application/pdf".into(),
+                    content_hash: hash.clone(),
+                })
+            };
+            let pdf = match pdf {
+                Ok(pdf) => pdf,
+                Err(error) => {
+                    bundle
+                        .warnings
+                        .push(format!("PDF preview unavailable: {error:#}"));
+                    return bundle;
+                }
+            };
+            if is_office(&artifact.mime) {
+                bundle.resources.push(pdf.clone());
+            }
+            let thumbnail = match reuse("image/png") {
+                Some(resource) => Ok(resource),
+                None => self.thumbnail(&pdf.content_hash, &source_name).await,
+            };
+            match thumbnail {
                 Ok(resource) => bundle.resources.push(resource),
                 Err(error) => bundle
                     .warnings
-                    .push(format!("PDF preview unavailable: {error:#}")),
+                    .push(format!("Thumbnail unavailable: {error:#}")),
             }
             return bundle;
         }
@@ -1285,10 +1391,11 @@ impl ArtifactObserver {
     }
 }
 
-/// Completed manifests never rebundle, so office snapshots preserved before PDF
-/// conversion existed convert on their first preview. Returns the current bundle
-/// for office artifacts only; a persisted failure is not retried.
-pub async fn ensure_office_preview(
+/// Completed manifests never rebundle, so documents preserved before PDF
+/// conversion or thumbnails existed derive them on their first preview. Returns
+/// the current bundle for document artifacts only; a persisted failure is not
+/// retried.
+pub async fn ensure_document_preview(
     session_id: Uuid,
     execution_id: Uuid,
     artifact_id: &str,
@@ -1303,7 +1410,7 @@ pub async fn ensure_office_preview(
     let Some(bundle) = manifest.bundles.get(artifact_id) else {
         return Ok(None);
     };
-    if !is_office(&bundle.artifact.mime) {
+    if !is_document(&bundle.artifact.mime) {
         return Ok(None);
     }
     let pending = manifest.list.complete
@@ -1311,11 +1418,11 @@ pub async fn ensure_office_preview(
         && !bundle
             .resources
             .iter()
-            .any(|resource| resource.mime == "application/pdf")
-        && !bundle
-            .warnings
-            .iter()
-            .any(|warning| warning.starts_with("PDF preview unavailable"));
+            .any(|resource| resource.mime == "image/png")
+        && !bundle.warnings.iter().any(|warning| {
+            warning.starts_with("PDF preview unavailable")
+                || warning.starts_with("Thumbnail unavailable")
+        });
     if !pending {
         return Ok(Some(bundle.clone()));
     }
@@ -1493,7 +1600,11 @@ mod tests {
         assert!(!is_office("application/pdf"));
         match office_to_pdf(b"{\\rtf1\\ansi Hello}", "note.rtf").await {
             Err(error) if error.to_string().contains("not installed") => {}
-            result => assert!(result.unwrap().starts_with(b"%PDF")),
+            result => {
+                let pdf = result.unwrap();
+                assert!(pdf.starts_with(b"%PDF"));
+                assert!(pdf_to_png(&pdf).await.unwrap().starts_with(b"\x89PNG"));
+            }
         }
     }
 
@@ -1533,33 +1644,58 @@ mod tests {
         drop(observer);
         let mut manifest = load(session, execution).await.unwrap().unwrap();
         let id = manifest.list.artifacts[0].id.clone();
-        let has_pdf = |bundle: &ArtifactBundle| {
+        let resource = |bundle: &ArtifactBundle, mime: &str| {
             bundle
                 .resources
                 .iter()
-                .any(|resource| resource.mime == "application/pdf")
+                .find(|resource| resource.mime == mime)
+                .map(|resource| resource.content_hash.clone())
         };
+        async fn save(session: Uuid, execution: Uuid, manifest: &ArtifactManifest) {
+            atomic_write(
+                &directory(session, execution).join("manifest.json"),
+                &serde_json::to_vec(manifest).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
         let bundle = &manifest.bundles[&id];
         if bundle.warnings.iter().any(|w| w.contains("not installed")) {
             return;
         }
-        assert!(has_pdf(bundle), "{:?}", bundle.warnings);
-        // A manifest preserved before conversion existed carries no PDF resource.
-        manifest.bundles.get_mut(&id).unwrap().resources.clear();
-        atomic_write(
-            &directory(session, execution).join("manifest.json"),
-            &serde_json::to_vec(&manifest).unwrap(),
-        )
-        .await
-        .unwrap();
-        let converted = ensure_office_preview(session, execution, &id, files)
+        let pdf =
+            resource(bundle, "application/pdf").unwrap_or_else(|| panic!("{:?}", bundle.warnings));
+        assert!(
+            resource(bundle, "image/png").is_some(),
+            "{:?}",
+            bundle.warnings
+        );
+        // The first shipped build derived only the PDF; its thumbnail is added
+        // without converting the office document again.
+        manifest
+            .bundles
+            .get_mut(&id)
+            .unwrap()
+            .resources
+            .retain(|resource| resource.mime == "application/pdf");
+        save(session, execution, &manifest).await;
+        let backfilled = ensure_document_preview(session, execution, &id, files.clone())
             .await
             .unwrap()
             .unwrap();
-        assert!(has_pdf(&converted));
-        assert!(has_pdf(
-            &load(session, execution).await.unwrap().unwrap().bundles[&id]
-        ));
+        assert_eq!(resource(&backfilled, "application/pdf"), Some(pdf));
+        assert!(resource(&backfilled, "image/png").is_some());
+        // A manifest preserved before conversion existed carries no derived files.
+        manifest.bundles.get_mut(&id).unwrap().resources.clear();
+        save(session, execution, &manifest).await;
+        let converted = ensure_document_preview(session, execution, &id, files)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(resource(&converted, "application/pdf").is_some());
+        assert!(resource(&converted, "image/png").is_some());
+        let saved = load(session, execution).await.unwrap().unwrap();
+        assert!(resource(&saved.bundles[&id], "image/png").is_some());
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();

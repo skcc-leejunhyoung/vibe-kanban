@@ -6,6 +6,7 @@ import { Download, Loader2, Share2 } from 'lucide-react';
 import { ZoomPane } from '@/shared/components/ZoomPane';
 import { defineModal } from '@/shared/lib/modals';
 import { formatFileSize } from '@/shared/lib/utils';
+import { shareFile } from '@/shared/lib/share-file';
 
 export interface ImagePreviewDialogProps {
   imageUrl?: string;
@@ -83,11 +84,8 @@ const ImagePreviewDialogImpl = create<ImagePreviewDialogProps>((props) => {
         /\.[a-z0-9]+$/i.test(base) || !extension
           ? base
           : `${base}.${extension}`;
-      const file = new File([blob], name, { type: blob.type });
-      if (!navigator.canShare?.({ files: [file] })) return handleDownload();
-      await navigator.share({ files: [file] });
+      if (!(await shareFile(blob, name))) await handleDownload();
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
       console.error('Failed to share image:', error);
     }
   };

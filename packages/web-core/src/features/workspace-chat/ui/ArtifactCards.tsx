@@ -10,19 +10,17 @@ import {
   EyeIcon,
   SpinnerIcon,
 } from '@phosphor-icons/react';
+import { Download, Loader2, Share2 } from 'lucide-react';
 import type { ArtifactReference } from 'shared/types';
 import { ExecutionProcessStatus } from 'shared/types';
 import { IconButton } from '@vibe/ui/components/IconButton';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { Switch } from '@vibe/ui/components/Switch';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@vibe/ui/components/KeyboardDialog';
+import { Dialog } from '@vibe/ui/components/KeyboardDialog';
 import { artifactsApi } from '@/shared/lib/api';
 import { defineModal } from '@/shared/lib/modals';
+import { shareFile } from '@/shared/lib/share-file';
+import { formatFileSize } from '@/shared/lib/utils';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
@@ -85,10 +83,11 @@ type ArtifactContent = {
 };
 
 // Shared by the chat thumbnail and the dialog so opening costs no second fetch.
+// `thumbnail` is the server-rendered first page of a PDF or Office document.
 function useArtifactContent(
   artifact: ArtifactReference,
   scope: Scope,
-  mode: 'preview' | 'source'
+  mode: 'thumbnail' | 'preview' | 'source'
 ) {
   const { t } = useTranslation('common');
   const { processId, workspaceId, sessionId, hostId } = scope;
@@ -135,6 +134,19 @@ function useArtifactContent(
           throw new Error(t('artifacts.changed'));
         return bundle;
       };
+      if (mode === 'thumbnail') {
+        const bundle = await fetchBundle();
+        const png = bundle.resources.find(
+          (resource) => resource.mime === 'image/png'
+        );
+        if (!png)
+          throw new Error(bundle.warnings.join(' ') || t('artifacts.binary'));
+        return {
+          blob: await fetchBytes(png.content_hash, 'image/png'),
+          text: '',
+          warnings: bundle.warnings,
+        };
+      }
       if (mode === 'preview' && isOfficeMime(artifact.mime)) {
         const bundle = await fetchBundle();
         const pdf = bundle.resources.find(
@@ -203,37 +215,46 @@ function useObjectUrl(blob: Blob | undefined) {
   return url;
 }
 
-function useArtifactDownload(artifact: ArtifactReference, scope: Scope) {
-  const [downloading, setDownloading] = useState(false);
+function useArtifactActions(artifact: ArtifactReference, scope: Scope) {
+  const [busy, setBusy] = useState<'download' | 'share'>();
   const [error, setError] = useState<string>();
-  const download = async () => {
-    setDownloading(true);
+  const run = async (action: 'download' | 'share') => {
+    setBusy(action);
     setError(undefined);
     try {
-      const blob = await artifactsApi.content(
-        scope.processId,
-        scope.workspaceId,
-        scope.sessionId,
-        artifact.id,
-        scope.hostId,
-        artifact.content_hash ?? undefined
+      const blob = new Blob(
+        [
+          await artifactsApi.content(
+            scope.processId,
+            scope.workspaceId,
+            scope.sessionId,
+            artifact.id,
+            scope.hostId,
+            artifact.content_hash ?? undefined
+          ),
+        ],
+        { type: artifact.mime }
       );
+      const name = artifact.name.split('/').pop() ?? 'artifact';
+      if (action === 'share' && (await shareFile(blob, name))) return;
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = artifact.name.split('/').pop() ?? 'artifact';
+      anchor.download = name;
       anchor.click();
       // Let the browser consume the click before releasing the download URL.
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setDownloading(false);
+      setBusy(undefined);
     }
   };
-  return { download, downloading, error };
+  return { run, busy, error };
 }
 
+// Fills the fullscreen dialog: title row, notes, content, then the action bar
+// that mirrors the image viewer (metadata, source toggle, share, download).
 function ArtifactViewer({
   artifact,
   scope,
@@ -256,6 +277,7 @@ function ArtifactViewer({
     'text/vnd.mermaid',
     'text/markdown',
   ].includes(artifact.mime);
+  const canShare = typeof navigator.share === 'function';
   const frameRef = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -270,112 +292,152 @@ function ArtifactViewer({
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [onClose]);
-  const {
-    download,
-    downloading,
-    error: downloadError,
-  } = useArtifactDownload(artifact, scope);
+  const { run, busy, error: actionError } = useArtifactActions(artifact, scope);
   const query = useArtifactContent(artifact, scope, mode);
   const documentUrl = useObjectUrl(isDocument ? query.data?.blob : undefined);
+  const warnings = [
+    ...(query.data?.warnings ?? []),
+    ...(query.data?.preview?.warnings ?? []),
+    ...(query.data?.preview && mode === 'preview'
+      ? [t('artifacts.staticPreview')]
+      : []),
+  ];
+  const errors = [runtimeError, actionError].filter(
+    (error): error is string => !!error
+  );
   const renderContent = () => {
-    if (query.isPending) return <p role="status">{t('artifacts.loading')}</p>;
-    if (query.error) return <p role="alert">{query.error.message}</p>;
-    const { text, preview, warnings } = query.data;
+    if (query.isPending)
+      return (
+        <div role="status" className="flex h-full items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-white/70" />
+        </div>
+      );
+    if (query.error)
+      return (
+        <p role="alert" className="p-4">
+          {query.error.message}
+        </p>
+      );
+    const { text, preview } = query.data;
     if (mode === 'source')
       return (
-        <pre className="overflow-auto whitespace-pre-wrap p-base text-base font-ibm-plex-mono">
+        <pre className="h-full overflow-auto whitespace-pre-wrap bg-primary p-base font-ibm-plex-mono text-base text-normal">
           {text || t('artifacts.binary')}
         </pre>
       );
     if (preview)
       return (
-        <>
-          {runtimeError && <p role="alert">{runtimeError}</p>}
-          {[...warnings, ...preview.warnings].map((warning) => (
-            <p key={warning} className="text-low">
-              {warning}
-            </p>
-          ))}
-          <iframe
-            ref={frameRef}
-            className="h-[65vh] w-full border-0 bg-white"
-            title={artifact.name}
-            sandbox="allow-scripts"
-            referrerPolicy="no-referrer"
-            srcDoc={preview.srcDoc}
-          />
-          <p className="text-low">{t('artifacts.staticPreview')}</p>
-        </>
+        <iframe
+          ref={frameRef}
+          className="h-full w-full border-0 bg-white"
+          title={artifact.name}
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          srcDoc={preview.srcDoc}
+        />
       );
     if (isDocument)
-      return (
-        <>
-          {warnings.map((warning) => (
-            <p key={warning} className="text-low">
-              {warning}
-            </p>
-          ))}
-          {documentUrl && (
-            <iframe
-              className="h-[75vh] w-full border-0 bg-white"
-              title={artifact.name}
-              src={documentUrl}
-            />
-          )}
-        </>
-      );
+      return documentUrl ? (
+        <iframe
+          className="h-full w-full border-0 bg-white"
+          title={artifact.name}
+          src={documentUrl}
+        />
+      ) : null;
     if (artifact.mime === 'text/vnd.mermaid')
       return (
-        <MermaidDiagram chart={text} theme={getResolvedTheme(theme)} isolated />
+        <div className="h-full overflow-auto bg-primary text-normal">
+          <MermaidDiagram
+            chart={text}
+            theme={getResolvedTheme(theme)}
+            isolated
+          />
+        </div>
       );
     if (artifact.mime === 'text/markdown')
       return (
-        <MarkdownPreview
-          content={text}
-          theme={getResolvedTheme(theme)}
-          allowRemoteImages={false}
-        />
+        <div className="h-full overflow-auto bg-primary p-base text-normal">
+          <MarkdownPreview
+            content={text}
+            theme={getResolvedTheme(theme)}
+            allowRemoteImages={false}
+          />
+        </div>
       );
     return (
-      <pre className="overflow-auto whitespace-pre-wrap p-base font-ibm-plex-mono">
+      <pre className="h-full overflow-auto whitespace-pre-wrap bg-primary p-base font-ibm-plex-mono text-normal">
         {text || t('artifacts.binary')}
       </pre>
     );
   };
+  const metadata = [artifact.mime, formatFileSize(BigInt(artifact.size_bytes))]
+    .filter(Boolean)
+    .join(' · ');
+  const actionClassName = 'text-white/70 transition-colors hover:text-white';
   return (
     <>
-      <DialogHeader className="pr-double">
-        <div className="flex min-w-0 items-center gap-base">
-          <DialogTitle
-            className="min-w-0 flex-1 truncate"
-            title={artifact.name}
+      <p
+        className="shrink-0 truncate px-4 pb-3 pr-16 pt-[max(1rem,env(safe-area-inset-top))] text-sm"
+        title={artifact.name}
+      >
+        {artifact.name}
+      </p>
+      {warnings.map((warning) => (
+        <p key={warning} className="shrink-0 px-4 pb-2 text-xs text-white/70">
+          {warning}
+        </p>
+      ))}
+      {errors.map((error) => (
+        <p key={error} role="alert" className="shrink-0 px-4 pb-2 text-xs">
+          {error}
+        </p>
+      ))}
+      <div className="min-h-0 flex-1">{renderContent()}</div>
+      <div className="flex shrink-0 items-center justify-between gap-4 bg-black/60 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 text-xs">
+        <p className="truncate text-white/70">{metadata}</p>
+        <div className="flex shrink-0 items-center gap-4">
+          {canToggleSource && (
+            <label className="flex items-center gap-half whitespace-nowrap text-white/70">
+              {t('artifacts.source')}
+              <Switch
+                checked={showSource}
+                onCheckedChange={setShowSource}
+                aria-label={t('artifacts.source')}
+              />
+            </label>
+          )}
+          {canShare && (
+            <button
+              type="button"
+              onClick={() => void run('share')}
+              disabled={!!busy}
+              className={actionClassName}
+              aria-label={t('kanban.shareAttachment')}
+              title={t('kanban.shareAttachment')}
+            >
+              {busy === 'share' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Share2 className="h-4 w-4" />
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void run('download')}
+            disabled={!!busy}
+            className={actionClassName}
+            aria-label={t('artifacts.download')}
+            title={t('artifacts.download')}
           >
-            {artifact.name}
-          </DialogTitle>
-          <div className="flex shrink-0 items-center gap-base">
-            {canToggleSource && (
-              <label className="flex items-center gap-half whitespace-nowrap text-base text-low">
-                {t('artifacts.source')}
-                <Switch
-                  checked={showSource}
-                  onCheckedChange={setShowSource}
-                  aria-label={t('artifacts.source')}
-                />
-              </label>
+            {busy === 'download' ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
             )}
-            <IconButton
-              icon={downloading ? SpinnerIcon : DownloadSimpleIcon}
-              iconClassName={downloading ? 'animate-spin' : undefined}
-              aria-label={t('artifacts.download')}
-              title={t('artifacts.download')}
-              disabled={downloading}
-              onClick={() => void download()}
-            />
-          </div>
+          </button>
         </div>
-      </DialogHeader>
-      {downloadError && <p role="alert">{downloadError}</p>}
-      {renderContent()}
+      </div>
     </>
   );
 }
@@ -399,13 +461,12 @@ const ArtifactPreviewDialog = defineModal<PreviewDialogProps, void>(
         onOpenChange={(open) => {
           if (!open) close();
         }}
-        size="5xl"
+        fullscreen
+        aria-label={artifact.name}
       >
-        <DialogContent className="max-h-[85vh] overflow-auto p-base">
-          {modal.visible && (
-            <ArtifactViewer artifact={artifact} scope={scope} onClose={close} />
-          )}
-        </DialogContent>
+        {modal.visible && (
+          <ArtifactViewer artifact={artifact} scope={scope} onClose={close} />
+        )}
       </Dialog>
     );
   })
@@ -502,13 +563,14 @@ function ArtifactTile({
   const setPanel = useUiPreferencesStore(
     (state) => state.setRightMainPanelMode
   );
-  const query = useArtifactContent(artifact, scope, 'preview');
-  const {
-    download,
-    downloading,
-    error: downloadError,
-  } = useArtifactDownload(artifact, scope);
-  const needsUrl = kind === 'image' || kind === 'pdf' || kind === 'office';
+  const isDocument = kind === 'pdf' || kind === 'office';
+  const query = useArtifactContent(
+    artifact,
+    scope,
+    isDocument ? 'thumbnail' : 'preview'
+  );
+  const { run, busy, error: actionError } = useArtifactActions(artifact, scope);
+  const needsUrl = kind === 'image' || isDocument;
   const url = useObjectUrl(needsUrl ? query.data?.blob : undefined);
   if (query.error)
     return (
@@ -565,28 +627,36 @@ function ArtifactTile({
           />
         );
       case 'frame':
+        // Half-scale page thumbnail that never scrolls; the overlay keeps
+        // wheel and pointer events out of the frame in every browser.
         return preview ? (
-          <iframe
-            className="h-[320px] w-full border-0 bg-white"
-            title={artifact.name}
-            sandbox="allow-scripts"
-            referrerPolicy="no-referrer"
-            loading="lazy"
-            srcDoc={preview.srcDoc}
-          />
+          <div className="relative h-[320px] overflow-hidden bg-white">
+            <iframe
+              className="h-[640px] w-[200%] origin-top-left scale-50 border-0"
+              title={artifact.name}
+              sandbox="allow-scripts"
+              referrerPolicy="no-referrer"
+              loading="lazy"
+              scrolling="no"
+              srcDoc={preview.srcDoc}
+            />
+            <div className="absolute inset-0" />
+          </div>
         ) : null;
       default:
         return (
-          <iframe
-            className="h-[320px] w-full border-0 bg-white"
-            title={artifact.name}
-            loading="lazy"
-            src={`${url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-          />
+          <div className="h-[320px]">
+            <img
+              src={url}
+              alt={artifact.name}
+              loading="lazy"
+              className="h-full w-full object-contain"
+            />
+          </div>
         );
     }
   };
-  const note = downloadError ?? artifact.error;
+  const note = actionError ?? artifact.error;
   return (
     <figure className="my-half overflow-hidden rounded-sm border border-border bg-panel text-base">
       {/* Thumbnails never trap wheel or clicks; frames stay inert until opened. */}
@@ -621,12 +691,12 @@ function ArtifactTile({
           />
         )}
         <IconButton
-          icon={downloading ? SpinnerIcon : DownloadSimpleIcon}
-          iconClassName={downloading ? 'animate-spin' : undefined}
+          icon={busy ? SpinnerIcon : DownloadSimpleIcon}
+          iconClassName={busy ? 'animate-spin' : undefined}
           aria-label={t('artifacts.download')}
           title={t('artifacts.download')}
-          disabled={downloading}
-          onClick={() => void download()}
+          disabled={!!busy}
+          onClick={() => void run('download')}
         />
       </figcaption>
       {note && (
