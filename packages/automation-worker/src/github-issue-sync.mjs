@@ -390,6 +390,18 @@ export function assertGithubIssueProject(issue, expectedProjectId) {
   }
 }
 
+// Reconcile must accept exactly the links the import path was allowed to create.
+// It used to hard-filter to the connector's own `owner/repo`, so an issue pulled
+// in under `includeIssuesFromOtherRepositories` was linked once and then never
+// reconciled again — its Project Status, title and comments drifted forever.
+export function shouldReconcileGithubIssueLink(link, rule, repository) {
+  return (
+    String(link?.repository || '').toLowerCase() ===
+      String(repository || '').toLowerCase() ||
+    rule?.config?.includeIssuesFromOtherRepositories === true
+  );
+}
+
 export function shouldRunGithubIssueSyncRule(rule, event) {
   return (
     rule?.kind !== 'github_issue_sync' ||

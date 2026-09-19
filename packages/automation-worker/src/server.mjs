@@ -25,6 +25,7 @@ import {
   retryPendingGithubIssueLinkOperations,
   selectGithubImportCandidates,
   selectGithubPollCandidates,
+  shouldReconcileGithubIssueLink,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withCommentMarker,
@@ -2625,6 +2626,7 @@ async function reconcileGithubIssueRules(githubConnector) {
   let synced = 0;
   const recovered = await retryPendingGithubIssueLinks(githubConnector);
   let backfilled = 0;
+  const ownRepository = `${githubConnector.config.owner}/${githubConnector.config.repo}`;
   const rules = state.rules.filter(
     (rule) =>
       rule.enabled &&
@@ -2685,12 +2687,7 @@ async function reconcileGithubIssueRules(githubConnector) {
       links,
     });
     for (const link of links) {
-      if (
-        String(link.repository).toLowerCase() !==
-        `${githubConnector.config.owner}/${githubConnector.config.repo}`.toLowerCase()
-      ) {
-        continue;
-      }
+      if (!shouldReconcileGithubIssueLink(link, rule, ownRepository)) continue;
       const vibeIssue = issues.get(link.issue_id);
       if (!vibeIssue) continue;
       if (config.fields?.comments !== false) {

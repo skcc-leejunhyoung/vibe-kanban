@@ -21,6 +21,7 @@ import {
   runSingleFlight,
   retryPendingGithubIssueLinkOperations,
   selectGithubPollCandidates,
+  shouldReconcileGithubIssueLink,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withCommentMarker,
@@ -343,6 +344,23 @@ test('scopes GitHub sync rules to their configured source and target connectors'
     githubIssueSyncVibeConnectorId({ kind: 'script' }, 'vibe-default'),
     'vibe-default'
   );
+});
+
+test('reconciles other-repository links exactly when the rule imports them', () => {
+  const rule = { kind: 'github_issue_sync', config: {} };
+  const own = { repository: 'skcc-ai/c2' };
+  const other = { repository: 'skcc-ai/wisdom-rag' };
+  assert.equal(shouldReconcileGithubIssueLink(own, rule, 'skcc-ai/c2'), true);
+  // Case-insensitive, same as the filter it replaces.
+  assert.equal(shouldReconcileGithubIssueLink(own, rule, 'SKCC-AI/C2'), true);
+  // The regression: imported under includeIssuesFromOtherRepositories, then
+  // dropped by reconcile so its Project Status never synced again.
+  assert.equal(
+    shouldReconcileGithubIssueLink(other, rule, 'skcc-ai/c2'),
+    false
+  );
+  rule.config.includeIssuesFromOtherRepositories = true;
+  assert.equal(shouldReconcileGithubIssueLink(other, rule, 'skcc-ai/c2'), true);
 });
 
 test('reuses the persisted GitHub issue when link persistence is retried', async () => {
