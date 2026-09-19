@@ -677,7 +677,7 @@ export function PreviewBrowserContainer({
   // handleUrlSubmit flow:
   //   1. Empty input → clear override, blur
   //   2. Invalid URL → reject (stay focused so user can fix)
-  //   3. Same URL as current → noop, blur
+  //   3. Same URL as current → reload that page, blur
   //   4. New URL → resetNavigation() to force sync effect to fire when iframe
   //      reports new URL
   //   5. Same port as current → bridge goto (postMessage to iframe, SPA navigation)
