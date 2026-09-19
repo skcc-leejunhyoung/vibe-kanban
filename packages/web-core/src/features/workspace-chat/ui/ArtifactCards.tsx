@@ -644,13 +644,15 @@ function ArtifactTile({
           </div>
         ) : null;
       default:
+        // sips renders PDF pages onto transparent pixels, so the page needs an
+        // opaque sheet behind it or dark themes swallow the black glyphs.
         return (
-          <div className="h-[320px]">
+          <div className="flex h-[320px] items-center justify-center">
             <img
               src={url}
               alt={artifact.name}
               loading="lazy"
-              className="h-full w-full object-contain"
+              className="h-full max-w-full bg-white object-contain"
             />
           </div>
         );
