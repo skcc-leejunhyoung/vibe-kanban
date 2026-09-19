@@ -320,12 +320,11 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       // Sent: the draft is now the workspace's first message, so drop it.
       setPrompt('');
       clearAttachments();
-      modal.resolve(workspace.id);
-      modal.hide();
       const goToDocument = () =>
         appNavigation.goToWorkspace(workspace.id, { hostId: selectedHostId });
-      // The pane takes focus itself; letting the dialog restore its opener
-      // afterwards would pull the caret back out of the new chat.
+      // Route the new chat before hiding: the dialog's close focus restore
+      // fires as soon as the hide flushes, and it has to already know that a
+      // pane took focus — otherwise it pulls the caret back to its opener.
       keepPaneFocusRef.current =
         !!openInNewPane &&
         openDestinationInOwnPane(
@@ -339,6 +338,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           goToDocument
         );
       if (!openInNewPane) goToDocument();
+      modal.resolve(workspace.id);
+      modal.hide();
     } catch (e) {
       setError(getErrorMessage(e) || 'Failed to start quick chat.');
       setSubmitting(false);
