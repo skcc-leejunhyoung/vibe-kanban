@@ -108,6 +108,18 @@ export const useConversationHistory = ({
   const loadedInitialEntries = useRef(false);
   const emittedEmptyInitialRef = useRef(false);
   const streamingProcessIdsRef = useRef<Set<string>>(new Set());
+  // Live streams of running processes, keyed by process id. A stream only
+  // closes itself on `finished`/error, so without this a scope change or
+  // unmount would orphan it: the socket stays open (parsing and applying every
+  // patch) for the rest of the run, and each visit to a workspace with a
+  // running agent leaks one more.
+  const runningStreamsRef = useRef<Map<string, { close: () => void }>>(
+    new Map()
+  );
+  const closeRunningStreams = useCallback(() => {
+    for (const stream of runningStreamsRef.current.values()) stream.close();
+    runningStreamsRef.current.clear();
+  }, []);
   const onTimelineUpdatedRef = useRef<
     UseConversationHistoryParams['onTimelineUpdated'] | null
   >(null);
@@ -298,14 +310,20 @@ export const useConversationHistory = ({
           },
           onFinished: () => {
             emitEntries(displayedExecutionProcesses.current, 'running', false);
-            controller.close();
+            release();
             resolve();
           },
           onError: () => {
-            controller.close();
+            release();
             reject();
           },
         });
+        const release = () => {
+          if (runningStreamsRef.current.get(executionProcess.id) === controller)
+            runningStreamsRef.current.delete(executionProcess.id);
+          controller.close();
+        };
+        runningStreamsRef.current.set(executionProcess.id, controller);
       });
     },
     [emitEntries]
@@ -547,7 +565,10 @@ export const useConversationHistory = ({
     loadingOlderRef.current = false;
     setHasMoreHistory(false);
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
-  }, [scopeKey, emitEntries]);
+    // Leaving the scope (switch or unmount) closes its live streams; the
+    // active-process effect reopens whatever the new scope is running.
+    return closeRunningStreams;
+  }, [scopeKey, emitEntries, closeRunningStreams]);
 
   useEffect(() => {
     let cancelled = false;
