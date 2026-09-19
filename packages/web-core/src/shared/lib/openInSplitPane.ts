@@ -157,7 +157,13 @@ export function revealDestinationInPane(
   }
   // adoptRouteDestination is the store's dedupe-by-key path; setPaneDestination
   // (what openDestinationForActivePane uses) would happily duplicate.
-  useWorkspacePanesStore.getState().adoptRouteDestination(destination);
+  const { adoptRouteDestination, focusActivePane } =
+    useWorkspacePanesStore.getState();
+  adoptRouteDestination(destination);
+  // Deliberate "go to it" gesture, and callers decline the command bar's focus
+  // restore, so nothing else moves the caret when the destination already sits
+  // in a pane — adoptRouteDestination is a no-op then and focus stays on body.
+  focusActivePane();
 }
 
 /**

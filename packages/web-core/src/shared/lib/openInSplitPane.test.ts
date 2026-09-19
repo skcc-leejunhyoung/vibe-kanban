@@ -20,9 +20,8 @@ vi.stubGlobal('window', {
   location: { pathname: '/workspaces' },
 });
 
-const { openDestinationInOwnPane, paneGridAvailable } = await import(
-  './openInSplitPane'
-);
+const { openDestinationInOwnPane, paneGridAvailable, revealDestinationInPane } =
+  await import('./openInSplitPane');
 const { useWorkspacePanesStore } = await import(
   '@/shared/stores/useWorkspacePanesStore'
 );
@@ -121,5 +120,32 @@ describe('openDestinationInOwnPane', () => {
 
     expect(navigateDocument).toHaveBeenCalled();
     expect(paneKinds()).toEqual(['workspace']);
+  });
+
+  describe('revealDestinationInPane', () => {
+    // The command bar declines its own focus restore for these actions, so if
+    // this path skipped the focus request the caret would land on <body> and
+    // keystrokes would go nowhere.
+    it('requests DOM focus even when the pane already shows it', () => {
+      seed([ws('ws1'), terminal], 4);
+      const serialBefore = state().focusSerial;
+
+      revealDestinationInPane(terminal, navigation, 'local', vi.fn());
+
+      expect(state().activePaneId).toBe('pane-1');
+      expect(state().focusSerial).toBe(serialBefore + 1);
+    });
+
+    it('leaves focus alone when it navigated the document instead', () => {
+      seed([ws('ws1')], 4);
+      isMobile = true;
+      const serialBefore = state().focusSerial;
+      const navigateDocument = vi.fn();
+
+      revealDestinationInPane(terminal, navigation, 'local', navigateDocument);
+
+      expect(navigateDocument).toHaveBeenCalled();
+      expect(state().focusSerial).toBe(serialBefore);
+    });
   });
 });
