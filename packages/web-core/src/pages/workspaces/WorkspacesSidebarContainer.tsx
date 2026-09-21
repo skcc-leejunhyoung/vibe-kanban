@@ -739,6 +739,25 @@ export function WorkspacesSidebarContainer({
     return () => root.removeEventListener('pointerover', onPointerOver);
   }, [keyboardNavRef, prefetchWorkspaceData]);
 
+  // DOM focus can be released without React knowing: Escape (the global
+  // useEscapeToBlur blurs the active element), Tab, or a click elsewhere. The
+  // cursor ring would stay parked on a row that arrow keys no longer drive, so
+  // follow focus instead — once it leaves the sidebar, the cursor is gone.
+  useEffect(() => {
+    const root = keyboardNavRef.current;
+    if (!root) return;
+    const onFocusOut = (event: FocusEvent) => {
+      // Arrow navigation moves focus row-to-row: still inside the sidebar.
+      const next = event.relatedTarget;
+      if (next instanceof Node && root.contains(next)) return;
+      // Switching window/tab keeps the row focused for when we come back.
+      if (!document.hasFocus()) return;
+      setFocusedWorkspaceId(null);
+    };
+    root.addEventListener('focusout', onFocusOut);
+    return () => root.removeEventListener('focusout', onFocusOut);
+  }, []);
+
   // When the cursor MOVES (user navigation), move real DOM focus onto the row
   // so the cursor and keyboard focus stay in lockstep: this keeps the
   // sidebar-scoped hotkeys active and makes native Enter agree with the cursor
