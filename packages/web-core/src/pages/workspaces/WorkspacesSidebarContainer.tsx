@@ -746,16 +746,21 @@ export function WorkspacesSidebarContainer({
   useEffect(() => {
     const root = keyboardNavRef.current;
     if (!root) return;
-    const onFocusOut = (event: FocusEvent) => {
-      // Arrow navigation moves focus row-to-row: still inside the sidebar.
-      const next = event.relatedTarget;
-      if (next instanceof Node && root.contains(next)) return;
-      // A dialog stealing focus is not the user leaving the list — it
-      // restores focus to the row on close, so keep the cursor.
-      if (isModalKeyboardActive()) return;
-      // Switching window/tab keeps the row focused for when we come back.
-      if (!document.hasFocus()) return;
-      setFocusedWorkspaceId(null);
+    const onFocusOut = () => {
+      // Decide on the settled focus, not on relatedTarget: a background list
+      // update moves the focused row's DOM node, which fires focusout with no
+      // relatedTarget and restores focus to the same row a microtask later.
+      requestAnimationFrame(() => {
+        // Still in the sidebar (row-to-row arrow navigation, a row button, or
+        // the row that was just moved): the cursor stays.
+        if (root.contains(document.activeElement)) return;
+        // A dialog stealing focus is not the user leaving the list — it
+        // restores focus to the row on close, so keep the cursor.
+        if (isModalKeyboardActive()) return;
+        // Switching window/tab keeps the row focused for when we come back.
+        if (!document.hasFocus()) return;
+        setFocusedWorkspaceId(null);
+      });
     };
     root.addEventListener('focusout', onFocusOut);
     return () => root.removeEventListener('focusout', onFocusOut);
