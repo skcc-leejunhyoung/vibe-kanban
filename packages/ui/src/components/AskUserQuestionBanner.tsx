@@ -214,7 +214,7 @@ export const AskUserQuestionBanner = forwardRef<
   return (
     <div className="border-b">
       {/* Header */}
-      <div className="flex items-center gap-base px-double py-base">
+      <div className="flex items-center gap-base px-plusfifty py-base">
         <QuestionIcon className="h-4 w-4 text-brand flex-shrink-0" />
         <span className="text-sm text-normal flex-1">
           {t('askQuestion.title')}
@@ -229,7 +229,7 @@ export const AskUserQuestionBanner = forwardRef<
 
       {/* Current question */}
       {currentQuestion && !submitted && (
-        <div className="px-double pb-base" onKeyDown={handleKeyDown}>
+        <div className="px-plusfifty pb-base" onKeyDown={handleKeyDown}>
           <div className="flex items-center gap-base mb-base">
             <span className="text-xs font-medium text-low bg-secondary px-1 py-0.5 rounded">
               {currentQuestion.header}

@@ -150,19 +150,21 @@ export function ChatBoxBase({
       >
         {editor}
 
-        {/* Footer - single row: attach/model controls wrap on the left, round
-            action buttons stay pinned bottom-right */}
+        {/* Footer - one row when it fits: attach/model controls on the left,
+            round action buttons on the right. The left group keeps its natural
+            width (flex-auto) so on narrow widths the action buttons drop to
+            their own line instead of squeezing the controls into a sliver. */}
         <div
           className={cn(
-            'flex items-end justify-between gap-base',
+            'flex flex-wrap items-end justify-between gap-base',
             fillHeight && 'shrink-0'
           )}
         >
-          <Toolbar className="flex-1 min-w-0 flex-wrap !gap-half">
+          <Toolbar className="flex-auto min-w-0 flex-wrap !gap-half">
             {footerLeft}
             {modelSelector}
           </Toolbar>
-          <div className="flex shrink-0 items-center gap-half">
+          <div className="ml-auto flex shrink-0 items-center gap-half">
             {footerRight}
           </div>
         </div>

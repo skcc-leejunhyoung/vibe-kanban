@@ -747,7 +747,7 @@ export function SessionChatBox<TExecutor extends string = string>({
       banners.push(
         <div
           key="review-comments"
-          className="bg-accent/5 border-b px-double py-base flex items-center gap-base"
+          className="bg-accent/5 border-b px-plusfifty py-base flex items-center gap-base"
         >
           <ChatCircleIcon className="h-4 w-4 text-brand flex-shrink-0" />
           <span className="text-sm text-normal flex-1">
@@ -789,7 +789,7 @@ export function SessionChatBox<TExecutor extends string = string>({
       banners.push(
         <div
           key="queued-list"
-          className="bg-secondary border-b px-double py-base flex flex-col gap-half"
+          className="bg-secondary border-b px-plusfifty py-base flex flex-col gap-half"
         >
           <div className="flex items-center gap-base">
             <ClockIcon className="h-4 w-4 text-low flex-shrink-0" />
