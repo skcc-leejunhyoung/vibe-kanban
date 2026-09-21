@@ -750,6 +750,9 @@ export function WorkspacesSidebarContainer({
       // Arrow navigation moves focus row-to-row: still inside the sidebar.
       const next = event.relatedTarget;
       if (next instanceof Node && root.contains(next)) return;
+      // A dialog stealing focus is not the user leaving the list — it
+      // restores focus to the row on close, so keep the cursor.
+      if (isModalKeyboardActive()) return;
       // Switching window/tab keeps the row focused for when we come back.
       if (!document.hasFocus()) return;
       setFocusedWorkspaceId(null);
