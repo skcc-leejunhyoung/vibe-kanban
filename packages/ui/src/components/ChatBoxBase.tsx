@@ -191,27 +191,33 @@ export function ChatActionButton({
   variant = 'primary',
 }: ChatActionButtonProps) {
   return (
+    // The span keeps the tooltip reachable while the button is disabled:
+    // disabled controls swallow pointer events in Safari/Firefox, so a
+    // Tooltip.Trigger on the button itself would never fire there and the
+    // icon-only sending/stopping/loading states would read as a bare circle.
     <Tooltip content={label} side="top">
-      <button
-        type="button"
-        aria-label={label}
-        onClick={onClick}
-        disabled={disabled}
-        className={cn(
-          'flex h-cta aspect-square shrink-0 items-center justify-center rounded-full transition-colors',
-          disabled
-            ? 'cursor-not-allowed bg-panel text-low'
-            : variant === 'primary'
-              ? 'bg-brand text-on-brand hover:bg-brand-hover'
-              : 'bg-panel text-normal hover:text-high'
-        )}
-      >
-        {ActionIcon === 'spinner' ? (
-          <SpinnerIcon className="size-icon-sm animate-spin" weight="bold" />
-        ) : (
-          <ActionIcon className="size-icon-sm" weight="bold" />
-        )}
-      </button>
+      <span className="inline-flex shrink-0">
+        <button
+          type="button"
+          aria-label={label}
+          onClick={onClick}
+          disabled={disabled}
+          className={cn(
+            'flex h-cta aspect-square shrink-0 items-center justify-center rounded-full transition-colors',
+            disabled
+              ? 'cursor-not-allowed bg-panel text-low'
+              : variant === 'primary'
+                ? 'bg-brand text-on-brand hover:bg-brand-hover'
+                : 'bg-panel text-normal hover:text-high'
+          )}
+        >
+          {ActionIcon === 'spinner' ? (
+            <SpinnerIcon className="size-icon-sm animate-spin" weight="bold" />
+          ) : (
+            <ActionIcon className="size-icon-sm" weight="bold" />
+          )}
+        </button>
+      </span>
     </Tooltip>
   );
 }
