@@ -100,6 +100,16 @@ export function XTermInstance({
       theme: getTerminalTheme(),
     });
 
+    // xterm swallows every key it handles — it calls preventDefault *and*
+    // stopPropagation — so a focused terminal would eat Ctrl+Tab before the
+    // document-level pane shortcut ever sees it, and send a plain tab to the
+    // shell instead. Returning false here makes xterm skip the event entirely
+    // and let it bubble. Plain Tab / Shift+Tab stay with the shell: those are
+    // completion. Ctrl/Cmd+Tab has no shell meaning anywhere.
+    terminal.attachCustomKeyEventHandler(
+      (event) => !(event.key === 'Tab' && (event.ctrlKey || event.metaKey))
+    );
+
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
 

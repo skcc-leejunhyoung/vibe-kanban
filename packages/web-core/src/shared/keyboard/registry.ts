@@ -581,27 +581,30 @@ export const modifierBindings: ModifierBinding[] = [
     actionId: 'openCommandBar',
     group: 'Modifiers',
   },
+  // ctrl+tab cycles panes, not workspaces: it is the pane-focus key everywhere
+  // else (browsers, editors, terminals), and a pane is what is on screen while
+  // you press it. Workspace/project cycling takes the alt variants.
   {
     id: NEXT_WORKSPACE_BINDING_ID,
-    keys: 'ctrl+tab',
+    keys: 'alt+tab',
     actionId: 'nextWorkspace',
     group: 'Modifiers',
   },
   {
     id: PREVIOUS_WORKSPACE_BINDING_ID,
-    keys: 'ctrl+shift+tab',
+    keys: 'shift+alt+tab',
     actionId: 'previousWorkspace',
     group: 'Modifiers',
   },
   {
     id: NEXT_SPLIT_PANE_BINDING_ID,
-    keys: 'alt+tab',
+    keys: 'ctrl+tab',
     actionId: 'nextSplitPane',
     group: 'Modifiers',
   },
   {
     id: PREVIOUS_SPLIT_PANE_BINDING_ID,
-    keys: 'shift+alt+tab',
+    keys: 'ctrl+shift+tab',
     actionId: 'previousSplitPane',
     group: 'Modifiers',
   },

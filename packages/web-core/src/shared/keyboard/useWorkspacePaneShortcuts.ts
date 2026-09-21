@@ -30,7 +30,7 @@ function hotkeyOptions(keys: string) {
 /**
  * Global split-pane shortcuts, VS Code style: mod+alt+shift+N focuses the
  * pane at that position (never creates one), mod+t opens a new pane next to
- * the active one, mod+w closes the focused pane, and alt+tab / shift+alt+tab
+ * the active one, mod+w closes the focused pane, and ctrl+tab / ctrl+shift+tab
  * cycle pane focus. Mounted once per document.
  */
 export function useWorkspacePaneShortcuts() {

@@ -89,9 +89,9 @@ describe('resolveModifier', () => {
   });
 
   it('uses the configured default split screen shortcuts', () => {
-    expect(resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, {})).toBe('alt+tab');
+    expect(resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, {})).toBe('ctrl+tab');
     expect(resolveModifier(PREVIOUS_SPLIT_PANE_BINDING_ID, {})).toBe(
-      'shift+alt+tab'
+      'ctrl+shift+tab'
     );
     expect(resolveModifier(SPLIT_PRESET_BINDING_IDS[1], {})).toBe(
       'mod+alt+shift+1'
