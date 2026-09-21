@@ -85,6 +85,7 @@ async fn open_remote_workspace_in_editor(
         &req.host_id.to_string(),
         &workspace_path,
         req.editor_type.as_deref(),
+        req.file_path.is_some(),
     )
     .map_err(|detail| {
         warn!(%detail, "Failed to open remote editor");
