@@ -30,6 +30,8 @@ interface DropdownMenuTriggerButtonProps
   label?: string;
   showCaret?: boolean;
   size?: 'default' | 'sm';
+  /** `ghost` drops the border/background for dense toolbars (chat composer). */
+  variant?: 'default' | 'ghost';
 }
 
 export const dropdownMenuTriggerButtonClassName =
@@ -39,6 +41,13 @@ export const dropdownMenuTriggerButtonClassName =
 const sizeClasses = {
   default: '',
   sm: 'text-sm h-cta',
+} as const;
+
+const variantClasses = {
+  default: dropdownMenuTriggerButtonClassName,
+  ghost:
+    'flex items-center gap-half rounded-sm px-half py-half min-w-0 ' +
+    'hover:bg-panel disabled:opacity-50 disabled:cursor-not-allowed',
 } as const;
 
 const DropdownMenuTriggerButton = React.forwardRef<
@@ -52,6 +61,7 @@ const DropdownMenuTriggerButton = React.forwardRef<
       label,
       showCaret = true,
       size = 'default',
+      variant = 'default',
       children,
       ...props
     },
@@ -59,11 +69,7 @@ const DropdownMenuTriggerButton = React.forwardRef<
   ) => (
     <DropdownMenuPrimitive.Trigger
       ref={ref}
-      className={cn(
-        dropdownMenuTriggerButtonClassName,
-        sizeClasses[size],
-        className
-      )}
+      className={cn(variantClasses[variant], sizeClasses[size], className)}
       {...props}
     >
       {IconComponent && (

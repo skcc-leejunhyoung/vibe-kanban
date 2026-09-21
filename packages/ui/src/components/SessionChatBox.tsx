@@ -23,6 +23,7 @@ import {
   PencilSimpleIcon,
   DotsSixVerticalIcon,
   CaretDownIcon,
+  StopIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -31,7 +32,12 @@ import {
   Draggable,
   type DropResult,
 } from '@hello-pangea/dnd';
-import { ChatBoxBase, VisualVariant, type DropzoneProps } from './ChatBoxBase';
+import {
+  ChatActionButton,
+  ChatBoxBase,
+  VisualVariant,
+  type DropzoneProps,
+} from './ChatBoxBase';
 import { type EditorProps, type ExecutorProps } from './CreateChatBox';
 import type { AskUserQuestionItem, QuestionAnswer } from 'shared/types';
 import {
@@ -479,6 +485,21 @@ export function SessionChatBox<TExecutor extends string = string>({
   const filesChanged = stats?.filesChanged ?? 0;
   const linesAdded = stats?.linesAdded;
   const linesRemoved = stats?.linesRemoved;
+  const statsLabel = (
+    <span className="text-sm space-x-half whitespace-nowrap truncate">
+      <span>{t('diff.filesChanged', { count: filesChanged })}</span>
+      {(linesAdded !== undefined || linesRemoved !== undefined) && (
+        <span className="space-x-half">
+          {linesAdded !== undefined && (
+            <span className="text-success">+{linesAdded}</span>
+          )}
+          {linesRemoved !== undefined && (
+            <span className="text-error">-{linesRemoved}</span>
+          )}
+        </span>
+      )}
+    </span>
+  );
 
   // Render action buttons based on status
   const renderActionButtons = () => {
@@ -612,7 +633,7 @@ export function SessionChatBox<TExecutor extends string = string>({
             {actions.onVibeReview && (
               <div className="flex">
                 <PrimaryButton
-                  variant="secondary"
+                  variant="tertiary"
                   onClick={actions.onVibeReview}
                   disabled={actions.isReviewing}
                   actionIcon={actions.isReviewing ? 'spinner' : undefined}
@@ -628,7 +649,7 @@ export function SessionChatBox<TExecutor extends string = string>({
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        className="min-h-cta rounded-sm rounded-l-none border-l border-on-brand/20 bg-brand-secondary px-half text-on-brand hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-panel"
+                        className="min-h-cta rounded-sm rounded-l-none border-l border-border bg-panel px-half text-normal hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
                         disabled={actions.isReviewing}
                         aria-label={t(
                           'conversation.actions.reviewMore',
@@ -652,60 +673,63 @@ export function SessionChatBox<TExecutor extends string = string>({
                 )}
               </div>
             )}
-            <PrimaryButton
+            <ChatActionButton
+              icon={ArrowUpIcon}
+              label={t('conversation.actions.send')}
               onClick={actions.onSend}
               disabled={!canSend}
-              value={t('conversation.actions.send')}
             />
           </>
         );
 
       case 'sending':
         return (
-          <PrimaryButton
+          <ChatActionButton
+            icon="spinner"
+            label={t('conversation.actions.sending')}
             onClick={actions.onStop}
-            actionIcon="spinner"
-            value={t('conversation.actions.sending')}
           />
         );
 
       case 'running':
         return (
           <>
-            <PrimaryButton
-              onClick={actions.onStop}
+            <ChatActionButton
               variant="secondary"
-              value={t('conversation.actions.stop')}
-              actionIcon="spinner"
+              icon={StopIcon}
+              label={t('conversation.actions.stop')}
+              onClick={actions.onStop}
             />
-            <PrimaryButton
+            <ChatActionButton
+              variant="secondary"
+              icon={LightningIcon}
+              label={t('conversation.actions.sendNow')}
               onClick={actions.onSteer}
               disabled={!canSend}
-              variant="secondary"
-              value={t('conversation.actions.sendNow')}
             />
-            <PrimaryButton
+            <ChatActionButton
+              icon={ArrowUpIcon}
+              label={t('conversation.actions.queue')}
               onClick={actions.onQueue}
               disabled={!canSend}
-              value={t('conversation.actions.queue')}
             />
           </>
         );
 
       case 'stopping':
         return (
-          <PrimaryButton
+          <ChatActionButton
+            icon="spinner"
+            label={t('conversation.actions.stopping')}
             disabled
-            value={t('conversation.actions.stopping')}
-            actionIcon="spinner"
           />
         );
       case 'queue-loading':
         return (
-          <PrimaryButton
+          <ChatActionButton
+            icon="spinner"
+            label={t('conversation.actions.loading')}
             disabled
-            value={t('conversation.actions.loading')}
-            actionIcon="spinner"
           />
         );
       case 'feedback':
@@ -922,8 +946,9 @@ export function SessionChatBox<TExecutor extends string = string>({
           {/* New session mode: agent icon + executor dropdown */}
           {isNewSessionMode && executor && (
             <>
-              {renderAgentIcon?.(agent, 'size-icon-xl')}
+              {renderAgentIcon?.(agent, 'size-icon-base')}
               <ToolbarDropdown
+                variant="ghost"
                 label={
                   executor.selected
                     ? formatExecutorLabel(executor.selected)
@@ -971,57 +996,27 @@ export function SessionChatBox<TExecutor extends string = string>({
                     </button>
                   )}
                   {onOpenWorkspace ? (
-                    <PrimaryButton
-                      variant="secondary"
+                    <button
+                      type="button"
                       onClick={onOpenWorkspace}
-                      value="Open Workspace"
-                      actionIcon={ArrowsOutIcon}
-                      className="min-w-0"
-                    />
-                  ) : onViewCode ? (
-                    <PrimaryButton
-                      variant="tertiary"
-                      onClick={onViewCode}
-                      className="min-w-0"
+                      className="flex min-w-0 items-center gap-half text-sm text-low hover:text-normal"
                     >
-                      <span className="text-sm space-x-half whitespace-nowrap truncate">
-                        <span>
-                          {t('diff.filesChanged', { count: filesChanged })}
-                        </span>
-                        {(linesAdded !== undefined ||
-                          linesRemoved !== undefined) && (
-                          <span className="space-x-half">
-                            {linesAdded !== undefined && (
-                              <span className="text-success">
-                                +{linesAdded}
-                              </span>
-                            )}
-                            {linesRemoved !== undefined && (
-                              <span className="text-error">
-                                -{linesRemoved}
-                              </span>
-                            )}
-                          </span>
-                        )}
-                      </span>
-                    </PrimaryButton>
+                      <ArrowsOutIcon
+                        className="size-icon-xs shrink-0"
+                        weight="bold"
+                      />
+                      <span className="truncate">Open Workspace</span>
+                    </button>
+                  ) : onViewCode ? (
+                    <button
+                      type="button"
+                      onClick={onViewCode}
+                      className="flex min-w-0 text-low hover:text-normal"
+                    >
+                      {statsLabel}
+                    </button>
                   ) : (
-                    <span className="text-sm text-low space-x-half whitespace-nowrap truncate min-w-0">
-                      <span>
-                        {t('diff.filesChanged', { count: filesChanged })}
-                      </span>
-                      {(linesAdded !== undefined ||
-                        linesRemoved !== undefined) && (
-                        <span className="space-x-half">
-                          {linesAdded !== undefined && (
-                            <span className="text-success">+{linesAdded}</span>
-                          )}
-                          {linesRemoved !== undefined && (
-                            <span className="text-error">-{linesRemoved}</span>
-                          )}
-                        </span>
-                      )}
-                    </span>
+                    <span className="flex min-w-0 text-low">{statsLabel}</span>
                   )}
                 </>
               )}
@@ -1059,7 +1054,7 @@ export function SessionChatBox<TExecutor extends string = string>({
                       aria-label={t('conversation.handoff.label')}
                       disabled={handoff.disabled}
                     >
-                      {renderAgentIcon?.(agent, 'size-icon-xl')}
+                      {renderAgentIcon?.(agent, 'size-icon-base')}
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent>
@@ -1085,7 +1080,7 @@ export function SessionChatBox<TExecutor extends string = string>({
                   </DropdownMenuContent>
                 </DropdownMenu>
               ) : (
-                renderAgentIcon?.(agent, 'size-icon-xl')
+                renderAgentIcon?.(agent, 'size-icon-base')
               )}
             </>
           )}
@@ -1098,6 +1093,7 @@ export function SessionChatBox<TExecutor extends string = string>({
             <ContextUsageGauge tokenUsageInfo={tokenUsageInfo} />
           )}
           <ToolbarDropdown
+            variant="ghost"
             label={sessionLabel}
             disabled={isInFeedbackMode || isInEditMode || isInApprovalMode}
             className="min-w-0 max-w-[120px]"

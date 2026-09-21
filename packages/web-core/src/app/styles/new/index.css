@@ -461,7 +461,8 @@ html {
 
   .chat-box-running::before {
     content: '';
-    @apply absolute inset-0 pointer-events-none rounded-sm;
+    @apply absolute inset-0 pointer-events-none;
+    border-radius: inherit;
     padding: 1px;
     background: linear-gradient(
       45deg,

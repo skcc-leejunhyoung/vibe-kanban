@@ -73,6 +73,9 @@ interface ModelSelectorContainerProps {
   /** Persist the picked model/effort to the recently-used LRU. Disabled in
    * Settings, which owns its own save flow. */
   persistRecent?: boolean;
+  /** Trigger look: `ghost` (borderless) inside the chat composer, bordered
+   * chips elsewhere (Settings, Create PR). */
+  variant?: 'default' | 'ghost';
 }
 
 export function ModelSelectorContainer({
@@ -90,6 +93,7 @@ export function ModelSelectorContainer({
   showPreset = true,
   showPermissions = true,
   persistRecent = true,
+  variant = 'default',
 }: ModelSelectorContainerProps) {
   const { t } = useTranslation('common');
   const { theme } = useTheme();
@@ -546,7 +550,12 @@ export function ModelSelectorContainer({
     return (
       <>
         <DropdownMenu>
-          <DropdownMenuTriggerButton size="sm" label={loadingLabel} disabled />
+          <DropdownMenuTriggerButton
+            variant={variant}
+            size="sm"
+            label={loadingLabel}
+            disabled
+          />
         </DropdownMenu>
       </>
     );
@@ -590,6 +599,7 @@ export function ModelSelectorContainer({
       {showPreset && (
         <DropdownMenu>
           <DropdownMenuTriggerButton
+            variant={variant}
             size="sm"
             icon={SlidersHorizontalIcon}
             label={
@@ -632,6 +642,7 @@ export function ModelSelectorContainer({
           onOpenChange={handleOpenChange}
           trigger={
             <DropdownMenuTriggerButton
+              variant={variant}
               size="sm"
               label={modelLabel}
               disabled={modelsPending}
@@ -660,6 +671,7 @@ export function ModelSelectorContainer({
       {showModelSelector && displaySelectedModel?.supports_fast && (
         <DropdownMenu>
           <DropdownMenuTriggerButton
+            variant={variant}
             size="sm"
             icon={LightningIcon}
             label={fastEnabled ? t('modelSelector.fast') : undefined}
@@ -686,6 +698,7 @@ export function ModelSelectorContainer({
       {showPermissions && permissionPolicy && config.permissions.length > 0 && (
         <DropdownMenu>
           <DropdownMenuTriggerButton
+            variant={variant}
             size="sm"
             icon={permissionIcon}
             showCaret={false}
@@ -712,7 +725,11 @@ export function ModelSelectorContainer({
 
       {config.agents.length > 0 && (
         <DropdownMenu>
-          <DropdownMenuTriggerButton size="sm" label={agentLabel} />
+          <DropdownMenuTriggerButton
+            variant={variant}
+            size="sm"
+            label={agentLabel}
+          />
           <DropdownMenuContent align="start">
             <DropdownMenuLabel>{t('modelSelector.agent')}</DropdownMenuLabel>
             <DropdownMenuItem

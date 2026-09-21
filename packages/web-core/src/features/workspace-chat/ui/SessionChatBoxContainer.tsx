@@ -1483,6 +1483,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const modelSelectorNode = effectiveExecutor ? (
     <ModelSelectorContainer
+      variant="ghost"
       agent={effectiveExecutor}
       workspaceId={workspaceId}
       sessionId={sessionId}

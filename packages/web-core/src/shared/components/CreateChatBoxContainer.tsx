@@ -607,7 +607,7 @@ export function CreateChatBoxContainer({
                   agentIcon={
                     <AgentIcon
                       agent={effectiveExecutor}
-                      className="size-icon-xl"
+                      className="size-icon-base"
                     />
                   }
                   onSend={handleSubmit}
@@ -632,6 +632,7 @@ export function CreateChatBoxContainer({
                   modelSelector={
                     effectiveExecutor ? (
                       <ModelSelectorContainer
+                        variant="ghost"
                         agent={effectiveExecutor}
                         workspaceId={undefined}
                         onAdvancedSettings={handleCustomise}

@@ -1,8 +1,18 @@
 import { type ReactNode, useRef } from 'react';
-import { CheckIcon, PaperclipIcon, XIcon } from '@phosphor-icons/react';
+import {
+  ArrowUpIcon,
+  CheckIcon,
+  PaperclipIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { Checkbox } from './Checkbox';
-import { ChatBoxBase, VisualVariant, type DropzoneProps } from './ChatBoxBase';
+import {
+  ChatActionButton,
+  ChatBoxBase,
+  VisualVariant,
+  type DropzoneProps,
+} from './ChatBoxBase';
 import { DropdownMenuItem, DropdownMenuLabel } from './Dropdown';
 import { PrimaryButton } from './PrimaryButton';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
@@ -213,7 +223,11 @@ export function CreateChatBox<TExecutor extends string = string>({
       headerLeft={
         <>
           {agentIcon}
-          <ToolbarDropdown label={executorLabel} disabled={isDisabled}>
+          <ToolbarDropdown
+            variant="ghost"
+            label={executorLabel}
+            disabled={isDisabled}
+          >
             <DropdownMenuLabel>
               {t('tasks:conversation.executors')}
             </DropdownMenuLabel>
@@ -303,15 +317,15 @@ export function CreateChatBox<TExecutor extends string = string>({
               }
             />
           )}
-          <PrimaryButton
-            onClick={onSend}
-            disabled={!canSend}
-            actionIcon={isSending ? 'spinner' : undefined}
-            value={
+          <ChatActionButton
+            icon={isSending ? 'spinner' : ArrowUpIcon}
+            label={
               isSending
                 ? (sendingLabel ?? t('tasks:conversation.workspace.creating'))
                 : (sendLabel ?? t('tasks:conversation.workspace.create'))
             }
+            onClick={onSend}
+            disabled={!canSend}
           />
         </>
       }

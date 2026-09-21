@@ -489,7 +489,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             />
           )}
           agentIcon={
-            <AgentIcon agent={effectiveExecutor} className="size-icon-xl" />
+            <AgentIcon agent={effectiveExecutor} className="size-icon-base" />
           }
           onSend={handleSend}
           isSending={submitting}
@@ -506,6 +506,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           modelSelector={
             effectiveExecutor ? (
               <ModelSelectorContainer
+                variant="ghost"
                 agent={effectiveExecutor}
                 workspaceId={undefined}
                 hostId={selectedHostId}

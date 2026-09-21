@@ -63,6 +63,7 @@ interface ToolbarDropdownProps {
   children?: ReactNode;
   className?: string;
   disabled?: boolean;
+  variant?: 'default' | 'ghost';
 }
 
 function ToolbarDropdown({
@@ -72,6 +73,7 @@ function ToolbarDropdown({
   children,
   className,
   disabled,
+  variant,
 }: ToolbarDropdownProps) {
   const { t } = useTranslation('common');
 
@@ -83,6 +85,7 @@ function ToolbarDropdown({
         aria-label={ariaLabel ?? label}
         className={className}
         disabled={disabled}
+        variant={variant}
       />
       <DropdownMenuContent>
         {children ?? (
