@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use axum::{
     Extension, Json, Router,
@@ -211,6 +211,15 @@ fn editor_path(
     let file_path = repo_name
         .and_then(|name| file_path.strip_prefix(&format!("{name}/")))
         .unwrap_or(file_path);
+    // Diff paths are always workspace-relative. An absolute path (`join` drops
+    // the root it is joined onto) or a `..` hop would hand the editor a file
+    // outside the workspace, so ignore it and open the workspace itself.
+    if Path::new(file_path)
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return repo_root;
+    }
     repo_root.join(file_path)
 }
 
@@ -249,32 +258,46 @@ mod tests {
     fn worktree_workspace_descends_into_repo_dir() {
         let root = Path::new("/ws");
         assert_eq!(
-            editor_path(root, false, Some("wisdom-rag"), None),
-            Path::new("/ws/wisdom-rag")
+            editor_path(root, false, Some("sample-repo"), None),
+            Path::new("/ws/sample-repo")
         );
         assert_eq!(
             editor_path(
                 root,
                 false,
-                Some("wisdom-rag"),
-                Some("wisdom-rag/src/main.py")
+                Some("sample-repo"),
+                Some("sample-repo/src/main.py")
             ),
-            Path::new("/ws/wisdom-rag/src/main.py")
+            Path::new("/ws/sample-repo/src/main.py")
         );
     }
 
     #[test]
     fn in_place_workspace_opens_container_ref_itself() {
-        let root = Path::new("/Users/me/VSC/wisdom-rag");
-        assert_eq!(editor_path(root, true, Some("wisdom-rag"), None), root);
+        let root = Path::new("/Users/me/VSC/sample-repo");
+        assert_eq!(editor_path(root, true, Some("sample-repo"), None), root);
         assert_eq!(
             editor_path(
                 root,
                 true,
-                Some("wisdom-rag"),
-                Some("wisdom-rag/src/main.py")
+                Some("sample-repo"),
+                Some("sample-repo/src/main.py")
             ),
-            Path::new("/Users/me/VSC/wisdom-rag/src/main.py")
+            Path::new("/Users/me/VSC/sample-repo/src/main.py")
+        );
+    }
+
+    #[test]
+    fn paths_escaping_the_workspace_fall_back_to_the_root() {
+        let root = Path::new("/ws");
+        assert_eq!(editor_path(root, false, None, Some("/etc/passwd")), root);
+        assert_eq!(
+            editor_path(root, false, None, Some("../../etc/passwd")),
+            root
+        );
+        assert_eq!(
+            editor_path(root, false, Some("api"), Some("api/../../etc/passwd")),
+            Path::new("/ws/api")
         );
     }
 
