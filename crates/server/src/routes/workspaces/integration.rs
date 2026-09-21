@@ -161,31 +161,57 @@ async fn resolve_workspace_editor_path(
         .await?;
     deployment.container().touch(workspace).await?;
 
-    let workspace_path = Path::new(&container_ref);
     let workspace_repos =
         WorkspaceRepo::find_repos_for_workspace(&deployment.db().pool, workspace.id).await?;
-    let workspace_path = if let Some(repo_id) = repo_id {
-        let repo = workspace_repos
-            .iter()
-            .find(|repo| repo.id == repo_id)
-            .ok_or_else(|| {
-                ApiError::BadRequest(format!(
-                    "Repository {repo_id} does not belong to workspace {}",
-                    workspace.id
-                ))
-            })?;
-        workspace_path.join(&repo.name)
-    } else if workspace_repos.len() == 1 && file_path.is_none() {
-        workspace_path.join(&workspace_repos[0].name)
-    } else {
-        workspace_path.to_path_buf()
+    let repo = match repo_id {
+        Some(repo_id) => Some(
+            workspace_repos
+                .iter()
+                .find(|repo| repo.id == repo_id)
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!(
+                        "Repository {repo_id} does not belong to workspace {}",
+                        workspace.id
+                    ))
+                })?,
+        ),
+        None => workspace_repos
+            .first()
+            .filter(|_| workspace_repos.len() == 1),
     };
 
-    Ok(if let Some(file_path) = file_path {
-        workspace_path.join(file_path)
-    } else {
-        workspace_path
-    })
+    Ok(editor_path(
+        Path::new(&container_ref),
+        workspace.in_place,
+        repo.map(|repo| repo.name.as_str()),
+        file_path,
+    ))
+}
+
+/// Map a workspace's container dir to the path to hand the editor.
+///
+/// In-place ("quick chat") workspaces run inside the user's real checkout, so
+/// `container_ref` already IS the repo root — joining the repo name there points
+/// at a directory that does not exist, and the editor opens it as a new empty
+/// file instead of the folder. Diff file paths are repo-name prefixed (see
+/// `path_prefix` in `diff_stream`), which the repo root already accounts for.
+fn editor_path(
+    container_ref: &Path,
+    in_place: bool,
+    repo_name: Option<&str>,
+    file_path: Option<&str>,
+) -> PathBuf {
+    let repo_root = match repo_name {
+        Some(name) if !in_place => container_ref.join(name),
+        _ => container_ref.to_path_buf(),
+    };
+    let Some(file_path) = file_path else {
+        return repo_root;
+    };
+    let file_path = repo_name
+        .and_then(|name| file_path.strip_prefix(&format!("{name}/")))
+        .unwrap_or(file_path);
+    repo_root.join(file_path)
 }
 
 #[axum::debug_handler]
@@ -212,5 +238,51 @@ pub async fn gh_cli_setup_handler(
             },
         ))),
         Err(err) => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worktree_workspace_descends_into_repo_dir() {
+        let root = Path::new("/ws");
+        assert_eq!(
+            editor_path(root, false, Some("wisdom-rag"), None),
+            Path::new("/ws/wisdom-rag")
+        );
+        assert_eq!(
+            editor_path(
+                root,
+                false,
+                Some("wisdom-rag"),
+                Some("wisdom-rag/src/main.py")
+            ),
+            Path::new("/ws/wisdom-rag/src/main.py")
+        );
+    }
+
+    #[test]
+    fn in_place_workspace_opens_container_ref_itself() {
+        let root = Path::new("/Users/me/VSC/wisdom-rag");
+        assert_eq!(editor_path(root, true, Some("wisdom-rag"), None), root);
+        assert_eq!(
+            editor_path(
+                root,
+                true,
+                Some("wisdom-rag"),
+                Some("wisdom-rag/src/main.py")
+            ),
+            Path::new("/Users/me/VSC/wisdom-rag/src/main.py")
+        );
+    }
+
+    #[test]
+    fn multi_repo_file_path_keeps_its_prefix() {
+        assert_eq!(
+            editor_path(Path::new("/ws"), false, None, Some("api/src/main.rs")),
+            Path::new("/ws/api/src/main.rs")
+        );
     }
 }
