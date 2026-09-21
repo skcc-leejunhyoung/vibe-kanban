@@ -70,6 +70,7 @@ import {
 } from '@/shared/keyboard/registry';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { getCycledWorkspaceKey } from './workspaceCycle';
+import { shouldReleaseWorkspaceCursor } from './workspaceCursorFocus';
 import {
   useIsPaneGridTargeted,
   useOpenInSplitPane,
@@ -749,17 +750,18 @@ export function WorkspacesSidebarContainer({
     const onFocusOut = () => {
       // Decide on the settled focus, not on relatedTarget: a background list
       // update moves the focused row's DOM node, which fires focusout with no
-      // relatedTarget and restores focus to the same row a microtask later.
+      // relatedTarget and is undone by react-dom restoring focus to the same
+      // row before the next frame.
       requestAnimationFrame(() => {
-        // Still in the sidebar (row-to-row arrow navigation, a row button, or
-        // the row that was just moved): the cursor stays.
-        if (root.contains(document.activeElement)) return;
-        // A dialog stealing focus is not the user leaving the list — it
-        // restores focus to the row on close, so keep the cursor.
-        if (isModalKeyboardActive()) return;
-        // Switching window/tab keeps the row focused for when we come back.
-        if (!document.hasFocus()) return;
-        setFocusedWorkspaceId(null);
+        if (
+          shouldReleaseWorkspaceCursor({
+            focusInSidebar: root.contains(document.activeElement),
+            modalActive: isModalKeyboardActive(),
+            documentHasFocus: document.hasFocus(),
+          })
+        ) {
+          setFocusedWorkspaceId(null);
+        }
       });
     };
     root.addEventListener('focusout', onFocusOut);
