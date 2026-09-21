@@ -296,11 +296,11 @@ export const AskUserQuestionBanner = forwardRef<
       )}
 
       {error && (
-        <div className="px-double pb-base text-sm text-error">{error}</div>
+        <div className="px-plusfifty pb-base text-sm text-error">{error}</div>
       )}
 
       {isSubmitting && (
-        <div className="px-double pb-base text-sm text-low">
+        <div className="px-plusfifty pb-base text-sm text-low">
           {t('askQuestion.submitting')}
         </div>
       )}
