@@ -42,9 +42,12 @@ async fn open_remote_workspace_in_editor(
     let relay_hosts = deployment.relay_hosts()?;
     let relay_host = relay_hosts.host(req.host_id).await?;
 
+    // An empty `file_path` means "just open the workspace": normalise it once
+    // here so the resolved path and the `is_file` flag below cannot disagree.
+    let file_path = req.file_path.as_deref().filter(|v| !v.is_empty());
+
     // Build the editor path API URL.
-    let api_path =
-        build_editor_path_api_path(req.workspace_id, req.file_path.as_deref(), req.repo_id);
+    let api_path = build_editor_path_api_path(req.workspace_id, file_path, req.repo_id);
 
     // Resolve workspace path via relay proxy (WebRTC-first, relay fallback).
     let mut response = relay_host
@@ -85,7 +88,7 @@ async fn open_remote_workspace_in_editor(
         &req.host_id.to_string(),
         &workspace_path,
         req.editor_type.as_deref(),
-        req.file_path.is_some(),
+        file_path.is_some(),
     )
     .map_err(|detail| {
         warn!(%detail, "Failed to open remote editor");
@@ -100,7 +103,6 @@ fn build_editor_path_api_path(
     repo_id: Option<Uuid>,
 ) -> String {
     let base = format!("/api/workspaces/{workspace_id}/integration/editor/path");
-    let file_path = file_path.filter(|v| !v.is_empty());
     if file_path.is_none() && repo_id.is_none() {
         return base;
     }
