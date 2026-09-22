@@ -150,20 +150,21 @@ export function ChatBoxBase({
       >
         {editor}
 
-        {/* Footer - one row when it fits: attach/model controls on the left,
-            round action buttons on the right. The left group keeps its natural
-            width (flex-auto) so on narrow widths the action buttons drop to
-            their own line instead of squeezing the controls into a sliver. */}
+        {/* Footer - controls and action buttons share ONE wrapping flow, so a
+            control that wraps takes the action buttons with it onto the same
+            line instead of leaving a half-empty row. `ml-auto` is per-line in
+            flexbox, so the buttons stay right-aligned on whichever line they
+            land on. Nesting the controls in their own flex container would
+            reintroduce the split: the whole group would claim the first line
+            and push the buttons to a row of their own. */}
         <div
           className={cn(
-            'flex flex-wrap items-end justify-between gap-base',
+            'flex flex-wrap items-center gap-half',
             fillHeight && 'shrink-0'
           )}
         >
-          <Toolbar className="flex-auto min-w-0 flex-wrap !gap-half">
-            {footerLeft}
-            {modelSelector}
-          </Toolbar>
+          {footerLeft}
+          {modelSelector}
           <div className="ml-auto flex shrink-0 items-center gap-half">
             {footerRight}
           </div>
