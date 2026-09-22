@@ -22,6 +22,20 @@ interface XTermInstanceProps {
   onClose?: () => void;
 }
 
+/**
+ * Fit only when the terminal is actually on screen: a tab hidden behind
+ * another one measures 0x0, and fitting against that proposes NaN dimensions
+ * that throw away the grid.
+ */
+function fitIfVisible(
+  container: HTMLElement | null,
+  fitAddon: FitAddon
+): boolean {
+  if (!container?.clientWidth || !container.clientHeight) return false;
+  fitAddon.fit();
+  return true;
+}
+
 function terminalEndpoint(
   workspaceId: string | undefined,
   cols: number,
@@ -63,10 +77,11 @@ export function XTermInstance({
   }, [onClose]);
 
   const fitTerminal = useCallback(() => {
-    fitAddonRef.current?.fit();
-    if (terminalRef.current) {
-      resizeTerminal(tabId, terminalRef.current.cols, terminalRef.current.rows);
-    }
+    const fitAddon = fitAddonRef.current;
+    const terminal = terminalRef.current;
+    if (!fitAddon || !terminal) return;
+    if (!fitIfVisible(containerRef.current, fitAddon)) return;
+    resizeTerminal(tabId, terminal.cols, terminal.rows);
   }, [tabId, resizeTerminal]);
 
   useEffect(() => {
@@ -78,7 +93,7 @@ export function XTermInstance({
       const { terminal, fitAddon } = existing;
       if (terminal.element) {
         container.appendChild(terminal.element);
-        fitAddon.fit();
+        fitIfVisible(container, fitAddon);
       }
       terminalRef.current = terminal;
       fitAddonRef.current = fitAddon;
@@ -118,7 +133,7 @@ export function XTermInstance({
     terminal.loadAddon(webLinksAddon);
     terminal.open(container);
 
-    fitAddon.fit();
+    fitIfVisible(container, fitAddon);
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
@@ -129,7 +144,7 @@ export function XTermInstance({
     let disposed = false;
     void document.fonts.ready.then(() => {
       if (disposed) return;
-      fitAddon.fit();
+      if (!fitIfVisible(container, fitAddon)) return;
       // The terminal font is a webfont here, so this refit usually lands while
       // the socket is still connecting — resizeTerminal records it either way.
       resizeTerminal(tabId, terminal.cols, terminal.rows);
@@ -209,8 +224,12 @@ export function XTermInstance({
   }, [fitTerminal]);
 
   useEffect(() => {
-    if (isActive) terminalRef.current?.focus();
-  }, [isActive]);
+    if (!isActive) return;
+    // This tab may have been hidden while the panel was resized, so it comes
+    // back with a stale grid.
+    fitTerminal();
+    terminalRef.current?.focus();
+  }, [isActive, fitTerminal]);
 
   useEffect(() => {
     if (terminalRef.current) {

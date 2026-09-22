@@ -46,4 +46,4 @@ dotenv = "0.15"
 tempfile = "3.8"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["fs"] }
+nix = { version = "0.29", features = ["fs", "signal"] }

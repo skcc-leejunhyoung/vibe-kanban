@@ -25,8 +25,22 @@ function TerminalTabs({
   tabKey: string;
   workspaceId?: string;
 }) {
-  const { getTabsForWorkspace, getActiveTab, createTab, closeTab } =
-    useTerminal();
+  const {
+    getTabsForWorkspace,
+    getActiveTab,
+    createTab,
+    closeTab,
+    setActiveTab,
+    retainScope,
+    releaseScope,
+  } = useTerminal();
+
+  // Closing the panel kills its shells; a panel that merely moves (sidebar to
+  // expanded and back) re-retains the scope before the kill fires.
+  useEffect(() => {
+    retainScope(tabKey);
+    return () => releaseScope(tabKey);
+  }, [tabKey, retainScope, releaseScope]);
 
   const tabs = getTabsForWorkspace(tabKey);
   const activeTab = getActiveTab(tabKey);
@@ -47,6 +61,9 @@ function TerminalTabs({
     <TerminalPanel
       tabs={tabs}
       activeTabId={activeTab?.id ?? null}
+      onSelectTab={(tabId) => setActiveTab(tabKey, tabId)}
+      onCreateTab={() => createTab(tabKey)}
+      onCloseTab={(tabId) => closeTab(tabKey, tabId)}
       renderTab={(tabId, isActive) => (
         <XTermInstance
           key={tabId}
@@ -63,22 +80,9 @@ function TerminalTabs({
 /** Terminal for the selected workspace, rooted at its worktree. */
 export function TerminalPanelContainer() {
   const { workspace } = useWorkspaceContext();
-  const { clearWorkspaceTabs } = useTerminal();
 
   const workspaceId = workspace?.id;
   const hasWorkspaceDir = !!workspace?.container_ref;
-  const prevWorkspaceIdRef = useRef<string | null>(null);
-
-  // Clean up terminals when workspace changes
-  useEffect(() => {
-    if (
-      prevWorkspaceIdRef.current &&
-      prevWorkspaceIdRef.current !== workspaceId
-    ) {
-      clearWorkspaceTabs(prevWorkspaceIdRef.current);
-    }
-    prevWorkspaceIdRef.current = workspaceId ?? null;
-  }, [workspaceId, clearWorkspaceTabs]);
 
   if (!workspaceId || !hasWorkspaceDir) return null;
   // Keyed so switching workspaces gets a fresh scope rather than carrying the

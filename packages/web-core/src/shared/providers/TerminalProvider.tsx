@@ -27,13 +27,22 @@ interface TerminalState {
 type TerminalAction =
   | { type: 'CREATE_TAB'; workspaceId: string }
   | { type: 'CLOSE_TAB'; workspaceId: string; tabId: string }
+  | { type: 'SET_ACTIVE_TAB'; workspaceId: string; tabId: string }
   | { type: 'CLEAR_WORKSPACE_TABS'; workspaceId: string };
+
+/**
+ * A panel that is only moving — the right-sidebar section swapping with the
+ * expanded terminal — unmounts and remounts within the same commit. Wait this
+ * long before killing its shells so the move survives; a panel a person
+ * actually closed never comes back inside a third of a second.
+ */
+const SCOPE_RELEASE_GRACE_MS = 300;
 
 function generateTabId(): string {
   return `term-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function terminalReducer(
+export function terminalReducer(
   state: TerminalState,
   action: TerminalAction
 ): TerminalState {
@@ -79,6 +88,19 @@ function terminalReducer(
         activeTabByWorkspace: {
           ...state.activeTabByWorkspace,
           [workspaceId]: newActiveTab,
+        },
+      };
+    }
+
+    case 'SET_ACTIVE_TAB': {
+      const { workspaceId, tabId } = action;
+      const tabs = state.tabsByWorkspace[workspaceId] || [];
+      if (!tabs.some((t) => t.id === tabId)) return state;
+      return {
+        ...state,
+        activeTabByWorkspace: {
+          ...state.activeTabByWorkspace,
+          [workspaceId]: tabId,
         },
       };
     }
@@ -137,6 +159,15 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     new Map()
   );
 
+  // Mount count per tab scope, plus the pending kill for a scope nobody shows
+  // anymore. Closing the panel has to take its shells down with it.
+  const scopeMountsRef = useRef<
+    Map<
+      string,
+      { mounts: number; killTimer: ReturnType<typeof setTimeout> | null }
+    >
+  >(new Map());
+
   // Store reconnection state for each connection
   const reconnectStateRef = useRef<
     Map<
@@ -149,6 +180,11 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       }
     >
   >(new Map());
+
+  // Mirror of the tab lists, so teardown scheduled on a timer reads the current
+  // tabs instead of whatever they were when the timer was armed.
+  const tabsRef = useRef(state.tabsByWorkspace);
+  tabsRef.current = state.tabsByWorkspace;
 
   const getTabsForWorkspace = useCallback(
     (workspaceId: string): TerminalTab[] => {
@@ -169,6 +205,10 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
 
   const createTab = useCallback((workspaceId: string) => {
     dispatch({ type: 'CREATE_TAB', workspaceId });
+  }, []);
+
+  const setActiveTab = useCallback((workspaceId: string, tabId: string) => {
+    dispatch({ type: 'SET_ACTIVE_TAB', workspaceId, tabId });
   }, []);
 
   const closeTerminalConnection = useCallback((tabId: string) => {
@@ -209,7 +249,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
   const clearWorkspaceTabs = useCallback(
     (workspaceId: string) => {
       // Dispose all terminal instances for this workspace
-      const tabs = state.tabsByWorkspace[workspaceId] || [];
+      const tabs = tabsRef.current[workspaceId] || [];
       tabs.forEach((tab) => {
         const instance = terminalInstancesRef.current.get(tab.id);
         if (instance) {
@@ -221,7 +261,34 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       });
       dispatch({ type: 'CLEAR_WORKSPACE_TABS', workspaceId });
     },
-    [state.tabsByWorkspace, closeTerminalConnection]
+    [closeTerminalConnection]
+  );
+
+  const retainScope = useCallback((workspaceId: string) => {
+    const scope = scopeMountsRef.current.get(workspaceId) ?? {
+      mounts: 0,
+      killTimer: null,
+    };
+    if (scope.killTimer) {
+      clearTimeout(scope.killTimer);
+      scope.killTimer = null;
+    }
+    scope.mounts += 1;
+    scopeMountsRef.current.set(workspaceId, scope);
+  }, []);
+
+  const releaseScope = useCallback(
+    (workspaceId: string) => {
+      const scope = scopeMountsRef.current.get(workspaceId);
+      if (!scope) return;
+      scope.mounts -= 1;
+      if (scope.mounts > 0) return;
+      scope.killTimer = setTimeout(() => {
+        scopeMountsRef.current.delete(workspaceId);
+        clearWorkspaceTabs(workspaceId);
+      }, SCOPE_RELEASE_GRACE_MS);
+    },
+    [clearWorkspaceTabs]
   );
 
   const registerTerminalInstance = useCallback(
@@ -410,7 +477,9 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       getActiveTab,
       createTab,
       closeTab,
-      clearWorkspaceTabs,
+      setActiveTab,
+      retainScope,
+      releaseScope,
       registerTerminalInstance,
       getTerminalInstance,
       createTerminalConnection,
@@ -422,7 +491,9 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       getActiveTab,
       createTab,
       closeTab,
-      clearWorkspaceTabs,
+      setActiveTab,
+      retainScope,
+      releaseScope,
       registerTerminalInstance,
       getTerminalInstance,
       createTerminalConnection,

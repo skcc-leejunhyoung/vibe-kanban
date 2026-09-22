@@ -279,6 +279,11 @@
     "noProcesses": "프로세스 없음",
     "terminal": "터미널"
   },
+  "terminal": {
+    "newSession": "새 터미널",
+    "closeSession": "터미널 닫기",
+    "session": "터미널 {{index}}"
+  },
   "search": {
     "matchCount": "{{current}} / {{total}}",
     "noMatches": "일치 항목 없음"

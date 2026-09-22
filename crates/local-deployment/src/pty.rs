@@ -2,8 +2,12 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
+    time::Duration,
 };
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
@@ -60,11 +64,77 @@ fn utf8_locale_override(
     Some(("LC_CTYPE", DEFAULT_UTF8_LOCALE))
 }
 
+/// How long a hung-up process group gets to wind down before it is killed.
+const HANGUP_GRACE: Duration = Duration::from_secs(3);
+
 struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
+    /// Signals the shell without owning it — the reader thread holds the
+    /// `Child` so it can reap it, and may be blocked in `wait`.
+    killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pid: Option<u32>,
+    /// Set once the shell has exited *and* been reaped, which frees its pid —
+    /// signalling after that could hit whatever process inherited the number.
+    exited: Arc<AtomicBool>,
     _output_handle: thread::JoinHandle<()>,
     closed: bool,
+}
+
+/// Hang up the terminal the way closing a terminal window does: SIGHUP the
+/// shell's own process group *and* the group that currently owns the terminal
+/// (a foreground job like `vim` runs in its own group), then SIGKILL whatever
+/// is still standing after [`HANGUP_GRACE`].
+///
+/// The kernel would do this by itself once the master fd closed, but the output
+/// thread holds a dup of that fd and cannot be interrupted while blocked in
+/// `read` — so without this the shell outlives the panel that opened it.
+///
+/// Returns whether anything was signalled.
+#[cfg(unix)]
+fn hangup(session: &PtySession) -> bool {
+    use nix::{
+        sys::signal::{Signal, killpg},
+        unistd::Pid,
+    };
+
+    let mut groups: Vec<Pid> = Vec::new();
+    // portable-pty starts the shell with setsid + TIOCSCTTY, so the shell's pid
+    // doubles as its process-group id.
+    if let Some(pid) = session.pid {
+        groups.push(Pid::from_raw(pid as i32));
+    }
+    if let Some(foreground) = session.master.process_group_leader() {
+        let foreground = Pid::from_raw(foreground);
+        if !groups.contains(&foreground) {
+            groups.push(foreground);
+        }
+    }
+
+    let signalled = groups.iter().fold(false, |acc, pgid| {
+        killpg(*pgid, Signal::SIGHUP).is_ok() || acc
+    });
+    if !signalled {
+        return false;
+    }
+
+    tokio::spawn(async move {
+        tokio::time::sleep(HANGUP_GRACE).await;
+        for pgid in groups {
+            // Signal 0 first: a group that is already gone may have had its id
+            // handed to something else by now.
+            if killpg(pgid, None::<Signal>).is_ok() {
+                let _ = killpg(pgid, Signal::SIGKILL);
+            }
+        }
+    });
+    true
+}
+
+#[cfg(not(unix))]
+fn hangup(_session: &PtySession) -> bool {
+    false
 }
 
 #[derive(Clone)]
@@ -88,6 +158,8 @@ impl PtyService {
         let session_id = Uuid::new_v4();
         let (output_tx, output_rx) = mpsc::unbounded_channel();
         let shell = get_interactive_shell().await;
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited_in_thread = exited.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let pty_system = NativePtySystem::default();
@@ -131,10 +203,12 @@ impl PtyService {
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
 
-            let child = pty_pair
+            let mut child = pty_pair
                 .slave
                 .spawn_command(cmd)
                 .map_err(|e| PtyError::CreateFailed(e.to_string()))?;
+            let killer = child.clone_killer();
+            let pid = child.process_id();
 
             let writer = pty_pair
                 .master
@@ -159,19 +233,25 @@ impl PtyService {
                         Err(_) => break,
                     }
                 }
-                drop(child);
+                // Reap the shell instead of leaving a zombie, then publish that
+                // its pid is free.
+                let _ = child.wait();
+                exited_in_thread.store(true, Ordering::SeqCst);
             });
 
-            Ok::<_, PtyError>((pty_pair.master, writer, output_handle))
+            Ok::<_, PtyError>((pty_pair.master, writer, killer, pid, output_handle))
         })
         .await
         .map_err(|e| PtyError::CreateFailed(e.to_string()))??;
 
-        let (master, writer, output_handle) = result;
+        let (master, writer, killer, pid, output_handle) = result;
 
         let session = PtySession {
             writer,
             master,
+            killer,
+            pid,
+            exited,
             _output_handle: output_handle,
             closed: false,
         };
@@ -236,14 +316,24 @@ impl PtyService {
         Ok(())
     }
 
+    /// Closes a session and takes the shell down with it: a panel that is gone
+    /// must not leave a login shell (and its jobs) running forever.
     pub async fn close_session(&self, session_id: Uuid) -> Result<(), PtyError> {
-        if let Some(mut session) = self
+        let Some(mut session) = self
             .sessions
             .lock()
             .map_err(|_| PtyError::SessionClosed)?
             .remove(&session_id)
-        {
-            session.closed = true;
+        else {
+            return Ok(());
+        };
+        session.closed = true;
+
+        if session.exited.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if !hangup(&session) {
+            let _ = session.killer.kill();
         }
         Ok(())
     }
@@ -295,6 +385,35 @@ mod tests {
             utf8_locale_override(lookup(&[("LC_ALL", ""), ("LANG", "en_US.UTF-8")])),
             None
         );
+    }
+
+    /// The whole point of closing a session: no shell left behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn close_session_takes_the_shell_down() {
+        use nix::{sys::signal::kill, unistd::Pid};
+
+        let service = PtyService::new();
+        let (session_id, _output_rx) = service
+            .create_session(std::env::temp_dir(), 80, 24)
+            .await
+            .expect("spawn pty");
+        let pid = {
+            let sessions = service.sessions.lock().unwrap();
+            Pid::from_raw(sessions[&session_id].pid.unwrap() as i32)
+        };
+        assert!(kill(pid, None).is_ok(), "shell should be running");
+
+        service.close_session(session_id).await.unwrap();
+
+        // SIGHUP, then the reader thread reaps it; both are off-thread.
+        for _ in 0..60 {
+            if kill(pid, None).is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("shell survived close_session");
     }
 
     #[test]
