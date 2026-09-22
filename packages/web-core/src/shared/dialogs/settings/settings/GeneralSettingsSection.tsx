@@ -39,6 +39,14 @@ import {
   zoomOut,
   zoomReset,
 } from '@/shared/lib/zoom';
+import {
+  TERMINAL_DEFAULT_FONT_SIZE,
+  TERMINAL_MAX_FONT_SIZE,
+  TERMINAL_MIN_FONT_SIZE,
+  getTerminalBaseFontSize,
+  setTerminalBaseFontSize,
+  subscribeTerminalFontSize,
+} from '@/shared/lib/terminalTheme';
 import { getLanguageOptions } from '@/i18n/languages';
 import { toPrettyCase } from '@/shared/lib/string';
 import {
@@ -167,6 +175,76 @@ function AppZoomField() {
           disabled={zoomPercent === DEFAULT_ZOOM_PERCENT}
         >
           {t('settings.general.appearance.zoom.reset', {
+            defaultValue: 'Reset',
+          })}
+        </Button>
+      </div>
+    </SettingsField>
+  );
+}
+
+// xterm sizes its cells in px, so it never inherits the rem-based text scale
+// the rest of the UI uses. Client-local (localStorage), like app zoom, which
+// still multiplies on top of whatever is picked here.
+function TerminalFontSizeField() {
+  const { t } = useTranslation('settings');
+  const fontSize = useSyncExternalStore(
+    subscribeTerminalFontSize,
+    getTerminalBaseFontSize
+  );
+  const label = t('settings.general.appearance.terminalFontSize.label', {
+    defaultValue: 'Terminal font size',
+  });
+
+  return (
+    <SettingsField
+      label={label}
+      description={t('settings.general.appearance.terminalFontSize.helper', {
+        defaultValue:
+          'Text size in the built-in terminal. App zoom scales it further.',
+      })}
+    >
+      <div
+        className="flex items-center gap-base"
+        role="group"
+        aria-label={label}
+      >
+        <IconButton
+          icon={MinusIcon}
+          variant="tertiary"
+          className="min-h-9 min-w-9"
+          onClick={() => setTerminalBaseFontSize(fontSize - 1)}
+          disabled={fontSize <= TERMINAL_MIN_FONT_SIZE}
+          aria-label={t(
+            'settings.general.appearance.terminalFontSize.smaller',
+            {
+              defaultValue: 'Smaller',
+            }
+          )}
+        />
+        <span
+          className="w-16 text-center text-sm tabular-nums text-normal"
+          aria-live="polite"
+        >
+          {fontSize}px
+        </span>
+        <IconButton
+          icon={PlusIcon}
+          variant="tertiary"
+          className="min-h-9 min-w-9"
+          onClick={() => setTerminalBaseFontSize(fontSize + 1)}
+          disabled={fontSize >= TERMINAL_MAX_FONT_SIZE}
+          aria-label={t('settings.general.appearance.terminalFontSize.larger', {
+            defaultValue: 'Larger',
+          })}
+        />
+        <Button
+          variant="secondary"
+          size="xs"
+          onClick={() => setTerminalBaseFontSize(TERMINAL_DEFAULT_FONT_SIZE)}
+          disabled={fontSize === TERMINAL_DEFAULT_FONT_SIZE}
+        >
+          {t('settings.general.appearance.terminalFontSize.reset', {
             defaultValue: 'Reset',
           })}
         </Button>
@@ -559,6 +637,8 @@ export function GeneralSettingsSection() {
         />
 
         <AppZoomField />
+
+        <TerminalFontSizeField />
 
         {isMobile && (
           <SettingsField

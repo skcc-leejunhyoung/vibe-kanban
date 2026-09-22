@@ -18,6 +18,12 @@ describe('scaleTerminalFontSize', () => {
     expect(scaleTerminalFontSize(Number.NaN)).toBe(12);
     expect(scaleTerminalFontSize(0)).toBe(12);
   });
+
+  it('scales the user-picked base size, not the built-in one', () => {
+    expect(scaleTerminalFontSize(16, 18)).toBe(18);
+    expect(scaleTerminalFontSize(24, 18)).toBe(27);
+    expect(scaleTerminalFontSize(Number.NaN, 18)).toBe(18);
+  });
 });
 
 describe('TERMINAL_FONT_FAMILY', () => {

@@ -108,6 +108,13 @@
           "in": "Zoom in",
           "out": "Zoom out",
           "reset": "Reset"
+        },
+        "terminalFontSize": {
+          "label": "Terminal font size",
+          "helper": "Text size in the built-in terminal. App zoom scales it further.",
+          "larger": "Larger",
+          "smaller": "Smaller",
+          "reset": "Reset"
         }
       },
       "diff": {

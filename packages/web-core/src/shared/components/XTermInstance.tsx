@@ -10,6 +10,7 @@ import {
   TERMINAL_SCROLLBACK,
   getTerminalFontSize,
   getTerminalTheme,
+  subscribeTerminalFontSize,
 } from '@/shared/lib/terminalTheme';
 import { useTerminal } from '@/shared/hooks/useTerminal';
 
@@ -182,8 +183,9 @@ export function XTermInstance({
     return () => observer.disconnect();
   }, [fitTerminal]);
 
-  // App zoom rewrites the root font size on <html>; follow it so the terminal
-  // does not stay pinned at its unzoomed size while the rest of the UI scales.
+  // Two inputs move the cell size: the settings font-size control, and app zoom
+  // rewriting the root font size on <html> — follow both, or the terminal stays
+  // pinned at its old size while the rest of the UI scales.
   useEffect(() => {
     const applyFontSize = () => {
       const terminal = terminalRef.current;
@@ -199,7 +201,11 @@ export function XTermInstance({
       attributes: true,
       attributeFilter: ['style'],
     });
-    return () => observer.disconnect();
+    const unsubscribe = subscribeTerminalFontSize(applyFontSize);
+    return () => {
+      observer.disconnect();
+      unsubscribe();
+    };
   }, [fitTerminal]);
 
   useEffect(() => {

@@ -34,8 +34,15 @@ export const TERMINAL_FONT_FAMILY = [
 /** Deep enough to scroll back through a build log. */
 export const TERMINAL_SCROLLBACK = 10000;
 
-const TERMINAL_BASE_FONT_SIZE = 12;
 const ROOT_BASE_FONT_SIZE = 16;
+
+/** Terminal font size in px at 100% app zoom, before the user adjusts it. */
+export const TERMINAL_DEFAULT_FONT_SIZE = 12;
+export const TERMINAL_MIN_FONT_SIZE = 8;
+export const TERMINAL_MAX_FONT_SIZE = 24;
+
+const FONT_SIZE_STORAGE_KEY = 'vk-terminal-font-size';
+const FONT_SIZE_EVENT = 'vk-terminal-font-size-change';
 
 /**
  * App zoom (`installAppZoom`) scales the root font size, so every rem-sized
@@ -43,19 +50,66 @@ const ROOT_BASE_FONT_SIZE = 16;
  * terminal by the same factor, rounded to whole pixels for the same reason the
  * zoom itself steps in integers: fractional cell metrics render blurry.
  */
-export function scaleTerminalFontSize(rootFontSizePx: number): number {
+export function scaleTerminalFontSize(
+  rootFontSizePx: number,
+  baseFontSizePx: number = TERMINAL_DEFAULT_FONT_SIZE
+): number {
   if (!Number.isFinite(rootFontSizePx) || rootFontSizePx <= 0) {
-    return TERMINAL_BASE_FONT_SIZE;
+    return baseFontSizePx;
   }
   return Math.max(
     6,
-    Math.round((TERMINAL_BASE_FONT_SIZE * rootFontSizePx) / ROOT_BASE_FONT_SIZE)
+    Math.round((baseFontSizePx * rootFontSizePx) / ROOT_BASE_FONT_SIZE)
   );
+}
+
+function clampFontSize(size: number): number {
+  return Math.min(
+    Math.max(Math.round(size), TERMINAL_MIN_FONT_SIZE),
+    TERMINAL_MAX_FONT_SIZE
+  );
+}
+
+function loadFontSize(): number {
+  try {
+    const stored = Number(localStorage.getItem(FONT_SIZE_STORAGE_KEY));
+    if (Number.isFinite(stored) && stored > 0) return clampFontSize(stored);
+  } catch {
+    // localStorage may be unavailable
+  }
+  return TERMINAL_DEFAULT_FONT_SIZE;
+}
+
+let currentFontSize: number | null = null;
+
+/** The user's terminal font size preference, before app zoom is applied. */
+export function getTerminalBaseFontSize(): number {
+  return (currentFontSize ??= loadFontSize());
+}
+
+export function setTerminalBaseFontSize(size: number): void {
+  currentFontSize = clampFontSize(size);
+  try {
+    if (currentFontSize === TERMINAL_DEFAULT_FONT_SIZE) {
+      localStorage.removeItem(FONT_SIZE_STORAGE_KEY);
+    } else {
+      localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(currentFontSize));
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+  window.dispatchEvent(new Event(FONT_SIZE_EVENT));
+}
+
+export function subscribeTerminalFontSize(onChange: () => void): () => void {
+  window.addEventListener(FONT_SIZE_EVENT, onChange);
+  return () => window.removeEventListener(FONT_SIZE_EVENT, onChange);
 }
 
 export function getTerminalFontSize(): number {
   return scaleTerminalFontSize(
-    parseFloat(getComputedStyle(document.documentElement).fontSize)
+    parseFloat(getComputedStyle(document.documentElement).fontSize),
+    getTerminalBaseFontSize()
   );
 }
 
