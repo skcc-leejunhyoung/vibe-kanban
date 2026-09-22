@@ -119,11 +119,18 @@ fn hangup(session: &PtySession) -> bool {
         return false;
     }
 
+    let exited = session.exited.clone();
     tokio::spawn(async move {
         tokio::time::sleep(HANGUP_GRACE).await;
+        // Once the shell has been reaped its pid is free, and signal 0 cannot
+        // tell the group apart from whatever was handed that id since — so stop
+        // rather than SIGKILL a stranger.
+        if exited.load(Ordering::SeqCst) {
+            return;
+        }
         for pgid in groups {
-            // Signal 0 first: a group that is already gone may have had its id
-            // handed to something else by now.
+            // Skip a group that is already gone; SIGKILL is for the job that
+            // sat out the hangup.
             if killpg(pgid, None::<Signal>).is_ok() {
                 let _ = killpg(pgid, Signal::SIGKILL);
             }
