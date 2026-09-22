@@ -39,10 +39,15 @@ function ToolbarIconButton({
   icon: IconComponent,
   className,
   disabled,
+  // Toolbar actions are never a form's submit. Leaving `type` off makes the
+  // DOM default it to "submit", which dialog keyboard handling reads as "this
+  // is the dialog's primary action" (see `findDialogPrimaryAction`).
+  type = 'button',
   ...props
 }: ToolbarIconButtonProps) {
   return (
     <button
+      type={type}
       className={cn(
         'flex items-center justify-center text-low hover:text-normal',
         disabled && 'opacity-40 cursor-not-allowed hover:text-low',

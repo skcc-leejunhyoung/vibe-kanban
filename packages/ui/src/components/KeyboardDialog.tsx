@@ -7,6 +7,7 @@ import { FocusScope } from '@radix-ui/react-focus-scope';
 import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 import {
+  activatesOnEnter,
   findDialogPrimaryAction,
   restoreDialogFocus,
   useDialogKeyboard,
@@ -140,6 +141,15 @@ const Dialog = React.forwardRef<
 
         const activeElement = document.activeElement as HTMLElement;
         if (activeElement?.tagName === 'TEXTAREA') {
+          return;
+        }
+        // Enter belongs to whatever is focused when that element activates on
+        // Enter by itself: a button the user tabbed to, a link, or the
+        // highlighted item of a menu opened from here (portaled outside this
+        // container). Claiming the key would press the dialog's primary action
+        // instead — in a composer dialog that meant "Enter opens the file
+        // picker" no matter which control was focused.
+        if (activatesOnEnter(activeElement)) {
           return;
         }
 

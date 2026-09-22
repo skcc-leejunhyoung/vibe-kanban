@@ -26,6 +26,10 @@ function isEscapeDeferred(event: KeyboardEvent): boolean {
   );
 }
 
+// `tabindex="-1"` is excluded everywhere: those elements are focusable only
+// programmatically (roving list items, the dialog shell, react-dropzone's
+// visually-hidden file input) and must not appear in the Tab cycle — landing
+// on an invisible file input makes the next Enter open a file picker.
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
@@ -33,8 +37,31 @@ const FOCUSABLE_SELECTOR = [
   'select:not([disabled])',
   'textarea:not([disabled])',
   '[contenteditable="true"]',
-  '[tabindex]:not([tabindex="-1"])',
+  '[tabindex]',
+]
+  .map((selector) => `${selector}:not([tabindex="-1"])`)
+  .join(', ');
+
+/**
+ * Elements that already activate themselves on Enter. A dialog-level Enter
+ * shortcut has to leave the key to them — otherwise keyboard navigation (Tab
+ * to a control, press Enter) silently fires the dialog's primary action
+ * instead of the control the user is standing on.
+ */
+const ENTER_ACTIVATES_SELF_SELECTOR = [
+  'button',
+  'a[href]',
+  'summary',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="tab"]',
+  '[role="option"]',
+  '[role^="menuitem"]',
 ].join(', ');
+
+export function activatesOnEnter(el: Element | null): boolean {
+  return !!el?.closest(ENTER_ACTIVATES_SELF_SELECTOR);
+}
 
 export function getFocusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(
