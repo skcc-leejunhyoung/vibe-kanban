@@ -644,9 +644,32 @@ export function ModelSelectorContainer({
             <DropdownMenuTriggerButton
               variant={variant}
               size="sm"
-              label={modelLabel}
+              // The composer caps the name and the effort separately so one
+              // long model ("Opus (1M context) · Extra High") can't widen the
+              // footer enough to wrap it onto a second row. The caps lift at
+              // @2xl, where the row fits the full label with room to spare, so
+              // the desktop composer still spells the model out. Roomier
+              // surfaces (Settings, Create PR) keep the plain, uncapped label.
+              label={variant === 'ghost' ? undefined : modelLabel}
+              title={modelLabel}
               disabled={modelsPending}
-            />
+            >
+              {variant === 'ghost' && (
+                <>
+                  <span className="max-w-[8rem] truncate @2xl:max-w-none">
+                    {modelLabelBase}
+                  </span>
+                  {reasoningLabel && (
+                    <>
+                      <span className="text-low">·</span>
+                      <span className="max-w-[4.5rem] truncate @2xl:max-w-none">
+                        {reasoningLabel}
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
+            </DropdownMenuTriggerButton>
           }
           config={displayConfig ?? config}
           error={streamError}
