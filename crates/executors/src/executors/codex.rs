@@ -5,7 +5,7 @@ pub mod review;
 pub mod slash_commands;
 pub mod transcript;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     env,
     path::{Path, PathBuf},
     str::FromStr,
@@ -23,6 +23,11 @@ pub fn codex_home() -> Option<PathBuf> {
         return Some(PathBuf::from(codex_home));
     }
     dirs::home_dir().map(|home| home.join(".codex"))
+}
+
+/// Path to Codex's `config.toml` inside the Codex home directory.
+pub fn codex_config_path() -> Option<PathBuf> {
+    codex_home().map(|home| home.join("config.toml"))
 }
 
 pub(crate) fn resolve_model(model: Option<&str>) -> (Option<&str>, bool) {
@@ -55,9 +60,165 @@ fn codex_supports_fast(model_id: &str) -> bool {
     )
 }
 
+/// Provider id the Codex catalog is grouped under once `~/.codex/config.toml`
+/// contributes providers of its own. Matches Codex's built-in default provider,
+/// so passing it back as `model_provider` is a no-op.
+const OPENAI_PROVIDER_ID: &str = "openai";
+
+/// Subset of `~/.codex/config.toml` needed to populate the model selector.
+/// Codex lists no models per provider, so its profiles are the catalog: each
+/// one pins a model to a provider (plus whatever else the profile sets).
+#[derive(Debug, Default, Deserialize)]
+struct CodexConfigToml {
+    #[serde(default)]
+    model_providers: BTreeMap<String, CodexProviderToml>,
+    #[serde(default)]
+    profiles: BTreeMap<String, CodexProfileToml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexProviderToml {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexProfileToml {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    model_provider: Option<String>,
+}
+
+/// A `[profiles.*]` entry that routes to a user-defined `[model_providers.*]`.
+#[derive(Debug, Clone, PartialEq)]
+struct CustomProfile {
+    name: String,
+    model: String,
+    provider_id: String,
+    provider_name: String,
+}
+
+fn parse_custom_profiles(raw: &str) -> Vec<CustomProfile> {
+    let config: CodexConfigToml = toml::from_str(raw).unwrap_or_default();
+    config
+        .profiles
+        .iter()
+        .filter_map(|(name, profile)| {
+            let provider_id = profile.model_provider.as_ref()?;
+            let provider = config.model_providers.get(provider_id)?;
+            Some(CustomProfile {
+                name: name.clone(),
+                model: profile.model.clone()?,
+                provider_id: provider_id.clone(),
+                provider_name: provider.name.clone().unwrap_or_else(|| provider_id.clone()),
+            })
+        })
+        .collect()
+}
+
+fn custom_profiles() -> Vec<CustomProfile> {
+    codex_config_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|raw| parse_custom_profiles(&raw))
+        .unwrap_or_default()
+}
+
+/// Codex's own models carry no provider, so the selector stays flat until a
+/// user-defined provider shows up. Once one does the whole list has to be
+/// provider-scoped — the picker otherwise files the provider-less models under
+/// whichever provider comes first.
+fn merge_custom_profiles(selector: &mut ModelSelectorConfig, profiles: Vec<CustomProfile>) {
+    if profiles.is_empty() {
+        return;
+    }
+
+    selector.providers.push(ModelProvider {
+        id: OPENAI_PROVIDER_ID.to_string(),
+        name: "OpenAI".to_string(),
+    });
+    for model in &mut selector.models {
+        model.provider_id = Some(OPENAI_PROVIDER_ID.to_string());
+    }
+    selector.default_model = selector
+        .default_model
+        .take()
+        .map(|id| format!("{OPENAI_PROVIDER_ID}/{id}"));
+
+    for profile in profiles {
+        if !selector
+            .providers
+            .iter()
+            .any(|provider| provider.id == profile.provider_id)
+        {
+            selector.providers.push(ModelProvider {
+                id: profile.provider_id.clone(),
+                name: profile.provider_name,
+            });
+        }
+        selector.models.push(ModelInfo {
+            name: if profile.name == profile.model {
+                profile.model
+            } else {
+                format!("{} ({})", profile.model, profile.name)
+            },
+            // The profile, not the model, is the selectable unit: picking it
+            // hands Codex the whole `[profiles.*]` entry.
+            id: profile.name,
+            provider_id: Some(profile.provider_id),
+            // A third-party model shares neither Codex's reasoning-effort
+            // scale nor its fast tier; the profile carries what it accepts.
+            reasoning_options: vec![],
+            supports_fast: false,
+        });
+    }
+}
+
+fn with_custom_profiles(mut selector: ModelSelectorConfig) -> ModelSelectorConfig {
+    merge_custom_profiles(&mut selector, custom_profiles());
+    selector
+}
+
+/// What a selector model id addresses. Custom entries are `provider/profile`,
+/// everything else is a plain Codex model (optionally `openai/`-scoped).
+#[derive(Debug, PartialEq)]
+enum SelectedModel {
+    Model(String),
+    Profile {
+        provider_id: String,
+        profile: String,
+    },
+}
+
+fn resolve_selected_model(model_id: &str, profiles: &[CustomProfile]) -> SelectedModel {
+    let Some((provider_id, rest)) = model_id.split_once('/') else {
+        return SelectedModel::Model(model_id.to_string());
+    };
+    // Profiles are checked first so a user-defined provider literally named
+    // `openai` still resolves to its profiles rather than to a bare model.
+    if profiles
+        .iter()
+        .any(|profile| profile.provider_id == provider_id && profile.name == rest)
+    {
+        return SelectedModel::Profile {
+            provider_id: provider_id.to_string(),
+            profile: rest.to_string(),
+        };
+    }
+    if provider_id == OPENAI_PROVIDER_ID {
+        return SelectedModel::Model(rest.to_string());
+    }
+    // A model name that merely contains a slash (`vendor/model`) is not scoped.
+    SelectedModel::Model(model_id.to_string())
+}
+
 /// Static fallback model catalog, shown until (or instead of, on probe
 /// failure) the live `model/list` result from the app server.
 fn static_model_selector() -> ModelSelectorConfig {
+    with_custom_profiles(static_openai_models())
+}
+
+fn static_openai_models() -> ModelSelectorConfig {
     let model = |id: &str, name: &str| ModelInfo {
         id: id.to_string(),
         name: name.to_string(),
@@ -135,7 +296,7 @@ fn model_selector_from_live(
         return None;
     }
 
-    Some(ModelSelectorConfig {
+    Some(with_custom_profiles(ModelSelectorConfig {
         models: infos,
         default_model,
         permissions: vec![
@@ -145,7 +306,7 @@ fn model_selector_from_live(
             PermissionPolicy::Plan,
         ],
         ..Default::default()
-    })
+    }))
 }
 
 async fn collect_model_pages<F, Fut>(
@@ -217,7 +378,9 @@ use crate::{
         SlashCommandDescription, SpawnedChild, StandardCodingAgentExecutor,
     },
     logs::utils::patch,
-    model_selector::{ModelInfo, ModelSelectorConfig, PermissionPolicy, ReasoningOption},
+    model_selector::{
+        ModelInfo, ModelProvider, ModelSelectorConfig, PermissionPolicy, ReasoningOption,
+    },
     profile::ExecutorConfig,
     stdout_dup::create_stdout_pipe_writer,
 };
@@ -427,7 +590,7 @@ impl StandardCodingAgentExecutor for Codex {
     }
 
     fn default_mcp_config_path(&self) -> Option<PathBuf> {
-        codex_home().map(|home| home.join("config.toml"))
+        codex_config_path()
     }
 
     fn get_availability_info(&self) -> AvailabilityInfo {
@@ -515,6 +678,7 @@ impl StandardCodingAgentExecutor for Codex {
             match this.fetch_live_models().await {
                 Ok(models) => {
                     if let Some(model_selector) = model_selector_from_live(&models) {
+                        yield patch::update_providers(model_selector.providers.clone());
                         yield patch::update_models(model_selector.models.clone());
                         yield patch::update_default_model(model_selector.default_model.clone());
                         let mut final_options = static_discovered_options();
@@ -603,6 +767,25 @@ fn static_discovered_options() -> ExecutorDiscoveredOptions {
 }
 
 impl Codex {
+    /// What `self.model` addresses. The selector stores custom entries as
+    /// `provider/profile`, and both the session override and the agent config
+    /// land in the same field, so this is resolved once at spawn time.
+    fn selected_model(&self) -> Option<SelectedModel> {
+        self.model
+            .as_deref()
+            .map(|model| resolve_selected_model(model, &custom_profiles()))
+    }
+
+    /// Reasoning effort to send. A `config.toml` profile pins its own, and a
+    /// third-party provider never advertised Codex's scale to begin with, so a
+    /// leftover effort must not ride along.
+    fn effective_reasoning_effort(&self) -> Option<&ReasoningEffort> {
+        match self.selected_model() {
+            Some(SelectedModel::Profile { .. }) => None,
+            _ => self.model_reasoning_effort.as_ref(),
+        }
+    }
+
     pub fn base_command() -> &'static str {
         "codex"
     }
@@ -726,6 +909,14 @@ impl Codex {
     }
 
     fn build_thread_start_params(&self, cwd: &Path) -> ThreadStartParams {
+        self.thread_start_params(cwd, self.selected_model())
+    }
+
+    fn thread_start_params(
+        &self,
+        cwd: &Path,
+        selected: Option<SelectedModel>,
+    ) -> ThreadStartParams {
         let sandbox = match self.sandbox.as_ref() {
             None | Some(SandboxMode::Auto) => Some(V2SandboxMode::WorkspaceWrite), // match the Auto preset in codex
             Some(SandboxMode::ReadOnly) => Some(V2SandboxMode::ReadOnly),
@@ -744,12 +935,18 @@ impl Codex {
             Some(AskForApproval::Never) => Some(V2AskForApproval::Never),
         };
 
-        let mut config = self.build_config_overrides();
+        // A profile picked in the selector wins over the agent config's own.
+        let profile = match &selected {
+            Some(SelectedModel::Profile { profile, .. }) => Some(profile.clone()),
+            _ => self.profile.clone(),
+        };
+
+        let mut config = self.build_config_overrides(&selected);
         // V1 top-level params that moved into config overrides in v2
-        if let Some(profile) = &self.profile {
+        if let Some(profile) = profile {
             config
                 .get_or_insert_with(HashMap::new)
-                .insert("profile".to_string(), Value::String(profile.clone()));
+                .insert("profile".to_string(), Value::String(profile));
         }
         if let Some(include) = self.include_apply_patch_tool {
             config
@@ -775,31 +972,44 @@ impl Codex {
             );
         }
 
-        let (model, is_fast) = resolve_model(self.model.as_deref());
-        let service_tier = if is_fast {
-            Some(Some(ServiceTier::Fast.request_value().to_string()))
-        } else {
-            None
+        let (model, is_fast) = match &selected {
+            Some(SelectedModel::Model(model)) => {
+                let (model, is_fast) = resolve_model(Some(model.as_str()));
+                (model.map(str::to_string), is_fast)
+            }
+            // The profile pins the model it routes to.
+            Some(SelectedModel::Profile { .. }) | None => (None, false),
         };
+        let service_tier = is_fast.then(|| Some(ServiceTier::Fast.request_value().to_string()));
 
         ThreadStartParams {
-            model: model.map(|m| m.to_string()),
+            model,
             cwd: Some(cwd.to_string_lossy().to_string()),
             approval_policy,
             sandbox,
             config,
             base_instructions: self.base_instructions.clone(),
-            model_provider: self.model_provider.clone(),
+            model_provider: match &selected {
+                Some(SelectedModel::Profile { provider_id, .. }) => Some(provider_id.clone()),
+                _ => self.model_provider.clone(),
+            },
             developer_instructions: self.developer_instructions.clone(),
             service_tier,
             ..Default::default()
         }
     }
 
-    fn build_config_overrides(&self) -> Option<HashMap<String, Value>> {
+    fn build_config_overrides(
+        &self,
+        selected: &Option<SelectedModel>,
+    ) -> Option<HashMap<String, Value>> {
         let mut overrides = HashMap::new();
 
-        if let Some(effort) = &self.model_reasoning_effort {
+        let effort = match selected {
+            Some(SelectedModel::Profile { .. }) => None,
+            _ => self.model_reasoning_effort.as_ref(),
+        };
+        if let Some(effort) = effort {
             overrides.insert(
                 "model_reasoning_effort".to_string(),
                 Value::String(effort.as_str().to_string()),
@@ -968,8 +1178,7 @@ impl Codex {
             approvals,
             auto_approve,
             plan_mode,
-            self.model_reasoning_effort
-                .as_ref()
+            self.effective_reasoning_effort()
                 .and_then(|effort| effort.as_str().parse().ok()),
             repo_context,
             commit_reminder,
@@ -1040,13 +1249,149 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AskForApproval, Codex, ReasoningEffort, SandboxMode, collect_model_pages,
-        model_selector_from_live, resolve_model, static_model_selector,
+        AskForApproval, Codex, ReasoningEffort, SandboxMode, SelectedModel, collect_model_pages,
+        merge_custom_profiles, model_selector_from_live, parse_custom_profiles, resolve_model,
+        resolve_selected_model, static_model_selector, static_openai_models,
     };
     use crate::{
         executors::{BaseCodingAgent, StandardCodingAgentExecutor},
         profile::ExecutorConfig,
     };
+
+    const CONFIG_TOML: &str = r#"
+model = "gpt-5.6-sol"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+
+[profiles.kimi]
+model = "moonshotai/kimi-k2"
+model_provider = "openrouter"
+
+[profiles.kimi-fast]
+model = "moonshotai/kimi-k2"
+model_provider = "openrouter"
+model_reasoning_effort = "low"
+
+[profiles.local]
+model = "llama3"
+model_provider = "not-declared"
+
+[profiles.plain]
+model = "gpt-5.6-sol"
+"#;
+
+    #[test]
+    fn custom_profiles_come_from_declared_providers_only() {
+        let profiles = parse_custom_profiles(CONFIG_TOML);
+        let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        // `local` points at an undeclared provider, `plain` at none at all.
+        assert_eq!(names, vec!["kimi", "kimi-fast"]);
+        assert_eq!(profiles[0].provider_name, "OpenRouter");
+        assert_eq!(profiles[0].model, "moonshotai/kimi-k2");
+    }
+
+    #[test]
+    fn merging_custom_profiles_scopes_the_builtin_catalog() {
+        let mut selector = static_openai_models();
+        selector.default_model = Some("gpt-5.6-sol".to_string());
+        let builtin = selector.models.len();
+        merge_custom_profiles(&mut selector, parse_custom_profiles(CONFIG_TOML));
+
+        assert_eq!(
+            selector.default_model.as_deref(),
+            Some("openai/gpt-5.6-sol")
+        );
+        let provider_ids: Vec<&str> = selector.providers.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(provider_ids, vec!["openai", "openrouter"]);
+        assert!(
+            selector.models[..builtin]
+                .iter()
+                .all(|m| m.provider_id.as_deref() == Some("openai")),
+            "builtin models have to be provider-scoped once a provider exists"
+        );
+
+        let custom = &selector.models[builtin..];
+        assert_eq!(custom.len(), 2);
+        assert_eq!(custom[0].id, "kimi");
+        assert_eq!(custom[0].name, "moonshotai/kimi-k2 (kimi)");
+        assert_eq!(custom[1].name, "moonshotai/kimi-k2 (kimi-fast)");
+        assert!(custom[0].reasoning_options.is_empty());
+    }
+
+    #[test]
+    fn selector_ids_resolve_to_models_or_profiles() {
+        let profiles = parse_custom_profiles(CONFIG_TOML);
+        let model = |id: &str| SelectedModel::Model(id.to_string());
+
+        assert_eq!(
+            resolve_selected_model("gpt-5.6-sol", &profiles),
+            model("gpt-5.6-sol")
+        );
+        assert_eq!(
+            resolve_selected_model("openai/gpt-5.6-sol-fast", &profiles),
+            model("gpt-5.6-sol-fast")
+        );
+        assert_eq!(
+            resolve_selected_model("openrouter/kimi", &profiles),
+            SelectedModel::Profile {
+                provider_id: "openrouter".to_string(),
+                profile: "kimi".to_string(),
+            }
+        );
+        // A slash inside a model name is not a provider scope.
+        assert_eq!(
+            resolve_selected_model("moonshotai/kimi-k2", &profiles),
+            model("moonshotai/kimi-k2")
+        );
+    }
+
+    #[test]
+    fn picking_a_custom_profile_drops_the_openai_model_and_effort() {
+        let codex: Codex = serde_json::from_value(json!({
+            // What the selector (or the agents settings form) stores.
+            "model": "openrouter/kimi",
+            "model_reasoning_effort": "high",
+        }))
+        .unwrap();
+        let selected =
+            resolve_selected_model("openrouter/kimi", &parse_custom_profiles(CONFIG_TOML));
+
+        let params = codex.thread_start_params(std::path::Path::new("/tmp"), Some(selected));
+
+        assert_eq!(params.model, None, "the profile pins the model");
+        assert_eq!(params.model_provider.as_deref(), Some("openrouter"));
+        let config = params.config.expect("profile override");
+        assert_eq!(config.get("profile"), Some(&json!("kimi")));
+        assert!(!config.contains_key("model_reasoning_effort"));
+    }
+
+    #[test]
+    fn picking_an_openai_model_keeps_the_fast_tier_and_effort() {
+        let codex: Codex = serde_json::from_value(json!({
+            "model": "openai/gpt-5.6-sol-fast",
+            "model_reasoning_effort": "high",
+        }))
+        .unwrap();
+        let selected = resolve_selected_model(
+            "openai/gpt-5.6-sol-fast",
+            &parse_custom_profiles(CONFIG_TOML),
+        );
+
+        let params = codex.thread_start_params(std::path::Path::new("/tmp"), Some(selected));
+
+        assert_eq!(params.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(params.model_provider, None);
+        assert!(params.service_tier.is_some());
+        assert_eq!(
+            params
+                .config
+                .and_then(|c| c.get("model_reasoning_effort").cloned()),
+            Some(json!("high"))
+        );
+    }
 
     #[test]
     fn fork_excludes_deprecated_full_history_hydration() {
