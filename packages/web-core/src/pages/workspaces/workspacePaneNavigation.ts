@@ -8,7 +8,8 @@ import {
  * An empty active pane has no content URL to mirror. Left alone, the address
  * bar keeps the previous pane's renderable URL, which the adopt effect then
  * treats as an external navigation and snaps the active pane back off the empty
- * one — breaking cmd+t / alt+tab focus. Park it on the bare grid route instead.
+ * one — breaking cmd+t / pane-cycle focus. Park it on the bare grid route
+ * instead.
  */
 export function shouldParkEmptyPaneUrl(
   activeDestination: WorkspacePaneDestination | null,

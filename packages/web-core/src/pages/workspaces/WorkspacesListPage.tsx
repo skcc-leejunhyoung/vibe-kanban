@@ -7,7 +7,8 @@ import { useIsMobile } from '@/shared/hooks/useIsMobile';
  * app shell instead of this page.
  *
  * Keeping the real sidebar mounted here preserves its list state, prefetching,
- * and global Ctrl+Tab bindings before a concrete workspace has been selected.
+ * and global workspace-cycling bindings before a concrete workspace has been
+ * selected.
  */
 export function WorkspacesListPage() {
   const isMobile = useIsMobile();
