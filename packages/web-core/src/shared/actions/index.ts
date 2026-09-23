@@ -292,7 +292,7 @@ async function selectIssuePullRequest(
       title: 'Select Pull Request',
       buildGroups: () => [
         {
-          label: 'Linked pull requests',
+          label: 'Linked Pull Requests',
           items: pullRequests.map((pullRequest) => ({
             type: 'action' as const,
             action: {
@@ -409,7 +409,7 @@ async function selectRepoPullRequest(
       title: 'Select Pull Request',
       buildGroups: () => [
         {
-          label: 'Connected pull requests',
+          label: 'Connected Pull Requests',
           items: pullRequests.map((pullRequest, index) => ({
             type: 'action' as const,
             action: {
@@ -862,7 +862,7 @@ export const Actions = {
 
   ViewWorkspaceSessions: {
     id: 'view-workspace-sessions',
-    label: 'View sessions',
+    label: 'View Sessions',
     icon: ChatsTeardropIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.isCurrentWorkspaceTarget,
@@ -914,7 +914,7 @@ export const Actions = {
 
   NewSession: {
     id: 'new-session',
-    label: 'New session',
+    label: 'New Session',
     icon: PlusIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.isCurrentWorkspaceTarget,
@@ -926,7 +926,7 @@ export const Actions = {
 
   RenameSession: {
     id: 'rename-session',
-    label: 'Rename session',
+    label: 'Rename Session',
     icon: PencilSimpleIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.isCurrentWorkspaceTarget,
@@ -950,7 +950,7 @@ export const Actions = {
 
   DeleteSession: {
     id: 'delete-session',
-    label: 'Delete session',
+    label: 'Delete Session',
     icon: TrashIcon,
     variant: 'destructive',
     requiresTarget: ActionTargetType.WORKSPACE,
@@ -1010,7 +1010,7 @@ export const Actions = {
 
   StartReviewAndCreatePR: {
     id: 'start-review-and-create-pr',
-    label: 'Review and create PR from ai',
+    label: 'Review and Create PR from AI',
     icon: SparkleIcon,
     keywords: ['review', 'merge', 'push', 'pull request', 'ai', 'draft'],
     requiresTarget: ActionTargetType.WORKSPACE,
@@ -1066,7 +1066,7 @@ export const Actions = {
 
   SpinOffWorkspace: {
     id: 'spin-off-workspace',
-    label: 'Spin off workspace',
+    label: 'Spin Off Workspace',
     icon: GitForkIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
@@ -1145,7 +1145,7 @@ export const Actions = {
 
   ToggleWorkspaceArchiveView: {
     id: 'toggle-workspace-archive-view',
-    label: 'Toggle active / archived workspaces',
+    label: 'Toggle Active / Archived Workspaces',
     icon: ArchiveIcon,
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) => ctx.layoutMode === 'workspaces',
@@ -1155,7 +1155,7 @@ export const Actions = {
 
   SearchWorkspaceList: {
     id: 'search-workspace-list',
-    label: 'Search workspaces',
+    label: 'Search Workspaces',
     icon: MagnifyingGlassIcon,
     requiresTarget: ActionTargetType.NONE,
     restoreFocusOnClose: false,
@@ -1167,7 +1167,7 @@ export const Actions = {
 
   SearchProjectIssues: {
     id: 'search-project-issues',
-    label: 'Search project issues',
+    label: 'Search Project Issues',
     icon: MagnifyingGlassIcon,
     requiresTarget: ActionTargetType.NONE,
     restoreFocusOnClose: false,
@@ -1179,7 +1179,7 @@ export const Actions = {
 
   ViewIssueWorkspaces: {
     id: 'view-issue-workspaces',
-    label: 'View linked workspaces',
+    label: 'View Linked Workspaces',
     icon: StackIcon,
     requiresTarget: ActionTargetType.ISSUE,
     isVisible: (ctx) => ctx.hasSelectedKanbanIssue,
@@ -1271,7 +1271,7 @@ export const Actions = {
 
   SelectProjectView: {
     id: 'select-project-view',
-    label: 'Select view',
+    label: 'Select View',
     icon: KanbanIcon,
     keywords: [
       'view',
@@ -1379,7 +1379,7 @@ export const Actions = {
 
   GotoWorkspaceMappedIssue: {
     id: 'goto-workspace-mapped-issue',
-    label: 'Go to mapped issue',
+    label: 'Go to Mapped Issue',
     icon: ArrowSquareOutIcon,
     keywords: ['workspace', 'issue', 'mapped', 'linked', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.WORKSPACE,
@@ -1505,10 +1505,12 @@ export const Actions = {
     // relay routes carrying a host id (`/hosts/{id}/...`), and a home-directory
     // terminal has no such id to carry, so there is nothing to offer here.
     isVisible: (ctx) => ctx.appRuntime === 'local',
-    // With the setting on the terminal claims a pane of its own instead of
-    // replacing what the active one shows, so the label promises a pane.
+    // With the setting on the terminal claims a pane of its own, and a
+    // terminal already on screen gets another session tab — the label says so.
     getLabel: (ctx) =>
-      ctx.terminalOpensInNewPane ? 'Open Terminal' : 'Goto: Terminal',
+      ctx.terminalOpensInNewPane
+        ? 'Open Terminal in New Tab'
+        : 'Goto: Terminal',
     execute: (ctx) => {
       // Read before opening: null means no terminal is on screen yet, and the
       // one about to mount starts with a session of its own.
@@ -1581,7 +1583,7 @@ export const Actions = {
 
   GotoPullRequestMappedIssue: {
     id: 'goto-pull-request-mapped-issue',
-    label: 'Pull Requests: Go to mapped issue',
+    label: 'Pull Requests: Go to Mapped Issue',
     icon: ArrowSquareOutIcon,
     keywords: ['pull request', 'pr', 'issue', 'mapped', 'go to'],
     requiresTarget: ActionTargetType.NONE,
@@ -1595,7 +1597,7 @@ export const Actions = {
 
   ViewPullRequestMappedWorkspaces: {
     id: 'view-pull-request-mapped-workspaces',
-    label: 'Pull Requests: View mapped workspaces',
+    label: 'Pull Requests: View Mapped Workspaces',
     icon: StackIcon,
     keywords: ['pull request', 'pr', 'workspace', 'mapped', 'linked'],
     requiresTarget: ActionTargetType.NONE,
@@ -1743,7 +1745,7 @@ export const Actions = {
   // === Layout Panel Actions ===
   NewPane: {
     id: 'newPane',
-    label: 'New pane',
+    label: 'New Pane',
     icon: PlusIcon,
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) => !ctx.isMobile,
@@ -2705,7 +2707,7 @@ export const Actions = {
   // fast-forward is impossible (diverged) instead of changing anything.
   GitPull: {
     id: 'git-pull',
-    label: 'Pull work branch',
+    label: 'Pull Work Branch',
     icon: ArrowDownIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
@@ -2759,7 +2761,7 @@ export const Actions = {
   // branches. Conflicts are surfaced through the existing resolve-conflicts flow.
   GitUpdateFromBase: {
     id: 'git-update-from-base',
-    label: 'Update work branch from target branch',
+    label: 'Update Work Branch from Target Branch',
     icon: GitMergeIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
@@ -2877,7 +2879,7 @@ export const Actions = {
 
   GitUpdateTargetFromBase: {
     id: 'git-update-target-from-base',
-    label: 'Update target branch from base branch',
+    label: 'Update Target Branch from Base Branch',
     icon: GitMergeIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
@@ -2997,7 +2999,7 @@ export const Actions = {
   // pull fast-forwards; divergence opens the same recovery choices as work pull.
   GitFetchTarget: {
     id: 'git-fetch-target',
-    label: 'Pull target branch',
+    label: 'Pull Target Branch',
     icon: ArrowLineDownIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
@@ -3043,7 +3045,7 @@ export const Actions = {
   // merging the work branch into the local target branch, to publish it.
   GitPushTarget: {
     id: 'git-push-target',
-    label: 'Push target branch',
+    label: 'Push Target Branch',
     icon: ArrowLineUpIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
@@ -3407,7 +3409,7 @@ export const Actions = {
 
   MakeSubIssueOf: {
     id: 'make-sub-issue-of',
-    label: 'Make Sub-issue of',
+    label: 'Make Sub-Issue Of',
     icon: TreeStructureIcon,
     shortcut: 'I M',
     requiresTarget: ActionTargetType.ISSUE,
@@ -3422,7 +3424,7 @@ export const Actions = {
 
   AddSubIssue: {
     id: 'add-sub-issue',
-    label: 'Add Sub-issue',
+    label: 'Add Sub-Issue',
     icon: PlusIcon,
     shortcut: 'I B',
     requiresTarget: ActionTargetType.ISSUE,
@@ -3444,7 +3446,7 @@ export const Actions = {
 
   CreateSubIssue: {
     id: 'create-sub-issue',
-    label: 'Create Sub-issue',
+    label: 'Create Sub-Issue',
     icon: PlusIcon,
     requiresTarget: ActionTargetType.ISSUE,
     isVisible: (ctx) =>

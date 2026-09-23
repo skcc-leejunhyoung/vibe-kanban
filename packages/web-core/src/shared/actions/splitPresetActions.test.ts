@@ -10,7 +10,7 @@ describe('splitPresetActions', () => {
     expect(focusActions).toHaveLength(9);
     expect(focusActions[0]).toMatchObject({
       id: 'focusPane1',
-      label: 'Focus pane 1',
+      label: 'Focus Pane 1',
     });
     expect(focusActions[3].keywords).toContain('cmd opt shift 4');
   });

@@ -9,7 +9,7 @@ export function buildSubIssueSelectionPages(
   issues: Issue[],
   mode: 'addChild' | 'setParent'
 ): Record<string, SelectionPage<SubIssueSelectionResult>> {
-  const title = mode === 'setParent' ? 'Make Sub-issue of' : 'Add Sub-issue';
+  const title = mode === 'setParent' ? 'Make Sub-Issue Of' : 'Add Sub-Issue';
   return {
     selectSubIssue: {
       id: 'selectSubIssue',

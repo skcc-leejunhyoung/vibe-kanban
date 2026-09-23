@@ -24,7 +24,7 @@ import {
 export const splitPresetActions: GlobalActionDefinition[] = [
   {
     id: 'newPane',
-    label: 'New pane',
+    label: 'New Pane',
     keywords: ['pane', 'split', 'new', 'open', '분할', '새 패널', 'cmd t'],
     icon: ColumnsIcon,
     requiresTarget: ActionTargetType.NONE,
@@ -32,7 +32,7 @@ export const splitPresetActions: GlobalActionDefinition[] = [
   },
   {
     id: 'closePane',
-    label: 'Close pane',
+    label: 'Close Pane',
     keywords: ['pane', 'split', 'close', '분할', '패널 닫기', 'cmd w'],
     icon: XIcon,
     requiresTarget: ActionTargetType.NONE,
@@ -40,7 +40,7 @@ export const splitPresetActions: GlobalActionDefinition[] = [
   },
   {
     id: 'reopenClosedPane',
-    label: 'Reopen closed pane',
+    label: 'Reopen Closed Pane',
     keywords: [
       'pane',
       'split',
@@ -59,7 +59,7 @@ export const splitPresetActions: GlobalActionDefinition[] = [
   ...WORKSPACE_PANE_COUNTS.map(
     (count): GlobalActionDefinition => ({
       id: `focusPane${count}`,
-      label: `Focus pane ${count}`,
+      label: `Focus Pane ${count}`,
       keywords: [
         'pane',
         'focus',

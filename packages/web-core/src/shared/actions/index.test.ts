@@ -466,7 +466,7 @@ describe('command palette navigation actions', () => {
 
     // The palette row promises the pane the setting hands out.
     expect(Actions.GotoTerminal.getLabel(off)).toBe('Goto: Terminal');
-    expect(Actions.GotoTerminal.getLabel(on)).toBe('Open Terminal');
+    expect(Actions.GotoTerminal.getLabel(on)).toBe('Open Terminal in New Tab');
     // The pane focuses the shell; the palette restoring its opener on close
     // would race that and land the caret back outside the terminal.
     expect(Actions.GotoTerminal.restoreFocusOnClose).toBe(false);
@@ -500,7 +500,7 @@ describe('command palette navigation actions', () => {
     expect(goToTerminal).toHaveBeenCalled();
   });
 
-  it('adds a session when Open Terminal runs on a terminal already open', () => {
+  it('adds a session when Open Terminal in New Tab runs on an open terminal', () => {
     const addSession = vi.fn();
     useHomeTerminalStore.setState({ addSession });
     try {

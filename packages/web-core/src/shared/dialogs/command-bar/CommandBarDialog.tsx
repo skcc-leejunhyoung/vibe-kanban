@@ -248,7 +248,7 @@ function CommandBarContent({
       ...resolvedPage,
       groups: [
         ...resolvedPage.groups,
-        { label: 'Go directly to', items: navigationItems },
+        { label: 'Go Directly To', items: navigationItems },
       ],
     };
   }, [currentPage, executorContext, resolvedPage, state.search]);
@@ -273,7 +273,7 @@ function CommandBarContent({
       ...pageWithNavigationMatches,
       groups: [
         ...pageWithNavigationMatches.groups,
-        { label: 'Split screen', items },
+        { label: 'Split Screen', items },
       ],
     };
   }, [currentPage, maxSplitPanes, pageWithNavigationMatches, state.search]);
@@ -310,7 +310,7 @@ function CommandBarContent({
         type: 'action' as const,
         action: {
           id: 'add-bookmark',
-          label: 'Add bookmark',
+          label: 'Add Bookmark',
           icon: StarIcon,
           requiresTarget: ActionTargetType.NONE,
           executeAfterClose: true,
@@ -326,7 +326,7 @@ function CommandBarContent({
         type: 'action' as const,
         action: {
           id: 'remove-bookmark',
-          label: 'Remove bookmark',
+          label: 'Remove Bookmark',
           icon: TrashIcon,
           requiresTarget: ActionTargetType.NONE,
           executeAfterClose: true,
@@ -341,7 +341,7 @@ function CommandBarContent({
     ];
     const groupsWithBookmarkManagement = [
       ...groups,
-      { label: 'Bookmark management', items: bookmarkManagementItems },
+      { label: 'Bookmark Management', items: bookmarkManagementItems },
     ];
 
     if (!url) {

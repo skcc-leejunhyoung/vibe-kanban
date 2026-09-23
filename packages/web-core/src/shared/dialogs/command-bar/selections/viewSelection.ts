@@ -19,7 +19,7 @@ export function buildViewSelectionPages(
   return {
     selectView: {
       id: 'selectView',
-      title: 'Select view',
+      title: 'Select View',
       buildGroups: () => [
         {
           label: 'Views',
