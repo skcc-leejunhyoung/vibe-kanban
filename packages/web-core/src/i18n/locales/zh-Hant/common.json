@@ -268,11 +268,6 @@
     "noProcesses": "無程序",
     "terminal": "終端機"
   },
-  "terminal": {
-    "newSession": "新增終端機",
-    "closeSession": "關閉終端機",
-    "session": "終端機 {{index}}"
-  },
   "search": {
     "matchCount": "{{current}} / {{total}}",
     "noMatches": "無匹配項"

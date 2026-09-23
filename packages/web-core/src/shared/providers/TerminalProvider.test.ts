@@ -16,25 +16,6 @@ describe('terminalReducer', () => {
     expect(state.activeTabByWorkspace.ws).toBe(tabs[2].id);
   });
 
-  it('switches between sessions', () => {
-    const state = create(create());
-    const first = state.tabsByWorkspace.ws[0].id;
-    const switched = terminalReducer(state, {
-      type: 'SET_ACTIVE_TAB',
-      workspaceId: 'ws',
-      tabId: first,
-    });
-    expect(switched.activeTabByWorkspace.ws).toBe(first);
-    // A tab that is already gone must not become active.
-    expect(
-      terminalReducer(switched, {
-        type: 'SET_ACTIVE_TAB',
-        workspaceId: 'ws',
-        tabId: 'term-gone',
-      })
-    ).toBe(switched);
-  });
-
   it('closing the active session falls back to a neighbour', () => {
     const state = create(create(create()));
     const [, second, third] = state.tabsByWorkspace.ws;

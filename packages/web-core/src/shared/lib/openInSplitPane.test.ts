@@ -98,14 +98,24 @@ describe('openDestinationInOwnPane', () => {
   });
 
   it('focuses the pane already showing it rather than opening a second one', () => {
-    // One PTY and one xterm element: a second pane adopts it away and leaves
-    // the first blank, so this must never duplicate.
+    seed([ws('ws1'), ws('ws2')], 4);
+    state().setActivePane('pane-1');
+
+    openDestinationInOwnPane(ws('ws1'), navigation, 'local', vi.fn());
+
+    expect(paneKinds()).toEqual(['workspace', 'workspace']);
+    expect(state().activePaneId).toBe('pane-0');
+  });
+
+  it('opens another terminal next to the one already open', () => {
+    // Each terminal pane runs its own shell: asking for a terminal while one
+    // is open means a second session, not the first one again.
     seed([ws('ws1'), terminal], 4);
 
     openDestinationInOwnPane(terminal, navigation, 'local', vi.fn());
 
-    expect(paneKinds()).toEqual(['workspace', 'terminal']);
-    expect(state().activePaneId).toBe('pane-1');
+    expect(paneKinds()).toEqual(['workspace', 'terminal', 'terminal']);
+    expect(state().activePaneId).toBe('pane-2');
   });
 
   it('navigates the document where there is no pane grid', () => {

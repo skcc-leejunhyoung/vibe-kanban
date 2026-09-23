@@ -268,11 +268,6 @@
     "noProcesses": "无进程",
     "terminal": "终端"
   },
-  "terminal": {
-    "newSession": "新建终端",
-    "closeSession": "关闭终端",
-    "session": "终端 {{index}}"
-  },
   "search": {
     "matchCount": "{{current}} / {{total}}",
     "noMatches": "无匹配项"

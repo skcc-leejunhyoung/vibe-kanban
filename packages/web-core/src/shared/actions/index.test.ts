@@ -93,7 +93,6 @@ import {
   workspacesApi,
 } from '@/shared/lib/api';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
-import { useHomeTerminalStore } from '@/shared/stores/useHomeTerminalStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
@@ -441,9 +440,8 @@ describe('command palette navigation actions', () => {
       })
     ).toBe(false);
 
-    // The terminal owns one PTY and one xterm DOM element, so it has to land in
-    // the pane already showing it — a second pane would adopt that element away
-    // and leave the first one blank.
+    // "Goto" lands in the pane already showing a terminal instead of opening
+    // another shell.
     const goToTerminal = vi.fn();
     const { ctx } = makeCtx({}, { appNavigation: { goToTerminal } as never });
     Actions.GotoTerminal.execute(ctx);
@@ -466,7 +464,7 @@ describe('command palette navigation actions', () => {
 
     // The palette row promises the pane the setting hands out.
     expect(Actions.GotoTerminal.getLabel(off)).toBe('Goto: Terminal');
-    expect(Actions.GotoTerminal.getLabel(on)).toBe('Open Terminal in New Tab');
+    expect(Actions.GotoTerminal.getLabel(on)).toBe('Open Terminal in New Pane');
     // The pane focuses the shell; the palette restoring its opener on close
     // would race that and land the caret back outside the terminal.
     expect(Actions.GotoTerminal.restoreFocusOnClose).toBe(false);
@@ -498,34 +496,6 @@ describe('command palette navigation actions', () => {
     );
     ownPane.mock.calls[0]?.[3]?.();
     expect(goToTerminal).toHaveBeenCalled();
-  });
-
-  it('adds a session when Open Terminal in New Tab runs on an open terminal', () => {
-    const addSession = vi.fn();
-    useHomeTerminalStore.setState({ addSession });
-    try {
-      const open = makeCtx(
-        {},
-        {
-          appNavigation: { goToTerminal: vi.fn() } as never,
-          terminalOpensInNewPane: true,
-        }
-      );
-      Actions.GotoTerminal.execute(open.ctx);
-      expect(openDestinationInOwnPane).toHaveBeenCalled();
-      expect(addSession).toHaveBeenCalledTimes(1);
-
-      // "Goto" only takes you to the terminal; it never spawns a shell.
-      const goto = makeCtx(
-        {},
-        { appNavigation: { goToTerminal: vi.fn() } as never }
-      );
-      Actions.GotoTerminal.execute(goto.ctx);
-      expect(revealDestinationInPane).toHaveBeenCalled();
-      expect(addSession).toHaveBeenCalledTimes(1);
-    } finally {
-      useHomeTerminalStore.setState({ addSession: null });
-    }
   });
 
   it('only shows the pull request refresh action on the pull requests page', () => {

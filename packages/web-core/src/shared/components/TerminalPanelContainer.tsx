@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useTerminal } from '@/shared/hooks/useTerminal';
-import { useHomeTerminalStore } from '@/shared/stores/useHomeTerminalStore';
 import { TerminalPanel } from '@vibe/ui/components/TerminalPanel';
 import { XTermInstance } from './XTermInstance';
 
@@ -31,12 +30,11 @@ function TerminalTabs({
     getActiveTab,
     createTab,
     closeTab,
-    setActiveTab,
     retainScope,
     releaseScope,
   } = useTerminal();
 
-  // Closing the panel kills its shells; a panel that merely moves (sidebar to
+  // Closing the panel kills its shell; a panel that merely moves (sidebar to
   // expanded and back) re-retains the scope before the kill fires.
   useEffect(() => {
     retainScope(tabKey);
@@ -62,9 +60,6 @@ function TerminalTabs({
     <TerminalPanel
       tabs={tabs}
       activeTabId={activeTab?.id ?? null}
-      onSelectTab={(tabId) => setActiveTab(tabKey, tabId)}
-      onCreateTab={() => createTab(tabKey)}
-      onCloseTab={(tabId) => closeTab(tabKey, tabId)}
       renderTab={(tabId, isActive) => (
         <XTermInstance
           key={tabId}
@@ -97,20 +92,12 @@ export function TerminalPanelContainer() {
   );
 }
 
-/** Standalone terminal pane: no workspace, starts in the user's home directory. */
-export function HomeTerminalPanel() {
-  const { createTab } = useTerminal();
-
-  useEffect(() => {
-    const addSession = () => createTab(HOME_TERMINAL_KEY);
-    useHomeTerminalStore.setState({ addSession });
-    return () => {
-      // Another mount may have taken the slot over in the meantime.
-      if (useHomeTerminalStore.getState().addSession === addSession) {
-        useHomeTerminalStore.setState({ addSession: null });
-      }
-    };
-  }, [createTab]);
-
-  return <TerminalTabs tabKey={HOME_TERMINAL_KEY} />;
+/**
+ * Standalone terminal: no workspace, starts in the user's home directory. Each
+ * grid pane gets a shell of its own (keyed by `paneId`), so opening another
+ * terminal pane opens another session rather than mirroring this one.
+ */
+export function HomeTerminalPanel({ paneId }: { paneId?: string }) {
+  const tabKey = paneId ? `${HOME_TERMINAL_KEY}:${paneId}` : HOME_TERMINAL_KEY;
+  return <TerminalTabs key={tabKey} tabKey={tabKey} />;
 }

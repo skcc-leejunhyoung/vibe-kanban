@@ -268,11 +268,6 @@
     "noProcesses": "プロセスがありません",
     "terminal": "ターミナル"
   },
-  "terminal": {
-    "newSession": "新しいターミナル",
-    "closeSession": "ターミナルを閉じる",
-    "session": "ターミナル {{index}}"
-  },
   "search": {
     "matchCount": "{{current}} / {{total}}",
     "noMatches": "一致なし"

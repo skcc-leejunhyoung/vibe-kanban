@@ -268,11 +268,6 @@
     "noProcesses": "Sin procesos",
     "terminal": "Terminal"
   },
-  "terminal": {
-    "newSession": "Nueva terminal",
-    "closeSession": "Cerrar terminal",
-    "session": "Terminal {{index}}"
-  },
   "search": {
     "matchCount": "{{current}} de {{total}}",
     "noMatches": "Sin coincidencias"

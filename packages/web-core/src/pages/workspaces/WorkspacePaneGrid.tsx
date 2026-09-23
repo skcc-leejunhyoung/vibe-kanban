@@ -95,17 +95,13 @@ function PaneChrome({
   // for pointer activation — that would steal focus from the clicked control.
   useEffect(() => {
     if (focusSerial > 0 && active) {
-      const candidates = containerRef.current?.querySelectorAll<HTMLElement>(
-        // `.xterm-helper-textarea` is what `Terminal.focus()` focuses, so a
-        // terminal pane lands on the shell rather than on the bare pane box,
-        // where keystrokes would go nowhere.
-        '[data-chatbox-container="true"] [contenteditable="true"], [data-workspace-selector], .xterm-helper-textarea'
-      );
-      // Skip what is not rendered: background terminal tabs are display:none,
-      // come first in DOM order, and cannot take focus.
       const target =
-        [...(candidates ?? [])].find((el) => el.getClientRects().length > 0) ??
-        containerRef.current;
+        containerRef.current?.querySelector<HTMLElement>(
+          // `.xterm-helper-textarea` is what `Terminal.focus()` focuses, so a
+          // terminal pane lands on the shell rather than on the bare pane box,
+          // where keystrokes would go nowhere.
+          '[data-chatbox-container="true"] [contenteditable="true"], [data-workspace-selector], .xterm-helper-textarea'
+        ) ?? containerRef.current;
       target?.focus({ preventScroll: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -315,9 +311,11 @@ function ProjectPaneTitle({
 }
 
 function PaneOutlet({
+  paneId,
   destination,
   isPaneActive,
 }: {
+  paneId: string;
   destination: WorkspacePaneDestination;
   isPaneActive: boolean;
 }) {
@@ -345,7 +343,7 @@ function PaneOutlet({
     case 'notifications':
       return <NotificationsPage />;
     case 'terminal':
-      return <HomeTerminalPanel />;
+      return <HomeTerminalPanel paneId={paneId} />;
   }
 }
 
@@ -456,6 +454,7 @@ function WorkspacePaneView({
               <div className="min-h-0 flex-1">
                 <PaneWidthProvider>
                   <PaneOutlet
+                    paneId={pane.id}
                     destination={pane.destination}
                     isPaneActive={active}
                   />

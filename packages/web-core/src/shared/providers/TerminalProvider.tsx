@@ -27,7 +27,6 @@ interface TerminalState {
 type TerminalAction =
   | { type: 'CREATE_TAB'; workspaceId: string }
   | { type: 'CLOSE_TAB'; workspaceId: string; tabId: string }
-  | { type: 'SET_ACTIVE_TAB'; workspaceId: string; tabId: string }
   | { type: 'CLEAR_WORKSPACE_TABS'; workspaceId: string };
 
 /**
@@ -88,19 +87,6 @@ export function terminalReducer(
         activeTabByWorkspace: {
           ...state.activeTabByWorkspace,
           [workspaceId]: newActiveTab,
-        },
-      };
-    }
-
-    case 'SET_ACTIVE_TAB': {
-      const { workspaceId, tabId } = action;
-      const tabs = state.tabsByWorkspace[workspaceId] || [];
-      if (!tabs.some((t) => t.id === tabId)) return state;
-      return {
-        ...state,
-        activeTabByWorkspace: {
-          ...state.activeTabByWorkspace,
-          [workspaceId]: tabId,
         },
       };
     }
@@ -205,10 +191,6 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
 
   const createTab = useCallback((workspaceId: string) => {
     dispatch({ type: 'CREATE_TAB', workspaceId });
-  }, []);
-
-  const setActiveTab = useCallback((workspaceId: string, tabId: string) => {
-    dispatch({ type: 'SET_ACTIVE_TAB', workspaceId, tabId });
   }, []);
 
   const closeTerminalConnection = useCallback((tabId: string) => {
@@ -477,7 +459,6 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       getActiveTab,
       createTab,
       closeTab,
-      setActiveTab,
       retainScope,
       releaseScope,
       registerTerminalInstance,
@@ -491,7 +472,6 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
       getActiveTab,
       createTab,
       closeTab,
-      setActiveTab,
       retainScope,
       releaseScope,
       registerTerminalInstance,

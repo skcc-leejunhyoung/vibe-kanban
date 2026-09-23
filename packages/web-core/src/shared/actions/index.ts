@@ -126,7 +126,6 @@ import { setCreateModeSeedState } from '@/features/create-mode/model/createModeS
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
 import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
-import { useHomeTerminalStore } from '@/shared/stores/useHomeTerminalStore';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import {
@@ -1505,28 +1504,20 @@ export const Actions = {
     // relay routes carrying a host id (`/hosts/{id}/...`), and a home-directory
     // terminal has no such id to carry, so there is nothing to offer here.
     isVisible: (ctx) => ctx.appRuntime === 'local',
-    // With the setting on the terminal claims a pane of its own, and a
-    // terminal already on screen gets another session tab — the label says so.
+    // With the setting on every run opens another terminal pane with a shell
+    // of its own; off, it goes to the terminal already showing (or shows one
+    // in the active pane).
     getLabel: (ctx) =>
       ctx.terminalOpensInNewPane
-        ? 'Open Terminal in New Tab'
+        ? 'Open Terminal in New Pane'
         : 'Goto: Terminal',
     execute: (ctx) => {
-      // Read before opening: null means no terminal is on screen yet, and the
-      // one about to mount starts with a session of its own.
-      const addSession = useHomeTerminalStore.getState().addSession;
-      // Both paths dedupe by destination — the terminal's sessions share one
-      // scope with one xterm DOM element per tab, so a second pane would adopt
-      // those elements away and leave the first one blank.
       const open = ctx.terminalOpensInNewPane
         ? openDestinationInOwnPane
         : revealDestinationInPane;
       open({ kind: 'terminal' }, ctx.appNavigation, ctx.appRuntime, () =>
         ctx.appNavigation.goToTerminal()
       );
-      // "Open" on a terminal that is already open asks for another shell;
-      // "Goto" only means take me there.
-      if (ctx.terminalOpensInNewPane) addSession?.();
     },
   } satisfies GlobalActionDefinition,
 

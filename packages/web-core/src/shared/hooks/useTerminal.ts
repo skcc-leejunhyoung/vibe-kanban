@@ -24,7 +24,6 @@ export interface TerminalContextType {
   getActiveTab: (workspaceId: string) => TerminalTab | null;
   createTab: (workspaceId: string) => void;
   closeTab: (workspaceId: string, tabId: string) => void;
-  setActiveTab: (workspaceId: string, tabId: string) => void;
   /**
    * Mount/unmount bracket for a panel showing a scope. The last release kills
    * the scope's shells: a terminal panel that is gone must not leave sessions

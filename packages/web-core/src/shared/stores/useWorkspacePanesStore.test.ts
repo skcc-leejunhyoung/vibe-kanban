@@ -235,6 +235,19 @@ describe('openPaneForDestination', () => {
 
     expect(store.getState().focusSerial).toBe(serialBefore + 1);
   });
+
+  it('opens another terminal pane every time', () => {
+    // Each terminal pane runs its own shell, so "open a terminal" must not
+    // collapse onto the pane already showing one.
+    store.getState().openPaneForDestination({ kind: 'terminal' });
+    const first = store.getState().activePaneId;
+    store.getState().openPaneForDestination({ kind: 'terminal' });
+    const terminals = store
+      .getState()
+      .panes.filter((pane) => pane.destination?.kind === 'terminal');
+    expect(terminals).toHaveLength(2);
+    expect(store.getState().activePaneId).not.toBe(first);
+  });
 });
 
 describe('adoptRouteDestination', () => {
@@ -258,10 +271,9 @@ describe('adoptRouteDestination', () => {
     expect(store.getState().panes).toHaveLength(2);
   });
 
-  it('keeps the terminal to a single pane', () => {
-    // The terminal owns one PTY and one xterm DOM element. A second pane on the
-    // same destination would adopt that element away and blank the first, so
-    // Goto: Terminal routes through here rather than setPaneDestination.
+  it('goes to the terminal pane already open', () => {
+    // Goto: Terminal routes through here: it means "take me to the terminal",
+    // not "open another shell".
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().adoptRouteDestination({ kind: 'terminal' });
     const terminalPaneId = store.getState().activePaneId;

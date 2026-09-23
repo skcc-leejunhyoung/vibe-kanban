@@ -198,7 +198,10 @@ interface WorkspacePanesState {
   focusPaneAt: (index: number) => void;
   /** Move DOM focus into the active pane (e.g. after clearing to the picker). */
   focusActivePane: () => void;
-  /** Show a destination in some pane (dedupe → empty → split → replace). */
+  /**
+   * Show a destination in some pane (dedupe → empty → split → replace).
+   * Terminals skip the dedupe: each pane runs its own shell.
+   */
   openPaneForDestination: (destination: WorkspacePaneDestination) => void;
   /**
    * Adopt an externally navigated destination (deep link, notification):
@@ -423,11 +426,16 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         set((state) => {
           const focusSerial = state.focusSerial + 1;
           const key = paneDestinationKey(destination);
-          const existing = state.panes.find(
-            (pane) =>
-              pane.destination !== null &&
-              paneDestinationKey(pane.destination) === key
-          );
+          // Every terminal pane runs a shell of its own, so opening a terminal
+          // means another one — never the pane already showing one.
+          const existing =
+            destination.kind === 'terminal'
+              ? undefined
+              : state.panes.find(
+                  (pane) =>
+                    pane.destination !== null &&
+                    paneDestinationKey(pane.destination) === key
+                );
           if (existing) {
             // Same identity (e.g. the pane's project) — adopt the more
             // specific destination (issue/workspace sub-navigation) too.

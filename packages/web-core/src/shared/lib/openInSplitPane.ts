@@ -49,11 +49,10 @@ export function reopenClosedPane(appNavigation: AppNavigation): void {
 /**
  * Give a destination a pane of its own: focus the pane already showing it,
  * else fill an empty pane, else append one, else take over the pane after the
- * active one. It never leaves two panes on the same destination, so it is safe
- * for singleton-backed ones (the terminal owns a single PTY and xterm
- * element). Returns false when there is no pane grid to use and it navigated
- * the document instead — callers that suppress their own focus restore need to
- * know which happened.
+ * active one. A terminal never reuses a pane already showing one — each
+ * terminal pane runs its own shell. Returns false when there is no pane grid to
+ * use and it navigated the document instead — callers that suppress their own
+ * focus restore need to know which happened.
  */
 export function openDestinationInOwnPane(
   destination: WorkspacePaneDestination,
@@ -146,10 +145,8 @@ export function openDestinationForActivePane(
 
 /**
  * Like {@link openDestinationForActivePane}, but never leaves two panes on the
- * same destination — it focuses the pane already showing it instead. Required
- * for destinations backed by a singleton resource: the terminal owns one PTY
- * and one xterm DOM element, so a second pane adopts that element away and
- * leaves the first pane blank.
+ * same destination — it focuses the pane already showing it instead ("go to
+ * it" rather than "open another").
  */
 export function revealDestinationInPane(
   destination: WorkspacePaneDestination,
