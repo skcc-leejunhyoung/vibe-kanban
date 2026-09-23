@@ -74,7 +74,14 @@ export function PdfPages({ blob, title }: { blob: Blob; title: string }) {
       const bytes = new Uint8Array(await blob.arrayBuffer());
       loading = pdfjs.getDocument({ data: bytes });
       document_ = await loading.promise;
-      if (cancelled) return;
+      if (cancelled) {
+        // Closing during the load leaves cleanup nothing to tear down, because
+        // the task did not exist yet when it ran.
+        void loading.destroy();
+        return;
+      }
+      // Placeholders appear from here on, so the label must not sit over them.
+      setPending(false);
       const numbers = new Map<Element, number>();
       // A frame can re-enter the viewport while its first draw is still
       // awaiting, which would stack a second canvas on top of the first.
@@ -148,7 +155,6 @@ export function PdfPages({ blob, title }: { blob: Blob; title: string }) {
         numbers.set(frame, number);
         observer.observe(frame);
       }
-      setPending(false);
     };
 
     run().catch((cause) => {
