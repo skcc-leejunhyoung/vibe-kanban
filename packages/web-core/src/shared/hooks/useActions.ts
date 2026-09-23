@@ -8,6 +8,7 @@ import type {
   ProjectMutations,
   NavigationProject,
 } from '@/shared/types/actions';
+import type { ProjectIssueCreateOptions } from '@/shared/stores/useKanbanIssueComposerStore';
 
 export interface ActionsContextValue {
   // Execute an action with optional workspaceId and repoId/projectId
@@ -62,8 +63,10 @@ export interface ActionsContextValue {
     direction: 'forward' | 'reverse'
   ) => Promise<void>;
 
-  // Set default status for issue creation based on current kanban tab
-  setDefaultCreateStatusId: (statusId: string | undefined) => void;
+  // Set default issue-create options (status, view filter labels) from the board
+  setDefaultCreateOptions: (
+    options: ProjectIssueCreateOptions | undefined
+  ) => void;
 
   // Register project mutations (called by components inside ProjectProvider)
   registerProjectMutations: (mutations: ProjectMutations) => () => void;

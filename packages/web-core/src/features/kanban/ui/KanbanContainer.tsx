@@ -286,7 +286,7 @@ export function KanbanContainer() {
 
   // Get setter and executor from ActionsContext
   const {
-    setDefaultCreateStatusId,
+    setDefaultCreateOptions,
     executeAction,
     openPrioritySelection,
     openAssigneeSelection,
@@ -577,15 +577,16 @@ export function KanbanContainer() {
     [groupStatuses, sortedStatuses]
   );
 
-  // Update default create status for command bar based on current tab
-  useEffect(() => {
-    setDefaultCreateStatusId(defaultCreateStatusId);
-  }, [defaultCreateStatusId, setDefaultCreateStatusId]);
+  // New issues mirror the flat filter fields. An advanced tree supersedes them
+  // (see useKanbanFilters), so their hidden leftovers must not leak in.
+  const createMirrorFilters = kanbanFilters.advancedFilter
+    ? DEFAULT_KANBAN_FILTER_STATE
+    : kanbanFilters;
 
   const createAssigneeIds = useMemo(() => {
     const assigneeIds = new Set<string>();
 
-    for (const assigneeId of kanbanFilters.assigneeIds) {
+    for (const assigneeId of createMirrorFilters.assigneeIds) {
       if (assigneeId === KANBAN_ASSIGNEE_FILTER_VALUES.UNASSIGNED) {
         continue;
       }
@@ -601,11 +602,32 @@ export function KanbanContainer() {
     }
 
     return [...assigneeIds];
-  }, [kanbanFilters.assigneeIds, userId]);
+  }, [createMirrorFilters.assigneeIds, userId]);
 
   // Tags mirror the active tag filter the same way, so a view whose default
   // filter (project settings) selects tags labels every issue created in it.
-  const createTagIds = kanbanFilters.tagIds;
+  // Deleted tags can linger in a saved filter; skip them.
+  const createTagIds = useMemo(() => {
+    const tagIds = new Set(tags.map((tag) => tag.id));
+    return createMirrorFilters.tagIds.filter((tagId) => tagIds.has(tagId));
+  }, [createMirrorFilters.tagIds, tags]);
+
+  // Board-level create defaults, shared by the "+" buttons and the command
+  // bar / `I C` shortcut so every create path from this view is labeled alike.
+  const defaultCreateOptions = useMemo<ProjectIssueCreateOptions>(
+    () => ({
+      statusId: defaultCreateStatusId,
+      ...(createAssigneeIds.length > 0
+        ? { assigneeIds: createAssigneeIds }
+        : {}),
+      ...(createTagIds.length > 0 ? { tagIds: createTagIds } : {}),
+    }),
+    [defaultCreateStatusId, createAssigneeIds, createTagIds]
+  );
+
+  useEffect(() => {
+    setDefaultCreateOptions(defaultCreateOptions);
+  }, [defaultCreateOptions, setDefaultCreateOptions]);
 
   // Inline "+ Add item" (list view): create an issue at the bottom of the group
   // with an empty body. Assignees and tags mirror the active filter so the new
@@ -1634,16 +1656,11 @@ export function KanbanContainer() {
 
   const handleAddTask = useCallback(
     (statusId?: string) => {
-      const createPayload = {
-        statusId: statusId ?? defaultCreateStatusId,
-        ...(createAssigneeIds.length > 0
-          ? { assigneeIds: createAssigneeIds }
-          : {}),
-        ...(createTagIds.length > 0 ? { tagIds: createTagIds } : {}),
-      };
-      startCreate(createPayload);
+      startCreate(
+        statusId ? { ...defaultCreateOptions, statusId } : defaultCreateOptions
+      );
     },
-    [createAssigneeIds, createTagIds, defaultCreateStatusId, startCreate]
+    [defaultCreateOptions, startCreate]
   );
 
   // Inline editing callbacks for kanban cards

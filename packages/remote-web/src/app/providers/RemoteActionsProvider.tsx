@@ -58,8 +58,8 @@ export function RemoteActionsProvider({
   const { projectId, hostId } = useParams({ strict: false });
   const userCtx = useContext(UserContext);
   const selectedOrgId = useOrganizationStore((s) => s.selectedOrgId);
-  const [defaultCreateStatusId, setDefaultCreateStatusId] = useState<
-    string | undefined
+  const [defaultCreateOptions, setDefaultCreateOptions] = useState<
+    ProjectIssueCreateOptions | undefined
   >();
   const [projectMutations, setProjectMutations] =
     useState<ProjectMutations | null>(null);
@@ -221,7 +221,7 @@ export function RemoteActionsProvider({
       openWorkspaceSelection,
       openRelationshipSelection,
       navigateToCreateIssue,
-      defaultCreateStatusId,
+      defaultCreateOptions,
       kanbanOrgId: selectedOrgId ?? undefined,
       kanbanProjectId: projectId,
       projectMutations: projectMutations ?? undefined,
@@ -239,7 +239,7 @@ export function RemoteActionsProvider({
       openWorkspaceSelection,
       openRelationshipSelection,
       navigateToCreateIssue,
-      defaultCreateStatusId,
+      defaultCreateOptions,
       selectedOrgId,
       projectId,
       projectMutations,
@@ -360,7 +360,7 @@ export function RemoteActionsProvider({
       openSubIssueSelection,
       openWorkspaceSelection,
       openRelationshipSelection,
-      setDefaultCreateStatusId,
+      setDefaultCreateOptions,
       registerProjectMutations,
       registerNavigationProjects: setNavigationProjects,
       executorContext,

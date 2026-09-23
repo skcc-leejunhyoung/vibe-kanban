@@ -11,6 +11,12 @@ import {
 import { OrgContext, type OrgContextValue } from '@/shared/hooks/useOrgContext';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
+import {
+  DEFAULT_KANBAN_FILTER_STATE,
+  useUiPreferencesStore,
+  type KanbanFilterState,
+} from '@/shared/stores/useUiPreferencesStore';
+import { newGroup } from '@/shared/filters/filterTree';
 import { KanbanContainer } from './KanbanContainer';
 
 /**
@@ -22,6 +28,7 @@ import { KanbanContainer } from './KanbanContainer';
 // Shared by the hoisted vi.mock factories below, so hoisted with them.
 const {
   contentRenders,
+  setDefaultCreateOptions,
   passthrough,
   nothing,
   noop,
@@ -33,6 +40,7 @@ const {
   t,
 } = vi.hoisted(() => ({
   contentRenders: vi.fn<(displayId: string) => void>(),
+  setDefaultCreateOptions: vi.fn(),
   passthrough: ({ children }: { children?: ReactNode }) => children ?? null,
   nothing: () => null,
   noop: () => {},
@@ -83,7 +91,7 @@ vi.mock('@/shared/hooks/useWorkspaceContext', () => ({
 }));
 vi.mock('@/shared/hooks/useActions', () => ({
   useActions: () => ({
-    setDefaultCreateStatusId: noop,
+    setDefaultCreateOptions,
     executeAction: noop,
     openPrioritySelection: noop,
     openAssigneeSelection: noop,
@@ -169,6 +177,7 @@ let projectCounter = 0;
 beforeEach(() => {
   vi.useFakeTimers();
   contentRenders.mockClear();
+  setDefaultCreateOptions.mockClear();
   pane.active = true;
   useIssueSelectionStore.getState().clearSelection();
   useIssueSelectionStore.getState().setOrderedIssueIds([]);
@@ -292,9 +301,10 @@ function seedRows(p: string): Record<string, Record<string, unknown>[]> {
   };
 }
 
-async function renderBoard() {
+async function renderBoard(setup?: (projectId: string) => void) {
   const projectId = `p${++projectCounter}`;
   route.projectId = projectId;
+  setup?.(projectId);
   const orgValue = {
     organizationId: 'org',
     projects: [{ id: projectId, name: 'Project', organization_id: 'org' }],
@@ -424,5 +434,47 @@ describe('KanbanContainer selection store', () => {
       'i1',
       'i2',
     ]);
+  });
+});
+
+describe('KanbanContainer create defaults', () => {
+  const withView = (filters: Partial<KanbanFilterState>) => (p: string) =>
+    useUiPreferencesStore.setState((state) => ({
+      projectViewsById: {
+        ...state.projectViewsById,
+        [p]: [
+          {
+            id: 'v1',
+            name: 'Bugs',
+            layout: 'kanban',
+            groupStatusIds: null,
+            filters: { ...DEFAULT_KANBAN_FILTER_STATE, ...filters },
+            showSubIssues: true,
+            showWorkspaces: true,
+            hideBlocked: false,
+          },
+        ],
+      },
+    }));
+
+  it('labels new issues with the view tag filter, minus deleted tags', async () => {
+    await renderBoard(withView({ tagIds: ['t1', 't-deleted'] }));
+    expect(setDefaultCreateOptions).toHaveBeenLastCalledWith({
+      statusId: 's1',
+      tagIds: ['t1'],
+    });
+  });
+
+  it('ignores flat filter leftovers while an advanced tree is active', async () => {
+    await renderBoard(
+      withView({
+        tagIds: ['t1'],
+        assigneeIds: ['u1'],
+        advancedFilter: newGroup('and'),
+      })
+    );
+    expect(setDefaultCreateOptions).toHaveBeenLastCalledWith({
+      statusId: 's1',
+    });
   });
 });

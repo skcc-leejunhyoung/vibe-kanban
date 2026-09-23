@@ -86,9 +86,9 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
     chromeTargetWorkspace?.workspaceId ?? workspaceId
   );
 
-  // Default status for issue creation based on current kanban tab
-  const [defaultCreateStatusId, setDefaultCreateStatusId] = useState<
-    string | undefined
+  // Default issue-create options (status, view filter labels) from the board
+  const [defaultCreateOptions, setDefaultCreateOptions] = useState<
+    ProjectIssueCreateOptions | undefined
   >();
 
   // Project mutations state (registered by components inside ProjectProvider)
@@ -277,7 +277,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
       openWorkspaceSelection,
       openRelationshipSelection,
       navigateToCreateIssue,
-      defaultCreateStatusId,
+      defaultCreateOptions,
       kanbanOrgId: selectedOrgId ?? undefined,
       kanbanProjectId: projectId,
       projectMutations: projectMutations ?? undefined,
@@ -317,7 +317,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
     openWorkspaceSelection,
     openRelationshipSelection,
     navigateToCreateIssue,
-    defaultCreateStatusId,
+    defaultCreateOptions,
     selectedOrgId,
     projectId,
     projectMutations,
@@ -422,7 +422,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
       openSubIssueSelection,
       openWorkspaceSelection,
       openRelationshipSelection,
-      setDefaultCreateStatusId,
+      setDefaultCreateOptions,
       registerProjectMutations,
       registerNavigationProjects,
       executorContext,

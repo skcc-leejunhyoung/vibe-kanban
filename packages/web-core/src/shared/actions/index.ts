@@ -571,7 +571,7 @@ function navigateToCreateSubIssue(
     ?.getAssigneesForIssue(parentIssueId)
     .map((a) => a.user_id);
   ctx.navigateToCreateIssue({
-    statusId: ctx.defaultCreateStatusId,
+    statusId: ctx.defaultCreateOptions?.statusId,
     parentIssueId,
     assigneeIds: assigneeIds?.length ? assigneeIds : undefined,
   });
@@ -3271,7 +3271,7 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) => ctx.layoutMode === 'kanban' && !ctx.isCreatingIssue,
     execute: (ctx) => {
-      ctx.navigateToCreateIssue({ statusId: ctx.defaultCreateStatusId });
+      ctx.navigateToCreateIssue(ctx.defaultCreateOptions);
     },
   } satisfies GlobalActionDefinition,
 

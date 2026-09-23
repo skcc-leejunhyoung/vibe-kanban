@@ -121,8 +121,8 @@ export interface ActionExecutorContext {
   ) => Promise<void>;
   // Kanban navigation (URL-based)
   navigateToCreateIssue: (options?: ProjectIssueCreateOptions) => void;
-  // Default status for issue creation based on current kanban tab
-  defaultCreateStatusId?: string;
+  // Default issue-create options (status, view filter labels) from the board
+  defaultCreateOptions?: ProjectIssueCreateOptions;
   // Current kanban context (for project settings action)
   kanbanOrgId?: string;
   kanbanProjectId?: string;
