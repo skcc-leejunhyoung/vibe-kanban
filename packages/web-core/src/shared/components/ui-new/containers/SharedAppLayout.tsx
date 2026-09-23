@@ -82,7 +82,6 @@ export function SharedAppLayout() {
   const appRuntime = useAppRuntime();
   const currentDestination = useCurrentAppDestination();
   const isMobile = useIsMobile();
-  const mobileFontScale = useUiPreferencesStore((s) => s.mobileFontScale);
   const isLeftSidebarVisible = useUiPreferencesStore(
     (s) => s.isLeftSidebarVisible
   );
@@ -101,22 +100,6 @@ export function SharedAppLayout() {
   // Register CMD+K shortcut globally for all routes under SharedAppLayout
   useCommandBarShortcut(() => CommandBarDialog.show());
   useMarkNotificationsReadOnView();
-
-  // Apply mobile font scale CSS variable
-  useEffect(() => {
-    if (!isMobile) {
-      document.documentElement.style.removeProperty('--mobile-font-scale');
-      return;
-    }
-    const scaleMap = { default: '1', small: '0.9', smaller: '0.8' } as const;
-    document.documentElement.style.setProperty(
-      '--mobile-font-scale',
-      scaleMap[mobileFontScale]
-    );
-    return () => {
-      document.documentElement.style.removeProperty('--mobile-font-scale');
-    };
-  }, [isMobile, mobileFontScale]);
 
   // AppBar state - organizations and projects
   const { data: orgsData } = useUserOrganizations();

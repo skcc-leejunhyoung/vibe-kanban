@@ -102,16 +102,23 @@
           "label": "Show the floating action bar",
           "helper": "The draggable bar of quick actions floating over the workspace."
         },
-        "zoom": {
-          "label": "Zoom",
-          "helper": "Scale the whole app, like browser zoom. Also bound to ⌘/Ctrl +, − and 0.",
-          "in": "Zoom in",
-          "out": "Zoom out",
+        "textSize": {
+          "label": "Text size",
+          "helper": "Scales text only; spacing, icons and controls keep their size.",
+          "larger": "Larger",
+          "smaller": "Smaller",
+          "reset": "Reset"
+        },
+        "uiSize": {
+          "label": "UI element size",
+          "helper": "Scales spacing, icons and controls; text keeps its size. ⌘/Ctrl +, − and 0 scale both together.",
+          "larger": "Larger",
+          "smaller": "Smaller",
           "reset": "Reset"
         },
         "terminalFontSize": {
           "label": "Terminal font size",
-          "helper": "Text size in the built-in terminal. App zoom scales it further.",
+          "helper": "Text size in the built-in terminal. The text size setting scales it further.",
           "larger": "Larger",
           "smaller": "Smaller",
           "reset": "Reset"

@@ -687,10 +687,6 @@ textarea:focus,
     overscroll-behavior: none;
   }
 
-  html {
-    font-size: var(--mobile-font-scale, 100%);
-  }
-
   /* Background colors for PWA safe-area */
   html,
   body {

@@ -29,15 +29,21 @@ import {
 } from 'shared/types';
 import { getModifierKey } from '@/shared/lib/platform';
 import {
+  DEFAULT_TEXT_PERCENT,
   DEFAULT_ZOOM_PERCENT,
+  MAX_TEXT_PERCENT,
   MAX_ZOOM_PERCENT,
+  MIN_TEXT_PERCENT,
   MIN_ZOOM_PERCENT,
+  getTextPercent,
   getZoomPercent,
-  isAppZoomEnabled,
   subscribeZoom,
-  zoomIn,
-  zoomOut,
-  zoomReset,
+  textSizeIn,
+  textSizeOut,
+  textSizeReset,
+  uiSizeIn,
+  uiSizeOut,
+  uiSizeReset,
 } from '@/shared/lib/zoom';
 import {
   TERMINAL_DEFAULT_FONT_SIZE,
@@ -68,12 +74,9 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { persistLanguage, updateLanguageFromConfig } from '@/i18n/config';
 import { TagManager } from '@/shared/components/TagManager';
 import { useSettingsMachineClient } from './SettingsHostContext';
-import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
   DEFAULT_THEME_VARIANT,
   DEFAULT_WORKSPACE_ISSUE_STATUSES,
-  type MobileFontScale,
-  useMobileFontScale,
   useThemePresets,
   useThemeVariant,
   useContextBarVisible,
@@ -115,95 +118,37 @@ import {
   useDiffViewStore,
 } from '@/shared/stores/useDiffViewStore';
 
-// App zoom (root font-size steps) stands in for browser zoom wherever native
-// zoom is unavailable — an installed PWA has no ⌘± and pinch is blocked. It is
-// a client-local preference (localStorage), so it stays reachable even when the
-// host/remote config the rest of this section needs is loading or unreachable.
-function AppZoomField() {
-  const { t } = useTranslation('settings');
-  const zoomPercent = useSyncExternalStore(subscribeZoom, getZoomPercent);
+type StepperFieldProps = {
+  label: string;
+  description: string;
+  value: string;
+  atMin: boolean;
+  atMax: boolean;
+  atDefault: boolean;
+  onDecrement: () => void;
+  onIncrement: () => void;
+  onReset: () => void;
+  decrementLabel: string;
+  incrementLabel: string;
+  resetLabel: string;
+};
 
-  if (!isAppZoomEnabled()) return null;
-
+function StepperField({
+  label,
+  description,
+  value,
+  atMin,
+  atMax,
+  atDefault,
+  onDecrement,
+  onIncrement,
+  onReset,
+  decrementLabel,
+  incrementLabel,
+  resetLabel,
+}: StepperFieldProps) {
   return (
-    <SettingsField
-      label={t('settings.general.appearance.zoom.label', {
-        defaultValue: 'Zoom',
-      })}
-      description={t('settings.general.appearance.zoom.helper', {
-        defaultValue:
-          'Scale the whole app, like browser zoom. Also bound to \u2318/Ctrl +, \u2212 and 0.',
-      })}
-    >
-      <div
-        className="flex items-center gap-base"
-        role="group"
-        aria-label={t('settings.general.appearance.zoom.label', {
-          defaultValue: 'Zoom',
-        })}
-      >
-        <IconButton
-          icon={MinusIcon}
-          variant="tertiary"
-          className="min-h-9 min-w-9"
-          onClick={zoomOut}
-          disabled={zoomPercent <= MIN_ZOOM_PERCENT}
-          aria-label={t('settings.general.appearance.zoom.out', {
-            defaultValue: 'Zoom out',
-          })}
-        />
-        <span
-          className="w-16 text-center text-sm tabular-nums text-normal"
-          aria-live="polite"
-        >
-          {zoomPercent}%
-        </span>
-        <IconButton
-          icon={PlusIcon}
-          variant="tertiary"
-          className="min-h-9 min-w-9"
-          onClick={zoomIn}
-          disabled={zoomPercent >= MAX_ZOOM_PERCENT}
-          aria-label={t('settings.general.appearance.zoom.in', {
-            defaultValue: 'Zoom in',
-          })}
-        />
-        <Button
-          variant="secondary"
-          size="xs"
-          onClick={zoomReset}
-          disabled={zoomPercent === DEFAULT_ZOOM_PERCENT}
-        >
-          {t('settings.general.appearance.zoom.reset', {
-            defaultValue: 'Reset',
-          })}
-        </Button>
-      </div>
-    </SettingsField>
-  );
-}
-
-// xterm sizes its cells in px, so it never inherits the rem-based text scale
-// the rest of the UI uses. Client-local (localStorage), like app zoom, which
-// still multiplies on top of whatever is picked here.
-function TerminalFontSizeField() {
-  const { t } = useTranslation('settings');
-  const fontSize = useSyncExternalStore(
-    subscribeTerminalFontSize,
-    getTerminalBaseFontSize
-  );
-  const label = t('settings.general.appearance.terminalFontSize.label', {
-    defaultValue: 'Terminal font size',
-  });
-
-  return (
-    <SettingsField
-      label={label}
-      description={t('settings.general.appearance.terminalFontSize.helper', {
-        defaultValue:
-          'Text size in the built-in terminal. App zoom scales it further.',
-      })}
-    >
+    <SettingsField label={label} description={description}>
       <div
         className="flex items-center gap-base"
         role="group"
@@ -213,43 +158,154 @@ function TerminalFontSizeField() {
           icon={MinusIcon}
           variant="tertiary"
           className="min-h-9 min-w-9"
-          onClick={() => setTerminalBaseFontSize(fontSize - 1)}
-          disabled={fontSize <= TERMINAL_MIN_FONT_SIZE}
-          aria-label={t(
-            'settings.general.appearance.terminalFontSize.smaller',
-            {
-              defaultValue: 'Smaller',
-            }
-          )}
+          onClick={onDecrement}
+          disabled={atMin}
+          aria-label={decrementLabel}
         />
         <span
           className="w-16 text-center text-sm tabular-nums text-normal"
           aria-live="polite"
         >
-          {fontSize}px
+          {value}
         </span>
         <IconButton
           icon={PlusIcon}
           variant="tertiary"
           className="min-h-9 min-w-9"
-          onClick={() => setTerminalBaseFontSize(fontSize + 1)}
-          disabled={fontSize >= TERMINAL_MAX_FONT_SIZE}
-          aria-label={t('settings.general.appearance.terminalFontSize.larger', {
-            defaultValue: 'Larger',
-          })}
+          onClick={onIncrement}
+          disabled={atMax}
+          aria-label={incrementLabel}
         />
         <Button
           variant="secondary"
           size="xs"
-          onClick={() => setTerminalBaseFontSize(TERMINAL_DEFAULT_FONT_SIZE)}
-          disabled={fontSize === TERMINAL_DEFAULT_FONT_SIZE}
+          onClick={onReset}
+          disabled={atDefault}
         >
-          {t('settings.general.appearance.terminalFontSize.reset', {
-            defaultValue: 'Reset',
-          })}
+          {resetLabel}
         </Button>
       </div>
     </SettingsField>
+  );
+}
+
+// Text and UI sizes are client-local (localStorage) root font-size / text-scale
+// steps (shared/lib/zoom.ts), so they stay reachable even when the host/remote
+// config the rest of this section needs is loading or unreachable. ⌘/Ctrl ±
+// still zooms both together (natively in a browser tab, via installAppZoom in
+// Tauri and installed PWAs).
+function TextSizeField() {
+  const { t } = useTranslation('settings');
+  const percent = useSyncExternalStore(subscribeZoom, getTextPercent);
+
+  return (
+    <StepperField
+      label={t('settings.general.appearance.textSize.label', {
+        defaultValue: 'Text size',
+      })}
+      description={t('settings.general.appearance.textSize.helper', {
+        defaultValue:
+          'Scales text only; spacing, icons and controls keep their size.',
+      })}
+      value={`${percent}%`}
+      atMin={percent <= MIN_TEXT_PERCENT}
+      atMax={percent >= MAX_TEXT_PERCENT}
+      atDefault={percent === DEFAULT_TEXT_PERCENT}
+      onDecrement={textSizeOut}
+      onIncrement={textSizeIn}
+      onReset={textSizeReset}
+      decrementLabel={t('settings.general.appearance.textSize.smaller', {
+        defaultValue: 'Smaller',
+      })}
+      incrementLabel={t('settings.general.appearance.textSize.larger', {
+        defaultValue: 'Larger',
+      })}
+      resetLabel={t('settings.general.appearance.textSize.reset', {
+        defaultValue: 'Reset',
+      })}
+    />
+  );
+}
+
+function UiSizeField() {
+  const { t } = useTranslation('settings');
+  const percent = useSyncExternalStore(subscribeZoom, getZoomPercent);
+
+  return (
+    <StepperField
+      label={t('settings.general.appearance.uiSize.label', {
+        defaultValue: 'UI element size',
+      })}
+      description={t('settings.general.appearance.uiSize.helper', {
+        defaultValue:
+          'Scales spacing, icons and controls; text keeps its size. \u2318/Ctrl +, \u2212 and 0 scale both together.',
+      })}
+      value={`${percent}%`}
+      atMin={percent <= MIN_ZOOM_PERCENT}
+      atMax={percent >= MAX_ZOOM_PERCENT}
+      atDefault={percent === DEFAULT_ZOOM_PERCENT}
+      onDecrement={uiSizeOut}
+      onIncrement={uiSizeIn}
+      onReset={uiSizeReset}
+      decrementLabel={t('settings.general.appearance.uiSize.smaller', {
+        defaultValue: 'Smaller',
+      })}
+      incrementLabel={t('settings.general.appearance.uiSize.larger', {
+        defaultValue: 'Larger',
+      })}
+      resetLabel={t('settings.general.appearance.uiSize.reset', {
+        defaultValue: 'Reset',
+      })}
+    />
+  );
+}
+
+function AppSizeFields() {
+  return (
+    <>
+      <TextSizeField />
+      <UiSizeField />
+    </>
+  );
+}
+
+// xterm sizes its cells in px, so it never inherits the rem-based text scale
+// the rest of the UI uses. Client-local (localStorage), like the sizes above,
+// which still multiply on top of whatever is picked here.
+function TerminalFontSizeField() {
+  const { t } = useTranslation('settings');
+  const fontSize = useSyncExternalStore(
+    subscribeTerminalFontSize,
+    getTerminalBaseFontSize
+  );
+
+  return (
+    <StepperField
+      label={t('settings.general.appearance.terminalFontSize.label', {
+        defaultValue: 'Terminal font size',
+      })}
+      description={t('settings.general.appearance.terminalFontSize.helper', {
+        defaultValue:
+          'Text size in the built-in terminal. The text size setting scales it further.',
+      })}
+      value={`${fontSize}px`}
+      atMin={fontSize <= TERMINAL_MIN_FONT_SIZE}
+      atMax={fontSize >= TERMINAL_MAX_FONT_SIZE}
+      atDefault={fontSize === TERMINAL_DEFAULT_FONT_SIZE}
+      onDecrement={() => setTerminalBaseFontSize(fontSize - 1)}
+      onIncrement={() => setTerminalBaseFontSize(fontSize + 1)}
+      onReset={() => setTerminalBaseFontSize(TERMINAL_DEFAULT_FONT_SIZE)}
+      decrementLabel={t(
+        'settings.general.appearance.terminalFontSize.smaller',
+        { defaultValue: 'Smaller' }
+      )}
+      incrementLabel={t('settings.general.appearance.terminalFontSize.larger', {
+        defaultValue: 'Larger',
+      })}
+      resetLabel={t('settings.general.appearance.terminalFontSize.reset', {
+        defaultValue: 'Reset',
+      })}
+    />
   );
 }
 
@@ -257,8 +313,6 @@ export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
   const { setDirty: setContextDirty } = useSettingsDirty();
 
-  const isMobile = useIsMobile();
-  const [mobileFontScale, setMobileFontScale] = useMobileFontScale();
   // Theme variants ("skins") are token-only presets (built-in + user-defined)
   // injected as a scoped <style>, applied on top of the Light/Dark mode. The
   // selection + presets sync through config (useConfigPreferenceSync), so the
@@ -479,7 +533,7 @@ export function GeneralSettingsSection() {
   if (loading) {
     return (
       <>
-        <AppZoomField />
+        <AppSizeFields />
         <div className="flex items-center justify-center py-8 gap-2">
           <SpinnerIcon
             className="size-icon-lg animate-spin text-brand"
@@ -494,7 +548,7 @@ export function GeneralSettingsSection() {
   if (!config) {
     return (
       <>
-        <AppZoomField />
+        <AppSizeFields />
         <div className="py-8">
           <div className="bg-error/10 border border-error/50 rounded-sm p-4 text-error">
             {t('settings.general.loadError')}
@@ -636,29 +690,9 @@ export function GeneralSettingsSection() {
           onChange={setContextBarVisible}
         />
 
-        <AppZoomField />
+        <AppSizeFields />
 
         <TerminalFontSizeField />
-
-        {isMobile && (
-          <SettingsField
-            label="Mobile Font Size"
-            description="Scale text size on mobile for better readability"
-          >
-            <SettingsSelect
-              value={mobileFontScale}
-              options={[
-                {
-                  value: 'default' as MobileFontScale,
-                  label: 'Default (100%)',
-                },
-                { value: 'small' as MobileFontScale, label: 'Small (95%)' },
-                { value: 'smaller' as MobileFontScale, label: 'Smaller (90%)' },
-              ]}
-              onChange={(value: MobileFontScale) => setMobileFontScale(value)}
-            />
-          </SettingsField>
-        )}
       </SettingsCard>
 
       <SettingsCard

@@ -2,16 +2,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // zoom.ts caches the current level in module state, so each case loads a fresh
 // copy against stubbed storage/DOM globals.
-async function loadZoom(stored?: string) {
+async function loadZoom(stored?: string, storedTextScale?: string) {
   const store = new Map<string, string>();
   if (stored) store.set('vk-zoom-level', stored);
+  if (storedTextScale) store.set('vk-text-scale', storedTextScale);
   vi.stubGlobal('localStorage', {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => void store.set(k, v),
     removeItem: (k: string) => void store.delete(k),
   });
   const style: Record<string, string> = {};
-  vi.stubGlobal('document', { documentElement: { style } });
+  vi.stubGlobal('document', {
+    documentElement: {
+      style: Object.assign(style, {
+        setProperty: (k: string, v: string) => void (style[k] = v),
+        removeProperty: (k: string) => void delete style[k],
+      }),
+    },
+  });
   vi.stubGlobal('window', new EventTarget());
   vi.resetModules();
   const zoom = await import('./zoom');
@@ -65,5 +73,65 @@ describe('app zoom', () => {
     unsubscribe();
     zoom.zoomOut();
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('zooms text and UI together and resets both', async () => {
+    const { zoom, store, style } = await loadZoom();
+    zoom.textSizeIn();
+    zoom.zoomIn();
+    expect(style.fontSize).toBe('17px');
+    expect(zoom.getZoomPercent()).toBe(106);
+    expect(zoom.getTextPercent()).toBe(117);
+
+    zoom.zoomReset();
+    expect(zoom.getZoomPercent()).toBe(100);
+    expect(zoom.getTextPercent()).toBe(100);
+    expect(style['--vk-text-scale']).toBe(undefined);
+    expect(store.has('vk-text-scale')).toBe(false);
+  });
+});
+
+describe('text and UI size', () => {
+  it('scales text without moving the root font size', async () => {
+    const { zoom, store, style } = await loadZoom();
+    zoom.textSizeIn();
+    expect(style.fontSize).toBe('16px');
+    expect(style['--vk-text-scale']).toBe('1.1');
+    expect(zoom.getTextPercent()).toBe(110);
+    expect(zoom.getZoomPercent()).toBe(100);
+    expect(store.get('vk-text-scale')).toBe('1.1');
+
+    zoom.textSizeReset();
+    expect(style['--vk-text-scale']).toBe(undefined);
+    expect(store.has('vk-text-scale')).toBe(false);
+  });
+
+  it('steps the UI while holding the rendered text size', async () => {
+    const { zoom, style } = await loadZoom();
+    zoom.uiSizeIn();
+    expect(style.fontSize).toBe('17px');
+    expect(zoom.getZoomPercent()).toBe(106);
+    expect(zoom.getTextPercent()).toBe(100);
+    expect(style['--vk-text-scale']).toBe('0.9412');
+
+    zoom.textSizeIn();
+    expect(zoom.getTextPercent()).toBe(110);
+    expect(zoom.getZoomPercent()).toBe(106);
+
+    zoom.uiSizeReset();
+    expect(style.fontSize).toBe('16px');
+    expect(zoom.getTextPercent()).toBe(110);
+    expect(style['--vk-text-scale']).toBe('1.1');
+  });
+
+  it('restores a stored scale and clamps the text size', async () => {
+    const { zoom } = await loadZoom('20', '1.2');
+    expect(zoom.getTextPercent()).toBe(150);
+
+    for (let i = 0; i < 20; i++) zoom.textSizeIn();
+    expect(zoom.getTextPercent()).toBe(zoom.MAX_TEXT_PERCENT);
+    for (let i = 0; i < 40; i++) zoom.textSizeOut();
+    expect(zoom.getTextPercent()).toBe(zoom.MIN_TEXT_PERCENT);
+    expect(zoom.getZoomPercent()).toBe(125);
   });
 });

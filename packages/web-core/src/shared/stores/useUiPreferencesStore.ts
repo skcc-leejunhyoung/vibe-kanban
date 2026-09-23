@@ -50,20 +50,7 @@ export type MobileTab =
   | 'preview'
   | 'git';
 
-export type MobileFontScale = 'default' | 'small' | 'smaller';
 export const DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT = false;
-
-const MOBILE_FONT_SCALE_KEY = 'vk-mobile-font-scale';
-
-const loadMobileFontScale = (): MobileFontScale => {
-  try {
-    const stored = localStorage.getItem(MOBILE_FONT_SCALE_KEY);
-    if (stored === 'small' || stored === 'smaller') return stored;
-  } catch {
-    // localStorage may be unavailable
-  }
-  return 'default';
-};
 
 // Theme variant ("skin") is a client-side visual preference applied on top of
 // the Light/Dark/System mode. 'default' means no extra skin (the built-in
@@ -557,9 +544,6 @@ type State = {
   // Mobile tab state
   mobileActiveTab: MobileTab;
 
-  // Mobile font scale
-  mobileFontScale: MobileFontScale;
-
   // Theme variant ("skin"), applied on top of the light/dark mode
   themeVariant: ThemeVariant;
 
@@ -653,9 +637,6 @@ type State = {
   // Mobile tab actions
   setMobileActiveTab: (tab: MobileTab) => void;
 
-  // Mobile font scale actions
-  setMobileFontScale: (scale: MobileFontScale) => void;
-
   // Theme variant actions
   setThemeVariant: (variant: ThemeVariant) => void;
   // Insert or update a preset (matched by id). Built-in ids become overrides.
@@ -711,9 +692,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
 
   // Mobile tab state
   mobileActiveTab: 'chat' as MobileTab,
-
-  // Mobile font scale
-  mobileFontScale: loadMobileFontScale(),
 
   // Theme variant
   themeVariant: loadThemeVariant(),
@@ -1053,20 +1031,6 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Mobile tab actions
   setMobileActiveTab: (tab) => set({ mobileActiveTab: tab }),
 
-  // Mobile font scale actions
-  setMobileFontScale: (scale) => {
-    try {
-      if (scale === 'default') {
-        localStorage.removeItem(MOBILE_FONT_SCALE_KEY);
-      } else {
-        localStorage.setItem(MOBILE_FONT_SCALE_KEY, scale);
-      }
-    } catch {
-      // localStorage may be unavailable
-    }
-    set({ mobileFontScale: scale });
-  },
-
   // Theme variant actions
   setThemeVariant: (variant) => {
     try {
@@ -1218,13 +1182,6 @@ export function useMobileActiveTab() {
   const tab = useUiPreferencesStore((s) => s.mobileActiveTab);
   const set = useUiPreferencesStore((s) => s.setMobileActiveTab);
   return [tab, set] as const;
-}
-
-// Hook for mobile font scale
-export function useMobileFontScale() {
-  const scale = useUiPreferencesStore((s) => s.mobileFontScale);
-  const set = useUiPreferencesStore((s) => s.setMobileFontScale);
-  return [scale, set] as const;
 }
 
 // Hook for theme variant ("skin")

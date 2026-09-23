@@ -19,6 +19,17 @@ function getSize(sizeLabel, multiplier = 1) {
   return sizes[sizeLabel] * multiplier + "rem";
 }
 
+// Font sizes also carry the text-size preference (`--vk-text-scale`, set on
+// <html> by web-core shared/lib/zoom.ts), so text scales apart from the
+// rem-based spacing/icon sizes, which follow the root font size alone.
+function getTextSize(rem) {
+  return `calc(${rem}rem * var(--vk-text-scale, 1))`;
+}
+
+function getFontSize(sizeLabel, lineHeight = sizes[sizeLabel] * lineHeightMultiplier) {
+  return [getTextSize(sizes[sizeLabel]), { lineHeight: getTextSize(lineHeight) }];
+}
+
 module.exports = {
   darkMode: ["class"],
   important: false,
@@ -87,12 +98,15 @@ module.exports = {
         DEFAULT: 'hsl(var(--brand))',
       },
       fontSize: {
-        xs: [getSize('xs'), { lineHeight: getSize('xs', lineHeightMultiplier) }],      // 8px
-        sm: [getSize('sm'), { lineHeight: getSize('sm', lineHeightMultiplier) }],   // 10px
-        base: [getSize('base'), { lineHeight: getSize('base', lineHeightMultiplier) }],  // 12px (base)
-        lg: [getSize('lg'), { lineHeight: getSize('lg', lineHeightMultiplier) }],    // 14px
-        xl: [getSize('xl'), { lineHeight: getSize('xl', lineHeightMultiplier) }],         // 16px
-        cta: [getSize('base'), { lineHeight: getSize('base') }],         // 16px
+        xs: getFontSize('xs'),
+        sm: getFontSize('sm'),
+        base: getFontSize('base'),
+        lg: getFontSize('lg'),
+        xl: getFontSize('xl'),
+        // Tailwind's own sizes/line-heights, re-declared to pick up the text scale.
+        '2xl': [getTextSize(1.5), { lineHeight: getTextSize(2) }],
+        '4xl': [getTextSize(2.25), { lineHeight: getTextSize(2.5) }],
+        cta: getFontSize('base', sizes.base),
       },
       spacing: {
         'half': getSize('base', 0.25),

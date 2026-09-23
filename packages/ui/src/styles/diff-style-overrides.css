@@ -891,7 +891,7 @@ diffs-container {
 /* Font: Use IBM Plex Mono to match old design */
 diffs-container {
   --diffs-font-family: "IBM Plex Mono", "SF Mono", Monaco, Consolas, monospace;
-  --diffs-font-size: 0.75rem;
+  --diffs-font-size: calc(0.75rem * var(--vk-text-scale, 1));
   --diffs-line-height: 1.125rem;
 }
 

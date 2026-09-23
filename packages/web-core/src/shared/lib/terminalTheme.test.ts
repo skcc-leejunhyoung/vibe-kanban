@@ -24,6 +24,12 @@ describe('scaleTerminalFontSize', () => {
     expect(scaleTerminalFontSize(24, 18)).toBe(27);
     expect(scaleTerminalFontSize(Number.NaN, 18)).toBe(18);
   });
+
+  it('follows the text-size scale on top of the root size', () => {
+    expect(scaleTerminalFontSize(16, 12, 1.5)).toBe(18);
+    // A UI-only step (root 17px, text scale compensating) leaves it alone.
+    expect(scaleTerminalFontSize(17, 12, 16 / 17)).toBe(12);
+  });
 });
 
 describe('TERMINAL_FONT_FAMILY', () => {

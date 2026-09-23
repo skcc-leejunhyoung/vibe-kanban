@@ -1,4 +1,5 @@
 import type { ITheme } from '@xterm/xterm';
+import { getTextScale } from './zoom';
 
 /**
  * oh-my-zsh themes (powerlevel10k in particular) draw their prompt out of Nerd
@@ -45,21 +46,25 @@ const FONT_SIZE_STORAGE_KEY = 'vk-terminal-font-size';
 const FONT_SIZE_EVENT = 'vk-terminal-font-size-change';
 
 /**
- * App zoom (`installAppZoom`) scales the root font size, so every rem-sized
- * surface grows with it — except xterm, which sizes its cells in px. Scale the
- * terminal by the same factor, rounded to whole pixels for the same reason the
- * zoom itself steps in integers: fractional cell metrics render blurry.
+ * App zoom (`installAppZoom`) scales the root font size and the text-size
+ * setting multiplies rem-based text on top of it, so every text surface grows
+ * with them — except xterm, which sizes its cells in px. Scale the terminal by
+ * the same factors, rounded to whole pixels for the same reason the zoom itself
+ * steps in integers: fractional cell metrics render blurry.
  */
 export function scaleTerminalFontSize(
   rootFontSizePx: number,
-  baseFontSizePx: number = TERMINAL_DEFAULT_FONT_SIZE
+  baseFontSizePx: number = TERMINAL_DEFAULT_FONT_SIZE,
+  textScale: number = 1
 ): number {
   if (!Number.isFinite(rootFontSizePx) || rootFontSizePx <= 0) {
     return baseFontSizePx;
   }
   return Math.max(
     6,
-    Math.round((baseFontSizePx * rootFontSizePx) / ROOT_BASE_FONT_SIZE)
+    Math.round(
+      (baseFontSizePx * rootFontSizePx * textScale) / ROOT_BASE_FONT_SIZE
+    )
   );
 }
 
@@ -109,7 +114,8 @@ export function subscribeTerminalFontSize(onChange: () => void): () => void {
 export function getTerminalFontSize(): number {
   return scaleTerminalFontSize(
     parseFloat(getComputedStyle(document.documentElement).fontSize),
-    getTerminalBaseFontSize()
+    getTerminalBaseFontSize(),
+    getTextScale()
   );
 }
 
