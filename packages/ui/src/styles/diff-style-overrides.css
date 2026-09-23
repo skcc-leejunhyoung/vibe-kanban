@@ -892,7 +892,7 @@ diffs-container {
 diffs-container {
   --diffs-font-family: "IBM Plex Mono", "SF Mono", Monaco, Consolas, monospace;
   --diffs-font-size: calc(0.75rem * var(--vk-text-scale, 1));
-  --diffs-line-height: 1.125rem;
+  --diffs-line-height: calc(1.125rem * var(--vk-text-scale, 1));
 }
 
 /* Light Mode Colors - Match old design */
