@@ -535,7 +535,8 @@ impl StandardCodingAgentExecutor for Opencode {
         repo_path: Option<&Path>,
     ) -> Result<futures::stream::BoxStream<'static, json_patch::Patch>, ExecutorError> {
         use crate::{
-            executor_discovery::ExecutorConfigCacheKey, executors::utils::executor_options_cache,
+            executor_discovery::ExecutorConfigCacheKey,
+            executors::utils::{ProbeSlot, acquire_discovery_probe, executor_options_cache},
         };
 
         let cache = executor_options_cache();
@@ -610,7 +611,10 @@ impl StandardCodingAgentExecutor for Opencode {
             )
         };
 
+        let fallback_model_selector = initial_options.model_selector.clone();
         let initial_patch = patch::executor_discovered_options(initial_options);
+        let probe_key =
+            ExecutorConfigCacheKey::new(target_path.as_ref(), cmd_key.clone(), base_executor);
 
         let this = self.clone();
         let cmd_key_for_discovery = cmd_key.clone();
@@ -618,6 +622,20 @@ impl StandardCodingAgentExecutor for Opencode {
         let discovery_stream = async_stream::stream! {
             let discovery_path = target_path.as_deref().unwrap_or(Path::new(".")).to_path_buf();
             let mut final_options = default_discovered_options();
+            final_options.model_selector = fallback_model_selector;
+
+            // Share one server probe per catalog: a fresh cache entry is served
+            // as-is, and concurrent callers for the same key wait for the
+            // first probe instead of each spawning an OpenCode server.
+            let probe = match acquire_discovery_probe(&probe_key).await {
+                ProbeSlot::Cached(cached) => {
+                    yield patch::executor_discovered_options(
+                        cached.as_ref().clone().with_loading(false),
+                    );
+                    return;
+                }
+                ProbeSlot::Probe(probe) => probe,
+            };
 
             let env = ExecutionEnv::new(RepoContext::default(), false, String::new());
             let env = setup_permissions_env(this.auto_approve, &env);
@@ -625,6 +643,7 @@ impl StandardCodingAgentExecutor for Opencode {
             let server = match this.spawn_server(&discovery_path, &env).await {
                 Ok(s) => s,
                 Err(e) => {
+                    drop(probe);
                     tracing::warn!("Failed to spawn OpenCode server: {}", e);
                     yield patch::discovery_error(e.to_string());
                     return;
@@ -635,6 +654,7 @@ impl StandardCodingAgentExecutor for Opencode {
             let client = match build_authenticated_client(&directory, &server.server_password) {
                 Ok(c) => c,
                 Err(e) => {
+                    drop(probe);
                     tracing::warn!("Failed to build authenticated client: {}", e);
                     yield patch::discovery_error(e.to_string());
                     return;
@@ -698,21 +718,15 @@ impl StandardCodingAgentExecutor for Opencode {
                         .filter(|p| data.connected.contains(&p.id))
                         .flat_map(|p| this.transform_models(&p.models, &p.id))
                         .collect();
-
-                    yield patch::update_providers(final_options.model_selector.providers.clone());
-                    yield patch::update_models(final_options.model_selector.models.clone());
-                    yield patch::models_loaded();
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch OpenCode providers: {}", e);
-                    yield patch::models_loaded();
                 }
             }
 
             match config_result {
                 Ok(config) => {
                     final_options.model_selector.default_model = config.model;
-                    yield patch::update_default_model(final_options.model_selector.default_model.clone());
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch OpenCode config: {}", e);
@@ -722,8 +736,6 @@ impl StandardCodingAgentExecutor for Opencode {
             match agents_result {
                 Ok(agents) => {
                     final_options.model_selector.agents = map_opencode_agents(&agents);
-                    yield patch::update_agents(final_options.model_selector.agents.clone());
-                    yield patch::agents_loaded();
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch OpenCode agents: {}", e);
@@ -745,14 +757,10 @@ impl StandardCodingAgentExecutor for Opencode {
                         .chain(defaults)
                         .collect();
                     final_options.slash_commands = reorder_slash_commands(discovered);
-                    yield patch::update_slash_commands(final_options.slash_commands.clone());
-                    yield patch::slash_commands_loaded();
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch OpenCode commands: {}", e);
                     final_options.slash_commands = hardcoded_slash_commands();
-                    yield patch::update_slash_commands(final_options.slash_commands.clone());
-                    yield patch::slash_commands_loaded();
                 }
             }
 
@@ -771,8 +779,12 @@ impl StandardCodingAgentExecutor for Opencode {
                     cmd_key_for_discovery,
                     BaseCodingAgent::Opencode,
                 );
-                cache.put(global_cache_key, final_options);
+                cache.put(global_cache_key, final_options.clone());
             }
+            // Cache written (or nothing worth caching): waiters can proceed.
+            drop(probe);
+
+            yield patch::executor_discovered_options(final_options.with_loading(false));
         };
 
         Ok(Box::pin(

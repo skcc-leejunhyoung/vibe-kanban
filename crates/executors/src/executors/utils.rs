@@ -112,6 +112,25 @@ where
             },
         );
     }
+
+    /// Store a value that already counts as expired: `get` misses, `get_stale`
+    /// still serves it. Lets tests exercise the "stale provisional + re-probe"
+    /// path without waiting out the TTL. (Falls back to a fresh entry when the
+    /// monotonic clock is too young to subtract from — only on a machine that
+    /// booted seconds ago.)
+    #[cfg(test)]
+    pub fn put_expired(&self, key: K, value: V) {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.put(
+            key,
+            CacheEntry {
+                cached_at: Instant::now()
+                    .checked_sub(self.ttl * 2)
+                    .unwrap_or_else(Instant::now),
+                value: Arc::new(value),
+            },
+        );
+    }
 }
 
 pub const EXECUTOR_OPTIONS_CACHE_CAPACITY: usize = 64;
@@ -122,6 +141,77 @@ pub fn executor_options_cache()
     static INSTANCE: OnceLock<TtlCache<ExecutorConfigCacheKey, ExecutorDiscoveredOptions>> =
         OnceLock::new();
     INSTANCE.get_or_init(|| TtlCache::new(EXECUTOR_OPTIONS_CACHE_CAPACITY, DEFAULT_CACHE_TTL))
+}
+
+/// How many live executor probes (`claude`, `codex app-server`, the OpenCode
+/// server) may run at once. Every open picker/editor stream used to spawn its
+/// own probe, so a reconnect burst launched dozens of CLIs at once and all of
+/// them blew the 10s discovery timeout.
+const DISCOVERY_PROBE_LIMIT: usize = 4;
+
+fn discovery_probe_semaphore() -> &'static tokio::sync::Semaphore {
+    static INSTANCE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    INSTANCE.get_or_init(|| tokio::sync::Semaphore::new(DISCOVERY_PROBE_LIMIT))
+}
+
+/// One lock per cache key so concurrent callers for the same catalog queue
+/// behind a single probe and pick its result up from the cache.
+// ponytail: LRU of 64 key locks; a burst of >64 distinct keys in flight can
+// evict a held lock and double-probe that key. Switch to a Weak map if seen.
+fn discovery_key_lock(key: &ExecutorConfigCacheKey) -> Arc<tokio::sync::Mutex<()>> {
+    type Locks = LruCache<ExecutorConfigCacheKey, Arc<tokio::sync::Mutex<()>>>;
+    static INSTANCE: OnceLock<Mutex<Locks>> = OnceLock::new();
+    let locks = INSTANCE.get_or_init(|| {
+        Mutex::new(LruCache::new(
+            NonZeroUsize::new(EXECUTOR_OPTIONS_CACHE_CAPACITY).expect("non-zero capacity"),
+        ))
+    });
+    let mut locks = locks.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(lock) = locks.get(key) {
+        return lock.clone();
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.put(key.clone(), lock.clone());
+    lock
+}
+
+/// Held for the duration of one live probe. Dropping it lets the next caller
+/// for the same key see the freshly cached result and skip its own probe.
+pub struct DiscoveryProbe {
+    _key_guard: tokio::sync::OwnedMutexGuard<()>,
+    _permit: tokio::sync::SemaphorePermit<'static>,
+}
+
+pub enum ProbeSlot {
+    /// A catalog cached within the TTL — serve it, no probe needed.
+    Cached(Arc<ExecutorDiscoveredOptions>),
+    /// This caller runs the probe; hold the value until the cache is written.
+    Probe(DiscoveryProbe),
+}
+
+/// Either a fresh cached catalog or the right to run the probe that produces
+/// one. Concurrent callers for the same key wait for the first probe and then
+/// find its result in the cache; distinct keys are throttled to
+/// [`DISCOVERY_PROBE_LIMIT`] probes at a time.
+// ponytail: failed probes are not cached, so a broken CLI still probes once per
+// waiter (throttled); add a short negative-cache TTL if that ever matters.
+pub async fn acquire_discovery_probe(key: &ExecutorConfigCacheKey) -> ProbeSlot {
+    let cache = executor_options_cache();
+    if let Some(fresh) = cache.get(key) {
+        return ProbeSlot::Cached(fresh);
+    }
+    let key_guard = discovery_key_lock(key).lock_owned().await;
+    if let Some(fresh) = cache.get(key) {
+        return ProbeSlot::Cached(fresh);
+    }
+    let permit = discovery_probe_semaphore()
+        .acquire()
+        .await
+        .expect("discovery semaphore is never closed");
+    ProbeSlot::Probe(DiscoveryProbe {
+        _key_guard: key_guard,
+        _permit: permit,
+    })
 }
 
 /// Spawn a background task to refresh the global cache for an executor.

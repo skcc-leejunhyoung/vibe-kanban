@@ -615,7 +615,8 @@ impl StandardCodingAgentExecutor for ClaudeCode {
         repo_path: Option<&Path>,
     ) -> Result<futures::stream::BoxStream<'static, json_patch::Patch>, ExecutorError> {
         use crate::{
-            executor_discovery::ExecutorConfigCacheKey, executors::utils::executor_options_cache,
+            executor_discovery::ExecutorConfigCacheKey,
+            executors::utils::{ProbeSlot, acquire_discovery_probe, executor_options_cache},
         };
 
         let cache = executor_options_cache();
@@ -703,6 +704,8 @@ impl StandardCodingAgentExecutor for ClaudeCode {
 
         let fallback_model_selector = initial_options.model_selector.clone();
         let initial_patch = patch::executor_discovered_options(initial_options);
+        let probe_key =
+            ExecutorConfigCacheKey::new(target_path.as_ref(), cmd_key.clone(), base_executor);
 
         let this = self.clone();
         let cmd_key_for_discovery = cmd_key.clone();
@@ -712,31 +715,35 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             let mut final_options = default_discovered_options(ccr);
             final_options.model_selector = fallback_model_selector;
 
+            // Share one CLI probe per catalog: a fresh cache entry is served
+            // as-is, and concurrent callers for the same key wait for the
+            // first probe instead of each spawning `claude`.
+            let probe = match acquire_discovery_probe(&probe_key).await {
+                ProbeSlot::Cached(cached) => {
+                    yield patch::executor_discovered_options(
+                        cached.as_ref().clone().with_loading(false),
+                    );
+                    return;
+                }
+                ProbeSlot::Probe(probe) => probe,
+            };
+
             match this.discover_agents_and_slash_commands_initial(&discovery_path).await {
                 Ok((mut agent_options, slash_commands_initial, plugins, live_models)) => {
+                    // A CLI that exits before answering the initialize request
+                    // yields an empty catalog; serving that from the cache for
+                    // a whole TTL would hide the real one, so only cache when
+                    // the CLI actually reported its models.
+                    let cli_answered = live_models.is_some();
                     // Under the router the CLI still reports Anthropic's catalog,
                     // but CCR is what picks the model — advertise its providers.
-                    let ccr_selector = ccr.then(ccr_model_selector).flatten();
-                    if let Some(selector) = ccr_selector {
+                    if let Some(selector) = ccr.then(ccr_model_selector).flatten() {
                         final_options.model_selector.providers = selector.providers;
                         final_options.model_selector.models = selector.models;
                         final_options.model_selector.default_model = selector.default_model;
-                        yield patch::update_providers(
-                            final_options.model_selector.providers.clone(),
-                        );
-                        yield patch::update_models(final_options.model_selector.models.clone());
-                        yield patch::update_default_model(
-                            final_options.model_selector.default_model.clone(),
-                        );
-                    } else if !ccr
-                        && apply_live_models(&mut final_options.model_selector, live_models)
-                    {
-                        yield patch::update_models(final_options.model_selector.models.clone());
-                        yield patch::update_default_model(
-                            final_options.model_selector.default_model.clone(),
-                        );
+                    } else if !ccr {
+                        apply_live_models(&mut final_options.model_selector, live_models);
                     }
-                    yield patch::models_loaded();
 
                     let default_agents = [
                         "Bash",
@@ -746,43 +753,43 @@ impl StandardCodingAgentExecutor for ClaudeCode {
                         "Plan",
                     ];
                     agent_options.retain(|a| !default_agents.contains(&a.id.as_str()));
-                    final_options.model_selector.agents = agent_options.clone();
-                    yield patch::update_agents(agent_options);
-                    yield patch::agents_loaded();
+                    final_options.model_selector.agents = agent_options;
 
                     let defaults = Self::hardcoded_slash_commands();
                     let slash_commands = reorder_slash_commands(
                         [slash_commands_initial, defaults].concat()
                     );
-                    final_options.slash_commands = slash_commands.clone();
-                    yield patch::update_slash_commands(slash_commands);
-
-                    let slash_commands_with_descriptions = Self::fill_slash_command_descriptions(
+                    final_options.slash_commands = Self::fill_slash_command_descriptions(
                         &discovery_path,
                         &plugins,
-                        &final_options.slash_commands,
+                        &slash_commands,
                     ).await;
-                    final_options.slash_commands = slash_commands_with_descriptions;
-                    yield patch::update_slash_commands(final_options.slash_commands.clone());
-                    yield patch::slash_commands_loaded();
 
-                    let cache = executor_options_cache();
-                    if let Some(path) = &target_path {
-                        let target_cache_key = ExecutorConfigCacheKey::new(
-                            Some(path),
-                            cmd_key_for_discovery.clone(),
+                    if cli_answered {
+                        let cache = executor_options_cache();
+                        if let Some(path) = &target_path {
+                            let target_cache_key = ExecutorConfigCacheKey::new(
+                                Some(path),
+                                cmd_key_for_discovery.clone(),
+                                BaseCodingAgent::ClaudeCode,
+                            );
+                            cache.put(target_cache_key, final_options.clone());
+                        }
+                        let global_cache_key = ExecutorConfigCacheKey::new(
+                            None,
+                            cmd_key_for_discovery,
                             BaseCodingAgent::ClaudeCode,
                         );
-                        cache.put(target_cache_key, final_options.clone());
+                        cache.put(global_cache_key, final_options.clone());
                     }
-                    let global_cache_key = ExecutorConfigCacheKey::new(
-                        None,
-                        cmd_key_for_discovery,
-                        BaseCodingAgent::ClaudeCode,
-                    );
-                    cache.put(global_cache_key, final_options);
+                    // Cache written (or nothing worth caching): waiters for
+                    // this key can be served now.
+                    drop(probe);
+
+                    yield patch::executor_discovered_options(final_options.with_loading(false));
                 }
                 Err(e) => {
+                    drop(probe);
                     tracing::warn!("Failed to discover Claude Code options: {}", e);
                     yield patch::models_loaded();
                     yield patch::agents_loaded();
@@ -4033,15 +4040,110 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        for path in [
-            "/options/loading_models",
-            "/options/loading_agents",
-            "/options/loading_slash_commands",
-        ] {
-            assert!(patches.iter().any(|patch| {
-                patch[0]["path"] == path && patch[0]["value"] == serde_json::Value::Bool(false)
-            }));
+        // `false` exits before answering, so discovery completes with empty
+        // catalogs: the final replace must still clear every loading flag.
+        let last = patches.last().unwrap();
+        assert_eq!(last[0]["path"], "/options");
+        for flag in ["loading_models", "loading_agents", "loading_slash_commands"] {
+            assert_eq!(last[0]["value"][flag], false, "{flag}");
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_discovery_shares_one_probe() {
+        // A fake CLI that logs each launch, answers the initialize request
+        // with one model, then lingers: six concurrent cold discoveries for
+        // the same key must launch it once and all see that model.
+        const INIT_RESPONSE: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"r","response":{"models":[{"value":"fake-model"}]}}}"#;
+        let dir = std::env::temp_dir();
+        let id = uuid::Uuid::new_v4();
+        let marker = dir.join(format!("vk-probe-{id}.log"));
+        let script = dir.join(format!("vk-probe-{id}.sh"));
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho probe >> \"{}\"\nprintf '%s\\n' '{INIT_RESPONSE}'\nsleep 1\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let claude: ClaudeCode = serde_json::from_value(serde_json::json!({
+            "base_command_override": format!("sh {}", script.display())
+        }))
+        .unwrap();
+
+        let runs = (0..6).map(|_| {
+            let claude = claude.clone();
+            async move {
+                claude
+                    .discover_options(None, None)
+                    .await
+                    .unwrap()
+                    .map(|patch| serde_json::to_value(patch).unwrap())
+                    .collect::<Vec<_>>()
+                    .await
+            }
+        });
+        let results = futures::future::join_all(runs).await;
+
+        let probes = std::fs::read_to_string(&marker)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&script);
+        assert_eq!(
+            probes, 1,
+            "concurrent callers must share a single CLI probe"
+        );
+        for patches in &results {
+            let last = patches.last().unwrap();
+            assert_eq!(last[0]["path"], "/options");
+            assert_eq!(
+                last[0]["value"]["model_selector"]["models"][0]["id"],
+                "fake-model"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fresh_cache_short_circuits_discovery() {
+        use crate::{
+            executor_discovery::ExecutorConfigCacheKey,
+            executors::{BaseCodingAgent, utils::executor_options_cache},
+        };
+
+        // `false` would fail the probe instantly; with a fresh cache entry the
+        // probe never runs and the cached catalog is served as-is.
+        let claude: ClaudeCode = serde_json::from_value(
+            serde_json::json!({"base_command_override": "false --fresh-cache-test"}),
+        )
+        .unwrap();
+        let key = ExecutorConfigCacheKey::new(
+            None,
+            claude.compute_cmd_key(),
+            BaseCodingAgent::ClaudeCode,
+        );
+        let mut cached = default_discovered_options(false);
+        cached.model_selector.models[0].id = "cached-model".to_string();
+        executor_options_cache().put(key, cached);
+
+        let patches: Vec<serde_json::Value> = claude
+            .discover_options(None, None)
+            .await
+            .unwrap()
+            .map(|patch| serde_json::to_value(patch).unwrap())
+            .collect()
+            .await;
+
+        let last = patches.last().unwrap();
+        assert_eq!(last[0]["path"], "/options");
+        assert_eq!(
+            last[0]["value"]["model_selector"]["models"][0]["id"],
+            "cached-model"
+        );
+        assert_eq!(last[0]["value"]["loading_models"], false);
+        assert!(last[0]["value"]["error"].is_null(), "probe must not run");
     }
 
     fn patches_to_entries(patches: &[json_patch::Patch]) -> Vec<NormalizedEntry> {

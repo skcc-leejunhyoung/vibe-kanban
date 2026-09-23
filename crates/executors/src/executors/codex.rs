@@ -666,7 +666,8 @@ impl StandardCodingAgentExecutor for Codex {
         _repo_path: Option<&std::path::Path>,
     ) -> Result<futures::stream::BoxStream<'static, json_patch::Patch>, ExecutorError> {
         use crate::{
-            executor_discovery::ExecutorConfigCacheKey, executors::utils::executor_options_cache,
+            executor_discovery::ExecutorConfigCacheKey,
+            executors::utils::{ProbeSlot, acquire_discovery_probe, executor_options_cache},
         };
 
         // The model catalog is account-level, not workdir-specific: one global
@@ -686,23 +687,38 @@ impl StandardCodingAgentExecutor for Codex {
 
         let this = self.clone();
         let discovery_stream = async_stream::stream! {
-            match this.fetch_live_models().await {
-                Ok(models) => {
-                    if let Some(model_selector) =
-                        model_selector_from_live(&models).map(with_custom_profiles)
-                    {
-                        yield patch::update_providers(model_selector.providers.clone());
-                        yield patch::update_models(model_selector.models.clone());
-                        yield patch::update_default_model(model_selector.default_model.clone());
-                        let mut final_options = static_discovered_options();
-                        final_options.model_selector = model_selector;
-                        executor_options_cache().put(cache_key, final_options);
-                    }
+            // Share one app-server probe per catalog: a fresh cache entry is
+            // served as-is, and concurrent callers wait for the first probe
+            // instead of each spawning `codex app-server`.
+            let probe = match acquire_discovery_probe(&cache_key).await {
+                ProbeSlot::Cached(cached) => {
+                    yield patch::executor_discovered_options(
+                        cached.as_ref().clone().with_loading(false),
+                    );
+                    return;
                 }
+                ProbeSlot::Probe(probe) => probe,
+            };
+            let live = match this.fetch_live_models().await {
+                Ok(models) => model_selector_from_live(&models).map(with_custom_profiles),
                 Err(e) => {
                     // Keep the static fallback list; the selector stays usable.
                     tracing::warn!("Failed to discover Codex models: {e}");
+                    None
                 }
+            };
+            if let Some(model_selector) = &live {
+                let mut final_options = static_discovered_options();
+                final_options.model_selector = model_selector.clone();
+                executor_options_cache().put(cache_key, final_options);
+            }
+            // Cache written (or nothing worth caching): release before yielding
+            // so a slow consumer never holds up the next caller's probe.
+            drop(probe);
+            if let Some(model_selector) = live {
+                yield patch::update_providers(model_selector.providers);
+                yield patch::update_models(model_selector.models);
+                yield patch::update_default_model(model_selector.default_model);
             }
             yield patch::models_loaded();
         };
@@ -1599,7 +1615,8 @@ model = "gpt-5.6-sol"
         );
         let mut cached = super::static_discovered_options();
         cached.model_selector.models[0].id = "cached-model".to_string();
-        executor_options_cache().put(cache_key, cached);
+        // Expired: still the provisional catalog, but the probe must re-run.
+        executor_options_cache().put_expired(cache_key, cached);
 
         let patches: Vec<serde_json::Value> = codex
             .discover_options(None, None)
