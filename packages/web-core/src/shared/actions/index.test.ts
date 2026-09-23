@@ -93,6 +93,7 @@ import {
   workspacesApi,
 } from '@/shared/lib/api';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import { useHomeTerminalStore } from '@/shared/stores/useHomeTerminalStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
@@ -497,6 +498,34 @@ describe('command palette navigation actions', () => {
     );
     ownPane.mock.calls[0]?.[3]?.();
     expect(goToTerminal).toHaveBeenCalled();
+  });
+
+  it('adds a session when Open Terminal runs on a terminal already open', () => {
+    const addSession = vi.fn();
+    useHomeTerminalStore.setState({ addSession });
+    try {
+      const open = makeCtx(
+        {},
+        {
+          appNavigation: { goToTerminal: vi.fn() } as never,
+          terminalOpensInNewPane: true,
+        }
+      );
+      Actions.GotoTerminal.execute(open.ctx);
+      expect(openDestinationInOwnPane).toHaveBeenCalled();
+      expect(addSession).toHaveBeenCalledTimes(1);
+
+      // "Goto" only takes you to the terminal; it never spawns a shell.
+      const goto = makeCtx(
+        {},
+        { appNavigation: { goToTerminal: vi.fn() } as never }
+      );
+      Actions.GotoTerminal.execute(goto.ctx);
+      expect(revealDestinationInPane).toHaveBeenCalled();
+      expect(addSession).toHaveBeenCalledTimes(1);
+    } finally {
+      useHomeTerminalStore.setState({ addSession: null });
+    }
   });
 
   it('only shows the pull request refresh action on the pull requests page', () => {

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useTerminal } from '@/shared/hooks/useTerminal';
+import { useHomeTerminalStore } from '@/shared/stores/useHomeTerminalStore';
 import { TerminalPanel } from '@vibe/ui/components/TerminalPanel';
 import { XTermInstance } from './XTermInstance';
 
@@ -98,5 +99,18 @@ export function TerminalPanelContainer() {
 
 /** Standalone terminal pane: no workspace, starts in the user's home directory. */
 export function HomeTerminalPanel() {
+  const { createTab } = useTerminal();
+
+  useEffect(() => {
+    const addSession = () => createTab(HOME_TERMINAL_KEY);
+    useHomeTerminalStore.setState({ addSession });
+    return () => {
+      // Another mount may have taken the slot over in the meantime.
+      if (useHomeTerminalStore.getState().addSession === addSession) {
+        useHomeTerminalStore.setState({ addSession: null });
+      }
+    };
+  }, [createTab]);
+
   return <TerminalTabs tabKey={HOME_TERMINAL_KEY} />;
 }

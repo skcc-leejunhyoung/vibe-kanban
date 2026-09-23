@@ -126,6 +126,7 @@ import { setCreateModeSeedState } from '@/features/create-mode/model/createModeS
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
 import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
+import { useHomeTerminalStore } from '@/shared/stores/useHomeTerminalStore';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import {
@@ -1509,15 +1510,21 @@ export const Actions = {
     getLabel: (ctx) =>
       ctx.terminalOpensInNewPane ? 'Open Terminal' : 'Goto: Terminal',
     execute: (ctx) => {
-      // Both paths dedupe by destination — the terminal owns one PTY and one
-      // xterm DOM element, so a second pane would adopt that element away and
-      // leave the first one blank.
+      // Read before opening: null means no terminal is on screen yet, and the
+      // one about to mount starts with a session of its own.
+      const addSession = useHomeTerminalStore.getState().addSession;
+      // Both paths dedupe by destination — the terminal's sessions share one
+      // scope with one xterm DOM element per tab, so a second pane would adopt
+      // those elements away and leave the first one blank.
       const open = ctx.terminalOpensInNewPane
         ? openDestinationInOwnPane
         : revealDestinationInPane;
       open({ kind: 'terminal' }, ctx.appNavigation, ctx.appRuntime, () =>
         ctx.appNavigation.goToTerminal()
       );
+      // "Open" on a terminal that is already open asks for another shell;
+      // "Goto" only means take me there.
+      if (ctx.terminalOpensInNewPane) addSession?.();
     },
   } satisfies GlobalActionDefinition,
 
