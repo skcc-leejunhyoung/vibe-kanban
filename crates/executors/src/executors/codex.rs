@@ -249,7 +249,9 @@ fn static_openai_models() -> ModelSelectorConfig {
 
 /// Convert the app server's live `model/list` catalog into the shared selector
 /// config. Returns `None` when no picker-visible model is present so callers
-/// keep the static fallback list.
+/// keep the static fallback list. Stays free of `~/.codex/config.toml` — the
+/// caller folds the custom profiles in, so this is testable without a home
+/// directory.
 fn model_selector_from_live(
     models: &[codex_app_server_protocol::Model],
 ) -> Option<ModelSelectorConfig> {
@@ -296,7 +298,7 @@ fn model_selector_from_live(
         return None;
     }
 
-    Some(with_custom_profiles(ModelSelectorConfig {
+    Some(ModelSelectorConfig {
         models: infos,
         default_model,
         permissions: vec![
@@ -306,7 +308,7 @@ fn model_selector_from_live(
             PermissionPolicy::Plan,
         ],
         ..Default::default()
-    }))
+    })
 }
 
 async fn collect_model_pages<F, Fut>(
@@ -677,7 +679,9 @@ impl StandardCodingAgentExecutor for Codex {
         let discovery_stream = async_stream::stream! {
             match this.fetch_live_models().await {
                 Ok(models) => {
-                    if let Some(model_selector) = model_selector_from_live(&models) {
+                    if let Some(model_selector) =
+                        model_selector_from_live(&models).map(with_custom_profiles)
+                    {
                         yield patch::update_providers(model_selector.providers.clone());
                         yield patch::update_models(model_selector.models.clone());
                         yield patch::update_default_model(model_selector.default_model.clone());
@@ -1466,6 +1470,10 @@ model = "gpt-5.6-sol"
         let config = model_selector_from_live(&models).unwrap();
         assert_eq!(config.default_model.as_deref(), Some("gpt-5.6-sol"));
         assert_eq!(config.models.len(), 2, "hidden models are filtered out");
+        assert!(
+            config.providers.is_empty(),
+            "the live catalog stays unscoped; the caller merges ~/.codex/config.toml in"
+        );
         assert!(
             config
                 .permissions
