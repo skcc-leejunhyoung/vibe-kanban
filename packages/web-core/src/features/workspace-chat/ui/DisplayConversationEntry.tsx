@@ -44,6 +44,7 @@ import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesC
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { ArtifactCards, useExecutionArtifacts } from './ArtifactCards';
 import {
+  type ArtifactSegment,
   findSegmentArtifact,
   splitArtifactSegments,
   subagentScope,
@@ -113,6 +114,13 @@ type Props = {
   aggregatedThinkingGroup: AggregatedThinkingGroup | null;
   readOnly?: boolean;
   artifactOverrides?: ArtifactReference[];
+  /** Assistant message split at its attachments; set by the spaced wrapper. */
+  artifactSegments?: PlacedSegment[];
+};
+
+type PlacedSegment = {
+  segment: ArtifactSegment;
+  artifact?: ArtifactReference;
 };
 
 type FileEditAction = Extract<ActionType, { action: 'file_edit' }>;
@@ -449,10 +457,14 @@ function DisplayConversationEntry(props: Props) {
       return (
         <AssistantMessageEntry
           content={entry.content}
+          segments={
+            props.artifactSegments ?? [
+              { segment: { kind: 'markdown', text: entry.content } },
+            ]
+          }
           workspaceId={workspaceWithSession?.id}
           sessionId={sessionId}
           executionProcessId={executionProcessId}
-          artifacts={props.artifactOverrides ?? EMPTY_ARTIFACTS}
         />
       );
 
@@ -1004,48 +1016,33 @@ function BackgroundWaitingEntry({ tasks }: { tasks: string[] }) {
 const EMPTY_ARTIFACTS: ArtifactReference[] = [];
 
 /**
- * Artifacts whose attachment line or marked fence this message renders in
- * place. Shared by the message body and the trailing list so nothing shows twice.
- */
-function inlineArtifacts(content: string, artifacts: ArtifactReference[]) {
-  return splitArtifactSegments(content).map((segment) => ({
-    segment,
-    artifact: findSegmentArtifact(segment, artifacts),
-  }));
-}
-
-/**
  * Assistant message entry. Attachment lines become their artifact preview at
  * that point of the reply; unregistered lines stay ordinary markdown.
  */
 function AssistantMessageEntry({
   content,
+  segments,
   workspaceId,
   sessionId,
   executionProcessId,
-  artifacts,
 }: {
   content: string;
+  segments: PlacedSegment[];
   workspaceId: string | undefined;
   sessionId: string | undefined;
   executionProcessId: string;
-  artifacts: ArtifactReference[];
 }) {
-  const parts = useMemo(() => {
-    const parts: (string | ArtifactReference)[] = [];
-    for (const { segment, artifact } of inlineArtifacts(content, artifacts)) {
-      if (artifact && workspaceId && sessionId) {
-        parts.push(artifact);
-        continue;
-      }
-      const text = segment.kind === 'markdown' ? segment.text : segment.raw;
-      const last = parts.at(-1);
-      if (typeof last === 'string')
-        parts[parts.length - 1] = `${last}\n${text}`;
-      else parts.push(text);
+  const parts: (string | ArtifactReference)[] = [];
+  for (const { segment, artifact } of segments) {
+    if (artifact && workspaceId && sessionId) {
+      parts.push(artifact);
+      continue;
     }
-    return parts;
-  }, [content, artifacts, workspaceId, sessionId]);
+    const text = segment.kind === 'markdown' ? segment.text : segment.raw;
+    const last = parts.at(-1);
+    if (typeof last === 'string') parts[parts.length - 1] = `${last}\n${text}`;
+    else parts.push(text);
+  }
   return (
     <ChatAssistantMessage
       content={content}
@@ -1063,8 +1060,9 @@ function AssistantMessageEntry({
               renderMermaidArtifacts
             />
           ) : (
+            // The same file may be attached on two lines of one message.
             <ArtifactCards
-              key={part.id}
+              key={index}
               artifacts={[part]}
               processId={executionProcessId}
               workspaceId={workspaceId!}
@@ -1845,31 +1843,30 @@ const DisplayConversationEntrySpaced = (props: Props) => {
   );
   const all =
     props.artifactOverrides ?? artifacts.data?.artifacts ?? EMPTY_ARTIFACTS;
-  // The message body renders these at their attachment line already.
-  const entryContent =
-    props.entry?.entry_type.type === 'assistant_message'
-      ? props.entry.content
-      : undefined;
-  const consumed = useMemo(
-    () =>
-      new Set(
-        entryContent === undefined
-          ? []
-          : inlineArtifacts(entryContent, all).flatMap(({ artifact }) =>
-              artifact ? [artifact.id] : []
-            )
-      ),
-    [entryContent, all]
-  );
-  const matching = (
+  const owned =
     props.artifactOverrides ??
     (artifacts.data?.artifacts ?? []).filter((artifact) =>
       artifact.source_scope
         ? scopes.has(artifact.source_scope)
         : artifact.source_entry !== null &&
           entryKeys.has(`${props.executionProcessId}:${artifact.source_entry}`)
-    )
-  ).filter((artifact) => !consumed.has(artifact.id));
+    );
+  const entryContent =
+    props.entry?.entry_type.type === 'assistant_message'
+      ? props.entry.content
+      : undefined;
+  const segments = useMemo(
+    () =>
+      entryContent === undefined ? [] : splitArtifactSegments(entryContent),
+    [entryContent]
+  );
+  const placed = segments.map((segment) => ({
+    segment,
+    artifact: findSegmentArtifact(segment, all, owned),
+  }));
+  // The message body renders these at their attachment line already.
+  const consumed = new Set(placed.map(({ artifact }) => artifact?.id));
+  const matching = owned.filter((artifact) => !consumed.has(artifact.id));
 
   return (
     <div
@@ -1878,7 +1875,11 @@ const DisplayConversationEntrySpaced = (props: Props) => {
         isGreyed && 'opacity-50 pointer-events-none'
       )}
     >
-      <DisplayConversationEntry {...props} artifactOverrides={all} />
+      <DisplayConversationEntry
+        {...props}
+        artifactOverrides={all}
+        artifactSegments={placed}
+      />
       {sessionId && (
         <ArtifactCards
           artifacts={matching}

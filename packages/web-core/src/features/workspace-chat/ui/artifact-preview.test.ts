@@ -242,7 +242,12 @@ describe('artifact segments', () => {
       name: 'app/out/report.pdf',
       path: 'app/out/report.pdf',
     };
-    const scoped = { ...file, id: 'child', source_scope: 'claude:t1' };
+    const nested = {
+      ...file,
+      id: 'nested',
+      name: 'app/docs/out/report.pdf',
+      path: 'app/docs/out/report.pdf',
+    };
     const inline = {
       ...base,
       id: 'inline',
@@ -250,48 +255,41 @@ describe('artifact segments', () => {
       path: null,
       mime: 'text/html',
     };
+    // Block names restart in every message of the execution.
+    const earlierInline = { ...inline, id: 'earlier', source_entry: 0 };
     const remote = {
       ...base,
       id: 'url',
       path: null,
       url: 'https://example.com/report',
     };
-    const artifacts = [scoped, file, inline, remote];
+    const artifacts = [nested, file, earlierInline, inline, remote];
+    const owned = [file, inline];
+    const find = (segment: Parameters<typeof findSegmentArtifact>[0]) =>
+      findSegmentArtifact(segment, artifacts, owned)?.id;
     const segment = (path: string) => ({
       kind: 'file' as const,
       raw: '',
       path,
     });
-    expect(findSegmentArtifact(segment('out/report.pdf'), artifacts)?.id).toBe(
-      'file'
-    );
-    expect(
-      findSegmentArtifact(segment('./out/report.pdf'), artifacts)?.id
-    ).toBe('file');
-    expect(
-      findSegmentArtifact(segment('/repo/app/out/report.pdf'), artifacts)?.id
-    ).toBe('file');
-    // A bare file name is relative to the agent's working directory.
-    expect(findSegmentArtifact(segment('report.pdf'), artifacts)?.id).toBe(
-      'file'
-    );
-    expect(
-      findSegmentArtifact(segment('other.pdf'), artifacts)
-    ).toBeUndefined();
-    expect(findSegmentArtifact(segment('out/report.pdf'), [scoped])?.id).toBe(
-      'child'
+    expect(find(segment('out/report.pdf'))).toBe('file');
+    expect(find(segment('./out/report.pdf'))).toBe('file');
+    expect(find(segment('/repo/app/out/report.pdf'))).toBe('file');
+    expect(find(segment('/repo/app/docs/out/report.pdf'))).toBe('nested');
+    expect(find(segment('docs/out/report.pdf'))).toBe('nested');
+    expect(find(segment('other.pdf'))).toBeUndefined();
+    expect(find({ kind: 'inline', raw: '', name: 'block-2.html' })).toBe(
+      'inline'
     );
     expect(
       findSegmentArtifact(
         { kind: 'inline', raw: '', name: 'block-2.html' },
-        artifacts
-      )?.id
-    ).toBe('inline');
+        artifacts,
+        [file]
+      )
+    ).toBeUndefined();
     expect(
-      findSegmentArtifact(
-        { kind: 'url', raw: '', url: 'https://example.com/report' },
-        artifacts
-      )?.id
+      find({ kind: 'url', raw: '', url: 'https://example.com/report' })
     ).toBe('url');
   });
 });

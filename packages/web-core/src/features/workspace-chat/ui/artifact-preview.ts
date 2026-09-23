@@ -208,7 +208,7 @@ const ARTIFACT_LINK =
 const FILE_LINE = /(?::[0-9]+){1,2}$/;
 
 function svgRoot(source: string) {
-  const trimmed = source.replace(/^﻿/, '').trimStart();
+  const trimmed = source.replace(/^\uFEFF/, '').trimStart();
   if (!trimmed.startsWith('<?xml')) return trimmed;
   const end = trimmed.indexOf('?>');
   return end === -1 ? trimmed : trimmed.slice(end + 2).trimStart();
@@ -350,34 +350,45 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
   return segments;
 }
 
-/** The registered artifact a segment stands for, if the execution has one. */
+/**
+ * The registered artifact a segment stands for, if the execution has one.
+ * Inline block names restart in every message, so fences only match `owned`,
+ * the artifacts bound to this entry. File and URL ids are execution-wide.
+ */
 export function findSegmentArtifact(
   segment: ArtifactSegment,
-  artifacts: ArtifactReference[]
+  artifacts: ArtifactReference[],
+  owned: ArtifactReference[]
 ): ArtifactReference | undefined {
   if (segment.kind === 'markdown') return undefined;
-  const path =
-    segment.kind === 'file' ? segment.path.replace(/^(\.\/)+/, '') : '';
-  const matches = (artifact: ArtifactReference) => {
-    switch (segment.kind) {
-      case 'url':
-        return artifact.url === segment.url;
-      case 'inline':
-        return artifact.path === null && artifact.name === segment.name;
-      default:
-        // Registered paths are workspace-relative; links are relative to the
-        // agent's working directory or absolute.
-        return (
-          !!artifact.path &&
-          (artifact.path === path ||
-            artifact.path.endsWith(`/${path}`) ||
-            path.endsWith(`/${artifact.path}`))
-        );
+  if (segment.kind === 'url')
+    return artifacts.find((artifact) => artifact.url === segment.url);
+  if (segment.kind === 'inline')
+    return owned.find(
+      (artifact) => artifact.path === null && artifact.name === segment.name
+    );
+  // Registered paths are workspace-relative; links are relative to the agent's
+  // working directory or absolute. Among files sharing a name the closest
+  // suffix match wins.
+  const path = segment.path.replace(/^(\.\/)+/, '');
+  let best: ArtifactReference | undefined;
+  let bestDistance = Infinity;
+  for (const artifact of artifacts) {
+    const candidate = artifact.path;
+    if (
+      !candidate ||
+      !(
+        candidate === path ||
+        candidate.endsWith(`/${path}`) ||
+        path.endsWith(`/${candidate}`)
+      )
+    )
+      continue;
+    const distance = Math.abs(candidate.length - path.length);
+    if (distance < bestDistance) {
+      best = artifact;
+      bestDistance = distance;
     }
-  };
-  // A parent message owns the unscoped copy; child transcripts pass only theirs.
-  return (
-    artifacts.find((artifact) => !artifact.source_scope && matches(artifact)) ??
-    artifacts.find(matches)
-  );
+  }
+  return best;
 }
