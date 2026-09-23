@@ -163,6 +163,20 @@ const PIERRE_DIFFS_THEME_CSS = `
     margin-bottom: 4px;
   }
 
+  /* WebKit snaps the scrolling panel back to the top whenever a slot in this
+     shadow tree changes (hover "+" button, header re-render) while a size
+     container is present. Drop the container and size the line-info
+     separators from the measured column width instead of 100cqi. */
+  [data-container-size] {
+    container-type: normal;
+  }
+  [data-unified] [data-separator='line-info'] [data-separator-wrapper] {
+    width: var(--diffs-column-width, 100%);
+  }
+  [data-overflow='scroll'] [data-additions] [data-gutter] [data-separator='line-info'] [data-separator-wrapper] {
+    width: calc(var(--diffs-column-width, 100%) - var(--diffs-gap-inline, var(--diffs-gap-fallback)));
+  }
+
   [data-indicators='classic'] [data-column-content] {
     position: relative;
     padding-inline-start: 34px;
